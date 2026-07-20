@@ -1,6 +1,6 @@
 # pond/sqlite is a library, not a language primitive — the `@ffi` recipe
 
-**Verdict (WS4, 2026-06-11).** The pond/sqlite FRICTION § F.1 premise —
+**Verdict (2026-06-11).** The pond/sqlite FRICTION § F.1 premise —
 "architecturally blocked behind a missing stdlib primitive
 (`std::db::sqlite::*`)" — is **incorrect**. Hale already ships the general
 C-ABI binding surface a database driver needs: `@ffi("c")` (see
@@ -111,7 +111,7 @@ immediately so it survives the next `step`. This is exactly the
 `DbError`-translation layer pond/sqlite's CONTRACTS.md already describes —
 the bodies just call the `@ffi` fns instead of returning `kind:"unsupported"`.
 
-## Hand-off
+## Follow-ups
 
 - **pond:** un-stub `pond/sqlite/` using the recipe above; drop the
   `conn_handle = 0` markers; restore method-shaped surfaces. No wait on the

@@ -132,8 +132,7 @@ Read recent commits before starting (`git log --oneline | head
   suggestion. Defensive alloca audit hoisted 5 escape-prone
   sites to entry-block to mirror the cliff-lift fix.
 
-The full ledger is in `spec/stdlib.md` (per-phase tables) and
-the `notes/v1.x-checkpoint.md` (current work tracker).
+The full ledger is in `spec/stdlib.md` (per-phase tables).
 
 ## Anti-patterns the compiler explicitly rejects
 

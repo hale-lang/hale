@@ -263,9 +263,9 @@ v1 keeps it strict for simplicity.
 | 5 | Ship `@form(hashmap)` + `@form(ring_buffer)` | Pattern from step 3 generalizes |
 | 6 | Cut v1.x-12 / 13 / 14 from the roadmap | Form library replaces them |
 
-## What changes in the existing v1.x checkpoint
+## What changes in the existing v1.x roadmap
 
-After this design note is accepted, the v1.x-checkpoint.md
+After this design note is accepted, the v1.x roadmap's
 "Cut from roadmap" section gains:
 
 - v1.x-12 (Map stdlib) — replaced by `@form(hashmap)`.

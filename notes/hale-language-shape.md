@@ -155,8 +155,7 @@ Sub-modes (per the v1.x-3 design): `fixed_cell(bytes=N)` —
 each child must fit in N bytes; `spillover(bytes=N)` — same
 with malloc fallback (v1.x ship); `summary_only` — children
 carry no per-instance state (v1.x ship); `shared_slab(bytes=N)`
-— one bump arena shared across all children. See
-`notes/v1.x-3-handoff.md`.
+— one bump arena shared across all children.
 
 Projection is about *children*, not the locus itself. A locus
 with no children (a leaf) has a projection class declared but
@@ -366,5 +365,3 @@ the axes blurring together.
   pattern.
 - `examples/14-projection-classes/main.hl` — explicit
   projection-class annotations (rich, chunked, recognition).
-- `notes/v1.x-3-handoff.md` — recognition class sub-modes
-  (forthcoming work).

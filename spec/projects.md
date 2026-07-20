@@ -22,8 +22,7 @@ projects with identical import graphs can ship totally
 different on-disk layouts; the lotus shape lives in the code.
 
 See `spec/decisions.md` F.19 and F.25 for the design
-rationale; `notes/v1.x-IMPORT-handoff.md` for the v1.x-IMPORT
-milestone history.
+rationale.
 
 ## Project shapes
 

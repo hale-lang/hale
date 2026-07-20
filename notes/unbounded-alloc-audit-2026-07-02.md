@@ -1,7 +1,7 @@
 # --warn-unbounded-alloc false-positive audit (M3 stage 5)
 
 Date: 2026-07-02. Scope: every .hl dir in pond + downstream apps +
-hale examples (261 dirs). Method: fresh-context agent, 7 parallel
+hale examples (261 dirs). Method: 7 parallel
 triage passes, EVERY warning read-the-code triaged, calibrated
 against codegen ground truth. Per-warning record:
 kept out-of-tree.

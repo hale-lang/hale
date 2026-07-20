@@ -1,7 +1,7 @@
 # `std::term` + raw byte I/O primitives (pond P4)
 
 Status: **all stages (1-4) landed.** Written 2026-06-09 from the pond
-terminal-stack handoff (P4, `term/FRICTION.md § stdlib-term-primitives`).
+terminal-stack friction log (P4, `term/FRICTION.md § stdlib-term-primitives`).
 
 > **Stage 1 landed:** `std::term::is_tty(fd) -> Bool` +
 > `std::io::stdout::write_bytes(s) -> Int` — `lotus_term_is_tty` /
@@ -144,7 +144,7 @@ break.
 
 ## Out of scope / future
 
-- **Parkable stdin on `where async_io` pools.** The handoff's longer-term
+- **Parkable stdin on `where async_io` pools.** The friction log's longer-term
   ask: an interactive app should *park* on fd 0 instead of poll-sleeping
   via `read_byte(timeout)`. F.35 parks sockets, not fd 0 — extending the
   pool's epoll set to stdin is a real runtime change, separate from these

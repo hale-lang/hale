@@ -1,12 +1,12 @@
 //! WS1#4 carrier — whole-reassignment of a nested locus param of a
 //! cross-seed (imported) type.
 //!
-//! A downstream app a market-data gateway reported that `self.conn = ws::WsClient { url:
+//! A downstream market-data gateway reported that `self.conn = ws::WsClient { url:
 //! …, … }` (reconnecting by swapping the whole nested-locus param)
 //! left the new instance half-initialized: `conn.url` logged
 //! `(null)` and the first `read_msg()` crashed. In-place field
 //! mutation (`self.conn.url = …`) worked. The single-seed form of
-//! this passes at HEAD (see `notes/ws0-friction-verification`), so
+//! this passes at HEAD (verified 2026-06-11), so
 //! this carrier exercises the untested axis: the reassigned type is
 //! imported from another seed, and its handle-like fields are
 //! established in `birth()`.

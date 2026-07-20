@@ -1392,9 +1392,7 @@ Eight substrate findings from a downstream service built on hale
   can bound a blocking read and run connection-liveness work instead of
   hanging forever on a half-open connection. Backward-compatible (`-2` only
   arises once a recv timeout is set). This is the language-side prerequisite
-  for the pond `WsClient` liveness fix — see
-  `notes/ws-readmsg-liveness-handoff.md` and the corrected verdict in
-  `notes/tls-concurrent-recv-starvation.md`.
+  for the pond `WsClient` liveness fix.
 
 - **Whole-value reassignment of a locus-typed field is now a lifecycle
   transition (post-audit WS1#4 — soundness fix).** `self.conn = WsClient
