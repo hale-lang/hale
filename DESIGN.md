@@ -232,7 +232,44 @@ treatment** like every other runtime primitive, modeled in
 the one unverified concurrent component in a runtime whose
 pitch is model-checked concurrency.
 
-## 12. Milestones
+## 12. Ownership
+
+iris does not do compiler or runtime work — the hale team
+owns that repo. The split:
+
+**iris team (this repo):**
+
+- The **shm protocol spec** — ring layout, record formats,
+  header/mode-mask/control words. iris authors and freezes
+  it; it is the contract both sides build against. Lives
+  here as `PROTOCOL.md`.
+- Consumer library (ring attach, merge, decode), fusion,
+  rendering, the flower, any `hale top`-style TUI harness.
+- A **synthetic emitter** — a mock process that writes the
+  ring format — so the entire consumer/fusion/render stack
+  is buildable and testable before any runtime emits.
+- An **`observe` library emitter** (ordinary pond lib +
+  FFI, no compiler changes): M1 demo apps import it and
+  emit their own structural/bus events into a ring.
+  Weaker coverage than native probes (no scheduler-level
+  events, manual lifecycle emission) but produces real
+  running-process data for M1–M2.
+
+**hale team (upstream asks, filed and owned there):**
+
+- Transport seq numbers + per-binding counters (hale#236).
+- Native dormant probes in the runtime + `.hale.topo`
+  emission (§4–5) — the asks that graduate iris from
+  library-emitter coverage to whole-runtime coverage;
+  filed when the protocol spec is frozen.
+- F.10 (blocks building spike code pulled from `main`).
+
+Sequencing consequence: nothing in M1–M2 waits on upstream.
+Native-probe asks are made from a working iris, against a
+frozen protocol, with the library emitter as the reference
+implementation — a much easier yes.
+
+## 13. Milestones
 
 M0 is not "visualize the codebase." Every milestone is a
 running system.
@@ -258,7 +295,7 @@ Gate on all of it: **hale F.10**
 Color registration asymmetry) still blocks `hale build` of
 the spike code; anything pulled from `main` hits it.
 
-## 13. Open questions
+## 14. Open questions
 
 - Discovery/session identity: registration-dir vs a real
   deployment identity from placement design (§8).
