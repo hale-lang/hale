@@ -17,6 +17,10 @@ pub enum DiagKind {
     Parse,
     /// Type-checker errors.
     Type,
+    /// GH #241: codegen-raised errors that carry a source span
+    /// (CodegenError::UnsupportedAt) — rendered with the same
+    /// location + caret treatment as check diagnostics.
+    Codegen,
     /// Non-fatal advisories — the program still compiles. The first
     /// is the blocking-syscall-on-a-cooperative-pool smell: legal,
     /// but it stalls co-scheduled loci, so it's surfaced rather than
@@ -37,6 +41,14 @@ impl Diag {
     pub fn parse(span: Span, msg: impl Into<String>) -> Self {
         Diag {
             kind: DiagKind::Parse,
+            span,
+            message: msg.into(),
+        }
+    }
+
+    pub fn codegen(span: Span, msg: impl Into<String>) -> Self {
+        Diag {
+            kind: DiagKind::Codegen,
             span,
             message: msg.into(),
         }
@@ -78,6 +90,7 @@ impl Diag {
             DiagKind::Lex => "lex error",
             DiagKind::Parse => "parse error",
             DiagKind::Type => "type error",
+            DiagKind::Codegen => "codegen error",
             DiagKind::Warn => "warning",
         }
     }

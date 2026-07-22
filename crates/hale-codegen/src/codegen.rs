@@ -517,6 +517,12 @@ fn bce_call_safe(
 #[derive(Debug)]
 pub enum CodegenError {
     Unsupported(String),
+    /// GH #241: an unsupported-construct error that can name the
+    /// user source location that produced it. Prefer this for any
+    /// raise a user program can reach; the CLI renders it through
+    /// the standard diagnostic formatter (file:line:col + caret)
+    /// instead of a bare `codegen error:` line.
+    UnsupportedAt(String, hale_syntax::Span),
     LlvmInit(String),
     LlvmEmit(String),
     Link(String),
@@ -526,6 +532,9 @@ impl std::fmt::Display for CodegenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CodegenError::Unsupported(s) => write!(f, "unsupported in codegen v0: {}", s),
+            CodegenError::UnsupportedAt(s, _) => {
+                write!(f, "unsupported in codegen v0: {}", s)
+            }
             CodegenError::LlvmInit(s) => write!(f, "LLVM init failed: {}", s),
             CodegenError::LlvmEmit(s) => write!(f, "LLVM emit failed: {}", s),
             CodegenError::Link(s) => write!(f, "link failed: {}", s),
@@ -10119,7 +10128,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// generic ref recurses through `mangle_generic_name`.
     fn type_expr_mangle_token(t: &TypeExpr) -> Result<String, CodegenError> {
         match t {
-            TypeExpr::Primitive(p, _) => match p {
+            TypeExpr::Primitive(p, span) => match p {
                 PrimType::Int => Ok("Int".into()),
                 PrimType::Float => Ok("Float".into()),
                 PrimType::Bool => Ok("Bool".into()),
@@ -10127,10 +10136,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 PrimType::Duration => Ok("Duration".into()),
                 PrimType::Decimal => Ok("Decimal".into()),
                 PrimType::Time => Ok("Time".into()),
-                other => Err(CodegenError::Unsupported(format!(
-                    "primitive `{:?}` as generic arg (m61 v0.1)",
-                    other
-                ))),
+                // GH #241: user-reachable — carry the arg's span.
+                other => Err(CodegenError::UnsupportedAt(
+                    format!(
+                        "primitive `{:?}` as a generic argument                          (v0 supports Int / Float / Bool / String                          / Duration / Decimal / Time)",
+                        other
+                    ),
+                    *span,
+                )),
             },
             TypeExpr::Named { path, generic_args, .. }
                 if path.segments.len() == 1 =>
@@ -10144,11 +10157,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )
                 }
             }
-            other => Err(CodegenError::Unsupported(format!(
-                "type form `{:?}` as generic arg (m61 v0.1 only \
-                 supports primitives + named types)",
-                other
-            ))),
+            // GH #241: user-reachable — carry the arg's span.
+            other => Err(CodegenError::UnsupportedAt(
+                format!(
+                    "type form `{:?}` as a generic argument (v0 \
+                     supports primitives and named types)",
+                    other
+                ),
+                other.span(),
+            )),
         }
     }
 

@@ -9713,6 +9713,62 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
+                // GH #241 (audit items 1+3): bare-builtin arg
+                // validation. println/print/to_string accept only
+                // printable types (primitives + enums — structs
+                // and loci have no rendering and previously died
+                // as spanless codegen errors); abs/min/max accept
+                // numerics (Int/Float/Duration/Decimal). Guarded
+                // on the name NOT resolving to a user fn, so user
+                // shadowing keeps its own signature.
+                if let Expr::Ident(id) = callee.as_ref() {
+                    let shadowed = self.top.lookup(&id.name).is_some()
+                        || self.locals.lookup(&id.name).is_some();
+                    if !shadowed {
+                        match id.name.as_str() {
+                            "println" | "print" | "to_string" => {
+                                for a in args {
+                                    let at = self.check_expr_addressed(a);
+                                    if !self.ty_is_printable(&at) {
+                                        self.diags.push(Diag::ty(
+                                            a.span(),
+                                            format!(
+                                                "`{}` cannot render a value of                                                  type `{}` — printable types are                                                  the scalar primitives, String,                                                  and enums (render struct/locus                                                  fields individually)",
+                                                id.name,
+                                                at.display()
+                                            ),
+                                        ));
+                                    }
+                                }
+                            }
+                            "abs" | "min" | "max" => {
+                                for a in args {
+                                    let at = self.check_expr_addressed(a);
+                                    let numeric = matches!(
+                                        &at,
+                                        Ty::Prim(
+                                            PrimType::Int
+                                                | PrimType::Float
+                                                | PrimType::Duration
+                                                | PrimType::Decimal
+                                        ) | Ty::Unknown
+                                    );
+                                    if !numeric {
+                                        self.diags.push(Diag::ty(
+                                            a.span(),
+                                            format!(
+                                                "`{}` takes numeric operands                                                  (Int / Float / Duration /                                                  Decimal), got `{}`",
+                                                id.name,
+                                                at.display()
+                                            ),
+                                        ));
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 // bounded[T; N] intrinsics (2026-07-02):
                 // push/at/count/clear over a bounded-typed first
                 // arg. Probed speculatively — when arg0 isn't
@@ -10818,7 +10874,7 @@ impl<'a> Checker<'a> {
     /// `value_to_string_supports` set: every primitive that
     /// `to_string(...)` accepts, plus enums (which render as their
     /// variant name).
-    fn ty_is_printable(t: &Ty) -> bool {
+    fn ty_is_printable(&self, t: &Ty) -> bool {
         match t {
             Ty::Prim(p) => matches!(
                 p,
@@ -10829,14 +10885,27 @@ impl<'a> Checker<'a> {
                     | PrimType::Decimal
                     | PrimType::Duration
                     | PrimType::Time
+                    | PrimType::StringView
             ),
-            // Named types: enums render via to_string at codegen.
-            // The typechecker doesn't distinguish enum vs struct
-            // here without more lookup work; permit and let
-            // codegen reject if the type isn't actually printable
-            // (struct with no Display rendering would still error
-            // there).
-            Ty::Named(_) => true,
+            // GH #241 (audit item 1): enums render via to_string
+            // (variant name); structs / loci / perspectives do
+            // NOT — pre-#241 this deferred to a spanless codegen
+            // error ("`to_string` not supported for type ...").
+            // Resolve the name: enum printable, everything else
+            // known is not. Unresolved names stay permissive
+            // (imports / synthesized types).
+            Ty::Named(n) => match self.top.symbols.get(n) {
+                Some(TopSymbol::Type(ti)) => {
+                    matches!(ti.kind, TypeKind::Enum(_))
+                }
+                Some(
+                    TopSymbol::Locus(_)
+                    | TopSymbol::Perspective(_)
+                    | TopSymbol::Interface(_),
+                ) => false,
+                _ => true,
+            },
+            Ty::Unknown => true,
             _ => false,
         }
     }
@@ -10850,8 +10919,8 @@ impl<'a> Checker<'a> {
         if matches!(op, Add) {
             let l_str = matches!(lt, Ty::Prim(PrimType::String));
             let r_str = matches!(rt, Ty::Prim(PrimType::String));
-            if (l_str && Self::ty_is_printable(rt))
-                || (r_str && Self::ty_is_printable(lt))
+            if (l_str && self.ty_is_printable(rt))
+                || (r_str && self.ty_is_printable(lt))
             {
                 return Ty::Prim(PrimType::String);
             }

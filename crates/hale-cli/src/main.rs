@@ -3182,7 +3182,15 @@ fn run_build(target: &Path) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("codegen error: {}", e);
+            // GH #241: span-carrying codegen errors render like
+            // check diagnostics (file:line:col + source caret);
+            // everything else keeps the bare line.
+            if let hale_codegen::CodegenError::UnsupportedAt(msg, span) = &e {
+                let d = hale_syntax::Diag::codegen(*span, msg.clone());
+                eprintln!("{}", render_located(&d, &file_bases, &sources));
+            } else {
+                eprintln!("codegen error: {}", e);
+            }
             ExitCode::from(1)
         }
     }
