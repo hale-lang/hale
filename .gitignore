@@ -2,3 +2,4 @@ emitter/synth
 emitter/peek
 *.dump
 consumer/fuse
+examples/obs-smoke/obs-smoke

@@ -1,0 +1,144 @@
+// observe — the library emitter for the iris observation
+// protocol (PROTOCOL.md). Segment setup lives in glue.c; the
+// record hot path is pure Hale over the lotus SPSC primitive
+// (std::ring::__spsc_emit, hale#247), which carries the
+// verified fence/publish semantics.
+//
+// v0 shape: one ring, one Observe locus per process.
+//
+//   import "lib/observe" as obs;
+//   main locus App {
+//       params { o: obs::Observe = obs::Observe { }; }
+//       run() {
+//           let t = self.o.topic("orders.new", "{id:U64}", 1);
+//           self.o.pub_ev(t, 7);
+//       }
+//   }
+
+// ---- glue (segment setup; ABI: Int=i64, String=cstr) ----
+
+@ffi("c") fn obs_create(rings: Int, slots: Int) -> Int;
+@ffi("c") fn obs_topic(name: String, shape: String, networked: Int) -> Int;
+@ffi("c") fn obs_locus_type(name: String) -> Int;
+@ffi("c") fn obs_binding(name: String, transport: Int, topic: Int) -> Int;
+@ffi("c") fn obs_scheduler(name: String, cpu: Int) -> Int;
+@ffi("c") fn obs_ring_desc_ptr(ring: Int) -> Int;
+@ffi("c") fn obs_base_ptr() -> Int;
+@ffi("c") fn obs_slots() -> Int;
+@ffi("c") fn obs_ts_shift() -> Int;
+@ffi("c") fn obs_observed() -> Int;
+@ffi("c") fn obs_mode(topic: Int) -> Int;
+@ffi("c") fn obs_count_topic(topic: Int, cell: Int, delta: Int);
+@ffi("c") fn obs_count_binding(binding: Int, cell: Int, delta: Int);
+@ffi("c") fn obs_records_total_add(n: Int);
+@ffi("c") fn obs_teardown();
+
+// ekinds (PROTOCOL.md §8)
+const EK_EPOCH: Int = 0;
+const EK_BUS_PUBLISH: Int = 1;
+const EK_BUS_DELIVER: Int = 2;
+const EK_NET_SEND: Int = 3;
+const EK_NET_DELIVER: Int = 4;
+const EK_LOCUS_BIRTH: Int = 5;
+const EK_LOCUS_DISSOLVE: Int = 6;
+const EK_RESTART: Int = 7;
+
+// counter cells
+const CT_PUBLISHED: Int = 0;
+const CT_DELIVERED: Int = 1;
+const CT_BYTES: Int = 2;
+const CB_SENT: Int = 0;
+const CB_DELIVERED: Int = 1;
+const CB_SEQ_HW: Int = 6;
+
+locus Observe {
+    params {
+        slots: Int = 65536;
+        up: Int = 0;
+        desc: Int = 0;
+        base: Int = 0;
+        shift: Int = 4;
+        last_epoch: Int = 0;
+    }
+
+    birth() {
+        self.up = obs_create(1, self.slots);
+        if self.up == 1 {
+            self.desc = obs_ring_desc_ptr(0);
+            self.base = obs_base_ptr();
+            self.shift = obs_ts_shift();
+            obs_scheduler("app", 0);
+        }
+    }
+
+    dissolve() {
+        obs_teardown();
+    }
+
+    // ---- registration passthroughs ----
+    fn topic(name: String, shape: String, networked: Int) -> Int {
+        return obs_topic(name, shape, networked);
+    }
+    fn locus_type(name: String) -> Int {
+        return obs_locus_type(name);
+    }
+    fn binding(name: String, transport: Int, topic: Int) -> Int {
+        return obs_binding(name, transport, topic);
+    }
+
+    // ---- the pure-Hale hot path ----
+    // Packs word0 (id:20 | ekind:5 | size_class:8 | ts_delta:31)
+    // and emits via the lotus SPSC primitive. Epoch records keep
+    // ts_delta small; the primitive supplies the verified
+    // release-fence + head-publish ordering.
+    fn emit(id: Int, ekind: Int, sz: Int, w1: Int) {
+        if self.up == 1 {
+            let now = std::time::monotonic_ns();
+            let mut delta = (now - self.last_epoch) >> self.shift;
+            if self.last_epoch == 0 || now - self.last_epoch > 1000000000 {
+                std::ring::__spsc_emit(self.base, self.desc, self.slots, 0, now);
+                self.last_epoch = now;
+                delta = 0;
+                obs_records_total_add(1);
+            }
+            let w0 = (id & 1048575)
+                   | ((ekind & 31) << 20)
+                   | ((sz & 255) << 25)
+                   | ((delta & 2147483647) << 33);
+            std::ring::__spsc_emit(self.base, self.desc, self.slots, w0, w1);
+            obs_records_total_add(1);
+        }
+    }
+
+    // ---- instrumentation surface ----
+    fn pub_ev(topic: Int, sz: Int) {
+        obs_count_topic(topic, CT_PUBLISHED, 1);
+        if obs_observed() == 1 && obs_mode(topic) >= 2 {
+            self.emit(topic, EK_BUS_PUBLISH, sz, 0);
+        }
+    }
+    fn dlv_ev(topic: Int, sz: Int) {
+        obs_count_topic(topic, CT_DELIVERED, 1);
+        if obs_observed() == 1 && obs_mode(topic) >= 2 {
+            self.emit(topic, EK_BUS_DELIVER, sz, 0);
+        }
+    }
+    fn net_send(topic: Int, binding: Int, seq: Int, sz: Int) {
+        obs_count_binding(binding, CB_SENT, 1);
+        if obs_observed() == 1 {
+            self.emit(topic, EK_NET_SEND, sz, (binding & 65535) | (seq << 16));
+        }
+    }
+    fn net_deliver(topic: Int, binding: Int, seq: Int, sz: Int) {
+        obs_count_binding(binding, CB_DELIVERED, 1);
+        if obs_observed() == 1 {
+            self.emit(topic, EK_NET_DELIVER, sz, (binding & 65535) | (seq << 16));
+        }
+    }
+    fn birth_ev(inst: Int, parent: Int, locus_type: Int) {
+        self.emit(inst, EK_LOCUS_BIRTH, 0, parent | (locus_type << 32));
+    }
+    fn dissolve_ev(inst: Int, reason: Int) {
+        self.emit(inst, EK_LOCUS_DISSOLVE, 0, reason);
+    }
+}

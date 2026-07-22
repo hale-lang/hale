@@ -1,0 +1,25 @@
+// obs-smoke — the observe library's build/run smoke test:
+// creates a segment, registers a topic, emits a few records,
+// stays alive briefly so a consumer (peek/fuse) can attach.
+
+import "lib/observe" as obs;
+
+main locus App {
+    params {
+        o: obs::Observe = obs::Observe { };
+        t: Int = 0;
+    }
+
+    run() {
+        self.t = self.o.topic("smoke.tick", "{n:Int}", 0);
+        let mut i = 0;
+        while i < 50 {
+            self.o.pub_ev(self.t, 3);
+            self.o.dlv_ev(self.t, 3);
+            std::time::sleep(100ms);
+            i = i + 1;
+        }
+    }
+}
+
+fn main() { App { }; }

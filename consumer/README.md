@@ -30,6 +30,13 @@ Verified at ~15k msgs/s across two processes: ~30 µs mean
 edge latency, injected 0.5% loss tracking within rounding of
 counter truth, zero consumer overruns.
 
+Fusion has been proven against a real production-shape
+workload: a market-data producer/consumer binary pair
+communicating over a declared-layout shm ring, each carrying
+~4 lines of `observe` instrumentation — full-rate seq
+matching over the real transport, mean ~73 µs edge latency,
+zero unmatched.
+
 ## Next
 
 - Latency histograms (mean/max → percentiles)

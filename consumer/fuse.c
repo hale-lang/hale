@@ -47,7 +47,7 @@ static int nsegs;
 
 /* ---- fused topic table ------------------------------------- */
 
-typedef struct { uint64_t seq; uint64_t ts; int seg; } seq_ent;
+typedef struct { uint64_t seq; uint64_t ts; int seg; int kind; } seq_ent; /* kind: 0 empty, 1 send, 2 dlv */
 
 typedef struct {
   uint64_t shape;
@@ -111,29 +111,44 @@ static void handle_event(int si, const obs_ev *ev) {
   obs_seg *s = g->s;
   char line[96];
   switch (ev->ekind) {
+  /* Send/deliver matching is ORDER-INDEPENDENT: segments are
+   * drained in attach order, so within one poll cycle the
+   * consumer's deliver can be processed before the producer's
+   * send for the same seq. Whichever side lands first is
+   * stored; the second completes the pair. */
   case OBS_EK_NET_SEND: {
     topic_row *t = ev->id < 4096 ? local_topic[si][ev->id] : NULL;
     if (!t) break;
     if (!t->inflight) t->inflight = calloc(SEQ_SLOTS, sizeof(seq_ent));
     uint64_t seq = obs_net_seq(ev->w1);
     seq_ent *e = &t->inflight[seq & (SEQ_SLOTS - 1)];
-    e->seq = seq; e->ts = ev->ts; e->seg = si;
     t->sends[si]++;
+    if (e->kind == 2 && e->seq == seq && e->seg != si) {
+      uint64_t lat = e->ts > ev->ts ? e->ts - ev->ts : 0;
+      t->matched[si][e->seg]++;
+      t->lat_sum[si][e->seg] += lat;
+      if (lat > t->lat_max[si][e->seg]) t->lat_max[si][e->seg] = lat;
+      e->kind = 0;
+    } else {
+      e->seq = seq; e->ts = ev->ts; e->seg = si; e->kind = 1;
+    }
     break;
   }
   case OBS_EK_NET_DELIVER: {
     topic_row *t = ev->id < 4096 ? local_topic[si][ev->id] : NULL;
     if (!t) break;
     t->delivers[si]++;
-    if (!t->inflight) break;
+    if (!t->inflight) t->inflight = calloc(SEQ_SLOTS, sizeof(seq_ent));
     uint64_t seq = obs_net_seq(ev->w1);
     seq_ent *e = &t->inflight[seq & (SEQ_SLOTS - 1)];
-    if (e->seq == seq && e->ts && e->seg != si) {
+    if (e->kind == 1 && e->seq == seq && e->seg != si) {
       uint64_t lat = ev->ts > e->ts ? ev->ts - e->ts : 0;
       t->matched[e->seg][si]++;
       t->lat_sum[e->seg][si] += lat;
       if (lat > t->lat_max[e->seg][si]) t->lat_max[e->seg][si] = lat;
-      e->ts = 0;
+      e->kind = 0;
+    } else {
+      e->seq = seq; e->ts = ev->ts; e->seg = si; e->kind = 2;
     }
     break;
   }
@@ -181,6 +196,21 @@ static void discover(void) {
     for (int i = 0; i < nsegs; i++)
       if (!strncmp(segs[i].reg, p, sizeof segs[i].reg)) { known = 1; break; }
     if (known || nsegs >= MAX_SEGS) continue;
+    /* stale-registration GC (PROTOCOL Â§1): dead pid => remove
+     * the file and its leaked segment, attach nothing */
+    {
+      long pid = atol(e->d_name);
+      char proc[64];
+      snprintf(proc, sizeof proc, "/proc/%ld", pid);
+      struct stat pst;
+      if (pid > 0 && stat(proc, &pst) != 0) {
+        char shmp[128];
+        snprintf(shmp, sizeof shmp, "/dev/shm/hale-obs-%ld", pid);
+        unlink(p);
+        unlink(shmp);
+        continue;
+      }
+    }
     char err[128];
     obs_seg *s = obs_attach_reg(p, err, sizeof err);
     if (!s) continue;
