@@ -549,6 +549,31 @@ pub fn suggest(surface: &NsSurface, name: &str) -> Option<&'static str> {
     }
 }
 
+/// GH #241: generic nearest-name suggestion for user-scope
+/// diagnostics (unknown field/method/type names), same threshold
+/// policy as the stdlib `suggest` above: distance ≤ 2 on names of
+/// length ≥ 4, or distance 1 on anything.
+pub fn nearest_name<'a, I>(name: &str, candidates: I) -> Option<String>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut best: Option<(&'a str, usize)> = None;
+    for cand in candidates {
+        let d = edit_distance(name, cand);
+        match best {
+            Some((_, bd)) if bd <= d => {}
+            _ => best = Some((cand, d)),
+        }
+    }
+    match best {
+        Some((cand, d)) if d <= 2 && name.len() >= 4 => {
+            Some(cand.to_string())
+        }
+        Some((cand, 1)) => Some(cand.to_string()),
+        _ => None,
+    }
+}
+
 fn edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
