@@ -80,3 +80,62 @@ fn exact_arity_stays_clean() {
         ds
     );
 }
+
+#[test]
+fn method_under_arity_is_a_check_error() {
+    let src = r#"
+        locus A {
+            fn go(a: Int, b: Int) { println(a + b); }
+        }
+        fn main() {
+            let a = A { };
+            a.go(1);
+        }
+    "#;
+    let ds = diags(src);
+    assert!(
+        ds.iter().any(|m| m.contains("method `go`")
+            && m.contains("at least 2")
+            && m.contains("got 1")),
+        "expected under-arity diag; got: {:?}",
+        ds
+    );
+}
+
+#[test]
+fn defaulted_params_may_be_omitted() {
+    let src = r#"
+        fn greet(name: String, punct: String = "!") -> String {
+            name + punct
+        }
+        fn main() {
+            println(greet("hale"));
+            println(greet("hale", "?"));
+        }
+    "#;
+    let ds = diags(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("at least") || m.contains("at most")),
+        "defaulted call must not trip arity diags; got: {:?}",
+        ds
+    );
+}
+
+#[test]
+fn free_fn_under_arity_is_a_check_error() {
+    let src = r#"
+        fn add(a: Int, b: Int) -> Int { a + b }
+        fn main() {
+            let x = add(1);
+            println(x);
+        }
+    "#;
+    let ds = diags(src);
+    assert!(
+        ds.iter().any(|m| m.contains("fn `add`")
+            && m.contains("at least 2")
+            && m.contains("got 1")),
+        "expected under-arity diag; got: {:?}",
+        ds
+    );
+}

@@ -10145,6 +10145,75 @@ impl<'a> Checker<'a> {
                             ),
                         ));
                     }
+                    // GH #229: arity LOWER bound. Ty::Function
+                    // erases default-param info, so resolve the
+                    // callee's symbol directly; the receiver
+                    // re-check is speculative (diags rolled
+                    // back — the real check already ran above).
+                    let min_required: Option<(usize, String)> =
+                        match callee.as_ref() {
+                            Expr::Ident(id) => {
+                                match self.top.lookup(&id.name) {
+                                    Some(TopSymbol::Fn(sig)) => Some((
+                                        sig.required_params(),
+                                        format!("fn `{}`", id.name),
+                                    )),
+                                    _ => None,
+                                }
+                            }
+                            Expr::Field { receiver, name, .. } => {
+                                let mark = self.diags.len();
+                                let rt = self.check_expr(receiver);
+                                self.diags.truncate(mark);
+                                match rt {
+                                    Ty::Named(tn) => {
+                                        match self.top.symbols.get(&tn) {
+                                            Some(TopSymbol::Locus(li)) => li
+                                                .methods
+                                                .iter()
+                                                .find(|m| m.name == name.name)
+                                                .map(|m| (
+                                                    m.required_params(),
+                                                    format!(
+                                                        "method `{}`",
+                                                        name.name
+                                                    ),
+                                                )),
+                                            Some(TopSymbol::Perspective(
+                                                pi,
+                                            )) => pi
+                                                .methods
+                                                .iter()
+                                                .find(|m| m.name == name.name)
+                                                .map(|m| (
+                                                    m.required_params(),
+                                                    format!(
+                                                        "method `{}`",
+                                                        name.name
+                                                    ),
+                                                )),
+                                            _ => None,
+                                        }
+                                    }
+                                    _ => None,
+                                }
+                            }
+                            _ => None,
+                        };
+                    if let Some((min, display)) = min_required {
+                        if arg_tys.len() < min {
+                            self.diags.push(Diag::ty(
+                                callee.span(),
+                                format!(
+                                    "{} takes at least {} argument{}, got {}",
+                                    display,
+                                    min,
+                                    if min == 1 { "" } else { "s" },
+                                    arg_tys.len()
+                                ),
+                            ));
+                        }
+                    }
                     for (i, (param_ty, arg_ty)) in
                         params.iter().zip(arg_tys.iter()).enumerate()
                     {
