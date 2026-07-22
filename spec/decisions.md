@@ -3034,6 +3034,107 @@ Each of these is a known extension point. Closing them off in v0
 keeps the spec tractable; opening them later is a non-breaking
 addition.
 
+### F.37 The publish contract: binding failure is structural
+
+Decided 2026-07-22, from GH #227 (external reviewer found
+`lotus_transport_create` failing on stderr while every publish
+kept "succeeding" — messages silently dropped).
+
+**The contract.** `T <- value` succeeding means *the broker
+accepted the message*. What "accepted" obligates the broker to
+is defined per binding (in-process: dispatched to every born
+subscriber; unix: handed to the peer connection, boundaries
+preserved; udp: handed to the local IP stack, lossy from there
+by declaration; shm_ring: slot committed under the declared
+`on_overflow` policy; adapter: the adapter locus's own
+contract). The invariant: **the broker may never accept a
+message it already knows it cannot handle under that binding's
+guarantee.**
+
+**Why `<-` stays infallible.** Publishers have no error channel
+by design (statement-only send, no caller frame — the same
+narrowed two-channel rule that rejects `fallible(E)` on
+substrate surfaces). That is only sound because the broker is
+obligated to either uphold the binding's guarantee or fail
+*structurally*: the error channel isn't missing, it's relocated
+to the one place it can be acted on.
+
+**Consequences.**
+
+1. A binding (or `LOTUS_BUS_CONFIG` route) that cannot be
+   *realized* is a **birth failure of the declaring locus** —
+   bindings live on `main`, main's parent is the root, so the
+   unhandled default is the root failure shape (stderr +
+   non-zero exit) via `lotus_bus_binding_fail`. Listener-side
+   realization is synchronous at registration; only blocking
+   accept/recv runs on reader threads, so failure can never
+   hide on a detached thread.
+2. Per-send transient errors on a transport whose guarantee is
+   lossy by declaration (udp) are logged, not structural —
+   downstream loss is within contract.
+3. Runtime alignment with the static checker: dead-bus-receiver
+   is a compile-time *error*; a dead route at boot is the same
+   condition materialized at runtime and gets the same severity.
+
+**Deferred (needs its own decision): connection loss, resolved
+via transports-as-loci.** Established-connection *loss* mid-run:
+today send-failure on a dead stream transport is logged and the
+reader EOF-terminates — the same accept-while-unable failure
+mode as the boot case, deferred only because it trades off
+against rolling restarts.
+
+The direction (2026-07-22 design discussion): substrate
+transports become **real loci** — children of `main`,
+instantiated by the binding entry, converging with the adapter
+path that already works this way (adapter-binding loci are
+already pinned-equivalent by construction in codegen). A
+transport endpoint has connection state, a realization step, a
+long-running recv loop, teardown, and failure modes: that IS
+`birth → run → dissolve` with structural failure, not a thing
+that needs its own policy vocabulary.
+
+- `birth()` = realization (socket/bind/listen or
+  connect-with-retry). The synchronous realization split shipped
+  above is birth-shaped by construction; boot failure becomes an
+  ordinary child birth failure that bubbles to root — identical
+  observable behavior, derived instead of special-cased.
+- `run()` = the recv loop (the reader thread is a pinned locus;
+  inbound via `std::bus::__local_dispatch`, which already
+  exists).
+- Loss = `violate link_lost;` — the standard inline structural
+  failure pattern (F.27). No new syntax.
+- The policy vocabulary is the **existing recovery
+  primitives** on main's `on_failure`: `restart` IS reconnect
+  (re-birth re-runs create-with-retry); `quarantine t for d` IS
+  backoff; `bubble` IS fail. Default (no handler on main) =
+  bubble = non-zero exit, so the honest default is preserved.
+- Down-window publish semantics stop being a new question:
+  "publish to a topic whose transport child is quarantined /
+  restarting" must be answered ONCE by quarantine semantics,
+  for every binding kind.
+
+**Explicitly rejected:** per-entry policy kwargs (`on_loss:`
+etc.) — that rebuilds a lifecycle DSL inside `bindings { }`
+when the language already has the singular expression of
+lifecycle. Binding entries carry only *parameters of the
+guarantee* (`role:`, `codec(...)`, shm_ring's `on_overflow:`)
+— the transport locus's `params`, never its lifecycle.
+
+**Control plane vs data plane:** the locus owns lifecycle and
+failure; publish fanout keeps calling `lotus_transport_send`
+directly against the handle the locus owns (the `@form`
+pattern: locus for flow, C for bytes).
+
+**Sequencing:** (1) transports-as-loci restructure, behavior
+unchanged (the regression tests above pass verbatim); (2)
+listen-side re-arm — peer EOF loops back into `accept()` on the
+already-bound listener, no policy needed, unblocks rolling
+restarts of connect-side binaries; (3) loss → `violate` with
+default bubble, landing **in the same change as** (4) the
+`on_failure`-on-main routing (`lotus_root_panic`'s documented
+seat) + `restart`-as-reconnect — per the guardrail: do not ship
+loss-is-fatal without the reconnect policy in the same change.
+
 ---
 
 ## Deferred & future work

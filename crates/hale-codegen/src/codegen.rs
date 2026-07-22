@@ -8518,13 +8518,63 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                     .as_pointer_value();
                 let role_val = i32_t.const_int(role as u64, false);
-                self.builder
+                let status = self
+                    .builder
                     .build_call(
                         register_fn,
                         &[subj_ptr.into(), url_ptr.into(), role_val.into()],
                         "lotus.binding.register",
                     )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("register_remote returns i32")
+                    .into_int_value();
+                // #227: a binding that cannot be realized is a
+                // birth failure of the declaring (main) locus —
+                // route non-zero status into the structural
+                // failure sink instead of running with a broker
+                // that would accept messages it cannot deliver.
+                let is_fail = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        status,
+                        i32_t.const_zero(),
+                        "lotus.binding.register.failed",
+                    )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let cur_fn = self
+                    .builder
+                    .get_insert_block()
+                    .expect("builder positioned")
+                    .get_parent()
+                    .expect("block has parent fn");
+                let fail_bb = self
+                    .context
+                    .append_basic_block(cur_fn, "binding.fail");
+                let cont_bb = self
+                    .context
+                    .append_basic_block(cur_fn, "binding.ok");
+                self.builder
+                    .build_conditional_branch(is_fail, fail_bb, cont_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder.position_at_end(fail_bb);
+                let binding_fail_fn = self
+                    .module
+                    .get_function("lotus_bus_binding_fail")
+                    .expect("lotus_bus_binding_fail declared");
+                self.builder
+                    .build_call(
+                        binding_fail_fn,
+                        &[subj_ptr.into(), url_ptr.into()],
+                        "lotus.binding.fail",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_unreachable()
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder.position_at_end(cont_bb);
                 // F.36 Slice 3a (2026-05-28): codec attachment.
                 // When the binding entry carries a `codec(L { ... })`
                 // clause, instantiate L into program-lifetime memory

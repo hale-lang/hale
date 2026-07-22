@@ -58,6 +58,21 @@ Subscribing is declarative — there's no `subscribe()` call at
 runtime. Registration happens when the locus is constructed, and
 unsubscribe happens automatically at dissolve.
 
+## What sending actually means
+
+Notice that `OrderShipped <- o;` has no error handling — no `or`
+clause, no return code. That's a promise, not an omission: a send
+succeeding means *the broker accepted the message*, and the
+broker is never allowed to accept a message it already knows it
+can't deliver under the topic's delivery guarantee. For an
+in-process topic that guarantee is "dispatched to every born
+subscriber". For a [bound topic](./multi-binary.md) the guarantee
+comes from the binding — and if a declared binding can't be
+opened at startup at all, the program refuses to boot rather
+than run with a broker that would quietly drop your messages.
+The error channel isn't missing from `<-`; it's relocated to the
+one place it can be acted on — the structural failure path.
+
 ## One ordering rule
 
 A subscriber must be *born before* a publisher sends, or the

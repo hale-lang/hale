@@ -9531,11 +9531,105 @@ static void lotus_set_cloexec(int fd) {
 #endif
 }
 
+void lotus_transport_destroy(lotus_transport_t *t);
+
+/* #227: LISTEN-role creation is split so the bus-binding boot
+ * path can realize (or refuse) the binding synchronously while
+ * the blocking accept stays off the boot path on the reader
+ * thread:
+ *   - lotus_transport_listener_create: socket + bind + listen.
+ *     Everything that fails because the declared binding cannot
+ *     be realized fails HERE, synchronously, so the caller can
+ *     turn it into a birth failure of the declaring locus.
+ *   - lotus_transport_listener_accept: the blocking accept,
+ *     unblockable via shutdown(listen_fd) at teardown.
+ * lotus_transport_create(path, LISTEN) composes both for callers
+ * that want the original single-shot behavior (test drivers).
+ * The split is also the seam a Darwin SOCK_STREAM fallback
+ * (GH #231) slots into without re-plumbing error paths. */
+lotus_transport_t *lotus_transport_listener_create(const char *path) {
+    if (!path) {
+        errno = EINVAL;
+        return NULL;
+    }
+    struct sockaddr_un addr;
+    if (lotus__transport_set_addr(&addr, path) != 0) {
+        perror("lotus_transport_listener_create: addr");
+        return NULL;
+    }
+    int sock = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+    if (sock < 0) {
+        perror("lotus_transport_listener_create: socket");
+        return NULL;
+    }
+    lotus_set_cloexec(sock);
+    /* Best-effort: clear any stale socket file so bind succeeds
+     * after a previous run was killed without destroy(). */
+    unlink(path);
+    if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        perror("lotus_transport_listener_create: bind");
+        int save = errno;
+        close(sock);
+        errno = save;
+        return NULL;
+    }
+    if (listen(sock, 1) < 0) {
+        perror("lotus_transport_listener_create: listen");
+        int save = errno;
+        close(sock);
+        unlink(path);
+        errno = save;
+        return NULL;
+    }
+    lotus_transport_t *t = (lotus_transport_t *)calloc(1, sizeof(*t));
+    if (!t) {
+        close(sock);
+        unlink(path);
+        errno = ENOMEM;
+        return NULL;
+    }
+    t->conn_fd   = -1;
+    t->listen_fd = sock;
+    t->path      = strdup(path);
+    t->role      = LOTUS_TRANSPORT_LISTEN;
+    return t;
+}
+
+int lotus_transport_listener_accept(lotus_transport_t *t) {
+    if (!t || t->listen_fd < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    int conn = accept(t->listen_fd, NULL, NULL);
+    if (conn < 0) {
+        /* Deliberately no perror: teardown unblocks a parked
+         * accept via shutdown(listen_fd), which surfaces here as
+         * EINVAL — a clean exit signal, not an error worth log
+         * noise. Real accept failures set errno for the caller. */
+        return -1;
+    }
+    lotus_set_cloexec(conn);
+    t->conn_fd = conn;
+    return 0;
+}
+
 lotus_transport_t *lotus_transport_create(const char *path, int role) {
     if (!path) {
         errno = EINVAL;
         return NULL;
     }
+
+    if (role == LOTUS_TRANSPORT_LISTEN) {
+        lotus_transport_t *t = lotus_transport_listener_create(path);
+        if (!t) return NULL;
+        if (lotus_transport_listener_accept(t) != 0) {
+            perror("lotus_transport_create: accept");
+            lotus_transport_destroy(t);
+            return NULL;
+        }
+        return t;
+    }
+
     struct sockaddr_un addr;
     if (lotus__transport_set_addr(&addr, path) != 0) {
         perror("lotus_transport_create: addr");
@@ -9548,43 +9642,6 @@ lotus_transport_t *lotus_transport_create(const char *path, int role) {
         return NULL;
     }
     lotus_set_cloexec(sock);
-
-    if (role == LOTUS_TRANSPORT_LISTEN) {
-        /* Best-effort: clear any stale socket file so bind succeeds
-         * after a previous run was killed without destroy(). */
-        unlink(path);
-        if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-            perror("lotus_transport_create: bind");
-            close(sock);
-            return NULL;
-        }
-        if (listen(sock, 1) < 0) {
-            perror("lotus_transport_create: listen");
-            close(sock);
-            unlink(path);
-            return NULL;
-        }
-        int conn = accept(sock, NULL, NULL);
-        if (conn < 0) {
-            perror("lotus_transport_create: accept");
-            close(sock);
-            unlink(path);
-            return NULL;
-        }
-        lotus_set_cloexec(conn);
-        lotus_transport_t *t = (lotus_transport_t *)calloc(1, sizeof(*t));
-        if (!t) {
-            close(conn);
-            close(sock);
-            unlink(path);
-            return NULL;
-        }
-        t->conn_fd   = conn;
-        t->listen_fd = sock;
-        t->path      = strdup(path);
-        t->role      = role;
-        return t;
-    }
 
     if (role == LOTUS_TRANSPORT_CONNECT) {
         /* Retry connect on ENOENT/ECONNREFUSED for up to ~1s so a
@@ -12353,39 +12410,33 @@ void lotus_bus_set_queue(lotus_bus_queue_t *queue) {
     g_bus_queue_for_remote = queue;
 }
 
-/* m59: reader-thread args. Owns the path string so the thread
- * can outlive the lotus_bus_register_remote call. The entry
- * back-reference lets the thread publish its transport ptr to
- * the entry so lotus_bus_remote_destroy_all can find it. */
+/* m59: reader-thread args. The entry back-reference carries the
+ * pre-created listener transport (#227: bind/listen now happens
+ * synchronously in lotus_bus_register_remote so a dead binding
+ * fails the boot path; only the blocking accept + recv loop live
+ * here) and lets lotus_bus_remote_destroy_all find the transport
+ * for teardown. */
 typedef struct lotus_bus_reader_args {
-    char                     *path;       /* owned by the thread */
     lotus_bus_remote_entry_t *entry;
 } lotus_bus_reader_args_t;
 
 static void *lotus_bus_reader_thread_main(void *arg) {
     lotus_bus_reader_args_t *args = (lotus_bus_reader_args_t *)arg;
-    /* Open the LISTEN transport HERE, on the reader thread, so
-     * accept() blocks the reader thread instead of main's boot
-     * path. m58 opened transports inline in register_remote which
-     * meant a subscriber binary would hang at startup until the
-     * publisher connected; m59 defers the accept off the boot
-     * path so main proceeds and any local-subscribe registration
-     * can complete before we wait for a peer. */
-    lotus_transport_t *t = lotus_transport_create(
-        args->path, LOTUS_TRANSPORT_LISTEN);
-    if (!t) {
-        free(args->path);
+    /* Accept HERE, on the reader thread, so the block-until-peer
+     * wait doesn't stall main's boot path (m59). The listener
+     * socket itself was already bound in register_remote, so a
+     * peer's connect-with-retry succeeds as soon as this binary
+     * boots, whether or not this thread has reached accept yet. */
+    lotus_transport_t *t = args->entry->transport;
+    if (lotus_transport_listener_accept(t) != 0) {
+        /* Teardown shut the listener down before any peer
+         * arrived (or accept genuinely failed). Destroy and
+         * hand the slot back as "no transport". */
+        args->entry->transport = NULL;
+        lotus_transport_destroy(t);
         free(args);
         return NULL;
     }
-    /* Publish the transport pointer back to the entry so
-     * lotus_bus_remote_destroy_all can shutdown(2) the connection
-     * if a clean teardown is needed. (Race: between accept
-     * returning and this store, destroy_all sees NULL and skips
-     * the shutdown — that's fine because in well-formed test
-     * scenarios destroy_all runs after the peer has closed,
-     * which already drives recv to EOF.) */
-    args->entry->transport = t;
 
     char wire_buf[LOTUS_PAYLOAD_MAX];
     char struct_buf[LOTUS_PAYLOAD_MAX];
@@ -12425,9 +12476,12 @@ static void *lotus_bus_reader_thread_main(void *arg) {
                                  struct_buf, (size_t)struct_size);
     }
 
+    /* NULL the entry's pointer BEFORE destroying so destroy_all
+     * never reads a freed transport — at worst it sees NULL and
+     * skips its shutdown, which is fine because this thread is
+     * already past the recv loop and exiting. */
+    args->entry->transport = NULL;
     lotus_transport_destroy(t);
-    args->entry->transport = NULL;     /* prevent double-destroy */
-    free(args->path);
     free(args);
     return NULL;
 }
@@ -12544,31 +12598,26 @@ static int lotus_bus_parse_udp_addr(const char *spec,
     return 0;
 }
 
-/* UDP LISTEN reader thread. Binds the socket (joins the multicast
- * group if applicable), then loops recvfrom + deserialize +
- * local_dispatch — same shape as the unix:// reader thread. */
-typedef struct lotus_bus_udp_reader_args {
-    char                     *host_port;  /* owned by thread */
-    lotus_bus_remote_entry_t *entry;
-} lotus_bus_udp_reader_args_t;
-
-static void *lotus_bus_udp_reader_thread_main(void *arg) {
-    lotus_bus_udp_reader_args_t *args = (lotus_bus_udp_reader_args_t *)arg;
+/* #227: LISTEN-side UDP socket setup, hoisted out of the reader
+ * thread so a binding that cannot be realized fails the boot
+ * path synchronously (a failure inside a detached thread has no
+ * reporting channel — the old shape died silently and the
+ * process ran on, receiving nothing). On success the bound,
+ * group-joined fd and dest are published on the entry; the
+ * reader thread only runs the recvfrom loop. Returns 0 or -1. */
+static int lotus_bus_udp_listener_setup(lotus_bus_remote_entry_t *e,
+                                        const char *host_port) {
     struct sockaddr_in dest;
-    if (lotus_bus_parse_udp_addr(args->host_port, &dest) != 0) {
+    if (lotus_bus_parse_udp_addr(host_port, &dest) != 0) {
         fprintf(stderr,
-                "lotus_bus udp reader: invalid host:port %s\n",
-                args->host_port);
-        free(args->host_port);
-        free(args);
-        return NULL;
+                "lotus_bus udp listener: invalid host:port %s\n",
+                host_port);
+        return -1;
     }
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) {
-        perror("lotus_bus udp reader: socket");
-        free(args->host_port);
-        free(args);
-        return NULL;
+        perror("lotus_bus udp listener: socket");
+        return -1;
     }
     lotus_set_cloexec(fd);
     int one = 1;
@@ -12623,11 +12672,11 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
      * NASDAQ ITCH-Recovery client samples. */
     bind_addr.sin_addr = dest.sin_addr;
     if (bind(fd, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) < 0) {
-        perror("lotus_bus udp reader: bind");
+        perror("lotus_bus udp listener: bind");
+        int save = errno;
         close(fd);
-        free(args->host_port);
-        free(args);
-        return NULL;
+        errno = save;
+        return -1;
     }
     if (lotus_addr_is_multicast(&dest.sin_addr)) {
         struct ip_mreq mreq;
@@ -12636,18 +12685,31 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
         mreq.imr_interface.s_addr = htonl(INADDR_ANY);
         if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
                        &mreq, sizeof(mreq)) < 0) {
-            perror("lotus_bus udp reader: IP_ADD_MEMBERSHIP");
+            perror("lotus_bus udp listener: IP_ADD_MEMBERSHIP");
+            int save = errno;
             close(fd);
-            free(args->host_port);
-            free(args);
-            return NULL;
+            errno = save;
+            return -1;
         }
-        args->entry->udp_is_multicast = 1;
+        e->udp_is_multicast = 1;
     }
-    /* Publish the fd back to the entry so destroy_all can close
-     * + leave-group on teardown. */
-    args->entry->udp_fd   = fd;
-    args->entry->udp_dest = dest;
+    e->udp_fd   = fd;
+    e->udp_dest = dest;
+    return 0;
+}
+
+/* UDP LISTEN reader thread: just the recvfrom + deserialize +
+ * local_dispatch loop over the pre-bound fd on the entry. */
+typedef struct lotus_bus_udp_reader_args {
+    lotus_bus_remote_entry_t *entry;
+} lotus_bus_udp_reader_args_t;
+
+static void *lotus_bus_udp_reader_thread_main(void *arg) {
+    lotus_bus_udp_reader_args_t *args = (lotus_bus_udp_reader_args_t *)arg;
+    /* Snapshot the fd: destroy_all resets entry->udp_fd to -1
+     * after the join, never before, so the snapshot is stable
+     * for this thread's lifetime. */
+    int fd = args->entry->udp_fd;
 
     char wire_buf[LOTUS_PAYLOAD_MAX];
     char struct_buf[LOTUS_PAYLOAD_MAX];
@@ -12707,18 +12769,17 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
                                  args->entry->subject,
                                  struct_buf, (size_t)struct_size);
     }
-    free(args->host_port);
     free(args);
     return NULL;
 }
 
-void lotus_bus_register_remote(const char *subject,
-                               const char *url,
-                               int role) {
+int lotus_bus_register_remote(const char *subject,
+                              const char *url,
+                              int role) {
     if (!subject || !url) {
         fprintf(stderr,
                 "lotus_bus_register_remote: null subject or url\n");
-        return;
+        return -1;
     }
     /* Recognized schemes:
      *   unix://<path>          AF_UNIX SEQPACKET (m58)
@@ -12743,12 +12804,12 @@ void lotus_bus_register_remote(const char *subject,
                 "lotus_bus_register_remote: unsupported URL scheme "
                 "(recognize unix:// and udp://): %s\n",
                 url);
-        return;
+        return -1;
     }
     if (*path == '\0') {
         fprintf(stderr,
                 "lotus_bus_register_remote: empty path in %s\n", url);
-        return;
+        return -1;
     }
 
     /* Grow the slot-array (of pointers, post-2026-05-27) so we
@@ -12764,17 +12825,17 @@ void lotus_bus_register_remote(const char *subject,
         lotus_bus_remote_entry_t **grown = (lotus_bus_remote_entry_t **)
             realloc(g_bus_remote_entries,
                     new_cap * sizeof(lotus_bus_remote_entry_t *));
-        if (!grown) return;
+        if (!grown) return -1;
         g_bus_remote_entries = grown;
         g_bus_remote_cap     = new_cap;
     }
 
     char *subject_copy = strdup(subject);
-    if (!subject_copy) return;
+    if (!subject_copy) return -1;
 
     lotus_bus_remote_entry_t *e = (lotus_bus_remote_entry_t *)
         malloc(sizeof(lotus_bus_remote_entry_t));
-    if (!e) { free(subject_copy); return; }
+    if (!e) { free(subject_copy); return -1; }
     g_bus_remote_entries[g_bus_remote_count++] = e;
     e->subject           = subject_copy;
     e->kind              = is_udp
@@ -12794,20 +12855,27 @@ void lotus_bus_register_remote(const char *subject,
     e->codec_encode_fn   = NULL;
     e->codec_decode_fn   = NULL;
 
+    /* #227: every failure below pops the just-pushed entry and
+     * returns -1 so the caller can fail the declaring locus's
+     * birth. The old shape left the dead entry in the table with
+     * transport=NULL, which made every subsequent publish
+     * "succeed" while fanout silently skipped the slot — the
+     * broker accepting messages it already knew it couldn't
+     * handle. Registration runs single-threaded on the boot
+     * path, so the pop is race-free. */
     if (is_udp) {
         if (role == LOTUS_TRANSPORT_LISTEN) {
-            /* LISTEN: spawn reader thread that owns the bind +
-             * multicast-group-join + recvfrom loop. Same shape
-             * as the unix:// reader thread but UDP semantics. */
+            /* LISTEN: realize the socket (parse + bind +
+             * multicast-group-join) synchronously so a dead
+             * binding refuses HERE; the reader thread only
+             * runs the recvfrom loop. */
+            if (lotus_bus_udp_listener_setup(e, path) != 0) {
+                goto fail_pop_entry;
+            }
             lotus_bus_udp_reader_args_t *args =
                 (lotus_bus_udp_reader_args_t *)malloc(sizeof(*args));
-            if (!args) return;
-            args->host_port = strdup(path);
-            args->entry     = e;
-            if (!args->host_port) {
-                free(args);
-                return;
-            }
+            if (!args) goto fail_close_udp;
+            args->entry = e;
             /* Reader thread dispatches handlers (which open scratch
              * subregions) concurrently with main → subregion latch. */
             lotus_mark_multithreaded();
@@ -12815,9 +12883,8 @@ void lotus_bus_register_remote(const char *subject,
                                lotus_bus_udp_reader_thread_main, args) != 0)
             {
                 perror("lotus_bus_register_remote: udp pthread_create");
-                free(args->host_port);
                 free(args);
-                return;
+                goto fail_close_udp;
             }
             e->has_reader_thread = 1;
         } else {
@@ -12829,12 +12896,12 @@ void lotus_bus_register_remote(const char *subject,
                 fprintf(stderr,
                         "lotus_bus_register_remote: invalid udp:// "
                         "host:port %s\n", path);
-                return;
+                goto fail_pop_entry;
             }
             int fd = socket(AF_INET, SOCK_DGRAM, 0);
             if (fd < 0) {
                 perror("lotus_bus_register_remote: udp socket");
-                return;
+                goto fail_pop_entry;
             }
             lotus_set_cloexec(fd);
             /* Bind to an ephemeral local port so the kernel picks
@@ -12848,37 +12915,42 @@ void lotus_bus_register_remote(const char *subject,
             if (bind(fd, (struct sockaddr *)&any, sizeof(any)) < 0) {
                 perror("lotus_bus_register_remote: udp bind");
                 close(fd);
-                return;
+                goto fail_pop_entry;
             }
             e->udp_fd           = fd;
             e->udp_is_multicast = lotus_addr_is_multicast(&e->udp_dest.sin_addr);
         }
-        return;
+        return 0;
     }
 
     if (role == LOTUS_TRANSPORT_LISTEN) {
-        /* m59: spawn a reader thread that owns this subject's
-         * recv loop. The thread opens the LISTEN transport on
-         * its own stack so accept() doesn't block the main
-         * thread. */
+        /* Realize the listener (socket + bind + listen)
+         * synchronously so a dead binding refuses HERE, on the
+         * boot path; only the blocking accept + recv loop go to
+         * the reader thread (m59's no-hang-at-boot property is
+         * preserved — a peer's connect succeeds as soon as the
+         * listener is bound, before this binary's thread reaches
+         * accept). */
+        e->transport = lotus_transport_listener_create(path);
+        if (!e->transport) goto fail_pop_entry;
         lotus_bus_reader_args_t *args =
             (lotus_bus_reader_args_t *)malloc(sizeof(*args));
-        if (!args) return;
-        args->path  = strdup(path);
-        args->entry = e;
-        if (!args->path) {
-            free(args);
-            return;
+        if (!args) {
+            lotus_transport_destroy(e->transport);
+            e->transport = NULL;
+            goto fail_pop_entry;
         }
+        args->entry = e;
         /* Reader thread dispatches handlers (which open scratch
          * subregions) concurrently with main → subregion latch. */
         lotus_mark_multithreaded();
         if (pthread_create(&e->reader_thread, NULL,
                            lotus_bus_reader_thread_main, args) != 0) {
             perror("lotus_bus_register_remote: pthread_create");
-            free(args->path);
             free(args);
-            return;
+            lotus_transport_destroy(e->transport);
+            e->transport = NULL;
+            goto fail_pop_entry;
         }
         e->has_reader_thread = 1;
     } else {
@@ -12886,10 +12958,39 @@ void lotus_bus_register_remote(const char *subject,
          * on the boot path. The first publish on this subject
          * fans out through the resulting transport. */
         e->transport = lotus_transport_create(path, role);
-        /* On failure lotus_transport_create already perror'd; the
-         * entry stays in the table with transport=NULL so fanout
-         * skips it and destroy_all is a no-op for this slot. */
+        if (!e->transport) goto fail_pop_entry;
     }
+    return 0;
+
+fail_close_udp:
+    if (e->udp_fd >= 0) {
+        close(e->udp_fd);
+        e->udp_fd = -1;
+    }
+fail_pop_entry:
+    g_bus_remote_count--;
+    free(e->subject);
+    free(e);
+    return -1;
+}
+
+/* #227: structural-failure sink for a bus binding that could not
+ * be realized. Bindings are declared on the main locus and have
+ * no caller frame or runtime rebind surface, so a failed binding
+ * is a birth failure of the declaring locus; with main's parent
+ * being the root, the unhandled default is the root failure
+ * shape (stderr + non-zero exit), same as lotus_root_panic.
+ * Like lotus_root_panic, this is the seat a future
+ * routing-through-main-locus-on_failure extension hooks into. */
+void lotus_bus_binding_fail(const char *subject, const char *url) {
+    dprintf(2,
+            "Hale structural failure: bus binding for subject `%s` "
+            "(%s) could not be realized — a declared binding the "
+            "broker cannot honor fails the declaring locus's birth "
+            "(spec/semantics.md, \"The publish contract\")\n",
+            subject ? subject : "<unknown>",
+            url ? url : "<unknown>");
+    exit(1);
 }
 
 /* Wave B: register an adapter binding. The adapter locus has
@@ -13060,7 +13161,22 @@ void lotus_bus_load_config(const char *path) {
                     path, lineno, role_str);
             continue;
         }
-        lotus_bus_register_remote(subject, url, role_val);
+        /* #227: a config-requested route that cannot be realized
+         * is the same structural failure as a bindings { } entry
+         * — no route that was asked for may silently not exist.
+         * (Malformed lines above stay warn-and-skip: the file is
+         * an operator-layered override and a parse error names
+         * the line; an OPEN failure would otherwise turn into
+         * silent message drops, which is the failure mode this
+         * check exists to kill.) */
+        if (lotus_bus_register_remote(subject, url, role_val) != 0) {
+            fprintf(stderr,
+                    "lotus_bus_load_config: %s:%d: route could not "
+                    "be realized\n",
+                    path, lineno);
+            fclose(fp);
+            lotus_bus_binding_fail(subject, url);
+        }
     }
     fclose(fp);
 }
@@ -16311,24 +16427,32 @@ void lotus_bus_remote_destroy_all(void) {
         }
 
         /* m59: for LISTEN role, the reader thread owns the
-         * transport's lifecycle. Best-effort shutdown(conn_fd)
-         * to unblock recv if the peer hasn't closed yet, then
-         * join. The thread destroys the transport itself before
-         * exiting, so we don't double-destroy here. */
+         * transport's lifecycle. Best-effort shutdown to unblock
+         * the thread wherever it's parked, then join. The thread
+         * destroys the transport itself before exiting, so we
+         * don't double-destroy here. */
         if (e->has_reader_thread) {
-            if (e->transport && e->transport->conn_fd >= 0) {
-                /* SHUT_RDWR turns subsequent recvs into
-                 * immediate EOF. Ignore errors — if the peer has
-                 * already closed (the common case in a clean
-                 * teardown), the fd may already be half-shut. */
-                shutdown(e->transport->conn_fd, SHUT_RDWR);
+            if (e->transport) {
+                /* SHUT_RDWR on the connection turns subsequent
+                 * recvs into immediate EOF; on the listener it
+                 * makes a parked accept() return (#227 — the
+                 * listener is now bound at register time, so a
+                 * subscriber whose peer never connected has its
+                 * thread parked in accept, which previously made
+                 * this join hang). Ignore errors — the fds may
+                 * already be half-shut in a clean teardown. */
+                if (e->transport->conn_fd >= 0) {
+                    shutdown(e->transport->conn_fd, SHUT_RDWR);
+                }
+                if (e->transport->listen_fd >= 0) {
+                    shutdown(e->transport->listen_fd, SHUT_RDWR);
+                }
             }
             pthread_join(e->reader_thread, NULL);
             /* Reader thread has already nulled e->transport on
-             * its way out, but if it failed before storing
-             * (transport_create returned NULL), the field is
-             * already NULL — so the CONNECT-style destroy below
-             * is a no-op for this slot. */
+             * its way out (both the EOF and the accept-refused
+             * paths), so the CONNECT-style destroy below is a
+             * no-op for this slot. */
         }
         if (e->transport) {
             lotus_transport_destroy(e->transport);
