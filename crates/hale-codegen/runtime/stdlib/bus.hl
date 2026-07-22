@@ -82,7 +82,7 @@ locus __StdBusUnixListenTransport {
         subject: String = "";
         url: String = "";
         path: String = "";
-        handle: Int = 0;    // remote-entry handle, set by birth
+        handle: Int = 0; // remote-entry handle, set by birth
     }
 
     birth() {
@@ -113,7 +113,7 @@ locus __StdBusUnixConnectTransport {
         subject: String = "";
         url: String = "";
         path: String = "";
-        handle: Int = 0;    // remote-entry handle, set by birth
+        handle: Int = 0; // remote-entry handle, set by birth
     }
 
     birth() {
