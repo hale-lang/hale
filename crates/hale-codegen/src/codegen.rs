@@ -2407,6 +2407,12 @@ pub fn stdlib_path_renames() -> &'static [(&'static [&'static str], &'static str
 
 const STDLIB_PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "bus", "Adapter"], "__StdBusAdapter"),
+    // GH #233 steps 3-4: the connect-side substrate transport is
+    // user-nameable so main can declare
+    // `on_failure(t: std::bus::UnixTransport, err: ClosureViolation)`.
+    // (The listen side re-arms instead of getting lost, so it
+    // stays internal.)
+    (&["std", "bus", "UnixTransport"], "__StdBusUnixConnectTransport"),
     (&["std", "bytes", "BytesBuilder"], "__StdBytesBytesBuilder"),
     (&["std", "cli", "Resolver"], "__StdCliResolver"),
     (&["std", "http", "Handler"], "__StdHttpHandler"),
@@ -8300,6 +8306,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
 
         let i32_t = self.context.i32_type();
+        let mut any_connect_binding = false;
 
         for block in bindings {
             for entry in block.entries {
@@ -8337,6 +8344,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 )));
                             }
                         };
+                        if !listen {
+                            any_connect_binding = true;
+                        }
                         self.emit_unix_transport_binding(
                             &subject,
                             &entry.topic.name,
@@ -8521,6 +8531,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 };
             }
         }
+        // GH #233 steps 3-4: when connect bindings exist and the
+        // main locus declares the matching on_failure, register
+        // the loss dispatcher. Without the handler, the C drain
+        // falls straight through to the structural exit — no
+        // dispatcher needed.
+        if any_connect_binding {
+            let main_handler = self
+                .main_locus_name
+                .as_ref()
+                .and_then(|n| self.user_loci.get(n))
+                .and_then(|info| info.failure_handler.as_ref())
+                .filter(|(child, _)| child == "__StdBusUnixConnectTransport")
+                .map(|(_, f)| *f);
+            if let Some(handler) = main_handler {
+                self.emit_transport_loss_dispatch(handler)?;
+            }
+        }
         Ok(())
     }
 
@@ -8591,7 +8618,270 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let mut scope = Scope::default();
         let result = self.lower_expr(&locus_lit, &mut scope);
         self.current_user_fn_ret = saved_ret;
-        result?;
+        let (self_val, _self_ty) = result?;
+        // GH #233 steps 3-4: bind the connect locus's self onto
+        // its remote entry so the loss-dispatch fn can hand it to
+        // main's on_failure. Birth already ran (cooperative,
+        // inline), so the handle field is populated.
+        if !listen {
+            let info = self
+                .user_loci
+                .get(locus_name)
+                .cloned()
+                .expect("transport locus checked above");
+            let (h_idx, _) = *info
+                .fields
+                .get("handle")
+                .expect("transport locus has handle field");
+            let i64_t = self.context.i64_type();
+            let self_ptr = self_val.into_pointer_value();
+            let h_slot = self
+                .builder
+                .build_struct_gep(
+                    info.struct_ty,
+                    self_ptr,
+                    h_idx,
+                    "transport.handle.slot",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let h = self
+                .builder
+                .build_load(i64_t, h_slot, "transport.handle")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let bind_fn = self
+                .module
+                .get_function("lotus_bus_transport_bind_self")
+                .expect("lotus_bus_transport_bind_self declared");
+            self.builder
+                .build_call(
+                    bind_fn,
+                    &[h.into(), self_ptr.into()],
+                    "transport.bind_self",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// GH #233 steps 3-4: emit `__hale_transport_loss_dispatch(h)`
+    /// and register it with the runtime — only called when the
+    /// main locus declares
+    /// `on_failure(t: std::bus::UnixTransport, err: ClosureViolation)`.
+    /// The fn runs on the queue owner thread (from
+    /// lotus_bus_drain_lost_transports): it invokes main's
+    /// handler with a synthetic link_lost ClosureViolation, then
+    /// reconnects if the handler called `restart (t)` (observed
+    /// as a bumped `__restart_count`), else falls back to the
+    /// structural exit.
+    fn emit_transport_loss_dispatch(
+        &mut self,
+        main_handler: inkwell::values::FunctionValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let i64_t = self.context.i64_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let void_t = self.context.void_type();
+        let info = self
+            .user_loci
+            .get("__StdBusUnixConnectTransport")
+            .cloned()
+            .expect("connect transport locus declared");
+
+        let fn_ty = void_t.fn_type(&[i64_t.into()], false);
+        let f = self.module.add_function(
+            "__hale_transport_loss_dispatch",
+            fn_ty,
+            None,
+        );
+        let saved_block = self.builder.get_insert_block();
+
+        let entry_bb = self.context.append_basic_block(f, "entry");
+        let have_main_bb = self.context.append_basic_block(f, "have_main");
+        let reconnect_bb = self.context.append_basic_block(f, "reconnect");
+        let fallback_bb = self.context.append_basic_block(f, "fallback");
+        let done_bb = self.context.append_basic_block(f, "done");
+
+        self.builder.position_at_end(entry_bb);
+        let h = f.get_nth_param(0).expect("handle param").into_int_value();
+        let locus_self_fn = self
+            .module
+            .get_function("lotus_bus_transport_locus_self")
+            .expect("locus_self declared");
+        let tself = self
+            .builder
+            .build_call(locus_self_fn, &[h.into()], "loss.tself")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr")
+            .into_pointer_value();
+        let main_global = self
+            .module
+            .get_global("lotus.main.self")
+            .unwrap_or_else(|| {
+                let g = self.module.add_global(ptr_t, None, "lotus.main.self");
+                g.set_initializer(&ptr_t.const_null());
+                g.set_linkage(inkwell::module::Linkage::Internal);
+                g
+            });
+        let mself = self
+            .builder
+            .build_load(ptr_t, main_global.as_pointer_value(), "loss.mself")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_pointer_value();
+        let tnull = self
+            .builder
+            .build_is_null(tself, "loss.tnull")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let mnull = self
+            .builder
+            .build_is_null(mself, "loss.mnull")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let any_null = self
+            .builder
+            .build_or(tnull, mnull, "loss.any_null")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(any_null, fallback_bb, have_main_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(have_main_bb);
+        // Synthetic ClosureViolation {locus, closure, diff} —
+        // static, never freed; matches the registered layout.
+        let viol_struct_ty = self.context.struct_type(
+            &[ptr_t.into(), ptr_t.into(), i64_t.into()],
+            false,
+        );
+        let locus_str = self
+            .builder
+            .build_global_string_ptr(
+                "__StdBusUnixConnectTransport",
+                "loss.viol.locus",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .as_pointer_value();
+        let closure_str = self
+            .builder
+            .build_global_string_ptr("link_lost", "loss.viol.closure")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .as_pointer_value();
+        let viol_g = self.module.add_global(viol_struct_ty, None, "loss.viol");
+        viol_g.set_initializer(&viol_struct_ty.const_named_struct(&[
+            ptr_t.const_null().into(),
+            ptr_t.const_null().into(),
+            i64_t.const_zero().into(),
+        ]));
+        viol_g.set_linkage(inkwell::module::Linkage::Internal);
+        let viol_ptr = viol_g.as_pointer_value();
+        let f0 = self
+            .builder
+            .build_struct_gep(viol_struct_ty, viol_ptr, 0, "loss.viol.f0")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(f0, locus_str)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f1 = self
+            .builder
+            .build_struct_gep(viol_struct_ty, viol_ptr, 1, "loss.viol.f1")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(f1, closure_str)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // restart-count before/after the handler call.
+        let rc_slot = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                tself,
+                info.restart_count_field_idx,
+                "loss.rc.slot",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let pre = self
+            .builder
+            .build_load(i64_t, rc_slot, "loss.rc.pre")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        self.builder
+            .build_call(
+                main_handler,
+                &[mself.into(), tself.into(), viol_ptr.into()],
+                "loss.on_failure",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let post = self
+            .builder
+            .build_load(i64_t, rc_slot, "loss.rc.post")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let bumped = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SGT,
+                post,
+                pre,
+                "loss.rc.bumped",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(bumped, reconnect_bb, fallback_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(reconnect_bb);
+        let reconnect_fn = self
+            .module
+            .get_function("lotus_bus_transport_reconnect")
+            .expect("reconnect declared");
+        let r = self
+            .builder
+            .build_call(reconnect_fn, &[h.into()], "loss.reconnect")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64")
+            .into_int_value();
+        let r_ok = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                r,
+                i64_t.const_zero(),
+                "loss.reconnect.ok",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_conditional_branch(r_ok, done_bb, fallback_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(fallback_bb);
+        let fallback_fn = self
+            .module
+            .get_function("lotus_bus_transport_lost_fallback")
+            .expect("lost_fallback declared");
+        self.builder
+            .build_call(fallback_fn, &[h.into()], "loss.fallback")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // lost_fallback exits the process.
+        self.builder
+            .build_unreachable()
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(done_bb);
+        self.builder
+            .build_return(None)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // Back to the prelude position; register the dispatcher.
+        if let Some(bb) = saved_block {
+            self.builder.position_at_end(bb);
+        }
+        let set_fn = self
+            .module
+            .get_function("lotus_bus_set_loss_handler")
+            .expect("set_loss_handler declared");
+        let f_ptr = f.as_global_value().as_pointer_value();
+        self.builder
+            .build_call(set_fn, &[f_ptr.into()], "loss.set_handler")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
     }
 

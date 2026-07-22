@@ -935,11 +935,23 @@ acted on. Consequences, all normative:
 - **Peer EOF on a listen binding is not loss.** The listener is
   still bound; the serve loop re-arms and accepts the next peer
   (GH #233 step 2), so rolling restarts of connect-side
-  binaries work without policy. An established *connect-side*
-  transport dying mid-run is currently logged at send; making
-  that *loss* structural (with reconnection as a supervision
-  policy via `restart` in main's `on_failure`, not a transport
-  feature) is GH #233 steps 3–4 — see F.37's deferred section.
+  binaries work without policy.
+- **Connect-side loss is structural, with reconnection as
+  supervision policy (GH #233 steps 3–4).** A send failure on a
+  source-declared connect binding marks the entry *lost*
+  (fanout skips it — publishes during the window are dropped,
+  never falsely "delivered") and queues a loss event dispatched
+  on the owner thread at the next queue drain. Default: the
+  structural exit, diagnostic naming the subject. Handled: the
+  main locus declares
+  `on_failure(t: std::bus::UnixTransport, err: ClosureViolation)`
+  — the handler receives a synthetic `link_lost` violation, and
+  `restart (t);` re-runs the connect-with-retry; on success the
+  binding resumes, on failure (or a handler that declines) the
+  structural exit fires. Reconnection is a supervision decision,
+  not a transport feature. `LOTUS_BUS_CONFIG` connect routes sit
+  outside the supervision tree (no locus to route through) and
+  keep logged-only send failures.
 - **Malformed `LOTUS_BUS_CONFIG` lines stay warn-and-skip**
   (the file is an operator-layered override and the diagnostic
   names the line); a well-formed line whose route cannot be

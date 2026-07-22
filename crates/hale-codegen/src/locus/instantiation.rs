@@ -1750,6 +1750,29 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             self_ptr,
             fields: info.fields.clone(),
         });
+        // GH #233 steps 3-4: publish the main locus's self ptr to
+        // `lotus.main.self` so the transport loss-dispatch fn
+        // (registered at the prelude, firing from the queue
+        // drain) can invoke main's on_failure. NULL until the
+        // main locus is born; the dispatch fn falls back to the
+        // structural exit in that window.
+        if is_main_locus {
+            let ptr_t = self.context.ptr_type(AddressSpace::default());
+            let g = self
+                .module
+                .get_global("lotus.main.self")
+                .unwrap_or_else(|| {
+                    let g = self
+                        .module
+                        .add_global(ptr_t, None, "lotus.main.self");
+                    g.set_initializer(&ptr_t.const_null());
+                    g.set_linkage(inkwell::module::Linkage::Internal);
+                    g
+                });
+            self.builder
+                .build_store(g.as_pointer_value(), self_ptr)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
         for (fname, default) in info.defaults.iter() {
             // F.31: per-field placement override for main-locus
             // params. Looked up by field name in

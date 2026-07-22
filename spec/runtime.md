@@ -1024,6 +1024,27 @@ control plane; the data plane stays in C:
 Publish fanout is untouched — realized entries land in the same
 `g_bus_remote_entries` table the fanout walks.
 
+**Connection-loss supervision (GH #233 steps 3–4).** Publish
+fanout marks a locus-served connect entry `lost` on send
+failure (skipping it thereafter — down-window publishes drop,
+never falsely succeed) and pushes it onto a mutex'd pending
+list (`lotus_bus_transport_mark_lost`). The top of
+`lotus_bus_queue_drain` — owner thread, the only place failure
+handlers may run — drains the list
+(`lotus_bus_drain_lost_transports`): each handle goes to the
+codegen-registered dispatcher (`lotus_bus_set_loss_handler`,
+emitted only when main declares the matching `on_failure`) or
+straight to the structural exit
+(`lotus_bus_transport_lost_fallback`). The dispatcher invokes
+`main.on_failure(main_self, transport_self, link_lost_violation)`
+and, when the handler bumped `__restart_count` via
+`restart (t)`, calls `lotus_bus_transport_reconnect` (re-runs
+connect-with-retry against the entry's stored path; success
+clears `lost`). Codegen support: `lotus.main.self` global
+(stored at main-locus instantiation),
+`lotus_bus_transport_bind_self` (entry ↔ locus self, emitted
+after each connect instantiation).
+
 Env-configured routes (`LOTUS_BUS_CONFIG`) have no source-level
 declaration to hang a locus on and keep the direct C path:
 `lotus_bus_register_remote(subject, url, role)` returns an i32

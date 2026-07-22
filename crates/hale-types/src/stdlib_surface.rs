@@ -177,6 +177,7 @@ pub const LOCUS_PATHS: &[&[&str]] = &[
     &["std", "bytes", "BytesBuilder"],
     &["std", "cli", "Resolver"],
     &["std", "http", "Client"],
+    &["std", "bus", "UnixTransport"],
     &["std", "http", "ClientRequest"],
     &["std", "http", "ClientResponse"],
     &["std", "http", "Context"],
