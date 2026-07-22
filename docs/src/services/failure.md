@@ -57,8 +57,8 @@ locus Bank {
 
     on_failure(a: Account, err: Error) {
         match err {
-            Error::ClosureViolation(v) -> quarantine(a) for 60s,
-            _                          -> bubble(err),
+            Error::ClosureViolation(v) -> { quarantine(a) for 60s; },
+            _                          -> { bubble(err); },
         }
     }
 }

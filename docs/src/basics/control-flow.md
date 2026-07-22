@@ -4,7 +4,7 @@
 
 ## `if` / `else`
 
-```hale
+```hale,fragment
 if score >= 90 {
     println("A");
 } else if score >= 80 {
@@ -18,14 +18,14 @@ if score >= 90 {
 assign with it. In expression position it needs an `else`, and
 both arms must produce the same type:
 
-```hale
+```hale,fragment
 let grade = if score >= 90 { "A" } else { "B" };
 ```
 
 Because an `if` is an expression, it can be an arm of another
 `if` and the value flows out through both:
 
-```hale
+```hale,fragment
 let band = if score >= 90 {
     if score >= 97 { "A+" } else { "A" }
 } else {
@@ -37,7 +37,7 @@ One small thing the compiler is strict about: an empty `if` body
 won't parse. If you genuinely want a branch that does nothing,
 put a comment in it or restructure the condition:
 
-```hale
+```hale,fragment
 if done {
     // nothing to do yet
 }
@@ -45,7 +45,7 @@ if done {
 
 ## `while` and `loop`
 
-```hale
+```hale,fragment
 let mut i = 0;
 while i < 5 {
     println(i);
@@ -53,11 +53,11 @@ while i < 5 {
 }
 ```
 
-`loop { ... }` repeats forever until you `break`:
+`while true { ... }` repeats forever until you `break`:
 
-```hale
+```hale,fragment
 let mut n = 0;
-loop {
+while true {
     n = n + 1;
     if n >= 3 { break; }
 }
@@ -70,7 +70,7 @@ iteration.
 
 `for` iterates over a range or a collection:
 
-```hale
+```hale,fragment
 for i in 0..5 {
     println(i);            // 0 1 2 3 4
 }
@@ -115,7 +115,7 @@ as expressions, and why a function can end in a bare expression
 instead of `return`. A block whose last item *does* end in `;`
 has value `()`.
 
-```hale
+```hale,fragment
 let label = {
     let base = compute();
     base + 1               // block evaluates to this

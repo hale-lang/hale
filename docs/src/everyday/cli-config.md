@@ -55,7 +55,7 @@ For a tool that draws to the terminal or reads keystrokes, a few
 `std::term::is_tty(fd)` answers *"is this a terminal?"* — the usual
 guard for whether to emit color:
 
-```hale
+```hale,fragment
 let color = std::term::is_tty(2);   // fd 2 = stderr
 ```
 
@@ -77,8 +77,8 @@ polls one byte (`0..255`, `-1` on timeout, `-2` on EOF), and
 `std::io::stdout::write_bytes(s)` does a raw, unbuffered write — it
 `fflush`es first so it stays ordered with any `println` output:
 
-```hale
-loop {
+```hale,fragment
+while true {
     let b = std::io::stdin::read_byte(100);   // 100ms poll
     if b == -1 { continue; }                    // timeout: redraw, tick, …
     if b == -2 { break; }                       // EOF
@@ -99,16 +99,15 @@ constructs the app locus with it.
 ```hale
 locus App {
     params { host: String = "127.0.0.1"; port: String = "8080"; }
-    fn run() { println("listening on ", self.host, ":", self.port); }
+    run() { println("listening on ", self.host, ":", self.port); }
 }
 
 fn main() {
     let cfg = std::cli::Resolver { prefix: "MYAPP" };
-    let app = App {
+    App {
         host: cfg.get("host", "127.0.0.1"),
         port: cfg.get("port", "8080"),
     };
-    app.run();
 }
 ```
 

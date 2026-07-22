@@ -1,0 +1,67 @@
+// 85-bindings-unix — the deployment seam in one file (GH #228:
+// the repo had no runnable `bindings { }` example outside test
+// strings). A topic that would be an in-process queue becomes a
+// cross-process unix-socket edge by naming it in the main
+// locus's bindings block; the publisher and subscriber code
+// never changes.
+//
+// Standalone, this binary binds the listener, waits briefly for
+// a peer, and exits cleanly — bindings are realized at birth
+// (the publish contract: an unrealizable binding refuses the
+// boot), and a listener with no peer is a normal, quiet run.
+//
+// To see it cross processes, run a publisher against the same
+// socket from a second binary whose main locus declares:
+//
+//     bindings { Beat: unix("/tmp/hale-bindings-demo.sock",
+//                           role: connect); }
+//
+// and publishes Beat — or point any binary at the socket with
+// a LOTUS_BUS_CONFIG line:
+//
+//     demo.beat = unix:///tmp/hale-bindings-demo.sock : connect
+//
+// The full walkthrough lives in docs/src/services/multi-binary.md.
+
+type Tick {
+    n: Int = 0;
+}
+
+topic Beat {
+    payload: Tick;
+    subject: "demo.beat";
+}
+
+locus Counter {
+    params {
+        seen: Int = 0;
+    }
+
+    bus {
+        subscribe Beat as on_beat;
+    }
+
+    fn on_beat(t: Tick) {
+        self.seen = self.seen + 1;
+        println("beat ", t.n, " (", self.seen, " seen)");
+    }
+}
+
+main locus App {
+    params {
+        counter: Counter = Counter { };
+    }
+
+    bindings {
+        Beat: unix("/tmp/hale-bindings-demo.sock", role: listen);
+    }
+
+    run() {
+        std::time::sleep(300ms);
+        println("listener served its window; exiting");
+    }
+}
+
+fn main() {
+    App { };
+}

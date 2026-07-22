@@ -35,13 +35,13 @@ Three things are happening:
 - **`get` and `pop` are fallible** — an index might be out of
   bounds — so you address them with `or`, just like any fallible
   call:
-  ```hale
+  ```hale,fragment
   let x = names.get(99) or "(missing)";
   ```
 
 Iterate with `for` over the items:
 
-```hale
+```hale,fragment
 for name in names.items {
     println(name);
 }

@@ -30,7 +30,7 @@ carrying the payload. The function's result is now "either an
 `Int`, or a `ParseError`" — and the caller can't just use it as
 an `Int`:
 
-```hale
+```hale,fragment
 let n = parse_count(input);     // ERROR: error not addressed
 ```
 
@@ -39,7 +39,7 @@ clause.
 
 ## The five `or` motions
 
-```hale
+```hale,fragment
 let a = parse_count(s) or raise;              // propagate upward
 let b = parse_count(s) or 0;                  // substitute a value
 let c = parse_count(s) or handle(err);        // hand off to a helper
@@ -53,7 +53,7 @@ some_unit_call()       or discard;            // ignore (unit result only)
 - **`or <expression>`** — substitute a fallback value of the
   success type. Inside the expression, `err` is bound to the
   payload, so you can inspect it:
-  ```hale
+  ```hale,fragment
   let port = std::str::parse_int(arg) or 8080;
   ```
 - **`or handler(err)`** — call a function that takes the error
@@ -81,7 +81,7 @@ If the read fails, we substitute a default. If instead we wanted
 the failure to stop us, we'd make `load_greeting` fallible and
 `or raise`:
 
-```hale
+```hale,fragment
 fn load_greeting() -> String fallible(...) {
     return std::io::fs::read_file("welcome.txt") or raise;
 }
@@ -92,7 +92,7 @@ fn load_greeting() -> String fallible(...) {
 `or` clauses chain right-to-left — each one disposes of one
 failure:
 
-```hale
+```hale,fragment
 let id = parse_count(primary) or parse_count(fallback) or 0;
 ```
 

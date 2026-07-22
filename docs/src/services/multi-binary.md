@@ -51,7 +51,7 @@ deployment (unix), chosen entirely at this seam.
   method). This is how NATS, MQTT, a raw-TCP framing, or a
   custom JSON-over-WebSocket transport plug in — as ordinary loci
   in your code, not language features:
-  ```hale
+  ```hale,fragment
   bindings {
       BrokerEvt: MyNatsAdapter { url: "nats://prod:4222" };
   }
@@ -129,7 +129,7 @@ fine Hale-to-Hale but opaque to a consumer in another language.
 When you need JSON over a socket or protobuf to a Python peer, a
 binding names a `codec` — a locus that owns encode/decode:
 
-```hale
+```hale,fragment
 bindings {
     Tick: unix("/tmp/ticks.sock") codec(TickJsonCodec { });
 }

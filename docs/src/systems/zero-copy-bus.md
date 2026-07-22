@@ -165,7 +165,7 @@ frames each `Ticks <- Tick { ... }` as a length-prefixed record
 another program (or another language) can read. Give the binding a
 `buffer_size:` to size the ring:
 
-```hale
+```hale,fragment
 Ticks: shm_ring("/foreign.ticks", on_overflow: drop,
                 layout: ForeignRing, buffer_size: 65536) where zero_copy;
 ```
@@ -193,9 +193,9 @@ locus Reader {
     fn on_rec(v: BytesView) {
         let kind = std::bytes::read_u8(v, 0) or 0;
         match kind {
-            1 => { /* decode an L1 record with std::bytes::read_* */ }
-            2 => { /* decode an L2 record */ }
-            _ => { }
+            1 -> { /* decode an L1 record with std::bytes::read_* */ },
+            2 -> { /* decode an L2 record */ },
+            _ -> { },
         }
     }
 }
@@ -265,7 +265,7 @@ type L2 {
 Now the consumer reads fields by name and the producer writes them by
 name — both compose with everything above:
 
-```hale
+```hale,fragment
 fn on_rec(v: BytesView) {
     let p = L2::price(v) or raise;       // read u32_le @ 1
     ...

@@ -34,7 +34,7 @@ locus sharing its pool — a 30-second keep-alive timer on the
 and drains the pool's pending bus work between slices, so
 neighbors keep getting dispatched while one locus naps:
 
-```hale
+```hale,fragment
 run() {
     while true {
         self.send_heartbeat();
@@ -161,7 +161,7 @@ on (one cooperative pool is one thread; the lock-free rings and
 bus devirtualization assume it). Instead you fan it into **K
 single-threaded instances**:
 
-```hale
+```hale,fragment
 placement {
     // 8 workers, replica i on core 4+i, each its own thread
     workers: pinned(cores = 4..12, replicas = 8);
@@ -244,7 +244,7 @@ To serve *many* concurrent connections on one thread without a
 thread-per-connection explosion, tag a cooperative pool with
 `where async_io`:
 
-```hale
+```hale,fragment
 placement {
     workers: cooperative(pool = ws) where async_io;
 }

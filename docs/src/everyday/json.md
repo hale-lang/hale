@@ -12,7 +12,7 @@
 
 Pull individual fields out of a JSON string by name:
 
-```hale
+```hale,fragment
 let doc = "{\"name\": \"Ada\", \"age\": 36, \"active\": true}";
 
 let name   = std::json::find_string_field(doc, "name");    // "Ada"
@@ -26,7 +26,7 @@ semantics, check with the raw accessor or validate upstream.
 `find_field_raw` returns the raw substring for a field, which is
 how you reach into a nested object:
 
-```hale
+```hale,fragment
 let inner = std::json::find_field_raw(doc, "address");
 let city  = std::json::find_string_field(inner, "city");
 ```
@@ -37,7 +37,7 @@ Pulling fields one by one rescans the document per field. When you have
 a fixed shape, tag the fields with their JSON keys and the compiler
 generates a single-pass parser for you:
 
-```hale
+```hale,fragment
 type Order {
     id: Int      `json:"id"`;
     price: Int   `json:"px"`;     // JSON key differs from the field name
@@ -66,7 +66,7 @@ A field whose type is **another `json:`-tagged struct** is parsed
 recursively — nest as deep as you like, and a missing field anywhere
 raises with that field's name:
 
-```hale
+```hale,fragment
 type Addr   { city: String `json:"city"`; zip: Int `json:"zip"`; }
 type Person { name: String `json:"name"`; home: Addr `json:"home"`; }
 
@@ -78,7 +78,7 @@ The same tags drive the reverse direction — `Type::to_json(value)`
 serializes back to a JSON string (numbers and bools bare, strings escaped,
 nested structs recursed), so `from_json` / `to_json` round-trip:
 
-```hale
+```hale,fragment
 let body = Order::to_json(o);          // -> {"id":7,"px":...}
 let o2   = Order::from_json(body) or raise;
 ```
@@ -100,7 +100,7 @@ explicit, locus-owned step.
 
 Walk a JSON array with the iterator pair:
 
-```hale
+```hale,fragment
 let arr = "[10, 20, 30]";
 let mut it = std::json::array_first(arr);
 while !it.done {
@@ -119,7 +119,7 @@ The `Builder` is a streaming assembler — it tracks open scopes
 and inserts separators for you, so you can't produce malformed
 JSON by forgetting a comma:
 
-```hale
+```hale,fragment
 let b = std::json::Builder { };
 b.begin_object();
 b.field("name", "Ada");

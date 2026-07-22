@@ -83,7 +83,7 @@ work: one recovery function shared across every read.
 `or discard` is handy for "make sure this exists; don't care if
 it already did" — it's allowed because the result type is `()`:
 
-```hale
+```hale,fragment
 std::io::fs::mkdir("cache") or discard;
 ```
 
@@ -94,7 +94,7 @@ want a file *handle* you read from incrementally — line by line,
 or seeking around — use `std::io::file::File`, a locus that holds
 the open descriptor for its lifetime:
 
-```hale
+```hale,fragment
 let f = std::io::file::open("log.txt", "r") or raise;
 let line = f.read_line() or "";
 // ... f closes when it goes out of scope

@@ -15,7 +15,7 @@ descriptor (an `Int`).
 Bind a socket, then send and receive datagrams. `bind` and the I/O
 calls are `fallible(IoError)`:
 
-```hale
+```hale,fragment
 let fd = std::io::udp::bind("0.0.0.0", 9000) or raise;
 std::io::udp::send(fd, "127.0.0.1", 9001, "ping") or raise;
 ```
@@ -23,7 +23,7 @@ std::io::udp::send(fd, "127.0.0.1", 9001, "ping") or raise;
 To receive *and* learn who sent it, use `recv_with_source` and read
 the thread-local source cache immediately after:
 
-```hale
+```hale,fragment
 let msg  = std::io::udp::recv_with_source(fd, 1500) or raise;  // Bytes
 let host = std::io::udp::last_source_host();
 let port = std::io::udp::last_source_port();
@@ -83,7 +83,7 @@ ingest shape as a default you reach for rather than one you assemble.
 `connect` does the TCP connection *and* the TLS 1.2+ handshake (SNI
 + system trust store) in one call, via the platform OpenSSL:
 
-```hale
+```hale,fragment
 let h = std::io::tls::connect("example.com", 443) or raise;
 std::io::tls::send_bytes(h, std::bytes::from_string(
     "GET / HTTP/1.0\r\nHost: example.com\r\n\r\n"));
@@ -103,7 +103,7 @@ The UDP `set_option_int` / `set_option_bool` / `get_option_int`
 calls take a `level` and `name` from `std::io::sockopt`'s named
 constants, so you never hardcode a platform number:
 
-```hale
+```hale,fragment
 std::io::udp::set_option_bool(
     fd, std::io::sockopt::SOL_SOCKET(),
     std::io::sockopt::SO_REUSEADDR(), true) or raise;
