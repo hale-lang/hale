@@ -9493,11 +9493,64 @@ void lotus_decimal_to_string(int64_t hi, uint64_t lo, char *buf) {
 #define LOTUS_TRANSPORT_CONNECT 1
 
 typedef struct lotus_transport {
-    int   conn_fd;        /* duplex SEQPACKET fd carrying messages */
+    int   conn_fd;        /* duplex fd carrying messages */
     int   listen_fd;      /* listener role only; -1 for connector */
     char *path;           /* listener role only; owned, unlinked on destroy */
     int   role;
+    /* GH #231/#236: framed SOCK_STREAM mode. Darwin has no
+     * AF_UNIX SOCK_SEQPACKET, so message boundaries come from a
+     * per-message header instead of the kernel:
+     *   [u64 LE payload len][u64 LE seq][payload]
+     * The seq is a per-(topic,binding) monotonic stamp — the
+     * primitive that makes wire loss computable by an observer
+     * (#236 item 1); the receiver counts gaps. Both ends of an
+     * AF_UNIX socket are on the same host, so they share the
+     * platform default; LOTUS_UNIX_STREAM=1 forces framed mode
+     * for cross-platform-parity testing on Linux (set it for
+     * BOTH processes — the two wire formats don't interoperate). */
+    int      framed;
+    uint64_t send_seq;    /* stamped then incremented per send */
+    uint64_t recv_seq;    /* last seq seen (0 = none yet) */
+    uint64_t seq_gaps;    /* recv'd seq != last+1 occurrences */
 } lotus_transport_t;
+
+#define LOTUS_UNIX_MAX_MSG_BYTES (8u * 1024u * 1024u)
+
+static int lotus__transport_use_stream(void) {
+#ifdef __APPLE__
+    return 1;
+#else
+    static int cached = -1;
+    if (cached < 0) {
+        const char *e = getenv("LOTUS_UNIX_STREAM");
+        cached = (e && strcmp(e, "1") == 0) ? 1 : 0;
+    }
+    return cached;
+#endif
+}
+
+/* Exact-count read/write over a stream socket, looping over
+ * short transfers. 0 on success; -1 on error/EOF-before-n. */
+static int lotus__transport_read_full(int fd, void *buf, size_t n) {
+    char *p = (char *)buf;
+    while (n > 0) {
+        ssize_t r = read(fd, p, n);
+        if (r > 0) { p += r; n -= (size_t)r; continue; }
+        if (r < 0 && errno == EINTR) continue;
+        return -1;
+    }
+    return 0;
+}
+static int lotus__transport_write_full(int fd, const void *buf, size_t n) {
+    const char *p = (const char *)buf;
+    while (n > 0) {
+        ssize_t w = write(fd, p, n);
+        if (w > 0) { p += w; n -= (size_t)w; continue; }
+        if (w < 0 && errno == EINTR) continue;
+        return -1;
+    }
+    return 0;
+}
 
 static int lotus__transport_set_addr(struct sockaddr_un *addr,
                                      const char *path) {
@@ -9565,7 +9618,9 @@ lotus_transport_t *lotus_transport_listener_create(const char *path) {
         perror("lotus_transport_listener_create: addr");
         return NULL;
     }
-    int sock = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+    int use_stream = lotus__transport_use_stream();
+    int sock = socket(AF_UNIX,
+                      use_stream ? SOCK_STREAM : SOCK_SEQPACKET, 0);
     if (sock < 0) {
         perror("lotus_transport_listener_create: socket");
         return NULL;
@@ -9600,6 +9655,7 @@ lotus_transport_t *lotus_transport_listener_create(const char *path) {
     t->listen_fd = sock;
     t->path      = strdup(path);
     t->role      = LOTUS_TRANSPORT_LISTEN;
+    t->framed    = use_stream;
     return t;
 }
 
@@ -9644,7 +9700,9 @@ lotus_transport_t *lotus_transport_create(const char *path, int role) {
         return NULL;
     }
 
-    int sock = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+    int use_stream = lotus__transport_use_stream();
+    int sock = socket(AF_UNIX,
+                      use_stream ? SOCK_STREAM : SOCK_SEQPACKET, 0);
     if (sock < 0) {
         perror("lotus_transport_create: socket");
         return NULL;
@@ -9669,6 +9727,7 @@ lotus_transport_t *lotus_transport_create(const char *path, int role) {
                 t->listen_fd = -1;
                 t->path      = NULL;
                 t->role      = role;
+                t->framed    = use_stream;
                 return t;
             }
             if (errno != ENOENT && errno != ECONNREFUSED) {
@@ -9698,6 +9757,18 @@ int lotus_transport_send(lotus_transport_t *t,
         errno = EINVAL;
         return -1;
     }
+    if (t->framed) {
+        /* GH #231/#236: [u64 LE len][u64 LE seq][payload]. */
+        uint64_t hdr[2];
+        hdr[0] = (uint64_t)len;
+        hdr[1] = ++t->send_seq;   /* first frame = 1; 0 = sentinel */
+        if (lotus__transport_write_full(t->conn_fd, hdr, sizeof(hdr)) != 0
+            || lotus__transport_write_full(t->conn_fd, buf, len) != 0) {
+            perror("lotus_transport_send");
+            return -1;
+        }
+        return 0;
+    }
     ssize_t n = send(t->conn_fd, buf, len, 0);
     if (n < 0) {
         perror("lotus_transport_send");
@@ -9712,6 +9783,38 @@ ssize_t lotus_transport_recv(lotus_transport_t *t,
     if (!t || (!buf && cap > 0)) {
         errno = EINVAL;
         return -1;
+    }
+    if (t->framed) {
+        uint64_t hdr[2];
+        if (lotus__transport_read_full(t->conn_fd, hdr, sizeof(hdr)) != 0) {
+            /* EOF at a frame boundary is the peer closing —
+             * report it as 0 like SEQPACKET does; mid-frame EOF
+             * or a real error stays -1 via the payload read. */
+            return 0;
+        }
+        uint64_t len = hdr[0];
+        uint64_t seq = hdr[1];
+        if (len > LOTUS_UNIX_MAX_MSG_BYTES || len > (uint64_t)cap) {
+            fprintf(stderr,
+                    "lotus_transport_recv: framed length %llu exceeds "
+                    "cap (%zu) or ceiling — peer speaking a different "
+                    "wire format? (SEQPACKET vs framed-STREAM ends "
+                    "must match; see LOTUS_UNIX_STREAM)\n",
+                    (unsigned long long)len, cap);
+            return -1;
+        }
+        if (lotus__transport_read_full(t->conn_fd, buf, (size_t)len) != 0) {
+            perror("lotus_transport_recv");
+            return -1;
+        }
+        /* #236 item 1: gap accounting — the primitive that makes
+         * wire loss computable. First frame accepts any seq (the
+         * peer may have re-armed through earlier connections). */
+        if (t->recv_seq != 0 && seq != t->recv_seq + 1) {
+            t->seq_gaps++;
+        }
+        t->recv_seq = seq;
+        return (ssize_t)len;
     }
     ssize_t n = recv(t->conn_fd, buf, cap, 0);
     if (n < 0) {
@@ -12408,6 +12511,7 @@ typedef struct lotus_bus_remote_entry {
     uint64_t           ctr_dropped_lost;
     uint64_t           ctr_rearms;
     uint64_t           ctr_reconnects;
+    uint64_t           ctr_seq_gaps;   /* framed mode: recv'd seq != last+1 */
 } lotus_bus_remote_entry_t;
 
 #define LOTUS_CTR_BUMP(field) \
@@ -12555,12 +12659,16 @@ static void lotus_bus_unix_serve(lotus_bus_remote_entry_t *entry) {
                                      struct_buf, (size_t)struct_size);
             LOTUS_CTR_BUMP(entry->ctr_msgs_delivered);
             LOTUS_CTR_ADD(entry->ctr_bytes_delivered, n);
+            entry->ctr_seq_gaps = t->seq_gaps;   /* framed mode */
         }
         /* GH #233 step 2: re-arm. Close the dead connection and
          * loop back into accept for the next peer. */
         if (t->conn_fd >= 0) {
             close(t->conn_fd);
             t->conn_fd = -1;
+            /* Fresh peer = fresh seq space (a reconnecting
+             * publisher restarts its counter at 1). */
+            t->recv_seq = 0;
             LOTUS_CTR_BUMP(entry->ctr_rearms);
         }
     }
@@ -16692,7 +16800,8 @@ void lotus_bus_remote_destroy_all(void) {
                     "[bus counters] subject=%s kind=%d role=%d "
                     "sent=%llu delivered=%llu bytes_sent=%llu "
                     "bytes_delivered=%llu send_failures=%llu "
-                    "dropped_lost=%llu rearms=%llu reconnects=%llu\n",
+                    "dropped_lost=%llu rearms=%llu reconnects=%llu "
+                    "seq_gaps=%llu\n",
                     e->subject, e->kind, e->role,
                     (unsigned long long)e->ctr_msgs_sent,
                     (unsigned long long)e->ctr_msgs_delivered,
@@ -16701,7 +16810,8 @@ void lotus_bus_remote_destroy_all(void) {
                     (unsigned long long)e->ctr_send_failures,
                     (unsigned long long)e->ctr_dropped_lost,
                     (unsigned long long)e->ctr_rearms,
-                    (unsigned long long)e->ctr_reconnects);
+                    (unsigned long long)e->ctr_reconnects,
+                    (unsigned long long)e->ctr_seq_gaps);
         }
 
         /* Wave B: adapter entries own their protocol lifecycle
