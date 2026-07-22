@@ -9459,6 +9459,54 @@ void lotus_decimal_to_string(int64_t hi, uint64_t lo, char *buf) {
     *p = '\0';
 }
 
+/* GH #230 item 2: std::decimal::format(d, places) — render with
+ * EXACTLY `places` fraction digits (0..=9, clamped), round
+ * half-up away from zero. The default print deliberately trims
+ * trailing zeros (declared precision isn't stored in the i128
+ * scale-9 repr, so `12.50d` and `12.5d` are the same value);
+ * this is the explicit surface for money-style fixed-places
+ * display. Allocates in the caller's arena via the TLS route
+ * (same lifetime class as lotus_str_from_decimal). */
+lotus_arena_t *lotus_caller_arena_or_global(void);
+
+const char *lotus_decimal_format(int64_t hi, uint64_t lo,
+                                 int64_t places) {
+    if (places < 0) places = 0;
+    if (places > 9) places = 9;
+    __int128 m = ((__int128)hi << 64) | (__int128)lo;
+    int neg = m < 0;
+    unsigned __int128 abs =
+        neg ? (unsigned __int128)(-m) : (unsigned __int128)m;
+    /* Round half-up at the target scale: divide out the dropped
+     * digits with +half correction. */
+    unsigned long long drop = 1ULL;
+    for (int64_t i = places; i < 9; i++) drop *= 10ULL;
+    abs = (abs + drop / 2) / drop;
+    unsigned long long keep = 1ULL;
+    for (int64_t i = 0; i < places; i++) keep *= 10ULL;
+    unsigned __int128 int_part = abs / keep;
+    unsigned long long frac = (unsigned long long)(abs % keep);
+    char *out = (char *)lotus_arena_alloc(
+        lotus_caller_arena_or_global(), 64, 1);
+    if (!out) return "";
+    char *p = out;
+    if (neg && (int_part != 0 || frac != 0)) *p++ = '-';
+    if ((int_part >> 64) == 0) {
+        p += snprintf(p, 32, "%llu", (unsigned long long)int_part);
+    } else {
+        unsigned __int128 base = 1000000000000000000ULL;
+        p += snprintf(p, 48, "%llu%018llu",
+                      (unsigned long long)(int_part / base),
+                      (unsigned long long)(int_part % base));
+    }
+    if (places > 0) {
+        *p++ = '.';
+        p += snprintf(p, 12, "%0*llu", (int)places, frac);
+    }
+    *p = '\0';
+    return out;
+}
+
 /*
  * m57: AF_UNIX transport for the cross-process bus.
  *
@@ -18242,6 +18290,15 @@ void lotus_root_panic(
  * (hand-rolled tanh from exp) and pond/math/matrix (synthesizes
  * `nan_sentinel()` as `0.0/0.0` and `is_nan(f)` as `f != f`).
  */
+/* GH #230: per-assertion test granularity. std::test asserts
+ * bump this on every PASS (silently — the pass path stays
+ * output-free per the testing contract); the FAILURE path reads
+ * it so "ASSERTION FAILED" can report how many earlier
+ * assertions passed instead of the file reading as 0/1. */
+static int64_t g_test_passes = 0;
+void lotus_test_note_pass(void) { g_test_passes++; }
+int64_t lotus_test_passes(void) { return g_test_passes; }
+
 double lotus_math_nan(void) {
     return (double)NAN;
 }

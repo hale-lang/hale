@@ -877,6 +877,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module
             .add_function("lotus_decimal_to_float", dec_to_float_ty, None);
 
+        // GH #230 item 2: fixed-places decimal formatting.
+        // declare ptr @lotus_decimal_format(i64 hi, i64 lo, i64 places)
+        let dec_format_ty = ptr_t.fn_type(
+            &[i64_t.into(), i64_t.into(), i64_t.into()],
+            false,
+        );
+        self.module
+            .add_function("lotus_decimal_format", dec_format_ty, None);
+
         // The single program-wide arena pointer. Initialized in
         // the prelude of main; consulted by every arena-allocated
         // user-type literal and ClosureViolation. m20 makes this
@@ -1574,6 +1583,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module.add_function(
             "lotus_bus_transport_lost_fallback",
             void_t.fn_type(&[i64_t.into()], false),
+            None,
+        );
+
+        // GH #230: per-assertion test granularity — std::test's
+        // pass counter (silent bump on every passing assert; the
+        // failure path reads it for the "(N earlier assertion(s)
+        // passed)" trailer).
+        self.module.add_function(
+            "lotus_test_note_pass",
+            void_t.fn_type(&[], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_test_passes",
+            i64_t.fn_type(&[], false),
             None,
         );
 

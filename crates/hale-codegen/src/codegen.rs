@@ -1615,6 +1615,16 @@ pub fn build_executable_with_options(
     // content-addressed cache key, so cached objects refresh
     // automatically.
     rt_cflags.push("-g".into());
+    // GH #230: the runtime TU's C warnings are noise to a Hale
+    // user — they can't act on lotus_arena.c diagnostics, and on
+    // toolchains where clang's defaults are chattier they leak
+    // straight into `hale run` output. Suppress unless the
+    // developer escape hatch is set (compiler devs working on the
+    // runtime itself export HALE_CC_WARNINGS=1; it's part of the
+    // content-addressed cache key like every other flag).
+    if !env_flag("HALE_CC_WARNINGS") {
+        rt_cflags.push("-w".into());
+    }
     if lotus_tsan {
         // TSAN: -O1 keeps reports readable. The wrap-malloc shim
         // collides with TSAN's allocator interceptor, so the wrapper
@@ -21452,6 +21462,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_bus_local_dispatch(args, scope)?;
                 Ok(())
             }
+            // GH #230: std::test pass-counter bump (statement).
+            ["std", "test", "__note_pass"] => {
+                let f = self
+                    .module
+                    .get_function("lotus_test_note_pass")
+                    .expect("lotus_test_note_pass declared");
+                self.builder
+                    .build_call(f, &[], "test.note_pass")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok(())
+            }
             // GH #233: __StdBusUnix*Transport lifecycle primitives.
             ["std", "bus", "__transport_reclaim"] => {
                 let _ = self.lower_std_bus_transport_handle_op(
@@ -22299,6 +22320,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.lower_std_bus_transport_handle_op(
                     "lotus_bus_transport_spawn_server", args, scope)
             }
+            // GH #230: std::test pass-counter read (expression).
+            ["std", "test", "__passes"] => {
+                let f = self
+                    .module
+                    .get_function("lotus_test_passes")
+                    .expect("lotus_test_passes declared");
+                let v = self
+                    .builder
+                    .build_call(f, &[], "test.passes")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("returns i64");
+                Ok((v, CodegenTy::Int))
+            }
             ["std", "str", "from_bytes"] => {
                 self.lower_std_str_from_bytes(args, scope)
             }
@@ -22886,6 +22922,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "time", "monotonic"] => self.lower_time_monotonic(args),
             ["std", "time", "monotonic_ns"] => self.lower_time_monotonic_ns(args),
             ["std", "decimal", "to_float"] => self.lower_std_decimal_to_float(args, scope),
+            ["std", "decimal", "format"] => self.lower_std_decimal_format(args, scope),
             // C7 (pond follow-up): wall-clock seconds-since-epoch
             // as Int. Statement-position sibling lives in
             // lower_stdlib_path_call.

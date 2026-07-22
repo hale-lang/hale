@@ -8,6 +8,21 @@ behavior.
 
 ## Unreleased
 
+- **Test failures report per-assertion progress; runtime C
+  warnings no longer leak (GH #230 items 1+3).** A failing
+  multi-assert test file now prints `(N earlier assertion(s)
+  passed)` under the ASSERTION FAILED diagnostic — the pass path
+  stays silent, so the exit-0-and-quiet contract is untouched.
+  And the emitted clang invocation compiles the runtime TU with
+  `-w` (Hale users can't act on lotus_arena.c diagnostics);
+  compiler developers re-enable with `HALE_CC_WARNINGS=1`.
+  Item 2 (decimal display) resolved per the design call:
+  declared precision isn't stored in the Decimal repr, so
+  default printing keeps trimming — the new
+  `std::decimal::format(d, places)` renders exactly `places`
+  fraction digits (0..=9, round half-up) for money-style
+  fixed display.
+
 - **macOS unix-transport support via framed SOCK_STREAM + wire
   sequence numbers (GH #231 transport half, GH #236 item 1).**
   Darwin has no AF_UNIX `SOCK_SEQPACKET`, so the substrate unix
@@ -26,8 +41,7 @@ behavior.
   Linux SEQPACKET default unchanged. Homebrew
   libunwind/OpenSSL static-linking for the prebuilt toolchain
   remains open on #231; the install page's platform matrix is
-  now honest about both carve-outs.
-- **Per-binding transport telemetry counters (GH #236 item 2).**
+  now honest about both carve-outs.- **Per-binding transport telemetry counters (GH #236 item 2).**
   Every remote binding now maintains relaxed-atomic counters at
   the transport choke points — messages/bytes sent and
   delivered, send failures, `dropped_lost` (publishes made while

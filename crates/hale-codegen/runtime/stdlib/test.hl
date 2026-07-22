@@ -33,11 +33,20 @@
 // failure) — without them, users would write
 // `assert(a == b, "...")` and lose the diagnostic detail.
 
+fn __test_fail_trailer() {
+    // GH #230: report how many assertions passed before this
+    // failure, so a multi-assert file doesn't read as 0/1.
+    let earlier = std::test::__passes();
+    println("  (", earlier, " earlier assertion(s) passed)");
+}
+
 fn __test_assert(cond: Bool, msg: String) {
     if !cond {
         println("ASSERTION FAILED: ", msg);
+        __test_fail_trailer();
         std::process::exit(1);
     }
+    std::test::__note_pass();
 }
 
 fn __test_assert_eq_int(actual: Int, expected: Int, msg: String) {
@@ -45,8 +54,10 @@ fn __test_assert_eq_int(actual: Int, expected: Int, msg: String) {
         println("ASSERTION FAILED: ", msg);
         println("  expected: ", expected);
         println("  actual:   ", actual);
+        __test_fail_trailer();
         std::process::exit(1);
     }
+    std::test::__note_pass();
 }
 
 fn __test_assert_eq_str(actual: String, expected: String, msg: String) {
@@ -54,6 +65,8 @@ fn __test_assert_eq_str(actual: String, expected: String, msg: String) {
         println("ASSERTION FAILED: ", msg);
         println("  expected: \"", expected, "\"");
         println("  actual:   \"", actual, "\"");
+        __test_fail_trailer();
         std::process::exit(1);
     }
+    std::test::__note_pass();
 }

@@ -293,6 +293,7 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["decimal"],
         fns: &[
+            "format",
             "to_float",
         ],
         open_prefixes: &[],
