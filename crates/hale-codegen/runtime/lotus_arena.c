@@ -18352,6 +18352,16 @@ void lotus_spsc_emit(void *seg_base, void *desc,
     uint64_t head = d->head;   /* producer-owned: plain read */
     uint64_t *slot = (uint64_t *)((char *)seg_base + d->data_off
         + (head & ((uint64_t)ring_slots - 1)) * 16u);
+    /* Release fence BEFORE the slot writes: pairs with the
+     * consumer's acquire fence before its h2 re-read (the
+     * Boehm seqlock recipe). Without it, a consumer's relaxed
+     * slot load may observe a FUTURE record's bytes while its
+     * h2 load is still permitted to return a stale head — a
+     * mixed record delivered past the overrun discard. Found
+     * by GenMC (verification/spsc_ring_model.c), not by the
+     * stress soak: real-hardware TSO masks it, the model
+     * doesn't. Free on x86 (compiler barrier), one dmb on ARM. */
+    __atomic_thread_fence(__ATOMIC_RELEASE);
     slot[0] = (uint64_t)w0;
     slot[1] = (uint64_t)w1;
     __atomic_store_n(&d->head, head + 1, __ATOMIC_RELEASE);
@@ -18408,6 +18418,14 @@ int64_t lotus_spsc_read(const void *seg_base, const void *desc,
         o[n * 2]     = slot[0];
         o[n * 2 + 1] = slot[1];
     }
+    /* Acquire fence: pairs with the producer's release fence
+     * (see lotus_spsc_emit). Any slot value we just read that
+     * came from record h's write now forces the h2 load below
+     * to observe head >= h — which places index h - slots
+     * inside the <= h2 - slots discard window. This is what
+     * makes the h1/copy/h2 validation formally sound, not just
+     * TSO-lucky. */
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
     uint64_t h2 = __atomic_load_n(&d->head, __ATOMIC_ACQUIRE);
     /* Discard anything the producer may have overwritten while
      * we copied: same boundary as above against the re-read

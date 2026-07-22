@@ -46,6 +46,11 @@ static void *producer(void *arg) {
     (void)arg;
     for (uint64_t i = 0; i < PRODUCE; i++) {
         uint64_t h = atomic_load_explicit(&head, memory_order_relaxed);
+        /* Release fence before slot writes — pairs with the
+         * consumer's acquire fence before h2 (Boehm seqlock
+         * recipe); without the pair GenMC exhibits a mixed
+         * record delivered past the discard (stale h2). */
+        atomic_thread_fence(memory_order_release);
         atomic_store_explicit(&slot_w0[h & (SLOTS - 1)], i,
                               memory_order_relaxed);
         atomic_store_explicit(&slot_w1[h & (SLOTS - 1)], i ^ MASK,
@@ -79,6 +84,7 @@ int main(void) {
                                            memory_order_relaxed);
         uint64_t w1 = atomic_load_explicit(&slot_w1[c & (SLOTS - 1)],
                                            memory_order_relaxed);
+        atomic_thread_fence(memory_order_acquire);
         uint64_t h2 = atomic_load_explicit(&head, memory_order_acquire);
         uint64_t live_min2 =
             h2 >= SLOTS ? h2 - SLOTS + (DISCARD_BOUNDARY_STRICT ? 0 : 1)

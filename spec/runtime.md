@@ -1102,10 +1102,16 @@ documented contract:
   construction), `u32 tag_a`, `u32 tag_b` (user tags; tag_b has
   a relaxed-store setter for gauge use), 32 B reserved (zero).
 - Slots: `ring_slots × 16 B`, two u64 words, written plain
-  BEFORE the head release-store publishes them.
+  after a RELEASE FENCE and before the head release-store. The
+  fence pairs with an acquire fence on the read side (below) —
+  the Boehm seqlock recipe. Without the pair, a relaxed slot
+  load may observe a future record while the h2 re-read returns
+  a stale head, delivering a mixed record past the discard;
+  GenMC exhibits it (the stress soak cannot — TSO masks it).
 - Read side (any process, no Hale runtime required): snapshot
-  h1 (acquire) → copy `[cursor, min(h1, cursor+max))` → re-read
-  h2 (acquire) → discard records with index `<= h2 - ring_slots`
+  h1 (acquire) → copy `[cursor, min(h1, cursor+max))` →
+  ACQUIRE FENCE → re-read h2 (acquire) → discard records with
+  index `<= h2 - ring_slots`
   and count them as overruns. The `<=` is load-bearing: the
   producer's in-flight (unpublished) write for record `h` is
   already clobbering slot index `h - ring_slots`, so the live
