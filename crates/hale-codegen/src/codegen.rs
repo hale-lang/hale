@@ -32,6 +32,7 @@ use crate::locus::dissolve::LocusDissolve;
 use crate::locus::instantiation::LocusInstantiate;
 use crate::locus::method::LocusMethodBodies;
 use crate::stdlib::bus::BusStdlib;
+use crate::stdlib::ring::RingStdlib;
 use crate::stdlib::bytes::BytesStdlib;
 use crate::stdlib::crypto::CryptoStdlib;
 use crate::stdlib::decimal::DecimalStdlib;
@@ -21494,6 +21495,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_bus_local_dispatch(args, scope)?;
                 Ok(())
             }
+            // GH #244: SPSC observation-ring primitives
+            // (statement position; emit/init/note_drop/set_tag).
+            ["std", "ring", "__spsc_init"] => {
+                let _ = self.lower_std_ring_op(
+                    "lotus_spsc_init", 4, args, scope)?;
+                Ok(())
+            }
+            ["std", "ring", "__spsc_emit"] => {
+                let _ = self.lower_std_ring_op(
+                    "lotus_spsc_emit", 5, args, scope)?;
+                Ok(())
+            }
+            ["std", "ring", "__spsc_note_drop"] => {
+                let _ = self.lower_std_ring_op(
+                    "lotus_spsc_note_drop", 1, args, scope)?;
+                Ok(())
+            }
+            ["std", "ring", "__spsc_set_tag_b"] => {
+                let _ = self.lower_std_ring_op(
+                    "lotus_spsc_set_tag_b", 2, args, scope)?;
+                Ok(())
+            }
             // GH #230: std::test pass-counter bump (statement).
             ["std", "test", "__note_pass"] => {
                 let f = self
@@ -22351,6 +22374,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "bus", "__transport_spawn_server"] => {
                 self.lower_std_bus_transport_handle_op(
                     "lotus_bus_transport_spawn_server", args, scope)
+            }
+            // GH #244: SPSC ring read (expression — returns the
+            // record count).
+            ["std", "ring", "__spsc_read"] => {
+                self.lower_std_ring_op("lotus_spsc_read", 7, args, scope)
             }
             // GH #230: std::test pass-counter read (expression).
             ["std", "test", "__passes"] => {

@@ -10,6 +10,7 @@
 //! `notes/refactor-codegen-model-org.md`.
 
 pub(crate) mod bus;
+pub(crate) mod ring;
 pub(crate) mod bytes;
 pub(crate) mod crypto;
 pub(crate) mod decimal;

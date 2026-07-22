@@ -291,6 +291,17 @@ pub const SURFACES: &[NsSurface] = &[
         open_prefixes: &[],
     },
     NsSurface {
+        ns: &["ring"],
+        fns: &[
+            "__spsc_emit",
+            "__spsc_init",
+            "__spsc_note_drop",
+            "__spsc_read",
+            "__spsc_set_tag_b",
+        ],
+        open_prefixes: &[],
+    },
+    NsSurface {
         ns: &["decimal"],
         fns: &[
             "format",
