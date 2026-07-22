@@ -18290,6 +18290,169 @@ void lotus_root_panic(
  * (hand-rolled tanh from exp) and pond/math/matrix (synthesizes
  * `nan_sentinel()` as `0.0/0.0` and `is_nan(f)` as `f != f`).
  */
+/*
+ * GH #244 — the SPSC observation ring as a lotus primitive.
+ *
+ * Single-producer fixed-slot ring over CALLER-PROVIDED memory
+ * (the rings live at fixed offsets inside an attachable shm
+ * segment; this code never allocates). The layout is a STABLE,
+ * documented contract (spec/runtime.md "SPSC observation ring")
+ * that external readers — including non-Hale processes like the
+ * iris observer — depend on byte-for-byte:
+ *
+ *   descriptor (64 B, 64-aligned, caller-placed):
+ *     u64 data_off   slot array offset from the SEGMENT BASE
+ *     u64 head       producer cursor: MONOTONIC, never wraps,
+ *                    published with a release store; slot index
+ *                    is head & (ring_slots - 1), ring_slots a
+ *                    power of two
+ *     u64 dropped    producer-side drop count (emit suppressed
+ *                    while a consumer-independent gate is off,
+ *                    etc.) — the ring itself NEVER blocks or
+ *                    drops: overwrite-oldest by construction
+ *     u32 tag_a      user tag (iris: sched_id)
+ *     u32 tag_b      user gauge (iris: current locus instance)
+ *     24 B reserved (zero)
+ *
+ *   slots: ring_slots × 16 B, two u64 words each, written plain
+ *   BEFORE the head release-store publishes them.
+ *
+ * Read side (any process): the h1/copy/h2 snapshot — load-
+ * acquire head, copy [cursor, min(h1, cursor+max)), re-load
+ * head; records with index < h2 - ring_slots were possibly
+ * overwritten mid-copy → discarded, cursor advanced, counted as
+ * overruns. Verified in verification/spsc_ring_model.c.
+ */
+
+typedef struct lotus_spsc_desc {
+    uint64_t data_off;
+    uint64_t head;
+    uint64_t dropped;
+    uint32_t tag_a;
+    uint32_t tag_b;
+    uint8_t  reserved[32];
+} lotus_spsc_desc_t;
+
+_Static_assert(sizeof(lotus_spsc_desc_t) == 64,
+               "spsc descriptor layout is a stable contract");
+
+void lotus_spsc_init(void *desc, int64_t data_off,
+                     int64_t tag_a, int64_t tag_b) {
+    lotus_spsc_desc_t *d = (lotus_spsc_desc_t *)desc;
+    memset(d, 0, sizeof(*d));
+    d->data_off = (uint64_t)data_off;
+    d->tag_a    = (uint32_t)tag_a;
+    d->tag_b    = (uint32_t)tag_b;
+}
+
+void lotus_spsc_emit(void *seg_base, void *desc,
+                     int64_t ring_slots,
+                     int64_t w0, int64_t w1) {
+    lotus_spsc_desc_t *d = (lotus_spsc_desc_t *)desc;
+    uint64_t head = d->head;   /* producer-owned: plain read */
+    uint64_t *slot = (uint64_t *)((char *)seg_base + d->data_off
+        + (head & ((uint64_t)ring_slots - 1)) * 16u);
+    /* Release fence BEFORE the slot writes: pairs with the
+     * consumer's acquire fence before its h2 re-read (the
+     * Boehm seqlock recipe). Without it, a consumer's relaxed
+     * slot load may observe a FUTURE record's bytes while its
+     * h2 load is still permitted to return a stale head — a
+     * mixed record delivered past the overrun discard. Found
+     * by GenMC (verification/spsc_ring_model.c), not by the
+     * stress soak: real-hardware TSO masks it, the model
+     * doesn't. Free on x86 (compiler barrier), one dmb on ARM. */
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    slot[0] = (uint64_t)w0;
+    slot[1] = (uint64_t)w1;
+    __atomic_store_n(&d->head, head + 1, __ATOMIC_RELEASE);
+}
+
+void lotus_spsc_note_drop(void *desc) {
+    lotus_spsc_desc_t *d = (lotus_spsc_desc_t *)desc;
+    /* Producer-owned counter; relaxed atomic so external
+     * readers never see a torn value. */
+    __atomic_fetch_add(&d->dropped, 1, __ATOMIC_RELAXED);
+}
+
+void lotus_spsc_set_tag_b(void *desc, int64_t v) {
+    lotus_spsc_desc_t *d = (lotus_spsc_desc_t *)desc;
+    __atomic_store_n(&d->tag_b, (uint32_t)v, __ATOMIC_RELAXED);
+}
+
+/* Snapshot-read up to max_records 16-byte records into out.
+ * cursor_io / overruns_io are CONSUMER-owned (live outside the
+ * shared segment). Returns the number of records copied. */
+int64_t lotus_spsc_read(const void *seg_base, const void *desc,
+                        int64_t ring_slots,
+                        int64_t *cursor_io, int64_t *overruns_io,
+                        void *out, int64_t max_records) {
+    const lotus_spsc_desc_t *d = (const lotus_spsc_desc_t *)desc;
+    uint64_t slots = (uint64_t)ring_slots;
+    uint64_t c = (uint64_t)*cursor_io;
+    uint64_t h1 = __atomic_load_n(&d->head, __ATOMIC_ACQUIRE);
+    /* Oldest SAFE record given a published head h: the producer's
+     * in-flight (not yet published) write for record h is already
+     * clobbering slot index h - slots, so the live window is
+     * (h - slots, h] — indices <= h - slots are suspect. (The
+     * iris PROTOCOL.md sketch used `< h - ring_slots`, which the
+     * concurrent driver test refutes empirically: the in-flight
+     * slot leaks a future record — flagged upstream on GH #244.)
+     */
+    uint64_t live_min1 = h1 >= slots ? h1 - slots + 1 : 0;
+    /* A reader attaching late (or after a long stall) starts at
+     * the oldest safe record. */
+    if (c < live_min1) {
+        *overruns_io += (int64_t)(live_min1 - c);
+        c = live_min1;
+    }
+    uint64_t end = h1;
+    if (end > c + (uint64_t)max_records) {
+        end = c + (uint64_t)max_records;
+    }
+    const uint64_t *data = (const uint64_t *)
+        ((const char *)seg_base + d->data_off);
+    uint64_t *o = (uint64_t *)out;
+    uint64_t n = 0;
+    for (uint64_t i = c; i < end; i++, n++) {
+        const uint64_t *slot = data + (i & (slots - 1)) * 2;
+        o[n * 2]     = slot[0];
+        o[n * 2 + 1] = slot[1];
+    }
+    /* Acquire fence: pairs with the producer's release fence
+     * (see lotus_spsc_emit). Any slot value we just read that
+     * came from record h's write now forces the h2 load below
+     * to observe head >= h — which places index h - slots
+     * inside the <= h2 - slots discard window. This is what
+     * makes the h1/copy/h2 validation formally sound, not just
+     * TSO-lucky. */
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    uint64_t h2 = __atomic_load_n(&d->head, __ATOMIC_ACQUIRE);
+    /* Discard anything the producer may have overwritten while
+     * we copied: same boundary as above against the re-read
+     * head — records with index <= h2 - slots are suspect. */
+    uint64_t live_min2 = h2 >= slots ? h2 - slots + 1 : 0;
+    if (c < live_min2) {
+        uint64_t stale = live_min2 - c;
+        if (stale >= n) {
+            /* Whole batch stale AND possibly a further gap the
+             * producer lapped past while we copied: account for
+             * every skipped index (the copied-and-discarded n
+             * plus the never-copied [c+n, live_min2)), so
+             * delivered + overruns always equals the cursor's
+             * total advance. */
+            *overruns_io += (int64_t)(live_min2 - c);
+            *cursor_io = (int64_t)live_min2;
+            return 0;
+        }
+        *overruns_io += (int64_t)stale;
+        memmove(o, o + stale * 2, (size_t)(n - stale) * 16u);
+        n -= stale;
+        c += stale;
+    }
+    *cursor_io = (int64_t)(c + n);
+    return (int64_t)n;
+}
+
 /* GH #230: per-assertion test granularity. std::test asserts
  * bump this on every PASS (silently — the pass path stays
  * output-free per the testing contract); the FAILURE path reads

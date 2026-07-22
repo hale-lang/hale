@@ -1084,6 +1084,48 @@ bytes, and fans into local subscribers via
 thread path; out-of-band recv loops (any code holding wire
 bytes for a bound subject) can use this too.
 
+**SPSC observation ring (GH #244).** A single-producer
+fixed-slot ring over CALLER-PROVIDED memory, exposed as lotus
+primitives (`lotus_spsc_init` / `_emit` / `_note_drop` /
+`_set_tag_b` / `_read`) and the raw all-Int Hale surface
+`std::ring::__spsc_*`. Built for observation planes (the iris
+observer attaches to these rings inside an shm segment,
+read-only, from a foreign process), so the layout is a STABLE
+documented contract:
+
+- Descriptor, 64 B, 64-aligned, caller-placed: `u64 data_off`
+  (slot array offset from the segment base), `u64 head`
+  (producer cursor — monotonic, never wraps, published with a
+  release store; slot index is `head & (ring_slots-1)`,
+  ring_slots a power of two), `u64 dropped` (producer-side drop
+  accounting; the ring itself never blocks — overwrite-oldest by
+  construction), `u32 tag_a`, `u32 tag_b` (user tags; tag_b has
+  a relaxed-store setter for gauge use), 32 B reserved (zero).
+- Slots: `ring_slots × 16 B`, two u64 words, written plain
+  after a RELEASE FENCE and before the head release-store. The
+  fence pairs with an acquire fence on the read side (below) —
+  the Boehm seqlock recipe. Without the pair, a relaxed slot
+  load may observe a future record while the h2 re-read returns
+  a stale head, delivering a mixed record past the discard;
+  GenMC exhibits it (the stress soak cannot — TSO masks it).
+- Read side (any process, no Hale runtime required): snapshot
+  h1 (acquire) → copy `[cursor, min(h1, cursor+max))` →
+  ACQUIRE FENCE → re-read h2 (acquire) → discard records with
+  index `<= h2 - ring_slots`
+  and count them as overruns. The `<=` is load-bearing: the
+  producer's in-flight (unpublished) write for record `h` is
+  already clobbering slot index `h - ring_slots`, so the live
+  window given a published head `h` is `(h - ring_slots, h]`.
+  Verified concurrently in `tests/spsc_driver.c` and modeled in
+  `verification/spsc_ring_model.c` (which also refutes the
+  strict-`<` boundary).
+
+Consumer cursors and overrun counters live OUTSIDE the shared
+segment (caller-owned); external readers never write the ring.
+This ring is the convergence target for iris's observation
+protocol (its PROTOCOL.md pre-freeze sketch is this layout with
+`tag_a`/`tag_b` as `sched_id`/`current_locus`).
+
 **SHM ring substrate (Form K5).** POSIX shared-
 memory ring backing the zero-copy bus route. Six C primitives in
 `runtime/lotus_shm_ring.c`, linked unconditionally so user

@@ -8,6 +8,29 @@ behavior.
 
 ## Unreleased
 
+- **SPSC observation ring as a lotus primitive (GH #244).**
+  `lotus_spsc_*` + `std::ring::__spsc_*`: a single-producer
+  16-byte-slot ring over caller-provided memory — monotonic
+  release-published head, overwrite-oldest (never blocks a
+  producer on readers), producer-side drop accounting, external-
+  reader-safe snapshot reads with overrun accounting. Layout is
+  a stable documented contract (spec/runtime.md) intended for
+  verbatim adoption by the iris observer protocol; concurrent
+  contract test + GenMC model included. Convergence note: the
+  driver test empirically refuted the pre-freeze protocol
+  sketch's overrun boundary (`< h2 - ring_slots`) — an in-flight
+  producer write already clobbers slot `h2 - ring_slots` before
+  publication, so the live window is `(h - ring_slots, h]`.
+- **Diagnostics: caret snippets, did-you-mean, span-carrying
+  codegen errors (GH #241).** Every rendered diagnostic shows
+  the offending source line with a caret underline; the
+  no-field diagnostic suggests the nearest name from the
+  receiver's own surface; printing a struct/locus and
+  abs/min/max on non-numerics are now spanned check-phase
+  errors (previously spanless codegen deaths); and
+  `CodegenError::UnsupportedAt` lets any codegen raise carry a
+  location rendered like a check diagnostic.
+
 - **Test failures report per-assertion progress; runtime C
   warnings no longer leak (GH #230 items 1+3).** A failing
   multi-assert test file now prints `(N earlier assertion(s)

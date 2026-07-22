@@ -1586,6 +1586,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
 
+        // GH #244: SPSC observation-ring primitives. Pointer
+        // params are declared i64 (addresses from the caller's
+        // shm mapping — same register class at the C ABI, the
+        // transport-handle precedent).
+        for (name, n_args, has_ret) in [
+            ("lotus_spsc_init", 4usize, false),
+            ("lotus_spsc_emit", 5, false),
+            ("lotus_spsc_note_drop", 1, false),
+            ("lotus_spsc_set_tag_b", 2, false),
+            ("lotus_spsc_read", 7, true),
+        ] {
+            let params: Vec<inkwell::types::BasicMetadataTypeEnum> =
+                (0..n_args).map(|_| i64_t.into()).collect();
+            let fn_ty = if has_ret {
+                i64_t.fn_type(&params, false)
+            } else {
+                void_t.fn_type(&params, false)
+            };
+            self.module.add_function(name, fn_ty, None);
+        }
+
         // GH #230: per-assertion test granularity — std::test's
         // pass counter (silent bump on every passing assert; the
         // failure path reads it for the "(N earlier assertion(s)
