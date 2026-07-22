@@ -110,6 +110,48 @@ jobs:
           # built — codegen needs it beside the binary to link programs.
           cargo build --release --workspace
 
+      - name: Vendor libunwind (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -eux
+          # GH #231: the binary links Homebrew llvm@18's
+          # libunwind.1.dylib; without Homebrew llvm@18 installed
+          # it crashes at launch. Vendor the dylib beside the
+          # binary and rewrite the load command to
+          # @executable_path so the tarball is self-contained
+          # (the .dylib ships in the archive next to `hale`).
+          BIN=target/release/hale
+          # Vendor EVERY non-system dylib (libunwind, libzstd, and
+          # anything the formulas grow next), then fix the vendored
+          # dylibs' own load commands + install ids. Two passes over
+          # the dylib set handles dylib-to-dylib references.
+          vendor_dir="$(dirname "$BIN")"
+          for pass in 1 2; do
+            for f in "$BIN" "$vendor_dir"/*.dylib; do
+              [ -e "$f" ] || continue
+              for LIB in $(otool -L "$f" | awk '/\/opt\/homebrew|\/usr\/local\/Cellar/ {print $1}'); do
+                base="$(basename "$LIB")"
+                [ -e "$vendor_dir/$base" ] || cp "$LIB" "$vendor_dir/$base"
+                install_name_tool -change "$LIB" "@executable_path/$base" "$f"
+              done
+            done
+          done
+          for d in "$vendor_dir"/*.dylib; do
+            [ -e "$d" ] || continue
+            install_name_tool -id "@executable_path/$(basename "$d")" "$d"
+            codesign --force --sign - "$d"
+          done
+          codesign --force --sign - "$BIN"
+          # Audit: nothing outside /usr/lib + @executable_path may
+          # remain across the binary AND the vendored dylibs.
+          for f in "$BIN" "$vendor_dir"/*.dylib; do
+            [ -e "$f" ] || continue
+            if otool -L "$f" | grep -E "/opt/homebrew|/usr/local/Cellar"; then
+              echo "non-system dylib dependency survived in $f" >&2
+              exit 1
+            fi
+          done
+
       - name: Smoke-test the binary
         run: |
           set -eux
@@ -134,6 +176,10 @@ jobs:
           # any program using std::io. Omitting it (the pre-2026-07 bug)
           # shipped tarballs that could not build real programs.
           cp target/release/libhale_ts_shim.a dist/
+          # GH #231: the vendored libunwind (macOS only — see the
+          # Vendor step) rides beside the binary; the rewritten
+          # @executable_path load command finds it there.
+          cp -v target/release/*.dylib dist/ 2>/dev/null || true
           cp -v README.md dist/ 2>/dev/null || true
           cp -v LICENSE-MIT dist/ 2>/dev/null || true
           cp -v LICENSE-APACHE dist/ 2>/dev/null || true
