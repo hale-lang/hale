@@ -794,6 +794,11 @@ fn register_locus(
                         .iter()
                         .map(|p| resolve_type_expr(&p.ty, known))
                         .collect(),
+                    // Mode params are projection inputs the
+                    // SUBSTRATE may supply (50-mode-defaults
+                    // calls `self.x.bulk()` bare) — exempt from
+                    // the GH #229 lower bound.
+                    min_params: Some(0),
                     ret,
                     fallible: None,
                 });
@@ -814,6 +819,11 @@ fn register_locus(
                         .iter()
                         .map(|p| resolve_type_expr(&p.ty, known))
                         .collect(),
+                    // GH #229: see FnSig::min_params.
+                    min_params: f
+                        .params
+                        .iter()
+                        .position(|p| p.default.is_some()),
                     ret,
                     fallible,
                 });
@@ -1062,6 +1072,11 @@ fn register_perspective(
                         .iter()
                         .map(|p| resolve_type_expr(&p.ty, known))
                         .collect(),
+                    // GH #229: see FnSig::min_params.
+                    min_params: f
+                        .params
+                        .iter()
+                        .position(|p| p.default.is_some()),
                     ret,
                     fallible,
                 });
@@ -1072,6 +1087,7 @@ fn register_perspective(
                 methods.push(MethodInfo {
                     name: "is_stable".to_string(),
                     params: Vec::new(),
+                    min_params: None,
                     ret: Ty::Prim(PrimType::Bool),
                     fallible: None,
                 });
@@ -1133,6 +1149,13 @@ fn register_fn(
     let sig = FnSig {
         name: decl.name.name.clone(),
         params,
+        // GH #229: lower arity bound — index of the first
+        // defaulted param; callers may omit only trailing
+        // defaulted params.
+        min_params: decl
+            .params
+            .iter()
+            .position(|p| p.default.is_some()),
         ret,
         fallible,
         span: decl.span,
@@ -1368,36 +1391,42 @@ fn synthesize_form_vec_methods(methods: &mut Vec<MethodInfo>, cell_ty: &Ty) {
     methods.push(MethodInfo {
         name: "push".to_string(),
         params: vec![cell_ty.clone()],
+        min_params: None,
         ret: Ty::Unit,
         fallible: None,
     });
     methods.push(MethodInfo {
         name: "get".to_string(),
         params: vec![Ty::Prim(PrimType::Int)],
+        min_params: None,
         ret: cell_ty.clone(),
         fallible: Some(index_err.clone()),
     });
     methods.push(MethodInfo {
         name: "set".to_string(),
         params: vec![Ty::Prim(PrimType::Int), cell_ty.clone()],
+        min_params: None,
         ret: Ty::Unit,
         fallible: Some(index_err.clone()),
     });
     methods.push(MethodInfo {
         name: "pop".to_string(),
         params: Vec::new(),
+        min_params: None,
         ret: cell_ty.clone(),
         fallible: Some(index_err),
     });
     methods.push(MethodInfo {
         name: "len".to_string(),
         params: Vec::new(),
+        min_params: None,
         ret: Ty::Prim(PrimType::Int),
         fallible: None,
     });
     methods.push(MethodInfo {
         name: "is_empty".to_string(),
         params: Vec::new(),
+        min_params: None,
         ret: Ty::Prim(PrimType::Bool),
         fallible: None,
     });
@@ -1413,18 +1442,21 @@ fn synthesize_form_vec_methods(methods: &mut Vec<MethodInfo>, cell_ty: &Ty) {
     methods.push(MethodInfo {
         name: "sort".to_string(),
         params: Vec::new(),
+        min_params: None,
         ret: Ty::Unit,
         fallible: None,
     });
     methods.push(MethodInfo {
         name: "sort_by".to_string(),
         params: vec![cmp_ty.clone()],
+        min_params: None,
         ret: Ty::Unit,
         fallible: None,
     });
     methods.push(MethodInfo {
         name: "sort_desc_by".to_string(),
         params: vec![cmp_ty],
+        min_params: None,
         ret: Ty::Unit,
         fallible: None,
     });
@@ -1457,36 +1489,42 @@ fn synthesize_form_hashmap_methods(
     methods.push(MethodInfo {
         name: "get".to_string(),
         params: vec![key_ty.clone()],
+        min_params: None,
         ret: value_ty.clone(),
         fallible: Some(key_err.clone()),
     });
     methods.push(MethodInfo {
         name: "set".to_string(),
         params: vec![value_ty.clone()],
+        min_params: None,
         ret: Ty::Unit,
         fallible: None,
     });
     methods.push(MethodInfo {
         name: "has".to_string(),
         params: vec![key_ty.clone()],
+        min_params: None,
         ret: Ty::Prim(PrimType::Bool),
         fallible: None,
     });
     methods.push(MethodInfo {
         name: "remove".to_string(),
         params: vec![key_ty.clone()],
+        min_params: None,
         ret: Ty::Unit,
         fallible: Some(key_err),
     });
     methods.push(MethodInfo {
         name: "len".to_string(),
         params: Vec::new(),
+        min_params: None,
         ret: Ty::Prim(PrimType::Int),
         fallible: None,
     });
     methods.push(MethodInfo {
         name: "is_empty".to_string(),
         params: Vec::new(),
+        min_params: None,
         ret: Ty::Prim(PrimType::Bool),
         fallible: None,
     });
@@ -1501,18 +1539,21 @@ fn synthesize_form_hashmap_methods(
     methods.push(MethodInfo {
         name: "key_at".to_string(),
         params: vec![Ty::Prim(PrimType::Int)],
+        min_params: None,
         ret: key_ty.clone(),
         fallible: Some(idx_err.clone()),
     });
     methods.push(MethodInfo {
         name: "entry_at".to_string(),
         params: vec![Ty::Prim(PrimType::Int)],
+        min_params: None,
         ret: value_ty.clone(),
         fallible: Some(idx_err),
     });
     methods.push(MethodInfo {
         name: "bump".to_string(),
         params: vec![key_ty.clone()],
+        min_params: None,
         ret: Ty::Unit,
         fallible: None,
     });
@@ -1556,24 +1597,28 @@ fn synthesize_form_ring_buffer_methods(
     methods.push(MethodInfo {
         name: "push".to_string(),
         params: vec![cell_ty.clone()],
+        min_params: None,
         ret: Ty::Prim(PrimType::Bool),
         fallible: None,
     });
     methods.push(MethodInfo {
         name: "pop".to_string(),
         params: Vec::new(),
+        min_params: None,
         ret: cell_ty.clone(),
         fallible: Some(empty_err),
     });
     methods.push(MethodInfo {
         name: "len".to_string(),
         params: Vec::new(),
+        min_params: None,
         ret: Ty::Prim(PrimType::Int),
         fallible: None,
     });
     methods.push(MethodInfo {
         name: "is_full".to_string(),
         params: Vec::new(),
+        min_params: None,
         ret: Ty::Prim(PrimType::Bool),
         fallible: None,
     });
@@ -1604,24 +1649,28 @@ fn synthesize_form_lru_cache_methods(
     methods.push(MethodInfo {
         name: "put".to_string(),
         params: vec![value_ty.clone()],
+        min_params: None,
         ret: Ty::Unit,
         fallible: None,
     });
     methods.push(MethodInfo {
         name: "get".to_string(),
         params: vec![key_ty.clone()],
+        min_params: None,
         ret: value_ty.clone(),
         fallible: Some(key_err),
     });
     methods.push(MethodInfo {
         name: "contains".to_string(),
         params: vec![key_ty.clone()],
+        min_params: None,
         ret: Ty::Prim(PrimType::Bool),
         fallible: None,
     });
     methods.push(MethodInfo {
         name: "len".to_string(),
         params: Vec::new(),
+        min_params: None,
         ret: Ty::Prim(PrimType::Int),
         fallible: None,
     });

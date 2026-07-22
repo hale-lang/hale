@@ -167,6 +167,11 @@ pub struct ClosureSymInfo {
 pub struct MethodInfo {
     pub name: String,
     pub params: Vec<Ty>,
+    /// GH #229: arity lower bound — index of the first
+    /// defaulted param (callers may omit trailing defaulted
+    /// params, never required ones). None = no defaults, every
+    /// param required.
+    pub min_params: Option<usize>,
     pub ret: Ty,
     /// v1.x-FORM-1: payload type when the method was declared
     /// (or synthesized) `fallible(E)`. Mirrors `FnSig.fallible`
@@ -272,6 +277,8 @@ pub struct ConstInfo {
 pub struct FnSig {
     pub name: String,
     pub params: Vec<(String, Ty)>,
+    /// GH #229: arity lower bound (see MethodInfo::min_params).
+    pub min_params: Option<usize>,
     pub ret: Ty,
     /// v1.x-FORM-1: payload type when the fn was declared
     /// `-> T fallible(E)`. Calls to fallible fns produce a
@@ -280,3 +287,18 @@ pub struct FnSig {
     pub fallible: Option<Ty>,
     pub span: Span,
 }
+
+impl MethodInfo {
+    /// Required-argument count: params before the first default.
+    pub fn required_params(&self) -> usize {
+        self.min_params.unwrap_or(self.params.len())
+    }
+}
+
+impl FnSig {
+    /// Required-argument count: params before the first default.
+    pub fn required_params(&self) -> usize {
+        self.min_params.unwrap_or(self.params.len())
+    }
+}
+
