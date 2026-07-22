@@ -8,6 +8,17 @@ behavior.
 
 ## Unreleased
 
+- **Per-binding transport telemetry counters (GH #236 item 2).**
+  Every remote binding now maintains relaxed-atomic counters at
+  the transport choke points — messages/bytes sent and
+  delivered, send failures, `dropped_lost` (publishes made while
+  a connect binding was in the lost/reconnecting window — the
+  drops GH #233's contract makes deliberate, now countable),
+  listener re-arms, and reconnects. `LOTUS_BUS_COUNTERS_DUMP=1`
+  prints one line per binding at teardown (operator/test
+  surface); no in-process consumer yet — this is the substrate
+  for the iris observer. Sequence numbers (item 1) ride #231's
+  framing rework per the sequencing recorded on the issue.
 - **Connection loss is structural; `restart` reconnects
   (GH #233 steps 3–4, closes #233).** A send failure on a
   source-declared connect binding now marks the binding lost

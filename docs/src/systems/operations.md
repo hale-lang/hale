@@ -38,6 +38,7 @@ own once you know which class you're chasing:
 | `LOTUS_BUS_LOG_DROP=1` | everything below, plus serialize-fail and no-post-target |
 | `LOTUS_BUS_LOG_UNMATCHED=1` | a keyed publish (`where key == …`) that matched no subscriber — prints subject, key, and the per-topic subscriber counts |
 | `LOTUS_BUS_LOG_DESERIALIZE_DROP=1` | the `udp://` reader thread dropping a frame (no deserializer registered, or a size-mismatched read) |
+| `LOTUS_BUS_COUNTERS_DUMP=1` | one line per remote binding at exit: messages/bytes sent and delivered, send failures, publishes dropped while a link was down, listener re-arms, reconnects |
 
 **The shape that produces no line at all.** If `LOTUS_BUS_LOG_DROP`
 is silent but the handler still never fires, the message *was*
