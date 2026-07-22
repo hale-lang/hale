@@ -10332,14 +10332,52 @@ impl<'a> Checker<'a> {
                         // through. Strict when the receiver
                         // is a known type and the field
                         // doesn't exist on it: catches typos
-                        // statically.
+                        // statically. GH #241: with a nearest-
+                        // name suggestion drawn from the
+                        // receiver's fields + methods.
                         if !matches!(rt, Ty::Unknown) {
+                            let mut candidates: Vec<String> = Vec::new();
+                            if let Ty::Named(tn) = &rt {
+                                match self.top.symbols.get(tn) {
+                                    Some(TopSymbol::Locus(li)) => {
+                                        candidates.extend(
+                                            li.params.iter().map(|p| p.name.clone()),
+                                        );
+                                        candidates.extend(
+                                            li.methods.iter().map(|m| m.name.clone()),
+                                        );
+                                    }
+                                    Some(TopSymbol::Perspective(pi)) => {
+                                        candidates.extend(
+                                            pi.params.iter().map(|p| p.name.clone()),
+                                        );
+                                        candidates.extend(
+                                            pi.methods.iter().map(|m| m.name.clone()),
+                                        );
+                                    }
+                                    Some(TopSymbol::Type(ti)) => {
+                                        if let TypeKind::Struct(fields) = &ti.kind {
+                                            candidates.extend(
+                                                fields.iter().map(|f| f.name.clone()),
+                                            );
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            let hint = crate::stdlib_surface::nearest_name(
+                                &name.name,
+                                candidates.iter().map(|s| s.as_str()),
+                            )
+                            .map(|s| format!(" — did you mean `{}`?", s))
+                            .unwrap_or_default();
                             self.diags.push(Diag::ty(
                                 *span,
                                 format!(
-                                    "no field `{}` on `{}`",
+                                    "no field `{}` on `{}`{}",
                                     name.name,
-                                    rt.display()
+                                    rt.display(),
+                                    hint
                                 ),
                             ));
                         }

@@ -31,5 +31,16 @@ fn render_located_unshifts_to_file_line_col() {
     // Demux: rendering against the file's own source + base recovers the
     // real location (line 1 — `fn main` is the first line).
     let out = d.render_located("lib/foo.hl", src, base);
-    assert_eq!(out, "lib/foo.hl:1:1: type error: boom");
+    // GH #241: rendered diagnostics carry a source-context
+    // snippet (offending line + caret underline).
+    assert!(
+        out.starts_with("lib/foo.hl:1:1: type error: boom\n"),
+        "got: {:?}",
+        out
+    );
+    assert!(
+        out.contains("\n    fn main() {\n    ^"),
+        "expected context snippet with caret; got: {:?}",
+        out
+    );
 }
