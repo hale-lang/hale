@@ -110,6 +110,30 @@ jobs:
           # built — codegen needs it beside the binary to link programs.
           cargo build --release --workspace
 
+      - name: Vendor libunwind (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -eux
+          # GH #231: the binary links Homebrew llvm@18's
+          # libunwind.1.dylib; without Homebrew llvm@18 installed
+          # it crashes at launch. Vendor the dylib beside the
+          # binary and rewrite the load command to
+          # @executable_path so the tarball is self-contained
+          # (the .dylib ships in the archive next to `hale`).
+          UNWIND="$(otool -L target/release/hale | awk '/libunwind/ {print $1}' | head -1)"
+          if [ -n "$UNWIND" ] && [ "${UNWIND#\/usr\/lib}" = "$UNWIND" ]; then
+            cp "$UNWIND" target/release/libunwind.1.dylib
+            install_name_tool -change "$UNWIND" \
+              "@executable_path/libunwind.1.dylib" target/release/hale
+            codesign --force --sign - target/release/hale
+          fi
+          # Verify: no Homebrew/keg paths may remain in the
+          # load commands.
+          if otool -L target/release/hale | grep -E "/opt/homebrew|/usr/local/Cellar"; then
+            echo "non-system dylib dependency survived" >&2
+            exit 1
+          fi
+
       - name: Smoke-test the binary
         run: |
           set -eux
@@ -134,6 +158,10 @@ jobs:
           # any program using std::io. Omitting it (the pre-2026-07 bug)
           # shipped tarballs that could not build real programs.
           cp target/release/libhale_ts_shim.a dist/
+          # GH #231: the vendored libunwind (macOS only — see the
+          # Vendor step) rides beside the binary; the rewritten
+          # @executable_path load command finds it there.
+          cp -v target/release/libunwind.1.dylib dist/ 2>/dev/null || true
           cp -v README.md dist/ 2>/dev/null || true
           cp -v LICENSE-MIT dist/ 2>/dev/null || true
           cp -v LICENSE-APACHE dist/ 2>/dev/null || true

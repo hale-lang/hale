@@ -161,3 +161,41 @@ jobs:
           echo "build exit code: $rc"
           test "$rc" -ne 0
           echo "$out" | grep -q "aren't supported on macOS"
+
+      - name: (d) GH 231 — emitted binaries link OpenSSL statically
+        run: |
+          set -eux
+          # The (a) step built /tmp/hlci binaries with the PR's
+          # codegen; any emitted binary links lotus_tls. Assert no
+          # Homebrew OpenSSL dylib survives in the load commands —
+          # the static libssl.a/libcrypto.a path must have won.
+          cargo run -q -p hale-cli --bin hale -- build /tmp/hlci/coop_bus.hl
+          otool -L /tmp/hlci/coop_bus | tee /tmp/hlci/otool.out
+          if grep -E "openssl|libssl|libcrypto" /tmp/hlci/otool.out; then
+            echo "emitted binary still links OpenSSL dynamically" >&2
+            exit 1
+          fi
+
+      - name: (e) GH 231 — toolchain vendoring rewrite launches
+        run: |
+          set -eux
+          # Rehearse the release workflow's libunwind vendoring on
+          # the PR-built binary: copy, rewrite the load command to
+          # @executable_path, drop the vendored dylib beside it,
+          # and prove the rewritten binary launches (the release
+          # tarball ships exactly this shape).
+          mkdir -p /tmp/hlci/vendored
+          cp target/release/hale /tmp/hlci/vendored/hale
+          UNWIND="$(otool -L /tmp/hlci/vendored/hale | awk '/libunwind/ {print $1}' | head -1)"
+          if [ -n "$UNWIND" ] && [ "${UNWIND#\/usr\/lib}" = "$UNWIND" ]; then
+            cp "$UNWIND" /tmp/hlci/vendored/libunwind.1.dylib
+            install_name_tool -change "$UNWIND" \
+              "@executable_path/libunwind.1.dylib" /tmp/hlci/vendored/hale
+            codesign --force --sign - /tmp/hlci/vendored/hale
+          fi
+          if otool -L /tmp/hlci/vendored/hale | grep -E "/opt/homebrew|/usr/local/Cellar"; then
+            echo "non-system dylib dependency survived the rewrite" >&2
+            exit 1
+          fi
+          /tmp/hlci/vendored/hale || true
+          file /tmp/hlci/vendored/hale

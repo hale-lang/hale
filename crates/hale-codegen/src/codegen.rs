@@ -1772,15 +1772,30 @@ pub fn build_executable_with_options(
         // use std::io::tls still pull the .so via dynamic-link,
         // but symbol GC at the codegen-level is moot since the
         // .c file references them at translation-unit scope.
-        .arg("-lssl")
-        .arg("-lcrypto");
-    // macOS: OpenSSL is keg-only under Homebrew, so `-lssl`/`-lcrypto`
-    // aren't on the default library path — add its lib dir. No-op on
-    // Linux (helper returns None).
+        ;
+    // GH #231: emitted binaries must not depend on Homebrew
+    // dylibs. On macOS, link OpenSSL's STATIC archives when the
+    // keg provides them (Homebrew openssl@3 ships libssl.a /
+    // libcrypto.a) so a compiled program runs on machines
+    // without Homebrew OpenSSL; fall back to the dynamic link
+    // if the archives are missing. Linux keeps the plain
+    // dynamic link — distro OpenSSL is a stable system dep.
+    let mut linked_static_ssl = false;
     if cfg!(target_os = "macos") {
         if let Some(prefix) = macos_openssl_prefix() {
-            clang.arg(format!("-L{}/lib", prefix.display()));
+            let ssl_a = prefix.join("lib").join("libssl.a");
+            let crypto_a = prefix.join("lib").join("libcrypto.a");
+            if ssl_a.exists() && crypto_a.exists() {
+                clang.arg(&ssl_a);
+                clang.arg(&crypto_a);
+                linked_static_ssl = true;
+            } else {
+                clang.arg(format!("-L{}/lib", prefix.display()));
+            }
         }
+    }
+    if !linked_static_ssl {
+        clang.arg("-lssl").arg("-lcrypto");
     }
     // 2026-05-21: -rdynamic exports the dynamic symbol table so
     // backtrace_symbols_fd / addr2line can resolve symbol names from
