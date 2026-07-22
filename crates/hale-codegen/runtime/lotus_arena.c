@@ -12392,7 +12392,28 @@ typedef struct lotus_bus_remote_entry {
     volatile int       lost;
     char              *path;
     void              *locus_self;
+    /* GH #236 (observability groundwork): per-binding telemetry
+     * counters, plain relaxed atomics bumped at the existing
+     * choke points — no consumer in-process yet (the iris
+     * observer attaches later; LOTUS_BUS_COUNTERS_DUMP=1 prints
+     * them at teardown for operators and tests). Socket-buffer
+     * occupancy is deliberately absent: it's a poll-time
+     * SIOCOUTQ query against the live fd, not transport state
+     * to duplicate. Zeroed by the calloc in entry_push. */
+    uint64_t           ctr_msgs_sent;
+    uint64_t           ctr_msgs_delivered;
+    uint64_t           ctr_bytes_sent;
+    uint64_t           ctr_bytes_delivered;
+    uint64_t           ctr_send_failures;
+    uint64_t           ctr_dropped_lost;
+    uint64_t           ctr_rearms;
+    uint64_t           ctr_reconnects;
 } lotus_bus_remote_entry_t;
+
+#define LOTUS_CTR_BUMP(field) \
+    __atomic_fetch_add(&(field), 1, __ATOMIC_RELAXED)
+#define LOTUS_CTR_ADD(field, n) \
+    __atomic_fetch_add(&(field), (uint64_t)(n), __ATOMIC_RELAXED)
 
 /* 2026-05-27 — array-of-pointers shape (was array-of-structs).
  * Each entry is its own malloc'd allocation; the global array
@@ -12532,12 +12553,15 @@ static void lotus_bus_unix_serve(lotus_bus_remote_entry_t *entry) {
             lotus_bus_local_dispatch(g_bus_queue_for_remote,
                                      entry->subject,
                                      struct_buf, (size_t)struct_size);
+            LOTUS_CTR_BUMP(entry->ctr_msgs_delivered);
+            LOTUS_CTR_ADD(entry->ctr_bytes_delivered, n);
         }
         /* GH #233 step 2: re-arm. Close the dead connection and
          * loop back into accept for the next peer. */
         if (t->conn_fd >= 0) {
             close(t->conn_fd);
             t->conn_fd = -1;
+            LOTUS_CTR_BUMP(entry->ctr_rearms);
         }
     }
 }
@@ -12838,6 +12862,8 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
         lotus_bus_local_dispatch(g_bus_queue_for_remote,
                                  args->entry->subject,
                                  struct_buf, (size_t)struct_size);
+        LOTUS_CTR_BUMP(args->entry->ctr_msgs_delivered);
+        LOTUS_CTR_ADD(args->entry->ctr_bytes_delivered, n);
     }
     free(args);
     return NULL;
@@ -13192,6 +13218,7 @@ int64_t lotus_bus_transport_reconnect(int64_t handle) {
     e->transport = lotus_transport_create(e->path, LOTUS_TRANSPORT_CONNECT);
     if (!e->transport) return -1;
     e->lost = 0;
+    LOTUS_CTR_BUMP(e->ctr_reconnects);
     return 0;
 }
 
@@ -13434,6 +13461,10 @@ void lotus_bus_remote_fanout(const char *subject,
                 parena, payload, (int64_t)payload_size);
             if (!bytes_val) continue;
             e->adapter_send_fn(e->adapter_self, e->subject, bytes_val);
+            /* Delivery is the adapter body's concern; "sent"
+             * here means handed to the adapter (GH #236). */
+            LOTUS_CTR_BUMP(e->ctr_msgs_sent);
+            LOTUS_CTR_ADD(e->ctr_bytes_sent, payload_size);
             continue;
         }
         if (e->kind == LOTUS_BUS_REMOTE_KIND_UDP) {
@@ -13452,7 +13483,11 @@ void lotus_bus_remote_fanout(const char *subject,
                                   (struct sockaddr *)&e->udp_dest,
                                   sizeof(e->udp_dest));
             if (sent < 0) {
+                LOTUS_CTR_BUMP(e->ctr_send_failures);
                 lotus_bus_udp_log_sendto_error(e->subject, errno);
+            } else {
+                LOTUS_CTR_BUMP(e->ctr_msgs_sent);
+                LOTUS_CTR_ADD(e->ctr_bytes_sent, payload_size);
             }
             continue;
         }
@@ -13467,19 +13502,28 @@ void lotus_bus_remote_fanout(const char *subject,
          * main thread (on_failure restart → reconnect, or the
          * structural exit). Publishes during the window are
          * dropped-and-counted, never falsely "delivered". */
-        if (e->lost) continue;
-        if (lotus_transport_send(e->transport, payload, payload_size) != 0
-            && e->locus_served) {
-            /* Connection-class failure on a locus-owned
-             * transport: the broker can no longer honor this
-             * binding's guarantee. Mark lost and queue the loss
-             * event for the main-thread drain (failure handlers
-             * only run on the queue owner thread; fanout may be
-             * running anywhere). Non-locus (LOTUS_BUS_CONFIG)
-             * entries keep the logged-only behavior — they sit
-             * outside the supervision tree. */
-            e->lost = 1;
-            lotus_bus_transport_mark_lost(e);
+        if (e->lost) {
+            LOTUS_CTR_BUMP(e->ctr_dropped_lost);
+            continue;
+        }
+        if (lotus_transport_send(e->transport, payload, payload_size) == 0) {
+            LOTUS_CTR_BUMP(e->ctr_msgs_sent);
+            LOTUS_CTR_ADD(e->ctr_bytes_sent, payload_size);
+        } else {
+            LOTUS_CTR_BUMP(e->ctr_send_failures);
+            if (e->locus_served) {
+                /* Connection-class failure on a locus-owned
+                 * transport: the broker can no longer honor this
+                 * binding's guarantee. Mark lost and queue the
+                 * loss event for the main-thread drain (failure
+                 * handlers only run on the queue owner thread;
+                 * fanout may be running anywhere). Non-locus
+                 * (LOTUS_BUS_CONFIG) entries keep the logged-only
+                 * behavior — they sit outside the supervision
+                 * tree. */
+                e->lost = 1;
+                lotus_bus_transport_mark_lost(e);
+            }
         }
         /* Send errors are also logged inside lotus_transport_send;
          * dispatch continues — local subscribers already received
@@ -16631,8 +16675,34 @@ const char *lotus_fs_mktemp(const char *prefix, const char *suffix) {
 }
 
 void lotus_bus_remote_destroy_all(void) {
+    /* GH #236: operator/test-facing counter dump. One line per
+     * binding to stderr at teardown when LOTUS_BUS_COUNTERS_DUMP=1
+     * (same env-diagnostic family as LOTUS_BUS_LOG_DESERIALIZE_DROP).
+     * Relaxed plain reads: locus-served entries' threads were
+     * joined at dissolve (counts exact); a config-route reader
+     * is joined later in this same loop, so its delivered counts
+     * are approximate by at most the in-flight message — fine
+     * for a teardown diagnostic. */
+    const char *dump_env = getenv("LOTUS_BUS_COUNTERS_DUMP");
+    int dump = dump_env && strcmp(dump_env, "1") == 0;
     for (size_t i = 0; i < g_bus_remote_count; i++) {
         lotus_bus_remote_entry_t *e = g_bus_remote_entries[i];
+        if (dump && e->subject) {
+            fprintf(stderr,
+                    "[bus counters] subject=%s kind=%d role=%d "
+                    "sent=%llu delivered=%llu bytes_sent=%llu "
+                    "bytes_delivered=%llu send_failures=%llu "
+                    "dropped_lost=%llu rearms=%llu reconnects=%llu\n",
+                    e->subject, e->kind, e->role,
+                    (unsigned long long)e->ctr_msgs_sent,
+                    (unsigned long long)e->ctr_msgs_delivered,
+                    (unsigned long long)e->ctr_bytes_sent,
+                    (unsigned long long)e->ctr_bytes_delivered,
+                    (unsigned long long)e->ctr_send_failures,
+                    (unsigned long long)e->ctr_dropped_lost,
+                    (unsigned long long)e->ctr_rearms,
+                    (unsigned long long)e->ctr_reconnects);
+        }
 
         /* Wave B: adapter entries own their protocol lifecycle
          * through the adapter locus's own dissolve method, which
