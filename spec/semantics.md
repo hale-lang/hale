@@ -931,12 +931,15 @@ acted on. Consequences, all normative:
 - **Per-send transient errors on a lossy transport are not
   structural.** A UDP `sendto` failure is logged (once per errno
   class), not fatal: the binding's guarantee is best-effort by
-  declaration, so downstream loss is within contract. An
-  established *stream* transport dying mid-run is currently
-  logged at send and EOF-terminates the reader; making binding
-  *loss* structural (with reconnection as a supervision policy,
-  not a transport feature) is an open decision — see GH #227's
-  follow-up discussion.
+  declaration, so downstream loss is within contract.
+- **Peer EOF on a listen binding is not loss.** The listener is
+  still bound; the serve loop re-arms and accepts the next peer
+  (GH #233 step 2), so rolling restarts of connect-side
+  binaries work without policy. An established *connect-side*
+  transport dying mid-run is currently logged at send; making
+  that *loss* structural (with reconnection as a supervision
+  policy via `restart` in main's `on_failure`, not a transport
+  feature) is GH #233 steps 3–4 — see F.37's deferred section.
 - **Malformed `LOTUS_BUS_CONFIG` lines stay warn-and-skip**
   (the file is an operator-layered override and the diagnostic
   names the line); a well-formed line whose route cannot be
@@ -945,18 +948,25 @@ acted on. Consequences, all normative:
 Transport surface:
 
 - `unix("/path")` or `unix("/path", role: connect|listen)` —
-  AF_UNIX framed-byte transport. Substrate-provided: the
-  runtime's `lotus_transport_*` owns the delivery contract
-  directly. `role: listen` binds + listens synchronously at
-  registration (so a dead binding fails the boot, per the
-  publish contract above), then spawns a reader thread that
-  accepts the peer and fans recv'd payloads into the local
-  handler set; `role: connect` opens a write-side transport
-  that publish-site dispatch sends to. When `role:` is omitted,
-  the typechecker infers it from the bus block (`publish` only
-  → connect, `subscribe` only → listen); if both publish and
-  subscribe touch the topic, the binding is rejected with a
-  "specify `role:`" diagnostic.
+  AF_UNIX framed-byte transport. Substrate-provided as a
+  **locus** (GH #233 / F.37): the entry is sugar that
+  instantiates `__StdBusUnixListenTransport` /
+  `__StdBusUnixConnectTransport` (stdlib `bus.hl`) as a
+  cooperative child of the main locus, converging with the
+  adapter path. `birth()` realizes the transport synchronously
+  on the boot path (so a dead binding fails the boot, per the
+  publish contract above); the listen side's birth spawns the C
+  serve thread, whose loop accepts a peer, fans recv'd payloads
+  into the local handler set, and **re-arms on peer EOF**
+  (closes the dead connection and accepts the next peer — a
+  restarted connect-side binary reconnects without the
+  subscriber noticing); `dissolve()` interrupts + joins the
+  serve thread and destroys the transport. `role: connect`
+  opens a write-side transport that publish-site dispatch sends
+  to. When `role:` is omitted, the typechecker infers it from
+  the bus block (`publish` only → connect, `subscribe` only →
+  listen); if both publish and subscribe touch the topic, the
+  binding is rejected with a "specify `role:`" diagnostic.
 
 - `LocusName { field: value, ... }` — user-supplied
   protocol-layer adapter. Any locus that declares

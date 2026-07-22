@@ -3126,14 +3126,22 @@ directly against the handle the locus owns (the `@form`
 pattern: locus for flow, C for bytes).
 
 **Sequencing:** (1) transports-as-loci restructure, behavior
-unchanged (the regression tests above pass verbatim); (2)
-listen-side re-arm — peer EOF loops back into `accept()` on the
+unchanged (the regression tests above pass verbatim) —
+**SHIPPED 2026-07-22** (GH #233 PR: `bindings { T: unix(...) }`
+desugars to `__StdBusUnix{Listen,Connect}Transport`
+instantiation; both cooperative — pinned placement was tried
+and rejected because a pinned locus runs birth on its spawned
+thread, making realization asynchronous; the serve thread is
+C-spawned by birth and joined by dissolve); (2) listen-side
+re-arm — peer EOF loops back into `accept()` on the
 already-bound listener, no policy needed, unblocks rolling
-restarts of connect-side binaries; (3) loss → `violate` with
-default bubble, landing **in the same change as** (4) the
-`on_failure`-on-main routing (`lotus_root_panic`'s documented
-seat) + `restart`-as-reconnect — per the guardrail: do not ship
-loss-is-fatal without the reconnect policy in the same change.
+restarts of connect-side binaries — **SHIPPED 2026-07-22**
+(`lotus_bus_unix_serve`, shared with `LOTUS_BUS_CONFIG` reader
+threads); (3) loss → `violate` with default bubble, landing
+**in the same change as** (4) the `on_failure`-on-main routing
+(`lotus_root_panic`'s documented seat) + `restart`-as-reconnect
+— per the guardrail: do not ship loss-is-fatal without the
+reconnect policy in the same change.
 
 ---
 

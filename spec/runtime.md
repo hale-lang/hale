@@ -990,27 +990,53 @@ optimization that elides bus dispatch for unambiguous
 intra-locus and single-hop parent→child tower patterns when no
 binding is declared.
 
-**Binding realization failure (GH #227, 2026-07-22).**
+**Binding realization failure (GH #227) + transports-as-loci
+(GH #233 steps 1–2, 2026-07-22).** Source-level
+`bindings { T: unix(...) }` entries are sugar: codegen
+instantiates a stdlib transport locus
+(`__StdBusUnixListenTransport` / `__StdBusUnixConnectTransport`,
+`runtime/stdlib/bus.hl`) as a cooperative child at the main
+prelude — converging with the adapter path. The locus is the
+control plane; the data plane stays in C:
+
+- `birth()` calls `lotus_bus_transport_realize(subject, path,
+  role)` synchronously on the boot path (unix `socket + bind +
+  listen` via `lotus_transport_listener_create` for listen,
+  connect-with-retry for connect). Realization failure routes
+  into `lotus_bus_binding_fail(subject, url)` — the
+  structural-failure shape (stderr diagnostic + `exit(1)`), the
+  same seat as `lotus_root_panic`. The listen locus's birth then
+  spawns the serve thread (`lotus_bus_transport_spawn_server`).
+  The transport loci are deliberately NOT pinned: a pinned locus
+  runs birth on its spawned thread, which would make realization
+  asynchronous; the serve thread belongs to the C data plane.
+- The serve loop (`lotus_bus_unix_serve`) accepts a peer,
+  dispatches its messages, and on peer EOF **re-arms** — closes
+  the dead connection and loops back into `accept()` for the
+  next peer (GH #233 step 2; peer EOF is not connection loss,
+  and a rolling restart of the connect-side binary just works).
+- `dissolve()` calls `lotus_bus_transport_reclaim`: sets the
+  serve loop's `closing` flag, shuts down both fds to unblock a
+  parked accept/recv, joins the serve thread, destroys the
+  transport. The husk entry stays in the remote table for
+  `lotus_bus_remote_destroy_all` to free uniformly.
+
+Publish fanout is untouched — realized entries land in the same
+`g_bus_remote_entries` table the fanout walks.
+
+Env-configured routes (`LOTUS_BUS_CONFIG`) have no source-level
+declaration to hang a locus on and keep the direct C path:
 `lotus_bus_register_remote(subject, url, role)` returns an i32
-status: 0 on success, -1 when the route cannot be realized
-(scheme/addr validation, socket/bind/listen, connect-retry
-timeout, thread spawn). Listener-side work that can fail is done
-synchronously at registration — unix: `socket + bind + listen`
-(`lotus_transport_listener_create`); udp: parse + bind +
-multicast join (`lotus_bus_udp_listener_setup`) — and only the
-blocking accept/recv loop runs on the reader thread, so a
-failure always surfaces on the boot path, never on a detached
-thread. On failure the entry is popped from the remote table
-(no dead slot for fanout to silently skip) and the caller —
-codegen's bindings prelude, or `lotus_bus_load_config` for
-env-configured routes — routes the failure into
-`lotus_bus_binding_fail(subject, url)`: the structural-failure
-shape (stderr diagnostic + `exit(1)`), the same seat as
-`lotus_root_panic`. Normative contract: spec/semantics.md,
-"The publish contract". Teardown note: because the listener is
-bound at registration, `lotus_bus_remote_destroy_all` also
-shuts down `listen_fd` so a reader thread parked in `accept()`
-(peer never connected) joins instead of hanging.
+status (0 ok / -1 unrealizable — scheme/addr validation,
+socket/bind/listen, connect-retry timeout, thread spawn), with
+listener-side work done synchronously at registration (udp:
+parse + bind + multicast join via
+`lotus_bus_udp_listener_setup`). On failure the entry is popped
+(no dead slot for fanout to silently skip) and
+`lotus_bus_load_config` routes into `lotus_bus_binding_fail`.
+Config-route unix listeners share `lotus_bus_unix_serve`, so
+they re-arm identically. Normative contract: spec/semantics.md,
+"The publish contract".
 
 **Adapter dispatch.** At codegen, an adapter binding
 instantiates the adapter locus into the program-lifetime

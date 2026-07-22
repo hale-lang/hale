@@ -1520,6 +1520,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
 
+        // GH #233 step 1: the locus-facing transport surface
+        // driven by the __StdBusUnix*Transport lifecycles
+        // (stdlib bus.hl). realize returns the entry handle as
+        // i64 (0 on failure); spawn_server starts the listen
+        // serve thread (0 ok / -1 fail); reclaim interrupts +
+        // joins the serve thread and destroys the transport at
+        // dissolve.
+        let i64_t = self.context.i64_type();
+        self.module.add_function(
+            "lotus_bus_transport_realize",
+            i64_t.fn_type(&[ptr_t.into(), ptr_t.into(), i64_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_bus_transport_spawn_server",
+            i64_t.fn_type(&[i64_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_bus_transport_reclaim",
+            void_t.fn_type(&[i64_t.into()], false),
+            None,
+        );
+
         // Wave B (bus-transport redesign): adapter-binding
         // registration. The runtime stores the (self, send_fn)
         // pair in lotus_bus_remote_entry_t's adapter slot and

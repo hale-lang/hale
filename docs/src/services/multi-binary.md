@@ -85,6 +85,14 @@ dropped. Per-datagram loss on `udp://` is different — that
 transport's guarantee is best-effort by declaration, so downstream
 loss is within contract and won't kill the process.
 
+And a peer *disconnecting* from a `unix(...)` listener isn't a
+failure at all: the listener stays bound and simply accepts the
+next connection. Restart the publishing binary and it reconnects
+— the subscriber never notices. (Under the hood each binding is
+a real locus, a child of your `main` locus, whose lifecycle
+opens the transport at birth and tears it down at dissolve —
+the same shape as a custom adapter.)
+
 The same rule covers routes added at deploy time through the
 `LOTUS_BUS_CONFIG` file: a route that's asked for but can't be
 opened refuses the boot.
