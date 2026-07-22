@@ -92,6 +92,11 @@ let qty   = 3;
 let total = price * 3;          // 59.97d — exact, no drift
 ```
 
+Printing trims trailing zeros (`12.50d` prints as `12.5` — the
+value is the same number); when a display needs fixed places,
+`std::decimal::format(price, 2)` renders exactly two fraction
+digits with half-up rounding.
+
 Use `Decimal` for prices, balances, quantities, anything where a
 penny of rounding error is a bug. Use `Float` for measurements,
 ratios, and math where approximation is fine. The two never mix

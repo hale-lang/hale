@@ -877,6 +877,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module
             .add_function("lotus_decimal_to_float", dec_to_float_ty, None);
 
+        // GH #230 item 2: fixed-places decimal formatting.
+        // declare ptr @lotus_decimal_format(i64 hi, i64 lo, i64 places)
+        let dec_format_ty = ptr_t.fn_type(
+            &[i64_t.into(), i64_t.into(), i64_t.into()],
+            false,
+        );
+        self.module
+            .add_function("lotus_decimal_format", dec_format_ty, None);
+
         // The single program-wide arena pointer. Initialized in
         // the prelude of main; consulted by every arena-allocated
         // user-type literal and ClosureViolation. m20 makes this

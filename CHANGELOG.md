@@ -16,9 +16,12 @@ behavior.
   And the emitted clang invocation compiles the runtime TU with
   `-w` (Hale users can't act on lotus_arena.c diagnostics);
   compiler developers re-enable with `HALE_CC_WARNINGS=1`.
-  Item 2 (decimal trailing-zero display) needs a design call —
-  declared precision isn't stored in the Decimal repr — and
-  stays open on the issue.
+  Item 2 (decimal display) resolved per the design call:
+  declared precision isn't stored in the Decimal repr, so
+  default printing keeps trimming — the new
+  `std::decimal::format(d, places)` renders exactly `places`
+  fraction digits (0..=9, round half-up) for money-style
+  fixed display.
 
 - **Per-binding transport telemetry counters (GH #236 item 2).**
   Every remote binding now maintains relaxed-atomic counters at

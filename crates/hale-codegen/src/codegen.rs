@@ -22922,6 +22922,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "time", "monotonic"] => self.lower_time_monotonic(args),
             ["std", "time", "monotonic_ns"] => self.lower_time_monotonic_ns(args),
             ["std", "decimal", "to_float"] => self.lower_std_decimal_to_float(args, scope),
+            ["std", "decimal", "format"] => self.lower_std_decimal_format(args, scope),
             // C7 (pond follow-up): wall-clock seconds-since-epoch
             // as Int. Statement-position sibling lives in
             // lower_stdlib_path_call.
