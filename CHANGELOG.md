@@ -8,6 +8,18 @@ behavior.
 
 ## Unreleased
 
+- **Diamond imports fixed (GH #249, iris friction F.10).** A lib
+  reached a second time — by the entry and by another lib, or by
+  two libs — now registers the second importer's alias against
+  the shared mangled names (seed-rename cache keyed by canonical
+  lib path). Previously the resolver's visited-set dedup skipped
+  the registration, so `alias::Name` references in the second
+  importer leaked into codegen as "qualified type not in stdlib
+  path-renames table" / "unknown type name in signature" while
+  `hale check` passed — with which alias broke depending on
+  import order. This was the bug gating iris's reuse of its
+  spike rendering libs.
+
 - **SPSC observation ring as a lotus primitive (GH #244).**
   `lotus_spsc_*` + `std::ring::__spsc_*`: a single-producer
   16-byte-slot ring over caller-provided memory — monotonic
