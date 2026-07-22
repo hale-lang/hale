@@ -1679,6 +1679,15 @@ fn resolve_imports(
     errors: &mut Vec<(PathBuf, hale_syntax::Diag, String)>,
     merged_items: &mut Vec<hale_syntax::ast::TopDecl>,
     renames: &mut ImportRenames,
+    // iris F.10: per-canonical-lib seed_renames cache. A lib
+    // reached a SECOND time (another importer, its own alias)
+    // has all files in `visited`, so the parse+mangle work is
+    // rightly skipped — but the new alias must still register
+    // against the lib's mangled names, or every `alias::Name`
+    // in the second importer leaks unrenamed into codegen
+    // ("qualified type `g::Rect` not in stdlib path-renames
+    // table" / "unknown type name in signature").
+    seed_cache: &mut BTreeMap<PathBuf, std::collections::HashMap<String, String>>,
 ) -> Result<(), ()> {
     // Defensive guards + env-gated tracing. The guards bound the
     // resolver's accumulators so a future bug (or pathological
@@ -1826,6 +1835,28 @@ fn resolve_imports(
             });
         }
         if parsed_files.is_empty() {
+            // Every file already visited: the lib was resolved
+            // earlier under some other alias. Its decls are
+            // merged and mangled; only THIS alias's rename rows
+            // are missing. lib_canonical_id keys mangled names
+            // off the canonical path, so both aliases map to the
+            // same single compiled copy.
+            let cache_key = match &target {
+                ImportTarget::Directory(d) => {
+                    d.canonicalize().unwrap_or_else(|_| d.clone())
+                }
+                ImportTarget::SingleFile(f) => {
+                    f.canonicalize().unwrap_or_else(|_| f.clone())
+                }
+            };
+            if let Some(cached) = seed_cache.get(&cache_key) {
+                for (name, mangled) in cached {
+                    renames.push((
+                        vec![alias.clone(), name.clone()],
+                        mangled.clone(),
+                    ));
+                }
+            }
             continue;
         }
         // Build the unified rename map across every file in this
@@ -1850,6 +1881,17 @@ fn resolve_imports(
         let lib_id = lib_canonical_id(&target, workspace_root);
         let seed_renames =
             hale_codegen::mangle::build_seed_renames(&stem_prog_refs, &lib_id);
+        {
+            let cache_key = match &target {
+                ImportTarget::Directory(d) => {
+                    d.canonicalize().unwrap_or_else(|_| d.clone())
+                }
+                ImportTarget::SingleFile(f) => {
+                    f.canonicalize().unwrap_or_else(|_| f.clone())
+                }
+            };
+            seed_cache.insert(cache_key, seed_renames.clone());
+        }
         if trace {
             eprintln!("[import]     build_seed_renames done (n={})", seed_renames.len());
         }
@@ -1910,6 +1952,7 @@ fn resolve_imports(
                 errors,
                 merged_items,
                 renames,
+                seed_cache,
             )?;
         }
         // Move mangled items into the merged program; stash sources.
@@ -1992,6 +2035,7 @@ fn parse_with_imports(
     let entry_imports = entry_program.imports.clone();
     let mut merged_items = entry_program.items;
     let mut renames: ImportRenames = Vec::new();
+    let mut seed_cache: BTreeMap<PathBuf, std::collections::HashMap<String, String>> = BTreeMap::new();
 
     if resolve_imports(
         &entry_program.imports,
@@ -2003,6 +2047,7 @@ fn parse_with_imports(
         &mut errors,
         &mut merged_items,
         &mut renames,
+        &mut seed_cache,
     )
     .is_err()
     {
@@ -2740,6 +2785,7 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
     let workspace_root = find_workspace_root(target);
     let mut merged_items = merged.items;
     let mut renames: ImportRenames = Vec::new();
+    let mut seed_cache: BTreeMap<PathBuf, std::collections::HashMap<String, String>> = BTreeMap::new();
     let mut path_sources: BTreeMap<PathBuf, String> = sources.into_iter().collect();
     let mut visited: std::collections::BTreeSet<PathBuf> =
         std::collections::BTreeSet::new();
@@ -2760,6 +2806,7 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
         &mut import_errors,
         &mut merged_items,
         &mut renames,
+        &mut seed_cache,
     )
     .is_err()
         || !import_errors.is_empty()
@@ -2876,6 +2923,7 @@ fn run_build(target: &Path) -> ExitCode {
         let workspace_root = find_workspace_root(target);
         let mut merged_items = merged.items;
         let mut renames: ImportRenames = Vec::new();
+    let mut seed_cache: BTreeMap<PathBuf, std::collections::HashMap<String, String>> = BTreeMap::new();
         let mut path_sources: BTreeMap<PathBuf, String> =
             sources.into_iter().collect();
         let mut visited: std::collections::BTreeSet<PathBuf> =
@@ -2898,6 +2946,7 @@ fn run_build(target: &Path) -> ExitCode {
             &mut import_errors,
             &mut merged_items,
             &mut renames,
+            &mut seed_cache,
         )
         .is_err()
         {
