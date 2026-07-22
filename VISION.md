@@ -376,7 +376,7 @@ Design:
   substrate. In production at the firm.
 - **<demo-app>** — multi-binary message-driven finance system.
   Operationalizes The Design at the financial-substrate.
-  Replacing internal infra (`grease` and `magus`).
+  Replacing two pieces of internal infra.
 - **Hale language + stdlib + pond + hale-js** — the
   language substrate The Design lives in at the
   programming-language layer. Two runtimes (native + browser)
