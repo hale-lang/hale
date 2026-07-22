@@ -39,14 +39,27 @@ fn counters_dump_reflects_rearm_scenario() {
         type T {{ n: Int = 0; }}
         topic Evt {{ payload: T; subject: "evt"; }}
         locus Sub {{
+            params {{ seen: Int = 0; }}
             bus {{ subscribe Evt as on_evt; }}
-            fn on_evt(t: T) {{ }}
+            fn on_evt(t: T) {{ self.seen = self.seen + 1; }}
         }}
         main locus App {{
             params {{ sub: Sub = Sub {{ }}; }}
             bindings {{ Evt: unix("{}", role: listen); }}
             run() {{
-                std::time::sleep(4000ms);
+                // Wait-until-delivered (cap ~12s), then settle so
+                // the final peer EOF re-arms before teardown — a
+                // fixed sleep flaked on loaded CI (window expired
+                // mid-exchange; teardown ate a queued message).
+                let mut waited = 0;
+                while self.sub.seen < 2 {{
+                    std::time::sleep(100ms);
+                    waited = waited + 1;
+                    if waited > 120 {{
+                        std::process::exit(3);
+                    }}
+                }}
+                std::time::sleep(500ms);
             }}
         }}
         fn main() {{ App {{ }}; }}

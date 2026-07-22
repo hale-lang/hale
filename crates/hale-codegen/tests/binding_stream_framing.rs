@@ -52,7 +52,19 @@ fn framed_stream_delivers_and_rearms_without_seq_gaps() {
             params {{ sub: Sub = Sub {{ }}; }}
             bindings {{ Evt: unix("{}", role: listen); }}
             run() {{
-                std::time::sleep(4000ms);
+                // Wait-until-delivered (cap ~12s), then settle so
+                // the final peer EOF re-arms before teardown — a
+                // fixed sleep flaked on loaded CI (window expired
+                // mid-exchange; teardown ate a queued message).
+                let mut waited = 0;
+                while self.sub.seen < 4 {{
+                    std::time::sleep(100ms);
+                    waited = waited + 1;
+                    if waited > 120 {{
+                        std::process::exit(3);
+                    }}
+                }}
+                std::time::sleep(500ms);
             }}
         }}
         fn main() {{ App {{ }}; }}
