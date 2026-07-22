@@ -8,7 +8,10 @@ with throughput/depth/latency/loss, supervision events as
 they fire, flight-recorder scrubbing after the fact.
 
 This branch (`observer`) is a ground-up redesign and a clean
-slate. **Start with [`DESIGN.md`](./DESIGN.md).**
+slate. **Start with [`DESIGN.md`](./DESIGN.md).** The shm
+contract lives in [`PROTOCOL.md`](./PROTOCOL.md); the
+post-observer editor vision in
+[`VISION-FORWARD.md`](./VISION-FORWARD.md).
 
 The previous spike (modeling-cockpit framing, May 2026) lives
 on `main` — it remains the artifact archive (raylib bindings,
