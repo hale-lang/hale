@@ -186,16 +186,36 @@ jobs:
           # tarball ships exactly this shape).
           mkdir -p /tmp/hlci/vendored
           cp target/release/hale /tmp/hlci/vendored/hale
-          UNWIND="$(otool -L /tmp/hlci/vendored/hale | awk '/libunwind/ {print $1}' | head -1)"
-          if [ -n "$UNWIND" ] && [ "${UNWIND#\/usr\/lib}" = "$UNWIND" ]; then
-            cp "$UNWIND" /tmp/hlci/vendored/libunwind.1.dylib
-            install_name_tool -change "$UNWIND" \
-              "@executable_path/libunwind.1.dylib" /tmp/hlci/vendored/hale
-            codesign --force --sign - /tmp/hlci/vendored/hale
-          fi
-          if otool -L /tmp/hlci/vendored/hale | grep -E "/opt/homebrew|/usr/local/Cellar"; then
-            echo "non-system dylib dependency survived the rewrite" >&2
-            exit 1
-          fi
+          BIN=/tmp/hlci/vendored/hale
+          # Vendor EVERY non-system dylib (libunwind, libzstd, and
+          # anything the formulas grow next), then fix the vendored
+          # dylibs' own load commands + install ids. Two passes over
+          # the dylib set handles dylib-to-dylib references.
+          vendor_dir="$(dirname "$BIN")"
+          for pass in 1 2; do
+            for f in "$BIN" "$vendor_dir"/*.dylib; do
+              [ -e "$f" ] || continue
+              for LIB in $(otool -L "$f" | awk '/\/opt\/homebrew|\/usr\/local\/Cellar/ {print $1}'); do
+                base="$(basename "$LIB")"
+                [ -e "$vendor_dir/$base" ] || cp "$LIB" "$vendor_dir/$base"
+                install_name_tool -change "$LIB" "@executable_path/$base" "$f"
+              done
+            done
+          done
+          for d in "$vendor_dir"/*.dylib; do
+            [ -e "$d" ] || continue
+            install_name_tool -id "@executable_path/$(basename "$d")" "$d"
+            codesign --force --sign - "$d"
+          done
+          codesign --force --sign - "$BIN"
+          # Audit: nothing outside /usr/lib + @executable_path may
+          # remain across the binary AND the vendored dylibs.
+          for f in "$BIN" "$vendor_dir"/*.dylib; do
+            [ -e "$f" ] || continue
+            if otool -L "$f" | grep -E "/opt/homebrew|/usr/local/Cellar"; then
+              echo "non-system dylib dependency survived in $f" >&2
+              exit 1
+            fi
+          done
           /tmp/hlci/vendored/hale || true
           file /tmp/hlci/vendored/hale
