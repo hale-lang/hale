@@ -10116,7 +10116,35 @@ impl<'a> Checker<'a> {
                 // typing in general; this fires *only* when the
                 // param is an interface, so we don't widen the
                 // call-site checking surface beyond that.
+                // GH #229: arity UPPER bound at check phase. More
+                // args than params is always an error (defaults
+                // can only excuse omissions, never extras), and
+                // pre-#229 it sailed through check to die as a
+                // spanless codegen internal error. The LOWER bound
+                // needs default-param counts plumbed into
+                // FnSig/MethodInfo — follow-through on the issue.
                 if let Ty::Function { params, .. } = &callee_ty {
+                    if arg_tys.len() > params.len() {
+                        let display = match callee.as_ref() {
+                            Expr::Field { name, .. } => {
+                                format!("method `{}`", name.name)
+                            }
+                            Expr::Ident(id) => {
+                                format!("fn `{}`", id.name)
+                            }
+                            _ => "this callee".to_string(),
+                        };
+                        self.diags.push(Diag::ty(
+                            callee.span(),
+                            format!(
+                                "{} takes at most {} argument{}, got {}",
+                                display,
+                                params.len(),
+                                if params.len() == 1 { "" } else { "s" },
+                                arg_tys.len()
+                            ),
+                        ));
+                    }
                     for (i, (param_ty, arg_ty)) in
                         params.iter().zip(arg_tys.iter()).enumerate()
                     {
