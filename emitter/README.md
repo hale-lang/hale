@@ -39,6 +39,13 @@ loss (counter truth + reorder-tolerant estimate),
 supervision churn (dissolve → superv → restart → birth),
 `current_locus` gauge updates, post-mortem dumps.
 
+Role-split mode (`--role producer|consumer --sock PATH`)
+splits the pipeline across two processes over a real unix
+dgram socket: the producer's NET_SENDs and the consumer's
+NET_DELIVERs happen in different segments, which is what
+`../consumer/fuse` joins into cross-process edges with real
+measured latency. `--role both` (default) keeps the original
+single-process simulation.
+
 Not yet here: dump-file reading in `peek` (consumer library
-work), SAMPLED-RICH/FIREHOSE modes, multi-process fusion
-(run two synths — fusion is the consumer's job).
+work), SAMPLED-RICH/FIREHOSE modes.

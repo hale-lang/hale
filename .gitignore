@@ -1,3 +1,4 @@
 emitter/synth
 emitter/peek
 *.dump
+consumer/fuse

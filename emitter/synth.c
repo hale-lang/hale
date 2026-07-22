@@ -25,7 +25,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -38,8 +40,14 @@ static struct {
   uint32_t duration;  /* seconds, 0 = forever */
   uint32_t loss_ppm;  /* NET_DELIVER drop rate */
   uint32_t churn_s;   /* worker restart period */
+  int role;           /* 0=both, 1=producer, 2=consumer */
+  const char *sock;   /* unix dgram path for producer<->consumer */
 } cfg = { .rate = 50000, .rings = 4, .slots = 1u << 16,
-          .duration = 0, .loss_ppm = 0, .churn_s = 7 };
+          .duration = 0, .loss_ppm = 0, .churn_s = 7,
+          .role = 0, .sock = NULL };
+
+enum { ROLE_BOTH = 0, ROLE_PRODUCER = 1, ROLE_CONSUMER = 2 };
+static int net_fd = -1;
 
 /* ---- topology ---------------------------------------------- */
 
@@ -178,6 +186,41 @@ static uint64_t xorshift(uint64_t *s) {
 
 static _Atomic uint64_t net_seq = 0;
 
+/* downstream half: router -> worker -> fill (consumer side) */
+static void consume_order(ring_ctx *r, uint64_t seq, uint32_t sz) {
+  int obs = emitting();
+  atomic_fetch_add_explicit(&CNT[cnt_binding[B_ORDERS_UNIX]].c[OBS_CB_DELIVERED], 1, memory_order_relaxed);
+  atomic_store_explicit(&CNT[cnt_binding[B_ORDERS_UNIX]].c[OBS_CB_SEQ_HW], seq, memory_order_relaxed);
+  if (obs) ring_emit(r, T_ORDERS_NEW, OBS_EK_NET_DELIVER, sz,
+                     obs_net_w1(B_ORDERS_UNIX, seq));
+
+  atomic_store_explicit(&r->d->current_locus, LI_ROUTER, memory_order_relaxed);
+  if (topic_mode(T_ORDERS_NEW) >= OBS_MODE_COUNTERS)
+    atomic_fetch_add_explicit(&CNT[cnt_topic[T_ORDERS_NEW]].c[OBS_CT_DELIVERED], 1, memory_order_relaxed);
+  if (obs && topic_mode(T_ORDERS_NEW) >= OBS_MODE_PACKED)
+    ring_emit(r, T_ORDERS_NEW, OBS_EK_BUS_DELIVER, sz, 0);
+
+  uint32_t w = (uint32_t)(xorshift(&r->rng) % N_WORKERS);
+  if (topic_mode(T_RISK_CHECK) >= OBS_MODE_COUNTERS) {
+    atomic_fetch_add_explicit(&CNT[cnt_topic[T_RISK_CHECK]].c[OBS_CT_PUBLISHED], 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&CNT[cnt_topic[T_RISK_CHECK]].c[OBS_CT_DELIVERED], 1, memory_order_relaxed);
+  }
+  if (obs && topic_mode(T_RISK_CHECK) >= OBS_MODE_PACKED) {
+    ring_emit(r, T_RISK_CHECK, OBS_EK_BUS_PUBLISH, 4, 0);
+    atomic_store_explicit(&r->d->current_locus, workers[w], memory_order_relaxed);
+    ring_emit(r, T_RISK_CHECK, OBS_EK_BUS_DELIVER, 4, 0);
+  }
+  if (topic_mode(T_ORDERS_FILL) >= OBS_MODE_COUNTERS) {
+    atomic_fetch_add_explicit(&CNT[cnt_topic[T_ORDERS_FILL]].c[OBS_CT_PUBLISHED], 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&CNT[cnt_topic[T_ORDERS_FILL]].c[OBS_CT_DELIVERED], 1, memory_order_relaxed);
+  }
+  if (obs && topic_mode(T_ORDERS_FILL) >= OBS_MODE_PACKED) {
+    ring_emit(r, T_ORDERS_FILL, OBS_EK_BUS_PUBLISH, 5, 0);
+    ring_emit(r, T_ORDERS_FILL, OBS_EK_BUS_DELIVER, 5, 0);
+  }
+  atomic_store_explicit(&r->d->current_locus, 0, memory_order_relaxed);
+}
+
 /* One end-to-end order: producer -> (net) -> router -> worker
  * -> fill back to producer. All simulated on one scheduler. */
 static void simulate_order(ring_ctx *r) {
@@ -203,42 +246,19 @@ static void simulate_order(ring_ctx *r) {
 
   int lost = cfg.loss_ppm &&
              (xorshift(&r->rng) % 1000000) < cfg.loss_ppm;
+  if (cfg.role == ROLE_PRODUCER) {
+    /* real wire: unix dgram to the consumer process */
+    if (!lost && net_fd >= 0) {
+      uint64_t pkt[2] = { seq, (uint64_t)sz };
+      (void)!send(net_fd, pkt, sizeof pkt, MSG_DONTWAIT);
+      /* EAGAIN/ENOBUFS = real loss under pressure; the seq gap
+       * at the consumer is the evidence either way */
+    }
+    return;
+  }
   if (lost) return; /* the message vanishes; seq gap is the evidence */
 
-  atomic_fetch_add_explicit(&CNT[cnt_binding[B_ORDERS_UNIX]].c[OBS_CB_DELIVERED], 1, memory_order_relaxed);
-  if (obs) ring_emit(r, T_ORDERS_NEW, OBS_EK_NET_DELIVER, sz,
-                     obs_net_w1(B_ORDERS_UNIX, seq));
-
-  /* router */
-  atomic_store_explicit(&r->d->current_locus, LI_ROUTER, memory_order_relaxed);
-  if (topic_mode(T_ORDERS_NEW) >= OBS_MODE_COUNTERS)
-    atomic_fetch_add_explicit(&CNT[cnt_topic[T_ORDERS_NEW]].c[OBS_CT_DELIVERED], 1, memory_order_relaxed);
-  if (obs && topic_mode(T_ORDERS_NEW) >= OBS_MODE_PACKED)
-    ring_emit(r, T_ORDERS_NEW, OBS_EK_BUS_DELIVER, sz, 0);
-
-  /* router -> risk.check -> worker */
-  uint32_t w = (uint32_t)(xorshift(&r->rng) % N_WORKERS);
-  if (topic_mode(T_RISK_CHECK) >= OBS_MODE_COUNTERS) {
-    atomic_fetch_add_explicit(&CNT[cnt_topic[T_RISK_CHECK]].c[OBS_CT_PUBLISHED], 1, memory_order_relaxed);
-    atomic_fetch_add_explicit(&CNT[cnt_topic[T_RISK_CHECK]].c[OBS_CT_DELIVERED], 1, memory_order_relaxed);
-  }
-  if (obs && topic_mode(T_RISK_CHECK) >= OBS_MODE_PACKED) {
-    ring_emit(r, T_RISK_CHECK, OBS_EK_BUS_PUBLISH, 4, 0);
-    atomic_store_explicit(&r->d->current_locus, workers[w], memory_order_relaxed);
-    ring_emit(r, T_RISK_CHECK, OBS_EK_BUS_DELIVER, 4, 0);
-  }
-
-  /* worker -> orders.fill -> producer */
-  if (topic_mode(T_ORDERS_FILL) >= OBS_MODE_COUNTERS) {
-    atomic_fetch_add_explicit(&CNT[cnt_topic[T_ORDERS_FILL]].c[OBS_CT_PUBLISHED], 1, memory_order_relaxed);
-    atomic_fetch_add_explicit(&CNT[cnt_topic[T_ORDERS_FILL]].c[OBS_CT_DELIVERED], 1, memory_order_relaxed);
-  }
-  if (obs && topic_mode(T_ORDERS_FILL) >= OBS_MODE_PACKED) {
-    ring_emit(r, T_ORDERS_FILL, OBS_EK_BUS_PUBLISH, 5, 0);
-    atomic_store_explicit(&r->d->current_locus, LI_PRODUCER, memory_order_relaxed);
-    ring_emit(r, T_ORDERS_FILL, OBS_EK_BUS_DELIVER, 5, 0);
-  }
-  atomic_store_explicit(&r->d->current_locus, 0, memory_order_relaxed);
+  consume_order(r, seq, sz);
 }
 
 /* ---- worker churn (thread 0 only, ring 0) ------------------ */
@@ -266,13 +286,23 @@ static void *producer_thread(void *arg) {
 
   while (running) {
     uint64_t now = now_mono_ns();
-    uint64_t target = (now - start) / 1000000000.0 * per_ring;
-    while (emitted < target && running) {
-      simulate_order(r);
-      emitted++;
+    if (cfg.role == ROLE_CONSUMER) {
+      uint64_t pkt[2];
+      ssize_t n;
+      int budget = 4096;
+      while (budget-- > 0 &&
+             (n = recv(net_fd, pkt, sizeof pkt, MSG_DONTWAIT)) == (ssize_t)sizeof pkt)
+        consume_order(r, pkt[0], (uint32_t)pkt[1]);
+    } else {
+      uint64_t target = (now - start) / 1000000000.0 * per_ring;
+      while (emitted < target && running) {
+        simulate_order(r);
+        emitted++;
+      }
     }
     if (ring_idx == 0) {
-      if (cfg.churn_s && now - last_churn > (uint64_t)cfg.churn_s * 1000000000ull) {
+      if (cfg.role != ROLE_PRODUCER &&
+          cfg.churn_s && now - last_churn > (uint64_t)cfg.churn_s * 1000000000ull) {
         churn_worker(r, churned++ % N_WORKERS);
         last_churn = now;
       }
@@ -340,7 +370,13 @@ int main(int argc, char **argv) {
     else if (!strcmp(argv[i], "--duration") && i + 1 < argc) cfg.duration = (uint32_t)atoi(argv[++i]);
     else if (!strcmp(argv[i], "--loss") && i + 1 < argc) cfg.loss_ppm = (uint32_t)atoi(argv[++i]);
     else if (!strcmp(argv[i], "--churn") && i + 1 < argc) cfg.churn_s = (uint32_t)atoi(argv[++i]);
-    else { fprintf(stderr, "usage: %s [--rate N] [--rings N] [--slots P2] [--duration S] [--loss PPM] [--churn S]\n", argv[0]); return 2; }
+    else if (!strcmp(argv[i], "--role") && i + 1 < argc) {
+      const char *r = argv[++i];
+      cfg.role = !strcmp(r, "producer") ? ROLE_PRODUCER
+               : !strcmp(r, "consumer") ? ROLE_CONSUMER : ROLE_BOTH;
+    }
+    else if (!strcmp(argv[i], "--sock") && i + 1 < argc) cfg.sock = argv[++i];
+    else { fprintf(stderr, "usage: %s [--rate N] [--rings N] [--slots P2] [--duration S] [--loss PPM] [--churn S] [--role producer|consumer|both] [--sock PATH]\n", argv[0]); return 2; }
   }
   if (cfg.slots & (cfg.slots - 1)) { fprintf(stderr, "--slots must be a power of two\n"); return 2; }
 
@@ -465,15 +501,32 @@ int main(int argc, char **argv) {
   signal(SIGTERM, on_signal);
   signal(SIGUSR1, on_signal);
 
+  /* real wire between role-split synths */
+  if (cfg.role != ROLE_BOTH) {
+    if (!cfg.sock) { fprintf(stderr, "synth: --role needs --sock PATH\n"); return 2; }
+    net_fd = socket(AF_UNIX, SOCK_DGRAM, 0);
+    struct sockaddr_un a = { .sun_family = AF_UNIX };
+    snprintf(a.sun_path, sizeof a.sun_path, "%s", cfg.sock);
+    if (cfg.role == ROLE_CONSUMER) {
+      unlink(cfg.sock);
+      if (bind(net_fd, (struct sockaddr *)&a, sizeof a) < 0) { perror("bind"); return 1; }
+    } else {
+      if (connect(net_fd, (struct sockaddr *)&a, sizeof a) < 0) { perror("connect"); return 1; }
+    }
+  }
+
   /* --- initial structural events (ring 0) --- */
   ring_ctx *r0 = &RC[0];
   ring_emit(r0, LI_MAIN, OBS_EK_LOCUS_BIRTH, 0, obs_birth_w1(0, LT_MAIN));
   ring_emit(r0, LI_SUP, OBS_EK_LOCUS_BIRTH, 0, obs_birth_w1(LI_MAIN, LT_SUPERVISOR));
-  ring_emit(r0, LI_PRODUCER, OBS_EK_LOCUS_BIRTH, 0, obs_birth_w1(LI_SUP, LT_PRODUCER));
-  ring_emit(r0, LI_ROUTER, OBS_EK_LOCUS_BIRTH, 0, obs_birth_w1(LI_SUP, LT_ROUTER));
-  for (uint32_t w = 0; w < N_WORKERS; w++) {
-    workers[w] = LI_WORKER0 + w;
-    ring_emit(r0, workers[w], OBS_EK_LOCUS_BIRTH, 0, obs_birth_w1(LI_SUP, LT_WORKER));
+  if (cfg.role != ROLE_CONSUMER)
+    ring_emit(r0, LI_PRODUCER, OBS_EK_LOCUS_BIRTH, 0, obs_birth_w1(LI_SUP, LT_PRODUCER));
+  if (cfg.role != ROLE_PRODUCER) {
+    ring_emit(r0, LI_ROUTER, OBS_EK_LOCUS_BIRTH, 0, obs_birth_w1(LI_SUP, LT_ROUTER));
+    for (uint32_t w = 0; w < N_WORKERS; w++) {
+      workers[w] = LI_WORKER0 + w;
+      ring_emit(r0, workers[w], OBS_EK_LOCUS_BIRTH, 0, obs_birth_w1(LI_SUP, LT_WORKER));
+    }
   }
   ring_emit(r0, B_ORDERS_UNIX, OBS_EK_BINDING_UP, 0, 0);
 
