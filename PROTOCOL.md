@@ -393,3 +393,13 @@ library emitter's abort hook (ours, M3) produces them.
 - Whether LOCUS_ENTER/EXIT (ekinds 16/17) ship with v0
   emitters or arrive as a minor-version upgrade once
   sampled flamegraphs prove insufficient.
+- **Ring convergence (hale#244):** hale v0.8.3 shipped
+  `shm_ring` (LRSRNG1: fixed slots, slot-counted cursor —
+  near-isomorphic to §9) and `ring_layout` declarations for
+  compile-time-foreign ring layouts. Pending upstream answers
+  on broadcast/observer mode and the declared-layout producer
+  path, §9's ring should either be expressed as a
+  `ring_layout` declaration or adopt LRSRNG1 outright —
+  making emitter and consumer pure Hale with zero ring FFI
+  and sharing the runtime's implementation (and its
+  verification) instead of forking it.
