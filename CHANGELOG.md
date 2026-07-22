@@ -8,6 +8,23 @@ behavior.
 
 ## Unreleased
 
+- **Substrate unix transports are loci; listen bindings re-arm
+  (GH #233 steps 1–2).** A `bindings { T: unix(...) }` entry now
+  desugars to a stdlib transport locus
+  (`__StdBusUnixListenTransport` / `__StdBusUnixConnectTransport`)
+  instantiated as a cooperative child at the main prelude —
+  converging with the adapter path, per F.37's
+  transports-as-loci direction. birth() realizes synchronously
+  on the boot path (behavior of GH #227 preserved verbatim);
+  dissolve() interrupts, joins, and reclaims. The listen serve
+  loop now **re-arms on peer EOF** — it closes the dead
+  connection and accepts the next peer instead of silently going
+  deaf for the rest of the process — so rolling restarts of the
+  connect-side binary just work (`LOTUS_BUS_CONFIG` unix
+  listeners share the same loop and re-arm too). The hot path is
+  unchanged: publish fanout still writes the C remote table
+  directly (locus for flow, C for bytes). Loss-is-structural +
+  restart-as-reconnect are GH #233 steps 3–4.
 - **Bus binding failure is now structural (F.37, GH #227).** A
   `bindings { }` entry or `LOTUS_BUS_CONFIG` route whose
   transport cannot be realized — socket/bind/listen/addr

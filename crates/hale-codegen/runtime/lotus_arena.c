@@ -12364,6 +12364,16 @@ typedef struct lotus_bus_remote_entry {
     void              *codec_self;
     void             *(*codec_encode_fn)(void *self, void *value);
     void             *(*codec_decode_fn)(void *self, void *bytes);
+    /* GH #233 step 1 (transports-as-loci): entries owned by a
+     * __StdBusUnixTransport locus instead of the register-time
+     * reader thread. `locus_served` entries are realized by the
+     * locus's birth(), served by its pinned run() (LISTEN role),
+     * and reclaimed by its dissolve() — destroy_all only frees
+     * the husk. `closing` is the serve-loop stop flag, set by
+     * lotus_bus_transport_interrupt before the pinned join (the
+     * transport analog of lotus_mailbox_shutdown). */
+    int                locus_served;
+    volatile int       closing;
 } lotus_bus_remote_entry_t;
 
 /* 2026-05-27 — array-of-pointers shape (was array-of-structs).
@@ -12398,6 +12408,39 @@ static inline int lotus_bus_has_remote_entries(void) {
 
 #define LOTUS_BUS_REMOTE_INITIAL_CAP 4
 
+/* Grow the slot-array (of pointers, post-2026-05-27) and push a
+ * zero-initialized entry. The realloc can move the array of
+ * pointers, but the individual entries it points to are stable
+ * malloc'd allocations — no dangling reader-thread/locus
+ * `entry` pointers from prior registrations. Returns NULL on
+ * allocation failure. Registration runs single-threaded on the
+ * boot path; a failed caller pops via g_bus_remote_count--. */
+static lotus_bus_remote_entry_t *lotus_bus_remote_entry_push(
+    const char *subject, int kind)
+{
+    if (g_bus_remote_count == g_bus_remote_cap) {
+        size_t new_cap = g_bus_remote_cap == 0
+            ? LOTUS_BUS_REMOTE_INITIAL_CAP
+            : g_bus_remote_cap * 2;
+        lotus_bus_remote_entry_t **grown = (lotus_bus_remote_entry_t **)
+            realloc(g_bus_remote_entries,
+                    new_cap * sizeof(lotus_bus_remote_entry_t *));
+        if (!grown) return NULL;
+        g_bus_remote_entries = grown;
+        g_bus_remote_cap     = new_cap;
+    }
+    char *subject_copy = strdup(subject);
+    if (!subject_copy) return NULL;
+    lotus_bus_remote_entry_t *e = (lotus_bus_remote_entry_t *)
+        calloc(1, sizeof(lotus_bus_remote_entry_t));
+    if (!e) { free(subject_copy); return NULL; }
+    e->subject = subject_copy;
+    e->kind    = kind;
+    e->udp_fd  = -1;
+    g_bus_remote_entries[g_bus_remote_count++] = e;
+    return e;
+}
+
 /* m59: queue pointer published by the codegen prelude (via
  * lotus_bus_set_queue) so reader threads can dispatch into the
  * cooperative-subscriber path without plumbing the queue through
@@ -12420,66 +12463,75 @@ typedef struct lotus_bus_reader_args {
     lotus_bus_remote_entry_t *entry;
 } lotus_bus_reader_args_t;
 
-static void *lotus_bus_reader_thread_main(void *arg) {
-    lotus_bus_reader_args_t *args = (lotus_bus_reader_args_t *)arg;
-    /* Accept HERE, on the reader thread, so the block-until-peer
-     * wait doesn't stall main's boot path (m59). The listener
-     * socket itself was already bound in register_remote, so a
-     * peer's connect-with-retry succeeds as soon as this binary
-     * boots, whether or not this thread has reached accept yet. */
-    lotus_transport_t *t = args->entry->transport;
-    if (lotus_transport_listener_accept(t) != 0) {
-        /* Teardown shut the listener down before any peer
-         * arrived (or accept genuinely failed). Destroy and
-         * hand the slot back as "no transport". */
-        args->entry->transport = NULL;
-        lotus_transport_destroy(t);
-        free(args);
-        return NULL;
-    }
-
+/* GH #233: the LISTEN-role serve loop, shared between the
+ * config-route reader thread below and the transport locus's
+ * pinned run() (lotus_bus_transport_serve). Accepts a peer,
+ * dispatches its messages until EOF, then RE-ARMS — peer EOF is
+ * not connection loss (the listener is still bound; a restarted
+ * connect-side binary's connect-with-retry lands on the next
+ * accept). Exits when `closing` is set or accept refuses
+ * (teardown shuts the listener down via
+ * lotus_bus_transport_interrupt / destroy_all). */
+static void lotus_bus_unix_serve(lotus_bus_remote_entry_t *entry) {
+    lotus_transport_t *t = entry->transport;
+    if (!t) return;
     char wire_buf[LOTUS_PAYLOAD_MAX];
     char struct_buf[LOTUS_PAYLOAD_MAX];
-    while (1) {
-        ssize_t n = lotus_transport_recv(t, wire_buf, sizeof(wire_buf));
-        if (n <= 0) break;     /* peer closed (0) or error (-1) */
+    while (!entry->closing) {
+        /* The listener socket was bound at realization, so a
+         * peer's connect-with-retry succeeds as soon as this
+         * binary boots, whether or not this thread has reached
+         * accept yet (m59's no-hang-at-boot property). */
+        if (lotus_transport_listener_accept(t) != 0) break;
+        while (!entry->closing) {
+            ssize_t n = lotus_transport_recv(t, wire_buf, sizeof(wire_buf));
+            if (n <= 0) break;     /* peer closed (0) or error (-1) */
 
-        /* m60: deserialize wire bytes into struct-layout bytes
-         * before handing them to local dispatch. Look up the
-         * deserialize_fn from the FIRST local entry matching
-         * this subject — by language constraint all entries on
-         * the same subject share the payload type, so any one
-         * works. Skip dispatch if the type-checker mismatches
-         * or there are no local subscribers (the recv'd bytes
-         * have nowhere to go locally; that's not an error in
-         * relay-shaped programs). */
-        lotus_deserialize_fn deserialize = NULL;
-        for (size_t i = 0; i < g_bus_count; i++) {
-            lotus_bus_entry_t *e = &g_bus_entries[i];
-            if (!e->subject) continue;
-            /* m94: wildcard locals (e.g. "log.**") need to match
-             * concrete remote-bound subjects too, so use the same
-             * pattern-matching as the dispatch path. By language
-             * constraint, all subscribers on the same subject
-             * share the payload type, so the deserialize_fn from
-             * any matching entry is the right one. */
-            if (!lotus_subject_match(e->subject, args->entry->subject)) continue;
-            deserialize = e->deserialize;
-            break;
+            /* m60: deserialize wire bytes into struct-layout bytes
+             * before handing them to local dispatch. Look up the
+             * deserialize_fn from the FIRST local entry matching
+             * this subject — by language constraint all entries on
+             * the same subject share the payload type, so any one
+             * works. Skip dispatch if the type-checker mismatches
+             * or there are no local subscribers (the recv'd bytes
+             * have nowhere to go locally; that's not an error in
+             * relay-shaped programs). */
+            lotus_deserialize_fn deserialize = NULL;
+            for (size_t i = 0; i < g_bus_count; i++) {
+                lotus_bus_entry_t *e = &g_bus_entries[i];
+                if (!e->subject) continue;
+                /* m94: wildcard locals (e.g. "log.**") need to
+                 * match concrete remote-bound subjects too, so use
+                 * the same pattern-matching as the dispatch path. */
+                if (!lotus_subject_match(e->subject, entry->subject)) continue;
+                deserialize = e->deserialize;
+                break;
+            }
+            if (!deserialize) continue;
+            ssize_t struct_size = deserialize(
+                wire_buf, (size_t)n, struct_buf, sizeof(struct_buf));
+            if (struct_size <= 0) continue;
+            lotus_bus_local_dispatch(g_bus_queue_for_remote,
+                                     entry->subject,
+                                     struct_buf, (size_t)struct_size);
         }
-        if (!deserialize) continue;
-        ssize_t struct_size = deserialize(
-            wire_buf, (size_t)n, struct_buf, sizeof(struct_buf));
-        if (struct_size <= 0) continue;
-        lotus_bus_local_dispatch(g_bus_queue_for_remote,
-                                 args->entry->subject,
-                                 struct_buf, (size_t)struct_size);
+        /* GH #233 step 2: re-arm. Close the dead connection and
+         * loop back into accept for the next peer. */
+        if (t->conn_fd >= 0) {
+            close(t->conn_fd);
+            t->conn_fd = -1;
+        }
     }
+}
 
+static void *lotus_bus_reader_thread_main(void *arg) {
+    lotus_bus_reader_args_t *args = (lotus_bus_reader_args_t *)arg;
+    lotus_transport_t *t = args->entry->transport;
+    lotus_bus_unix_serve(args->entry);
     /* NULL the entry's pointer BEFORE destroying so destroy_all
      * never reads a freed transport — at worst it sees NULL and
      * skips its shutdown, which is fine because this thread is
-     * already past the recv loop and exiting. */
+     * already past the serve loop and exiting. */
     args->entry->transport = NULL;
     lotus_transport_destroy(t);
     free(args);
@@ -12812,48 +12864,11 @@ int lotus_bus_register_remote(const char *subject,
         return -1;
     }
 
-    /* Grow the slot-array (of pointers, post-2026-05-27) so we
-     * have room to stash the new entry's pointer. The
-     * realloc here can move the array of pointers, but the
-     * individual entries it points to are stable malloc'd
-     * allocations — no dangling reader-thread `args->entry`
-     * pointers from prior registrations. */
-    if (g_bus_remote_count == g_bus_remote_cap) {
-        size_t new_cap = g_bus_remote_cap == 0
-            ? LOTUS_BUS_REMOTE_INITIAL_CAP
-            : g_bus_remote_cap * 2;
-        lotus_bus_remote_entry_t **grown = (lotus_bus_remote_entry_t **)
-            realloc(g_bus_remote_entries,
-                    new_cap * sizeof(lotus_bus_remote_entry_t *));
-        if (!grown) return -1;
-        g_bus_remote_entries = grown;
-        g_bus_remote_cap     = new_cap;
-    }
-
-    char *subject_copy = strdup(subject);
-    if (!subject_copy) return -1;
-
-    lotus_bus_remote_entry_t *e = (lotus_bus_remote_entry_t *)
-        malloc(sizeof(lotus_bus_remote_entry_t));
-    if (!e) { free(subject_copy); return -1; }
-    g_bus_remote_entries[g_bus_remote_count++] = e;
-    e->subject           = subject_copy;
-    e->kind              = is_udp
-        ? LOTUS_BUS_REMOTE_KIND_UDP
-        : LOTUS_BUS_REMOTE_KIND_UNIX;
-    e->transport         = NULL;
-    e->role              = role;
-    e->has_reader_thread = 0;
-    e->adapter_self      = NULL;
-    e->adapter_send_fn   = NULL;
-    e->udp_fd            = -1;
-    memset(&e->udp_dest, 0, sizeof(e->udp_dest));
-    e->udp_is_multicast  = 0;
-    /* F.36 Slice 3: codec fields default NULL (m70 path). The
-     * register_codec call below zero-or-overwrites them. */
-    e->codec_self        = NULL;
-    e->codec_encode_fn   = NULL;
-    e->codec_decode_fn   = NULL;
+    lotus_bus_remote_entry_t *e = lotus_bus_remote_entry_push(
+        subject,
+        is_udp ? LOTUS_BUS_REMOTE_KIND_UDP : LOTUS_BUS_REMOTE_KIND_UNIX);
+    if (!e) return -1;
+    e->role = role;
 
     /* #227: every failure below pops the just-pushed entry and
      * returns -1 so the caller can fail the declaring locus's
@@ -12993,6 +13008,103 @@ void lotus_bus_binding_fail(const char *subject, const char *url) {
     exit(1);
 }
 
+/*
+ * GH #233 step 1 — the locus-facing transport surface. A source
+ * `bindings { T: unix(...) }` entry no longer emits a raw
+ * lotus_bus_register_remote call; codegen instantiates a
+ * __StdBusUnixTransport locus (stdlib bus.hl) whose lifecycle
+ * drives these four primitives:
+ *
+ *   birth()    -> lotus_bus_transport_realize (synchronous;
+ *                 failure = birth failure of the locus), then
+ *                 for LISTEN role lotus_bus_transport_spawn_server
+ *                 (starts the accept/dispatch/re-arm thread)
+ *   dissolve() -> lotus_bus_transport_reclaim  (interrupt the
+ *                 serve thread, join it, destroy the transport)
+ *
+ * Publish fanout is untouched: realized entries land in the
+ * same g_bus_remote_entries table the fanout walks (locus for
+ * flow, C for bytes — F.37). The serve thread is the same
+ * machinery the LOTUS_BUS_CONFIG reader path uses; it belongs
+ * to the data plane, not the locus placement machinery.
+ *
+ * The handle is the entry pointer as i64. Entries stay in the
+ * table after reclaim (subject intact, transport NULL) so
+ * destroy_all can free the husk uniformly.
+ */
+int64_t lotus_bus_transport_realize(const char *subject,
+                                    const char *path,
+                                    int64_t role) {
+    if (!subject || !path || *path == '\0') return 0;
+    lotus_bus_remote_entry_t *e = lotus_bus_remote_entry_push(
+        subject, LOTUS_BUS_REMOTE_KIND_UNIX);
+    if (!e) return 0;
+    e->role         = (int)role;
+    e->locus_served = 1;
+    if (role == LOTUS_TRANSPORT_LISTEN) {
+        e->transport = lotus_transport_listener_create(path);
+    } else {
+        e->transport = lotus_transport_create(path, (int)role);
+    }
+    if (!e->transport) {
+        g_bus_remote_count--;
+        free(e->subject);
+        free(e);
+        return 0;
+    }
+    return (int64_t)(intptr_t)e;
+}
+
+int64_t lotus_bus_transport_spawn_server(int64_t handle) {
+    lotus_bus_remote_entry_t *e =
+        (lotus_bus_remote_entry_t *)(intptr_t)handle;
+    if (!e || e->role != LOTUS_TRANSPORT_LISTEN || !e->transport) {
+        return -1;
+    }
+    lotus_bus_reader_args_t *args =
+        (lotus_bus_reader_args_t *)malloc(sizeof(*args));
+    if (!args) return -1;
+    args->entry = e;
+    lotus_mark_multithreaded();
+    if (pthread_create(&e->reader_thread, NULL,
+                       lotus_bus_reader_thread_main, args) != 0) {
+        perror("lotus_bus_transport_spawn_server: pthread_create");
+        free(args);
+        return -1;
+    }
+    e->has_reader_thread = 1;
+    return 0;
+}
+
+void lotus_bus_transport_reclaim(int64_t handle) {
+    lotus_bus_remote_entry_t *e =
+        (lotus_bus_remote_entry_t *)(intptr_t)handle;
+    if (!e) return;
+    e->closing = 1;
+    if (e->transport) {
+        /* Unblock the serve thread wherever it's parked: a
+         * shutdown connection recv returns EOF; a shutdown
+         * listener makes a parked accept() refuse. */
+        if (e->transport->conn_fd >= 0) {
+            shutdown(e->transport->conn_fd, SHUT_RDWR);
+        }
+        if (e->transport->listen_fd >= 0) {
+            shutdown(e->transport->listen_fd, SHUT_RDWR);
+        }
+    }
+    if (e->has_reader_thread) {
+        pthread_join(e->reader_thread, NULL);
+        /* The thread destroyed the transport and NULLed the
+         * entry's pointer on its way out. Clear the flag so
+         * destroy_all doesn't double-join. */
+        e->has_reader_thread = 0;
+    }
+    if (e->transport) {
+        lotus_transport_destroy(e->transport);
+        e->transport = NULL;
+    }
+}
+
 /* Wave B: register an adapter binding. The adapter locus has
  * already been instantiated by codegen with program-lifetime
  * allocation, and its `send(subject, bytes)` method's fn pointer
@@ -13019,36 +13131,11 @@ void lotus_bus_register_remote_adapter(
                 "self_data, or send_fn\n");
         return;
     }
-    if (g_bus_remote_count == g_bus_remote_cap) {
-        size_t new_cap = g_bus_remote_cap == 0
-            ? LOTUS_BUS_REMOTE_INITIAL_CAP
-            : g_bus_remote_cap * 2;
-        lotus_bus_remote_entry_t **grown = (lotus_bus_remote_entry_t **)
-            realloc(g_bus_remote_entries,
-                    new_cap * sizeof(lotus_bus_remote_entry_t *));
-        if (!grown) return;
-        g_bus_remote_entries = grown;
-        g_bus_remote_cap     = new_cap;
-    }
-    char *subject_copy = strdup(subject);
-    if (!subject_copy) return;
-    lotus_bus_remote_entry_t *e = (lotus_bus_remote_entry_t *)
-        malloc(sizeof(lotus_bus_remote_entry_t));
-    if (!e) { free(subject_copy); return; }
-    g_bus_remote_entries[g_bus_remote_count++] = e;
-    e->subject           = subject_copy;
-    e->kind              = LOTUS_BUS_REMOTE_KIND_ADAPTER;
-    e->transport         = NULL;
-    e->role              = 0;
-    e->has_reader_thread = 0;
-    e->adapter_self      = self_data;
-    e->adapter_send_fn   = send_fn;
-    e->udp_fd            = -1;
-    memset(&e->udp_dest, 0, sizeof(e->udp_dest));
-    e->udp_is_multicast  = 0;
-    e->codec_self        = NULL;
-    e->codec_encode_fn   = NULL;
-    e->codec_decode_fn   = NULL;
+    lotus_bus_remote_entry_t *e = lotus_bus_remote_entry_push(
+        subject, LOTUS_BUS_REMOTE_KIND_ADAPTER);
+    if (!e) return;
+    e->adapter_self    = self_data;
+    e->adapter_send_fn = send_fn;
 }
 
 /* F.36 Slice 3 (2026-05-28): attach a pluggable codec to an

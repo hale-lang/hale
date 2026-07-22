@@ -53,3 +53,78 @@
 interface __StdBusAdapter {
     fn send(subject: String, bytes: Bytes);
 }
+
+// GH #233 (F.37): the substrate unix transports, expressed as
+// what they always were — loci with lifecycle. A source-level
+// `bindings { T: unix("/path", role: ...) }` entry is sugar that
+// instantiates one of these as a child of the main locus
+// (converging with the adapter path above). The locus is the
+// control plane; the data plane stays in C — publish fanout
+// writes through the realized entry directly, and the listen
+// serve loop (accept → dispatch → re-arm on peer EOF) runs in
+// `lotus_bus_unix_serve` on the listen locus's pinned thread.
+//
+// birth() realizes the transport synchronously on the boot path
+// — a binding the broker cannot honor fails the declaring
+// locus's birth (the publish contract, spec/semantics.md). Both
+// types are cooperative: birth runs inline at the prelude (the
+// codec-locus precedent), so realization failure refuses the
+// boot before any user code runs. The listen side's serve
+// thread (accept → dispatch → re-arm on peer EOF) is spawned by
+// birth and joined by dissolve — the byte-pump thread belongs
+// to the C data plane, not the locus placement machinery (a
+// pinned run() would move birth onto the spawned thread and
+// make realization asynchronous again).
+
+/// Listen-side substrate transport: `unix(..., role: listen)`.
+locus __StdBusUnixListenTransport {
+    params {
+        subject: String = "";
+        url: String = "";
+        path: String = "";
+        handle: Int = 0;    // remote-entry handle, set by birth
+    }
+
+    birth() {
+        self.handle = std::bus::__transport_realize(
+            self.subject, self.path, 0);
+        if self.handle == 0 {
+            // Structural refusal: diagnostic + non-zero exit.
+            // (The handled route — violate → main's on_failure —
+            // is GH #233 steps 3/4.)
+            std::bus::__binding_fail(self.subject, self.url);
+        }
+        let spawned = std::bus::__transport_spawn_server(self.handle);
+        if spawned != 0 {
+            std::bus::__binding_fail(self.subject, self.url);
+        }
+    }
+
+    dissolve() {
+        // Interrupts the serve thread (closing flag + fd
+        // shutdown), joins it, destroys the transport.
+        std::bus::__transport_reclaim(self.handle);
+    }
+}
+
+/// Connect-side substrate transport: `unix(..., role: connect)`.
+locus __StdBusUnixConnectTransport {
+    params {
+        subject: String = "";
+        url: String = "";
+        path: String = "";
+        handle: Int = 0;    // remote-entry handle, set by birth
+    }
+
+    birth() {
+        self.handle = std::bus::__transport_realize(
+            self.subject, self.path, 1);
+        if self.handle == 0 {
+            std::bus::__binding_fail(self.subject, self.url);
+        }
+    }
+
+    dissolve() {
+        std::bus::__transport_reclaim(self.handle);
+    }
+}

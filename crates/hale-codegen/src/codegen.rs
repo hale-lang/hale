@@ -8253,7 +8253,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
 
         // Walk binding entries: adapter loci instantiated inline
-        // are pinned-equivalent by construction.
+        // are pinned-equivalent by construction. (The GH #233
+        // stdlib transport loci are deliberately NOT pinned —
+        // birth must run inline on the boot path so realization
+        // failure refuses the boot synchronously; their serve
+        // thread is C-spawned by birth, not placement-spawned.)
         for m in &l.members {
             if let LocusMember::Bindings(bb) = m {
                 for entry in &bb.entries {
@@ -8296,10 +8300,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
 
         let i32_t = self.context.i32_type();
-        let register_fn = self
-            .module
-            .get_function("lotus_bus_register_remote")
-            .expect("lotus_bus_register_remote declared");
 
         for block in bindings {
             for entry in block.entries {
@@ -8312,9 +8312,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .cloned()
                     .unwrap_or_else(|| entry.topic.name.clone());
 
-                // Build URL + role from the transport spec, or
-                // dispatch to the adapter-binding path.
-                let (url, role) = match &entry.transport {
+                // Emit per transport spec: unix entries become
+                // __StdBusUnix{Listen,Connect}Transport locus
+                // children (GH #233); adapter / shm_ring keep
+                // their dedicated paths.
+                match &entry.transport {
                     TransportSpec::Unix { path, role, .. } => {
                         // Role inference filled this in during desugar
                         // (publish-only → connect, subscribe-only →
@@ -8322,9 +8324,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         // binding was ambiguous or unused; in that
                         // path role stays None and we fall through to
                         // the error arm below.
-                        let r = match role {
-                            Some(TransportRole::Listen) => 0_i64,
-                            Some(TransportRole::Connect) => 1_i64,
+                        let listen = match role {
+                            Some(TransportRole::Listen) => true,
+                            Some(TransportRole::Connect) => false,
                             None => {
                                 return Err(CodegenError::Unsupported(format!(
                                     "binding for topic `{}`: role could not be \
@@ -8335,7 +8337,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 )));
                             }
                         };
-                        (format!("unix://{}", path), r)
+                        self.emit_unix_transport_binding(
+                            &subject,
+                            &entry.topic.name,
+                            path,
+                            listen,
+                            entry.topic.span,
+                        )?;
+                        // F.36 Slice 3a (2026-05-28): codec
+                        // attachment rides the unix binding.
+                        if let Some(codec) = &entry.codec {
+                            self.emit_codec_binding_register(
+                                &subject,
+                                &entry.topic.name,
+                                &codec.locus,
+                                &codec.inits,
+                            )?;
+                        }
+                        continue;
                     }
                     TransportSpec::Adapter { locus, inits, .. } => {
                         self.emit_adapter_binding_register(
@@ -8500,101 +8519,79 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         continue;
                     }
                 };
-
-                let subj_ptr = self
-                    .builder
-                    .build_global_string_ptr(
-                        &subject,
-                        &format!("lotus.binding.subject.{}", entry.topic.name),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                    .as_pointer_value();
-                let url_ptr = self
-                    .builder
-                    .build_global_string_ptr(
-                        &url,
-                        &format!("lotus.binding.url.{}", entry.topic.name),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                    .as_pointer_value();
-                let role_val = i32_t.const_int(role as u64, false);
-                let status = self
-                    .builder
-                    .build_call(
-                        register_fn,
-                        &[subj_ptr.into(), url_ptr.into(), role_val.into()],
-                        "lotus.binding.register",
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                    .try_as_basic_value()
-                    .left()
-                    .expect("register_remote returns i32")
-                    .into_int_value();
-                // #227: a binding that cannot be realized is a
-                // birth failure of the declaring (main) locus —
-                // route non-zero status into the structural
-                // failure sink instead of running with a broker
-                // that would accept messages it cannot deliver.
-                let is_fail = self
-                    .builder
-                    .build_int_compare(
-                        inkwell::IntPredicate::NE,
-                        status,
-                        i32_t.const_zero(),
-                        "lotus.binding.register.failed",
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let cur_fn = self
-                    .builder
-                    .get_insert_block()
-                    .expect("builder positioned")
-                    .get_parent()
-                    .expect("block has parent fn");
-                let fail_bb = self
-                    .context
-                    .append_basic_block(cur_fn, "binding.fail");
-                let cont_bb = self
-                    .context
-                    .append_basic_block(cur_fn, "binding.ok");
-                self.builder
-                    .build_conditional_branch(is_fail, fail_bb, cont_bb)
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                self.builder.position_at_end(fail_bb);
-                let binding_fail_fn = self
-                    .module
-                    .get_function("lotus_bus_binding_fail")
-                    .expect("lotus_bus_binding_fail declared");
-                self.builder
-                    .build_call(
-                        binding_fail_fn,
-                        &[subj_ptr.into(), url_ptr.into()],
-                        "lotus.binding.fail",
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                self.builder
-                    .build_unreachable()
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                self.builder.position_at_end(cont_bb);
-                // F.36 Slice 3a (2026-05-28): codec attachment.
-                // When the binding entry carries a `codec(L { ... })`
-                // clause, instantiate L into program-lifetime memory
-                // (same m90-routed shape as the adapter path) and
-                // call `lotus_bus_register_codec` so the runtime
-                // entry knows which method ptrs to invoke at
-                // publish / receive. Slice 3b will wire the actual
-                // publish + receive dispatch through these ptrs;
-                // today the registration completes but dispatch
-                // falls through to m70.
-                if let Some(codec) = &entry.codec {
-                    self.emit_codec_binding_register(
-                        &subject,
-                        &entry.topic.name,
-                        &codec.locus,
-                        &codec.inits,
-                    )?;
-                }
             }
         }
+        Ok(())
+    }
+
+    /// GH #233: emit a `bindings { T: unix(...) }` entry as a
+    /// substrate-transport locus instantiation — the sugar view
+    /// of "transports are loci, children of main." Listen-role
+    /// entries instantiate `__StdBusUnixListenTransport` on the
+    /// pinned path (its run() serves the accept/recv/re-arm loop
+    /// on a dedicated thread); connect-role entries instantiate
+    /// `__StdBusUnixConnectTransport` cooperatively (no thread —
+    /// fanout drives the transport). Both realize synchronously
+    /// in birth(), which routes an unrealizable binding into
+    /// `std::bus::__binding_fail` — same observable behavior as
+    /// the #227 register-call shape this replaces.
+    fn emit_unix_transport_binding(
+        &mut self,
+        subject: &str,
+        topic_name: &str,
+        path: &str,
+        listen: bool,
+        span: hale_syntax::Span,
+    ) -> Result<(), CodegenError> {
+        let locus_name = if listen {
+            "__StdBusUnixListenTransport"
+        } else {
+            "__StdBusUnixConnectTransport"
+        };
+        let url = format!("unix://{}", path);
+        let str_init = |name: &str, value: &str| StructInit {
+            name: Ident { name: name.to_string(), span },
+            value: Expr::Literal(Literal::String(value.to_string()), span),
+            span,
+        };
+        let locus_lit = Expr::Struct {
+            path: QualifiedName {
+                segments: vec![Ident {
+                    name: locus_name.to_string(),
+                    span,
+                }],
+                span,
+            },
+            inits: vec![
+                str_init("subject", subject),
+                str_init("url", &url),
+                str_init("path", path),
+            ],
+            span,
+        };
+        if self.user_loci.get(locus_name).is_none() {
+            return Err(CodegenError::Unsupported(format!(
+                "binding for topic `{}`: stdlib transport locus `{}` \
+                 missing from the merged program (stdlib bus.hl not \
+                 loaded?)",
+                topic_name, locus_name
+            )));
+        }
+        // m90 routing → program-lifetime payload arena, exactly
+        // like the adapter path — but NO pinned override: a
+        // pinned locus runs its whole lifecycle (birth included)
+        // on the spawned thread, which would make realization
+        // asynchronous again. Both transport loci are
+        // cooperative; birth runs inline right here on the boot
+        // path, and the listen serve thread is C-spawned by
+        // birth itself (lotus_bus_transport_spawn_server).
+        let saved_ret = self.current_user_fn_ret.clone();
+        self.current_user_fn_ret =
+            Some(Some(CodegenTy::LocusRef(locus_name.to_string())));
+        let mut scope = Scope::default();
+        let result = self.lower_expr(&locus_lit, &mut scope);
+        self.current_user_fn_ret = saved_ret;
+        result?;
         Ok(())
     }
 
@@ -21165,6 +21162,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let _ = self.lower_std_bus_local_dispatch(args, scope)?;
                 Ok(())
             }
+            // GH #233: __StdBusUnix*Transport lifecycle primitives.
+            ["std", "bus", "__transport_reclaim"] => {
+                let _ = self.lower_std_bus_transport_handle_op(
+                    "lotus_bus_transport_reclaim", args, scope)?;
+                Ok(())
+            }
+            ["std", "bus", "__binding_fail"] => {
+                let _ = self.lower_std_bus_binding_fail(args, scope)?;
+                Ok(())
+            }
             ["std", "str", "from_bytes"] => {
                 let _ = self.lower_std_str_from_bytes(args, scope)?;
                 Ok(())
@@ -21991,6 +21998,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             ["std", "bus", "__local_dispatch"] => {
                 self.lower_std_bus_local_dispatch(args, scope)
+            }
+            // GH #233: expression-position transport primitives
+            // (realize is assigned to self.handle in birth();
+            // spawn_server's status is checked there too).
+            ["std", "bus", "__transport_realize"] => {
+                self.lower_std_bus_transport_realize(args, scope)
+            }
+            ["std", "bus", "__transport_spawn_server"] => {
+                self.lower_std_bus_transport_handle_op(
+                    "lotus_bus_transport_spawn_server", args, scope)
             }
             ["std", "str", "from_bytes"] => {
                 self.lower_std_str_from_bytes(args, scope)

@@ -13,6 +13,22 @@ pub(crate) trait BusStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_bus_transport_realize(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_bus_transport_handle_op(
+        &mut self,
+        c_fn: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_bus_binding_fail(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
 }
 
 impl<'ctx, 'p> BusStdlib<'ctx> for Cx<'ctx, 'p> {
@@ -88,4 +104,137 @@ impl<'ctx, 'p> BusStdlib<'ctx> for Cx<'ctx, 'p> {
         Ok((i64_t.const_zero().into(), CodegenTy::Int))
     }
 
+    /// GH #233: `std::bus::__transport_realize(subject: String,
+    /// path: String, role: Int) -> Int` — realize a unix bus
+    /// transport (socket + bind + listen, or connect-with-retry)
+    /// and register it with the fanout table. Returns the entry
+    /// handle, 0 on failure. Called from
+    /// __StdBusUnixTransport.birth() only.
+    fn lower_std_bus_transport_realize(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 3 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bus::__transport_realize takes 3 args \
+                 (subject, path, role), got {}",
+                args.len()
+            )));
+        }
+        let (subj_val, subj_ty) = self.lower_expr(&args[0], scope)?;
+        let (path_val, path_ty) = self.lower_expr(&args[1], scope)?;
+        for (name, ty) in [("subject", &subj_ty), ("path", &path_ty)] {
+            if !matches!(ty, CodegenTy::String | CodegenTy::StringView) {
+                return Err(CodegenError::Unsupported(format!(
+                    "std::bus::__transport_realize: {} must be String, got {:?}",
+                    name, ty
+                )));
+            }
+        }
+        let subj_val = self.unpack_view_if_needed(subj_val, &subj_ty)?;
+        let path_val = self.unpack_view_if_needed(path_val, &path_ty)?;
+        let (role_val, role_ty) = self.lower_expr(&args[2], scope)?;
+        if !matches!(role_ty, CodegenTy::Int) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bus::__transport_realize: role must be Int, got {:?}",
+                role_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_bus_transport_realize")
+            .expect("lotus_bus_transport_realize declared");
+        let handle = self
+            .builder
+            .build_call(
+                f,
+                &[subj_val.into(), path_val.into(), role_val.into()],
+                "bus.transport.realize",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("realize returns i64");
+        Ok((handle, CodegenTy::Int))
+    }
+
+    /// GH #233: shared lowering for the 1-arg handle ops —
+    /// `std::bus::__transport_serve(h)` / `__transport_reclaim(h)`.
+    fn lower_std_bus_transport_handle_op(
+        &mut self,
+        c_fn: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "{} takes 1 arg (handle), got {}",
+                c_fn,
+                args.len()
+            )));
+        }
+        let (h_val, h_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(h_ty, CodegenTy::Int) {
+            return Err(CodegenError::Unsupported(format!(
+                "{}: handle must be Int, got {:?}",
+                c_fn, h_ty
+            )));
+        }
+        let f = self
+            .module
+            .get_function(c_fn)
+            .unwrap_or_else(|| panic!("{} declared", c_fn));
+        let call = self
+            .builder
+            .build_call(f, &[h_val.into()], "bus.transport.op")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let i64_t = self.context.i64_type();
+        // i64-returning ops (spawn_server) surface their status;
+        // void ops (reclaim) type as Int 0 so statement-position
+        // calls stay uniform.
+        let ret = call
+            .try_as_basic_value()
+            .left()
+            .unwrap_or_else(|| i64_t.const_zero().into());
+        Ok((ret, CodegenTy::Int))
+    }
+
+    /// #227/#233: `std::bus::__binding_fail(subject: String,
+    /// url: String)` — the structural-failure sink (stderr +
+    /// exit(1)); called from __StdBusUnixTransport.birth() when
+    /// realization fails and no handled route exists.
+    fn lower_std_bus_binding_fail(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::bus::__binding_fail takes 2 args (subject, url), got {}",
+                args.len()
+            )));
+        }
+        let (subj_val, subj_ty) = self.lower_expr(&args[0], scope)?;
+        let (url_val, url_ty) = self.lower_expr(&args[1], scope)?;
+        for (name, ty) in [("subject", &subj_ty), ("url", &url_ty)] {
+            if !matches!(ty, CodegenTy::String | CodegenTy::StringView) {
+                return Err(CodegenError::Unsupported(format!(
+                    "std::bus::__binding_fail: {} must be String, got {:?}",
+                    name, ty
+                )));
+            }
+        }
+        let subj_val = self.unpack_view_if_needed(subj_val, &subj_ty)?;
+        let url_val = self.unpack_view_if_needed(url_val, &url_ty)?;
+        let f = self
+            .module
+            .get_function("lotus_bus_binding_fail")
+            .expect("lotus_bus_binding_fail declared");
+        self.builder
+            .build_call(f, &[subj_val.into(), url_val.into()], "bus.binding.fail")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let i64_t = self.context.i64_type();
+        Ok((i64_t.const_zero().into(), CodegenTy::Int))
+    }
 }
