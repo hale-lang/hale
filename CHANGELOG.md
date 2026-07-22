@@ -6,7 +6,7 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.11.10 — the publish contract + loss supervision, macOS unix transport, SPSC observation ring, diagnostics overhaul (2026-07-22)
 
 - **Diamond imports fixed (GH #249, iris friction F.10).** A lib
   reached a second time — by the entry and by another lib, or by
