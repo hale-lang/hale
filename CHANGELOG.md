@@ -8,6 +8,18 @@ behavior.
 
 ## Unreleased
 
+- **Test failures report per-assertion progress; runtime C
+  warnings no longer leak (GH #230 items 1+3).** A failing
+  multi-assert test file now prints `(N earlier assertion(s)
+  passed)` under the ASSERTION FAILED diagnostic — the pass path
+  stays silent, so the exit-0-and-quiet contract is untouched.
+  And the emitted clang invocation compiles the runtime TU with
+  `-w` (Hale users can't act on lotus_arena.c diagnostics);
+  compiler developers re-enable with `HALE_CC_WARNINGS=1`.
+  Item 2 (decimal trailing-zero display) needs a design call —
+  declared precision isn't stored in the Decimal repr — and
+  stays open on the issue.
+
 - **Per-binding transport telemetry counters (GH #236 item 2).**
   Every remote binding now maintains relaxed-atomic counters at
   the transport choke points — messages/bytes sent and

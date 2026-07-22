@@ -18132,6 +18132,15 @@ void lotus_root_panic(
  * (hand-rolled tanh from exp) and pond/math/matrix (synthesizes
  * `nan_sentinel()` as `0.0/0.0` and `is_nan(f)` as `f != f`).
  */
+/* GH #230: per-assertion test granularity. std::test asserts
+ * bump this on every PASS (silently — the pass path stays
+ * output-free per the testing contract); the FAILURE path reads
+ * it so "ASSERTION FAILED" can report how many earlier
+ * assertions passed instead of the file reading as 0/1. */
+static int64_t g_test_passes = 0;
+void lotus_test_note_pass(void) { g_test_passes++; }
+int64_t lotus_test_passes(void) { return g_test_passes; }
+
 double lotus_math_nan(void) {
     return (double)NAN;
 }

@@ -1577,6 +1577,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
 
+        // GH #230: per-assertion test granularity — std::test's
+        // pass counter (silent bump on every passing assert; the
+        // failure path reads it for the "(N earlier assertion(s)
+        // passed)" trailer).
+        self.module.add_function(
+            "lotus_test_note_pass",
+            void_t.fn_type(&[], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_test_passes",
+            i64_t.fn_type(&[], false),
+            None,
+        );
+
         // Wave B (bus-transport redesign): adapter-binding
         // registration. The runtime stores the (self, send_fn)
         // pair in lotus_bus_remote_entry_t's adapter slot and
