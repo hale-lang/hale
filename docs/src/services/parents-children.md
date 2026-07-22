@@ -143,7 +143,7 @@ locus Conn {
     params { conn_fd: Int = -1; }
     run() {
         let stream = std::io::tcp::Stream { conn_fd: self.conn_fd, owns_fd: false };
-        loop {
+        while true {
             let chunk = stream.recv(4096) or "";
             if len(chunk) == 0 { return; }   // client closed → run() ends
             // ... handle chunk

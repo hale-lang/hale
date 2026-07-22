@@ -34,7 +34,7 @@ sends, or the early events have nowhere to go.
 Loggers carry the usual levels: `trace`, `debug`, `info`,
 `warn`, `error`. Call the matching method:
 
-```hale
+```hale,fragment
 log.debug(f"cache size = {n}");
 log.error(f"request {id} failed: {reason}");
 ```
@@ -68,7 +68,7 @@ reference each other; they only share the topic name.
 the same `log.**`, so swapping is a one-line change at the wiring
 site:
 
-```hale
+```hale,fragment
 std::log::FileSink { path: "logs/app.log" };       // append + rotate
 std::log::ConsoleSink { };                          // colored badges
 ```

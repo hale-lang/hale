@@ -29,7 +29,7 @@ pinned reader  ──▶  cooperative manager  ──▶  keyed per-entity child
 - The **topic declares its routing field** and each child subscribes
   with a key filter, so the bus delivers only that entity's traffic:
 
-  ```hale
+  ```hale,fragment
   topic Update { payload: Tick; keyed_by id; }
   // in the child:
   bus { subscribe Update as on_update where key == self.id; }
@@ -51,7 +51,7 @@ A special case of the gateway with **zero hardcoded topology**: the
 manager doesn't know its children up front. A subscription *triggers*
 the `accept()`:
 
-```hale
+```hale,fragment
 // manager
 bus { subscribe "entity.first_seen" as on_seen of type Seen; }
 fn on_seen(s: Seen) {
@@ -125,7 +125,7 @@ That view is valid only until the next operation that overwrites the
 buffer — the next `recv`, the next ring read. Holding it across that
 boundary reads freed/overwritten memory:
 
-```hale
+```hale,fragment
 let name = std::json::find_string_field(msg, "name");  // view into recv buf
 self.read_msg();                                       // ← overwrites the buffer
 println(name);                                         // ✗ dangling view
@@ -134,7 +134,7 @@ println(name);                                         // ✗ dangling view
 The rule: **a view is valid until the next recv/overwrite; copy out
 to persist.** Materialize it before the boundary:
 
-```hale
+```hale,fragment
 let name = std::str::clone(std::json::find_string_field(msg, "name"));
 self.read_msg();
 println(name);   // ✓ owns its own copy
@@ -152,7 +152,7 @@ Every production connection locus converges on the same three
 fields: buffers held as `params`, reused every frame, never
 instantiated in a handler:
 
-```hale
+```hale,fragment
 locus WsConn {
     params {
         rx_buf:  std::bytes::BytesBuilder = ...;  // frame reassembly
@@ -179,7 +179,7 @@ and [Performance](../systems/performance.md).
 When one event reaches N consumers, render the shared payload once
 at ingest; each consumer adds only its per-consumer delta:
 
-```hale
+```hale,fragment
 // ingest: render once
 self.update_json = render_update(t);          // one render
 Tick <- Update { json: self.update_json };    // fan out

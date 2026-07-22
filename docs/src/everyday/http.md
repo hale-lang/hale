@@ -165,7 +165,7 @@ leaks the connection.
 
 Outbound requests are one call:
 
-```hale
+```hale,fragment
 let resp = std::http::get("https://example.com") or raise;
 println(std::str::from_bytes(resp.body));
 
@@ -181,7 +181,7 @@ when you know it's text). For repeated calls to the same host,
 `std::http::Client { keep_alive: true }` pools connections and
 retries with backoff:
 
-```hale
+```hale,fragment
 let c = std::http::Client { keep_alive: true, max_retries: 2 };
 let r = c.get("http://api.local/health") or raise;
 ```

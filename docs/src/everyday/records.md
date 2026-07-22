@@ -19,7 +19,7 @@ type Player {
 
 Construct with a struct literal, naming each field:
 
-```hale
+```hale,fragment
 let p = Player { id: "p1", name: "Ada", score: 0 };
 println(p.name);                  // field access with .
 ```
@@ -28,7 +28,7 @@ Records are pure data: you pass them by value, read their
 fields, and compare them. They carry no behavior and no
 lifecycle. Fields can have defaults, so callers can omit them:
 
-```hale
+```hale,fragment
 type Config { host: String = "127.0.0.1"; port: Int = 8080; }
 
 let c = Config { port: 9000 };    // host defaults
@@ -43,7 +43,7 @@ signal to promote it to a [locus](./locus-gently.md).
 A fixed sequence of one type is an array. `[T]` is a slice (a
 view of some elements); `[T; N]` is a fixed-length array:
 
-```hale
+```hale,fragment
 type Match { players: [Player]; }     // a slice of Players
 
 let xs = [1, 2, 3];                    // an array literal
@@ -57,7 +57,7 @@ the [previous chapter](./collections.md), not a bare array.
 
 A quick, unnamed grouping of a few values:
 
-```hale
+```hale,fragment
 let pair = (1, "one");
 ```
 

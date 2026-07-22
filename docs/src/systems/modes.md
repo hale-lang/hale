@@ -13,7 +13,7 @@ A locus can declare up to three **modes**, each a named
 projection of the same underlying computation, operating on the
 same locus state:
 
-```hale
+```hale,fragment
 locus Pricer {
     params { /* shared state */ }
 

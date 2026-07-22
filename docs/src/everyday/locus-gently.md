@@ -44,7 +44,7 @@ fn main() {
 You construct a locus with `Name { ... }`, overriding any field
 you like:
 
-```hale
+```hale,fragment
 let c = Counter { count: 10 };
 ```
 
@@ -89,21 +89,20 @@ Almost every locus you write at this level is one of two shapes.
 ```hale
 locus App {
     params { name: String = "world"; }
-    fn run() {
+    run() {
         println("hello, ", self.name);
     }
 }
 
 fn main() {
-    let app = App { name: std::env::arg_or(1, "world") };
-    app.run();
+    App { name: std::env::arg_or(1, "world") };
 }
 ```
 
 This replaces the bare-`main`-with-helpers shape from the basics:
-the app's top-level state and entry point now have a home. (At
-the services level, `run()` becomes a special *lifecycle* method
-the runtime drives — but as an ordinary method it already works.)
+the app's top-level state and entry point now have a home. (`run`
+is a reserved lifecycle name — the runtime drives it; you never
+declare it with `fn` or call it yourself.)
 
 **The namespace locus** — a home for a coherent vocabulary of
 helpers, with little or no state. Hale's stand-in for a "module

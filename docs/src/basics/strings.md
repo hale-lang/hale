@@ -7,7 +7,7 @@
 The `+` operator concatenates strings, and `println` /
 f-strings join for you:
 
-```hale
+```hale,fragment
 let first = "Ada";
 let last  = "Lovelace";
 
@@ -19,7 +19,7 @@ println("full name: ", full);
 `to_string(x)` converts a number, bool, duration, etc. into its
 text form when you need a `String` specifically:
 
-```hale
+```hale,fragment
 let n = 42;
 let label = "n=" + to_string(n);
 ```
@@ -28,7 +28,7 @@ let label = "n=" + to_string(n);
 
 `len(s)` is a builtin — the byte length of the string:
 
-```hale
+```hale,fragment
 let s = "hello";
 println(len(s));          // 5
 ```
@@ -36,7 +36,7 @@ println(len(s));          // 5
 Most text operations live in `std::str`, called as plain
 functions:
 
-```hale
+```hale,fragment
 let i   = std::str::index_of("hello world", "world");   // 6
 let sub = std::str::substring("hello world", 0, 5);     // "hello"
 let up  = std::str::upper("hi");                          // "HI"
@@ -48,7 +48,7 @@ Hale has no per-character method syntax (`s.charAt(i)`); you
 slice with a range or use the `std::str` helpers. Slicing a
 string by byte range:
 
-```hale
+```hale,fragment
 let s = "hello";
 let h = s[0..1];          // "h"
 ```
@@ -60,7 +60,7 @@ number. So the parse functions are *fallible*, and the next
 chapter ([When a call can fail](./fallible.md)) is exactly about
 how you handle that. The shape, previewed:
 
-```hale
+```hale,fragment
 let n = std::str::parse_int("42") or 0;     // 42, or 0 if it wasn't
 ```
 
@@ -74,7 +74,7 @@ Text is `String`; raw binary is `Bytes`. They're different types
 because they have different rules — a `String` is valid UTF-8, a
 `Bytes` is any sequence of octets, including embedded zeros.
 
-```hale
+```hale,fragment
 let b = std::bytes::from_string("hello");   // String  -> Bytes
 let s = std::str::from_bytes(b);            // Bytes   -> String
 let byte0 = std::bytes::at(b, 0) or 0;       // a single byte (fallible)

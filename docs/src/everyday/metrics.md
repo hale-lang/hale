@@ -60,7 +60,7 @@ locus OrderHandler {
 A gauge goes up *and* down — current temperature, queue depth,
 open connections:
 
-```hale
+```hale,fragment
 let depth = std::metrics::gauge(reg, "queue_depth",
     std::metrics::labels_empty());
 depth.set(0.0);
@@ -71,7 +71,7 @@ A histogram buckets observations — latencies, sizes. You declare
 the bucket upper bounds as a space-separated string, parsed once
 at registration:
 
-```hale
+```hale,fragment
 let lat = std::metrics::histogram(reg, "latency_seconds",
     "0.005 0.01 0.05 0.1 0.5", std::metrics::labels_empty());
 lat.observe(0.023);
@@ -87,7 +87,7 @@ scrape dashboard wants to look at anyway.
 
 Labels distinguish series that share a name:
 
-```hale
+```hale,fragment
 let l = std::metrics::labels_two("route", "/api", "method", "GET");
 let l2 = std::metrics::labels_append(l, "status", "200");
 ```
