@@ -8,6 +8,25 @@ behavior.
 
 ## Unreleased
 
+- **macOS unix-transport support via framed SOCK_STREAM + wire
+  sequence numbers (GH #231 transport half, GH #236 item 1).**
+  Darwin has no AF_UNIX `SOCK_SEQPACKET`, so the substrate unix
+  transport now has a framed byte-stream mode — per-message
+  `[u64 len][u64 seq]` header, boundaries preserved by the
+  transport instead of the kernel — selected by default on
+  macOS (`#ifdef __APPLE__`) and forcible on Linux with
+  `LOTUS_UNIX_STREAM=1` (set it for every process on the
+  socket; the two wire formats don't interoperate — a
+  mismatched peer is detected via the length sanity cap and
+  refused loudly). The "build a monolith, deploy a distributed
+  system" flow now works on macOS. The seq stamp is #236's
+  loss-computability primitive: per-connection monotonic,
+  starting at 1, reset per accepted peer; the receiver counts
+  gaps (`seq_gaps` in the `LOTUS_BUS_COUNTERS_DUMP=1` line).
+  Linux SEQPACKET default unchanged. Homebrew
+  libunwind/OpenSSL static-linking for the prebuilt toolchain
+  remains open on #231; the install page's platform matrix is
+  now honest about both carve-outs.
 - **Per-binding transport telemetry counters (GH #236 item 2).**
   Every remote binding now maintains relaxed-atomic counters at
   the transport choke points — messages/bytes sent and
