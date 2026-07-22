@@ -1544,6 +1544,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
 
+        // GH #233 steps 3-4: connection-loss supervision. The
+        // prelude binds each connect transport locus's self to
+        // its entry; the queue drain routes loss events through
+        // the registered dispatch fn (emitted only when main
+        // declares the matching on_failure); restart-as-reconnect
+        // re-runs the connect-with-retry; the fallback is the
+        // structural exit.
+        self.module.add_function(
+            "lotus_bus_transport_bind_self",
+            void_t.fn_type(&[i64_t.into(), ptr_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_bus_transport_locus_self",
+            ptr_t.fn_type(&[i64_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_bus_set_loss_handler",
+            void_t.fn_type(&[ptr_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_bus_transport_reconnect",
+            i64_t.fn_type(&[i64_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_bus_transport_lost_fallback",
+            void_t.fn_type(&[i64_t.into()], false),
+            None,
+        );
+
         // Wave B (bus-transport redesign): adapter-binding
         // registration. The runtime stores the (self, send_fn)
         // pair in lotus_bus_remote_entry_t's adapter slot and

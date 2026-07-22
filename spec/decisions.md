@@ -3137,11 +3137,26 @@ re-arm — peer EOF loops back into `accept()` on the
 already-bound listener, no policy needed, unblocks rolling
 restarts of connect-side binaries — **SHIPPED 2026-07-22**
 (`lotus_bus_unix_serve`, shared with `LOTUS_BUS_CONFIG` reader
-threads); (3) loss → `violate` with default bubble, landing
-**in the same change as** (4) the `on_failure`-on-main routing
-(`lotus_root_panic`'s documented seat) + `restart`-as-reconnect
-— per the guardrail: do not ship loss-is-fatal without the
-reconnect policy in the same change.
+threads); (3)+(4) loss-is-structural + `on_failure`-on-main +
+`restart`-as-reconnect — **SHIPPED 2026-07-22 together**, per
+the guardrail. Implementation notes: loss is detected at
+publish fanout (any thread), marshaled through a mutex'd
+pending list, and dispatched at the top of
+`lotus_bus_queue_drain` (the owner thread — the only place
+failure handlers may run); the dispatcher is a codegen-emitted
+fn registered only when main declares
+`on_failure(t: std::bus::UnixTransport, err: ClosureViolation)`
+(the connect locus's public name via the rename tables), passes
+a synthetic `link_lost` ClosureViolation, detects `restart (t)`
+by the `__restart_count` bump, and reconnects via the stored
+path; no handler / no restart / failed reconnect all take the
+structural exit. Down-window sends are dropped (fanout skips
+lost entries) — the broker never falsely accepts. The
+loss-as-`violate`-statement spelling inside the transport locus
+body was NOT used — the violation is synthesized at the
+dispatch site instead, since the locus body isn't executing
+when fanout detects the loss; the observable semantics
+(ClosureViolation through on_failure) are as specified.
 
 ---
 

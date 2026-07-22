@@ -93,6 +93,31 @@ a real locus, a child of your `main` locus, whose lifecycle
 opens the transport at birth and tears it down at dissolve —
 the same shape as a custom adapter.)
 
+The *connect* side is the one that can genuinely lose its link —
+the peer it sends to goes away mid-run. That loss is structural:
+by default the process exits with a diagnostic naming the
+subject, because a broker that kept "accepting" messages it can
+no longer deliver would be lying to you. If you'd rather
+reconnect, say so — as a supervision decision on `main`:
+
+```hale
+main locus App {
+    bindings { Evt: unix("/tmp/evt.sock", role: connect); }
+    on_failure(t: std::bus::UnixTransport, err: ClosureViolation) {
+        restart (t);     // re-run the connect-with-retry
+    }
+    run() { /* ... */ }
+}
+```
+
+`restart` re-dials with the same retry window the boot connect
+uses, and publishing resumes on success. No hidden retry loops
+in the transport, no policy kwargs on the binding — the same
+`on_failure` + recovery-primitive vocabulary you already use for
+child loci. (Messages published while the link is down are
+dropped, and the drop is visible in the supervision flow — the
+broker never pretends they were delivered.)
+
 The same rule covers routes added at deploy time through the
 `LOTUS_BUS_CONFIG` file: a route that's asked for but can't be
 opened refuses the boot.

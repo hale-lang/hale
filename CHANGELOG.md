@@ -8,6 +8,23 @@ behavior.
 
 ## Unreleased
 
+- **Connection loss is structural; `restart` reconnects
+  (GH #233 steps 3–4, closes #233).** A send failure on a
+  source-declared connect binding now marks the binding lost
+  (publishes during the window are dropped, never falsely
+  "delivered") and routes a synthetic `link_lost`
+  `ClosureViolation` through the main locus's `on_failure` at
+  the next queue drain. Declare
+  `on_failure(t: std::bus::UnixTransport, err: ClosureViolation)
+  { restart (t); }` on `main` to reconnect — the runtime re-runs
+  the connect-with-retry and publishing resumes (the new
+  public name `std::bus::UnixTransport` names the connect-side
+  substrate transport locus). Without a handler (or when
+  reconnect fails), the process exits non-zero with a
+  diagnostic naming the subject — completing the publish
+  contract: the broker never accepts what it cannot deliver, at
+  boot (#227) or mid-run. `LOTUS_BUS_CONFIG` routes sit outside
+  the supervision tree and keep logged-only send failures.
 - **Substrate unix transports are loci; listen bindings re-arm
   (GH #233 steps 1–2).** A `bindings { T: unix(...) }` entry now
   desugars to a stdlib transport locus

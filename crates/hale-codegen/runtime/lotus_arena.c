@@ -5657,6 +5657,9 @@ static void bus_inline_drain_one(lotus_bus_queue_t *q) {
  * (TSAN-flagged). A __thread flag is per-thread, so neither happens. */
 static __thread int g_bus_drain_active = 0;
 
+/* GH #233: defined with the remote-transport machinery below. */
+void lotus_bus_drain_lost_transports(void);
+
 void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
     if (!q) return;
     /* Owner-only handler execution (see the `owner` field comment).
@@ -5667,6 +5670,11 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
      * the owner's next drain point. */
     if (!pthread_equal(pthread_self(), q->owner)) return;
     if (g_bus_drain_active) return;
+    /* GH #233 steps 3-4: dispatch pending transport-loss events
+     * first — we're on the owner thread here, the only place
+     * failure handlers may run. Defined with the transport
+     * machinery below; cheap flag check when nothing is lost. */
+    lotus_bus_drain_lost_transports();
     g_bus_drain_active = 1;
     int locked = __atomic_load_n(&g_bus_has_pinned, __ATOMIC_ACQUIRE);
     if (locked) {
@@ -12365,15 +12373,25 @@ typedef struct lotus_bus_remote_entry {
     void             *(*codec_encode_fn)(void *self, void *value);
     void             *(*codec_decode_fn)(void *self, void *bytes);
     /* GH #233 step 1 (transports-as-loci): entries owned by a
-     * __StdBusUnixTransport locus instead of the register-time
+     * __StdBusUnix*Transport locus instead of the register-time
      * reader thread. `locus_served` entries are realized by the
-     * locus's birth(), served by its pinned run() (LISTEN role),
-     * and reclaimed by its dissolve() — destroy_all only frees
-     * the husk. `closing` is the serve-loop stop flag, set by
-     * lotus_bus_transport_interrupt before the pinned join (the
-     * transport analog of lotus_mailbox_shutdown). */
+     * locus's birth(), served by a birth-spawned thread (LISTEN
+     * role), and reclaimed by its dissolve() — destroy_all only
+     * frees the husk. `closing` is the serve-loop stop flag set
+     * at reclaim. */
     int                locus_served;
     volatile int       closing;
+    /* GH #233 steps 3-4 (loss supervision): `lost` is set by
+     * publish fanout when a locus-served CONNECT transport's
+     * send fails with a connection-class errno; fanout skips
+     * lost entries, and the main-thread drain routes the loss
+     * into main's on_failure (or the structural fallback).
+     * `path` (owned) is kept for restart-as-reconnect;
+     * `locus_self` is the owning transport locus, bound by
+     * codegen right after instantiation. */
+    volatile int       lost;
+    char              *path;
+    void              *locus_self;
 } lotus_bus_remote_entry_t;
 
 /* 2026-05-27 — array-of-pointers shape (was array-of-structs).
@@ -13041,6 +13059,15 @@ int64_t lotus_bus_transport_realize(const char *subject,
     if (!e) return 0;
     e->role         = (int)role;
     e->locus_served = 1;
+    /* Kept for restart-as-reconnect (steps 3-4): reconnect
+     * re-runs the connect-with-retry against this path. */
+    e->path = strdup(path);
+    if (!e->path) {
+        g_bus_remote_count--;
+        free(e->subject);
+        free(e);
+        return 0;
+    }
     if (role == LOTUS_TRANSPORT_LISTEN) {
         e->transport = lotus_transport_listener_create(path);
     } else {
@@ -13048,6 +13075,7 @@ int64_t lotus_bus_transport_realize(const char *subject,
     }
     if (!e->transport) {
         g_bus_remote_count--;
+        free(e->path);
         free(e->subject);
         free(e);
         return 0;
@@ -13074,6 +13102,119 @@ int64_t lotus_bus_transport_spawn_server(int64_t handle) {
     }
     e->has_reader_thread = 1;
     return 0;
+}
+
+/*
+ * GH #233 steps 3-4 — connection-loss supervision.
+ *
+ * Loss detection happens at publish fanout (any thread); failure
+ * handlers run only on the queue owner thread. The bridge is a
+ * small mutex'd pending list drained at the top of
+ * lotus_bus_queue_drain: each lost entry is handed to the
+ * codegen-registered loss handler (emitted only when the main
+ * locus declares `on_failure(t: std::bus::UnixTransport, err:
+ * ClosureViolation)`), which invokes the handler and — if it
+ * called `restart(t)` — asks for a reconnect. With no handler
+ * registered (or a handler that declined), the loss is the
+ * structural exit, same seat as lotus_bus_binding_fail.
+ */
+#define LOTUS_BUS_LOST_MAX 16
+static pthread_mutex_t g_transport_lost_lock = PTHREAD_MUTEX_INITIALIZER;
+static lotus_bus_remote_entry_t *g_transport_lost[LOTUS_BUS_LOST_MAX];
+static int g_transport_lost_count = 0;
+volatile int g_transport_lost_pending = 0;
+static void (*g_transport_loss_handler)(int64_t) = NULL;
+
+void lotus_bus_set_loss_handler(void (*fn)(int64_t)) {
+    g_transport_loss_handler = fn;
+}
+
+void lotus_bus_transport_mark_lost(lotus_bus_remote_entry_t *e) {
+    pthread_mutex_lock(&g_transport_lost_lock);
+    if (g_transport_lost_count < LOTUS_BUS_LOST_MAX) {
+        g_transport_lost[g_transport_lost_count++] = e;
+        g_transport_lost_pending = 1;
+    }
+    pthread_mutex_unlock(&g_transport_lost_lock);
+}
+
+static void lotus_bus_binding_lost_fail(const char *subject,
+                                        const char *path) {
+    dprintf(2,
+            "Hale structural failure: bus binding for subject `%s` "
+            "(unix://%s) lost its connection — the broker can no "
+            "longer honor this binding's guarantee and no restart "
+            "policy is in place (spec/semantics.md, \"The publish "
+            "contract\"; declare `on_failure(t: "
+            "std::bus::UnixTransport, err: ClosureViolation)` on "
+            "the main locus with `restart (t);` to reconnect)\n",
+            subject ? subject : "<unknown>",
+            path ? path : "<unknown>");
+    exit(1);
+}
+
+void lotus_bus_transport_lost_fallback(int64_t handle) {
+    lotus_bus_remote_entry_t *e =
+        (lotus_bus_remote_entry_t *)(intptr_t)handle;
+    lotus_bus_binding_lost_fail(e ? e->subject : NULL,
+                                e ? e->path : NULL);
+}
+
+void lotus_bus_transport_bind_self(int64_t handle, void *locus_self) {
+    lotus_bus_remote_entry_t *e =
+        (lotus_bus_remote_entry_t *)(intptr_t)handle;
+    if (e) e->locus_self = locus_self;
+}
+
+void *lotus_bus_transport_locus_self(int64_t handle) {
+    lotus_bus_remote_entry_t *e =
+        (lotus_bus_remote_entry_t *)(intptr_t)handle;
+    return e ? e->locus_self : NULL;
+}
+
+const char *lotus_bus_transport_subject(int64_t handle) {
+    lotus_bus_remote_entry_t *e =
+        (lotus_bus_remote_entry_t *)(intptr_t)handle;
+    return (e && e->subject) ? e->subject : "<unknown>";
+}
+
+/* Re-run the connect-with-retry against the stored path. 0 on
+ * success (entry live again, fanout resumes), -1 on failure.
+ * Runs on the main thread from the loss-dispatch path only. */
+int64_t lotus_bus_transport_reconnect(int64_t handle) {
+    lotus_bus_remote_entry_t *e =
+        (lotus_bus_remote_entry_t *)(intptr_t)handle;
+    if (!e || !e->path || e->role != LOTUS_TRANSPORT_CONNECT) return -1;
+    if (e->transport) {
+        lotus_transport_destroy(e->transport);
+        e->transport = NULL;
+    }
+    e->transport = lotus_transport_create(e->path, LOTUS_TRANSPORT_CONNECT);
+    if (!e->transport) return -1;
+    e->lost = 0;
+    return 0;
+}
+
+void lotus_bus_drain_lost_transports(void) {
+    if (!g_transport_lost_pending) return;
+    /* Snapshot under the lock, dispatch outside it — the handler
+     * may publish (re-entering fanout) or exit the process. */
+    lotus_bus_remote_entry_t *batch[LOTUS_BUS_LOST_MAX];
+    int n;
+    pthread_mutex_lock(&g_transport_lost_lock);
+    n = g_transport_lost_count;
+    memcpy(batch, g_transport_lost, sizeof(batch[0]) * (size_t)n);
+    g_transport_lost_count   = 0;
+    g_transport_lost_pending = 0;
+    pthread_mutex_unlock(&g_transport_lost_lock);
+    for (int i = 0; i < n; i++) {
+        int64_t h = (int64_t)(intptr_t)batch[i];
+        if (g_transport_loss_handler) {
+            g_transport_loss_handler(h);
+        } else {
+            lotus_bus_transport_lost_fallback(h);
+        }
+    }
 }
 
 void lotus_bus_transport_reclaim(int64_t handle) {
@@ -13318,13 +13459,31 @@ void lotus_bus_remote_fanout(const char *subject,
         if (!e->transport) continue;
         /* CONNECT role only fans out at this milestone. LISTEN
          * role transports exist on the receive side and are
-         * driven by the (future) reader thread, not by publish-
-         * site dispatch. */
+         * driven by the reader thread, not by publish-site
+         * dispatch. */
         if (e->role != LOTUS_TRANSPORT_CONNECT) continue;
-        (void)lotus_transport_send(e->transport, payload, payload_size);
-        /* Errors are logged inside lotus_transport_send; we don't
-         * abort dispatch on transport failure — local subscribers
-         * already received their copy. */
+        /* GH #233 steps 3-4: a lost binding accepts nothing —
+         * fanout skips it until the loss is dispatched on the
+         * main thread (on_failure restart → reconnect, or the
+         * structural exit). Publishes during the window are
+         * dropped-and-counted, never falsely "delivered". */
+        if (e->lost) continue;
+        if (lotus_transport_send(e->transport, payload, payload_size) != 0
+            && e->locus_served) {
+            /* Connection-class failure on a locus-owned
+             * transport: the broker can no longer honor this
+             * binding's guarantee. Mark lost and queue the loss
+             * event for the main-thread drain (failure handlers
+             * only run on the queue owner thread; fanout may be
+             * running anywhere). Non-locus (LOTUS_BUS_CONFIG)
+             * entries keep the logged-only behavior — they sit
+             * outside the supervision tree. */
+            e->lost = 1;
+            lotus_bus_transport_mark_lost(e);
+        }
+        /* Send errors are also logged inside lotus_transport_send;
+         * dispatch continues — local subscribers already received
+         * their copy. */
     }
 }
 
@@ -16546,6 +16705,9 @@ void lotus_bus_remote_destroy_all(void) {
         }
         if (e->subject) {
             free(e->subject);
+        }
+        if (e->path) {
+            free(e->path);
         }
         free(e);
     }
