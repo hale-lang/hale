@@ -132,7 +132,7 @@ The checks above are the compiler's. You can add your own with a
 **closure** — a property a locus promises to keep, written as a
 first-class block and audited by the runtime while the program runs:
 
-```hale
+```hale,fragment
 closure balanced {
     self.debits ~~ self.credits within 0.01d;
 }

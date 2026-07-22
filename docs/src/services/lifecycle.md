@@ -100,7 +100,7 @@ keeps its current connection in `self.conn` — assigning a fresh
 one **replaces a live thing**, so it's a lifecycle event, not a
 plain store:
 
-```hale
+```hale,fragment
 self.conn = Connection { url: next };   // reconnect
 ```
 

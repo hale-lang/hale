@@ -122,7 +122,7 @@ A few rules:
   replaces only the vtable, so the new impl picks up right where the
   old one left off, on the same live state:
 
-  ```hale
+  ```hale,fragment
   self.counter.bump();  self.counter.bump();   // count = 2 (V1)
   reperspective self.counter as CounterV2;      // redeploy
   println(self.counter.get());                  // still 2 — carried
@@ -164,7 +164,7 @@ so a message published *after* the swap lands on the new handler
 while state the old handler accumulated carries across — the async
 counterpart of the sync vtable flip:
 
-```hale
+```hale,fragment
 "orders" <- Order { id: 1 };            // → the old impl's handler
 reperspective self.router as OrderV2;   // redeploy, live
 "orders" <- Order { id: 2 };            // → the new impl's handler

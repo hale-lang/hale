@@ -6,7 +6,7 @@
 
 The operators are what you'd expect:
 
-```hale
+```hale,fragment
 let a = 7 + 3;       // 10
 let b = 7 - 3;       // 4
 let c = 7 * 3;       // 21
@@ -16,7 +16,7 @@ let e = 7 % 3;       // 1   — remainder
 
 Comparison and logic:
 
-```hale
+```hale,fragment
 let bigger = a > b;          // Bool
 let between = a > 0 && a < 100;
 let either  = ready || forced;
@@ -37,14 +37,14 @@ at a `let` with a `Float` annotation, when passing an `Int` to a
 `Float` parameter, and when one side of an arithmetic or
 comparison operator is a `Float`:
 
-```hale
+```hale,fragment
 let x: Float = 3;        // 3.0 — widened
 let y = 2.0 * 3;         // 6.0 — Int 3 promoted to Float
 ```
 
 Going the other way loses information, so it's explicit:
 
-```hale
+```hale,fragment
 let n = Int(3.9);        // 3 — truncates toward zero
 ```
 
@@ -52,7 +52,7 @@ When you'd rather name the conversion — or need it mid-expression
 where the implicit widening doesn't reach — `std::math` has both
 directions as functions:
 
-```hale
+```hale,fragment
 let f = std::math::int_to_float(42);     // 42.0
 let m = std::math::float_to_int(3.99);   // 3 — round toward zero
 ```
@@ -65,7 +65,7 @@ When you want a Float *rounded* to an `Int` rather than
 truncated — building an integer field out of a Float quantity,
 say — reach for `round`; `trunc` is the toward-zero sibling:
 
-```hale
+```hale,fragment
 let a = std::math::round(3.7);          // 4   (Int)
 let b = std::math::round(2.5);          // 3   — half away from zero
 let c = std::math::round(0.0 - 2.5);    // -3
@@ -86,7 +86,7 @@ IEEE-float language, and rounding error compounds. Hale gives
 you `Decimal`: a fixed-point type with exact arithmetic. Write
 the literal with a `d` suffix.
 
-```hale
+```hale,fragment
 let price = 19.99d;
 let qty   = 3;
 let total = price * 3;          // 59.97d — exact, no drift
@@ -107,7 +107,7 @@ you can't accidentally launder exactness away.
 
 A duration is a length of time, written with a unit suffix:
 
-```hale
+```hale,fragment
 let timeout = 5s;
 let frame   = 16ms;
 let day      = 24h;
@@ -117,14 +117,14 @@ let compound = 1h30m;          // durations add up
 No more "is this milliseconds or seconds?" — the unit is part of
 the literal. Durations do arithmetic and comparison:
 
-```hale
+```hale,fragment
 let total = timeout + frame;
 if elapsed > timeout { /* ... */ }
 ```
 
 This is also what the runtime's sleep takes:
 
-```hale
+```hale,fragment
 std::time::sleep(100ms);
 ```
 
@@ -133,14 +133,14 @@ std::time::sleep(100ms);
 A `Time` is a specific instant, written as an ISO-8601 literal in
 backticks:
 
-```hale
+```hale,fragment
 let launch = `2026-05-08T12:00:00Z`;
 ```
 
 For *measuring elapsed time*, reach for the monotonic clock —
 it never jumps backward when the wall clock is adjusted:
 
-```hale
+```hale,fragment
 let start = std::time::monotonic();   // a Duration since boot
 do_work();
 let took = std::time::monotonic() - start;

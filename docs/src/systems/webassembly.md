@@ -136,7 +136,7 @@ When the program has a top-level `fn main()` and no `@export` entry,
 `--wrap-main` synthesizes — *on the parsed AST*, before typecheck — the
 equivalent of:
 
-```hale
+```hale,fragment
 target wasm { }
 @export locus __Main { birth() { <main's body> } }
 ```

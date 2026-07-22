@@ -108,7 +108,7 @@ docker compose -f release/docker-compose.yml run --rm build
 | Platform | Status |
 |---|---|
 | **Linux x86_64** (glibc) | First-class — hosts the compiler and runs compiled programs, all features. |
-| **macOS** (Apple Silicon) | Supported — hosts the compiler and targets itself. Everything runs **except `async_io` pools**, which fail at compile time with a clear diagnostic (use a cooperative pool, or build on Linux). Intel Macs run the arm64 build via Rosetta 2. |
+| **macOS** (Apple Silicon) | Supported — hosts the compiler and targets itself, with two carve-outs. **`async_io` pools** fail at compile time with a clear diagnostic (use a cooperative pool, or build on Linux). **Cross-process `unix(...)` bindings** use a framed byte-stream transport on macOS (Darwin has no `SOCK_SEQPACKET`) — same semantics, message boundaries preserved by a per-message header rather than the kernel; both ends of a socket must be Hale binaries on the same wire format (always true on one host). The prebuilt toolchain currently links Homebrew `llvm@18`'s libunwind and emitted binaries link Homebrew OpenSSL — machines without those Homebrew packages need them installed (`brew install llvm@18 openssl@3`); self-contained binaries are tracked upstream. Intel Macs run the arm64 build via Rosetta 2. |
 | **Windows** | No native support (the runtime is POSIX). Use **WSL2** (Ubuntu) and follow the Linux instructions. |
 | **wasm32** | `hale build --target wasm32` for the browser. |
 

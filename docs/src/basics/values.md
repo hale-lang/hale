@@ -4,7 +4,7 @@
 
 A variable is introduced with `let`:
 
-```hale
+```hale,fragment
 let greeting = "hello";
 let count    = 3;
 let ratio    = 0.5;
@@ -15,7 +15,7 @@ Hale infers the type from the value. You can write it explicitly
 when you want to be sure, or when there's no value to infer
 from:
 
-```hale
+```hale,fragment
 let count: Int = 3;
 ```
 
@@ -24,7 +24,7 @@ let count: Int = 3;
 A plain `let` binding can't be reassigned. To make a variable
 you can change, add `mut`:
 
-```hale
+```hale,fragment
 let total = 0;
 total = total + 1;        // ERROR: total is immutable
 
@@ -70,14 +70,9 @@ default to `Float`; the `d` suffix makes a `Decimal`.
 ## Strings
 
 Double-quoted, with the usual escapes (`\n`, `\t`, `\"`, `\\`,
-`\xNN`). Three extra forms:
+`\xNN`). One extra form — the f-string:
 
-```hale
-let raw   = r"C:\not\escaped";        // raw — backslashes literal
-let multi = """
-    spans
-    lines
-    """;                               // triple-quoted
+```hale,fragment
 let name  = "world";
 let hi    = f"hello {name}";           // f-string interpolation
 ```

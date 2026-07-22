@@ -146,7 +146,7 @@ does a synchronous fork + exec + wait and captures the result. The
 argument vector is **newline-separated** (no shell, no word
 splitting — each line is one `argv` entry):
 
-```hale
+```hale,fragment
 let out = std::process::run("git\nstatus\n--short") or raise;
 println("exit ", to_string(out.code));
 println(out.stdout);

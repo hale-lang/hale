@@ -54,6 +54,14 @@ jobs:
             fi
           done
 
+      # GH #228: every ```hale snippet in docs/src must parse
+      # (deliberately-partial blocks are fenced ```hale,fragment).
+      # The gate also runs in the main test shards as part of the
+      # hale-syntax suite; running it here too makes a docs-only
+      # PR fail fast without waiting on the full suite.
+      - name: Docs snippet parse gate
+        run: cargo test --release -p hale-syntax --test docs_snippets
+
       - name: Build docs
         run: mdbook build docs
 

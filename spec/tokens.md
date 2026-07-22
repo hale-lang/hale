@@ -488,8 +488,12 @@ annotations are not in v1.
   Rust String invariant would UTF-8-encode them as two bytes
   and surprise the caller. No `\u{NNNN}` Unicode escape at
   v1; agents needing non-ASCII drop to byte literals.
-- Raw strings: `r"..."` — no escape processing.
-- Multi-line strings: `"""..."""`.
+- Raw strings (`r"..."`) and multi-line strings
+  (`"""..."""`) are NOT implemented — the lexer rejects both
+  (verified 2026-07-22, GH #228 docs-drift audit; both were
+  previously listed here aspirationally). Byte literals +
+  f-strings cover the practical cases; add these forms to the
+  lexer before re-documenting them.
 - F-strings (v1.x-10): `f"hello {name}"` — interpolates Hale
   expressions inside `{...}`, each rendered via the same
   formatter `println` uses. `{{` and `}}` are literal braces.

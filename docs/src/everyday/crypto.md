@@ -9,7 +9,7 @@ random numbers. They live under `std::crypto`, `std::text`, and
 
 Digests take `Bytes` and return `Bytes`:
 
-```hale
+```hale,fragment
 let data = std::bytes::from_string("hello");
 let key  = std::bytes::from_string("secret");
 
@@ -31,13 +31,13 @@ dependency.
 Raw hash bytes aren't printable, so encode one to show or
 transport it:
 
-```hale
+```hale,fragment
 println(std::text::base64::encode(digest));
 ```
 
 ## Base64 — `std::text::base64`
 
-```hale
+```hale,fragment
 let enc = std::text::base64::encode(data);     // Bytes -> String
 let dec = std::text::base64::decode(enc);      // String -> Bytes
 let url = std::text::base64::url_encode(data);  // URL-safe, unpadded
@@ -52,7 +52,7 @@ both alphabets.
 For JWT / API-request signing, `std::crypto` ships ECDSA over NIST P-256
 with SHA-256 (the `ES256` JWS algorithm), OpenSSL-backed:
 
-```hale
+```hale,fragment
 // key: PEM EC private key (SEC1 or PKCS#8); message: Bytes
 let sig = std::crypto::ecdsa_p256_sign(key, message) or raise;
 
@@ -71,14 +71,14 @@ detail }` like any other error.
 `std::rand` is a fast, **non-cryptographic** PRNG — fine for
 jitter, sampling, shuffling, game logic:
 
-```hale
+```hale,fragment
 let roll = std::rand::next_int(6) + 1;   // a die roll, [1, 6]
 ```
 
 For anything security-sensitive (tokens, nonces, keys), use the
 CSPRNG instead:
 
-```hale
+```hale,fragment
 let nonce = std::os::getrandom(16) or raise;   // 16 random Bytes
 ```
 
