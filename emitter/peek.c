@@ -103,17 +103,28 @@ static int pull(uint32_t i) {
     uint64_t h1 = atomic_load_explicit((_Atomic uint64_t *)&d->head,
                                        memory_order_acquire);
     if (s->cursor >= h1) return 0;
-    if (h1 > (uint64_t)H->ring_slots && s->cursor < h1 - H->ring_slots) {
-      s->overruns += (h1 - H->ring_slots) - s->cursor;
-      s->cursor = h1 - H->ring_slots;
+    /* Live window given published head h is (h - ring_slots, h]
+     * — the in-flight record h clobbers index h - ring_slots, so
+     * the boundary is <=, not < (hale#244 finding 1); the full
+     * cursor jump is counted as overrun (finding 2). */
+    if (h1 > (uint64_t)H->ring_slots && s->cursor <= h1 - H->ring_slots) {
+      uint64_t nc = h1 - H->ring_slots + 1;
+      s->overruns += nc - s->cursor;
+      s->cursor = nc;
     }
     obs_record rec = s->slots[s->cursor & (H->ring_slots - 1)];
+    /* Consumer acquire fence before the h2 re-read (hale#244
+     * finding 3, Boehm seqlock pair): observing any of record
+     * h's bytes then forces h2 >= h, placing h - ring_slots
+     * inside the <= discard window below. Required of every
+     * external reader by PROTOCOL §10. */
+    atomic_thread_fence(memory_order_acquire);
     uint64_t h2 = atomic_load_explicit((_Atomic uint64_t *)&d->head,
                                        memory_order_acquire);
-    if (h2 > (uint64_t)H->ring_slots && s->cursor < h2 - H->ring_slots) {
-      /* slot may have been overwritten mid-copy; discard + resync */
-      s->overruns += (h2 - H->ring_slots) - s->cursor;
-      s->cursor = h2 - H->ring_slots;
+    if (h2 > (uint64_t)H->ring_slots && s->cursor <= h2 - H->ring_slots) {
+      uint64_t nc = h2 - H->ring_slots + 1;
+      s->overruns += nc - s->cursor;
+      s->cursor = nc;
       continue;
     }
     s->cursor++;

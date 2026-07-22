@@ -145,6 +145,11 @@ static ring_ctx *RC;
 static void ring_raw_emit(ring_ctx *r, uint64_t w0, uint64_t w1) {
   uint64_t h = atomic_load_explicit(&r->d->head, memory_order_relaxed);
   obs_record *slot = &r->slots[h & (cfg.slots - 1)];
+  /* Boehm-seqlock producer fence (hale#244 finding 3): pairs with
+   * the consumer's acquire fence so observing any of record h's
+   * bytes forces a subsequent head read >= h. Compiler barrier on
+   * x86; dmb ish on ARM. */
+  atomic_thread_fence(memory_order_release);
   slot->word1 = w1;
   slot->word0 = w0;
   atomic_store_explicit(&r->d->head, h + 1, memory_order_release);
@@ -194,7 +199,7 @@ static void consume_order(ring_ctx *r, uint64_t seq, uint32_t sz) {
   if (obs) ring_emit(r, T_ORDERS_NEW, OBS_EK_NET_DELIVER, sz,
                      obs_net_w1(B_ORDERS_UNIX, seq));
 
-  atomic_store_explicit(&r->d->current_locus, LI_ROUTER, memory_order_relaxed);
+  atomic_store_explicit(&r->d->tag_b, LI_ROUTER, memory_order_relaxed);
   if (topic_mode(T_ORDERS_NEW) >= OBS_MODE_COUNTERS)
     atomic_fetch_add_explicit(&CNT[cnt_topic[T_ORDERS_NEW]].c[OBS_CT_DELIVERED], 1, memory_order_relaxed);
   if (obs && topic_mode(T_ORDERS_NEW) >= OBS_MODE_PACKED)
@@ -207,7 +212,7 @@ static void consume_order(ring_ctx *r, uint64_t seq, uint32_t sz) {
   }
   if (obs && topic_mode(T_RISK_CHECK) >= OBS_MODE_PACKED) {
     ring_emit(r, T_RISK_CHECK, OBS_EK_BUS_PUBLISH, 4, 0);
-    atomic_store_explicit(&r->d->current_locus, workers[w], memory_order_relaxed);
+    atomic_store_explicit(&r->d->tag_b, workers[w], memory_order_relaxed);
     ring_emit(r, T_RISK_CHECK, OBS_EK_BUS_DELIVER, 4, 0);
   }
   if (topic_mode(T_ORDERS_FILL) >= OBS_MODE_COUNTERS) {
@@ -218,7 +223,7 @@ static void consume_order(ring_ctx *r, uint64_t seq, uint32_t sz) {
     ring_emit(r, T_ORDERS_FILL, OBS_EK_BUS_PUBLISH, 5, 0);
     ring_emit(r, T_ORDERS_FILL, OBS_EK_BUS_DELIVER, 5, 0);
   }
-  atomic_store_explicit(&r->d->current_locus, 0, memory_order_relaxed);
+  atomic_store_explicit(&r->d->tag_b, 0, memory_order_relaxed);
 }
 
 /* One end-to-end order: producer -> (net) -> router -> worker
@@ -228,7 +233,7 @@ static void simulate_order(ring_ctx *r) {
   uint32_t sz = 6 + (uint32_t)(xorshift(&r->rng) % 4); /* 64..512 B class */
 
   /* producer publishes orders.new */
-  atomic_store_explicit(&r->d->current_locus, LI_PRODUCER,
+  atomic_store_explicit(&r->d->tag_b, LI_PRODUCER,
                         memory_order_relaxed);
   if (topic_mode(T_ORDERS_NEW) >= OBS_MODE_COUNTERS) {
     atomic_fetch_add_explicit(&CNT[cnt_topic[T_ORDERS_NEW]].c[OBS_CT_PUBLISHED], 1, memory_order_relaxed);
@@ -277,7 +282,7 @@ static void churn_worker(ring_ctx *r, uint32_t slot_idx) {
 
 static void *producer_thread(void *arg) {
   ring_ctx *r = (ring_ctx *)arg;
-  uint32_t ring_idx = r->d->sched_id;
+  uint32_t ring_idx = r->d->tag_a;
   uint64_t per_ring = cfg.rate / cfg.rings;
   uint64_t start = now_mono_ns();
   uint64_t emitted = 0;
@@ -470,7 +475,7 @@ int main(int argc, char **argv) {
   RC = calloc(cfg.rings, sizeof *RC);
   for (uint32_t i = 0; i < cfg.rings; i++) {
     RD[i] = (obs_ring_desc){ .data_off = rings_off + rings_hdr + (uint64_t)i * ring_bytes,
-                             .sched_id = i };
+                             .tag_a = i };
     RC[i].d = &RD[i];
     RC[i].slots = (obs_record *)((char *)seg + RD[i].data_off);
     RC[i].rng = 0x9E3779B97F4A7C15ull ^ (i + 1);

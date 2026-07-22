@@ -305,7 +305,7 @@ RingDesc:
   current_locus u32    // gauge: locus instance id now running on this scheduler; 0 = idle
 ```
 
-`current_locus` is the **external-sampling join**: the
+`tag_b` (current_locus) is the **external-sampling join**: the
 emitter stores it (relaxed) at every locus switch — cheap and
 exact under cooperative scheduling. A consumer running a
 sampling profiler (perf_event_open; sample data never enters
@@ -316,35 +316,60 @@ switch may misattribute by one event — acceptable for
 sampling by construction. Span-exact attribution is the
 LOCUS_ENTER/EXIT upgrade path (§8, reserved).
 
-- **Producer:** write both words of slot `head &
-  (ring_slots-1)`, then publish `head+1` with a release
-  store. No CAS, no consumer interaction. If the ring is
-  "full" it simply keeps writing — overwrite-oldest is the
-  cursor arithmetic, not a branch.
+- **Producer:** issue a **release fence**, write both words
+  of slot `head & (ring_slots-1)`, then publish `head+1`
+  with a release store. The pre-write fence is the producer
+  half of the Boehm-seqlock pair (finding 3 below); it is a
+  compiler barrier on x86 and one `dmb ish` on ARM. No CAS,
+  no consumer interaction. If the ring is "full" it simply
+  keeps writing — overwrite-oldest is the cursor arithmetic,
+  not a branch.
 - **Consumer:** keeps its own cursor `c` (consumer-side, not
   in shm — this is what makes N concurrent observers free).
   Snapshot algorithm:
 
-  1. `h1 = load-acquire(head)`
+  1. `h1 = load-acquire(head)`; if `c <= h1 - ring_slots`,
+     fast-forward `c` to `h1 - ring_slots + 1`, counting the
+     full jump as overrun.
   2. copy slots `[c, min(h1, c + batch))`
-  3. `h2 = load-acquire(head)`
-  4. any copied slot with index `< h2 - ring_slots` was
-     possibly overwritten mid-copy → discard those, advance
-     `c` to `h2 - ring_slots`, count as overrun (rendered,
-     per DESIGN §4).
-  5. decode the survivors; merge across rings by
+  3. **acquire fence** (the consumer half of the seqlock
+     pair — REQUIRED of every external reader)
+  4. `h2 = load-acquire(head)`
+  5. any copied slot with index `<= h2 - ring_slots` was
+     possibly overwritten or is being clobbered by the
+     in-flight record → discard, advance `c` to
+     `h2 - ring_slots + 1`, and count the **entire cursor
+     advance** (including any never-copied gap) as overrun
+     (rendered, per DESIGN §4).
+  6. decode the survivors; merge across rings by
      reconstructed timestamp.
 
-- Word-tearing: slots are two u64 stores; a consumer may
-  observe a half-written slot only within the overrun window
-  the snapshot algorithm already discards. (To be
-  model-checked, not argued — §11.)
+  Three corrections here came out of the shared primitive's
+  GenMC verification (hale#244 thread, hale#247): the live
+  window given published head `h` is `(h - ring_slots, h]` —
+  the producer's in-flight record `h` already clobbers index
+  `h - ring_slots`, so the boundary is `<=`, not `<`;
+  overrun accounting must cover the full cursor advance or
+  `delivered + overruns` undercounts; and the fenceless
+  h1/copy/h2 validation is formally unsound (a relaxed slot
+  load may read a future record's write while h2 reads
+  stale — masked on TSO/x86, live on ARM). The fence pair
+  guarantees observing any of record `h`'s bytes forces
+  `h2 >= h`.
+
+- Word-tearing: slots are two u64 plain stores; with the
+  fence pair, a consumer can observe mixed/half-written
+  words only at indices the `<=` discard window rejects.
+  Model-checked, not argued: `hale/verification/
+  spsc_ring_model.c` (genmc CI) asserts no *delivered*
+  record is torn and delivered seqs strictly increase.
 
 ## 10. Memory ordering summary
 
 | Site | Ordering |
 |---|---|
-| slot words → head publish | release store on head |
+| producer: fence → slot words → head publish | release fence before slot writes; release store on head |
+| consumer: copy → fence → h2 read | acquire fence between slot copy and head re-read (REQUIRED of external readers) |
 | consumer head read | acquire |
 | manifest entry → manifest_gen | release inc |
 | consumer manifest_gen read | acquire, then re-scan |
@@ -393,13 +418,9 @@ library emitter's abort hook (ours, M3) produces them.
 - Whether LOCUS_ENTER/EXIT (ekinds 16/17) ship with v0
   emitters or arrive as a minor-version upgrade once
   sampled flamegraphs prove insufficient.
-- **Ring convergence (hale#244):** hale v0.8.3 shipped
-  `shm_ring` (LRSRNG1: fixed slots, slot-counted cursor —
-  near-isomorphic to §9) and `ring_layout` declarations for
-  compile-time-foreign ring layouts. Pending upstream answers
-  on broadcast/observer mode and the declared-layout producer
-  path, §9's ring should either be expressed as a
-  `ring_layout` declaration or adopt LRSRNG1 outright —
-  making emitter and consumer pure Hale with zero ring FFI
-  and sharing the runtime's implementation (and its
-  verification) instead of forking it.
+- ~~Ring convergence (hale#244)~~ **RESOLVED (hale#247):**
+  the runtime now ships the SPSC observation ring as a lotus
+  primitive using this protocol's descriptor (with tag_a/
+  tag_b generalization); §9 adopts it verbatim. Emitters use
+  `std::ring::__spsc_*` from pure Hale; the three
+  verification-found corrections are folded into §9/§10.

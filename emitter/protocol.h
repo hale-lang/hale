@@ -209,13 +209,16 @@ static_assert(sizeof(obs_record) == 16, "one slot size, 16 B");
 
 /* ---- rings ------------------------------------------------- */
 
+/* Canonical lotus SPSC observation-ring descriptor (hale#244/#247
+ * — lotus_spsc_* / std::ring::__spsc_*). tag_a/tag_b are user
+ * fields; iris assigns tag_a = sched_id, tag_b = current_locus. */
 typedef struct {
-  uint64_t data_off;               /* slots array, ring_slots * 16 B */
-  _Atomic uint64_t head;           /* monotonic, never wraps */
-  _Atomic uint64_t dropped;        /* emit-side drops */
-  uint32_t sched_id;
-  _Atomic uint32_t current_locus;  /* gauge; 0 = idle */
-  uint8_t  pad[64 - 8*3 - 4*2];
+  uint64_t data_off;         /* slots array offset from SEGMENT base */
+  _Atomic uint64_t head;     /* monotonic, never wraps, release-published */
+  _Atomic uint64_t dropped;  /* producer-side drop accounting */
+  uint32_t tag_a;            /* iris: sched_id */
+  _Atomic uint32_t tag_b;    /* iris: current_locus gauge; 0 = idle */
+  uint8_t  reserved[32];
 } obs_ring_desc;
 
 static_assert(sizeof(obs_ring_desc) == 64, "RingDesc is 64 B aligned");
