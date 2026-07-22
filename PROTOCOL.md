@@ -56,10 +56,20 @@ An emitter with observation enabled:
    stale registrations by pid liveness; stale files may be
    garbage-collected by any consumer.
 
+When `$XDG_RUNTIME_DIR` is unset, the fallback directory is
+`/tmp/hale-obs`. *(Amended.)*
+
 Consumers watch the directory (inotify) and may also attach
 manually by pid. Multiple consumers may attach to one
 segment concurrently (see §9 — consumer state is
 consumer-side, so N readers are free).
+
+**Reference implementation:** `emitter/protocol.h` is the
+executable form of this document (layouts pinned by
+static_asserts), exercised end-to-end by `emitter/synth.c`
+(emitter) and `emitter/peek.c` (consumer seed). Where header
+and document disagree, that is a bug: fix both in one
+commit.
 
 ## 2. Segment layout
 
@@ -125,18 +135,34 @@ manifest maps ids to names, kinds, and shapes. Emitters MUST
 publish a manifest entry before the first record referencing
 its id.
 
-Layout: entry table + string pool.
+Layout: manifest header, then `entry_cap` entries, then
+string pool to the end of the region. *(Amended from "entry
+table + string pool" by the v0 reference implementation —
+consumers need a count and pool location.)*
+
+```
+ManifestHdr (16 B):
+  entry_count  u32 (atomic; release on append)
+  entry_cap    u32
+  pool_off     u32     // from manifest_off
+  pool_used    u32 (atomic)
+```
+
+Entry field order is chosen for natural alignment (u64s
+first; 30 B of fields + 2 B pad). *(Amended: the original
+doc order packed to 30 B with misaligned u64s.)*
 
 ```
 ManifestEntry (32 B):
-  id           u32     // topic_id or locus_type_id (§7 id space)
-  kind         u8      // 0=topic, 1=locus_type, 2=binding, 3=scheduler
-  flags        u8      // bit 0: networked (topics); bit 1: from .hale.topo
+  shape_hash   u64     // payload-shape content hash (topics); 0 otherwise
+  aux_b        u64     // binding: owning topic_id; scheduler: cpu index
+  id           u32     // per-kind id space (§7)
   name_off     u32     // into string pool
   name_len     u16
   aux_a        u16     // binding: transport enum (unix/udp/tcp/...)
-  shape_hash   u64     // payload-shape content hash (topics); 0 otherwise
-  aux_b        u64     // binding: owning topic_id; scheduler: cpu index
+  kind         u8      // 0=topic, 1=locus_type, 2=binding, 3=scheduler
+  flags        u8      // bit 0: networked (topics); bit 1: from .hale.topo
+  _pad         u16     // zero
 ```
 
 - **Topic identity across binaries** (fusion join key):
@@ -173,10 +199,15 @@ of consumer-writable fields).
 
 ## 6. Counter table
 
-Per manifest entry of kind topic or binding, a cache-line
-(64 B) of u64 monotonic counters, indexed by manifest entry
-order (slot i ↔ i-th topic/binding entry; index map derived
-from manifest scan):
+Line 0 is a global line; then one cache-line (64 B) of u64
+counters per manifest entry of kind topic or binding, in
+manifest entry order counting only those kinds (index map
+derived from manifest scan). A **late-registered**
+topic/binding takes the next line index at registration time
+— i.e. line index is fixed by its position among
+topic/binding entries, exactly as a startup registration
+would be. *(Amended: global-line-first and the late-entry
+rule made explicit by the v0 implementation.)*
 
 ```
 topics:    published, delivered, bytes, dropped_records
@@ -193,10 +224,15 @@ consumers. Gauges (queue_depth) are last-write-wins.
 
 - `topic_id`, `locus_type_id`: u20 (record-packed), assigned
   by the emitter (native: from `.hale.topo` ordering;
-  library: registration order). Ids are per-segment; only
-  (name, shape_hash) is stable across processes.
+  library: registration order). **Id spaces are per-kind**
+  (topic 3 and locus-type 3 are unrelated; records disambiguate
+  by ekind). Ids are per-segment; only (name, shape_hash) is
+  stable across processes. Locus *instance* ids are a further
+  dynamic space seeded by LOCUS_BIRTH records.
 - **Mode mask**: one byte per topic_id, `modemask_off +
-  topic_id`. Values:
+  topic_id`. The region is sized to the id *capacity*
+  (`entry_cap`), not the full u20 space — consumers bound-check
+  topic ids against the region length. *(Amended.)* Values:
 
   ```
   0 OFF | 1 COUNTERS | 2 PACKED (default) | 3 SAMPLED-RICH | 4 FIREHOSE
