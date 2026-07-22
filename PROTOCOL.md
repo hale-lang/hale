@@ -8,8 +8,8 @@ dump tooling).
 
 Status: **DRAFT — not frozen.** Field widths and table sizes
 are v0 working values; freeze happens after M1 measurement
-(DESIGN.md §14), then the version byte governs forever.
-iris owns this document (DESIGN.md §12); upstream native
+(DESIGN.md §15), then the version byte governs forever.
+iris owns this document (DESIGN.md §13); upstream native
 emission implements it, not the other way around.
 
 Design invariants the protocol must never violate:
@@ -238,7 +238,10 @@ word1 (u64):  ekind-dependent (seq, aux, full timestamp, ...)
   12 BINDING_DOWN     id = binding; word1 = errno/reason
   13 SAMPLE_RICH      header slot; followed by 1 extra slot of payload metadata
   14 DROP_MARK        word1 = records dropped since last mark
-  15–31 reserved
+  15 CONT             continuation slot (see SAMPLE_RICH)
+  16 LOCUS_ENTER      id = instance; word1 = trigger topic_id:20 | seq-low:44   [reserved, not emitted in v0]
+  17 LOCUS_EXIT       id = instance; word1 = 0                                  [reserved, not emitted in v0]
+  18–31 reserved
   ```
 
   SAMPLE_RICH is the one two-slot form: a header slot + one
@@ -250,7 +253,7 @@ word1 (u64):  ekind-dependent (seq, aux, full timestamp, ...)
 
 - Locus **instance ids**: u20 per-segment monotonic
   allocation, tied to LOCUS_BIRTH; wraparound emits a
-  generation EPOCH note (open item, §12).
+  generation EPOCH note (open item, §13).
 
 ## 9. Rings
 
@@ -259,11 +262,23 @@ One SPSC ring per scheduler. Descriptor array at
 
 ```
 RingDesc:
-  data_off   u64    // slots array, ring_slots * 16 B
-  head       u64    // producer write cursor, monotonic, never wraps
-  dropped    u64    // overwritten-unread estimate is consumer-side; this counts emit-side drops (OFF-mode races etc.)
-  sched_id   u32
+  data_off      u64    // slots array, ring_slots * 16 B
+  head          u64    // producer write cursor, monotonic, never wraps
+  dropped       u64    // overwritten-unread estimate is consumer-side; this counts emit-side drops (OFF-mode races etc.)
+  sched_id      u32
+  current_locus u32    // gauge: locus instance id now running on this scheduler; 0 = idle
 ```
+
+`current_locus` is the **external-sampling join**: the
+emitter stores it (relaxed) at every locus switch — cheap and
+exact under cooperative scheduling. A consumer running a
+sampling profiler (perf_event_open; sample data never enters
+the segment) joins `(tid → sched_id, timestamp)` against this
+gauge to attribute native callstacks to loci (DESIGN §10).
+Consumers read it relaxed; a sample landing exactly on a
+switch may misattribute by one event — acceptable for
+sampling by construction. Span-exact attribution is the
+LOCUS_ENTER/EXIT upgrade path (§8, reserved).
 
 - **Producer:** write both words of slot `head &
   (ring_slots-1)`, then publish `head+1` with a release
@@ -298,6 +313,7 @@ RingDesc:
 | manifest entry → manifest_gen | release inc |
 | consumer manifest_gen read | acquire, then re-scan |
 | counters | relaxed (monotonic; gauges last-write-wins) |
+| current_locus (emitter store / consumer load) | relaxed (gauge; sampling tolerates one-event skew) |
 | control/mode reads (emitter) | relaxed |
 
 ## 11. Verification obligation
@@ -335,3 +351,9 @@ library emitter's abort hook (ours, M3) produces them.
   (another mode-mask-sized table).
 - macOS: POSIX shm name limits and `memfd`-equivalent —
   parked until the platform work upstream settles (#231).
+- Symbol demangling scheme for native-stack attribution
+  (`__lib_..._Type` pattern) — needs the mangling rules
+  documented by the hale team; consumer-side otherwise.
+- Whether LOCUS_ENTER/EXIT (ekinds 16/17) ship with v0
+  emitters or arrive as a minor-version upgrade once
+  sampled flamegraphs prove insufficient.

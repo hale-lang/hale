@@ -50,7 +50,7 @@ Consequences:
 - The observation domain is **the system, not the process**.
   iris attaches to N processes and fuses.
 - Milestone 1 is a *running two-process system over a real
-  binding*, not a static visualization (§13).
+  binding*, not a static visualization (§14).
 - The instrumentation design treats networked edges as
   first-class instruments (§7), not decorations.
 
@@ -201,7 +201,50 @@ The rings are history. Two features fall out nearly free:
   a real crash is the single most persuasive artifact this
   ecosystem can produce.
 
-## 10. The app: what survives from the spike
+## 10. Intra-locus stacks
+
+Two distinct notions of "stack," both rendered; neither adds
+hot-path cost.
+
+**Message-chain stacks (in-protocol, free).** Bus delivery is
+synchronous — a publish invokes subscribers in the same call
+stack (spike finding, `main` FRICTION.md). So in-process
+message chains nest exactly like frames:
+`deliver(A) → handler → publish(B) → deliver(B) → …`. The v0
+record set (BUS_PUBLISH/BUS_DELIVER with per-topic seq,
+total order within a scheduler) reconstructs these chains as
+**topic-typed stacks**: click a petal mid-scrub, see
+"handling `orders.fill` ← `risk.check` ← NET_DELIVER
+`orders.new`." Frames are named by declared topics and the
+chain walks the flower across loci. This is the Hale-native
+stack; no other runtime can label frames with declared,
+typed topics.
+
+**Native callstacks (consumer-side sampling).** For
+"why is this handler slow": iris runs a sampling profiler
+(`perf_event_open`, same-user permissions) against the
+observed process. Zero runtime cooperation, zero ring
+bandwidth — sample data never enters the segment (wrong rate
+class). The join from sample `(tid, ts, stack)` to petal is
+the per-scheduler `current_locus` gauge (PROTOCOL §9): each
+petal expands into a **time-scoped flamegraph**, scrubber-
+synced since samples share CLOCK_MONOTONIC with the rings —
+flight-recorder flamegraphs fall out.
+
+Dependencies (quality, not blocking): demangling Hale's
+symbol scheme (`__lib_..._Type` pattern — mechanical);
+source-line frame quality tracks the C backend's debug info
+(upstream quality ask, someday).
+
+Anti-scope: **no per-function-call instrumentation through
+the rings.** Function calls run 2–3 orders hotter than
+messages; sampling exists precisely to make stack visibility
+rate-independent. LOCUS_ENTER/EXIT events (PROTOCOL §8,
+reserved) can later upgrade flamegraph scoping from
+sampled-approximate to span-exact — they're message-rate,
+so PACKED absorbs them.
+
+## 11. The app: what survives from the spike
 
 - **Trinity survives, reweighted.** viz = the flower as
   instrument; source = the code the petals map to (petal →
@@ -223,7 +266,7 @@ The rings are history. Two features fall out nearly free:
   pane/layout system, mcp_server, pty/http/sse libs. Nothing
   moves until needed.
 
-## 11. Verification
+## 12. Verification
 
 The ring + mode-mask concurrency (SPSC producers, merging
 consumer, observer-written control words) gets the **GenMC
@@ -232,7 +275,7 @@ treatment** like every other runtime primitive, modeled in
 the one unverified concurrent component in a runtime whose
 pitch is model-checked concurrency.
 
-## 12. Ownership
+## 13. Ownership
 
 iris does not do compiler or runtime work — the hale team
 owns that repo. The split:
@@ -269,7 +312,7 @@ Native-probe asks are made from a working iris, against a
 frozen protocol, with the library emitter as the reference
 implementation — a much easier yes.
 
-## 13. Milestones
+## 14. Milestones
 
 M0 is not "visualize the codebase." Every milestone is a
 running system.
@@ -295,7 +338,7 @@ Gate on all of it: **hale F.10**
 Color registration asymmetry) still blocks `hale build` of
 the spike code; anything pulled from `main` hits it.
 
-## 14. Open questions
+## 15. Open questions
 
 - Discovery/session identity: registration-dir vs a real
   deployment identity from placement design (§8).
