@@ -61,6 +61,34 @@ The substrate stays neutral on protocol semantics — reliability,
 ordering, retries, backpressure all live in the adapter body,
 where they belong.
 
+## What each binding promises
+
+A send succeeding means the broker accepted the message — and
+what "accepted" obligates the broker to depends on the binding:
+
+| Binding      | "Accepted" means                                          |
+|--------------|-----------------------------------------------------------|
+| in-process   | dispatched to every born subscriber in this binary        |
+| `unix(...)`  | handed to the peer connection, message boundaries intact  |
+| `udp://...`  | handed to the local IP stack — lossy from there, by design |
+| adapter      | whatever the adapter locus's own contract says            |
+
+The one thing a broker may never do is accept a message it
+already knows it can't handle. So a binding that can't be
+*opened* — the socket path doesn't exist, the address won't
+bind, the peer never answers the connect retry — is a **birth
+failure**: the program prints a structural diagnostic naming the
+subject and exits non-zero at startup, where your supervisor
+(systemd, Kubernetes) sees it. There is no mode where a dead
+binding lets publishers keep "succeeding" while every message is
+dropped. Per-datagram loss on `udp://` is different — that
+transport's guarantee is best-effort by declaration, so downstream
+loss is within contract and won't kill the process.
+
+The same rule covers routes added at deploy time through the
+`LOTUS_BUS_CONFIG` file: a route that's asked for but can't be
+opened refuses the boot.
+
 ## Talking to other languages: codecs
 
 By default the bus uses Hale's internal wire format, which is

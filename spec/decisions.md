@@ -3034,6 +3034,58 @@ Each of these is a known extension point. Closing them off in v0
 keeps the spec tractable; opening them later is a non-breaking
 addition.
 
+### F.37 The publish contract: binding failure is structural
+
+Decided 2026-07-22, from GH #227 (external reviewer found
+`lotus_transport_create` failing on stderr while every publish
+kept "succeeding" — messages silently dropped).
+
+**The contract.** `T <- value` succeeding means *the broker
+accepted the message*. What "accepted" obligates the broker to
+is defined per binding (in-process: dispatched to every born
+subscriber; unix: handed to the peer connection, boundaries
+preserved; udp: handed to the local IP stack, lossy from there
+by declaration; shm_ring: slot committed under the declared
+`on_overflow` policy; adapter: the adapter locus's own
+contract). The invariant: **the broker may never accept a
+message it already knows it cannot handle under that binding's
+guarantee.**
+
+**Why `<-` stays infallible.** Publishers have no error channel
+by design (statement-only send, no caller frame — the same
+narrowed two-channel rule that rejects `fallible(E)` on
+substrate surfaces). That is only sound because the broker is
+obligated to either uphold the binding's guarantee or fail
+*structurally*: the error channel isn't missing, it's relocated
+to the one place it can be acted on.
+
+**Consequences.**
+
+1. A binding (or `LOTUS_BUS_CONFIG` route) that cannot be
+   *realized* is a **birth failure of the declaring locus** —
+   bindings live on `main`, main's parent is the root, so the
+   unhandled default is the root failure shape (stderr +
+   non-zero exit) via `lotus_bus_binding_fail`. Listener-side
+   realization is synchronous at registration; only blocking
+   accept/recv runs on reader threads, so failure can never
+   hide on a detached thread.
+2. Per-send transient errors on a transport whose guarantee is
+   lossy by declaration (udp) are logged, not structural —
+   downstream loss is within contract.
+3. Runtime alignment with the static checker: dead-bus-receiver
+   is a compile-time *error*; a dead route at boot is the same
+   condition materialized at runtime and gets the same severity.
+
+**Deferred (needs its own decision).** Established-connection
+*loss* mid-run: today send-failure on a dead stream transport is
+logged and the reader EOF-terminates. The candidate design is
+"binding loss raises through main's `on_failure`, where
+`restart` re-runs the create-with-retry loop" — reconnection as
+supervision policy, not transport feature. Trades off against
+rolling restarts of multi-binary deployments; do not ship
+loss-is-fatal without the reconnect policy landing in the same
+change.
+
 ---
 
 ## Deferred & future work

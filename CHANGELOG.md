@@ -8,6 +8,28 @@ behavior.
 
 ## Unreleased
 
+- **Bus binding failure is now structural (F.37, GH #227).** A
+  `bindings { }` entry or `LOTUS_BUS_CONFIG` route whose
+  transport cannot be realized — socket/bind/listen/addr
+  failure, connect-retry timeout, unparseable route — now fails
+  the declaring locus's birth: structural diagnostic on stderr
+  naming the subject + non-zero exit at boot. Previously the
+  runtime perror'd and ran on with a dead table entry, so every
+  publish "succeeded" while fanout silently dropped the
+  messages (the failure mode an external reviewer hit on macOS
+  via SEQPACKET's `Protocol not supported`). Listener-side
+  realization (unix `socket+bind+listen`, udp parse+bind+group
+  join) moved from the reader thread to the synchronous boot
+  path, so failures can't die invisibly on a detached thread —
+  only blocking accept/recv stays threaded, preserving the
+  no-hang-at-boot property. Bonus fix: teardown now shuts down
+  the listener fd, so a subscriber whose peer never connected
+  exits cleanly instead of hanging in `pthread_join` at
+  dissolve. Per-send transient errors on lossy transports (udp
+  `sendto`) stay logged-not-fatal, per the new normative publish
+  contract in `spec/semantics.md`. Regression tests inject
+  failures platform-independently (ENAMETOOLONG / ENOENT), per
+  the issue's ask — no macOS hardware needed.
 - **Toolchain reorg: `hale mcp`, `crates/hale-lsp`,
   tree-sitter-hale.** (1) `hale mcp` — a Model Context Protocol
   server in the binary (stdio, newline-delimited JSON-RPC):

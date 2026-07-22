@@ -990,6 +990,28 @@ optimization that elides bus dispatch for unambiguous
 intra-locus and single-hop parent→child tower patterns when no
 binding is declared.
 
+**Binding realization failure (GH #227, 2026-07-22).**
+`lotus_bus_register_remote(subject, url, role)` returns an i32
+status: 0 on success, -1 when the route cannot be realized
+(scheme/addr validation, socket/bind/listen, connect-retry
+timeout, thread spawn). Listener-side work that can fail is done
+synchronously at registration — unix: `socket + bind + listen`
+(`lotus_transport_listener_create`); udp: parse + bind +
+multicast join (`lotus_bus_udp_listener_setup`) — and only the
+blocking accept/recv loop runs on the reader thread, so a
+failure always surfaces on the boot path, never on a detached
+thread. On failure the entry is popped from the remote table
+(no dead slot for fanout to silently skip) and the caller —
+codegen's bindings prelude, or `lotus_bus_load_config` for
+env-configured routes — routes the failure into
+`lotus_bus_binding_fail(subject, url)`: the structural-failure
+shape (stderr diagnostic + `exit(1)`), the same seat as
+`lotus_root_panic`. Normative contract: spec/semantics.md,
+"The publish contract". Teardown note: because the listener is
+bound at registration, `lotus_bus_remote_destroy_all` also
+shuts down `listen_fd` so a reader thread parked in `accept()`
+(peer never connected) joins instead of hanging.
+
 **Adapter dispatch.** At codegen, an adapter binding
 instantiates the adapter locus into the program-lifetime
 payload arena (same m90 routing the `-> LocusRef(L)` return

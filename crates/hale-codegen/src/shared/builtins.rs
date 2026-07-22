@@ -1490,15 +1490,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // `bindings { Topic: <transport> : role; }` entry in the
         // main locus, before lotus_bus_load_config so an env
         // override can layer on top of the static program shape.
-        // declare void @lotus_bus_register_remote(ptr subject, ptr url, i32 role)
+        // #227: returns i32 status — 0 on success, -1 when the
+        // binding could not be realized; the prelude routes
+        // non-zero into lotus_bus_binding_fail (birth failure of
+        // the declaring locus).
+        // declare i32 @lotus_bus_register_remote(ptr subject, ptr url, i32 role)
         let i32_t = self.context.i32_type();
-        let bus_register_remote_ty = void_t.fn_type(
+        let bus_register_remote_ty = i32_t.fn_type(
             &[ptr_t.into(), ptr_t.into(), i32_t.into()],
             false,
         );
         self.module.add_function(
             "lotus_bus_register_remote",
             bus_register_remote_ty,
+            None,
+        );
+
+        // #227: structural-failure sink for an unrealizable bus
+        // binding. Prints the root-failure shape and exits
+        // non-zero; never returns.
+        // declare void @lotus_bus_binding_fail(ptr subject, ptr url)
+        let bus_binding_fail_ty = void_t.fn_type(
+            &[ptr_t.into(), ptr_t.into()],
+            false,
+        );
+        self.module.add_function(
+            "lotus_bus_binding_fail",
+            bus_binding_fail_ty,
             None,
         );
 

@@ -893,18 +893,70 @@ main locus App {
 }
 ```
 
+**The publish contract (GH #227, 2026-07-22).** `T <- value`
+succeeding means *the broker accepted the message*; what
+"accepted" obligates the broker to is defined per binding, and
+the broker may never accept a message it already knows it cannot
+handle under that binding's guarantee. Per binding:
+
+| Binding            | "Accepted" means                                                        |
+|--------------------|-------------------------------------------------------------------------|
+| none (in-process)  | dispatched to every born subscriber in this binary                      |
+| `unix(...)`        | handed to the peer connection, message boundaries preserved             |
+| `udp://...`        | handed to the local IP stack; lossy from there **by declaration**       |
+| `shm_ring(...)`    | slot claimed + committed, under the declared `on_overflow` policy       |
+| adapter locus      | whatever the adapter's own contract says (it owns delivery)             |
+
+This contract is what lets `<-` be an infallible statement: the
+error channel isn't missing, it's relocated to where it can be
+acted on. Consequences, all normative:
+
+- **Binding realization failure is a birth failure of the
+  declaring locus.** A `bindings { }` entry (or
+  `LOTUS_BUS_CONFIG` route) whose transport cannot be opened —
+  socket/bind/listen/addr failure, connect-retry timeout,
+  unparseable route — refuses the boot. There is no code path
+  where a binding fails to open and subsequent publishes report
+  success. Bindings live on the `main` locus, whose parent is
+  the root, so the unhandled default is the root failure shape:
+  the structural diagnostic on stderr + non-zero exit (the same
+  seat `lotus_root_panic` occupies; routing through a main-locus
+  `on_failure` is the planned extension of that seat). The
+  runtime primitive is `lotus_bus_binding_fail(subject, url)`.
+  Listener-side realization is synchronous at registration
+  (socket + bind + listen; UDP: parse + bind + group join) —
+  only the blocking accept / recv loop runs on the reader
+  thread, so a dead binding can never fail invisibly on a
+  detached thread.
+- **Per-send transient errors on a lossy transport are not
+  structural.** A UDP `sendto` failure is logged (once per errno
+  class), not fatal: the binding's guarantee is best-effort by
+  declaration, so downstream loss is within contract. An
+  established *stream* transport dying mid-run is currently
+  logged at send and EOF-terminates the reader; making binding
+  *loss* structural (with reconnection as a supervision policy,
+  not a transport feature) is an open decision — see GH #227's
+  follow-up discussion.
+- **Malformed `LOTUS_BUS_CONFIG` lines stay warn-and-skip**
+  (the file is an operator-layered override and the diagnostic
+  names the line); a well-formed line whose route cannot be
+  *opened* fails the boot like a `bindings { }` entry.
+
 Transport surface:
 
 - `unix("/path")` or `unix("/path", role: connect|listen)` —
   AF_UNIX framed-byte transport. Substrate-provided: the
   runtime's `lotus_transport_*` owns the delivery contract
-  directly. `role: listen` spawns a reader thread that fans
-  recv'd payloads into the local handler set; `role: connect`
-  opens a write-side transport that publish-site dispatch sends
-  to. When `role:` is omitted, the typechecker infers it from
-  the bus block (`publish` only → connect, `subscribe` only →
-  listen); if both publish and subscribe touch the topic, the
-  binding is rejected with a "specify `role:`" diagnostic.
+  directly. `role: listen` binds + listens synchronously at
+  registration (so a dead binding fails the boot, per the
+  publish contract above), then spawns a reader thread that
+  accepts the peer and fans recv'd payloads into the local
+  handler set; `role: connect` opens a write-side transport
+  that publish-site dispatch sends to. When `role:` is omitted,
+  the typechecker infers it from the bus block (`publish` only
+  → connect, `subscribe` only → listen); if both publish and
+  subscribe touch the topic, the binding is rejected with a
+  "specify `role:`" diagnostic.
 
 - `LocusName { field: value, ... }` — user-supplied
   protocol-layer adapter. Any locus that declares

@@ -14,58 +14,109 @@
 //! transport is exercised by the wire path, not by an actual
 //! socket peer.
 
-use std::process::Command;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use hale_codegen::build_executable;
 
+/// Compile transport_driver.c + lotus_arena.c into a peer binary
+/// (same recipe as tests/transport.rs). GH #227 made an
+/// unrealizable binding a birth failure, so the connect-role
+/// binding below needs a real listener peer — the pre-#227
+/// version of this test silently relied on the broker tolerating
+/// a dead transport.
+fn build_peer_driver(tag: &str) -> PathBuf {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut bin = std::env::temp_dir();
+    bin.push(format!("hale_codec_e2e_peer_{}", tag));
+    let status = Command::new("clang")
+        .arg(manifest.join("tests").join("transport_driver.c"))
+        .arg(manifest.join("runtime").join("lotus_arena.c"))
+        .arg("-O2")
+        .arg("-lpthread")
+        .arg("-o")
+        .arg(&bin)
+        .status()
+        .expect("clang invocation");
+    assert!(status.success(), "clang failed building peer driver");
+    bin
+}
+
 #[test]
 fn xor_codec_round_trip_through_in_process_wire_path() {
-    let src = r#"
-        type Msg { tag: Int = 0; }
-        type EncErr { kind: String = ""; }
-        type DecErr { kind: String = ""; }
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let sock = format!(
+        "{}/codec-e2e-{}-{}.sock",
+        std::env::temp_dir().display(),
+        std::process::id(),
+        nanos
+    );
+    let src = format!(
+        r#"
+        type Msg {{ tag: Int = 0; }}
+        type EncErr {{ kind: String = ""; }}
+        type DecErr {{ kind: String = ""; }}
 
-        topic MsgTopic { payload: Msg; subject: "codec.xor.msgs"; }
+        topic MsgTopic {{ payload: Msg; subject: "codec.xor.msgs"; }}
 
-        locus XorCodec {
-            fn encode(v: Msg) -> Bytes fallible(EncErr) {
+        locus XorCodec {{
+            fn encode(v: Msg) -> Bytes fallible(EncErr) {{
                 let scrambled = v.tag ^ 170;
                 return std::bytes::from_int(scrambled);
-            }
-            fn decode(b: Bytes) -> Msg fallible(DecErr) {
+            }}
+            fn decode(b: Bytes) -> Msg fallible(DecErr) {{
                 let raw = std::bytes::at(b, 0)
-                    or fail DecErr { kind: "oob" };
+                    or fail DecErr {{ kind: "oob" }};
                 let unxor = raw ^ 170;
-                return Msg { tag: unxor };
-            }
-        }
+                return Msg {{ tag: unxor }};
+            }}
+        }}
 
-        main locus App {
-            bus {
+        main locus App {{
+            bus {{
                 publish   MsgTopic;
                 subscribe MsgTopic as on_msg;
-            }
-            bindings {
-                MsgTopic: unix("/tmp/hale_codec_e2e.sock", role: connect)
-                          codec(XorCodec { });
-            }
-            fn on_msg(m: Msg) {
+            }}
+            bindings {{
+                MsgTopic: unix("{}", role: connect)
+                          codec(XorCodec {{ }});
+            }}
+            fn on_msg(m: Msg) {{
                 println("[sub] tag=", m.tag);
-            }
-            run() {
-                MsgTopic <- Msg { tag: 42 };
+            }}
+            run() {{
+                MsgTopic <- Msg {{ tag: 42 }};
                 std::time::sleep(150ms);
-            }
-        }
-        fn main() { App { }; }
-    "#;
-    let program = hale_syntax::parse_source(src).expect("parse");
+            }}
+        }}
+        fn main() {{ App {{ }}; }}
+    "#,
+        sock
+    );
+    let program = hale_syntax::parse_source(&src).expect("parse");
     let mut bin = std::env::temp_dir();
     bin.push("hale_test_codec_dispatch_roundtrip");
     build_executable(&program, &bin).expect("build");
+    // Listener peer first so the app's connect-with-retry lands.
+    // The peer just absorbs the (scrambled) wire bytes; the
+    // round-trip under test is the in-process wire path.
+    let driver = build_peer_driver("xor");
+    let listener = Command::new(&driver)
+        .arg("listen")
+        .arg(&sock)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn listener peer");
     let output = Command::new(&bin).output().expect("run");
+    let _ = listener.wait_with_output();
     let _ = std::fs::remove_file(&bin);
-    let _ = std::fs::remove_file("/tmp/hale_codec_e2e.sock");
+    let _ = std::fs::remove_file(&driver);
+    let _ = std::fs::remove_file(&sock);
     let stdout = String::from_utf8_lossy(&output.stdout);
     // The original tag is 42. encode XORs with 170 → 0xAA wire byte
     // (1 byte). decode XORs back → 42. Both encode and decode MUST
