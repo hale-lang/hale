@@ -50,7 +50,7 @@ Consequences:
 - The observation domain is **the system, not the process**.
   iris attaches to N processes and fuses.
 - Milestone 1 is a *running two-process system over a real
-  binding*, not a static visualization (§12).
+  binding*, not a static visualization (§13).
 - The instrumentation design treats networked edges as
   first-class instruments (§7), not decorations.
 
