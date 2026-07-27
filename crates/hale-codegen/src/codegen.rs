@@ -1746,6 +1746,14 @@ pub fn build_executable_with_options(
         "compress",
         &rt_cflags,
     )?;
+    // iris P4: native observation emission (PROTOCOL v0.1). Own TU;
+    // probes in lotus_arena.c are weak-guarded so helper binaries
+    // that compile the arena TU alone still link.
+    let obs_o = compile_cached_runtime_object(
+        RUNTIME_OBS_C_SOURCE,
+        "obs",
+        &rt_cflags,
+    )?;
 
     // m96: locate the tree-sitter shim staticlib produced by the
     // sibling `hale-ts-shim` workspace crate. We don't try to
@@ -1765,7 +1773,8 @@ pub fn build_executable_with_options(
         .arg(&arena_o)
         .arg(&tls_o)
         .arg(&shm_ring_o)
-        .arg(&compress_o);
+        .arg(&compress_o)
+        .arg(&obs_o);
     if lto_active {
         // Full-LTO link: -flto pulls the Hale bitcode + the runtime
         // bitcode TUs through the LTO backend at -O3, inlining the arena
@@ -1959,6 +1968,8 @@ const RUNTIME_C_SOURCE: &str = include_str!("../runtime/lotus_arena.c");
 const RUNTIME_TLS_C_SOURCE: &str = include_str!("../runtime/lotus_tls.c");
 const RUNTIME_COMPRESS_C_SOURCE: &str =
     include_str!("../runtime/lotus_compress.c");
+const RUNTIME_OBS_C_SOURCE: &str =
+    include_str!("../runtime/lotus_obs.c");
 /// Form K5 (2026-05-20) — POSIX SHM ring substrate for zero-copy
 /// bus payload routing. Independent translation unit; pulled in
 /// unconditionally so user programs that bind a topic to a

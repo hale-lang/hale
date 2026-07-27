@@ -3161,6 +3161,31 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
+            // iris P4: LOCUS_BIRTH for pinned loci — their birth
+            // runs on the spawned thread, so the cooperative-path
+            // probe never sees them. Parent is unattributed here
+            // (the spawning locus's self isn't marshaled into the
+            // thread-main); v0 accepts the root-parent rendering.
+            {
+                let ptr_t2 =
+                    self.context.ptr_type(AddressSpace::default());
+                let obs_fn = self
+                    .module
+                    .get_function("lotus_obs_locus_birth")
+                    .expect("lotus_obs_locus_birth declared");
+                let tname = self.global_string(locus_name);
+                self.builder
+                    .build_call(
+                        obs_fn,
+                        &[
+                            thread_self.into(),
+                            tname.into(),
+                            ptr_t2.const_null().into(),
+                        ],
+                        &format!("{}.obs.birth.pinned", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
             for kind in &["birth", "run"] {
                 if let Some(method) = info.methods.get(*kind) {
                     let skip = info.empty_lifecycle.contains(*kind);
@@ -3443,6 +3468,30 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
+        }
+        // iris P4: LOCUS_BIRTH probe (no-op unless LOTUS_OBS=1;
+        // one predictable branch inside the C fn otherwise).
+        // Parent = the instantiating locus's self when inside a
+        // lifecycle/method body, null from free fns.
+        {
+            let ptr_t = self.context.ptr_type(AddressSpace::default());
+            let obs_fn = self
+                .module
+                .get_function("lotus_obs_locus_birth")
+                .expect("lotus_obs_locus_birth declared");
+            let tname = self.global_string(locus_name);
+            let parent: inkwell::values::BasicValueEnum = self
+                .current_self
+                .as_ref()
+                .map(|cs| cs.self_ptr.into())
+                .unwrap_or_else(|| ptr_t.const_null().into());
+            self.builder
+                .build_call(
+                    obs_fn,
+                    &[self_ptr.into(), tname.into(), parent.into()],
+                    &format!("{}.obs.birth", locus_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         if let Some(birth_closures_fn) = info.birth_closures_fn {
             let (parent_self, handler_ptr) =

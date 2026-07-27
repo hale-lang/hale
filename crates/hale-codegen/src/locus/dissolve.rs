@@ -865,6 +865,23 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         self_ptr: PointerValue<'ctx>,
         locus_name: &str,
     ) -> Result<(), CodegenError> {
+        // iris P4: LOCUS_DISSOLVE probe at THE teardown
+        // chokepoint (every dissolve path funnels here). No-op
+        // unless LOTUS_OBS=1.
+        {
+            let obs_fn = self
+                .module
+                .get_function("lotus_obs_locus_dissolve")
+                .expect("lotus_obs_locus_dissolve declared");
+            let i64_t = self.context.i64_type();
+            self.builder
+                .build_call(
+                    obs_fn,
+                    &[self_ptr.into(), i64_t.const_zero().into()],
+                    &format!("{}.obs.dissolve", locus_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
         // Arena-elision counterpart: when `__arena` was pointed
         // at the caller's arena at instantiation (see
         // `locus_arena_elidable` + the matching branch in
