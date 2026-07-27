@@ -933,6 +933,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ),
             None,
         );
+        // iris P4 — lifecycle observation probes (lotus_obs.c):
+        // declare void @lotus_obs_locus_birth(ptr self, ptr type_name, ptr parent)
+        // declare void @lotus_obs_locus_dissolve(ptr self, i64 reason)
+        self.module.add_function(
+            "lotus_obs_locus_birth",
+            self.context.void_type().fn_type(
+                &[ptr_t.into(), ptr_t.into(), ptr_t.into()],
+                false,
+            ),
+            None,
+        );
+        self.module.add_function(
+            "lotus_obs_locus_dissolve",
+            self.context
+                .void_type()
+                .fn_type(&[ptr_t.into(), i64_t2.into()], false),
+            None,
+        );
         // declare i32 @lotus_process_wait(i32 pid,
         //                                 ptr out_code,
         //                                 ptr out_signal)

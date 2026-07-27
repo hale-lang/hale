@@ -5552,6 +5552,25 @@ static void bus_inline_drain_one(lotus_bus_queue_t *q);
  * because codegen proved the whole program has no pinned / cross-pool
  * placement, so g_bus_has_pinned is provably 0 and the acquire-load is
  * dead work. */
+/* iris P4 — native observation probes, defined in lotus_obs.c.
+ * WEAK: helper binaries that compile this TU alone (transport
+ * drivers, model checkers) link without the obs TU; every call
+ * site guards on the symbol's presence. */
+void lotus_obs_bus_publish(const char *subject, void *publisher_self,
+                           uint64_t payload_bytes)
+    __attribute__((weak));
+void lotus_obs_bus_deliver(const char *subject, void *subscriber_self,
+                           uint64_t payload_bytes)
+    __attribute__((weak));
+int64_t lotus_obs_binding_register(const char *subject,
+                                   int64_t transport_kind)
+    __attribute__((weak));
+void lotus_obs_net_send(int64_t binding_id, uint64_t seq,
+                        uint64_t bytes) __attribute__((weak));
+void lotus_obs_net_deliver(int64_t binding_id, uint64_t seq,
+                           uint64_t bytes) __attribute__((weak));
+void lotus_obs_restart(const char *subject) __attribute__((weak));
+
 /* GH #255 phase 2 — forward decls: the bound-enforcement hooks
  * are defined with the registry machinery further down. */
 int lotus_subject_match(const char *pattern, const char *subject);
@@ -8209,6 +8228,13 @@ void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
                               const void *payload,
                               size_t payload_size) {
     if (!subject) return;
+    /* iris P4: BUS_PUBLISH once per dispatch; BUS_DELIVER per
+     * matched target below (enqueue-time — see lotus_obs.c v0
+     * scope notes). Publisher attribution rides the caller-arena
+     * TLS owner when available; v0 passes NULL (unattributed). */
+    if (lotus_obs_bus_publish) {
+        lotus_obs_bus_publish(subject, NULL, (uint64_t)payload_size);
+    }
     size_t delivered = 0;
     for (size_t i = 0; i < g_bus_count; i++) {
         lotus_bus_entry_t *e = &g_bus_entries[i];
@@ -8240,6 +8266,10 @@ void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
             lotus_bus_queue_enqueue(queue, e->handler, e->self_ptr,
                                     payload, payload_size);
             delivered++;
+        }
+        if (lotus_obs_bus_deliver) {
+            lotus_obs_bus_deliver(subject, e->self_ptr,
+                                  (uint64_t)payload_size);
         }
     }
     if (delivered == 0 && lotus_bus_log_drop_enabled()) {
@@ -12818,6 +12848,7 @@ typedef struct lotus_bus_remote_entry {
     uint64_t           ctr_reconnects;
     uint64_t           ctr_seq_gaps;   /* framed mode: recv'd seq != last+1 */
     uint64_t           ctr_waits;      /* GH #255: publishes that parked in `or wait` */
+    int64_t            obs_binding_id; /* iris P4: manifest id; 0 = unregistered, -1 = declined */
 } lotus_bus_remote_entry_t;
 
 #define LOTUS_CTR_BUMP(field) \
@@ -12963,9 +12994,23 @@ static void lotus_bus_unix_serve(lotus_bus_remote_entry_t *entry) {
             lotus_bus_local_dispatch(g_bus_queue_for_remote,
                                      entry->subject,
                                      struct_buf, (size_t)struct_size);
-            LOTUS_CTR_BUMP(entry->ctr_msgs_delivered);
+            uint64_t dseq = LOTUS_CTR_BUMP(entry->ctr_msgs_delivered);
             LOTUS_CTR_ADD(entry->ctr_bytes_delivered, n);
             entry->ctr_seq_gaps = t->seq_gaps;   /* framed mode */
+            /* iris P4: NET_DELIVER — framed mode carries the wire
+             * seq (t->last_seq); datagram/legacy falls back to the
+             * local deliver count. */
+            if (lotus_obs_net_deliver && lotus_obs_binding_register) {
+                if (entry->obs_binding_id == 0) {
+                    int64_t id = lotus_obs_binding_register(
+                        entry->subject ? entry->subject : "?", 0);
+                    entry->obs_binding_id = (id > 0) ? id : -1;
+                }
+                if (entry->obs_binding_id > 0) {
+                    lotus_obs_net_deliver(entry->obs_binding_id, dseq,
+                                          (uint64_t)n);
+                }
+            }
         }
         /* GH #233 step 2: re-arm. Close the dead connection and
          * loop back into accept for the next peer. */
@@ -13276,8 +13321,20 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
         lotus_bus_local_dispatch(g_bus_queue_for_remote,
                                  args->entry->subject,
                                  struct_buf, (size_t)struct_size);
-        LOTUS_CTR_BUMP(args->entry->ctr_msgs_delivered);
+        uint64_t dseq2 = LOTUS_CTR_BUMP(args->entry->ctr_msgs_delivered);
         LOTUS_CTR_ADD(args->entry->ctr_bytes_delivered, n);
+        if (lotus_obs_net_deliver && lotus_obs_binding_register) {
+            if (args->entry->obs_binding_id == 0) {
+                int64_t id = lotus_obs_binding_register(
+                    args->entry->subject ? args->entry->subject : "?",
+                    1);
+                args->entry->obs_binding_id = (id > 0) ? id : -1;
+            }
+            if (args->entry->obs_binding_id > 0) {
+                lotus_obs_net_deliver(args->entry->obs_binding_id,
+                                      dseq2, (uint64_t)n);
+            }
+        }
     }
     free(args);
     return NULL;
@@ -13633,6 +13690,10 @@ int64_t lotus_bus_transport_reconnect(int64_t handle) {
     if (!e->transport) return -1;
     e->lost = 0;
     LOTUS_CTR_BUMP(e->ctr_reconnects);
+    /* iris P4: RESTART record for the reconnected binding. */
+    if (lotus_obs_restart) {
+        lotus_obs_restart(e->subject);
+    }
     return 0;
 }
 
@@ -13921,8 +13982,21 @@ void lotus_bus_remote_fanout(const char *subject,
             continue;
         }
         if (lotus_transport_send(e->transport, payload, payload_size) == 0) {
-            LOTUS_CTR_BUMP(e->ctr_msgs_sent);
+            uint64_t sent_seq = LOTUS_CTR_BUMP(e->ctr_msgs_sent);
             LOTUS_CTR_ADD(e->ctr_bytes_sent, payload_size);
+            /* iris P4: NET_SEND with the per-binding monotonic seq.
+             * Lazy binding registration on first observed send. */
+            if (lotus_obs_net_send && lotus_obs_binding_register) {
+                if (e->obs_binding_id == 0) {
+                    int64_t id = lotus_obs_binding_register(
+                        e->subject ? e->subject : "?", 0);
+                    e->obs_binding_id = (id > 0) ? id : -1;
+                }
+                if (e->obs_binding_id > 0) {
+                    lotus_obs_net_send(e->obs_binding_id, sent_seq,
+                                       (uint64_t)payload_size);
+                }
+            }
         } else {
             LOTUS_CTR_BUMP(e->ctr_send_failures);
             if (e->locus_served) {
@@ -14183,6 +14257,11 @@ void lotus_bus_dispatch_wire(const char *subject,
                              const void *wire_bytes,
                              size_t wire_size) {
     if (!subject || !wire_bytes || wire_size == 0) return;
+    /* iris P4: BUS_PUBLISH for the cross-thread wire path (the
+     * deliver probe rides the per-subscriber fanout below). */
+    if (lotus_obs_bus_publish) {
+        lotus_obs_bus_publish(subject, NULL, (uint64_t)wire_size);
+    }
     /* Phase-3 Task 9 (2026-05-20): per-subscriber arena routing.
      * Previously this deserialize-once-then-fanout shape parked
      * the deserialized String/Bytes pointers in the program-
@@ -14346,11 +14425,19 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
     if (flat) {
         /* Verbatim local fanout (mirror lotus_bus_local_dispatch). */
         size_t delivered = 0;
+        /* iris P4 (mirrors the dynamic path). */
+        if (lotus_obs_bus_publish) {
+            lotus_obs_bus_publish(subject, NULL, (uint64_t)struct_size);
+        }
         if (b) {
             for (size_t k = 0; k < b->count; k++) {
                 lotus_bus_entry_t *e = &g_bus_entries[b->idx[k]];
                 if (!e->subject) continue;           /* quarantined */
                 if (e->key_filter_kind != 0) continue;
+                if (lotus_obs_bus_deliver) {
+                    lotus_obs_bus_deliver(subject, e->self_ptr,
+                                          (uint64_t)struct_size);
+                }
                 if (e->mailbox) {
                     lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
                                        struct_payload, (size_t)struct_size);
