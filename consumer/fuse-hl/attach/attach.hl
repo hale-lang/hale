@@ -1,0 +1,26 @@
+// attach — FFI surface over glue.c (see glue.c header).
+@ffi("c") fn fz_attach(reg_path: String) -> Int;
+@ffi("c") fn fz_detach(h: Int);
+@ffi("c") fn fz_alive(h: Int) -> Int;
+@ffi("c") fn fz_pid(h: Int) -> Int;
+@ffi("c") fn fz_overruns(h: Int) -> Int;
+@ffi("c") fn fz_next(h: Int) -> Int;
+@ffi("c") fn fz_ev_ts() -> Int;
+@ffi("c") fn fz_ev_kind() -> Int;
+@ffi("c") fn fz_ev_id() -> Int;
+@ffi("c") fn fz_ev_seq() -> Int;
+@ffi("c") fn fz_ev_birth_parent() -> Int;
+@ffi("c") fn fz_ev_birth_type() -> Int;
+@ffi("c") fn fz_ev_w1() -> Int;
+@ffi("c") fn fz_ev_bus_locus() -> Int;
+@ffi("c") fn fz_next_batch(h: Int, buf: Bytes) -> Int;
+@ffi("c") fn fz_entry_count(h: Int) -> Int;
+@ffi("c") fn fz_entry_kind(h: Int, i: Int) -> Int;
+@ffi("c") fn fz_entry_id(h: Int, i: Int) -> Int;
+@ffi("c") fn fz_entry_shape_hex(h: Int, i: Int) -> String;
+@ffi("c") fn fz_name(h: Int, kind: Int, id: Int) -> String;
+@ffi("c") fn fz_counter_line(h: Int, kind: Int, id: Int) -> Int;
+@ffi("c") fn fz_counter(h: Int, line: Int, cell: Int) -> Int;
+@ffi("c") fn fz_now() -> Int;
+@ffi("c") fn fz_unlink(path: String);
+@ffi("c") fn fz_set_sndtimeo(fd: Int, ms: Int);

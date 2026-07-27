@@ -1,0 +1,2 @@
+[ffi]
+csrc = ["glue.c", "../../obs_attach.c"]
