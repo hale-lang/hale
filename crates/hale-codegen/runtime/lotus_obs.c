@@ -155,6 +155,18 @@ static const char *obs_shape_for(const char *subject) {
 }
 
 static void *g_seg; static size_t g_seg_len;
+/* iris handoff-3 P11/P12: a stable nonzero 16-bit per-process
+ * identity. NET_SEND stamps it; the wire carries it; NET_DELIVER
+ * echoes the WIRE origin (not the reader's) — so iris matches a
+ * send and its delivers on (origin, seq), which is unique across
+ * the fleet even with multiple senders multicasting one subject
+ * (the receiver-local delivery count summed across senders was
+ * the zero-edges cause). Folded from the full pid; never 0 (0 is
+ * the unattributed/legacy sentinel). */
+static int obs_on(void);
+static uint16_t g_obs_origin = 0;
+uint64_t lotus_obs_origin(void) { return g_obs_origin; }
+int lotus_obs_active(void) { return obs_on(); }
 static obs_hdr_t *H; static obs_ctrl_t *C; static obs_mh_t *MH;
 static obs_me_t *ME; static char *POOL; static uint8_t *MODE;
 static obs_cline_t *CNT; static obs_rdesc_t *RD;
@@ -285,6 +297,11 @@ static int obs_create(int64_t rings, int64_t slots) {
       (unsigned long long)H->started_wall_ns, (int)rings);
     fclose(f);
     rename(tmp, g_reg_path);
+  }
+  {
+    uint32_t pid = (uint32_t)getpid();
+    uint16_t o = (uint16_t)((pid ^ (pid >> 16)) & 0xFFFFu);
+    g_obs_origin = o ? o : (uint16_t)0xFFFFu;
   }
   atexit(lotus_obs_teardown);
   return 1;
@@ -486,6 +503,20 @@ void lotus_obs_bus_publish(const char *subject, void *publisher_self,
   if (!obs_on() || !subject) return;
   obs_topic_slot_t *t = obs_topic_slot(subject, 0);
   if (!t) return;
+  /* iris handoff-3 P13: consume-once publisher TLS. A genuine
+   * local publish set it in lower_send right before the dispatch
+   * that reaches here (same thread, synchronous). The reader
+   * thread re-dispatches INBOUND wire messages through this same
+   * lotus_bus_local_dispatch with no TLS — those are deliveries
+   * (already covered by NET_DELIVER + per-subscriber BUS_DELIVER),
+   * NOT local publishes, and were stamping every record locus=0
+   * (the fleet's pub=0 attribution). So: attribute + count + emit
+   * only when a real publisher is present; the re-dispatch path
+   * finds NULL and is skipped. Cleared after read so a stale value
+   * can't leak to the next (possibly re-dispatch) call. */
+  void *pub = publisher_self ? publisher_self : g_obs_tls_publisher;
+  g_obs_tls_publisher = NULL;
+  if (!pub) return; /* inbound re-dispatch / unattributed — not a publish */
   uint64_t seq =
       atomic_fetch_add_explicit(&t->seq, 1, memory_order_relaxed);
   obs_count(MK_TOPIC, t->id, 0, 1);              /* published */
@@ -493,8 +524,7 @@ void lotus_obs_bus_publish(const char *subject, void *publisher_self,
   if (!obs_gate()) return;
   uint8_t mode = MODE[t->id & (OBS_ENTRY_CAP - 1)];
   if (mode < 2) return; /* OFF / COUNTERS */
-  if (!publisher_self) publisher_self = g_obs_tls_publisher;
-  uint32_t locus = publisher_self ? obs_inst_id_of(publisher_self) : 0;
+  uint32_t locus = obs_inst_id_of(pub);
   obs_emit(EK_BUS_PUBLISH, (uint32_t)t->id,
            obs_size_class(payload_bytes),
            ((uint64_t)locus & 0xFFFFFu)
@@ -532,24 +562,29 @@ int64_t lotus_obs_binding_register(const char *subject,
   return id;
 }
 
-void lotus_obs_net_send(int64_t binding_id, uint64_t seq,
-                        uint64_t bytes) {
-  if (binding_id < 0 || !obs_on()) return;
-  obs_count(MK_BINDING, binding_id, 0, 1);
-  obs_count(MK_BINDING, binding_id, 2, bytes);
+void lotus_obs_net_send(int64_t binding_id, uint64_t origin,
+                        uint64_t seq, uint64_t bytes) {
+  if (!obs_on()) return;
+  if (binding_id >= 0) {
+    obs_count(MK_BINDING, binding_id, 0, 1);
+    obs_count(MK_BINDING, binding_id, 2, bytes);
+  }
   if (!obs_gate()) return;
+  /* w1 = origin:16 | seq:48 (PROTOCOL §8, handoff-3 amendment).
+   * origin identifies the SENDER; the receiver echoes both from
+   * the wire so (origin, seq) is a fleet-unique message id. */
   obs_emit(EK_NET_SEND, 0, obs_size_class(bytes),
-           ((uint64_t)binding_id & 0xFFFFu)
+           ((uint64_t)origin & 0xFFFFu)
                | ((seq & 0xFFFFFFFFFFFFULL) << 16));
 }
 
-void lotus_obs_net_deliver(int64_t binding_id, uint64_t seq,
-                           uint64_t bytes) {
-  if (binding_id < 0 || !obs_on()) return;
-  obs_count(MK_BINDING, binding_id, 1, 1);
+void lotus_obs_net_deliver(int64_t binding_id, uint64_t origin,
+                           uint64_t seq, uint64_t bytes) {
+  if (!obs_on()) return;
+  if (binding_id >= 0) obs_count(MK_BINDING, binding_id, 1, 1);
   if (!obs_gate()) return;
   obs_emit(EK_NET_DELIVER, 0, obs_size_class(bytes),
-           ((uint64_t)binding_id & 0xFFFFu)
+           ((uint64_t)origin & 0xFFFFu)
                | ((seq & 0xFFFFFFFFFFFFULL) << 16));
 }
 
