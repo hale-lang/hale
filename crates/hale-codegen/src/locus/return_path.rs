@@ -443,10 +443,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let bytes = struct_ty
                     .size_of()
                     .expect("user-type struct has known size");
+                // iris handoff P1: consult the retire freelist so a
+                // steady-state form replace (vec.set) ping-pongs
+                // between reused blocks instead of growing the
+                // owner's arena ~sizeof(elem) per call.
                 let alloc_fn = self
                     .module
-                    .get_function("lotus_arena_alloc")
-                    .expect("lotus_arena_alloc declared");
+                    .get_function("lotus_arena_alloc_reusable")
+                    .expect("lotus_arena_alloc_reusable declared");
                 let i64_t = self.context.i64_type();
                 let new_struct = self
                     .builder

@@ -157,11 +157,15 @@ and write it through the raw-fd `std::io::tcp` functions
 (`send_fd(fd, bytes)` to write, `recv_into` to read, `close_fd`
 to hang up) or a borrowed
 `Stream { conn_fd: fd, owns_fd: false }`, and close it
-when the session ends. Two things to remember: the server's 5s
+when the session ends. Three things to remember: the server's 5s
 receive timeout is still set on the fd (clear it with
 `std::io::tcp::set_recv_timeout(fd, 0)` for a long-lived
-session), and a takeover response without stashing `req.conn_fd`
-leaks the connection.
+session); a stalled peer — a half-dead connection, a throttled
+browser tab — will block your sends *forever* unless you bound
+them, so set `std::io::tcp::set_send_timeout(fd, 200ms)` before
+entering a push loop (an SSE/WS fan-out stalls its whole loop on
+one dead client otherwise); and a takeover response without
+stashing `req.conn_fd` leaks the connection.
 
 ## Calling out
 

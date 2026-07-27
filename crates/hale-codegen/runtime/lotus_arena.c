@@ -4570,6 +4570,91 @@ void lotus_hashmap_set_retire_desc(void *map_ptr,
  * is 9 bytes ⇒ 16-byte nodes need size >= 16; smaller blobs are
  * simply dropped back to the shell list without reuse — they cost
  * almost nothing to leak and can't hold a node). */
+/* GH iris-handoff P1 (2026-07-27): put one block on the reuse
+ * freelist IMMEDIATELY (no pending window). Used by the form
+ * pointer-storage replace paths (vec.set overwriting a slot),
+ * where the deep copy of the NEW value completed before the old
+ * pointer is unlinked — under the single-owner value rule no
+ * live alias may survive the overwrite, so the block is
+ * reclaimable now. Same size-16 split as the flush below. */
+int64_t lotus_bytes_len(const void *b); /* defined below */
+
+static void lotus_arena_free_block_now(lotus_arena_t *a, void *blob,
+                                       size_t size) {
+    if (!a || !blob) return;
+    if (size >= 16) {
+        char *b = (char *)blob;
+        memcpy(b, &size, sizeof(size_t));
+        memcpy(b + 8, &a->retire_free, sizeof(void *));
+        a->retire_free = b;
+    } else {
+        lotus_retire_shell_t *sh =
+            (lotus_retire_shell_t *)a->retire_shells;
+        if (sh) {
+            a->retire_shells = sh->next;
+        } else {
+            sh = (lotus_retire_shell_t *)lotus_arena_alloc(
+                a, sizeof(lotus_retire_shell_t), 8);
+            if (!sh) return;
+        }
+        sh->blob = blob;
+        sh->size = size;
+        sh->next = (lotus_retire_shell_t *)a->retire_free_small;
+        a->retire_free_small = sh;
+    }
+}
+
+/* GH iris-handoff P1: retire everything a REPLACED pointer-storage
+ * form element owned — its top-level String fields (surviving
+ * pointers excluded, intra-call aliasing deduped: the hashmap
+ * retire-cell discipline) and then the element block itself.
+ * `size` sentinels: -1 = old_blob is a NUL-terminated String
+ * (strlen+1); -2 = old_blob is a Bytes blob (8 + len); >= 0 =
+ * struct block of that many bytes. All guards live here so the
+ * publish-site IR is two loads + one call. */
+void lotus_form_retire_replaced(void *arena_ptr, void *old_blob,
+                                void *new_blob, int64_t size,
+                                const int32_t *str_offs,
+                                int64_t n_offs) {
+    lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
+    if (!a || !old_blob || old_blob == new_blob) return;
+    if (!lotus_arena_contains_ptr(a, old_blob)) return;
+    const char *old_v = (const char *)old_blob;
+    const char *new_v = (const char *)new_blob;
+    for (int64_t i = 0; i < n_offs; i++) {
+        int32_t off = str_offs[i];
+        char *oldp;
+        memcpy(&oldp, old_v + off, sizeof(char *));
+        if (!oldp) continue;
+        if (new_v) {
+            char *newp;
+            memcpy(&newp, new_v + off, sizeof(char *));
+            if (oldp == newp) continue; /* survives into the new elem */
+        }
+        int dup = 0;
+        for (int64_t j = 0; j < i; j++) {
+            char *pj;
+            memcpy(&pj, old_v + str_offs[j], sizeof(char *));
+            if (pj == oldp) { dup = 1; break; }
+        }
+        if (dup) continue;
+        if (!lotus_arena_contains_ptr(a, oldp)) continue;
+        lotus_arena_free_block_now(a, oldp, strlen(oldp) + 1);
+    }
+    size_t block_size;
+    if (size == -1) {
+        block_size = strlen((const char *)old_blob) + 1;
+    } else if (size == -2) {
+        block_size =
+            (size_t)lotus_bytes_len(old_blob) + sizeof(int64_t);
+    } else if (size >= 0) {
+        block_size = (size_t)size;
+    } else {
+        return;
+    }
+    lotus_arena_free_block_now(a, old_blob, block_size);
+}
+
 void lotus_arena_flush_retired(void *arena_ptr) {
     lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
     if (!a) return;
@@ -4671,7 +4756,11 @@ void *lotus_arena_alloc_reusable(void *arena_ptr, uint64_t size,
                                  uint64_t align) {
     lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
     if (!a) return NULL;
-    if (align <= 8) {
+    /* GH iris-handoff P1: struct blocks alloc at align 16 (the
+     * i128/Decimal movdqa fix) — admit them; the pops match by
+     * candidate ADDRESS alignment, so a 16-align request simply
+     * skips under-aligned blocks. */
+    if (align <= 16) {
         void *b = size >= 16
             ? lotus_retire_free_pop(a, (size_t)size, (size_t)align)
             : lotus_retire_free_small_pop(a, (size_t)size, (size_t)align);

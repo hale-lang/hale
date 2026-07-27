@@ -99,8 +99,22 @@ fn form_grows(form_name: &str) -> bool {
 /// Phase D / D2: the method names that *insert* into a collection (vs read
 /// it). Gated by `form_grows` on the receiver's form, so a `get`/`len`/`pop`
 /// never counts.
+///
+/// iris handoff P1 (2026-07-27): `set` no longer counts for VEC —
+/// a vec `.set` replaces in place and RETIRES the old element onto
+/// the reuse freelist (RSS-proven flat at 2M sets), so it is not an
+/// accumulation channel anymore. `hashmap.set` keeps counting: it
+/// can insert a NEW key (growth), and its replaced-value retirement
+/// already has its own retired_store modeling (Gap D).
 fn is_insert_method(method: &str) -> bool {
     matches!(method, "push" | "set" | "insert" | "add")
+}
+
+fn is_growing_insert(form_name: &str, method: &str) -> bool {
+    if form_name == "vec" && method == "set" {
+        return false;
+    }
+    form_grows(form_name) && is_insert_method(method)
 }
 
 /// The unqualified name of a `Named` type expression (`SegVec` from
@@ -432,6 +446,8 @@ pub struct FormShape {
 /// The bundle-wide allocation summary + call graph.
 #[derive(Debug, Clone, Default)]
 pub struct AllocSummary {
+    /// iris handoff P2.2: loci only ever instantiated eagerly.
+    pub eager_only_loci: BTreeSet<String>,
     pub fns: BTreeMap<FnKey, FnSummary>,
     /// GH #18 item 1: loci carrying `@bounded` — their leak sites are
     /// reported even without the `--warn-unbounded-alloc` survey flag
@@ -588,6 +604,39 @@ impl AllocSummary {
         callers: &BTreeMap<FnKey, BTreeSet<FnKey>>,
     ) -> SiteVerdict {
         let intra = site.verdict();
+        // iris handoff P2.2: EAGER-ONLY loci — every instantiation is
+        // a bare statement that dissolves (arena destroyed) at the
+        // statement itself.
+        //  (a) An instantiation SITE of such a locus in a parent
+        //      loop reclaims per iteration — the fresh instance
+        //      cannot outlive the statement.
+        //  (b) A site INSIDE such a locus's own frames whose value
+        //      stays in the instance (Local / StoredToSelf) is
+        //      bounded by that statement-scoped lifetime. Returned /
+        //      Sent escapes keep their normal analysis — they leave
+        //      the instance.
+        // `while true` inside the eager locus still disqualifies
+        // (the statement never completes).
+        // (a) applies regardless of the PARENT loop's kind — even
+        // under `while true`, the eager child drains/dissolves and
+        // its arena is destroyed at the statement, every iteration.
+        if let AllocKind::StructLit(n) = &site.kind {
+            if self.eager_only_loci.contains(n) {
+                return SiteVerdict::PerIterationReclaim;
+            }
+        }
+        if !site.in_infinite_loop {
+            if let Some(l) = &owner.locus {
+                if self.eager_only_loci.contains(l)
+                    && matches!(
+                        site.escape,
+                        Escape::Local | Escape::StoredToSelf
+                    )
+                {
+                    return SiteVerdict::PerIterationReclaim;
+                }
+            }
+        }
         let owner_scratchless = scratchless.contains(owner);
         match intra {
             SiteVerdict::AccumulatesUnbounded => {
@@ -876,6 +925,169 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
     let mut retirable_structs: BTreeSet<String> = BTreeSet::new();
     // 2026-07-01 — per-locus scalar-[T; N] param fields (inline layout).
     let mut locus_inline_arrays: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    // iris handoff P2.1 (2026-07-27): top-level `const` ints, so a
+    // `while i < NET_SLOTS * WINDOW` ceiling const-folds to a real
+    // bound instead of ranking as a runtime `while`.
+    let mut const_ints: BTreeMap<String, i64> = BTreeMap::new();
+    for program in programs {
+        for item in &program.items {
+            if let TopDecl::Const(c) = item {
+                if let Some(v) =
+                    const_int_eval(&c.value, &const_ints)
+                {
+                    const_ints.insert(c.name.name.clone(), v);
+                }
+            }
+        }
+    }
+
+    // iris handoff P2.2 (2026-07-27): loci whose every instantiation
+    // is EAGER — a bare statement `L { ... };` that drains/dissolves
+    // (arena destroyed) at the statement itself. Their per-instance
+    // region accumulation is bounded by one parent statement, and an
+    // instantiation site in a parent loop reclaims per iteration.
+    // Conservative subtraction: any subscription (defers to scope
+    // exit), any use as a param-field type (parent-owned lifetime),
+    // any let-binding of the literal (defers to method exit), any
+    // appearance as an accept() param type, or `main` status
+    // disqualifies.
+    let mut eager_only_loci: BTreeSet<String> = BTreeSet::new();
+    {
+        let mut all: BTreeSet<String> = BTreeSet::new();
+        let mut deferred: BTreeSet<String> = BTreeSet::new();
+        fn has_while_true(b: &Block) -> bool {
+            b.stmts.iter().any(|st| match st {
+                Stmt::While { cond, body, .. } => {
+                    matches!(cond, Expr::Literal(Literal::Bool(true), _))
+                        || has_while_true(body)
+                }
+                Stmt::For { body, .. } => has_while_true(body),
+                Stmt::If(i) => {
+                    fn hif(i: &IfStmt) -> bool {
+                        if has_while_true(&i.then_block) {
+                            return true;
+                        }
+                        match i.else_block.as_deref() {
+                            Some(ElseBranch::Else(b)) => has_while_true(b),
+                            Some(ElseBranch::ElseIf(i2)) => hif(i2),
+                            None => false,
+                        }
+                    }
+                    hif(i)
+                }
+                Stmt::Block(b2) => has_while_true(b2),
+                _ => false,
+            })
+        }
+        fn scan_lets_if(i: &IfStmt, out: &mut BTreeSet<String>) {
+            scan_lets(&i.then_block, out);
+            if let Some(e) = &i.else_block {
+                match e.as_ref() {
+                    ElseBranch::Else(b) => scan_lets(b, out),
+                    ElseBranch::ElseIf(i2) => scan_lets_if(i2, out),
+                }
+            }
+        }
+        fn scan_lets(b: &Block, out: &mut BTreeSet<String>) {
+            for st in &b.stmts {
+                match st {
+                    Stmt::Let { value, .. } => {
+                        if let Expr::Struct { path, .. } = value {
+                            if path.segments.len() == 1 {
+                                out.insert(
+                                    path.segments[0].name.clone(),
+                                );
+                            }
+                        }
+                    }
+                    Stmt::While { body, .. } => scan_lets(body, out),
+                    Stmt::For { body, .. } => scan_lets(body, out),
+                    Stmt::If(i) => scan_lets_if(i, out),
+                    Stmt::Block(b2) => scan_lets(b2, out),
+                    _ => {}
+                }
+            }
+        }
+        for program in programs {
+            for item in &program.items {
+                let TopDecl::Locus(l) = item else { continue };
+                all.insert(l.name.name.clone());
+                if l.is_main {
+                    deferred.insert(l.name.name.clone());
+                }
+                for member in &l.members {
+                    match member {
+                        LocusMember::Bus(_) => {
+                            let has_sub =
+                                l.members.iter().any(|m| match m {
+                                    LocusMember::Bus(bb) => {
+                                        bb.members.iter().any(|bm| {
+                                            matches!(
+                                                bm,
+                                                BusMember::Subscribe {
+                                                    ..
+                                                }
+                                            )
+                                        })
+                                    }
+                                    _ => false,
+                                });
+                            if has_sub {
+                                deferred.insert(l.name.name.clone());
+                            }
+                        }
+                        LocusMember::Params(pb) => {
+                            for p in &pb.params {
+                                if let Some(ty) = &p.ty {
+                                    if let Some(n) =
+                                        single_named_type_name(ty)
+                                    {
+                                        deferred.insert(n);
+                                    }
+                                }
+                            }
+                        }
+                        LocusMember::Lifecycle(lc) => {
+                            for p in &lc.params {
+                                if let Some(n) =
+                                    single_named_type_name(&p.ty)
+                                {
+                                    deferred.insert(n);
+                                }
+                            }
+                            scan_lets(&lc.body, &mut deferred);
+                            // A `while true` anywhere in the locus's
+                            // own bodies means an eager statement may
+                            // never complete — no statement-scoped
+                            // lifetime to lean on.
+                            if has_while_true(&lc.body) {
+                                deferred.insert(l.name.name.clone());
+                            }
+                        }
+                        LocusMember::Fn(f) => {
+                            scan_lets(&f.body, &mut deferred);
+                            if has_while_true(&f.body) {
+                                deferred.insert(l.name.name.clone());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        for program in programs {
+            for item in &program.items {
+                if let TopDecl::Fn(f) = item {
+                    scan_lets(&f.body, &mut deferred);
+                }
+            }
+        }
+        for l in all {
+            if !deferred.contains(&l) {
+                eager_only_loci.insert(l);
+            }
+        }
+    }
 
     for program in programs {
         for item in &program.items {
@@ -977,6 +1189,7 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
 
     // Phase 2 — walk each body.
     let mut summary = AllocSummary::default();
+    summary.eager_only_loci = eager_only_loci;
     for (key, body, entry, enclosing_locus, param_types) in &bodies {
         let escaping = collect_escaping_names(body);
         let field_types = enclosing_locus
@@ -997,6 +1210,7 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
             loop_stack: Vec::new(),
             infinite_stack: Vec::new(),
             fn_body: body,
+            const_ints: &const_ints,
             store_target: None,
             var_types: param_types.iter().cloned().collect(),
             field_types,
@@ -1146,7 +1360,10 @@ pub fn unbounded_alloc_diags(programs: &[&Program], include_all: bool) -> Vec<Di
                 format!(
                     "unbounded allocation: this {} {} accumulates in `{}`'s region \
                      until the locus dissolves — it is never reclaimed per iteration, \
-                     so it grows without bound. Bound the loop; store it in a \
+                     so it grows without bound (or acknowledge an \
+                     intentionally-/domain-bounded shape with `@unbounded` \
+                     on the enclosing fn or lifecycle hook). Bound the loop; \
+                     store it in a \
                      capacity-bounded form (`@form(ring_buffer)` / `@form(lru_cache)` / \
                      a `capacity` slot) instead of a replaced field; mutate fixed state \
                      in place rather than rebuilding it; route the value over the bus \
@@ -1244,6 +1461,8 @@ struct Walker<'a> {
     /// `while v < N` counter is const-bounded (const init + only positive
     /// const increments anywhere in the fn).
     fn_body: &'a Block,
+    /// iris handoff P2.1: top-level const ints for ceiling folding.
+    const_ints: &'a BTreeMap<String, i64>,
     /// Phase D / D1: the `self.<field>` currently being assigned, set around
     /// the RHS walk of a `self.<field> = …` statement so an escaping
     /// allocation in that RHS records which field it lands in.
@@ -1435,7 +1654,8 @@ impl<'a> Walker<'a> {
                 // const-initialized and only ever incremented by positive
                 // consts is const-bounded; any other `while` is unbounded
                 // (its trip count is runtime, like a runtime `for`-iter).
-                let bounded = while_counter_bounded(cond, self.fn_body);
+                let bounded =
+                    while_counter_bounded(cond, self.fn_body, self.const_ints);
                 let kind = if bounded { LoopKind::WhileCounter } else { while_loop_kind(cond) };
                 let infinite = matches!(
                     cond,
@@ -1557,7 +1777,10 @@ impl<'a> Walker<'a> {
                 | Expr::Path2 { receiver, name, .. } = callee.as_ref()
                 {
                     if is_insert_method(&name.name) {
-                        if let Some(form) = self.growing_form_of_receiver(receiver) {
+                        if let Some(form) = self
+                            .growing_form_of_receiver(receiver)
+                            .filter(|f| is_growing_insert(f, &name.name))
+                        {
                             self.push_collection_insert(form, depth, *span);
                         }
                     }
@@ -1708,11 +1931,23 @@ fn while_loop_kind(cond: &Expr) -> LoopKind {
 /// a const ceiling → the trip count is bounded by a compile-time constant.
 /// Conservative: any non-increment mutation, shadowing, non-const init, or
 /// a `self.field` counter → false (never a false "bounded").
-fn while_counter_bounded(cond: &Expr, fn_body: &Block) -> bool {
+fn while_counter_bounded(
+    cond: &Expr,
+    fn_body: &Block,
+    const_ints: &BTreeMap<String, i64>,
+) -> bool {
+    // iris handoff P2.1: the ceiling may be any CONST-FOLDABLE int
+    // expression — a literal, a top-level `const` ident, or +/-/*
+    // arithmetic over those (`NET_SLOTS * WINDOW`). Runtime values
+    // still rank unbounded.
     let var = match cond {
         Expr::Binary { op: BinOp::Lt | BinOp::LtEq, left, right, .. } => {
-            match (left.as_ref(), right.as_ref()) {
-                (Expr::Ident(v), Expr::Literal(Literal::Int(_), _)) => v.name.as_str(),
+            match left.as_ref() {
+                Expr::Ident(v)
+                    if const_int_eval(right, const_ints).is_some() =>
+                {
+                    v.name.as_str()
+                }
                 _ => return false,
             }
         }
@@ -1734,6 +1969,42 @@ fn while_counter_bounded(cond: &Expr, fn_body: &Block) -> bool {
         && s.rebindings == 0
         && s.bad_assigns == 0
         && s.pos_increments >= 1
+}
+
+/// iris handoff P2.2: single-segment named type → its name.
+fn single_named_type_name(ty: &TypeExpr) -> Option<String> {
+    match ty {
+        TypeExpr::Named { path, generic_args, .. }
+            if path.segments.len() == 1 && generic_args.is_empty() =>
+        {
+            Some(path.segments[0].name.clone())
+        }
+        _ => None,
+    }
+}
+
+/// iris handoff P2.1: fold an int expression over literals,
+/// top-level `const` idents, and +/-/* arithmetic. None = not a
+/// compile-time constant.
+fn const_int_eval(
+    e: &Expr,
+    const_ints: &BTreeMap<String, i64>,
+) -> Option<i64> {
+    match e {
+        Expr::Literal(Literal::Int(v), _) => Some(*v),
+        Expr::Ident(id) => const_ints.get(&id.name).copied(),
+        Expr::Binary { op, left, right, .. } => {
+            let l = const_int_eval(left, const_ints)?;
+            let r = const_int_eval(right, const_ints)?;
+            match op {
+                BinOp::Add => l.checked_add(r),
+                BinOp::Sub => l.checked_sub(r),
+                BinOp::Mul => l.checked_mul(r),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 #[derive(Default)]
@@ -2447,6 +2718,105 @@ mod tests {
         assert!(
             !msgs.iter().any(|m| m.contains("struct Cell")),
             "retired struct replace must not be flagged, got: {:?}",
+            msgs
+        );
+    }
+
+    #[test]
+    fn const_expr_ceiling_ranks_bounded() {
+        // iris handoff P2.1: `while i < NET_SLOTS * WINDOW` with both
+        // top-level consts is a const-bounded counter, not a runtime
+        // while.
+        let src = r#"
+            const NET_SLOTS: Int = 16;
+            const WINDOW: Int = 4;
+            locus K {
+                params { seen: Int = 0; }
+                bus { subscribe "k" as on_k of type Int; }
+                birth() {
+                    let mut i = 0;
+                    while i < NET_SLOTS * WINDOW {
+                        let s = "x" + i;
+                        self.seen = self.seen + len(s);
+                        i = i + 1;
+                    }
+                }
+                fn on_k(n: Int) { self.seen = self.seen + n; }
+            }
+            fn main() { }
+        "#;
+        let msgs = leak_msgs(src);
+        assert!(
+            msgs.is_empty(),
+            "const-expr ceiling must rank bounded, got: {:?}",
+            msgs
+        );
+    }
+
+    #[test]
+    fn eager_child_in_run_loop_not_flagged() {
+        // iris handoff P2.2: a bare-statement child instantiated per
+        // iteration dissolves at the statement — neither the
+        // instantiation site nor the child's own self-stores
+        // accumulate, even under the parent's `while true`.
+        let src = r#"
+            locus Cycle {
+                params { n: Int = 0; work: String = ""; }
+                birth() {
+                    let mut i = 0;
+                    while i < 8 {
+                        self.work = self.work + "x";
+                        i = i + 1;
+                    }
+                }
+            }
+            locus Driver {
+                params { r: Int = 0; }
+                bus { subscribe "tick" as on_t of type Int; }
+                run() {
+                    while true {
+                        Cycle { n: self.r };
+                        self.r = self.r + 1;
+                    }
+                }
+                fn on_t(n: Int) { self.r = self.r + n; }
+            }
+            fn main() { }
+        "#;
+        let msgs = leak_msgs(src);
+        assert!(
+            !msgs.iter().any(|m| m.contains("Cycle")),
+            "eager per-iteration child must not flag, got: {:?}",
+            msgs
+        );
+    }
+
+    #[test]
+    fn let_bound_child_in_run_loop_still_flagged() {
+        // The counterpart: a LET-BOUND instantiation defers to method
+        // exit — under `while true` that is a real accumulation and
+        // must keep flagging.
+        let src = r#"
+            locus Cycle {
+                params { n: Int = 0; }
+            }
+            locus Driver {
+                params { r: Int = 0; }
+                bus { subscribe "tick" as on_t of type Int; }
+                run() {
+                    while true {
+                        let c = Cycle { n: self.r };
+                        self.r = self.r + c.n;
+                    }
+                }
+                fn on_t(n: Int) { self.r = self.r + n; }
+            }
+            fn main() { }
+        "#;
+        let msgs = leak_msgs(src);
+        assert!(
+            msgs.iter().any(|m| m.contains("Cycle")),
+            "let-bound child in while-true must stay flagged, got: {:?}",
             msgs
         );
     }
