@@ -93,6 +93,39 @@ for a completion signal ("exit when done") before returning.
 Set `LOTUS_BUS_LOG_DROP=1` to see any such drop while
 debugging.
 
+## When a consumer can't keep up
+
+Unbounded by default: most topics are low-rate control flow and
+a queue that grows briefly is fine. When a fast publisher meets
+a slow consumer, two opt-in knobs bound the damage — one for
+each side of the contract:
+
+```hale,fragment
+topic Frame {
+    payload: Reading;
+    bounded(1024);
+    on_full: fail;
+}
+```
+
+The topic bound is the *publisher's* contract: at capacity the
+broker refuses, and every send site must say what it does about
+that — `or raise` (a full queue is a bug), `or discard` (shed at
+the source, counted), or `or wait` (run at the consumer's pace).
+
+```hale,fragment
+subscribe Frame as on_frame bounded(64, drop_old);
+```
+
+The subscriber bound is that consumer's *private* coping
+strategy: `drop_old` keeps the newest 64 (right for reload-style
+events, where stale beats losing the freshest), `drop_new`
+rejects arrivals. A consumer bound below the topic bound sheds
+quietly before the publisher ever sees refusal. Pool- and
+pinned-placed subscribers don't take these bounds — their queues
+are already fixed-size rings that push back on producers
+directly.
+
 ## Why this doesn't break the tower
 
 In the [parent/child model](./parents-children.md), flow is

@@ -275,6 +275,133 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                 .build_unreachable()
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder.position_at_end(cont_bb);
+            // GH #255 phase 2: also wait for queue space on an
+            // `on_full: fail` topic (no-op when no registration
+            // carries a refuse bound). Same abort semantics.
+            let space_fn = self
+                .module
+                .get_function("lotus_bus_subject_wait_space")
+                .expect("lotus_bus_subject_wait_space declared");
+            let sret = self
+                .builder
+                .build_call(
+                    space_fn,
+                    &[queue_ptr.into(), subj_val.into()],
+                    "bus.wait.space",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("returns i64")
+                .into_int_value();
+            let saborted = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::SLT,
+                    sret,
+                    i64_t.const_zero(),
+                    "bus.wait.space.aborted",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let spanic_bb = self
+                .context
+                .append_basic_block(current_fn, "bus.wait.space.raise");
+            let scont_bb = self
+                .context
+                .append_basic_block(current_fn, "bus.wait.space.cont");
+            self.builder
+                .build_conditional_branch(saborted, spanic_bb, scont_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(spanic_bb);
+            self.builder
+                .build_call(
+                    panic_fn,
+                    &[
+                        ptr_t.const_null().into(),
+                        i64_t.const_zero().into(),
+                        typename_str.into(),
+                    ],
+                    "bus.wait.space.raise.call",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_unreachable()
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(scont_bb);
+        }
+        // GH #255 phase 2: `or raise` on an `on_full: fail` topic —
+        // synchronous refusal at the publish site. `or discard`
+        // needs no publish-site code: the enqueue-side cap sheds
+        // (counted) and the dispatch proceeds for everyone else.
+        let full_fail_hit = match subject {
+            Expr::Literal(Literal::String(s), _) => {
+                self.full_fail_subjects.contains_key(s)
+            }
+            _ => false,
+        };
+        if full_fail_hit
+            && matches!(or_disposition, Some(OrDisposition::Raise(_)))
+        {
+            let ptr_t = self.context.ptr_type(AddressSpace::default());
+            let i64_t = self.context.i64_type();
+            let refuse_fn = self
+                .module
+                .get_function("lotus_bus_subject_would_refuse")
+                .expect("lotus_bus_subject_would_refuse declared");
+            let r = self
+                .builder
+                .build_call(refuse_fn, &[subj_val.into()], "bus.full.check")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("returns i64")
+                .into_int_value();
+            let refused = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::NE,
+                    r,
+                    i64_t.const_zero(),
+                    "bus.full.refused",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let current_fn = self
+                .builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_parent())
+                .expect("inside a function");
+            let panic_bb = self
+                .context
+                .append_basic_block(current_fn, "bus.full.raise");
+            let cont_bb = self
+                .context
+                .append_basic_block(current_fn, "bus.full.cont");
+            self.builder
+                .build_conditional_branch(refused, panic_bb, cont_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(panic_bb);
+            let panic_fn = self
+                .module
+                .get_function("lotus_root_panic")
+                .expect("lotus_root_panic declared");
+            let msg = self.global_string(
+                "BusFull (publish refused: a subscriber is at the topic's `bounded` capacity under `on_full: fail`)",
+            );
+            self.builder
+                .build_call(
+                    panic_fn,
+                    &[
+                        ptr_t.const_null().into(),
+                        i64_t.const_zero().into(),
+                        msg.into(),
+                    ],
+                    "bus.full.raise.call",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_unreachable()
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(cont_bb);
         }
         // v1.x-FRAMEWORK: ephemeral-payload fast path. When the
         // value is a bare struct literal, the publisher-side

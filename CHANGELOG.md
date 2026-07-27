@@ -8,6 +8,26 @@ behavior.
 
 ## Unreleased
 
+- **Bounded topics + consumer shed bounds (GH #255 phase 2).**
+  Topic-level `bounded(N); on_full: fail;` makes publishes
+  refusal-fallible: every send site carries a disposition —
+  `or raise` (synchronous BusFull refusal), `or discard`
+  (at-capacity registrations shed the newcomer, counted), or
+  `or wait` (park until the drain frees space — queue-full is
+  the second wake source for the phase-1 disposition, no new
+  surface). Subscriber-level `bounded(N, drop_new|drop_old)` is
+  that consumer's private cap; `drop_old` keeps the newest N
+  (ring semantics — right for reload/telemetry events), and a
+  consumer bound below the topic bound sheds privately before
+  refusal ever fires (min governs). v1 scope: main-queue
+  subscribers only — pool queues and pinned mailboxes are
+  already bounded MPSC rings with producer-blocking
+  backpressure (GH #125), so declared bounds there are
+  typecheck-rejected with that explanation; err-payload
+  dispositions on full-fail topics land in a follow-up slice.
+  Self-checking corpus fixture `73-bounded-bus`; contracts
+  pinned by `bus_bounded_topics.rs`.
+
 - **`or wait` — park a publish through the loss window
   (GH #255 phase 1).** A send to a transport-bound topic can
   attach `or wait`: instead of the counted `dropped_lost` drop

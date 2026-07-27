@@ -589,6 +589,8 @@ fn register_topic(
         wire_subject: r.wire_subject,
         keyed_by: decl.keyed_by.as_ref().map(|i| i.name.clone()),
         on_unmatched: decl.on_unmatched,
+        bounded: decl.bounded.map(|(n, _)| n),
+        on_full_fail: decl.on_full_fail.is_some(),
         span: decl.span,
     };
     register_symbol(

@@ -520,7 +520,7 @@ fn resolve_payload(top: &TopScope, locus: &str, key: &str) -> String {
 /// First-placement-wins when a type is placed in multiple fields
 /// (the multi-instance case); placement is informational for the
 /// gate, so a conservative single label suffices.
-fn collect_subscriber_placements(bundle: &Bundle<'_>) -> BTreeMap<String, Placement> {
+pub(crate) fn collect_subscriber_placements(bundle: &Bundle<'_>) -> BTreeMap<String, Placement> {
     let mut out: BTreeMap<String, Placement> = BTreeMap::new();
 
     fn walk(items: &[TopDecl], out: &mut BTreeMap<String, Placement>) {

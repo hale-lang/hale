@@ -380,6 +380,9 @@ pub fn check_bundle(
     //     `where key == _` subscriber program-wide.
     //   - `where key == _` is only legal on fallback topics.
     check_phase3_fallback_subscribers(bundle, &mut diags);
+    // GH #255 phase 2: bounded-topic pairing + subscriber-bound
+    // placement rules.
+    check_bounded_bus(bundle, &mut diags);
     // F.31 Phase 5: single-threaded-method invariant. Walks
     // method bodies looking for cross-pool `self.X.foo()` calls
     // where X's locus type is placed on a different pool than
@@ -3614,6 +3617,75 @@ fn transport_satisfies(
 /// h`) or literal subject (`subscribe "k" as h of type T`). We
 /// validate both forms; for literal subjects we look up the topic
 /// by its wire subject string.
+/// GH #255 phase 2 bundle checks:
+/// * a topic `bounded(N)` requires `on_full: fail` (v1's only
+///   topic-level policy) and vice versa;
+/// * a subscribe-site `bounded(N, policy)` is only legal on a
+///   MAIN-queue subscriber: pool queues and pinned mailboxes are
+///   already bounded MPSC rings with producer-blocking
+///   backpressure (GH #125), so shed bounds there would
+///   misdescribe the actual contract.
+fn check_bounded_bus(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+    for program in bundle.programs.values() {
+        for item in &program.items {
+            if let TopDecl::Topic(t) = item {
+                match (t.bounded, t.on_full_fail) {
+                    (Some((_, bspan)), None) => diags.push(Diag::ty(
+                        bspan,
+                        "topic `bounded(N)` requires `on_full: fail;` \
+                         — a capacity with no declared policy is \
+                         meaningless (consumer-side shedding is \
+                         declared on the subscribe instead: \
+                         `bounded(N, drop_old)`)",
+                    )),
+                    (None, Some(fspan)) => diags.push(Diag::ty(
+                        fspan,
+                        "topic `on_full: fail;` requires `bounded(N);` \
+                         — a refusal policy with no capacity never \
+                         fires",
+                    )),
+                    _ => {}
+                }
+            }
+        }
+    }
+    let placements = crate::bus_graph::collect_subscriber_placements(bundle);
+    for program in bundle.programs.values() {
+        for item in &program.items {
+            let TopDecl::Locus(l) = item else { continue };
+            for member in &l.members {
+                let LocusMember::Bus(bb) = member else { continue };
+                for bm in &bb.members {
+                    let BusMember::Subscribe {
+                        bound: Some(b), ..
+                    } = bm
+                    else {
+                        continue;
+                    };
+                    let placed = placements
+                        .get(&l.name.name)
+                        .cloned()
+                        .unwrap_or(crate::bus_graph::Placement::SameThread);
+                    if placed != crate::bus_graph::Placement::SameThread {
+                        diags.push(Diag::ty(
+                            b.span,
+                            format!(
+                                "subscriber `bounded(N, ...)` is only \
+                                 supported on main-queue subscribers at \
+                                 v1, and `{}` is placed off-main — its \
+                                 pool/mailbox ring is already bounded \
+                                 with producer-blocking backpressure \
+                                 (GH #125)",
+                                l.name.name
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn check_phase3_fallback_subscribers(
     bundle: &Bundle<'_>,
     diags: &mut Vec<Diag>,
@@ -8817,7 +8889,7 @@ impl<'a> Checker<'a> {
         // or-disposition leaves the no-match err unhandled. We
         // resolve the topic by name/literal-subject and validate
         // both directions.
-        let target_topic: Option<(String, Option<UnmatchedPolicy>)> =
+        let target_topic: Option<(String, Option<UnmatchedPolicy>, bool)> =
             match subject {
                 Expr::Literal(Literal::String(s), _) => self
                     .top
@@ -8829,19 +8901,55 @@ impl<'a> Checker<'a> {
                                 || ti.wire_subject == *s
                                 || ti.name == *s =>
                         {
-                            Some((ti.name.clone(), ti.on_unmatched))
+                            Some((
+                                ti.name.clone(),
+                                ti.on_unmatched,
+                                ti.on_full_fail,
+                            ))
                         }
                         _ => None,
                     }),
                 Expr::Ident(id) => match self.top.lookup(&id.name) {
-                    Some(TopSymbol::Topic(ti)) => {
-                        Some((ti.name.clone(), ti.on_unmatched))
-                    }
+                    Some(TopSymbol::Topic(ti)) => Some((
+                        ti.name.clone(),
+                        ti.on_unmatched,
+                        ti.on_full_fail,
+                    )),
                     _ => None,
                 },
                 _ => None,
             };
-        let target_policy = target_topic.as_ref().map(|(_, p)| *p);
+        let target_policy = target_topic.as_ref().map(|(_, p, _)| *p);
+        let target_full_fail =
+            target_topic.as_ref().map_or(false, |(_, _, f)| *f);
+        // GH #255 phase 2: an `on_full: fail` topic's publishes are
+        // refusal-fallible — every send site carries a disposition.
+        // v1 wires raise / discard / wait; the err-payload
+        // dispositions (`or handler(err)` / `or fail <p>`) land in
+        // the follow-up slice and are rejected with a pointer.
+        if target_full_fail {
+            match or_disposition {
+                None => self.diags.push(Diag::ty(
+                    span,
+                    "publish to a topic with `on_full: fail` must \
+                     carry an `or` disposition — e.g. \
+                     `Subject <- value or raise` (or `or discard` / \
+                     `or wait`)",
+                )),
+                Some(OrDisposition::Substitute(_))
+                | Some(OrDisposition::Fail(_, _)) => {
+                    self.diags.push(Diag::ty(
+                        span,
+                        "`or handler(err)` / `or fail <payload>` on an \
+                         `on_full: fail` topic aren't wired yet — use \
+                         `or raise`, `or discard`, or `or wait` (the \
+                         err-payload dispositions land in the next \
+                         slice)",
+                    ));
+                }
+                _ => {}
+            }
+        }
         // GH #255 phase 1: `or wait` is its own disposition kind —
         // a delivery-mode modifier on a NON-fallible publish, only
         // meaningful when the topic has a declared transport
@@ -8864,16 +8972,16 @@ impl<'a> Checker<'a> {
             } else {
                 let is_bound = target_topic
                     .as_ref()
-                    .map_or(false, |(name, _)| {
-                        self.bound_topics.contains(name)
+                    .map_or(false, |(name, _, full_fail)| {
+                        *full_fail || self.bound_topics.contains(name)
                     });
                 if !is_bound {
                     self.diags.push(Diag::ty(
                         *wsp,
                         "`or wait` requires the topic to have a declared \
-                         transport binding (a `bindings { }` entry) — \
-                         an unbound in-process publish has no loss \
-                         window to wait out",
+                         transport binding (a loss window to wait \
+                         out) or `on_full: fail` capacity (queue \
+                         space to wait for)",
                     ));
                 }
             }

@@ -742,6 +742,8 @@ impl Parser {
         let mut subject: Option<String> = None;
         let mut keyed_by: Option<Ident> = None;
         let mut on_unmatched: Option<UnmatchedPolicy> = None;
+        let mut bounded: Option<(i64, Span)> = None;
+        let mut on_full_fail: Option<Span> = None;
         while !matches!(self.peek(), TokenKind::RBrace) {
             let field_name = self.expect_ident("topic field name")?;
             match field_name.name.as_str() {
@@ -820,13 +822,66 @@ impl Parser {
                     }
                     on_unmatched = Some(policy);
                 }
+                // GH #255 phase 2: `bounded(N);`
+                "bounded" => {
+                    self.expect(TokenKind::LParen, "(")?;
+                    let tok = self.peek_token().clone();
+                    let n = match tok.kind {
+                        TokenKind::IntLit(v) if v > 0 => {
+                            self.bump();
+                            v
+                        }
+                        _ => {
+                            return Err(Diag::parse(
+                                tok.span,
+                                "topic `bounded(N)` takes a positive \
+                                 integer capacity",
+                            ));
+                        }
+                    };
+                    let close_p = self.expect(TokenKind::RParen, ")")?;
+                    if bounded.is_some() {
+                        return Err(Diag::parse(
+                            field_name.span,
+                            "duplicate `bounded(...)` in topic declaration",
+                        ));
+                    }
+                    bounded = Some((n, field_name.span.merge(close_p.span)));
+                }
+                // GH #255 phase 2: `on_full: fail;`
+                "on_full" => {
+                    self.expect(TokenKind::Colon, ":")?;
+                    let policy_ident =
+                        self.expect_ident("on_full policy")?;
+                    if policy_ident.name != "fail" {
+                        return Err(Diag::parse(
+                            policy_ident.span,
+                            format!(
+                                "unknown on_full policy `{}` (v1 has \
+                                 exactly one topic-level policy: `fail`; \
+                                 consumer-side shedding is declared on \
+                                 the subscribe: `bounded(N, drop_old)`)",
+                                policy_ident.name
+                            ),
+                        ));
+                    }
+                    if on_full_fail.is_some() {
+                        return Err(Diag::parse(
+                            field_name.span,
+                            "duplicate `on_full:` in topic declaration",
+                        ));
+                    }
+                    on_full_fail =
+                        Some(field_name.span.merge(policy_ident.span));
+                }
                 other => {
                     return Err(Diag::parse(
                         field_name.span,
                         format!(
                             "unknown topic field `{}` (recognized: \
                              `payload:`, `subject:`, `keyed_by`, \
-                             `on_unmatched:`)",
+                             `on_unmatched:`, `bounded(...)`, \
+                             `on_full:`)",
                             other
                         ),
                     ));
@@ -848,6 +903,8 @@ impl Parser {
             subject,
             keyed_by,
             on_unmatched,
+            bounded,
+            on_full_fail,
             span: kw.span.merge(close.span),
         })
     }
@@ -2872,6 +2929,55 @@ impl Parser {
                 } else {
                     None
                 };
+                // GH #255 phase 2: optional
+                // `bounded(N, drop_old|drop_new)` — contextual
+                // (`bounded` is an ordinary ident here).
+                let bound = if matches!(
+                    self.peek(), TokenKind::Ident(s) if s == "bounded")
+                {
+                    let b_tok = self.bump();
+                    self.expect(TokenKind::LParen, "(")?;
+                    let cap_tok = self.peek_token().clone();
+                    let cap = match cap_tok.kind {
+                        TokenKind::IntLit(v) if v > 0 => {
+                            self.bump();
+                            v
+                        }
+                        _ => {
+                            return Err(Diag::parse(
+                                cap_tok.span,
+                                "subscribe `bounded(N, policy)` takes a \
+                                 positive integer capacity",
+                            ));
+                        }
+                    };
+                    self.expect(TokenKind::Comma, ",")?;
+                    let pol_ident =
+                        self.expect_ident("shed policy")?;
+                    let policy = match pol_ident.name.as_str() {
+                        "drop_new" => ShedPolicy::DropNew,
+                        "drop_old" => ShedPolicy::DropOld,
+                        other => {
+                            return Err(Diag::parse(
+                                pol_ident.span,
+                                format!(
+                                    "unknown shed policy `{}` (expected \
+                                     `drop_new` or `drop_old`; the policy \
+                                     is mandatory with a subscriber bound)",
+                                    other
+                                ),
+                            ));
+                        }
+                    };
+                    let close_p = self.expect(TokenKind::RParen, ")")?;
+                    Some(SubBound {
+                        cap,
+                        policy,
+                        span: b_tok.span.merge(close_p.span),
+                    })
+                } else {
+                    None
+                };
                 // Optional `where key == EXPR` (Phase 3).
                 // `where` is already a reserved keyword (used in
                 // form annotations); reuse the same TokenKind.
@@ -2919,6 +3025,7 @@ impl Parser {
                     handler,
                     ty,
                     key_filter,
+                    bound,
                     span: kw.span.merge(semi.span),
                 })
             }
