@@ -283,6 +283,21 @@ pub const SURFACES: &[NsSurface] = &[
         open_prefixes: &[],
     },
     NsSurface {
+        ns: &["tar"],
+        fns: &[
+            "entries", "entry_data", "entry_name", "entry_size",
+            "entry_type", "finish", "pack", "pack_dir",
+        ],
+        open_prefixes: &[],
+    },
+    NsSurface {
+        ns: &["compress"],
+        fns: &[
+            "gunzip", "gzip", "unzstd", "zstd",
+        ],
+        open_prefixes: &[],
+    },
+    NsSurface {
         ns: &["crypto"],
         fns: &[
             "crc32", "ecdsa_p256_sign", "ecdsa_p256_verify", "hmac_sha256",
@@ -345,7 +360,8 @@ pub const SURFACES: &[NsSurface] = &[
         fns: &[
             "extension", "file_exists", "file_size", "list_dir",
             "list_dir_at", "list_dir_count", "mkdir", "mktemp",
-            "read_bytes", "read_file", "rename", "unlink", "write_file",
+            "read_bytes", "read_file", "rename", "unlink", "write_bytes",
+            "write_file",
             "write_file_append",
         ],
         open_prefixes: &[],
@@ -663,6 +679,8 @@ const NS_STDIN: &[&str] = &["io", "stdin"];
 const NS_STDOUT: &[&str] = &["io", "stdout"];
 const NS_BYTES: &[&str] = &["bytes"];
 const NS_CRYPTO: &[&str] = &["crypto"];
+const NS_COMPRESS: &[&str] = &["compress"];
+const NS_TAR: &[&str] = &["tar"];
 const NS_B64: &[&str] = &["text", "base64"];
 const NS_RAND: &[&str] = &["rand"];
 const NS_FS: &[&str] = &["io", "fs"];
@@ -802,6 +820,26 @@ pub const SIGS: &[FnSig] = &[
     sig!(NS_CRYPTO, "crc32", [Bytes], Int),
     sig!(NS_CRYPTO, "hmac_sha256", [Bytes, Bytes], Bytes),
     sig!(NS_CRYPTO, "hmac_sha512", [Bytes, Bytes], Bytes),
+    // std::compress (GH #254): one-shot Bytes -> Bytes. gzip pair
+    // rides zlib (-lz, universal); zstd pair dlopens libzstd at
+    // first use — on a machine without it the call fails
+    // kind="not_found" rather than the program failing to link.
+    sig!(NS_COMPRESS, "gzip", [Bytes], Bytes, "IoError"),
+    sig!(NS_COMPRESS, "gunzip", [Bytes], Bytes, "IoError"),
+    sig!(NS_COMPRESS, "zstd", [Bytes], Bytes, "IoError"),
+    sig!(NS_COMPRESS, "unzstd", [Bytes], Bytes, "IoError"),
+    // std::tar (GH #254): one-shot ustar over Bytes. Read side is
+    // indexed (list-then-extract shape); write side is append-style
+    // (start from empty Bytes, pack entries, finish appends the
+    // terminating zero blocks).
+    sig!(NS_TAR, "entries", [Bytes], Int, "IoError"),
+    sig!(NS_TAR, "entry_name", [Bytes, Int], Str, "IoError"),
+    sig!(NS_TAR, "entry_size", [Bytes, Int], Int, "IoError"),
+    sig!(NS_TAR, "entry_type", [Bytes, Int], Str, "IoError"),
+    sig!(NS_TAR, "entry_data", [Bytes, Int], Bytes, "IoError"),
+    sig!(NS_TAR, "pack", [Bytes, Str, Bytes], Bytes, "IoError"),
+    sig!(NS_TAR, "pack_dir", [Bytes, Str], Bytes, "IoError"),
+    sig!(NS_TAR, "finish", [Bytes], Bytes, "IoError"),
     // std::text::base64
     sig!(NS_B64, "encode", [Bytes], Str),
     sig!(NS_B64, "decode", [Str], Bytes),
@@ -823,6 +861,7 @@ pub const SIGS: &[FnSig] = &[
     sig!(NS_FS, "read_file", [Str], Str, "IoError"),
     sig!(NS_FS, "read_bytes", [Str], Bytes, "IoError"),
     sig!(NS_FS, "write_file", [Str, Str], Unit, "IoError"),
+    sig!(NS_FS, "write_bytes", [Str, Bytes], Unit, "IoError"),
     sig!(NS_FS, "write_file_append", [Str, Str], Int, "IoError"),
     sig!(NS_FS, "file_size", [Str], Int, "IoError"),
     sig!(NS_FS, "mkdir", [Str], Unit, "IoError"),

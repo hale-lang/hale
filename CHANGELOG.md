@@ -8,6 +8,49 @@ behavior.
 
 ## Unreleased
 
+- **`std::compress` + `std::tar` — compression and archives
+  (GH #254).** One-shot over `Bytes`, all `fallible(IoError)`:
+  `compress::gzip`/`gunzip` (zlib, gzip container; gunzip
+  auto-detects bare zlib too), `compress::zstd`/`unzstd`
+  (libzstd, **dlopen'd at first use** — no link-time dependency;
+  machines without it get a clean `not_found`), and a ustar
+  `std::tar` (indexed read: `entries`/`entry_name`/`entry_size`/
+  `entry_type`/`entry_data`; append-style write:
+  `pack`/`pack_dir`/`finish`). Corrupt input fails
+  `kind="invalid"`; decompression is guarded at 1 GiB one-shot
+  (zip-bomb protection). Plus the companion the whole pipeline
+  needed: **`std::io::fs::write_bytes(path, b)`**, the
+  binary-safe file write (`write_file` truncates String content
+  at the first NUL). Hale-built `.tar.gz` output is accepted by
+  system `tar`/`gzip` (pinned by `compress_tar.rs`). This was
+  the distance between hale-bun's parody registry and the real
+  npm protocol; it also unblocks HTTP `Content-Encoding` work.
+
+- **Teardown no longer drops pinned workers' final publishes
+  (GH #253, hale-bun handoff item 2).** A parent whose `run()`
+  returned immediately used to dissolve eagerly — cascading its
+  subscriber fields' teardown and destroying the arena holding
+  its pinned children's self structs — before those pinned
+  threads were joined, so events they published in their last
+  moments were silently dropped in ANY declaration order (the
+  hale-bun install-fanout shape). A dissolving parent now joins
+  its own pinned children (mailbox shutdown → join → bus drain)
+  before the field cascade, and the fn-exit flush joins
+  subscription-less pinned entries before any cooperative
+  teardown. The delivery contract — what is now guaranteed and
+  what still drops (publish after the last subscriber dissolved:
+  coordinate completion explicitly) — is spec'd in
+  spec/runtime.md and docs/src/services/bus.md. Self-checking
+  corpus fixture `72-teardown-publish-delivery`. The fixture
+  also flushed out a pre-existing devirt soundness bug (caught
+  by the static/dynamic differential in CI): the direct-call
+  gate never checked PUBLISHER placement, so a pinned publisher
+  could run a same-thread subscriber's quiet handler directly on
+  its own thread — two such publishers ran it concurrently and
+  lost `self.x + 1` updates. Direct-call eligibility now
+  requires every publisher same-thread; off-thread publishers
+  stay on the serializing enqueue path.
+
 - **Conditional instantiation of a deferred-dissolve locus fixed
   (hale-bun handoff item 1).** `if c { App { }; }` with a
   placement-bearing child died at build time with an LLVM

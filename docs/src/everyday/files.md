@@ -43,6 +43,7 @@ All of these live under `std::io::fs` and all are
 | `read_file(path) -> String` | whole-file read |
 | `read_bytes(path) -> Bytes` | whole-file read, binary |
 | `write_file(path, contents)` | create / truncate |
+| `write_bytes(path, b: Bytes)` | create / truncate, binary |
 | `write_file_append(path, contents)` | append |
 | `file_size(path) -> Int` | size in bytes |
 | `mkdir(path)` | create a directory |
@@ -86,6 +87,30 @@ it already did" — it's allowed because the result type is `()`:
 ```hale,fragment
 std::io::fs::mkdir("cache") or discard;
 ```
+
+## Compression and archives
+
+`std::compress` and `std::tar` work over `Bytes` in memory, so
+building a `.tar.gz` is a pipeline of ordinary calls:
+
+```hale
+fn ship(report: Bytes) fallible(IoError) {
+    let a = std::tar::pack(std::bytes::from_string(""),
+        "out/report.json", report) or raise;
+    let archive = std::tar::finish(a) or raise;
+    let tgz = std::compress::gzip(archive) or raise;
+    std::io::fs::write_bytes("report.tar.gz", tgz) or raise;
+}
+```
+
+Reading goes the other way: `read_bytes` → `gunzip` →
+`tar::entries` / `entry_name` / `entry_data` to walk what's
+inside. `zstd` / `unzstd` are the faster-newer siblings — they
+load libzstd at first use, and fail with `kind == "not_found"`
+on a machine that doesn't have it (gzip always works). Corrupt
+or truncated input fails with `kind == "invalid"` rather than
+crashing, and decompression refuses to expand past 1 GiB in one
+shot — a zip bomb is an error, not an OOM.
 
 ## Held-open files
 

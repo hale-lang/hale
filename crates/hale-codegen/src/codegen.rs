@@ -1733,6 +1733,15 @@ pub fn build_executable_with_options(
         "shm_ring",
         &rt_cflags,
     )?;
+    // GH #254: compression TU. Own TU (same rationale as tls) so
+    // helper tests that include lotus_arena.c directly don't pick
+    // up the zlib dep; zstd is dlopen'd at runtime so no link-time
+    // libzstd dependency exists at all.
+    let compress_o = compile_cached_runtime_object(
+        RUNTIME_COMPRESS_C_SOURCE,
+        "compress",
+        &rt_cflags,
+    )?;
 
     // m96: locate the tree-sitter shim staticlib produced by the
     // sibling `hale-ts-shim` workspace crate. We don't try to
@@ -1751,7 +1760,8 @@ pub fn build_executable_with_options(
         .arg(&main_input)
         .arg(&arena_o)
         .arg(&tls_o)
-        .arg(&shm_ring_o);
+        .arg(&shm_ring_o)
+        .arg(&compress_o);
     if lto_active {
         // Full-LTO link: -flto pulls the Hale bitcode + the runtime
         // bitcode TUs through the LTO backend at -O3, inlining the arena
@@ -1816,6 +1826,16 @@ pub fn build_executable_with_options(
     }
     if !linked_static_ssl {
         clang.arg("-lssl").arg("-lcrypto");
+    }
+    // GH #254: zlib for std::compress gzip/gunzip — universally
+    // present (distro zlib1g / the macOS SDK). zstd deliberately
+    // NOT linked: lotus_compress.c dlopens libzstd at first use.
+    // -ldl for that dlopen (folded into libc on glibc >= 2.34 and
+    // on macOS, but the explicit arg is harmless there and
+    // required on older glibc).
+    clang.arg("-lz");
+    if !cfg!(target_os = "macos") {
+        clang.arg("-ldl");
     }
     // 2026-05-21: -rdynamic exports the dynamic symbol table so
     // backtrace_symbols_fd / addr2line can resolve symbol names from
@@ -1933,6 +1953,8 @@ pub fn build_executable_with_options(
 /// lifetimes).
 const RUNTIME_C_SOURCE: &str = include_str!("../runtime/lotus_arena.c");
 const RUNTIME_TLS_C_SOURCE: &str = include_str!("../runtime/lotus_tls.c");
+const RUNTIME_COMPRESS_C_SOURCE: &str =
+    include_str!("../runtime/lotus_compress.c");
 /// Form K5 (2026-05-20) — POSIX SHM ring substrate for zero-copy
 /// bus payload routing. Independent translation unit; pulled in
 /// unconditionally so user programs that bind a topic to a
@@ -5863,7 +5885,64 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .deferred_dissolves
             .pop()
             .expect("flush without matching push");
-        for (self_slot, locus_name, thread_id_alloca) in frame.into_iter().rev() {
+        // GH #253: join subscription-less pinned entries FIRST,
+        // before any cooperative teardown. Reverse push order
+        // alone processed a parent (and its cascade of subscriber
+        // children) before its sibling pinned workers were
+        // joined, so cells those workers published in their last
+        // moments arrived after their subscribers had dissolved —
+        // silently dropped, in any declaration order. A pinned
+        // locus with no mailbox cannot receive, so joining it
+        // early loses nothing; the per-entry drain below then
+        // dispatches its final publishes while every subscriber
+        // is still alive. Pinned entries WITH a mailbox are
+        // subscribers themselves and keep their original slot so
+        // cooperative dissolve-publishes can still reach them.
+        // (This also closes a latent lifetime hazard: the old
+        // order destroyed the owner's arena — which holds the
+        // pinned child's self struct — before joining the pinned
+        // thread.)
+        let (pinned_workers, rest): (Vec<_>, Vec<_>) =
+            frame.into_iter().partition(|(_, name, tid)| {
+                tid.is_some()
+                    && self
+                        .user_loci
+                        .get(name)
+                        .map_or(false, |i| i.mailbox_field_idx.is_none())
+            });
+        for (self_slot, locus_name, thread_id_alloca) in pinned_workers
+            .into_iter()
+            .rev()
+            .chain(rest.into_iter().rev())
+        {
+            self.emit_deferred_entry_teardown(
+                self_slot,
+                &locus_name,
+                thread_id_alloca,
+                drain_queue,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// One deferred-dissolve entry's full teardown: the extracted
+    /// per-entry body of `flush_dissolve_frame_kind`, reused by
+    /// the GH #253 eager path (`lower_locus_instantiation` joins
+    /// an eagerly-dissolving parent's own pinned children before
+    /// cascading its subscriber fields). Emits the NULL-slot /
+    /// NULL-arena skip checks, pinned mailbox-shutdown + join +
+    /// mailbox-destroy (or cooperative drain → closures →
+    /// dissolve), the child-field cascade, arena destroy, and the
+    /// m52 post-entry drain.
+    pub(crate) fn emit_deferred_entry_teardown(
+        &mut self,
+        self_slot: PointerValue<'ctx>,
+        locus_name: &str,
+        thread_id_alloca: Option<PointerValue<'ctx>>,
+        drain_queue: bool,
+    ) -> Result<(), CodegenError> {
+        {
+            let locus_name = locus_name.to_string();
             let info = self
                 .user_loci
                 .get(&locus_name)
