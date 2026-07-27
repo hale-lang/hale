@@ -111,6 +111,49 @@ void lotus_spsc_note_drop(void *desc);
 /* 0 = unchecked, 1 = disabled, 2 = enabled. */
 static _Atomic int g_obs_state = 0;
 
+/* iris handoff-2 P10: publisher attribution. Codegen notes the
+ * publishing locus's self in this TLS right before lowering a
+ * `<-` dispatch from inside a locus body (NULL from free-fn
+ * contexts), and bus_publish falls back to it when its explicit
+ * arg is NULL. */
+static __thread void *g_obs_tls_publisher = NULL;
+void lotus_obs_note_publisher(void *self) {
+  g_obs_tls_publisher = self;
+}
+
+/* iris handoff-2 P6: canonical topic shapes, registered by
+ * codegen at program start (before the segment exists — obs
+ * init is lazy). shape_hash = fnv(subject, canonical payload
+ * structure), NEVER the declaring type's name, so two binaries
+ * declaring the same subject under different local topic names
+ * fuse into one row (the PROTOCOL §13 canonicalization rule
+ * proposed by the field report). */
+typedef struct { const char *subject; const char *shape; } obs_shape_t;
+static obs_shape_t g_shapes[OBS_ENTRY_CAP];
+static _Atomic int g_shape_count = 0;
+
+void lotus_obs_topic_shape(const char *subject, const char *shape) {
+  if (!subject || !shape) return;
+  int n = atomic_load(&g_shape_count);
+  if (n >= OBS_ENTRY_CAP) return;
+  for (int i = 0; i < n; i++) {
+    if (strcmp(g_shapes[i].subject, subject) == 0) return;
+  }
+  g_shapes[n].subject = strdup(subject);
+  g_shapes[n].shape = strdup(shape);
+  atomic_store_explicit(&g_shape_count, n + 1, memory_order_release);
+}
+
+static const char *obs_shape_for(const char *subject) {
+  int n = atomic_load_explicit(&g_shape_count, memory_order_acquire);
+  for (int i = 0; i < n; i++) {
+    if (strcmp(g_shapes[i].subject, subject) == 0) {
+      return g_shapes[i].shape;
+    }
+  }
+  return "";
+}
+
 static void *g_seg; static size_t g_seg_len;
 static obs_hdr_t *H; static obs_ctrl_t *C; static obs_mh_t *MH;
 static obs_me_t *ME; static char *POOL; static uint8_t *MODE;
@@ -137,6 +180,14 @@ static _Atomic uint32_t g_next_inst_id = 1;
 static _Atomic int g_ring_next = 0;
 static __thread int t_ring = -1;          /* -1 unassigned, -2 none free */
 static __thread uint64_t t_epoch_ns = 0;  /* ring epoch anchor */
+/* iris handoff-2 P7: records emitted since the last EPOCH. A
+ * high-rate ring wraps and OVERWRITES its EPOCH record; a
+ * consumer that attaches (or falls behind) then reconstructs
+ * from base 0 — observed as ~2^64 ns timestamps on the fleet's
+ * hottest segment. Re-emit EPOCH every OBS_EPOCH_EVERY records
+ * so every ring window contains at least one anchor. */
+#define OBS_EPOCH_EVERY 1024
+static __thread uint32_t t_since_epoch = 0;
 
 static uint64_t obs_mono_ns(void) {
   struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -274,7 +325,12 @@ static uint64_t obs_fnv(const char *a, const char *b) {
   return h;
 }
 
-static int64_t g_next_id[4] = {1, 1, 0, 0};
+/* iris handoff-2: binding ids start at 1 here (reference glue
+ * started them at 0, which collided with the arena-side
+ * `obs_binding_id == 0` = unregistered sentinel and produced
+ * records the consumer showed as `unknown:0`). Consumers read
+ * ids from manifest entries, so the numbering start is free. */
+static int64_t g_next_id[4] = {1, 1, 1, 0};
 
 /* Under g_obs_lock. */
 static int64_t obs_manifest_add(uint8_t kind, uint8_t flg,
@@ -336,11 +392,14 @@ static void obs_emit(uint32_t ekind, uint32_t id, uint32_t size_class,
                      uint64_t w1) {
   uint64_t now = obs_mono_ns();
   uint64_t delta = (now - t_epoch_ns) >> H->ts_shift;
-  if (t_epoch_ns == 0 || delta > OBS_TS_DELTA_MAX) {
+  if (t_epoch_ns == 0 || delta > OBS_TS_DELTA_MAX ||
+      t_since_epoch >= OBS_EPOCH_EVERY) {
     t_epoch_ns = now;
+    t_since_epoch = 0;
     obs_emit_raw((uint64_t)EK_EPOCH << 20, now);
     delta = 0;
   }
+  t_since_epoch++;
   uint64_t w0 = ((uint64_t)(id & 0xFFFFFu))
       | ((uint64_t)(ekind & 0x1Fu) << 20)
       | ((uint64_t)(size_class & 0xFFu) << 25)
@@ -391,7 +450,9 @@ static obs_topic_slot_t *obs_topic_slot(const char *subject,
   obs_topic_slot_t *slot = NULL;
   if (n < OBS_ENTRY_CAP) {
     int64_t id = obs_manifest_add(MK_TOPIC, networked ? 1 : 0, subject,
-                                  0, obs_fnv(subject, ""), 0);
+                                  0,
+                                  obs_fnv(subject, obs_shape_for(subject)),
+                                  0);
     if (id >= 0) {
       char *copy = strdup(subject);
       if (copy) {
@@ -432,6 +493,7 @@ void lotus_obs_bus_publish(const char *subject, void *publisher_self,
   if (!obs_gate()) return;
   uint8_t mode = MODE[t->id & (OBS_ENTRY_CAP - 1)];
   if (mode < 2) return; /* OFF / COUNTERS */
+  if (!publisher_self) publisher_self = g_obs_tls_publisher;
   uint32_t locus = publisher_self ? obs_inst_id_of(publisher_self) : 0;
   obs_emit(EK_BUS_PUBLISH, (uint32_t)t->id,
            obs_size_class(payload_bytes),

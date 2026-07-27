@@ -957,6 +957,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ptr_t.fn_type(&[], false),
             None,
         );
+        // iris handoff-2: publisher-attribution TLS + topic shapes.
+        // declare void @lotus_obs_note_publisher(ptr self)
+        // declare void @lotus_obs_topic_shape(ptr subject, ptr shape)
+        self.module.add_function(
+            "lotus_obs_note_publisher",
+            self.context.void_type().fn_type(&[ptr_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_obs_topic_shape",
+            self.context
+                .void_type()
+                .fn_type(&[ptr_t.into(), ptr_t.into()], false),
+            None,
+        );
         self.module.add_function(
             "lotus_obs_locus_dissolve",
             self.context

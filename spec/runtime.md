@@ -1354,7 +1354,24 @@ late-attaching observer reconstructs the tree. Knobs:
 locus attribution on BUS_PUBLISH is unattributed (0); pinned
 births render parent=root. `lotus_obs.c` is its own TU; the
 arena TU's probes are weak-guarded so helper binaries compiling
-`lotus_arena.c` alone still link.
+`lotus_arena.c` alone  still link.
+
+Field-hardening (iris handoff 2, 2026-07-27, v0.11.13): NET_SEND
+now fires on the UDP multicast fanout path (it `continue`s before
+the stream-transport probe, so multicast publishers emitted only
+deliver-side records — the seq matcher had nothing to pair);
+LOCUS_BIRTH is emitted BEFORE a locus's field-default init and
+carries real parentage (the parent registers before its children
+look it up — post-birth placement rendered every tree flat), and
+pinned children register on the spawning thread so a park before
+their first probe doesn't hide them; BUS_PUBLISH stamps the
+publishing locus from a codegen-set TLS (the C dispatch doesn't
+know `self`); topic shape_hash is `fnv(subject, canonical payload
+structure)` — field names + coarse type tags in declared order,
+never the declaring type's local name — so two binaries sharing a
+subject fuse into one manifest row; and each ring re-emits EPOCH
+every 1024 records so a high-rate ring that wraps its anchor never
+reconstructs timestamps from a stale base (the ~2^64 ns readings).
 
 ### Time
 

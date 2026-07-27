@@ -8,6 +8,25 @@ behavior.
 
 ## Unreleased
 
+- **Native observation emission: field-report hardening (iris
+  handoff 2).** Six fixes from a ~16-binary production fleet run:
+  NET_SEND now fires on the **UDP multicast fanout** (it was
+  `continue`-skipped before the stream probe, so multicast
+  publishers emitted no send-side records and the cross-process
+  seq matcher rendered zero edges); LOCUS_BIRTH carries real
+  **parentage** (emitted before field-default init so a child
+  finds its parent registered — every tree was rendering flat)
+  and **pinned children register on the spawning thread**
+  (previously a pinned reader that parked before its first probe
+  emitted nothing); BUS_PUBLISH **stamps the publishing locus**
+  (per-locus perimeter pulses); topic **shape_hash is subject +
+  canonical payload structure**, never the declaring type's local
+  name, so two binaries sharing a subject fuse into one manifest
+  row; and rings **re-emit EPOCH every 1024 records** so a
+  high-rate ring that wraps its anchor stops reconstructing ~2^64
+  ns timestamps. `obs_emission.rs` gains ring-walking assertions
+  for parentage + attribution.
+
 - **Direct `std::io::tcp::listen_socket` path-call fixed (Crumb
   batch-2 item 2).** The direct user-code lowering truncated the
   port to i32 against the C primitive's declared `(ptr, i16)`

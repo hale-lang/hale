@@ -190,6 +190,27 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
             )));
         }
         let subj_val = self.unpack_view_if_needed(subj_val, &subj_ty)?;
+        // iris handoff-2 P10: note the publishing locus in the obs
+        // TLS so BUS_PUBLISH records carry locus attribution (the
+        // C dispatch doesn't know self; petals don't pulse
+        // without it). Null from free-fn contexts. One relaxed
+        // TLS store per publish; the obs fn is a no-op branch
+        // when observation is off.
+        {
+            let ptr_t = self.context.ptr_type(AddressSpace::default());
+            let note_fn = self
+                .module
+                .get_function("lotus_obs_note_publisher")
+                .expect("lotus_obs_note_publisher declared");
+            let pub_self: inkwell::values::BasicValueEnum = self
+                .current_self
+                .as_ref()
+                .map(|cs| cs.self_ptr.into())
+                .unwrap_or_else(|| ptr_t.const_null().into());
+            self.builder
+                .build_call(note_fn, &[pub_self.into()], "obs.note_pub")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
         // GH #255 phase 1: `or wait` — park through the binding's
         // loss window BEFORE the dispatch fanout, so the publish
         // that follows lands on a live transport instead of
