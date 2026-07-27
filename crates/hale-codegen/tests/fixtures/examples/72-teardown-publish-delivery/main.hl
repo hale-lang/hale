@@ -1,0 +1,65 @@
+// GH #253 (hale-bun handoff item 2): events published by pinned
+// workers in their final moments must reach a sibling cooperative
+// subscriber, even when the parent's run() returns immediately.
+// Pre-fix, the parent dissolved eagerly — cascading the
+// subscriber's teardown and destroying the arena holding the
+// pinned self structs — before the pinned threads were joined, so
+// both Done events were silently dropped in ANY declaration
+// order. The fix joins the parent's own pinned children (and
+// drains their final publishes) before the field cascade.
+//
+// Self-checking: Tally's dissolve exits 1 if either event was
+// missed, which the corpus oracle's exit-0 check catches.
+
+type Done {
+    n: Int;
+}
+
+locus Tally {
+    params { seen: Int = 0; }
+    bus {
+        subscribe "install.done" as on_done of type Done;
+    }
+    dissolve() {
+        if self.seen != 2 {
+            println("MISSED: tally saw ", self.seen, " of 2");
+            std::process::exit(1);
+        }
+        println("tally saw all ", self.seen);
+    }
+    fn on_done(d: Done) {
+        self.seen = self.seen + 1;
+    }
+}
+
+locus Fetcher {
+    params { id: Int = 0; }
+    bus {
+        publish "install.done" of type Done;
+    }
+    run() {
+        std::time::sleep(150ms);
+        "install.done" <- Done { n: self.id };
+    }
+}
+
+main locus App {
+    params {
+        // Subscriber deliberately declared FIRST — the
+        // historically unfriendly order.
+        tally: Tally = Tally { };
+        f0: Fetcher = Fetcher { id: 0 };
+        f1: Fetcher = Fetcher { id: 1 };
+    }
+    placement {
+        f0: pinned(core = 0);
+        f1: pinned(core = 1);
+    }
+    run() {
+        println("app run returns immediately");
+    }
+}
+
+fn main() {
+    App { };
+}

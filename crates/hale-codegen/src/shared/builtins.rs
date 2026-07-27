@@ -815,6 +815,55 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             enoent_hint_ty,
             None,
         );
+        // GH #254 — std::compress: declare ptr @lotus_compress_*(ptr b)
+        // (one-shot Bytes -> Bytes; NULL + errno on failure).
+        let compress_ty = ptr_t.fn_type(&[ptr_t.into()], false);
+        for name in [
+            "lotus_compress_gzip",
+            "lotus_compress_gunzip",
+            "lotus_compress_zstd",
+            "lotus_compress_unzstd",
+        ] {
+            self.module.add_function(name, compress_ty, None);
+        }
+        // GH #254 — std::tar (ustar): mixed-signature family.
+        let i64_t2 = self.context.i64_type();
+        self.module.add_function(
+            "lotus_tar_entries",
+            i64_t2.fn_type(&[ptr_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_tar_entry_size",
+            i64_t2.fn_type(&[ptr_t.into(), i64_t2.into()], false),
+            None,
+        );
+        for name in ["lotus_tar_entry_name", "lotus_tar_entry_type",
+                     "lotus_tar_entry_data"] {
+            self.module.add_function(
+                name,
+                ptr_t.fn_type(&[ptr_t.into(), i64_t2.into()], false),
+                None,
+            );
+        }
+        self.module.add_function(
+            "lotus_tar_pack",
+            ptr_t.fn_type(
+                &[ptr_t.into(), ptr_t.into(), ptr_t.into()],
+                false,
+            ),
+            None,
+        );
+        self.module.add_function(
+            "lotus_tar_pack_dir",
+            ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_tar_finish",
+            ptr_t.fn_type(&[ptr_t.into()], false),
+            None,
+        );
         // declare i32 @lotus_process_wait(i32 pid,
         //                                 ptr out_code,
         //                                 ptr out_signal)

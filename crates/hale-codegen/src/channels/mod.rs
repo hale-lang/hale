@@ -21,6 +21,8 @@ use crate::codegen::{
     Cx, FallibleCallResult, FallibleCtx, FnSig, LocusInfo, Scope, SelfCx,
 };
 use crate::stdlib::bytes::BytesStdlib;
+use crate::stdlib::compress::CompressStdlib;
+use crate::stdlib::compress::{TarArg, TarRet, TarStdlib};
 use crate::stdlib::crypto::CryptoStdlib;
 use crate::stdlib::io_file::IoFileStdlib;
 use crate::stdlib::io_fs::IoFsStdlib;
@@ -1055,11 +1057,73 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // result + path into `complete_io_fallible_call` to build
         // the lazy-IoError branch.
         match segs {
+            // GH #254: std::tar (ustar) one-shot surface.
+            ["std", "tar", "entries"] => Ok(Some(self.lower_std_tar_fallible(
+                "lotus_tar_entries", "std::tar::entries",
+                &[TarArg::Bytes], TarRet::Int, args, scope,
+            )?)),
+            ["std", "tar", "entry_name"] => Ok(Some(self.lower_std_tar_fallible(
+                "lotus_tar_entry_name", "std::tar::entry_name",
+                &[TarArg::Bytes, TarArg::Int], TarRet::Str, args, scope,
+            )?)),
+            ["std", "tar", "entry_size"] => Ok(Some(self.lower_std_tar_fallible(
+                "lotus_tar_entry_size", "std::tar::entry_size",
+                &[TarArg::Bytes, TarArg::Int], TarRet::Int, args, scope,
+            )?)),
+            ["std", "tar", "entry_type"] => Ok(Some(self.lower_std_tar_fallible(
+                "lotus_tar_entry_type", "std::tar::entry_type",
+                &[TarArg::Bytes, TarArg::Int], TarRet::Str, args, scope,
+            )?)),
+            ["std", "tar", "entry_data"] => Ok(Some(self.lower_std_tar_fallible(
+                "lotus_tar_entry_data", "std::tar::entry_data",
+                &[TarArg::Bytes, TarArg::Int], TarRet::Bytes, args, scope,
+            )?)),
+            ["std", "tar", "pack"] => Ok(Some(self.lower_std_tar_fallible(
+                "lotus_tar_pack", "std::tar::pack",
+                &[TarArg::Bytes, TarArg::Str, TarArg::Bytes], TarRet::Bytes,
+                args, scope,
+            )?)),
+            ["std", "tar", "pack_dir"] => Ok(Some(self.lower_std_tar_fallible(
+                "lotus_tar_pack_dir", "std::tar::pack_dir",
+                &[TarArg::Bytes, TarArg::Str], TarRet::Bytes, args, scope,
+            )?)),
+            ["std", "tar", "finish"] => Ok(Some(self.lower_std_tar_fallible(
+                "lotus_tar_finish", "std::tar::finish",
+                &[TarArg::Bytes], TarRet::Bytes, args, scope,
+            )?)),
+            // GH #254: std::compress one-shot surface.
+            ["std", "compress", "gzip"] => Ok(Some(
+                self.lower_std_compress_fallible(
+                    "lotus_compress_gzip", "std::compress::gzip",
+                    args, scope,
+                )?,
+            )),
+            ["std", "compress", "gunzip"] => Ok(Some(
+                self.lower_std_compress_fallible(
+                    "lotus_compress_gunzip", "std::compress::gunzip",
+                    args, scope,
+                )?,
+            )),
+            ["std", "compress", "zstd"] => Ok(Some(
+                self.lower_std_compress_fallible(
+                    "lotus_compress_zstd", "std::compress::zstd",
+                    args, scope,
+                )?,
+            )),
+            ["std", "compress", "unzstd"] => Ok(Some(
+                self.lower_std_compress_fallible(
+                    "lotus_compress_unzstd", "std::compress::unzstd",
+                    args, scope,
+                )?,
+            )),
             ["std", "io", "fs", "read_file"] => Ok(Some(
                 self.lower_std_io_fs_read_file_fallible(args, scope)?,
             )),
             ["std", "io", "fs", "read_bytes"] => Ok(Some(
                 self.lower_std_io_fs_read_bytes_fallible(args, scope)?,
+            )),
+            ["std", "io", "fs", "write_bytes"] => Ok(Some(
+                self.lower_std_io_fs_write_bytes_fallible(args, scope)?,
             )),
             ["std", "io", "fs", "write_file"] => Ok(Some(
                 self.lower_std_io_fs_write_file_fallible(

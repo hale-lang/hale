@@ -50,6 +50,16 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         // eager dissolve. Outermost instantiation owns it; nested
         // ones see false.
         let defer_for_let = std::mem::take(&mut self.defer_next_locus_dissolve);
+        // GH #253: high-water mark of the enclosing deferred-
+        // dissolve frame. Every entry pushed past this point
+        // during THIS call is a (transitive) child of this
+        // instantiation — in particular its pinned children,
+        // which the eager-dissolve branch below must join (and
+        // deliver the final publishes of) BEFORE cascading its
+        // subscriber fields' dissolves and destroying the arena
+        // their self structs live in.
+        let deferred_frame_mark =
+            self.deferred_dissolves.last().map_or(0, |f| f.len());
         // Interest-based ownership #3: whether THIS instantiation is a
         // bare expression-statement (`I { ... };`, value discarded) —
         // the only context in which a cross-pool fire-and-forget spawn
@@ -3815,6 +3825,44 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             // locus dissolving mid-program must not join global pools.
             if is_main_locus {
                 self.emit_coop_pool_shutdown_all()?;
+            }
+            // GH #253: join this locus's own pinned children (the
+            // frame entries pushed during param init above) BEFORE
+            // the field-drain/dissolve cascade. Pinned children
+            // were deferred to fn-scope exit, so an eagerly-
+            // dissolving parent used to tear down its subscriber
+            // fields — and destroy the arena the pinned self
+            // structs live in — while those threads still ran:
+            // their final publishes arrived after their sibling
+            // subscribers had dissolved and were silently dropped
+            // (hale-bun handoff item 2), in any declaration
+            // order. The extracted flush body handles mailbox
+            // shutdown + join + per-entry drain, so cells a
+            // pinned child publishes in its last moments are
+            // dispatched while every subscriber field is still
+            // alive. This is the pinned mirror of the
+            // emit_coop_pool_shutdown_all fix above (2026-06-01).
+            {
+                let mut own_pinned: Vec<(
+                    PointerValue<'ctx>,
+                    String,
+                    Option<PointerValue<'ctx>>,
+                )> = Vec::new();
+                if let Some(frame) = self.deferred_dissolves.last_mut() {
+                    let mut i = deferred_frame_mark.min(frame.len());
+                    while i < frame.len() {
+                        if frame[i].2.is_some() {
+                            own_pinned.push(frame.remove(i));
+                        } else {
+                            i += 1;
+                        }
+                    }
+                }
+                for (slot, name, tid) in own_pinned {
+                    self.emit_deferred_entry_teardown(
+                        slot, &name, tid, true,
+                    )?;
+                }
             }
             // Phase-2 (3): cascade child-field drains depth-first
             // BEFORE outer's drain, per spec/runtime.md "drain()

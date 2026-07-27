@@ -80,6 +80,19 @@ message has nowhere to land. In practice: instantiate your
 subscribers first in `main`. (This is the same rule you saw with
 the log sink.)
 
+The mirror-image rule at the *end* of a program is handled for
+you: at teardown, the runtime joins pinned workers (and drains
+what they published) *before* dissolving their sibling
+subscribers, so events a worker publishes in its final moments
+still arrive even when `main`'s `run()` returns immediately.
+What can still be lost is a publish made *after* its last
+subscriber has dissolved — say, from a pool-placed publisher
+whose queued work outlives teardown. If losing those would
+matter, don't lean on teardown ordering: have the parent wait
+for a completion signal ("exit when done") before returning.
+Set `LOTUS_BUS_LOG_DROP=1` to see any such drop while
+debugging.
+
 ## Why this doesn't break the tower
 
 In the [parent/child model](./parents-children.md), flow is

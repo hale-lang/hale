@@ -12,6 +12,7 @@
 pub(crate) mod bus;
 pub(crate) mod ring;
 pub(crate) mod bytes;
+pub(crate) mod compress;
 pub(crate) mod crypto;
 pub(crate) mod decimal;
 pub(crate) mod diag;

@@ -202,10 +202,30 @@ the model: runtime is automatic; stdlib is explicit.
   hang). Together these let a program whose `main` run() returns
   while a classic-pool server child is live shut down cleanly
   rather than hanging or segfaulting.
-- **Recovery primitives.** `restart`, `restart_in_place`,
-  `quarantine`, `reorganize`, `bubble`, `dissolve`, `drain` —
-  all language keywords; runtime implements the actual
-  effects.
+- **Teardown delivery contract (GH #253, 2026-07-27).** A
+  dissolving parent joins its own **pinned** children — mailbox
+  shutdown, `pthread_join`, then a bus drain — BEFORE cascading
+  its field children's drain/dissolve, and the fn-exit flush
+  likewise joins subscription-less pinned entries before any
+  cooperative entry's teardown. Consequence: events a pinned
+  worker publishes in its final moments (up to `run()` return)
+  are **delivered** to sibling subscribers, in any declaration
+  order — a parent whose `run()` returns immediately no longer
+  silently drops its workers' last publishes (the hale-bun
+  install-fanout shape). This is the pinned mirror of the
+  pool-worker join rule above, and it also closes the lifetime
+  hazard of destroying the owner's arena (which holds the pinned
+  children's self structs) while their threads still ran. What
+  still drops, by contract: a publish made **after** its last
+  subscriber has dissolved — e.g. from a pool-placed publisher
+  whose queued work outlives the process teardown, or from a
+  `dissolve()` body publishing to a subscriber that tore down
+  earlier in the same cascade. Those cells are discarded via the
+  deregister-on-dissolve invariant (never dispatched to freed
+  memory); `LOTUS_BUS_LOG_DROP=1` surfaces them. A workload that
+  must not lose such events coordinates completion explicitly
+  ("exit when done" — poll a tally / await a completion event)
+  rather than relying on teardown ordering.
 - **Recovery primitives.** `restart`, `restart_in_place`,
   `quarantine`, `reorganize`, `bubble`, `dissolve`, `drain` —
   all language keywords; runtime implements the actual

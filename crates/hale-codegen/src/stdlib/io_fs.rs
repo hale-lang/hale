@@ -29,6 +29,12 @@ pub(crate) trait IoFsStdlib<'ctx> {
         scope: &Scope<'ctx>,
         c_fn_name: &str,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
+
+    fn lower_std_io_fs_write_bytes_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
     fn lower_std_io_fs_file_size_fallible(
         &mut self,
         args: &[Expr],
@@ -318,6 +324,89 @@ impl<'ctx, 'p> IoFsStdlib<'ctx> for Cx<'ctx, 'p> {
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.complete_io_fallible_call(is_err, path_val, None, "fs.write_file")
+    }
+
+    /// GH #254 companion: `std::io::fs::write_bytes(path, b: Bytes)
+    /// -> () fallible(IoError)` — the binary-safe write. Without it
+    /// an in-memory archive (`std::tar` / `std::compress` output)
+    /// could not be written to disk: `write_file` ships String
+    /// content via strlen, truncating at the first NUL. Reuses
+    /// `lotus_fs_write_file` (already buf+len at the C level) with
+    /// the blob's data/len.
+    fn lower_std_io_fs_write_bytes_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::fs::write_bytes takes 2 args (path, b), got {}",
+                args.len()
+            )));
+        }
+        let (path_val, path_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(path_ty, CodegenTy::String | CodegenTy::StringView) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::fs::write_bytes: path must be String, got {:?}",
+                path_ty
+            )));
+        }
+        let path_val = self.unpack_view_if_needed(path_val, &path_ty)?;
+        let (b_val, b_ty) = self.lower_expr(&args[1], scope)?;
+        if b_ty != CodegenTy::Bytes {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::fs::write_bytes: b must be Bytes, got {:?}",
+                b_ty
+            )));
+        }
+        let data_fn = self
+            .module
+            .get_function("lotus_bytes_data")
+            .expect("lotus_bytes_data declared");
+        let len_fn = self
+            .module
+            .get_function("lotus_bytes_len")
+            .expect("lotus_bytes_len declared");
+        let data_v = self
+            .builder
+            .build_call(data_fn, &[b_val.into()], "wb.data")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        let len_v = self
+            .builder
+            .build_call(len_fn, &[b_val.into()], "wb.len")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        let write_fn = self
+            .module
+            .get_function("lotus_fs_write_file")
+            .expect("lotus_fs_write_file declared");
+        let ret = self
+            .builder
+            .build_call(
+                write_fn,
+                &[path_val.into(), data_v.into(), len_v.into()],
+                "wb.ret",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                ret,
+                ret.get_type().const_zero(),
+                "wb.is_err",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.complete_io_fallible_call(is_err, path_val, None, "fs.write_bytes")
     }
 
     /// `std::io::fs::file_size(path) -> Int fallible(IoError)`.
