@@ -122,16 +122,16 @@ locus Observe {
     fn dlv_ev(topic: Int, sz: Int) {
         self.dlv_ev_from(topic, sz, 0);
     }
-    fn pub_ev_from(topic: Int, sz: Int, locus: Int) {
+    fn pub_ev_from(topic: Int, sz: Int, lc: Int) {
         obs_count_topic(topic, CT_PUBLISHED, 1);
         if obs_observed() == 1 && obs_mode(topic) >= 2 {
-            self.emit(topic, EK_BUS_PUBLISH, sz, (locus & 1048575) << 44);
+            self.emit(topic, EK_BUS_PUBLISH, sz, (lc & 1048575) << 44);
         }
     }
-    fn dlv_ev_from(topic: Int, sz: Int, locus: Int) {
+    fn dlv_ev_from(topic: Int, sz: Int, lc: Int) {
         obs_count_topic(topic, CT_DELIVERED, 1);
         if obs_observed() == 1 && obs_mode(topic) >= 2 {
-            self.emit(topic, EK_BUS_DELIVER, sz, (locus & 1048575) << 44);
+            self.emit(topic, EK_BUS_DELIVER, sz, (lc & 1048575) << 44);
         }
     }
     fn net_send(topic: Int, binding: Int, seq: Int, sz: Int) {
