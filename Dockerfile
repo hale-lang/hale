@@ -56,7 +56,7 @@ FROM ubuntu:24.04 AS runtime
 # libtinfo, libzstd, zlib, libstdc++.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       clang-18 lld-18 libc6-dev libssl-dev \
-      libffi8 libtinfo6 libzstd1 zlib1g libstdc++6 \
+      libffi8 libtinfo6 libzstd1 zlib1g-dev libstdc++6 \
     && ln -s /usr/bin/clang-18 /usr/bin/clang \
     && rm -rf /var/lib/apt/lists/*
 
