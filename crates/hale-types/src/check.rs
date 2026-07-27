@@ -8297,6 +8297,66 @@ impl<'a> Checker<'a> {
         // Locus context is forbidden — @ffi only valid on top-level
         // free fns at Stage 1; the parser dispatch in
         // parse_top_decl enforces this, but defend in depth here.
+        // Crumb batch-2 item 1 (C→Hale re-entry): an `@export fn` is
+        // a C-ABI symbol on native (and a wasm export) — its params
+        // and return must sit in the same FFI-portable set the
+        // `@ffi` import direction validates, and it can't be
+        // fallible (no C error channel) or take defaults (fixed
+        // C arity).
+        if decl.export && locus.is_none() {
+            for p in &decl.params {
+                let ty = resolve_type_expr(&p.ty, self.known);
+                if let Some(reason) = ffi_type_unportable(&ty) {
+                    self.diags.push(Diag::ty(
+                        p.ty.span(),
+                        format!(
+                            "`@export` fn `{}` parameter `{}` has type {} \
+                             — {} (the export is a C-ABI symbol; only the \
+                             FFI-portable set crosses)",
+                            decl.name.name,
+                            p.name.name,
+                            ty.display(),
+                            reason,
+                        ),
+                    ));
+                }
+                if p.default.is_some() {
+                    self.diags.push(Diag::ty(
+                        p.ty.span(),
+                        format!(
+                            "`@export` fn `{}`: defaulted params aren't \
+                             exportable — a C caller has fixed arity",
+                            decl.name.name
+                        ),
+                    ));
+                }
+            }
+            if let Some(ret_te) = &decl.ret {
+                let ret_ty = resolve_type_expr(ret_te, self.known);
+                if let Some(reason) = ffi_type_unportable(&ret_ty) {
+                    self.diags.push(Diag::ty(
+                        ret_te.span(),
+                        format!(
+                            "`@export` fn `{}` return type {} — {}",
+                            decl.name.name,
+                            ret_ty.display(),
+                            reason,
+                        ),
+                    ));
+                }
+            }
+            if decl.fallible.is_some() {
+                self.diags.push(Diag::ty(
+                    decl.span,
+                    format!(
+                        "`@export` fn `{}`: fallible fns aren't \
+                         exportable (no C error channel) — return a \
+                         sentinel or split the error out",
+                        decl.name.name
+                    ),
+                ));
+            }
+        }
         if let Some(ffi) = &decl.ffi {
             if locus.is_some() {
                 self.diags.push(Diag::ty(

@@ -1172,6 +1172,7 @@ pub fn build_executable_with_options(
         target_data,
         is_wasm,
         wasm_exports: Vec::new(),
+        native_exports: Vec::new(),
         instantiating_persistent_singleton: false,
         cell_owned_clone: false,
         program: &merged,
@@ -1560,7 +1561,15 @@ pub fn build_executable_with_options(
                     .to_str()
                     .unwrap_or("")
                     .to_string();
-                if func.count_basic_blocks() > 0 && name != "main" {
+                // Crumb batch-2: `@export` wrappers are external
+                // API — a C caller links them by name, so they must
+                // survive internalize+globaldce like `main` does
+                // (their `__hale_impl_*` bodies survive through the
+                // wrapper's call edge).
+                if func.count_basic_blocks() > 0
+                    && name != "main"
+                    && !cx.native_exports.contains(&name)
+                {
                     func.set_linkage(inkwell::module::Linkage::Internal);
                 }
                 f = func.get_next_function();
@@ -2766,6 +2775,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// arena-less wrappers were emitted; passed to `wasm-ld
     /// --export=`. Empty on native builds.
     pub(crate) wasm_exports: Vec<String>,
+    /// Crumb batch-2: native `@export` wrapper symbols — preserved
+    /// through the internalize+globaldce prepass (they're exactly
+    /// the symbols an external C caller links by name).
+    pub(crate) native_exports: Vec<String>,
     /// WASM entry-inversion: set while `_hale_start` instantiates the
     /// `@export locus` singleton, so `lower_locus_instantiation`
     /// allocates its struct in the persistent program arena (not a
@@ -7841,6 +7854,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // `@export` fns + the `_hale_start` setup entry. No-op on native.
         if self.is_wasm {
             self.synthesize_wasm_export_wrappers(&user_fn_decls)?;
+        } else {
+            // Crumb batch-2 item 1: native C-ABI export wrappers
+            // (C→Hale re-entry).
+            self.synthesize_native_export_wrappers(&user_fn_decls)?;
         }
 
         // Pass 3: the C entry point — i32 @main(i32 argc, ptr argv).
@@ -11719,7 +11736,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // resolve through `user_fns[name].func` (the SSA value), so the
         // symbol rename is invisible to them. Native builds keep the
         // literal name (no wrapper, `@export` is a no-op).
-        let impl_symbol = if self.is_wasm && f.export {
+        // Crumb batch-2: the rename applies on NATIVE too — the
+        // literal name is claimed by the C-ABI export wrapper
+        // (synthesize_native_export_wrappers); internal callers
+        // resolve through user_fns[name].func either way.
+        let impl_symbol = if f.export {
             format!("__hale_impl_{}", f.name.name)
         } else {
             f.name.name.clone()
@@ -11783,6 +11804,104 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ///     implementation (`__hale_impl_<name>`, arena-ABI). The JS host
     ///     calls these with just the declared args.
     /// Collected names are handed to `wasm-ld --export=`.
+    /// Crumb batch-2 item 1 — C→Hale re-entry, native side. Each
+    /// `@export fn` gets a C-ABI wrapper under its LITERAL name
+    /// (the arena-ABI implementation was renamed to
+    /// `__hale_impl_<name>`): prologue = `lotus_reentry_arena`
+    /// (same-thread contract: the caller-arena TLS must be live —
+    /// i.e. the callback fires during an in-flight `@ffi` call;
+    /// foreign-thread entry aborts with a pointed diagnostic),
+    /// then a straight call through the existing marshalling
+    /// (Int↔int64_t, Float↔double, Bool↔bool, String↔const char*,
+    /// Bytes↔lotus blob ptr). Fallibility and defaults are
+    /// rejected at typecheck; wasm keeps its own wrapper flavor.
+    fn synthesize_native_export_wrappers(
+        &mut self,
+        user_fn_decls: &[FnDecl],
+    ) -> Result<(), CodegenError> {
+        let void_t = self.context.void_type();
+        let emit = |s: String| CodegenError::LlvmEmit(s);
+        for f in user_fn_decls {
+            if !f.export {
+                continue;
+            }
+            let name = &f.name.name;
+            let sig = self
+                .user_fns
+                .get(name)
+                .cloned()
+                .expect("@export fn declared in pass B");
+            if sig.fallible.is_some() {
+                return Err(CodegenError::Unsupported(format!(
+                    "@export fn `{}`: fallible exports are not \
+                     supported (no C error channel)",
+                    name
+                )));
+            }
+            let mut wparam_tys: Vec<
+                inkwell::types::BasicMetadataTypeEnum,
+            > = Vec::with_capacity(sig.params.len());
+            for p in &sig.params {
+                wparam_tys.push(self.llvm_basic_type(p).into());
+            }
+            let wrapper_ty = match &sig.ret {
+                Some(rt) => {
+                    self.llvm_basic_type(rt).fn_type(&wparam_tys, false)
+                }
+                None => void_t.fn_type(&wparam_tys, false),
+            };
+            let wrapper = self.module.add_function(name, wrapper_ty, None);
+            self.native_exports.push(name.clone());
+            let wentry = self.context.append_basic_block(wrapper, "entry");
+            self.builder.position_at_end(wentry);
+            let arena_fn = self
+                .module
+                .get_function("lotus_reentry_arena")
+                .expect("lotus_reentry_arena declared");
+            let name_g = self.global_string(name);
+            let arena = self
+                .builder
+                .build_call(arena_fn, &[name_g.into()], "reentry.arena")
+                .map_err(|e| emit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("returns ptr");
+            let mut call_args: Vec<
+                inkwell::values::BasicMetadataValueEnum,
+            > = Vec::with_capacity(sig.params.len() + 1);
+            call_args.push(arena.into());
+            for i in 0..sig.params.len() {
+                call_args.push(
+                    wrapper
+                        .get_nth_param(i as u32)
+                        .expect("wrapper param")
+                        .into(),
+                );
+            }
+            let call = self
+                .builder
+                .build_call(sig.func, &call_args, "reentry.call")
+                .map_err(|e| emit(e.to_string()))?;
+            match &sig.ret {
+                Some(_) => {
+                    let rv = call
+                        .try_as_basic_value()
+                        .left()
+                        .expect("non-void export returns a value");
+                    self.builder
+                        .build_return(Some(&rv))
+                        .map_err(|e| emit(e.to_string()))?;
+                }
+                None => {
+                    self.builder
+                        .build_return(None)
+                        .map_err(|e| emit(e.to_string()))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn synthesize_wasm_export_wrappers(
         &mut self,
         user_fn_decls: &[FnDecl],
@@ -13300,10 +13419,38 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 };
             lowered_args.push(coerced.into());
         }
+        // Crumb batch-2 (C→Hale re-entry): publish the call
+        // site's arena in the caller-arena TLS for the duration
+        // of the @ffi call, so an `@export fn` the C code calls
+        // back into (same thread, in-flight call — the v1
+        // contract) finds a live context. Saved/restored around
+        // the call for nesting.
+        let tls_get = self
+            .module
+            .get_function("lotus_caller_arena_get")
+            .expect("lotus_caller_arena_get declared");
+        let tls_set = self
+            .module
+            .get_function("lotus_set_caller_arena")
+            .expect("lotus_set_caller_arena declared");
+        let tls_prev = self
+            .builder
+            .build_call(tls_get, &[], "ffi.tls.prev")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        let site_arena = self.current_arena_ptr()?;
+        self.builder
+            .build_call(tls_set, &[site_arena.into()], "ffi.tls.set")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let call = self
             .builder
             .build_call(sig.func, &lowered_args, &format!("{}.ffi.call", name))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_call(tls_set, &[tls_prev.into()], "ffi.tls.restore")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let ret_ty_opt = sig.ret.clone();
         // sret-style struct return: the LLVM call returned void
         // (the C glue wrote into the slot we passed); yield the

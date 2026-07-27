@@ -496,3 +496,45 @@ Bytes;` (Hale reads them and parses with `std::json` / `std::bytes`).
 - `docs/src/systems/webassembly.md` — the pedagogical companion to
   the WASM host interface above (the browser-client walkthrough:
   loader `run(glue)`, the inbox, the `@export locus` game loop).
+
+
+## C→Hale re-entry: `@export fn` on native (Crumb batch 2, 2026-07-27)
+
+The inverse direction of `@ffi`: an `@export fn` free fn is
+emitted as an **unmangled C-ABI symbol** on native targets (the
+same annotation wasm entry-inversion already used; the internal
+arena-ABI implementation is renamed `__hale_impl_<name>` and the
+literal name is claimed by a C-callable wrapper). C code — an
+engine registering host functions, a callback-taking library —
+links the symbol and calls straight into Hale.
+
+**Marshalling** is the same FFI-portable set as imports, in the
+same C shapes: `Int` ↔ `int64_t`, `Float` ↔ `double`, `Bool` ↔
+`bool`, `String` ↔ `const char*`, `Bytes` ↔ lotus blob pointer
+(`lotus_bytes_len`/`lotus_bytes_data` are linkable for C-side
+access). Typecheck rejects non-portable params/returns, defaulted
+params (fixed C arity), and fallible exports (no C error
+channel).
+
+**The v1 contract is same-thread re-entry**: the callback must
+fire while Hale is inside an in-flight `@ffi` call on that same
+thread (the engine-host-function shape — JS calls a host fn
+during `crumb_js_run_file`). Codegen publishes the call site's
+arena in the caller-arena TLS around every `@ffi` call
+(save/set/restore, nesting-safe); the export wrapper's prologue
+picks it up, so the re-entered body composes with the established
+context — bus publishes dispatch, eager loci instantiate and
+dissolve, all on the thread that owns them. Entry from a foreign
+thread (or outside any in-flight `@ffi` call) aborts with a
+pointed diagnostic naming this section; cross-thread entry is the
+documented follow-up.
+
+**Invariants the re-entered code inherits** (spelled out per the
+Crumb request): re-entry runs on the calling thread's context —
+the same single-threaded interiority as the locus/fn that made
+the `@ffi` call. Publishes enqueue exactly as they would from
+that caller; a re-entered export must not assume it runs on main
+unless the `@ffi` call site does. `JSValue`-style by-value
+foreign structs never cross — trampolines convert to the
+marshalling set C-side (the pond/sqlite handles-in/scalars-out
+pattern).
