@@ -3158,6 +3158,38 @@ dispatch site instead, since the locus body isn't executing
 when fanout detects the loss; the observable semantics
 (ClosureViolation through on_failure) are as specified.
 
+**`or wait` — the third down-window option (GH #255 phase 1,
+2026-07-27).** A publish site may attach `or wait` to a send on
+a transport-bound topic: instead of taking the counted
+`dropped_lost` drop during the loss window, the publisher
+*parks* until the window closes (the app's `on_failure` ran
+`restart (t)` and the reconnect succeeded) and then publishes
+onto the re-armed binding. This is a **delivery-mode modifier,
+not error handling** — the send stays infallible; `wait` is
+its own disposition kind, rejected everywhere except a send to
+a transport-bound topic. Semantics:
+
+- Transient refusal (binding `lost`) parks the publishing
+  thread in 1ms slices. A main-thread publisher pumps its own
+  queue drain while parked (loss events only dispatch on the
+  queue-owner thread, and tick-driven retry handlers keep
+  firing) — without the pump it would deadlock on itself.
+- Structural impossibility raises: a failed/declined reconnect
+  takes the existing structural exit (the waiter dies with the
+  process), and **main teardown aborts all parked waits into a
+  `BusWaitAborted` panic** — the abort fires before main joins
+  its pinned children, so a parked pinned publisher can never
+  hang the join.
+- The first send that *discovers* a loss still fails
+  (detection is send-time; that message is a `send_failure`,
+  not a window drop) — `or wait` guarantees no `dropped_lost`
+  drops, not exactly-once.
+- Per-binding `waits` counter (GH #236 family) records parks.
+
+Phase 2 (bounded topics / consumer shed bounds, designed on
+GH #255) will feed queue-full as a second transient-refusal
+condition into this same disposition — no surface change.
+
 ---
 
 ## Deferred & future work

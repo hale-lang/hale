@@ -2147,7 +2147,9 @@ fn scan_expr_for_stdlib_usage(e: &Expr, out: &mut StdlibErrorUsage) {
                 OrDisposition::Fail(payload, _) => {
                     scan_expr_for_stdlib_usage(payload, out)
                 }
-                OrDisposition::Raise(_) | OrDisposition::Discard(_) => {}
+                OrDisposition::Raise(_)
+                | OrDisposition::Discard(_)
+                | OrDisposition::Wait(_) => {}
             }
         }
         Expr::Sum(inner, _) | Expr::Prod(inner, _) => {

@@ -549,6 +549,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.lower_or_raise(&call)?;
                     None
                 }
+                // GH #255: typecheck rejects `or wait` in
+                // expression position; defensive here.
+                OrDisposition::Wait(_) => {
+                    return Err(CodegenError::Unsupported(
+                        "`or wait` is only legal on a bus send to a                          transport-bound topic"
+                            .to_string(),
+                    ));
+                }
                 OrDisposition::Fail(payload, _) => {
                     // B3 / G6: `or fail X` — evaluate X as the
                     // enclosing fallible fn's declared payload type

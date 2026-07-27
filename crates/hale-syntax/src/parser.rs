@@ -4658,12 +4658,18 @@ impl Parser {
         let is_raise = matches!(self.peek(), TokenKind::Ident(s) if s == "raise");
         let is_discard = matches!(self.peek(), TokenKind::Ident(s) if s == "discard");
         let is_fail = matches!(self.peek(), TokenKind::Ident(s) if s == "fail");
+        // GH #255: `wait` is contextual, same as raise/discard —
+        // only recognized as the immediate RHS of `or`.
+        let is_wait = matches!(self.peek(), TokenKind::Ident(s) if s == "wait");
         if is_raise {
             let raise_tok = self.bump();
             Ok((OrDisposition::Raise(raise_tok.span), raise_tok.span))
         } else if is_discard {
             let discard_tok = self.bump();
             Ok((OrDisposition::Discard(discard_tok.span), discard_tok.span))
+        } else if is_wait {
+            let wait_tok = self.bump();
+            Ok((OrDisposition::Wait(wait_tok.span), wait_tok.span))
         } else if is_fail {
             let fail_tok = self.bump();
             let payload = self.parse_expr()?;

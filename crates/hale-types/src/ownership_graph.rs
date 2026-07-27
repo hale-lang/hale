@@ -952,7 +952,9 @@ fn collect_sites_expr(
                 OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => {
                     collect_sites_expr(e, locus_types, out)
                 }
-                OrDisposition::Raise(_) | OrDisposition::Discard(_) => {}
+                OrDisposition::Raise(_)
+                | OrDisposition::Discard(_)
+                | OrDisposition::Wait(_) => {}
             }
         }
         // Leaves — no sub-expressions.

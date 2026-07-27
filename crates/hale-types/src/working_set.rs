@@ -1072,7 +1072,9 @@ fn expr_scratch_bytes(e: &Expr, idx: &Index<'_>) -> u64 {
                 OrDisposition::Fail(payload, _) => {
                     t = t.saturating_add(expr_scratch_bytes(payload, idx))
                 }
-                OrDisposition::Raise(_) | OrDisposition::Discard(_) => {}
+                OrDisposition::Raise(_)
+                | OrDisposition::Discard(_)
+                | OrDisposition::Wait(_) => {}
             }
             t
         }

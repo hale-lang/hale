@@ -1601,7 +1601,9 @@ impl<'a> Walker<'a> {
                 match disposition {
                     OrDisposition::Substitute(e) => self.walk_expr(e, depth, escape),
                     OrDisposition::Fail(e, _) => self.walk_expr(e, depth, escape),
-                    OrDisposition::Raise(_) | OrDisposition::Discard(_) => {}
+                    OrDisposition::Raise(_)
+                    | OrDisposition::Discard(_)
+                    | OrDisposition::Wait(_) => {}
                 }
             }
         }

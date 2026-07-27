@@ -190,6 +190,92 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
             )));
         }
         let subj_val = self.unpack_view_if_needed(subj_val, &subj_ty)?;
+        // GH #255 phase 1: `or wait` — park through the binding's
+        // loss window BEFORE the dispatch fanout, so the publish
+        // that follows lands on a live transport instead of
+        // taking the counted `dropped_lost` drop. The C primitive
+        // returns 0 when every CONNECT binding for the subject is
+        // ready (or none is bound), and -1 when main teardown
+        // aborted the wait — structurally unsatisfiable, so that
+        // branch raises rather than publishing into the void.
+        if let Some(OrDisposition::Wait(_)) = or_disposition {
+            let ptr_t = self.context.ptr_type(AddressSpace::default());
+            let i64_t = self.context.i64_type();
+            let queue_global = self
+                .module
+                .get_global("lotus.bus_queue.global")
+                .expect("bus queue global declared");
+            let queue_ptr = self
+                .builder
+                .build_load(
+                    ptr_t,
+                    queue_global.as_pointer_value(),
+                    "wait.queue.cur",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let wait_fn = self
+                .module
+                .get_function("lotus_bus_binding_wait_ready")
+                .expect("lotus_bus_binding_wait_ready declared");
+            let ret = self
+                .builder
+                .build_call(
+                    wait_fn,
+                    &[queue_ptr.into(), subj_val.into()],
+                    "bus.wait.ready",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("returns i64")
+                .into_int_value();
+            let aborted = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::SLT,
+                    ret,
+                    i64_t.const_zero(),
+                    "bus.wait.aborted",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let current_fn = self
+                .builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_parent())
+                .expect("inside a function");
+            let panic_bb = self
+                .context
+                .append_basic_block(current_fn, "bus.wait.raise");
+            let cont_bb = self
+                .context
+                .append_basic_block(current_fn, "bus.wait.cont");
+            self.builder
+                .build_conditional_branch(aborted, panic_bb, cont_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(panic_bb);
+            let panic_fn = self
+                .module
+                .get_function("lotus_root_panic")
+                .expect("lotus_root_panic declared");
+            let typename_str = self.global_string(
+                "BusWaitAborted (`or wait` parked past main teardown — the binding's loss window can no longer close)",
+            );
+            self.builder
+                .build_call(
+                    panic_fn,
+                    &[
+                        ptr_t.const_null().into(),
+                        i64_t.const_zero().into(),
+                        typename_str.into(),
+                    ],
+                    "bus.wait.raise.call",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_unreachable()
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(cont_bb);
+        }
         // v1.x-FRAMEWORK: ephemeral-payload fast path. When the
         // value is a bare struct literal, the publisher-side
         // storage is dead after lotus_bus_dispatch returns (the
@@ -516,6 +602,14 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                     .expect("dispatch_keyed_fallible returns i32")
                     .into_int_value();
                 match or_disposition {
+                    // GH #255: typecheck rejects wait on
+                    // fail-policy topics; defensive here.
+                    Some(OrDisposition::Wait(_)) => {
+                        return Err(CodegenError::Unsupported(
+                            "`or wait` is not an unmatched-key                              disposition"
+                                .to_string(),
+                        ));
+                    }
                     Some(OrDisposition::Raise(_)) => {
                         // No match → panic with a BusUnmatchedKey
                         // message naming subject + key.

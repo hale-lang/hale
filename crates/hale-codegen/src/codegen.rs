@@ -437,7 +437,9 @@ fn bce_expr_safe(expr: &Expr, vkey: &BceVecKey, var: &str) -> bool {
         Expr::Or { inner, disposition, .. } => {
             bce_expr_safe(inner, vkey, var)
                 && match disposition {
-                    OrDisposition::Raise(_) | OrDisposition::Discard(_) => true,
+                    OrDisposition::Raise(_)
+                    | OrDisposition::Discard(_)
+                    | OrDisposition::Wait(_) => true,
                     OrDisposition::Substitute(e) => bce_expr_safe(e, vkey, var),
                     OrDisposition::Fail(e, _) => bce_expr_safe(e, vkey, var),
                 }
@@ -4831,7 +4833,9 @@ fn count_self_fields_in_expr(
                 OrDisposition::Fail(payload, _) => {
                     count_self_fields_in_expr(payload, counts, depth);
                 }
-                OrDisposition::Raise(_) | OrDisposition::Discard(_) => {}
+                OrDisposition::Raise(_)
+                | OrDisposition::Discard(_)
+                | OrDisposition::Wait(_) => {}
             }
         }
     }
@@ -5004,7 +5008,9 @@ fn expr_reads_self_children(e: &Expr) -> bool {
                 return true;
             }
             match disposition {
-                OrDisposition::Raise(_) | OrDisposition::Discard(_) => false,
+                OrDisposition::Raise(_)
+                | OrDisposition::Discard(_)
+                | OrDisposition::Wait(_) => false,
                 OrDisposition::Substitute(rhs) => expr_reads_self_children(rhs),
                 OrDisposition::Fail(payload, _) => expr_reads_self_children(payload),
             }
@@ -5885,6 +5891,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .deferred_dissolves
             .pop()
             .expect("flush without matching push");
+        // GH #255: at fn-main's scope exit this flush IS main
+        // teardown — wake `or wait` parked publishers into the
+        // raise path before the pinned joins below would block on
+        // them. Gated on in_main: every other fn's flush must not
+        // disable waits program-wide.
+        if self.in_main {
+            self.emit_bus_wait_abort_all()?;
+        }
         // GH #253: join subscription-less pinned entries FIRST,
         // before any cooperative teardown. Reverse push order
         // alone processed a parent (and its cascade of subscriber

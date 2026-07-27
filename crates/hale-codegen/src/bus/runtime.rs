@@ -11,6 +11,7 @@ use crate::codegen::{CodegenError, Cx};
 
 pub(crate) trait BusRuntime<'ctx> {
     fn emit_bus_drain(&mut self) -> Result<(), CodegenError>;
+    fn emit_bus_wait_abort_all(&mut self) -> Result<(), CodegenError>;
     fn emit_bus_queue_destroy(&mut self) -> Result<(), CodegenError>;
     fn emit_bus_register_shm_ring(
         &mut self,
@@ -43,6 +44,23 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
     /// queue is empty at pop time. Called at the start of every
     /// `flush_dissolve_frame` so cooperative subscribers process
     /// pending cells BEFORE they themselves dissolve.
+    /// GH #255 phase 1: wake every publisher parked in `or wait`
+    /// into the raise path. Emitted at MAIN teardown only (eager
+    /// main-locus dissolve + fn-main scope-exit flush), BEFORE
+    /// pinned children are joined — a parked pinned publisher
+    /// would otherwise hang the join forever (main is inside
+    /// pthread_join, so nothing can dispatch the loss/reconnect).
+    fn emit_bus_wait_abort_all(&mut self) -> Result<(), CodegenError> {
+        let f = self
+            .module
+            .get_function("lotus_bus_wait_abort_all")
+            .expect("lotus_bus_wait_abort_all declared");
+        self.builder
+            .build_call(f, &[], "bus.wait.abort_all")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
     fn emit_bus_drain(&mut self) -> Result<(), CodegenError> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let queue_global = self

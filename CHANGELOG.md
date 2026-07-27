@@ -8,6 +8,25 @@ behavior.
 
 ## Unreleased
 
+- **`or wait` — park a publish through the loss window
+  (GH #255 phase 1).** A send to a transport-bound topic can
+  attach `or wait`: instead of the counted `dropped_lost` drop
+  while a connect binding is lost/reconnecting, the publisher
+  parks until the app's `on_failure` → `restart (t)` re-arms
+  the binding, then publishes onto the live link. A
+  delivery-mode modifier, not error handling — the send stays
+  infallible; `wait` is its own disposition kind, rejected on
+  unbound topics ("nothing to wait for"), on fail-policy keyed
+  publishes, and in expression position. Main-thread waiters
+  pump their own queue drain (loss dispatch + ticks) while
+  parked; a structurally unsatisfiable wait raises — failed
+  reconnect takes the existing structural exit, and main
+  teardown wakes parked waiters into `BusWaitAborted` before
+  the pinned joins (a parked publisher can never hang
+  teardown). Per-binding `waits` counter joins the #236 dump.
+  Phase 2 (bounded topics, designed on the issue) feeds
+  queue-full into this same disposition later.
+
 - **`std::compress` + `std::tar` — compression and archives
   (GH #254).** One-shot over `Bytes`, all `fallible(IoError)`:
   `compress::gzip`/`gunzip` (zlib, gzip container; gunzip

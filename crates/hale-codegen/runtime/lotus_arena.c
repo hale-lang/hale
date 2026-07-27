@@ -12560,6 +12560,7 @@ typedef struct lotus_bus_remote_entry {
     uint64_t           ctr_rearms;
     uint64_t           ctr_reconnects;
     uint64_t           ctr_seq_gaps;   /* framed mode: recv'd seq != last+1 */
+    uint64_t           ctr_waits;      /* GH #255: publishes that parked in `or wait` */
 } lotus_bus_remote_entry_t;
 
 #define LOTUS_CTR_BUMP(field) \
@@ -13684,6 +13685,79 @@ void lotus_bus_remote_fanout(const char *subject,
         /* Send errors are also logged inside lotus_transport_send;
          * dispatch continues — local subscribers already received
          * their copy. */
+    }
+}
+
+/* GH #255 phase 1 — `or wait` publisher park.
+ *
+ * Parks the calling (publisher) thread while any CONNECT-role
+ * binding for `subject` sits in the loss window (`e->lost`),
+ * instead of taking the counted `dropped_lost` drop. Wakes when
+ * the loss window closes (the app's on_failure ran `restart(t)`
+ * -> reconnect cleared `lost`) and returns 0 so the caller
+ * proceeds into the normal dispatch fanout.
+ *
+ * Returns 0 = ready (or nothing bound for this subject — nothing
+ * to wait for); -1 = permanently unsatisfiable (main teardown
+ * aborted the wait) — the caller raises instead of publishing.
+ *
+ * Main-thread callers pump `lotus_bus_queue_drain` each slice:
+ * loss events are only dispatched on the queue-owner thread, so
+ * a parked main publisher must run its own on_failure/restart
+ * (and any tick-driven retry) or it would deadlock on itself.
+ * The drain call is owner-guarded internally, so off-main
+ * callers' pump is a no-op and they just poll-sleep: the loss
+ * window is reconnect-scale (ms to seconds), a 1ms poll is
+ * noise. A publisher that keeps waiting while the app's handler
+ * declines to reconnect waits indefinitely — that matches the
+ * binding's declared state (still lost, might be retried on a
+ * later tick); the structural no-handler path exits the process
+ * and takes the waiter with it. */
+static volatile int g_bus_wait_abort = 0;
+
+/* Called at MAIN teardown (eager main-locus dissolve + fn-main
+ * scope-exit flush), BEFORE pinned children are joined: a pinned
+ * publisher parked in `or wait` would otherwise hang the join
+ * forever (main is in pthread_join, so nothing can dispatch the
+ * loss or reconnect). Waiters wake into the raise path — at
+ * teardown the wait is structurally unsatisfiable. */
+void lotus_bus_wait_abort_all(void) {
+    __atomic_store_n(&g_bus_wait_abort, 1, __ATOMIC_RELEASE);
+}
+
+int64_t lotus_bus_binding_wait_ready(lotus_bus_queue_t *queue,
+                                     const char *subject) {
+    if (!subject) return 0;
+    int bumped = 0;
+    for (;;) {
+        int any_lost = 0;
+        lotus_bus_remote_entry_t *lost_entry = NULL;
+        for (size_t i = 0; i < g_bus_remote_count; i++) {
+            lotus_bus_remote_entry_t *e = g_bus_remote_entries[i];
+            if (!e || !e->subject) continue;
+            if (e->role != LOTUS_TRANSPORT_CONNECT) continue;
+            if (!e->locus_served) continue;
+            if (strcmp(e->subject, subject) != 0) continue;
+            if (e->lost) {
+                any_lost = 1;
+                lost_entry = e;
+                break;
+            }
+        }
+        if (!any_lost) return 0;
+        if (!bumped && lost_entry) {
+            LOTUS_CTR_BUMP(lost_entry->ctr_waits);
+            bumped = 1;
+        }
+        if (__atomic_load_n(&g_bus_wait_abort, __ATOMIC_ACQUIRE)) {
+            return -1;
+        }
+        /* Owner-guarded internally: pumps loss dispatch + coop
+         * queue (incl. tick-driven retry handlers) on main,
+         * no-ops elsewhere. */
+        lotus_bus_queue_drain(queue);
+        struct timespec ts = {0, 1000000}; /* 1ms slice */
+        nanosleep(&ts, NULL);
     }
 }
 
@@ -16874,7 +16948,7 @@ void lotus_bus_remote_destroy_all(void) {
                     "[bus counters] subject=%s kind=%d role=%d "
                     "sent=%llu delivered=%llu bytes_sent=%llu "
                     "bytes_delivered=%llu send_failures=%llu "
-                    "dropped_lost=%llu rearms=%llu reconnects=%llu "
+                    "dropped_lost=%llu waits=%llu rearms=%llu reconnects=%llu "
                     "seq_gaps=%llu\n",
                     e->subject, e->kind, e->role,
                     (unsigned long long)e->ctr_msgs_sent,
@@ -16883,6 +16957,7 @@ void lotus_bus_remote_destroy_all(void) {
                     (unsigned long long)e->ctr_bytes_delivered,
                     (unsigned long long)e->ctr_send_failures,
                     (unsigned long long)e->ctr_dropped_lost,
+                    (unsigned long long)e->ctr_waits,
                     (unsigned long long)e->ctr_rearms,
                     (unsigned long long)e->ctr_reconnects,
                     (unsigned long long)e->ctr_seq_gaps);

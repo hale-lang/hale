@@ -118,6 +118,27 @@ child loci. (Messages published while the link is down are
 dropped, and the drop is visible in the supervision flow — the
 broker never pretends they were delivered.)
 
+If a publish would rather not be dropped during that window, it
+can say so at the send site:
+
+```hale,fragment
+Evt <- reading or wait;
+```
+
+`or wait` parks the publisher until the reconnect lands, then
+sends on the re-armed link — the third option next to
+counted-drop and structural exit. It's a delivery-mode choice,
+not error handling: the send is still infallible, and each send
+site of the same topic picks its own behavior (a hot path can
+keep the default drop while a must-arrive path waits). Two
+honest edges: the send that *discovers* a dead link still fails
+(that's how the loss is detected — `or wait` prevents the
+window drops that follow, not the detection casualty), and a
+wait that can never be satisfied — the reconnect fails, or the
+program is already tearing down — raises instead of hanging.
+Parks are visible as a `waits` counter next to `dropped_lost`
+in the `LOTUS_BUS_COUNTERS_DUMP=1` line.
+
 The same rule covers routes added at deploy time through the
 `LOTUS_BUS_CONFIG` file: a route that's asked for but can't be
 opened refuses the boot.

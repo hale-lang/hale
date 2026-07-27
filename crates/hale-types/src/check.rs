@@ -327,6 +327,23 @@ pub fn check_bundle(
                 if matches!(t.name.name.as_str(), "wasm" | "browser_js"))
         })
     });
+    // GH #255: bundle-wide set of transport-bound topic names,
+    // for the `or wait` legality check at publish sites.
+    let mut bound_topics: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    for program in bundle.programs.values() {
+        for item in &program.items {
+            if let TopDecl::Locus(l) = item {
+                for member in &l.members {
+                    if let LocusMember::Bindings(bb) = member {
+                        for e in &bb.entries {
+                            bound_topics.insert(e.topic.name.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
     for program in bundle.programs.values() {
         let mut generic_fns: BTreeMap<String, &FnDecl> = BTreeMap::new();
         collect_generic_fns(&program.items, &mut generic_fns);
@@ -347,6 +364,7 @@ pub fn check_bundle(
             or_value_discarded: false,
             generic_fns,
             generic_types,
+            bound_topics: &bound_topics,
         };
         for item in &program.items {
             cx.check_top_decl(item);
@@ -2963,7 +2981,9 @@ fn walk_expr_pool(expr: &Expr, cx: &mut PoolCheckCx) {
             match disposition {
                 OrDisposition::Substitute(e) => walk_expr_pool(e, cx),
                 OrDisposition::Fail(e, _) => walk_expr_pool(e, cx),
-                OrDisposition::Raise(_) | OrDisposition::Discard(_) => {}
+                OrDisposition::Raise(_)
+                | OrDisposition::Discard(_)
+                | OrDisposition::Wait(_) => {}
             }
         }
         Expr::Literal(_, _)
@@ -5089,6 +5109,11 @@ struct Checker<'a> {
     /// codegen unit tests, which skip the checker, exercised
     /// them). Fields validate against the SUBSTITUTED types.
     generic_types: BTreeMap<String, &'a TypeDecl>,
+    /// GH #255 phase 1: topic names with a declared transport
+    /// binding (any `bindings { }` entry, bundle-wide). Gates
+    /// `or wait` on publishes — the loss window it waits out
+    /// only exists for bound topics.
+    bound_topics: &'a std::collections::BTreeSet<String>,
 }
 
 #[derive(Default)]
@@ -8792,28 +8817,72 @@ impl<'a> Checker<'a> {
         // or-disposition leaves the no-match err unhandled. We
         // resolve the topic by name/literal-subject and validate
         // both directions.
-        let target_policy = match subject {
-            Expr::Literal(Literal::String(s), _) => self
-                .top
-                .symbols
-                .values()
-                .find_map(|sym| match sym {
-                    TopSymbol::Topic(ti)
-                        if ti.subject == *s
-                            || ti.wire_subject == *s
-                            || ti.name == *s =>
-                    {
-                        Some(ti.on_unmatched)
+        let target_topic: Option<(String, Option<UnmatchedPolicy>)> =
+            match subject {
+                Expr::Literal(Literal::String(s), _) => self
+                    .top
+                    .symbols
+                    .values()
+                    .find_map(|sym| match sym {
+                        TopSymbol::Topic(ti)
+                            if ti.subject == *s
+                                || ti.wire_subject == *s
+                                || ti.name == *s =>
+                        {
+                            Some((ti.name.clone(), ti.on_unmatched))
+                        }
+                        _ => None,
+                    }),
+                Expr::Ident(id) => match self.top.lookup(&id.name) {
+                    Some(TopSymbol::Topic(ti)) => {
+                        Some((ti.name.clone(), ti.on_unmatched))
                     }
                     _ => None,
-                }),
-            Expr::Ident(id) => match self.top.lookup(&id.name) {
-                Some(TopSymbol::Topic(ti)) => Some(ti.on_unmatched),
+                },
                 _ => None,
-            },
-            _ => None,
-        };
+            };
+        let target_policy = target_topic.as_ref().map(|(_, p)| *p);
+        // GH #255 phase 1: `or wait` is its own disposition kind —
+        // a delivery-mode modifier on a NON-fallible publish, only
+        // meaningful when the topic has a declared transport
+        // binding (the loss window is what it waits out). Checked
+        // before the fail-policy matrix below because it is not a
+        // member of the fallible-disposition family.
+        if let Some(OrDisposition::Wait(wsp)) = or_disposition {
+            if matches!(
+                target_policy.flatten(),
+                Some(UnmatchedPolicy::Fail)
+            ) {
+                self.diags.push(Diag::ty(
+                    *wsp,
+                    "`or wait` is not an unmatched-key disposition — an \
+                     unmatched routing key is not a transient \
+                     condition to outwait. Use `or raise` / \
+                     `or discard` / `or handler(err)` / \
+                     `or fail <payload>`",
+                ));
+            } else {
+                let is_bound = target_topic
+                    .as_ref()
+                    .map_or(false, |(name, _)| {
+                        self.bound_topics.contains(name)
+                    });
+                if !is_bound {
+                    self.diags.push(Diag::ty(
+                        *wsp,
+                        "`or wait` requires the topic to have a declared \
+                         transport binding (a `bindings { }` entry) — \
+                         an unbound in-process publish has no loss \
+                         window to wait out",
+                    ));
+                }
+            }
+        }
         match (target_policy.flatten(), or_disposition) {
+            // GH #255: wait was fully validated above — pass it
+            // through so the fail-policy matrix doesn't
+            // mis-diagnose it as an illegal disposition.
+            (_, Some(OrDisposition::Wait(_))) => {}
             (Some(UnmatchedPolicy::Fail), None) => {
                 self.diags.push(Diag::ty(
                     span,
@@ -8835,6 +8904,9 @@ impl<'a> Checker<'a> {
                 //     the enclosing fallible fn's declared err.
                 match disp {
                     OrDisposition::Raise(_) | OrDisposition::Discard(_) => {}
+                    // Unreachable: the Wait arm of the outer
+                    // matrix consumed it (GH #255).
+                    OrDisposition::Wait(_) => {}
                     OrDisposition::Substitute(rhs) => {
                         let err_ty =
                             Ty::Named("BusUnmatchedKey".to_string());
@@ -10555,6 +10627,23 @@ impl<'a> Checker<'a> {
                         // `or raise` diverges via closure
                         // violation; expression's value type is
                         // the success type.
+                        success
+                    }
+                    OrDisposition::Wait(span) => {
+                        // GH #255: `or wait` is a publish
+                        // delivery-mode modifier, not an error
+                        // disposition — a fallible call has an
+                        // error to handle, not a transient
+                        // refusal to outwait.
+                        self.diags.push(Diag::ty(
+                            *span,
+                            "`or wait` is only legal on a bus send to a \
+                             transport-bound topic (it parks the \
+                             publisher through the binding's loss \
+                             window); use `or raise` / `or <default>` / \
+                             `or handler(err)` to dispose of a fallible \
+                             call's error",
+                        ));
                         success
                     }
                     OrDisposition::Discard(span) => {
