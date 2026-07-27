@@ -6,6 +6,17 @@ behavior.
 
 ---
 
+## Unreleased
+
+- **Direct `std::io::tcp::listen_socket` path-call fixed (Crumb
+  batch-2 item 2).** The direct user-code lowering truncated the
+  port to i32 against the C primitive's declared `(ptr, i16)`
+  signature — a debug-info verifier failure, and silently
+  mismatched IR without debug info. The stdlib's own `Listener`
+  path was unaffected (it truncates correctly), which is why
+  only direct calls tripped. Now i16 on both paths; regression
+  test in `tcp_raw_fd_freefns.rs`.
+
 ## v0.11.12 — the iris handoff: native observation emission, vec.set retire, verify modeling (2026-07-27)
 
 - **Native observation emission (iris handoff P4).** `LOTUS_OBS=1`
