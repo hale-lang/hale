@@ -265,6 +265,32 @@ so PACKED absorbs them.
   lotus_viz (scene/layout/animator), heron (tree-sitter),
   pane/layout system, mcp_server, pty/http/sse libs. Nothing
   moves until needed.
+- **Render target — DECIDED (2026-07-27): browser over an
+  HTTP/SSE backend on fuse, not a native TUI/raylib app.**
+  The flower renders in the browser; fuse grows a serve mode
+  (JSON snapshot + SSE stream at a capped cadence). Why:
+  (a) the backend isn't extra code — the same query surface
+  is what the MCP co-debugger reads (`viz.snapshot` et al.
+  above), so one API serves both clients; (b) remote
+  observation falls out for free (consumer stays shm-attached
+  on the observed host, renderer connects over HTTP) — a step
+  toward M4 without doing M4; (c) read-only v1 means no
+  writes to gate over the network; (d) top-end visual
+  expression. A disposable `peek`/top harness remains the
+  cheap channel proof (§14 M1). The raylib/lotus_viz pull-in
+  path is abandoned for the flower. Frontend language: a
+  wasm spike (examples/wasm-flower) proved hale's wasm32
+  target hosts a render loop with ~100× frame-budget headroom
+  (`@export fn frame` + `_hale_start` persistent arena +
+  `@ffi("js")` canvas imports); the M1 frontend may start as
+  plain JS for velocity, with Hale→wasm the committed
+  direction once fused-state ingestion into wasm is designed.
+  The UI frame-caps itself (~30fps, rAF pauses in hidden
+  tabs) and the SSE cadence is server-capped — the observer
+  must not be the CPU hog in the system it observes. The
+  flower is 2D (an instrument, not a scene): precise
+  hit-testing, labels, and scrubbing outrank depth; WebGL is
+  an acceptable raster backend later, but the scene stays 2D.
 
 ## 12. Verification
 

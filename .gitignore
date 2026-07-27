@@ -3,3 +3,6 @@ emitter/peek
 *.dump
 consumer/fuse
 examples/obs-smoke/obs-smoke
+consumer/fuse-hl/fuse-hl
+examples/wasm-flower/flower.wasm
+examples/wasm-flower/flower.mjs
