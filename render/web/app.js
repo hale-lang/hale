@@ -179,6 +179,11 @@ function treeLayout(loci, cx, cy) {
 const KEEP = 2, AGG_MIN = 5;
 
 function condenseLoci(pid, loci) {
+  // runtime/stdlib internals (__-prefixed types) are real loci
+  // but the wrong altitude for petals — demote each flower's
+  // internals to one dim aggregate.
+  const internal = loci.filter(l => l.type.startsWith("__"));
+  loci = loci.filter(l => !l.type.startsWith("__"));
   const groups = new Map();
   for (const l of loci) {
     const k = l.parent + "|" + l.type;
@@ -208,6 +213,15 @@ function condenseLoci(pid, loci) {
       type: members[0].type, parent: members[0].parent,
       agg: true, count: rest.length, aggPub: pub, aggDlv: dlv,
     });
+  }
+  if (internal.length) {
+    let pub = 0, dlv = 0;
+    for (const m of internal) {
+      const r = rates.loci.get(pid + ":" + m.id) || { pub: 0, dlv: 0 };
+      pub += r.pub; dlv += r.dlv;
+    }
+    out.push({ id: -999999, type: "runtime", parent: 0, agg: true,
+               internal: true, count: internal.length, aggPub: pub, aggDlv: dlv });
   }
   return out;
 }
@@ -257,7 +271,9 @@ function drawFlower(p, cx, cy, t) {
     ctx.ellipse(10 * scale, 0, (16 + 6 * bloom) * scale, (5 + 5 * bloom) * scale, 0, 0, Math.PI * 2);
     ctx.fillStyle = dead
       ? `hsla(${h}, 12%, 34%, .35)`
-      : `hsla(${h}, 68%, 62%, ${0.3 + 0.5 * bloom})`;
+      : l.internal
+        ? `hsla(220, 8%, 45%, ${0.12 + 0.2 * bloom})`
+        : `hsla(${h}, 68%, 62%, ${0.3 + 0.5 * bloom})`;
     ctx.fill();
     // reacting: perimeter pulse, flicker rate rises with load
     if (!dead && rxI > 0) {
@@ -399,6 +415,8 @@ function frame(now) {
   topicsEl.innerHTML = (snap.topics || [])
     .map(tp => `${tp.name} <span style="color:#5c6773">pub ${fmt(tp.pub)} · dlv ${fmt(tp.dlv)}</span>`)
     .join("<br>");
-  eventsEl.innerHTML = (snap.events || []).slice(-6).map(x => `<div>${x}</div>`).join("");
+  eventsEl.innerHTML = (snap.events || [])
+    .filter(x => !x.includes("__"))
+    .slice(-6).map(x => `<div>${x}</div>`).join("");
 }
 requestAnimationFrame(frame);
