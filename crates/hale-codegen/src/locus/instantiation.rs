@@ -3825,6 +3825,9 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             // locus dissolving mid-program must not join global pools.
             if is_main_locus {
                 self.emit_coop_pool_shutdown_all()?;
+                // GH #255: wake `or wait` parked publishers into
+                // the raise path before the pinned joins below.
+                self.emit_bus_wait_abort_all()?;
             }
             // GH #253: join this locus's own pinned children (the
             // frame entries pushed during param init above) BEFORE

@@ -551,7 +551,9 @@ fn scan_expr(
                 return Some(imp);
             }
             match disposition {
-                OrDisposition::Raise(_) | OrDisposition::Discard(_) => None,
+                OrDisposition::Raise(_)
+                | OrDisposition::Discard(_)
+                | OrDisposition::Wait(_) => None,
                 OrDisposition::Substitute(e) => scan_expr(e, all_fns, map, any_unknown),
                 OrDisposition::Fail(e, _) => scan_expr(e, all_fns, map, any_unknown),
             }

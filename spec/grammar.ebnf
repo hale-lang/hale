@@ -1011,9 +1011,16 @@ assignment_expr   = or_disposition_expr , [ assign_op , assignment_expr ] ;
    type, identical at each level. *)
 or_disposition_expr
                   = logical_or_expr , [ or_clause ] ;
-or_clause         = "or" , ( "raise" | "discard"
+or_clause         = "or" , ( "raise" | "discard" | "wait"
                             | "fail" , expr
                             | or_disposition_expr ) ;
+(* `or wait` (GH #255, 2026-07-27) is a delivery-mode modifier,
+   legal ONLY on a bus send to a transport-bound topic — the
+   publisher parks through the binding's loss window instead of
+   taking the counted drop; a structurally unsatisfiable wait
+   (main teardown) raises. The typechecker rejects it in every
+   other `or` position; like raise/discard, `wait` is contextual
+   (an ordinary identifier outside the or-clause RHS). *)
 (* `or discard` (added 2026-05-16) swallows the error and
    substitutes Unit. Typechecker rejects it on calls whose
    success type is non-Unit and points the user at

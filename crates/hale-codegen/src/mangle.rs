@@ -1010,6 +1010,7 @@ impl<'a> Mangler<'a> {
             Expr::Or { inner, disposition, .. } => {
                 self.walk_expr(inner);
                 match disposition {
+                    OrDisposition::Wait(_) => {}
                     OrDisposition::Substitute(rhs) => self.walk_expr(rhs),
                     // B3 / G6 — `or fail <payload>`: the payload is an
                     // ordinary expression whose type names and bare

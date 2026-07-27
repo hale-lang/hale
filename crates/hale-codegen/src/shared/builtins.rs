@@ -864,6 +864,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ptr_t.fn_type(&[ptr_t.into()], false),
             None,
         );
+        // GH #255 phase 1 — `or wait` publisher park:
+        // declare i64 @lotus_bus_binding_wait_ready(ptr queue, ptr subject)
+        // declare void @lotus_bus_wait_abort_all()
+        self.module.add_function(
+            "lotus_bus_binding_wait_ready",
+            i64_t2.fn_type(&[ptr_t.into(), ptr_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_bus_wait_abort_all",
+            self.context.void_type().fn_type(&[], false),
+            None,
+        );
         // declare i32 @lotus_process_wait(i32 pid,
         //                                 ptr out_code,
         //                                 ptr out_signal)

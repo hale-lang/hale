@@ -2020,6 +2020,18 @@ pub enum OrDisposition {
     /// via the error path. Lets a caller translate one error
     /// payload into another without bouncing through a helper.
     Fail(Box<Expr>, Span),
+    /// GH #255 phase 1 — `or wait`: a delivery-mode MODIFIER on a
+    /// publish to a transport-bound topic, not a member of the
+    /// fallible family (the send stays non-fallible). During a
+    /// transient refusal — v1: the connect-binding loss window —
+    /// the publisher parks until the binding re-arms instead of
+    /// taking the counted `dropped_lost` drop. A structurally
+    /// permanent refusal (binding declared dead, process
+    /// teardown) wakes the publisher into the raise path rather
+    /// than hanging. Legal only on `Stmt::Send` to a
+    /// transport-bound topic; the typechecker rejects it
+    /// anywhere else ("nothing to wait for").
+    Wait(Span),
 }
 
 impl Expr {
