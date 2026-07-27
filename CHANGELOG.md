@@ -6,7 +6,7 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.11.11 — or wait + bounded topics (the backpressure contract), std::compress + std::tar, teardown delivery contract (2026-07-27)
 
 - **Bounded topics + consumer shed bounds (GH #255 phase 2).**
   Topic-level `bounded(N); on_full: fail;` makes publishes
