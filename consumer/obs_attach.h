@@ -28,6 +28,7 @@ void obs_detach(obs_seg *s);
 
 int obs_alive(const obs_seg *s);
 uint32_t obs_pid(const obs_seg *s);
+const char *obs_exe(const obs_seg *s); /* registration exe path; "" if absent */
 uint64_t obs_started_mono(const obs_seg *s);
 uint64_t obs_overruns(const obs_seg *s);
 

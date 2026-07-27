@@ -134,6 +134,10 @@ const char *fz_entry_shape_hex(int64_t h, int64_t i) {
   snprintf(b, sizeof b, "%016llx", (unsigned long long)e->shape_hash);
   return astr(b);
 }
+const char *fz_exe(int64_t h) {
+  obs_seg *s = seg(h);
+  return astr(s ? obs_exe(s) : "");
+}
 const char *fz_name(int64_t h, int64_t kind, int64_t id) {
   obs_seg *s = seg(h);
   return astr(s ? obs_name(s, (int)kind, (uint32_t)id) : "");

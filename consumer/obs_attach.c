@@ -35,7 +35,10 @@ struct obs_seg {
   char *names[4][NAME_MAX_ID];
   uint64_t shapes[NAME_MAX_ID];
   int cnt_line[4][NAME_MAX_ID]; /* -1 = none */
+  char exe[128]; /* from the registration file; "" if absent */
 };
+
+const char *obs_exe(const obs_seg *s) { return s->exe; }
 
 static void rescan(obs_seg *s) {
   uint32_t n = atomic_load_explicit((_Atomic uint32_t *)&s->MH->entry_count,
@@ -59,6 +62,7 @@ static void rescan(obs_seg *s) {
 
 obs_seg *obs_attach_reg(const char *reg_path, char *err, size_t errlen) {
   char shm[128] = {0};
+  char exe[128] = {0};
   {
     FILE *f = fopen(reg_path, "r");
     if (!f) { snprintf(err, errlen, "open %s failed", reg_path); return NULL; }
@@ -72,6 +76,11 @@ obs_seg *obs_attach_reg(const char *reg_path, char *err, size_t errlen) {
       snprintf(err, errlen, "bad registration %s", reg_path); return NULL;
     }
     memcpy(shm, p + 8, (size_t)(q - (p + 8)));
+    /* optional exe field (present since proto 0.1's writer) */
+    char *e = strstr(buf, "\"exe\": \"");
+    char *eq = e ? strchr(e + 8, '"') : NULL;
+    if (eq && (size_t)(eq - (e + 8)) < sizeof exe)
+      memcpy(exe, e + 8, (size_t)(eq - (e + 8)));
   }
 
   int fd = shm_open(shm, O_RDWR, 0);
@@ -102,6 +111,7 @@ obs_seg *obs_attach_reg(const char *reg_path, char *err, size_t errlen) {
     s->rs[i].slots = (const obs_record *)((char *)s->map + s->RD[i].data_off);
   for (int k = 0; k < 4; k++)
     for (int i = 0; i < NAME_MAX_ID; i++) s->cnt_line[k][i] = -1;
+  snprintf(s->exe, sizeof s->exe, "%s", exe);
   rescan(s);
   s->seen_gen = atomic_load((_Atomic uint64_t *)&s->H->manifest_gen);
   atomic_fetch_add(&s->CTRL->observer_count, 1);

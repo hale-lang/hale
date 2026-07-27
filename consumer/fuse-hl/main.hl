@@ -45,6 +45,13 @@ const CG_RECORDS_TOTAL: Int = 2;
 // spread at our poll cadence with 1/4 the memory.
 const WINDOW: Int = 16384;
 const NET_SLOTS: Int = 8;
+// pending-deliver windows: per (net topic, receiver seg), for
+// delivers that arrive before their send in drain interleave.
+// Sends live in the shared per-topic window and are NOT cleared
+// on match — multicast fan-out means one send matches a deliver
+// from EVERY listening seg (M2: mixed unix+udp).
+const PWINDOW: Int = 2048;
+const MAX_SEGS: Int = 16;
 const EV_TAIL: Int = 8;
 const SSE_SLOTS: Int = 8;
 const BATCH: Int = 512; // events per fz_next_batch call
@@ -57,7 +64,7 @@ const M_WORKED: Int = 2;
 
 // ---- rows ----
 
-type SegRow { h: Int = -1; pid: Int = 0; dead: Int = 0; restarts: Int = 0; reg: String = ""; }
+type SegRow { h: Int = -1; pid: Int = 0; name: String = ""; dead: Int = 0; restarts: Int = 0; reg: String = ""; }
 type LocusRow { seg: Int = -1; inst: Int = 0; tname: String = ""; parent: Int = 0; alive: Int = 0; pub: Int = 0; dlv: Int = 0; }
 type TopicRow { key: String = ""; name: String = ""; shape: String = ""; slot: Int = -1; }
 type TopicSeg { topic: Int = -1; seg: Int = -1; local_id: Int = -1; line: Int = -1; sends: Int = 0; delivers: Int = 0; }
@@ -155,6 +162,16 @@ locus FuseHandler {
 
 // ---- json helpers ----
 
+fn basename(p: String) -> String {
+    let mut i = std::str::index_of(p, "/");
+    let mut rest = p;
+    while i >= 0 {
+        rest = std::str::substring(rest, i + 1, len(rest));
+        i = std::str::index_of(rest, "/");
+    }
+    return rest;
+}
+
 fn jstr(s: String) -> String {
     // names/events here are protocol identifiers and formatted
     // lines; escape the two structural characters.
@@ -223,8 +240,9 @@ locus Cycle {
                             fz::fz_unlink("/dev/shm/hale-obs-" + stale_pid);
                         } else {
                             self.segs.push(SegRow {
-                                h: h, pid: fz::fz_pid(h), dead: 0,
-                                restarts: 0, reg: p
+                                h: h, pid: fz::fz_pid(h),
+                                name: basename(fz::fz_exe(h)),
+                                dead: 0, restarts: 0, reg: p
                             });
                             self.index_topics(self.segs.len() - 1);
                             println("fuse-hl: attached pid " + fz::fz_pid(h));
@@ -378,6 +396,10 @@ locus Cycle {
         return t.slot;
     }
 
+    fn pending_base(slot: Int, seg: Int) -> Int {
+        return NET_SLOTS * WINDOW + (slot * MAX_SEGS + seg) * PWINDOW;
+    }
+
     fn net_event(si: Int, tsi: Int, is_send: Bool, ts: Int, seq: Int) {
         let mut tseg = self.tsegs.get(tsi) or TopicSeg { };
         if is_send { tseg.sends = tseg.sends + 1; }
@@ -386,34 +408,49 @@ locus Cycle {
 
         let slot = self.net_slot_for(tseg.topic);
         if slot < 0 { return; }
-        let idx = slot * WINDOW + seq % WINDOW;
-        let e = self.inflight.get(idx) or SeqEnt { };
-        // whichever side lands first is stored; the second — with
-        // a matching seq from ANOTHER seg — completes the pair.
-        let mut mine = 1;
-        if !is_send { mine = 2; }
-        let other = 3 - mine;
-        if e.kind == other {
-            if e.seq == seq {
-                if e.seg != si {
-                    let mut lat = 0;
-                    let mut from = si;
-                    let mut to = e.seg;
-                    if is_send {
-                        // deliver arrived first: lat = dlv.ts - send.ts
-                        if e.ts > ts { lat = e.ts - ts; }
-                    } else {
-                        from = e.seg;
-                        to = si;
-                        if ts > e.ts { lat = ts - e.ts; }
+        let sidx = slot * WINDOW + seq % WINDOW;
+
+        if is_send {
+            // store (overwrite on window wrap); kept after matches
+            // so every listener can pair against it
+            self.inflight.set(sidx, SeqEnt { seq: seq, ts: ts, seg: si, kind: 1 }) or discard;
+            // sweep pending delivers parked by any other seg
+            let mut rs = 0;
+            while rs < self.segs.len() {
+                if rs != si {
+                    if rs < MAX_SEGS {
+                        let pidx = self.pending_base(slot, rs) + seq % PWINDOW;
+                        let pe = self.inflight.get(pidx) or SeqEnt { };
+                        if pe.kind == 2 {
+                            if pe.seq == seq {
+                                let mut lat = 0;
+                                if pe.ts > ts { lat = pe.ts - ts; }
+                                self.edge_bump(tseg.topic, si, rs, lat);
+                                self.inflight.set(pidx, SeqEnt { }) or discard;
+                            }
+                        }
                     }
-                    self.edge_bump(tseg.topic, from, to, lat);
-                    self.inflight.set(idx, SeqEnt { }) or discard;
-                    return;
+                }
+                rs = rs + 1;
+            }
+        } else {
+            let e = self.inflight.get(sidx) or SeqEnt { };
+            if e.kind == 1 {
+                if e.seq == seq {
+                    if e.seg != si {
+                        let mut lat = 0;
+                        if ts > e.ts { lat = ts - e.ts; }
+                        self.edge_bump(tseg.topic, e.seg, si, lat);
+                        return; // send entry stays for other listeners
+                    }
                 }
             }
+            // deliver-before-send: park in this seg's pending window
+            if si < MAX_SEGS {
+                let pidx = self.pending_base(slot, si) + seq % PWINDOW;
+                self.inflight.set(pidx, SeqEnt { seq: seq, ts: ts, seg: si, kind: 2 }) or discard;
+            }
         }
-        self.inflight.set(idx, SeqEnt { seq: seq, ts: ts, seg: si, kind: mine }) or discard;
     }
 
     // ---- event pump ----
@@ -524,7 +561,8 @@ locus Cycle {
             if i > 0 { s = s + ","; }
             let mut state = "live";
             if g.dead == 1 { state = "dead"; }
-            s = s + "{\"pid\":" + g.pid + ",\"state\":\"" + state + "\""
+            s = s + "{\"pid\":" + g.pid + ",\"name\":\"" + jstr(g.name)
+                + "\",\"state\":\"" + state + "\""
                 + ",\"records\":" + fz::fz_counter(g.h, 0, CG_RECORDS_TOTAL)
                 + ",\"overruns\":" + fz::fz_overruns(g.h)
                 + ",\"restarts\":" + g.restarts + ",\"loci\":[";
@@ -661,7 +699,7 @@ main locus App {
 
     birth() {
         let mut i = 0;
-        while i < NET_SLOTS * WINDOW {
+        while i < NET_SLOTS * WINDOW + NET_SLOTS * MAX_SEGS * PWINDOW {
             self.inflight.push(SeqEnt { });
             i = i + 1;
         }

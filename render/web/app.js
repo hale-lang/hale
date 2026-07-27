@@ -290,10 +290,10 @@ function drawFlower(p, cx, cy, t) {
   ctx.fillStyle = dead ? "#f85149" : "#e6edf3";
   ctx.textAlign = "center";
   ctx.font = "12px ui-monospace, monospace";
-  ctx.fillText(`pid ${p.pid}${dead ? " ✝" : ""}`, cx, cy + labelR);
+  ctx.fillText(`${p.name || "pid " + p.pid}${dead ? " ✝" : ""}`, cx, cy + labelR);
   ctx.fillStyle = "#5c6773";
   ctx.font = "10px ui-monospace, monospace";
-  ctx.fillText(dead ? "dissolved" : `${fmt(rec)} rec/s · ${p.restarts} restarts`,
+  ctx.fillText(dead ? "dissolved" : `pid ${p.pid} · ${fmt(rec)} rec/s · ${p.restarts} restarts`,
     cx, cy + labelR + 14);
 }
 
