@@ -392,6 +392,23 @@ vec.set(0, new_first) or raise;
 vec.set(i, x)         or noop(err);   # swallow OOB
 ```
 
+> **Replaced-element reclamation (iris handoff P1, 2026-07-27).**
+> Vec elements are pointer-storage: each `set` deep-copies the new
+> value into the form owner's arena. The REPLACED element (and its
+> non-surviving String fields, with aliasing dedup — the hashmap
+> retire-cell discipline) now retires onto the arena's reuse
+> freelist immediately, and the deep-copy allocation consults that
+> freelist — steady-state `set` churn ping-pongs between reused
+> blocks instead of growing the arena (~33 B/set and a
+> progressively slower containment walk, pre-fix). Single-owner
+> caveat: a value obtained from `.get` is invalidated by a later
+> `set` to the same slot — holding a get result across a mutation
+> of its slot is out of contract (the same single-owner rule the
+> hashmap forms document).
+
+```hale,fragment
+```
+
 ### `pop`
 
 ```

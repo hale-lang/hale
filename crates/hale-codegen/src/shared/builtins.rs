@@ -906,6 +906,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i64_t2.fn_type(&[ptr_t.into(), ptr_t.into()], false),
             None,
         );
+        // iris handoff P1 — form pointer-storage replace retire:
+        // declare void @lotus_form_retire_replaced(ptr arena, ptr old,
+        //     ptr new, i64 size, ptr str_offs, i64 n_offs)
+        // declare ptr @lotus_arena_alloc_reusable(ptr, i64, i64)
+        self.module.add_function(
+            "lotus_form_retire_replaced",
+            self.context.void_type().fn_type(
+                &[
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    i64_t2.into(),
+                    ptr_t.into(),
+                    i64_t2.into(),
+                ],
+                false,
+            ),
+            None,
+        );
+        self.module.add_function(
+            "lotus_arena_alloc_reusable",
+            ptr_t.fn_type(
+                &[ptr_t.into(), i64_t2.into(), i64_t2.into()],
+                false,
+            ),
+            None,
+        );
         // declare i32 @lotus_process_wait(i32 pid,
         //                                 ptr out_code,
         //                                 ptr out_signal)

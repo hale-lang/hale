@@ -510,6 +510,118 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         )
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                 };
+                // iris handoff P1 (2026-07-27): retire the REPLACED
+                // element before the overwrite. Pointer-storage
+                // elements (structs / String / Bytes) each own an
+                // arena block that the old code simply orphaned in
+                // the form owner's program-lifetime arena — ~33B
+                // and one arena chunk-walk per set at fuse-hl's
+                // rates. All guards (NULL, old==new, containment,
+                // field-survival, intra-call aliasing dedup) live
+                // in the C helper; here it is one load + one call
+                // on the in-bounds path. Scalar-repr elements
+                // (Int/Float/Bool/enum-tag) store inline — nothing
+                // to retire.
+                let retire_spec: Option<(i64, Vec<u32>)> = match &elem_ty {
+                    CodegenTy::String => Some((-1, Vec::new())),
+                    CodegenTy::Bytes => Some((-2, Vec::new())),
+                    CodegenTy::TypeRef(tn) => {
+                        self.user_types.get(tn).map(|ti| {
+                            let sz = self
+                                .target_data
+                                .get_abi_size(&ti.struct_ty)
+                                as i64;
+                            let mut offs = Vec::new();
+                            for fname in &ti.field_order {
+                                if let Some((idx, fty)) =
+                                    ti.fields.get(fname)
+                                {
+                                    if matches!(fty, CodegenTy::String) {
+                                        if let Some(o) = self
+                                            .target_data
+                                            .offset_of_element(
+                                                &ti.struct_ty,
+                                                *idx,
+                                            )
+                                        {
+                                            offs.push(o as u32);
+                                        }
+                                    }
+                                }
+                            }
+                            (sz, offs)
+                        })
+                    }
+                    _ => None,
+                };
+                if let Some((size_sentinel, offs)) = retire_spec {
+                    let old_ptr = self
+                        .builder
+                        .build_load(
+                            ptr_t,
+                            elem_ptr,
+                            &format!("{}.vec.set.old", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let (desc_ptr, n_offs) = if offs.is_empty() {
+                        (ptr_t.const_null(), 0i64)
+                    } else {
+                        let gname = format!(
+                            "__vec_retire_desc.{}",
+                            match &elem_ty {
+                                CodegenTy::TypeRef(tn) => tn.clone(),
+                                _ => unreachable!(),
+                            }
+                        );
+                        let g = match self.module.get_global(&gname) {
+                            Some(g) => g,
+                            None => {
+                                let vals: Vec<_> = offs
+                                    .iter()
+                                    .map(|o| {
+                                        i32_t.const_int(*o as u64, false)
+                                    })
+                                    .collect();
+                                let arr = i32_t.const_array(&vals);
+                                let g = self.module.add_global(
+                                    arr.get_type(),
+                                    None,
+                                    &gname,
+                                );
+                                g.set_initializer(&arr);
+                                g.set_constant(true);
+                                g.set_linkage(
+                                    inkwell::module::Linkage::Internal,
+                                );
+                                g
+                            }
+                        };
+                        (g.as_pointer_value(), offs.len() as i64)
+                    };
+                    let retire_fn = self
+                        .module
+                        .get_function("lotus_form_retire_replaced")
+                        .expect("lotus_form_retire_replaced declared");
+                    self.builder
+                        .build_call(
+                            retire_fn,
+                            &[
+                                dest_arena.into(),
+                                old_ptr.into(),
+                                val.into(),
+                                i64_t
+                                    .const_int(
+                                        size_sentinel as u64,
+                                        true,
+                                    )
+                                    .into(),
+                                desc_ptr.into(),
+                                i64_t.const_int(n_offs as u64, false).into(),
+                            ],
+                            &format!("{}.vec.set.retire", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
                 self.builder
                     .build_store(elem_ptr, val)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

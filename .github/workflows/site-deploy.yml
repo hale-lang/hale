@@ -23,7 +23,7 @@ jobs:
     steps:
       - run: |
           if [ -z "$TOKEN" ]; then
-            echo "::notice::SITE_DEPLOY_TOKEN not set — site not redeployed"
+            echo "::warning::SITE_DEPLOY_TOKEN not set — the docs site is now STALE (create a fine-grained PAT with Actions rw on hale-lang/hale-lang.org and save it as this repo secret)"
             exit 0
           fi
           GH_TOKEN="$TOKEN" gh workflow run deploy -R hale-lang/hale-lang.org

@@ -1616,7 +1616,35 @@ fn hot_walk_stmt(s: &Stmt, cx: &mut HotPathCx) {
         Stmt::Match(m) => hot_walk_match(m, cx),
         Stmt::Return(Some(e), _) => hot_walk_expr(e, cx),
         Stmt::Fail { value, .. } => hot_walk_expr(value, cx),
-        Stmt::Expr(e) => hot_walk_expr(e, cx),
+        Stmt::Expr(e) => {
+            // iris handoff P2.2: a BARE-STATEMENT instantiation of
+            // a subscription-less locus dissolves EAGERLY at the
+            // statement — its arena is destroyed every iteration,
+            // which is the documented per-iteration-child idiom
+            // (and the very fix this advisory's "hoist it"
+            // guidance competes with). Only let-bound and
+            // subscription-bearing instantiations defer to
+            // method exit, so only those keep the warning. The
+            // field inits still walk (a nested builder inside
+            // the child literal is still a finding).
+            if let Expr::Struct { path, inits, .. } = e {
+                let eager = hot_locus_name(path, cx.top)
+                    .map(|n| match cx.top.lookup(&n) {
+                        Some(TopSymbol::Locus(li)) => {
+                            li.bus_subscribes.is_empty()
+                        }
+                        _ => false,
+                    })
+                    .unwrap_or(false);
+                if eager {
+                    for init in inits {
+                        hot_walk_expr(&init.value, cx);
+                    }
+                    return;
+                }
+            }
+            hot_walk_expr(e, cx);
+        }
         _ => {}
     }
 }
@@ -1645,11 +1673,14 @@ fn hot_walk_expr(e: &Expr, cx: &mut HotPathCx) {
                         *span,
                         format!(
                             "hot-path allocation: locus `{}` is instantiated \
-                             {} and only reclaimed when the enclosing method \
+                             {} and, being let-bound or subscription-bearing, \
+                             is only reclaimed when the enclosing method \
                              returns (a `run()` read loop never returns). \
-                             Hoist it to a reused field, or `clear()` and \
-                             refill one builder, to keep the hot path \
-                             allocation-free.",
+                             Hoist it to a reused field, `clear()` and refill \
+                             one builder, use a bare-statement per-iteration \
+                             child (eagerly dissolved), or acknowledge an \
+                             intentional shape with `@unbounded` on the \
+                             enclosing fn/hook.",
                             name, where_
                         ),
                     );

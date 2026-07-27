@@ -6,6 +6,44 @@ behavior.
 
 ---
 
+## Unreleased
+
+- **`@form(vec).set` no longer leaks or slows down (iris handoff
+  P1).** Vec elements are pointer-storage; `set` deep-copied the
+  new element into the form owner's program-lifetime arena but
+  never retired the REPLACED one — ~33 B leaked per set, and the
+  growing arena made the per-set containment walk progressively
+  slower (the reported ~1µs/set, ~1000× `get`; ~1.4 MB/s in a
+  ~1M sets/s observer). Replaced elements (and their
+  non-surviving String fields, hashmap retire-cell discipline)
+  now retire straight onto the arena's reuse freelist and the
+  deep-copy alloc consults it: the iris repro went from 2.06 s /
+  70 MB to 0.01 s / 7.8 MB flat over 2M sets, ASan-clean.
+  Single-owner caveat spec'd in forms.md: a `.get` value is
+  invalidated by a later `set` to the same slot.
+
+- **`hale verify` unbounded-allocation analysis: three
+  false-positive shapes fixed (iris handoff P2).** (1) Loop
+  ceilings const-fold — `while i < NET_SLOTS * WINDOW` over
+  top-level consts ranks bounded. (2) Eager per-iteration
+  children are modeled: a bare-statement `Cycle { ... };`
+  dissolves at the statement, so neither the instantiation site
+  nor the child's own self-stores accumulate (let-bound and
+  subscription-bearing instantiations, and loci containing
+  `while true`, keep the conservative verdict) — the analysis
+  no longer flags the very idiom its advisory recommends.
+  (3) A vec `.set` is no longer an accumulation channel (see the
+  P1 retire). Both advisory texts now name `@unbounded` on the
+  enclosing fn/hook as the acknowledge mechanism for
+  domain-bounded shapes. fuse-hl: 26 findings → 0, with the
+  let-bound/while-true counterparts still flagged.
+
+- **Docs: takeover send timeouts.** `std::io::tcp::
+  set_send_timeout(fd, d)` already shipped but the takeover
+  chapter never mentioned it — a stalled SSE/WS peer blocks
+  `send` forever without it (iris handoff P3). The chapter now
+  says so next to the recv-timeout note.
+
 ## v0.11.11 — or wait + bounded topics (the backpressure contract), std::compress + std::tar, teardown delivery contract (2026-07-27)
 
 - **Bounded topics + consumer shed bounds (GH #255 phase 2).**
