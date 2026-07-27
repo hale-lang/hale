@@ -800,6 +800,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module
             .add_function("lotus_process_spawn", process_spawn_ty, None);
+        // declare ptr @lotus_process_enoent_hint_label(
+        //     ptr argv_blob, ptr plain_label, ptr hint_label)
+        // — picks the IoError surface label on run/spawn failure:
+        // the hint variant when errno==ENOENT and argv[0] contains
+        // a space (shell-split argv passed to the newline-
+        // separated surface).
+        let enoent_hint_ty = ptr_t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), ptr_t.into()],
+            false,
+        );
+        self.module.add_function(
+            "lotus_process_enoent_hint_label",
+            enoent_hint_ty,
+            None,
+        );
         // declare i32 @lotus_process_wait(i32 pid,
         //                                 ptr out_code,
         //                                 ptr out_signal)

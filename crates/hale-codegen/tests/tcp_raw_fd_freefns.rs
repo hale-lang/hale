@@ -136,3 +136,95 @@ fn raw_fd_freefns_roundtrip_via_wrapper_fns() {
     );
     server.join().expect("server thread");
 }
+
+/// hale-bun upstream item 4b — the PUBLIC takeover-companion
+/// surface: `std::io::tcp::send_fd(fd, b)` (fallible, Unit
+/// success), the blessed write path for a taken-over fd that
+/// mustn't adopt Stream's close-at-scope-exit lifecycle. Same
+/// echo harness as above; failure routes through an `or`
+/// handler that exits non-zero.
+fn public_send_fd_src(port: u16, rounds: u32) -> String {
+    format!(
+        r#"
+        fn on_send_err(e: IoError) {{
+            println("send_fd failed: ", e.kind);
+            std::process::exit(4);
+        }}
+        locus Client {{
+            params {{ ok: Int = 0; }}
+            run() {{
+                let fd = std::io::tcp::__connect("127.0.0.1", {port});
+                if fd < 0 {{
+                    println("connect-failed");
+                    std::process::exit(3);
+                }}
+                let mut i = 0;
+                while i < {rounds} {{
+                    let payload = std::bytes::from_string("pub-" + i + "-padpadpadpad");
+                    std::io::tcp::send_fd(fd, payload) or on_send_err(err);
+                    let back = std::io::tcp::__recv_bytes(fd, 4096);
+                    if len(back) != len(payload) {{
+                        println("mismatch at ", i, ": ", len(back), " vs ", len(payload));
+                        std::process::exit(2);
+                    }}
+                    self.ok = self.ok + 1;
+                    i = i + 1;
+                }}
+                std::io::tcp::close_fd(fd);
+                println("rounds-ok=", self.ok);
+                std::process::exit(0);
+            }}
+        }}
+        main locus App {{
+            params {{ c: Client = Client {{ }}; }}
+            placement {{ c: cooperative(pool = cli); }}
+            run() {{ std::time::sleep(10s); println("TIMEOUT"); std::process::exit(1); }}
+        }}
+        fn main() {{ App {{ }}; }}
+    "#
+    )
+}
+
+#[test]
+fn public_send_fd_roundtrip() {
+    let port = pick_free_port();
+    let rounds: u32 = 32;
+
+    let listener =
+        std::net::TcpListener::bind(("127.0.0.1", port)).expect("bind");
+    let server = thread::spawn(move || {
+        let (mut s, _) = listener.accept().expect("accept");
+        s.set_read_timeout(Some(Duration::from_secs(8))).ok();
+        let mut buf = [0u8; 4096];
+        loop {
+            match s.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if s.write_all(&buf[..n]).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    let bin = build("public_send_fd", &public_send_fd_src(port, rounds));
+    let out = Command::new(&bin).output().expect("run client");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "client exited {:?}\nstdout: {}\nstderr: {}",
+        out.status,
+        stdout,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains(&format!("rounds-ok={}", rounds)),
+        "expected {} clean round-trips, got:\n{}",
+        rounds,
+        stdout
+    );
+    server.join().expect("server thread");
+}

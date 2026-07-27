@@ -14870,6 +14870,32 @@ int64_t lotus_term_read_byte(int64_t timeout_ms) {
     return (errno == EINTR) ? -1 : -2;
 }
 
+/* hale-bun upstream item 4: pick the IoError surface label for a
+ * failed run/spawn. argv is newline-separated; passing a
+ * shell-style "echo hello world" execs a binary literally named
+ * that, fails ENOENT, and surfaces as kind="not_found" — which
+ * reads as "echo isn't on PATH". When errno is ENOENT and the
+ * first argv line contains a space, return the hint label so the
+ * IoError's path field names the real mistake. Called on the
+ * error path immediately after the failed primitive (errno still
+ * live); reads errno only, never writes it. Both labels are
+ * codegen-emitted globals, so no allocation here. */
+const char *lotus_process_enoent_hint_label(
+    const char *argv_blob,
+    const char *plain_label,
+    const char *hint_label
+) {
+    if (errno != ENOENT || !argv_blob) {
+        return plain_label;
+    }
+    for (const char *p = argv_blob; *p && *p != '\n'; p++) {
+        if (*p == ' ') {
+            return hint_label;
+        }
+    }
+    return plain_label;
+}
+
 int lotus_process_run(
     const char *argv_blob,
     int32_t *out_code,

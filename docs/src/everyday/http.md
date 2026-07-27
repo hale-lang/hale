@@ -153,8 +153,10 @@ locus WsHandler {
 With `takeover: true` the server writes just the status line and
 your headers — no `Content-Length`, no `Connection: close` — and
 then *leaves the socket open and forgets it*. It's yours: read
-and write it through the raw-fd `std::io::tcp` functions or a
-borrowed `Stream { conn_fd: fd, owns_fd: false }`, and close it
+and write it through the raw-fd `std::io::tcp` functions
+(`send_fd(fd, bytes)` to write, `recv_into` to read, `close_fd`
+to hang up) or a borrowed
+`Stream { conn_fd: fd, owns_fd: false }`, and close it
 when the session ends. Two things to remember: the server's 5s
 receive timeout is still set on the fd (clear it with
 `std::io::tcp::set_recv_timeout(fd, 0)` for a long-lived

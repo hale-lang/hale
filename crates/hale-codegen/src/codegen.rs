@@ -2491,6 +2491,9 @@ const STDLIB_PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "io", "tcp", "Listener"], "__StdIoTcpListener"),
     (&["std", "io", "tcp", "Stream"], "__StdIoTcpStream"),
     (&["std", "io", "tcp", "LogEvent"], "__StdIoTcpLogEvent"),
+    // hale-bun upstream item 4b: public raw-fd send for takeover
+    // consumers (the write-side companion to `close_fd`).
+    (&["std", "io", "tcp", "send_fd"], "__std_io_tcp_send_fd"),
     (&["std", "io", "udp", "Reader"], "__StdIoUdpReader"),
     (&["std", "iter", "Lines"], "__StdIterLines"),
     (&["std", "json", "ArrayIter"], "__JsonArrayIter"),
@@ -2983,7 +2986,12 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// inside that body are pushed here instead of dissolving
     /// immediately, then drained + dissolved in reverse order at
     /// scope exit so they outlive synchronous publishes.
-    /// Each entry is `(self_ptr, locus_name, thread_id_alloca)`.
+    /// Each entry is `(self_slot, locus_name, thread_id_alloca)`.
+    /// `self_slot` is a NULL-inited entry-block slot holding the
+    /// locus self pointer (`defer_dissolve_slot`) — never the raw
+    /// SSA pointer, which wouldn't dominate the fn-exit flush
+    /// when the instantiation sits inside a branch, and which the
+    /// not-taken path must observe as NULL (skip teardown).
     /// If `thread_id_alloca` is Some, the locus is pinned (m27)
     /// and the flush emits a `pthread_join(load thread_id_alloca)`
     /// before the rest of the dissolve sequence; pthread_join
@@ -5594,6 +5602,91 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.import_renames.get(&key).cloned()
     }
 
+    /// hale-bun upstream item 3: diagnostic for a qualified path
+    /// that resolves to nothing. The old message blamed the
+    /// *position* ("qualified-name struct literal in expression
+    /// position") when the actual problem is the *name* —
+    /// expression position is fully supported for names that
+    /// resolve, so `std::process::Output` (real name:
+    /// `ProcessOutput`) sent its reporter hunting a nonexistent
+    /// positional restriction. Name the real failure and suggest:
+    /// substring match against siblings under the same prefix
+    /// first (`Output` → `ProcessOutput` is edit-distance 7,
+    /// far past any sane nearest-name threshold, but exactly the
+    /// mistake users make), nearest-name second, then list what
+    /// the prefix actually provides.
+    pub(crate) fn unknown_qualified_path_msg(&self, segs: &[&str]) -> String {
+        let path = segs.join("::");
+        let base = format!("unknown qualified name `{}`", path);
+        if segs.is_empty() {
+            return base;
+        }
+        let (prefix, last) = segs.split_at(segs.len() - 1);
+        let last = last[0];
+        let mut siblings: Vec<String> = Vec::new();
+        for (key, _) in STDLIB_PATH_RENAMES {
+            if key.len() == segs.len() && key[..key.len() - 1] == *prefix {
+                siblings.push(key[key.len() - 1].to_string());
+            }
+        }
+        for key in self.import_renames.keys() {
+            if key.len() == segs.len()
+                && key[..key.len() - 1]
+                    .iter()
+                    .map(String::as_str)
+                    .eq(prefix.iter().copied())
+            {
+                siblings.push(key[key.len() - 1].clone());
+            }
+        }
+        siblings.sort();
+        siblings.dedup();
+        // Internal `__` names are reachable but not the surface
+        // to advertise.
+        siblings.retain(|s| !s.starts_with("__"));
+        let last_lc = last.to_lowercase();
+        let substring_hit = siblings.iter().find(|s| {
+            let s_lc = s.to_lowercase();
+            (last_lc.len() >= 3 && s_lc.contains(&last_lc))
+                || (s_lc.len() >= 3 && last_lc.contains(&s_lc))
+        });
+        if let Some(hit) = substring_hit {
+            return format!(
+                "{} — did you mean `{}::{}`?",
+                base,
+                prefix.join("::"),
+                hit
+            );
+        }
+        if let Some(near) = hale_types::stdlib_surface::nearest_name(
+            last,
+            siblings.iter().map(String::as_str),
+        ) {
+            return format!(
+                "{} — did you mean `{}::{}`?",
+                base,
+                prefix.join("::"),
+                near
+            );
+        }
+        if !siblings.is_empty() {
+            let mut list = siblings;
+            let extra = list.len().saturating_sub(8);
+            list.truncate(8);
+            let mut shown = list.join(", ");
+            if extra > 0 {
+                shown.push_str(&format!(", … ({} more)", extra));
+            }
+            return format!(
+                "{}; `{}` provides: {}",
+                base,
+                prefix.join("::"),
+                shown
+            );
+        }
+        base
+    }
+
 
     /// Mark the program as containing at least one `bus subscribe`
     /// declaration. m45-followup migrated bus storage out of LLVM
@@ -5617,6 +5710,72 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// outlive synchronous publishes within the same body.
     pub(crate) fn push_dissolve_frame(&mut self) {
         self.deferred_dissolves.push(Vec::new());
+    }
+
+    /// Spill a deferred-dissolve entry's self pointer into a
+    /// NULL-initialized entry-block slot and return the slot.
+    /// Deferred entries flush at fn exit, so a raw SSA pointer
+    /// captured at the instantiation point breaks under
+    /// conditional instantiation (`if c { App { }; }`): the def
+    /// doesn't dominate the flush (LLVM verifier failure with
+    /// debug info; silently-broken IR without), and on the
+    /// not-taken path the flush would tear down a garbage
+    /// pointer. The slot's entry-block NULL init gives the flush
+    /// a dominating load plus a reliable "never instantiated on
+    /// this path" sentinel.
+    pub(crate) fn defer_dissolve_slot(
+        &mut self,
+        self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let name = format!("{}.deferred.slot", locus_name);
+        let slot = match self.current_fn {
+            Some(func) => {
+                let entry_bb = func
+                    .get_first_basic_block()
+                    .expect("fn has an entry block");
+                let saved = self.builder.get_insert_block();
+                if let Some(first_instr) = entry_bb.get_first_instruction() {
+                    self.builder.position_before(&first_instr);
+                } else {
+                    self.builder.position_at_end(entry_bb);
+                }
+                let slot = self
+                    .builder
+                    .build_alloca(ptr_t, &name)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_store(slot, ptr_t.const_null())
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                if let Some(bb) = saved {
+                    self.builder.position_at_end(bb);
+                }
+                // Same debug-location re-assert as alloca_in_entry:
+                // position_before adopts the entry alloca's (empty)
+                // location.
+                if let Some(loc) = self.di_current_loc {
+                    self.builder.set_current_debug_location(loc);
+                }
+                slot
+            }
+            // Defense — outside any fn, fall through to current
+            // builder position (mirrors alloca_in_entry).
+            None => {
+                let slot = self
+                    .builder
+                    .build_alloca(ptr_t, &name)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_store(slot, ptr_t.const_null())
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                slot
+            }
+        };
+        self.builder
+            .build_store(slot, self_ptr)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(slot)
     }
 
 
@@ -5704,30 +5863,70 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .deferred_dissolves
             .pop()
             .expect("flush without matching push");
-        for (self_ptr, locus_name, thread_id_alloca) in frame.into_iter().rev() {
+        for (self_slot, locus_name, thread_id_alloca) in frame.into_iter().rev() {
             let info = self
                 .user_loci
                 .get(&locus_name)
                 .cloned()
                 .expect("deferred locus declared");
-            // Skip entries whose `let X = SomeLocus { };` never
-            // executed on this control-flow path. The
-            // lower_locus_instantiation hoist (entry-block alloca
-            // with NULL-init arena field) gives us a reliable
-            // sentinel: if the arena field reads NULL here, the
-            // let-statement was bypassed (e.g., by an earlier
-            // `return`), and there is nothing to dissolve. Skip
-            // the entire entry — drain, dissolve, and
-            // arena_destroy all would dereference uninitialized
-            // state otherwise.
+            // Skip entries whose instantiation never executed on
+            // this control-flow path. Two sentinels, checked in
+            // order:
             //
-            // For pinned entries the same sentinel applies: the
-            // pthread was never created, so pthread_join would
-            // block forever on a garbage TID.
+            // 1. The entry's self pointer lives in a NULL-inited
+            //    entry-block slot (`defer_dissolve_slot`) — a raw
+            //    SSA pointer wouldn't dominate this flush when
+            //    the instantiation sits inside a branch
+            //    (hale-bun upstream item 1). NULL here
+            //    means the instantiation statement was bypassed
+            //    (branch not taken, earlier `return`): nothing
+            //    exists to dissolve, and every downstream ref
+            //    (arena gep, pthread_join TID) would be garbage.
+            //
+            // 2. The arena field of a hoisted `let`-bound locus
+            //    struct is NULL-inited at entry; NULL means the
+            //    let was bypassed. Subsumed by (1) in current
+            //    flows, kept as defense — it's one load + branch.
+            //
+            // For pinned entries the same applies: the pthread
+            // was never created, so pthread_join would block
+            // forever on a garbage TID.
             let func = self
                 .current_fn
                 .expect("flush called outside a fn body");
             let ptr_t = self.context.ptr_type(AddressSpace::default());
+            let self_ptr = self
+                .builder
+                .build_load(
+                    ptr_t,
+                    self_slot,
+                    &format!("{}.deferred.self", locus_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_pointer_value();
+            let self_is_null = self
+                .builder
+                .build_is_null(
+                    self_ptr,
+                    &format!("{}.dissolve.self_null", locus_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let skip_bb = self
+                .context
+                .append_basic_block(func, &format!("{}.dissolve.skip", locus_name));
+            let arena_bb = self
+                .context
+                .append_basic_block(func, &format!("{}.dissolve.arena_check", locus_name));
+            let process_bb = self
+                .context
+                .append_basic_block(func, &format!("{}.dissolve.process", locus_name));
+            let after_bb = self
+                .context
+                .append_basic_block(func, &format!("{}.dissolve.after", locus_name));
+            self.builder
+                .build_conditional_branch(self_is_null, skip_bb, arena_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(arena_bb);
             let arena_check_ptr = self
                 .builder
                 .build_struct_gep(
@@ -5749,15 +5948,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     &format!("{}.dissolve.skip", locus_name),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let skip_bb = self
-                .context
-                .append_basic_block(func, &format!("{}.dissolve.skip", locus_name));
-            let process_bb = self
-                .context
-                .append_basic_block(func, &format!("{}.dissolve.process", locus_name));
-            let after_bb = self
-                .context
-                .append_basic_block(func, &format!("{}.dissolve.after", locus_name));
             self.builder
                 .build_conditional_branch(is_null, skip_bb, process_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -14314,10 +14504,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     match self.mangled_for_path(&segs) {
                         Some(mangled) => mangled,
                         None => {
-                            return Err(CodegenError::Unsupported(format!(
-                                "qualified-name struct literal `{}`",
-                                segs.join("::")
-                            )));
+                            return Err(CodegenError::Unsupported(
+                                self.unknown_qualified_path_msg(&segs),
+                            ));
                         }
                     }
                 } else {
@@ -19679,10 +19868,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map(|s| s.name.as_str())
                     .collect();
                 let mangled_owned = self.mangled_for_path(&segs).ok_or_else(|| {
-                    CodegenError::Unsupported(format!(
-                        "qualified-name struct literal `{}` in expression position",
-                        segs.join("::")
-                    ))
+                    CodegenError::Unsupported(
+                        self.unknown_qualified_path_msg(&segs),
+                    )
                 })?;
                 let mangled: &str = &mangled_owned;
                 if self.user_loci.contains_key(mangled) {

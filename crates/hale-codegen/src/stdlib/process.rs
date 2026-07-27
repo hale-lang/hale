@@ -427,12 +427,20 @@ impl<'ctx, 'p> ProcessStdlib<'ctx> for Cx<'ctx, 'p> {
             &info, struct_ptr, "stderr", stderr_ptr_v, "ProcessOutput",
         )?;
 
-        // Diagnostic-path on IoError = surface label.
-        let path_label = self
-            .builder
-            .build_global_string_ptr("std::process::run", "proc.run.label")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .as_pointer_value();
+        // Diagnostic-path on IoError = surface label. hale-bun
+        // upstream item 4: routed through the C hint helper so an
+        // ENOENT with a space in argv[0] (shell-split argv passed
+        // to the newline-separated surface) names the real
+        // mistake instead of reading as "binary not on PATH".
+        // errno is still live from the failed primitive here; on
+        // the success arm the label goes unused.
+        let path_label = self.process_surface_label_with_enoent_hint(
+            argv_val,
+            "std::process::run",
+            "std::process::run — argv[0] contains a space; argv is \
+             newline-separated (\"echo\\nhello\"), not shell-split",
+            "proc.run",
+        )?;
         self.complete_io_fallible_call(
             is_err,
             path_label.into(),
@@ -535,11 +543,14 @@ impl<'ctx, 'p> ProcessStdlib<'ctx> for Cx<'ctx, 'p> {
             &info, struct_ptr, "stderr_fd", err_i64.into(), "SpawnHandle",
         )?;
 
-        let path_label = self
-            .builder
-            .build_global_string_ptr("std::process::spawn", "proc.spawn.label")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .as_pointer_value();
+        // Same ENOENT space-in-argv[0] hint as run above.
+        let path_label = self.process_surface_label_with_enoent_hint(
+            argv_val,
+            "std::process::spawn",
+            "std::process::spawn — argv[0] contains a space; argv is \
+             newline-separated (\"echo\\nhello\"), not shell-split",
+            "proc.spawn",
+        )?;
         self.complete_io_fallible_call(
             is_err,
             path_label.into(),
@@ -1059,5 +1070,51 @@ impl<'ctx, 'p> ProcessStdlib<'ctx> for Cx<'ctx, 'p> {
             .build_store(fp, val)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
+    }
+}
+
+impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// hale-bun upstream item 4: emit the plain + hint surface
+    /// labels for a run/spawn call and pick between them at
+    /// runtime via `lotus_process_enoent_hint_label` — the hint
+    /// wins when errno is ENOENT and argv[0] contains a space
+    /// (shell-split argv passed to the newline-separated
+    /// surface, which otherwise reads as "binary not on PATH").
+    /// Must be called right after the failed primitive, while
+    /// its errno is still live; the helper reads errno only.
+    fn process_surface_label_with_enoent_hint(
+        &mut self,
+        argv_val: BasicValueEnum<'ctx>,
+        plain: &str,
+        hint: &str,
+        tag: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let plain_g = self
+            .builder
+            .build_global_string_ptr(plain, &format!("{}.label", tag))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .as_pointer_value();
+        let hint_g = self
+            .builder
+            .build_global_string_ptr(hint, &format!("{}.label.hint", tag))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .as_pointer_value();
+        let f = self
+            .module
+            .get_function("lotus_process_enoent_hint_label")
+            .expect("lotus_process_enoent_hint_label declared");
+        let call = self
+            .builder
+            .build_call(
+                f,
+                &[argv_val.into(), plain_g.into(), hint_g.into()],
+                &format!("{}.label.pick", tag),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(call
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr")
+            .into_pointer_value())
     }
 }

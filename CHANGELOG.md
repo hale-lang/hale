@@ -6,6 +6,47 @@ behavior.
 
 ---
 
+## Unreleased
+
+- **Conditional instantiation of a deferred-dissolve locus fixed
+  (hale-bun handoff item 1).** `if c { App { }; }` with a
+  placement-bearing child died at build time with an LLVM
+  dominance failure ("Instruction does not dominate all uses",
+  debug-info verifier) — and without debug info the same broken
+  teardown IR was emitted silently: the fn-exit dissolve flush
+  referenced pointers defined inside the branch, so the
+  not-taken path tore down garbage. Deferred-dissolve entries
+  now spill their self pointer to a NULL-initialized entry-block
+  slot; the flush loads it and skips teardown entirely when the
+  instantiation never ran. Corpus fixture
+  `71-conditional-instantiation` pins both branches.
+
+- **Unknown qualified names diagnosed as unknown names (hale-bun
+  handoff item 3).** A qualified struct literal whose path
+  resolves to nothing (e.g. `std::process::Output` — real name
+  `ProcessOutput`) used to error "qualified-name struct literal
+  in expression position", which reads as a positional
+  restriction (expression position is fully supported for names
+  that resolve). It now says `unknown qualified name` with a
+  did-you-mean — substring match against siblings under the
+  same prefix first, nearest-name second, else a listing of
+  what the namespace provides.
+
+- **`std::process` ENOENT hint for shell-split argv (hale-bun
+  handoff item 4).** `run("echo hello world")` execs a binary
+  literally named that, and the resulting `not_found` read as
+  "echo isn't on PATH" — the first mistake every new user makes
+  against the newline-separated argv convention. When run/spawn
+  fails ENOENT and argv[0] contains a space, the IoError's
+  `path` label now names the real mistake.
+
+- **`std::io::tcp::send_fd(fd, b: Bytes)` — public raw-fd send
+  (hale-bun handoff item 4b).** The write-side takeover
+  companion to `close_fd` / `recv_into`: a handler that keeps a
+  taken-over `Request.conn_fd` previously had only the internal
+  `__send_bytes` to write with. Same contract as
+  `Stream.send_bytes` (Unit success, `fallible(IoError)`).
+
 ## v0.11.10 — the publish contract + loss supervision, macOS unix transport, SPSC observation ring, diagnostics overhaul (2026-07-22)
 
 - **Diamond imports fixed (GH #249, iris friction F.10).** A lib
