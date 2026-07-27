@@ -6,7 +6,7 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.11.12 — the iris handoff: native observation emission, vec.set retire, verify modeling (2026-07-27)
 
 - **Native observation emission (iris handoff P4).** `LOTUS_OBS=1`
   makes any hale binary publish an iris-protocol observation
