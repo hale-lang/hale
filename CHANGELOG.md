@@ -17,6 +17,22 @@ behavior.
   only direct calls tripped. Now i16 on both paths; regression
   test in `tcp_raw_fd_freefns.rs`.
 
+- **C→Hale re-entry: `@export fn` emits a native C-ABI symbol
+  (Crumb batch-2 item 1 — the port's critical path).** The same
+  annotation wasm entry-inversion uses now works on native: the
+  exported fn's literal name becomes an unmangled C-callable
+  symbol (FFI-portable marshalling both ways), and codegen
+  publishes the call-site arena in the caller-arena TLS around
+  every `@ffi` call so a callback fired during an in-flight call
+  re-enters with a live context — bus publishes and eager locus
+  instantiation from inside the callback work (CI-proven).
+  Same-thread contract at v1: foreign-thread/idle entry aborts
+  with a pointed diagnostic; typecheck rejects non-portable
+  types, defaults, and fallible exports. spec/ffi.md § "C→Hale
+  re-entry". This is what lets QuickJS host functions land in
+  Hale — `serve()`/`fetch()` from JS backed by `std::http` and
+  the bus.
+
 ## v0.11.12 — the iris handoff: native observation emission, vec.set retire, verify modeling (2026-07-27)
 
 - **Native observation emission (iris handoff P4).** `LOTUS_OBS=1`

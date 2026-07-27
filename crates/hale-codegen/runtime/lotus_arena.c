@@ -14813,6 +14813,12 @@ void lotus_set_caller_arena(lotus_arena_t *a) {
     lotus_current_caller_arena = a;
 }
 
+/* Crumb batch-2 (C→Hale re-entry): read the TLS so codegen can
+ * save/restore it around @ffi calls. */
+lotus_arena_t *lotus_caller_arena_get(void) {
+    return lotus_current_caller_arena;
+}
+
 lotus_arena_t *lotus_caller_arena_or_global(void) {
     if (lotus_current_caller_arena) return lotus_current_caller_arena;
     pthread_mutex_lock(&g_bus_payload_arena_mutex);
@@ -14832,6 +14838,29 @@ lotus_arena_t *lotus_caller_arena_or_global(void) {
  * with the mutex when no TLS. Returns NULL on either alloc
  * failure (cap or malloc); callers' existing NULL handling
  * surfaces it. */
+/* Crumb batch-2 item 1 — C→Hale re-entry (native `@export fn`).
+ * The export wrapper's prologue: hand back the arena the re-
+ * entered Hale body should treat as its caller's. v1 contract =
+ * SAME-THREAD re-entry only: the callback fires while Hale is
+ * inside an in-flight `@ffi` call on this thread, so the
+ * caller-arena TLS is live and the re-entered fn composes with
+ * the established context (bus publishes, locus instantiation —
+ * all on the thread that already owns them). Entry from a
+ * foreign thread (TLS unset) is rejected loudly rather than
+ * left undefined; cross-thread entry is the documented
+ * follow-up. */
+void *lotus_reentry_arena(const char *fn_name) {
+    if (lotus_current_caller_arena) return lotus_current_caller_arena;
+    fprintf(stderr,
+            "hale: @export fn `%s` re-entered outside an in-flight "
+            "@ffi call on a Hale thread — cross-thread / idle C->Hale "
+            "entry is not supported yet (spec/ffi.md § C->Hale "
+            "re-entry). Register the callback so it fires during the "
+            "@ffi call that installed it.\n",
+            fn_name ? fn_name : "?");
+    abort();
+}
+
 void *lotus_caller_or_global_bytes_create(int64_t len) {
     if (lotus_current_caller_arena) {
         return lotus_bytes_create(lotus_current_caller_arena, len);

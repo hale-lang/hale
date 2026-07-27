@@ -944,6 +944,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ),
             None,
         );
+        // Crumb batch-2: C→Hale re-entry prologue.
+        // declare ptr @lotus_reentry_arena(ptr fn_name)
+        self.module.add_function(
+            "lotus_reentry_arena",
+            ptr_t.fn_type(&[ptr_t.into()], false),
+            None,
+        );
+        // declare ptr @lotus_caller_arena_get()
+        self.module.add_function(
+            "lotus_caller_arena_get",
+            ptr_t.fn_type(&[], false),
+            None,
+        );
         self.module.add_function(
             "lotus_obs_locus_dissolve",
             self.context
