@@ -58,6 +58,16 @@ behavior.
   fraction digits (0..=9, round half-up) for money-style
   fixed display.
 
+- **Per-binding transport telemetry counters (GH #236 item 2).**
+  Every remote binding maintains relaxed-atomic counters at the
+  transport choke points — messages/bytes sent and delivered,
+  send failures, `dropped_lost` (publishes made while a connect
+  binding was in the lost/reconnecting window), listener
+  re-arms, reconnects, and `seq_gaps`. `LOTUS_BUS_COUNTERS_DUMP=1`
+  prints one line per binding at teardown; this is the substrate
+  for the iris observer. (Entry restored — it was dropped in a
+  changelog merge during the release cycle; the feature shipped
+  in v0.11.10 as PR #237.)
 - **macOS unix-transport support via framed SOCK_STREAM + wire
   sequence numbers (GH #231 transport half, GH #236 item 1).**
   Darwin has no AF_UNIX `SOCK_SEQPACKET`, so the substrate unix
