@@ -80,7 +80,14 @@ topic_field       = "payload" , ":" , type_expr , ";"
                   | "subject" , ":" , STRING_LIT , ";"
                   | "keyed_by" , IDENTIFIER , ";"
                   | "on_unmatched" , ":" , unmatched_policy , ";"
+                  | "bounded" , "(" , INT_LIT , ")" , ";"
+                  | "on_full" , ":" , "fail" , ";"
                   ;
+(* GH #255 phase 2: `bounded(N)` + `on_full: fail` pair up (each
+   requires the other) — the publisher-facing refusal capacity.
+   Every send site of such a topic must carry an `or` disposition
+   (raise / discard / wait at v1; the err-payload dispositions
+   land in a follow-up slice). *)
 
 (* `ring_layout Name { ... }` — declares the byte layout of an
    externally-defined SHM broadcast ring so a
@@ -453,7 +460,15 @@ bus_member        = bus_subscribe
 bus_subject       = STRING_LIT | qualified_name ;
 bus_subscribe     = "subscribe" , bus_subject , "as" , IDENTIFIER ,
                     [ "of" , "type" , type_expr ] ,
+                    [ "bounded" , "(" , INT_LIT , "," , shed_policy , ")" ] ,
                     [ key_filter ] , ";" ;
+shed_policy       = "drop_new" | "drop_old" ;
+(* GH #255 phase 2: the subscriber's private in-flight cap +
+   mandatory shed policy. Main-queue subscribers only at v1 —
+   pool/pinned rings are already bounded with producer-blocking
+   backpressure (GH #125). Composes with a topic bound as
+   min(topic, consumer): a smaller consumer bound sheds privately
+   below the topic's refusal threshold. *)
 bus_publish       = "publish" , bus_subject ,
                     [ "of" , "type" , type_expr ] ,
                     [ "as" , IDENTIFIER ] , ";" ;

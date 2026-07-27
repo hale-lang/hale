@@ -5463,6 +5463,17 @@ static void bus_inline_drain_one(lotus_bus_queue_t *q);
  * because codegen proved the whole program has no pinned / cross-pool
  * placement, so g_bus_has_pinned is provably 0 and the acquire-load is
  * dead work. */
+/* GH #255 phase 2 — forward decls: the bound-enforcement hooks
+ * are defined with the registry machinery further down. */
+int lotus_subject_match(const char *pattern, const char *subject);
+struct lotus_bus_entry;
+static struct lotus_bus_entry *lotus_bus_bound_entry_for(void *handler,
+                                                         void *self_ptr);
+static int lotus_bus_shed_check(struct lotus_bus_entry *reg,
+                                lotus_bus_queue_t *q);
+static void lotus_bus_note_enqueued(struct lotus_bus_entry *reg);
+static void lotus_bus_note_dispatched(void *handler, void *self_ptr);
+
 static void bus_queue_enqueue_inner(lotus_bus_queue_t *q,
                                     void *handler,
                                     void *self_ptr,
@@ -5483,6 +5494,18 @@ static void bus_queue_enqueue_inner(lotus_bus_queue_t *q,
         }
     }
     if (locked) pthread_mutex_lock(&q->lock);
+    /* GH #255 phase 2: per-registration bound. Checked under the
+     * lock (drop_old tombstones in-queue cells). */
+    {
+        struct lotus_bus_entry *reg =
+            lotus_bus_bound_entry_for(handler, self_ptr);
+        if (reg && !lotus_bus_shed_check(reg, q)) {
+            if (locked) pthread_mutex_unlock(&q->lock);
+            if (heap_buf) free(heap_buf);
+            return; /* shed the newcomer */
+        }
+        if (reg) lotus_bus_note_enqueued(reg);
+    }
     /* Ensure a free tail slot, applying the bounded-queue backpressure
      * policy (GH #125). */
     while (q->tail == q->cap) {
@@ -5616,6 +5639,8 @@ typedef void (*lotus_handler_fn)(void *self, void *payload);
  * at the cap). */
 static void bus_inline_drain_one(lotus_bus_queue_t *q) {
     lotus_bus_cell_t *cell = &q->cells[q->head++];
+    if (!cell->handler) return; /* GH #255: tombstoned (drop_old) */
+    lotus_bus_note_dispatched(cell->handler, cell->self_ptr);
     if (!lotus_bus_cell_materialize(cell)) return;
     void  *handler_fn   = cell->handler;
     void  *handler_self = cell->self_ptr;
@@ -5697,6 +5722,9 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
             /* Wire cell from a cross-thread publisher: deserialize
              * into the subscriber's arena here, on the queue's
              * owner thread (bug 3). */
+            if (!cell_copy.handler) continue; /* GH #255 tombstone */
+            lotus_bus_note_dispatched(cell_copy.handler,
+                                      cell_copy.self_ptr);
             if (!lotus_bus_cell_materialize(&cell_copy)) continue;
             void *payload_ptr = NULL;
             if (cell_copy.payload_size > 0) {
@@ -5725,6 +5753,8 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
                 return;
             }
             lotus_bus_cell_t *cell = &q->cells[q->head++];
+            if (!cell->handler) continue; /* GH #255 tombstone */
+            lotus_bus_note_dispatched(cell->handler, cell->self_ptr);
             /* Single-threaded programs never build wire cells, but
              * keep the drain paths uniform (one NULL check). */
             if (!lotus_bus_cell_materialize(cell)) continue;
@@ -7571,11 +7601,149 @@ typedef struct lotus_bus_entry {
      * (a concurrent dispatch walk past the subject gate may still
      * read it). */
     const char           *key_str;
+    /* GH #255 phase 2: per-registration capacity on MAIN-queue
+     * deliveries. `shed_bound` (>0) with `shed_policy` (1 =
+     * drop_new, 2 = drop_old) is the subscriber's private cap;
+     * `refuse_bound` (>0) is the topic-level `on_full: fail`
+     * threshold consulted by the publish-site refusal pre-check.
+     * `in_flight` counts this registration's queued-but-not-yet-
+     * dispatched main-queue cells. Pool/mailbox registrations
+     * carry no bounds at v1 — their MPSC rings are already
+     * bounded with producer-blocking backpressure (GH #125);
+     * the typechecker rejects declared bounds off-main. */
+    int64_t               shed_bound;
+    uint8_t               shed_policy;
+    int64_t               refuse_bound;
+    volatile int64_t      in_flight;
+    uint64_t              ctr_dropped_full;
 } lotus_bus_entry_t;
 
 static lotus_bus_entry_t *g_bus_entries = NULL;
 static size_t             g_bus_count   = 0;
 static size_t             g_bus_cap     = 0;
+
+/* GH #255 phase 2: find the registration a queued cell belongs
+ * to. Linear scan — dispatch already walks this array, and the
+ * scan only runs for programs that declared bounds (guarded by
+ * g_bus_any_bounds). */
+static int g_bus_any_bounds = 0;
+
+static lotus_bus_entry_t *lotus_bus_bound_entry_for(void *handler,
+                                                    void *self_ptr) {
+    if (!g_bus_any_bounds) return NULL;
+    for (size_t i = 0; i < g_bus_count; i++) {
+        lotus_bus_entry_t *e = &g_bus_entries[i];
+        if (e->handler == handler && e->self_ptr == self_ptr &&
+            (e->shed_bound > 0 || e->refuse_bound > 0)) {
+            return e;
+        }
+    }
+    return NULL;
+}
+
+/* Enqueue-side policy, called with q's lock held (locked path)
+ * or single-threaded (st path). Returns 1 = proceed with the
+ * enqueue, 0 = shed the newcomer (drop_new, or drop_old that
+ * found nothing to tombstone in-queue). drop_old tombstones the
+ * registration's oldest queued cell (handler = NULL; drain
+ * paths skip) and frees its payload storage in place. */
+static int lotus_bus_shed_check(lotus_bus_entry_t *reg,
+                                lotus_bus_queue_t *q) {
+    if (!reg) return 1;
+    int64_t inflight =
+        __atomic_load_n(&reg->in_flight, __ATOMIC_RELAXED);
+    /* Refuse bound doubles as the hard enqueue cap: the publish-
+     * site pre-check is the synchronous signal, this is the
+     * backstop that also gives `or discard` its semantics (the
+     * dispatch proceeds; at-capacity registrations shed the
+     * newcomer, counted). */
+    if (reg->refuse_bound > 0 && inflight >= reg->refuse_bound &&
+        (reg->shed_bound <= 0 || reg->refuse_bound <= reg->shed_bound)) {
+        __atomic_fetch_add(&reg->ctr_dropped_full, 1, __ATOMIC_RELAXED);
+        return 0;
+    }
+    if (reg->shed_bound <= 0 || inflight < reg->shed_bound) return 1;
+    if (reg->shed_policy == 2 /* drop_old */) {
+        for (size_t i = q->head; i < q->tail; i++) {
+            lotus_bus_cell_t *c = &q->cells[i];
+            if (c->handler == reg->handler &&
+                c->self_ptr == reg->self_ptr) {
+                if (c->payload_heap) {
+                    free(c->payload_heap);
+                    c->payload_heap = NULL;
+                }
+                if (c->payload_region) {
+                    lotus_arena_destroy(
+                        (lotus_arena_t *)c->payload_region);
+                    c->payload_region = NULL;
+                }
+                c->handler = NULL; /* tombstone */
+                __atomic_fetch_sub(&reg->in_flight, 1,
+                                   __ATOMIC_RELAXED);
+                __atomic_fetch_add(&reg->ctr_dropped_full, 1,
+                                   __ATOMIC_RELAXED);
+                return 1; /* room made — enqueue the newcomer */
+            }
+        }
+        /* Nothing tombstonable (cells mid-dispatch): shed new. */
+    }
+    __atomic_fetch_add(&reg->ctr_dropped_full, 1, __ATOMIC_RELAXED);
+    return 0;
+}
+
+static void lotus_bus_note_enqueued(lotus_bus_entry_t *reg) {
+    if (reg) {
+        __atomic_fetch_add(&reg->in_flight, 1, __ATOMIC_RELAXED);
+    }
+}
+
+/* Called by codegen right after lotus_bus_register for a bounded
+ * subscriber: attaches the effective bounds to the registration
+ * (matched by subject + self so multi-topic subscribers
+ * disambiguate). */
+void lotus_bus_set_sub_bound(const char *subject,
+                             void *self_ptr,
+                             int64_t shed_bound,
+                             int64_t shed_policy,
+                             int64_t refuse_bound) {
+    for (size_t i = 0; i < g_bus_count; i++) {
+        lotus_bus_entry_t *e = &g_bus_entries[i];
+        if (!e->subject || e->self_ptr != self_ptr) continue;
+        if (strcmp(e->subject, subject) != 0) continue;
+        e->shed_bound   = shed_bound;
+        e->shed_policy  = (uint8_t)shed_policy;
+        e->refuse_bound = refuse_bound;
+        g_bus_any_bounds = 1;
+    }
+}
+
+/* Post-dispatch accounting: a main-queue cell for this
+ * registration completed (or was tombstoned/discarded). */
+static void lotus_bus_note_dispatched(void *handler, void *self_ptr) {
+    lotus_bus_entry_t *e = lotus_bus_bound_entry_for(handler, self_ptr);
+    if (e) {
+        __atomic_fetch_sub(&e->in_flight, 1, __ATOMIC_RELAXED);
+    }
+}
+
+/* Publish-site refusal pre-check for `on_full: fail` topics:
+ * 1 when any registration matching `subject` is at its refuse
+ * bound. Concurrent publishers may interleave past this check —
+ * the enqueue-side shed is the hard backstop; the refusal is the
+ * best-effort synchronous signal (documented in spec). */
+int64_t lotus_bus_subject_would_refuse(const char *subject) {
+    if (!g_bus_any_bounds || !subject) return 0;
+    for (size_t i = 0; i < g_bus_count; i++) {
+        lotus_bus_entry_t *e = &g_bus_entries[i];
+        if (!e->subject || e->refuse_bound <= 0) continue;
+        if (!lotus_subject_match(e->subject, subject)) continue;
+        if (__atomic_load_n(&e->in_flight, __ATOMIC_RELAXED) >=
+            e->refuse_bound) {
+            return 1;
+        }
+    }
+    return 0;
+}
 
 /* === Static-devirt per-subject buckets (build #1b) ================
  *
@@ -13755,6 +13923,25 @@ int64_t lotus_bus_binding_wait_ready(lotus_bus_queue_t *queue,
         /* Owner-guarded internally: pumps loss dispatch + coop
          * queue (incl. tick-driven retry handlers) on main,
          * no-ops elsewhere. */
+        lotus_bus_queue_drain(queue);
+        struct timespec ts = {0, 1000000}; /* 1ms slice */
+        nanosleep(&ts, NULL);
+    }
+}
+
+/* GH #255 phase 2 — `or wait` on a bounded `on_full: fail`
+ * topic: park until no registration for `subject` sits at its
+ * refuse bound. Same loop discipline as the binding wait above
+ * (main pumps its own drain — which is also what empties the
+ * queue and closes the window; teardown abort raises). */
+int64_t lotus_bus_subject_wait_space(lotus_bus_queue_t *queue,
+                                     const char *subject) {
+    if (!subject) return 0;
+    for (;;) {
+        if (!lotus_bus_subject_would_refuse(subject)) return 0;
+        if (__atomic_load_n(&g_bus_wait_abort, __ATOMIC_ACQUIRE)) {
+            return -1;
+        }
         lotus_bus_queue_drain(queue);
         struct timespec ts = {0, 1000000}; /* 1ms slice */
         nanosleep(&ts, NULL);

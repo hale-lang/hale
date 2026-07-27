@@ -877,6 +877,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.context.void_type().fn_type(&[], false),
             None,
         );
+        // GH #255 phase 2 — bounded topics:
+        // declare void @lotus_bus_set_sub_bound(ptr subject, ptr self,
+        //     i64 shed_bound, i64 shed_policy, i64 refuse_bound)
+        // declare i64 @lotus_bus_subject_would_refuse(ptr subject)
+        // declare i64 @lotus_bus_subject_wait_space(ptr queue, ptr subject)
+        self.module.add_function(
+            "lotus_bus_set_sub_bound",
+            self.context.void_type().fn_type(
+                &[
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    i64_t2.into(),
+                    i64_t2.into(),
+                    i64_t2.into(),
+                ],
+                false,
+            ),
+            None,
+        );
+        self.module.add_function(
+            "lotus_bus_subject_would_refuse",
+            i64_t2.fn_type(&[ptr_t.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_bus_subject_wait_space",
+            i64_t2.fn_type(&[ptr_t.into(), ptr_t.into()], false),
+            None,
+        );
         // declare i32 @lotus_process_wait(i32 pid,
         //                                 ptr out_code,
         //                                 ptr out_signal)

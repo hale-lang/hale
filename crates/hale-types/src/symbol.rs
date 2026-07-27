@@ -90,6 +90,12 @@ pub struct TopicInfo {
     /// policy. Codegen treats None as Swallow at lowering
     /// time.
     pub on_unmatched: Option<hale_syntax::ast::UnmatchedPolicy>,
+    /// GH #255 phase 2: `bounded(N)` — topic-level refusal
+    /// capacity (requires `on_full: fail`).
+    pub bounded: Option<i64>,
+    /// GH #255 phase 2: `on_full: fail` — publishes are
+    /// refusal-fallible; send sites must carry a disposition.
+    pub on_full_fail: bool,
     pub span: Span,
 }
 

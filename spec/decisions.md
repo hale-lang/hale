@@ -3186,9 +3186,28 @@ a transport-bound topic. Semantics:
   drops, not exactly-once.
 - Per-binding `waits` counter (GH #236 family) records parks.
 
-Phase 2 (bounded topics / consumer shed bounds, designed on
-GH #255) will feed queue-full as a second transient-refusal
-condition into this same disposition — no surface change.
+**Phase 2 SHIPPED (2026-07-27, same day):** the two capacity
+knobs from the GH #255 design. Topic-level `bounded(N)` +
+`on_full: fail` is the publisher-facing refusal contract —
+publishes to such a topic must carry a disposition (`or raise`
+= synchronous BusFull refusal at the send site; `or discard` =
+proceed, at-capacity registrations shed the newcomer counted;
+`or wait` = park until the drain frees space — queue-full is
+the second transient-refusal condition feeding the same
+disposition, exactly as designed). Subscriber-level
+`bounded(N, drop_new|drop_old)` is that consumer's private cap:
+drop_old tombstones its oldest queued cell (ring semantics),
+and a consumer bound below the topic bound converts would-be
+refusal into private shedding. Scope facts: bounds apply to
+MAIN-queue registrations only at v1 (pool/pinned rings are
+already bounded MPSC rings with producer-blocking backpressure
+— GH #125 — so declared bounds there are typecheck-rejected
+with that explanation); the publish-site refusal pre-check is
+best-effort under concurrent publishers with the enqueue-side
+cap as the hard backstop; the err-payload dispositions
+(`or handler(err)` / `or fail <p>`) on full-fail topics are
+rejected with a pointer until the BusFull-payload slice lands.
+Per-registration `dropped_full` counting rides the entry.
 
 ---
 

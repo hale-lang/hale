@@ -1199,6 +1199,8 @@ pub fn build_executable_with_options(
         bus_state: None,
         shm_ring_subjects: std::collections::BTreeMap::new(),
         routing_key_subjects: std::collections::BTreeMap::new(),
+        full_fail_subjects: std::collections::BTreeMap::new(),
+        sub_bounds: std::collections::BTreeMap::new(),
         bus_devirt_ids,
         bus_devirt_direct,
         bus_devirt_direct_subs,
@@ -2895,6 +2897,15 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// topic declarations before any user-code lowering. Unkeyed
     /// topics are NOT present in this map; absence ⇒ "route
     /// through the legacy lotus_bus_dispatch path."
+    /// GH #255 phase 2: wire subjects of `on_full: fail` topics
+    /// (value = the topic's refuse bound). Publishes to these get
+    /// the would-refuse pre-check + disposition branch.
+    pub(crate) full_fail_subjects:
+        std::collections::BTreeMap<String, i64>,
+    /// GH #255 phase 2: (locus name, wire subject) → subscriber
+    /// shed bound (cap, policy: 1 = drop_new, 2 = drop_old).
+    pub(crate) sub_bounds:
+        std::collections::BTreeMap<(String, String), (i64, u8)>,
     pub(crate) routing_key_subjects:
         std::collections::BTreeMap<String, RoutingKeySubjectInfo>,
     /// Static-bus-dispatch devirtualization (build #1b). Maps each
@@ -8302,6 +8313,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Self::collect_topic_wire_subjects(&self.program.items, &mut wire_subjects);
         for item in &self.program.items {
             if let TopDecl::Topic(t) = item {
+                // GH #255 phase 2: record on_full-fail capacities.
+                if let (Some((cap, _)), Some(_)) =
+                    (t.bounded, t.on_full_fail)
+                {
+                    let wire = wire_subjects
+                        .get(&t.name.name)
+                        .cloned()
+                        .unwrap_or_else(|| t.name.name.clone());
+                    self.full_fail_subjects.insert(wire, cap);
+                }
                 let keyed_field = match &t.keyed_by {
                     Some(f) => f.name.clone(),
                     None => continue,
@@ -8326,6 +8347,42 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         policy: t.on_unmatched,
                     },
                 );
+            }
+        }
+        // GH #255 phase 2: subscriber shed bounds, keyed by
+        // (locus, wire subject).
+        let mut wire_subjects2: BTreeMap<String, String> = BTreeMap::new();
+        Self::collect_topic_wire_subjects(
+            &self.program.items,
+            &mut wire_subjects2,
+        );
+        for item in &self.program.items {
+            let TopDecl::Locus(l) = item else { continue };
+            for member in &l.members {
+                let LocusMember::Bus(bb) = member else { continue };
+                for bm in &bb.members {
+                    let BusMember::Subscribe {
+                        subject,
+                        bound: Some(b),
+                        ..
+                    } = bm
+                    else {
+                        continue;
+                    };
+                    let canon = subject.canonical().to_string();
+                    let wire = wire_subjects2
+                        .get(&canon)
+                        .cloned()
+                        .unwrap_or(canon);
+                    let policy = match b.policy {
+                        hale_syntax::ast::ShedPolicy::DropNew => 1u8,
+                        hale_syntax::ast::ShedPolicy::DropOld => 2u8,
+                    };
+                    self.sub_bounds.insert(
+                        (l.name.name.clone(), wire),
+                        (b.cap, policy),
+                    );
+                }
             }
         }
     }
@@ -10587,7 +10644,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .members
                     .iter()
                     .map(|bm| match bm {
-                        BusMember::Subscribe { subject, handler, ty, key_filter, span } => {
+                        BusMember::Subscribe { subject, handler, ty, key_filter, bound, span } => {
                             BusMember::Subscribe {
                                 subject: subject.clone(),
                                 handler: handler.clone(),
@@ -10595,6 +10652,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                     Self::substitute_type_expr(t, subst)
                                 }),
                                 key_filter: key_filter.clone(),
+                                bound: *bound,
                                 span: span.clone(),
                             }
                         }

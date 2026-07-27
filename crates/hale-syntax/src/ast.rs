@@ -101,6 +101,19 @@ pub struct TopicDecl {
     /// typecheck. When `None`, the topic is unkeyed and behaves
     /// as it has since Phase 1.
     pub keyed_by: Option<Ident>,
+    /// GH #255 phase 2: `bounded(N);` — the publisher-facing
+    /// refusal capacity. Uniform per-subscriber in-flight cap on
+    /// this topic's queued deliveries. Requires `on_full:` (v1:
+    /// `fail`) — a topic bound without a declared policy is
+    /// rejected at typecheck.
+    pub bounded: Option<(i64, Span)>,
+    /// GH #255 phase 2: `on_full: fail;` — publishes to this
+    /// topic become refusal-fallible: every send site must carry
+    /// an `or` disposition (raise / discard / handler(err) /
+    /// fail <p> / wait). v1 has exactly one topic-level policy
+    /// (`fail`); consumer-side shedding lives on the subscribe
+    /// declaration instead.
+    pub on_full_fail: Option<Span>,
     /// Behavior when a keyed publish finds no subscriber whose
     /// `where key == X` filter matches. `None` is equivalent to
     /// `Some(Swallow)` (the default; matches today's no-subscriber
@@ -1216,6 +1229,13 @@ pub enum BusMember {
         /// = filter at dispatch time. See `spec/semantics.md` §
         /// "Phase 3: routing keys".
         key_filter: Option<KeyFilter>,
+        /// GH #255 phase 2: `bounded(N, drop_old|drop_new)` — this
+        /// subscriber's private in-flight cap + shed policy on its
+        /// queued deliveries. The policy is mandatory with the
+        /// bound (no silent default). Affects nobody but the
+        /// declaring subscriber; composes with a topic-level
+        /// `bounded(N)` as min(topic, consumer).
+        bound: Option<SubBound>,
         span: Span,
     },
     Publish {
@@ -1225,6 +1245,30 @@ pub enum BusMember {
         alias: Option<Ident>,
         span: Span,
     },
+}
+
+/// GH #255 phase 2: a subscribe declaration's private capacity.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SubBound {
+    pub cap: i64,
+    pub policy: ShedPolicy,
+    pub span: Span,
+}
+
+/// GH #255 phase 2: what a bounded subscriber sheds when its
+/// in-flight cap is reached. Applies only to queues the core
+/// owns (main coop queue / pool queues); pinned subscribers'
+/// mailboxes keep their existing bounded-ring block-producer
+/// contract (GH #125).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShedPolicy {
+    /// Reject the newcomer; the arriving message is dropped
+    /// (counted).
+    DropNew,
+    /// Ring semantics: tombstone this subscriber's oldest queued
+    /// delivery to make room (right for telemetry / reload-style
+    /// events where stale beats lost-freshest).
+    DropOld,
 }
 
 /// `where key == EXPR` clause on `subscribe`. See

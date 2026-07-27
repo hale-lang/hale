@@ -12,6 +12,12 @@ use crate::codegen::{CodegenError, Cx};
 pub(crate) trait BusRuntime<'ctx> {
     fn emit_bus_drain(&mut self) -> Result<(), CodegenError>;
     fn emit_bus_wait_abort_all(&mut self) -> Result<(), CodegenError>;
+    fn emit_sub_bound_if_any(
+        &mut self,
+        locus_name: &str,
+        subject: &str,
+        self_ptr: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError>;
     fn emit_bus_queue_destroy(&mut self) -> Result<(), CodegenError>;
     fn emit_bus_register_shm_ring(
         &mut self,
@@ -57,6 +63,47 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
             .expect("lotus_bus_wait_abort_all declared");
         self.builder
             .build_call(f, &[], "bus.wait.abort_all")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
+    /// GH #255 phase 2: attach shed/refuse bounds to the
+    /// registration just emitted (no-op when neither the
+    /// subscribe declaration nor the topic declared capacity).
+    fn emit_sub_bound_if_any(
+        &mut self,
+        locus_name: &str,
+        subject: &str,
+        self_ptr: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let shed = self
+            .sub_bounds
+            .get(&(locus_name.to_string(), subject.to_string()))
+            .copied();
+        let refuse = self.full_fail_subjects.get(subject).copied();
+        if shed.is_none() && refuse.is_none() {
+            return Ok(());
+        }
+        let (cap, policy) = shed.unwrap_or((0, 0));
+        let refuse_bound = refuse.unwrap_or(0);
+        let i64_t = self.context.i64_type();
+        let subj_g = self.global_string(subject);
+        let f = self
+            .module
+            .get_function("lotus_bus_set_sub_bound")
+            .expect("lotus_bus_set_sub_bound declared");
+        self.builder
+            .build_call(
+                f,
+                &[
+                    subj_g.into(),
+                    self_ptr.into(),
+                    i64_t.const_int(cap as u64, false).into(),
+                    i64_t.const_int(policy as u64, false).into(),
+                    i64_t.const_int(refuse_bound as u64, false).into(),
+                ],
+                "bus.set_sub_bound",
+            )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
     }

@@ -2953,6 +2953,10 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                         key_filter.as_ref(),
                         owned_beyond_scope,
                     )?;
+                    // GH #255 phase 2: attach declared capacity.
+                    self.emit_sub_bound_if_any(
+                        locus_name, subject, self_ptr,
+                    )?;
                 }
             }
             self.in_params_default = prev_ipd_sub;
