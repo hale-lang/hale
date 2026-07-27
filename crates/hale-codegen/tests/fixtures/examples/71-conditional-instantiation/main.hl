@@ -1,0 +1,42 @@
+// hale-bun upstream item 1: instantiating a placement-bearing
+// main locus inside a branch. Pre-fix, the deferred-dissolve
+// flush at fn exit referenced the pinned child's arena alloc from
+// inside the `if` — an LLVM dominance failure with debug info,
+// silently-broken teardown IR without. The not-taken branch also
+// matters: its flush must observe the NULL slot sentinel and skip
+// teardown instead of releasing a garbage pointer.
+
+locus Worker {
+    run() {
+        println("worker ran");
+    }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { };
+    }
+    placement {
+        w: pinned(core = 0);
+    }
+    run() {
+        println("app ran");
+    }
+}
+
+locus Ghost {
+    run() {
+        println("ghost ran (BUG: not-taken branch instantiated)");
+    }
+}
+
+fn main() {
+    let cmd = "a";
+    if cmd == "a" {
+        App { };
+    }
+    if cmd == "never" {
+        Ghost { };
+    }
+    println("done");
+}

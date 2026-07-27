@@ -204,6 +204,25 @@ locus __StdIoTcpStream {
     }
 }
 
+// hale-bun upstream item 4b: public raw-fd send, the takeover
+// companion to `close_fd` / `recv_into` / `set_recv_timeout`.
+// A handler that keeps a taken-over `Request.conn_fd` (or any
+// fd it refuses to hand to Stream's close-at-scope-exit
+// lifecycle) previously had only the internal
+// `__send_bytes(fd, b)` to write with — a surface gap. Same
+// error contract as `Stream.send_bytes`: Unit success,
+// `fallible(IoError)` on genuine I/O errors. Surfaced as
+// `std::io::tcp::send_fd(fd, b)` via the path-renames table.
+fn __std_io_tcp_send_fd(fd: Int, b: Bytes) -> () fallible(IoError) {
+    let n = std::io::tcp::__send_bytes(fd, b);
+    if n < 0 {
+        let e = std::io::tcp::__last_io_status();
+        fail IoError {
+            kind: std::io::tcp::__io_error_kind(e), errno: e, path: "",
+        };
+    }
+}
+
 // Default on_connection callback. Logs the fd and returns —
 // the per-connection Stream dissolves once `__handle_one_
 // connection` returns, closing the fd. Users who want real

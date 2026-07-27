@@ -3393,8 +3393,12 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             // flush ALSO signals the mailbox shutdown before
             // joining, so the pinned thread breaks out of its
             // mailbox loop and proceeds to drain/dissolve.
-            if let Some(top) = self.deferred_dissolves.last_mut() {
-                top.push((self_ptr, locus_name.to_string(), Some(tid_alloca)));
+            if !self.deferred_dissolves.is_empty() {
+                let slot = self.defer_dissolve_slot(self_ptr, locus_name)?;
+                self.deferred_dissolves
+                    .last_mut()
+                    .expect("checked non-empty")
+                    .push((slot, locus_name.to_string(), Some(tid_alloca)));
             } else {
                 return Err(CodegenError::Unsupported(format!(
                     "pinned locus `{}` instantiated outside any tracked \
@@ -3893,8 +3897,12 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             // backed buffer for shapes like BytesBuilder. Phase 2
             // wires the cascade through the parent's arena_destroy
             // ordering.
-        } else if let Some(top) = self.deferred_dissolves.last_mut() {
-            top.push((self_ptr, locus_name.to_string(), None));
+        } else if !self.deferred_dissolves.is_empty() {
+            let slot = self.defer_dissolve_slot(self_ptr, locus_name)?;
+            self.deferred_dissolves
+                .last_mut()
+                .expect("checked non-empty")
+                .push((slot, locus_name.to_string(), None));
         } else {
             // Should be unreachable: every fn body / lifecycle
             // body opens a frame in lower_program/method body
