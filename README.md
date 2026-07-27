@@ -7,8 +7,10 @@ One primitive, the **locus**, scales from a single function to a fleet of
 services wired over a typed message bus. There's no translation layer
 between the sentence you'd say out loud and the code you write.
 
+**[hale-lang.org](https://hale-lang.org)** — docs, [playground](https://hale-lang.org/playground), packages, roadmap.
+
 [![Tests](https://github.com/hale-lang/hale/actions/workflows/tests.yml/badge.svg)](https://github.com/hale-lang/hale/actions/workflows/tests.yml)
-[![Docs](https://github.com/hale-lang/hale/actions/workflows/docs.yml/badge.svg)](https://hale-lang.github.io/hale/)
+[![Docs](https://github.com/hale-lang/hale/actions/workflows/docs.yml/badge.svg)](https://hale-lang.org/docs)
 [![License](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](./LICENSE)
 [![LLVM](https://img.shields.io/badge/LLVM-18-red.svg)](https://llvm.org/)
 
@@ -60,7 +62,7 @@ them — dynamic subject creation is on the roadmap.)
 
 > GitHub can't syntax-highlight Hale yet, so the snippets here render in a
 > single color. For highlighted, runnable Hale, open the
-> [playground](https://hale-lang.github.io/hale/play/).
+> [playground](https://play.hale-lang.org/).
 
 ## One primitive, at any altitude
 
@@ -79,7 +81,7 @@ down is how much of it you choose to see.
 
 A function you wrote at the top still works at the bottom — you've just
 learned to see more of what was always there. The
-[docs](https://hale-lang.github.io/hale/) are organized as exactly this
+[docs](https://hale-lang.org/docs) are organized as exactly this
 descent, so you go only as deep as you need.
 
 ## Deploy the same system anywhere — by editing `main`
@@ -184,7 +186,7 @@ You don't get a "verified" sticker on your whole program. You get a
 foundation whose coordination can't silently race — and because messages are
 copies and loci never reach sideways, programs that are **data-race-free by
 construction**, with no GC and no borrow checker.
-[Verification →](https://hale-lang.github.io/hale/verification.html)
+[Verification →](https://hale-lang.org/docs/verification)
 
 ## Built for humans and models
 
@@ -202,14 +204,15 @@ system.
 
 ## Try it
 
-**No install — [run curated Hale examples in your browser](https://hale-lang.github.io/hale/play/).**
-Each playground example is real Hale, precompiled to WebAssembly and run
-on the page (the UI itself is a Hale `@export locus` — the same `.hl`
-source runs native or in the browser). You can read the source and run
-it; editing code in the browser isn't there yet — for that, install
-below.
+**No install — [write and run Hale in your browser](https://play.hale-lang.org/).**
+Your source is compiled to WebAssembly by a compile service written in
+Hale itself, and the result runs fully client-side — the same compiler
+you install locally. Prefer a guided start? The
+[example gallery](https://hale-lang.org/play/) walks curated programs,
+each precompiled from real Hale (the gallery UI is itself a Hale
+`@export locus` — the same `.hl` source runs native or in the browser).
 
-**Prebuilt Linux binaries** are on the
+**Prebuilt Linux and macOS binaries** are on the
 [releases page](https://github.com/hale-lang/hale/releases) — download,
 extract, put `hale` on your `PATH`. Or build from source:
 
@@ -341,7 +344,7 @@ They mean things, and they fit together:
 
 ## Where to go next
 
-- **[Docs site](https://hale-lang.github.io/hale/)** — the level-by-level
+- **[Docs site](https://hale-lang.org/docs)** — the level-by-level
   tour. Start here.
 - **[`spec/`](./spec/)** — the canonical reference; the compiler enforces
   what it describes.

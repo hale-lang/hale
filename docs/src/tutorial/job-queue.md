@@ -4,7 +4,7 @@ In about thirty minutes, you'll build a small **job queue** and watch it
 descend the four altitudes — from a throwaway script to a service split
 across processes — changing almost nothing but `main` at the very end. The
 first three stages run in the browser at the
-[playground](https://hale-lang.github.io/hale/play/) (no install); to follow
+[playground](https://play.hale-lang.org/) (no install); to follow
 along locally, drop each program in a `.hl` file and `hale run` it.
 
 We'll keep the "work" trivial — squaring a number stands in for whatever a
@@ -129,7 +129,9 @@ job 3 done -> 81
 ```
 
 > **Run it:** this exact program is live in the
-> [playground](https://hale-lang.github.io/hale/play/?example=jobqueue) — no install.
+> [example gallery](https://hale-lang.org/play/?example=jobqueue) — no
+> install. Or paste it into the [playground](https://play.hale-lang.org/)
+> and edit as you go.
 
 Notice what you *didn't* write. The `Submitter` never calls the `Worker` —
 it publishes to a topic, and whoever subscribes gets the message. There's no
@@ -200,5 +202,5 @@ That last row is the point: a Hale program is a *design* of loci and topics;
 where and how it runs is a binding you change in one place. From here, the
 [concurrent services](../services/lifecycle.md) chapters go deeper on
 lifecycle, failure, and supervision — or open the
-[playground](https://hale-lang.github.io/hale/play/) and run the bus version
+[playground](https://play.hale-lang.org/) and run the bus version
 in your browser.
