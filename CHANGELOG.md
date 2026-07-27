@@ -41,7 +41,15 @@ behavior.
   what still drops (publish after the last subscriber dissolved:
   coordinate completion explicitly) — is spec'd in
   spec/runtime.md and docs/src/services/bus.md. Self-checking
-  corpus fixture `72-teardown-publish-delivery`.
+  corpus fixture `72-teardown-publish-delivery`. The fixture
+  also flushed out a pre-existing devirt soundness bug (caught
+  by the static/dynamic differential in CI): the direct-call
+  gate never checked PUBLISHER placement, so a pinned publisher
+  could run a same-thread subscriber's quiet handler directly on
+  its own thread — two such publishers ran it concurrently and
+  lost `self.x + 1` updates. Direct-call eligibility now
+  requires every publisher same-thread; off-thread publishers
+  stay on the serializing enqueue path.
 
 - **Conditional instantiation of a deferred-dissolve locus fixed
   (hale-bun handoff item 1).** `if c { App { }; }` with a

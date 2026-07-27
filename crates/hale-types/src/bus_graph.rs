@@ -390,8 +390,26 @@ pub fn build_bus_graph(bundle: &Bundle<'_>, top: &TopScope) -> BusGraph {
         // handler provably quiet (the flat-payload leg is ANDed in at
         // the codegen publish site). Default-bail: a missing handler
         // body or any unmodeled placement/effect ⟹ not direct.
+        //
+        // GH #253 follow-up (caught by the devirt differential on
+        // corpus fixture 72): every PUBLISHER must be same-thread
+        // too. A direct call executes the handler on the PUBLISHING
+        // thread — a pinned (or pooled) publisher would run a
+        // same-thread subscriber's handler off-main, and two such
+        // publishers run it CONCURRENTLY: a `self.seen + 1`
+        // read-modify-write loses updates (observed as a rare
+        // saw-1-of-2 under CI load). Off-thread publishers must
+        // stay on the enqueue path, which serializes dispatch on
+        // the draining thread.
         let direct_call_eligible = eligible
             && !subscribers.is_empty()
+            && publishers.iter().all(|p| {
+                placements
+                    .get(&p.locus)
+                    .cloned()
+                    .unwrap_or(Placement::SameThread)
+                    == Placement::SameThread
+            })
             && subscribers.iter().all(|s| {
                 s.placement == Placement::SameThread
                     && find_handler_fn(bundle, &s.locus, &s.handler)
