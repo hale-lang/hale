@@ -1783,6 +1783,42 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                 .build_store(g.as_pointer_value(), self_ptr)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
+        // iris P4 + handoff-2 P8/P9: register THIS instance's
+        // LOCUS_BIRTH *before* field-default init, so a child
+        // born during that init finds this locus already in the
+        // instance table for its parent lookup (post-birth()
+        // placement rendered every parent as root). Parent = the
+        // OUTER context (the locus/instantiation that created us),
+        // null/root from `fn main`.
+        {
+            let ptr_t = self.context.ptr_type(AddressSpace::default());
+            let obs_fn = self
+                .module
+                .get_function("lotus_obs_locus_birth")
+                .expect("lotus_obs_locus_birth declared");
+            let tname = self.global_string(locus_name);
+            let parent: inkwell::values::BasicValueEnum = self
+                .current_instantiation_parent
+                .map(|p| p.into())
+                .or_else(|| {
+                    self.current_self.as_ref().map(|cs| cs.self_ptr.into())
+                })
+                .unwrap_or_else(|| ptr_t.const_null().into());
+            self.builder
+                .build_call(
+                    obs_fn,
+                    &[self_ptr.into(), tname.into(), parent.into()],
+                    &format!("{}.obs.birth", locus_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        // iris handoff-2 P9: every child instantiated during THIS
+        // locus's field-default init records this locus as its
+        // LOCUS_BIRTH parent — now registered above.
+        let prev_obs_parent = std::mem::replace(
+            &mut self.current_instantiation_parent,
+            Some(self_ptr),
+        );
         for (fname, default) in info.defaults.iter() {
             // F.31: per-field placement override for main-locus
             // params. Looked up by field name in
@@ -2252,6 +2288,8 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             }
         }
         self.current_arena_override = prev_arena_override;
+        // iris handoff-2 P9: restore the obs-parent context.
+        self.current_instantiation_parent = prev_obs_parent;
         // F.31 Phase 3b: restore params-init-parent context.
         // The placement-pinned children we instantiated above
         // have already stored their __parent_self values via
@@ -3161,31 +3199,6 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
-            // iris P4: LOCUS_BIRTH for pinned loci — their birth
-            // runs on the spawned thread, so the cooperative-path
-            // probe never sees them. Parent is unattributed here
-            // (the spawning locus's self isn't marshaled into the
-            // thread-main); v0 accepts the root-parent rendering.
-            {
-                let ptr_t2 =
-                    self.context.ptr_type(AddressSpace::default());
-                let obs_fn = self
-                    .module
-                    .get_function("lotus_obs_locus_birth")
-                    .expect("lotus_obs_locus_birth declared");
-                let tname = self.global_string(locus_name);
-                self.builder
-                    .build_call(
-                        obs_fn,
-                        &[
-                            thread_self.into(),
-                            tname.into(),
-                            ptr_t2.const_null().into(),
-                        ],
-                        &format!("{}.obs.birth.pinned", locus_name),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            }
             for kind in &["birth", "run"] {
                 if let Some(method) = info.methods.get(*kind) {
                     let skip = info.empty_lifecycle.contains(*kind);
@@ -3328,6 +3341,7 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             // session's fix for the locus .self struct alloca).
             let tid_alloca = self
                 .alloca_in_entry(i64_t.into(), &format!("{}.tid", locus_name))?;
+
             let thread_main_ptr =
                 thread_main.as_global_value().as_pointer_value();
             let null_attr = ptr_t.const_null();
@@ -3468,30 +3482,6 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
-        }
-        // iris P4: LOCUS_BIRTH probe (no-op unless LOTUS_OBS=1;
-        // one predictable branch inside the C fn otherwise).
-        // Parent = the instantiating locus's self when inside a
-        // lifecycle/method body, null from free fns.
-        {
-            let ptr_t = self.context.ptr_type(AddressSpace::default());
-            let obs_fn = self
-                .module
-                .get_function("lotus_obs_locus_birth")
-                .expect("lotus_obs_locus_birth declared");
-            let tname = self.global_string(locus_name);
-            let parent: inkwell::values::BasicValueEnum = self
-                .current_self
-                .as_ref()
-                .map(|cs| cs.self_ptr.into())
-                .unwrap_or_else(|| ptr_t.const_null().into());
-            self.builder
-                .build_call(
-                    obs_fn,
-                    &[self_ptr.into(), tname.into(), parent.into()],
-                    &format!("{}.obs.birth", locus_name),
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         if let Some(birth_closures_fn) = info.birth_closures_fn {
             let (parent_self, handler_ptr) =

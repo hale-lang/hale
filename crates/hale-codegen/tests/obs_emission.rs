@@ -154,6 +154,121 @@ fn emits_protocol_segment_with_matching_counters() {
     );
 }
 
+/// Walk a ring's slots, collecting decoded (ekind, w0-id, w1)
+/// tuples. Consumer-side: read head, scan the live window.
+fn drain_ring(
+    seg: &[u8],
+    rings_off: usize,
+    ring_slots: usize,
+    ring: usize,
+) -> Vec<(u32, u32, u64)> {
+    // ring descriptor: {u64 data_off, u64 head, ...} at rings_off
+    // + ring * 64 (sizeof rdesc). Descriptors precede data.
+    let rdesc = rings_off + ring * 64;
+    let data_off = read_u64(seg, rdesc) as usize;
+    let head = read_u64(seg, rdesc + 8) as usize;
+    let mut out = Vec::new();
+    let start = head.saturating_sub(ring_slots);
+    for i in start..head {
+        let slot = data_off + (i & (ring_slots - 1)) * 16;
+        let w0 = read_u64(seg, slot);
+        let w1 = read_u64(seg, slot + 8);
+        let id = (w0 & 0xFFFFF) as u32;
+        let ekind = ((w0 >> 20) & 0x1F) as u32;
+        out.push((ekind, id, w1));
+    }
+    out
+}
+
+#[test]
+fn births_carry_parentage_and_publishes_attribute_locus() {
+    let bin = build("attrib", DEMO);
+    let mut child = Command::new(&bin)
+        .env("LOTUS_OBS", "1")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    let pid = child.id();
+    let shm_path = format!("/dev/shm/hale-obs-{}", pid);
+    let mut seg_file = None;
+    for _ in 0..40 {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        if let Ok(f) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&shm_path)
+        {
+            seg_file = Some(f);
+            break;
+        }
+    }
+    let seg_file = seg_file.unwrap_or_else(|| {
+        let _ = child.kill();
+        panic!("segment never appeared")
+    });
+    let seg_len = seg_file.metadata().expect("meta").len() as usize;
+    let map = unsafe { libc_mmap(&seg_file, seg_len) };
+    let seg = unsafe { std::slice::from_raw_parts(map, seg_len) };
+    let control_off = read_u64(seg, 0x38) as usize;
+    let rings_off = read_u64(seg, 0x68) as usize;
+    let ring_count = read_u32(seg, 0x1C) as usize;
+    let ring_slots = read_u32(seg, 0x20) as usize;
+    // Attach BEFORE the publish burst (starts at t+400ms).
+    unsafe {
+        let oc = map.add(control_off) as *mut u32;
+        std::ptr::write_volatile(oc, 1);
+    }
+    let out = child.wait_with_output().expect("wait");
+    assert!(out.status.success(), "demo exited nonzero");
+
+    let mut births = 0usize;
+    let mut parented = 0usize;
+    let mut publishes = 0usize;
+    let mut attributed = 0usize;
+    for r in 0..ring_count {
+        for (ekind, _id, w1) in
+            drain_ring(seg, rings_off, ring_slots, r)
+        {
+            match ekind {
+                5 => {
+                    // LOCUS_BIRTH: w1 = parent:32 | type:20
+                    births += 1;
+                    if (w1 & 0xFFFFFFFF) != 0 {
+                        parented += 1;
+                    }
+                }
+                1 => {
+                    // BUS_PUBLISH: w1 = locus:20 | seq:44
+                    publishes += 1;
+                    if (w1 & 0xFFFFF) != 0 {
+                        attributed += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    // Sink + Pub (+ App itself) all birth; at least the two
+    // children must carry a non-root parent (P9).
+    assert!(births >= 2, "expected births, got {}", births);
+    assert!(
+        parented >= 2,
+        "births must carry parentage (P9): {}/{} parented",
+        parented,
+        births
+    );
+    // The publisher is the pinned Pub locus — its publishes must
+    // attribute it (P10).
+    assert!(publishes >= 1, "expected publishes, got {}", publishes);
+    assert!(
+        attributed >= 1,
+        "BUS_PUBLISH must attribute the publishing locus (P10):          {}/{} attributed",
+        attributed,
+        publishes
+    );
+}
+
 #[test]
 fn dormant_by_default() {
     let bin = build("dormant", DEMO);

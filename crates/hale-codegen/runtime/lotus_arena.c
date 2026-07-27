@@ -13961,8 +13961,25 @@ void lotus_bus_remote_fanout(const char *subject,
                 LOTUS_CTR_BUMP(e->ctr_send_failures);
                 lotus_bus_udp_log_sendto_error(e->subject, errno);
             } else {
-                LOTUS_CTR_BUMP(e->ctr_msgs_sent);
+                uint64_t useq = LOTUS_CTR_BUMP(e->ctr_msgs_sent);
                 LOTUS_CTR_ADD(e->ctr_bytes_sent, payload_size);
+                /* iris handoff-2 P5: NET_SEND for the UDP fanout —
+                 * this branch `continue`s before the stream-
+                 * transport probe below, so the fleet's multicast
+                 * publishes emitted no send-side records and the
+                 * seq matcher had nothing to pair (0 edges).
+                 * Mirrors the deliver-side placement. */
+                if (lotus_obs_net_send && lotus_obs_binding_register) {
+                    if (e->obs_binding_id == 0) {
+                        int64_t id = lotus_obs_binding_register(
+                            e->subject ? e->subject : "?", 1);
+                        e->obs_binding_id = (id > 0) ? id : -1;
+                    }
+                    if (e->obs_binding_id > 0) {
+                        lotus_obs_net_send(e->obs_binding_id, useq,
+                                           (uint64_t)payload_size);
+                    }
+                }
             }
             continue;
         }

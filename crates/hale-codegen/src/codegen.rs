@@ -411,6 +411,24 @@ fn bce_ifstmt_safe(ifs: &IfStmt, vkey: &BceVecKey, var: &str) -> bool {
 
 /// True iff evaluating `expr` cannot mutate vec `vkey` (nor pass
 /// `self`/V by-reference somewhere that could). Default-bail.
+/// iris handoff-2 P6: coarse, stable field-type tags for the
+/// canonical topic shape string. Deliberately name-free for
+/// nested user types ("struct") so the hash never depends on a
+/// declaring binary's local type names.
+fn obs_shape_tag(ty: &CodegenTy) -> &'static str {
+    match ty {
+        CodegenTy::Int => "i",
+        CodegenTy::Float => "f",
+        CodegenTy::Bool => "b",
+        CodegenTy::Decimal => "d",
+        CodegenTy::Time => "t",
+        CodegenTy::Duration => "u",
+        CodegenTy::String | CodegenTy::StringView => "s",
+        CodegenTy::Bytes | CodegenTy::BytesView => "y",
+        _ => "struct",
+    }
+}
+
 fn bce_expr_safe(expr: &Expr, vkey: &BceVecKey, var: &str) -> bool {
     // A bare occurrence of V anywhere OTHER than as the receiver of a
     // read-only method call (handled in `bce_call_safe`, which does
@@ -1173,6 +1191,7 @@ pub fn build_executable_with_options(
         is_wasm,
         wasm_exports: Vec::new(),
         native_exports: Vec::new(),
+        current_instantiation_parent: None,
         instantiating_persistent_singleton: false,
         cell_owned_clone: false,
         program: &merged,
@@ -2779,6 +2798,13 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// through the internalize+globaldce prepass (they're exactly
     /// the symbols an external C caller links by name).
     pub(crate) native_exports: Vec<String>,
+    /// iris handoff-2 P9: the self pointer of the locus currently
+    /// being INSTANTIATED, so children created during its
+    /// param-init register LOCUS_BIRTH with real parentage
+    /// (current_self is None in that context — param defaults
+    /// lower in the instantiating fn's scope).
+    pub(crate) current_instantiation_parent:
+        Option<PointerValue<'ctx>>,
     /// WASM entry-inversion: set while `_hale_start` instantiates the
     /// `@export locus` singleton, so `lower_locus_instantiation`
     /// allocates its struct in the persistent program arena (not a
@@ -8097,6 +8123,80 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // reachable from `main`) would otherwise survive gc-sections and
         // become host imports. The browser bus is in-memory / WebSocket-
         // adapter-driven (a later slice), never cross-process sockets.
+        // iris handoff-2 P6: register every declared topic's
+        // canonical shape (subject + field structure, never the
+        // declaring type's name) before any traffic — two
+        // binaries sharing a subject under different local topic
+        // names then hash identically and fuse into one manifest
+        // row on the consumer. Cheap: one strdup'd table entry
+        // per topic, consulted lazily if/when observation
+        // initializes.
+        if !self.is_wasm {
+            let shapes: Vec<(String, String)> = self
+                .program
+                .items
+                .iter()
+                .filter_map(|it| match it {
+                    TopDecl::Topic(t) => {
+                        let subj = t
+                            .subject
+                            .clone()
+                            .unwrap_or_else(|| t.name.name.clone());
+                        let shape = match &t.payload {
+                            TypeExpr::Named { path, generic_args, .. }
+                                if path.segments.len() == 1
+                                    && generic_args.is_empty() =>
+                            {
+                                self.user_types
+                                    .get(&path.segments[0].name)
+                                    .map(|ti| {
+                                        ti.field_order
+                                            .iter()
+                                            .filter_map(|f| {
+                                                ti.fields.get(f).map(
+                                                    |(_, fty)| {
+                                                        format!(
+                                                            "{}:{}",
+                                                            f,
+                                                            obs_shape_tag(
+                                                                fty
+                                                            )
+                                                        )
+                                                    },
+                                                )
+                                            })
+                                            .collect::<Vec<_>>()
+                                            .join(";")
+                                    })
+                                    .unwrap_or_default()
+                            }
+                            _ => String::new(),
+                        };
+                        Some((subj, shape))
+                    }
+                    _ => None,
+                })
+                .collect();
+            if !shapes.is_empty() {
+                let shape_fn = self
+                    .module
+                    .get_function("lotus_obs_topic_shape")
+                    .expect("lotus_obs_topic_shape declared");
+                for (subj, shape) in shapes {
+                    let sg = self.global_string(&subj);
+                    let hg = self.global_string(&shape);
+                    self.builder
+                        .build_call(
+                            shape_fn,
+                            &[sg.into(), hg.into()],
+                            "obs.topic_shape",
+                        )
+                        .map_err(|e| {
+                            CodegenError::LlvmEmit(e.to_string())
+                        })?;
+                }
+            }
+        }
         if !self.is_wasm {
             let load_cfg_fn = self
                 .module
