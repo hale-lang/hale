@@ -270,8 +270,20 @@ word1 (u64):  ekind-dependent (seq, aux, full timestamp, ...)
                       in-process seq wraps at ~17T msgs/topic.
   2  BUS_DELIVER      word1 = locus:20 | seq:44 (consumer instance;
                       same packing and 0-means-unattributed rule)
-  3  NET_SEND         word1 = binding_id:16 | seq:48
-  4  NET_DELIVER      word1 = binding_id:16 | seq:48
+  3  NET_SEND         word1 = origin_id:16 | seq:48
+  4  NET_DELIVER      word1 = origin_id:16 | seq:48
+                      Amended 2026-07-27 (field finding): the
+                      pair is the SENDER's — origin_id is the
+                      sending process's binding/stream id and
+                      seq its per-(origin, subject) send
+                      counter, carried ON THE WIRE and echoed
+                      verbatim by the receiver's NET_DELIVER.
+                      A receiver-local receive counter can
+                      never match under multicast (N senders
+                      sum into one count) and cannot show
+                      loss; the wire seq's gaps ARE the loss.
+                      Consumers match deliveries to sends on
+                      (topic, origin_id, seq).
   5  LOCUS_BIRTH      id = instance; word1 = parent:32 | type:20
   6  LOCUS_DISSOLVE   id = instance; word1 = reason enum
   7  RESTART          id = instance; word1 = attempt:16 | policy:8
