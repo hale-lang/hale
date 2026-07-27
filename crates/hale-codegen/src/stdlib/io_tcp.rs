@@ -129,19 +129,24 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
             .module
             .get_function("lotus_tcp_listen_socket")
             .expect("lotus_tcp_listen_socket declared");
-        let port_i32 = self
+        // Crumb batch-2 item 2: the C primitive takes uint16_t —
+        // truncating to i32 here mismatched the declared (ptr, i16)
+        // signature. The debug-info verifier caught it; without
+        // debug info LLVM emitted the mismatched call silently
+        // (same failure family as the batch-1 dominance bug).
+        let port_i16 = self
             .builder
             .build_int_truncate(
                 port_val.into_int_value(),
-                self.context.i32_type(),
-                "listen.port.i32",
+                self.context.i16_type(),
+                "listen.port.i16",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let fd_i32 = self
             .builder
             .build_call(
                 listen_fn,
-                &[host_val.into(), port_i32.into()],
+                &[host_val.into(), port_i16.into()],
                 "listen.fd",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?

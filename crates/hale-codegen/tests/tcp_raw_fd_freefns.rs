@@ -228,3 +228,37 @@ fn public_send_fd_roundtrip() {
     );
     server.join().expect("server thread");
 }
+
+/// Crumb batch-2 item 2: the DIRECT user-code path-call of
+/// `listen_socket` truncated the port to i32 against the
+/// declared (ptr, i16) C signature — a debug-info verifier
+/// failure (and silently-mismatched IR without debug info).
+/// The stdlib's own Listener path was unaffected, which is why
+/// only direct calls tripped it.
+#[test]
+fn direct_listen_socket_path_call_builds_and_runs() {
+    let port = pick_free_port();
+    let src = format!(
+        r#"
+        fn main() {{
+            let lfd = std::io::tcp::listen_socket("127.0.0.1", {port}) or -1;
+            if lfd < 0 {{
+                println("BIND FAILED");
+                std::process::exit(1);
+            }}
+            println("listening");
+            std::io::tcp::close_fd(lfd);
+        }}
+    "#
+    );
+    let bin = build("direct_listen", &src);
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("listening"),
+        "stdout: {:?}\nstderr: {:?}",
+        stdout,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
