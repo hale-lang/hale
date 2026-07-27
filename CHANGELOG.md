@@ -8,6 +8,21 @@ behavior.
 
 ## Unreleased
 
+- **Native observation emission (iris handoff P4).** `LOTUS_OBS=1`
+  makes any hale binary publish an iris-protocol observation
+  segment and emit records from the runtime's own choke points —
+  BUS_PUBLISH/BUS_DELIVER at dispatch, NET_SEND/NET_DELIVER with
+  per-binding seqs at the transport layer, LOCUS_BIRTH/DISSOLVE/
+  RESTART from the lifecycle paths — lighting up a whole deployed
+  stack with zero app changes. Dormant = one branch per probe;
+  observed-but-unattached = counters only; SPSC ring per emitting
+  thread; live-locus birth replay on observer attach (late-attach
+  tree reconstruction). Verified end-to-end against iris's own
+  `peek` consumer (pub=dlv 1:1, manifest-resolved names, births
+  incl. pinned loci). spec/runtime.md § "Native observation
+  emission"; `obs_emission.rs` pins the segment contract +
+  dormant default.
+
 - **`@form(vec).set` no longer leaks or slows down (iris handoff
   P1).** Vec elements are pointer-storage; `set` deep-copied the
   new element into the form owner's program-lifetime arena but

@@ -1327,6 +1327,35 @@ zero_copy binding produces.
   the runtime's only value-error escape valve. See
   `spec/semantics.md` § "Process exit".
 
+### Native observation emission (iris P4, 2026-07-27)
+
+With `LOTUS_OBS=1` the runtime publishes an iris-protocol
+observation segment (`/hale-obs-<pid>` + registration file per
+PROTOCOL v0.1 — the contract lives in the iris-observer repo;
+layouts mirrored from its reference implementation) and the
+runtime's own choke points emit records: `BUS_PUBLISH` /
+`BUS_DELIVER` at every dispatch flavor (dynamic, static-devirt,
+cross-thread wire; deliver is enqueue-time at v0),
+`NET_SEND` / `NET_DELIVER` at the transport fanout/reader with
+per-binding monotonic seqs (what iris seq-matches into
+cross-process edges), `LOCUS_BIRTH` / `LOCUS_DISSOLVE` (both
+cooperative and pinned lifecycle paths; dissolve rides the
+`emit_locus_arena_destroy` chokepoint) and `RESTART` at
+reconnect. Cost contract: env unset = one predictable branch
+per probe (`g_obs_state`); enabled-but-unobserved
+(`observer_count == 0`) = counters only, no ring writes; ring
+emission is SPSC via the #247 primitive with one ring per
+emitting thread (TLS assignment; overflow threads count into
+`ring_drops_total`). On the observer-count 0→1 rising edge the
+live-locus table replays as `LOCUS_BIRTH` records so a
+late-attaching observer reconstructs the tree. Knobs:
+`LOTUS_OBS_RINGS` (default 8), `LOTUS_OBS_SLOTS` (default
+4096). v0 notes: manifest ids are registration-order; publisher
+locus attribution on BUS_PUBLISH is unattributed (0); pinned
+births render parent=root. `lotus_obs.c` is its own TU; the
+arena TU's probes are weak-guarded so helper binaries compiling
+`lotus_arena.c` alone still link.
+
 ### Time
 
 - **Monotonic + wall-clock.** `time::now()` and

@@ -3161,6 +3161,31 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
+            // iris P4: LOCUS_BIRTH for pinned loci — their birth
+            // runs on the spawned thread, so the cooperative-path
+            // probe never sees them. Parent is unattributed here
+            // (the spawning locus's self isn't marshaled into the
+            // thread-main); v0 accepts the root-parent rendering.
+            {
+                let ptr_t2 =
+                    self.context.ptr_type(AddressSpace::default());
+                let obs_fn = self
+                    .module
+                    .get_function("lotus_obs_locus_birth")
+                    .expect("lotus_obs_locus_birth declared");
+                let tname = self.global_string(locus_name);
+                self.builder
+                    .build_call(
+                        obs_fn,
+                        &[
+                            thread_self.into(),
+                            tname.into(),
+                            ptr_t2.const_null().into(),
+                        ],
+                        &format!("{}.obs.birth.pinned", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
             for kind in &["birth", "run"] {
                 if let Some(method) = info.methods.get(*kind) {
                     let skip = info.empty_lifecycle.contains(*kind);
