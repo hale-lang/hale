@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>iris — live fused view</title>
+<style>
+  :root { --bg: #0b0e14; --fg: #a8b3c4; --dim: #5c6773; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 13px/1.45 ui-monospace, "SF Mono", monospace; overflow: hidden; }
+  #c { display: block; width: 100vw; height: 100vh; }
+  .panel { position: fixed; padding: 10px 14px; background: rgba(11,14,20,.82);
+           border: 1px solid #1c2430; border-radius: 8px; backdrop-filter: blur(4px); }
+  #hud { top: 12px; left: 14px; }
+  #hud b { color: #e6edf3; font-weight: 600; }
+  #topics { top: 12px; right: 14px; text-align: right; }
+  #events { bottom: 12px; left: 14px; max-width: 46em; color: var(--dim); }
+  #events div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .live { color: #7ee787; } .dead { color: #f85149; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud" class="panel">iris · <span id="conn" class="dead">connecting…</span><br><span id="stats"></span></div>
+<div id="topics" class="panel"></div>
+<div id="events" class="panel"></div>
+<script src="app.js"></script>
+</body>
+</html>
