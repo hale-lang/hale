@@ -260,8 +260,16 @@ word1 (u64):  ekind-dependent (seq, aux, full timestamp, ...)
 
   ```
   0  EPOCH            word1 = full CLOCK_MONOTONIC ns
-  1  BUS_PUBLISH      word1 = in-process seq (per topic)
-  2  BUS_DELIVER      word1 = seq of delivered msg
+  1  BUS_PUBLISH      word1 = locus:20 | seq:44 (publisher instance;
+                      0 = unattributed — library emitters without
+                      locus context). Amended 2026-07-27: locus
+                      attribution packed into the high bits so
+                      consumers can render per-locus activity
+                      (which petal is emitting/reacting); mirrors
+                      NET_SEND's binding:16|seq:48 packing. 44-bit
+                      in-process seq wraps at ~17T msgs/topic.
+  2  BUS_DELIVER      word1 = locus:20 | seq:44 (consumer instance;
+                      same packing and 0-means-unattributed rule)
   3  NET_SEND         word1 = binding_id:16 | seq:48
   4  NET_DELIVER      word1 = binding_id:16 | seq:48
   5  LOCUS_BIRTH      id = instance; word1 = parent:32 | type:20

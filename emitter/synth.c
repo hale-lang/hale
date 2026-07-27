@@ -203,7 +203,7 @@ static void consume_order(ring_ctx *r, uint64_t seq, uint32_t sz) {
   if (topic_mode(T_ORDERS_NEW) >= OBS_MODE_COUNTERS)
     atomic_fetch_add_explicit(&CNT[cnt_topic[T_ORDERS_NEW]].c[OBS_CT_DELIVERED], 1, memory_order_relaxed);
   if (obs && topic_mode(T_ORDERS_NEW) >= OBS_MODE_PACKED)
-    ring_emit(r, T_ORDERS_NEW, OBS_EK_BUS_DELIVER, sz, 0);
+    ring_emit(r, T_ORDERS_NEW, OBS_EK_BUS_DELIVER, sz, obs_bus_w1(LI_ROUTER, seq));
 
   uint32_t w = (uint32_t)(xorshift(&r->rng) % N_WORKERS);
   if (topic_mode(T_RISK_CHECK) >= OBS_MODE_COUNTERS) {
@@ -211,17 +211,17 @@ static void consume_order(ring_ctx *r, uint64_t seq, uint32_t sz) {
     atomic_fetch_add_explicit(&CNT[cnt_topic[T_RISK_CHECK]].c[OBS_CT_DELIVERED], 1, memory_order_relaxed);
   }
   if (obs && topic_mode(T_RISK_CHECK) >= OBS_MODE_PACKED) {
-    ring_emit(r, T_RISK_CHECK, OBS_EK_BUS_PUBLISH, 4, 0);
+    ring_emit(r, T_RISK_CHECK, OBS_EK_BUS_PUBLISH, 4, obs_bus_w1(LI_ROUTER, seq));
     atomic_store_explicit(&r->d->tag_b, workers[w], memory_order_relaxed);
-    ring_emit(r, T_RISK_CHECK, OBS_EK_BUS_DELIVER, 4, 0);
+    ring_emit(r, T_RISK_CHECK, OBS_EK_BUS_DELIVER, 4, obs_bus_w1(workers[w], seq));
   }
   if (topic_mode(T_ORDERS_FILL) >= OBS_MODE_COUNTERS) {
     atomic_fetch_add_explicit(&CNT[cnt_topic[T_ORDERS_FILL]].c[OBS_CT_PUBLISHED], 1, memory_order_relaxed);
     atomic_fetch_add_explicit(&CNT[cnt_topic[T_ORDERS_FILL]].c[OBS_CT_DELIVERED], 1, memory_order_relaxed);
   }
   if (obs && topic_mode(T_ORDERS_FILL) >= OBS_MODE_PACKED) {
-    ring_emit(r, T_ORDERS_FILL, OBS_EK_BUS_PUBLISH, 5, 0);
-    ring_emit(r, T_ORDERS_FILL, OBS_EK_BUS_DELIVER, 5, 0);
+    ring_emit(r, T_ORDERS_FILL, OBS_EK_BUS_PUBLISH, 5, obs_bus_w1(workers[w], seq));
+    ring_emit(r, T_ORDERS_FILL, OBS_EK_BUS_DELIVER, 5, obs_bus_w1(LI_ROUTER, seq));
   }
   atomic_store_explicit(&r->d->tag_b, 0, memory_order_relaxed);
 }
@@ -240,7 +240,7 @@ static void simulate_order(ring_ctx *r) {
     atomic_fetch_add_explicit(&CNT[cnt_topic[T_ORDERS_NEW]].c[OBS_CT_BYTES], 1u << sz, memory_order_relaxed);
   }
   if (obs && topic_mode(T_ORDERS_NEW) >= OBS_MODE_PACKED)
-    ring_emit(r, T_ORDERS_NEW, OBS_EK_BUS_PUBLISH, sz, 0);
+    ring_emit(r, T_ORDERS_NEW, OBS_EK_BUS_PUBLISH, sz, obs_bus_w1(LI_PRODUCER, 0));
 
   /* networked hop */
   uint64_t seq = atomic_fetch_add(&net_seq, 1);

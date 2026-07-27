@@ -200,6 +200,15 @@ static inline uint64_t obs_birth_w1(uint32_t parent, uint32_t type_id) {
 static inline uint32_t obs_birth_parent(uint64_t w1) { return (uint32_t)(w1 & 0xFFFFFFFFu); }
 static inline uint32_t obs_birth_type(uint64_t w1)   { return (uint32_t)((w1 >> 32) & 0xFFFFFu); }
 
+/* BUS_PUBLISH / BUS_DELIVER: locus:20 | seq:44 (2026-07-27
+ * amendment -- per-locus activity attribution; locus 0 means
+ * unattributed). */
+static inline uint64_t obs_bus_w1(uint32_t locus, uint64_t seq) {
+  return ((uint64_t)(locus & 0xFFFFFu) << 44) | (seq & 0xFFFFFFFFFFFULL);
+}
+static inline uint32_t obs_bus_locus(uint64_t w1) { return (uint32_t)((w1 >> 44) & 0xFFFFFu); }
+static inline uint64_t obs_bus_seq(uint64_t w1)   { return w1 & 0xFFFFFFFFFFFULL; }
+
 typedef struct {
   uint64_t word0;
   uint64_t word1;
