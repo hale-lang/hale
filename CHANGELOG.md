@@ -6,7 +6,7 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.11.13 — C→Hale re-entry, iris observation field-hardening, Crumb bug fixes (2026-07-27)
 
 - **Native observation emission: field-report hardening (iris
   handoff 2).** Six fixes from a ~16-binary production fleet run:
