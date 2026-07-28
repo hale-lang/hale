@@ -6,7 +6,7 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.11.17 — publish hot path back to baseline (obs note branch-gated) (2026-07-28)
 
 - **perf: publish hot path back to baseline — the obs
   publisher-attribution note is now branch-gated.** v0.11.13's
