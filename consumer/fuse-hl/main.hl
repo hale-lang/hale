@@ -44,7 +44,7 @@ const CG_RECORDS_TOTAL: Int = 2;
 // reference uses 65536; 16384 covers the same drain-interleave
 // spread at our poll cadence with 1/4 the memory.
 const WINDOW: Int = 16384;
-const NET_SLOTS: Int = 8;
+const NET_SLOTS: Int = 32;
 // pending-deliver windows: per (net topic, receiver seg), for
 // delivers that arrive before their send in drain interleave.
 // Sends live in the shared per-topic window and are NOT cleared
@@ -69,7 +69,7 @@ type LocusRow { seg: Int = -1; inst: Int = 0; tname: String = ""; parent: Int = 
 type TopicRow { key: String = ""; name: String = ""; shape: String = ""; slot: Int = -1; }
 type TopicSeg { topic: Int = -1; seg: Int = -1; local_id: Int = -1; line: Int = -1; sends: Int = 0; delivers: Int = 0; }
 type EdgeRow { topic: Int = -1; from_seg: Int = -1; to_seg: Int = -1; matched: Int = 0; lat_sum: Int = 0; lat_max: Int = 0; }
-type SeqEnt { seq: Int = 0; ts: Int = 0; seg: Int = -1; kind: Int = 0; }
+type SeqEnt { seq: Int = 0; ts: Int = 0; seg: Int = -1; kind: Int = 0; origin: Int = 0; }
 type SnapEntry { key: String = ""; val: String = ""; }
 type FdEntry { key: String = ""; fd: Int = -1; }
 
@@ -400,7 +400,7 @@ locus Cycle {
         return NET_SLOTS * WINDOW + (slot * MAX_SEGS + seg) * PWINDOW;
     }
 
-    fn net_event(si: Int, tsi: Int, is_send: Bool, ts: Int, seq: Int) {
+    fn net_event(si: Int, tsi: Int, is_send: Bool, ts: Int, seq: Int, origin: Int) {
         let mut tseg = self.tsegs.get(tsi) or TopicSeg { };
         if is_send { tseg.sends = tseg.sends + 1; }
         else { tseg.delivers = tseg.delivers + 1; }
@@ -408,21 +408,21 @@ locus Cycle {
 
         let slot = self.net_slot_for(tseg.topic);
         if slot < 0 { return; }
-        let sidx = slot * WINDOW + seq % WINDOW;
+        let sidx = slot * WINDOW + (seq + origin * 7919) % WINDOW;
 
         if is_send {
             // store (overwrite on window wrap); kept after matches
             // so every listener can pair against it
-            self.inflight.set(sidx, SeqEnt { seq: seq, ts: ts, seg: si, kind: 1 }) or discard;
+            self.inflight.set(sidx, SeqEnt { seq: seq, ts: ts, seg: si, kind: 1, origin: origin }) or discard;
             // sweep pending delivers parked by any other seg
             let mut rs = 0;
             while rs < self.segs.len() {
                 if rs != si {
                     if rs < MAX_SEGS {
-                        let pidx = self.pending_base(slot, rs) + seq % PWINDOW;
+                        let pidx = self.pending_base(slot, rs) + (seq + origin * 7919) % PWINDOW;
                         let pe = self.inflight.get(pidx) or SeqEnt { };
                         if pe.kind == 2 {
-                            if pe.seq == seq {
+                            if pe.seq == seq && pe.origin == origin {
                                 let mut lat = 0;
                                 if pe.ts > ts { lat = pe.ts - ts; }
                                 self.edge_bump(tseg.topic, si, rs, lat);
@@ -436,7 +436,7 @@ locus Cycle {
         } else {
             let e = self.inflight.get(sidx) or SeqEnt { };
             if e.kind == 1 {
-                if e.seq == seq {
+                if e.seq == seq && e.origin == origin {
                     if e.seg != si {
                         let mut lat = 0;
                         if ts > e.ts { lat = ts - e.ts; }
@@ -447,8 +447,8 @@ locus Cycle {
             }
             // deliver-before-send: park in this seg's pending window
             if si < MAX_SEGS {
-                let pidx = self.pending_base(slot, si) + seq % PWINDOW;
-                self.inflight.set(pidx, SeqEnt { seq: seq, ts: ts, seg: si, kind: 2 }) or discard;
+                let pidx = self.pending_base(slot, si) + (seq + origin * 7919) % PWINDOW;
+                self.inflight.set(pidx, SeqEnt { seq: seq, ts: ts, seg: si, kind: 2, origin: origin }) or discard;
             }
         }
     }
@@ -484,11 +484,15 @@ locus Cycle {
         }
         if k == EK_NET_SEND {
             let tsi = self.tseg_index(si, id);
-            if tsi >= 0 { self.net_event(si, tsi, true, ts, (w1 >> 16) & 281474976710655); }
+            if tsi >= 0 {
+                self.net_event(si, tsi, true, ts, (w1 >> 16) & 281474976710655, w1 & 65535);
+            }
         }
         if k == EK_NET_DELIVER {
             let tsi = self.tseg_index(si, id);
-            if tsi >= 0 { self.net_event(si, tsi, false, ts, (w1 >> 16) & 281474976710655); }
+            if tsi >= 0 {
+                self.net_event(si, tsi, false, ts, (w1 >> 16) & 281474976710655, w1 & 65535);
+            }
         }
         if k == EK_LOCUS_BIRTH {
             let btype = (w1 >> 32) & 1048575;
