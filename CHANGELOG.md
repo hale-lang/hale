@@ -6,6 +6,56 @@ behavior.
 
 ---
 
+## v0.11.15 — iris observation edge-emission fixes (topic id, publish counter, wire opt-in) (2026-07-28)
+
+Three regressions the iris fleet caught in the v0.11.14 field test
+(handoff 4), plus the acceptance test that would have caught them.
+
+- **NET records carry the topic id (P14).** `NET_SEND` /
+  `NET_DELIVER` hardcoded their record id field to 0. For those
+  record kinds the id field IS the topic id — the consumer's join
+  key onto the fused topic row — so no NET event could be
+  associated with any topic and cross-process edges were
+  structurally impossible regardless of `(origin, seq)`
+  correctness. The probes now resolve the id from the subject (in
+  hand at every emit site); the per-binding counter line still
+  keys off the binding id.
+
+- **The published counter is no longer attribution-gated (P15).**
+  handoff-3's consume-once publisher-TLS gated both the record AND
+  the published *counter* behind a TLS that a keyed or otherwise
+  unattributed publish never delivered to the probe — zeroing the
+  fleet's published counters (and every `BUS_PUBLISH`). Counters
+  are the dormant-mode contract and must count every genuine
+  publish. Inbound wire re-dispatch is now excluded by NEGATIVE
+  marking (the reader brackets its re-dispatch and the probe
+  consumes the mark) instead of by requiring a positive TLS;
+  genuine publishes are the unmarked default and always count,
+  with best-effort locus attribution. The **keyed** dispatch
+  flavors, which had no publish OR deliver probe at all (a routed
+  market-data-style feed recorded zero of both), now emit both.
+
+- **`LOTUS_OBS` never alters the wire; edges opt in with
+  `LOTUS_OBS_WIRE=1` (P16).** The `(origin, seq)` edge header is a
+  wire-format change a pre-header receiver cannot parse — an
+  observed sender silently dropped every datagram at a stale peer,
+  partitioning a mixed-version fleet invisibly. The UDP
+  self-describing header and the framed-transport origin word now
+  ride the wire ONLY under `LOTUS_OBS_WIRE=1`; with `LOTUS_OBS`
+  alone the wire is byte-for-byte identical to an unobserved run.
+  Cross-process edges require `LOTUS_OBS_WIRE=1` fleet-wide;
+  counters and local records need only `LOTUS_OBS=1`.
+
+- **Field-shaped acceptance test.** `obs_fleet_contract.rs` runs
+  three processes over a real UDP multicast group and asserts the
+  full consumer contract in one pass — nonzero publish AND deliver
+  counters, NET records with a nonzero topic id + origin,
+  cross-process `(origin, seq)` pairs, and `BUS_PUBLISH` attributed
+  to a real birth instance — plus a keyed-publish probe test and a
+  pristine-wire test (an unobserving receiver still receives from a
+  `LOTUS_OBS=1` sender). Prior obs tests were 2-process loopback
+  unicast, which is why the multicast/keyed/wire gaps slipped.
+
 ## v0.11.14 — iris observation NET seq pairing (edges), transport-branch parity (2026-07-28)
 
 - **Native observation: NET (origin,seq) on the transport branch

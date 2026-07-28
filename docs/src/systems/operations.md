@@ -237,12 +237,20 @@ under `$XDG_RUNTIME_DIR/hale/` (or `/tmp/hale-obs/`). The wire
 layout is the iris observation protocol — the canonical contract
 is `spec/runtime.md` § *Native observation emission*; the iris
 project is the reference consumer. Knobs: `LOTUS_OBS_RINGS`
-(default 8), `LOTUS_OBS_SLOTS` (default 4096). Cross-process
-edge pairing needs a framed transport (`udp://` carries the
-`(origin, seq)` header inline; `unix://` under
-`LOTUS_UNIX_STREAM=1` carries it in the frame header) — a
-non-framed unicast transport falls back to a local delivery
-count.
+(default 8), `LOTUS_OBS_SLOTS` (default 4096).
+
+**Cross-process edges opt into the wire.** The `(origin, seq)`
+key that pairs a send with its deliveries travels *in the wire
+message* (a self-describing header on `udp://`; the frame header
+on `unix://` under `LOTUS_UNIX_STREAM=1`). That is a wire-format
+change a stale peer running an older binary cannot parse, so
+`LOTUS_OBS=1` **alone never touches the wire** — it gives you
+counters and single-process records with the wire byte-for-byte
+unchanged. To get cross-process edges, set `LOTUS_OBS_WIRE=1`
+across the whole fleet; every node must be on a build that
+understands the header. (A non-framed unicast transport carries
+no seq and falls back to a local delivery count even with the
+wire enabled.)
 
 ## Debugging with the native toolchain
 

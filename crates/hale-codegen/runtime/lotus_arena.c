@@ -5565,14 +5565,21 @@ void lotus_obs_bus_deliver(const char *subject, void *subscriber_self,
 int64_t lotus_obs_binding_register(const char *subject,
                                    int64_t transport_kind)
     __attribute__((weak));
-void lotus_obs_net_send(int64_t binding_id, uint64_t origin,
-                        uint64_t seq, uint64_t bytes)
+/* iris handoff-4 P14: subject leads so the probe can resolve the
+ * record's topic id (the consumer join key); binding_id drives the
+ * per-binding counter line only. */
+void lotus_obs_net_send(const char *subject, int64_t binding_id,
+                        uint64_t origin, uint64_t seq, uint64_t bytes)
     __attribute__((weak));
-void lotus_obs_net_deliver(int64_t binding_id, uint64_t origin,
-                           uint64_t seq, uint64_t bytes)
+void lotus_obs_net_deliver(const char *subject, int64_t binding_id,
+                           uint64_t origin, uint64_t seq, uint64_t bytes)
     __attribute__((weak));
 uint64_t lotus_obs_origin(void) __attribute__((weak));
 int lotus_obs_active(void) __attribute__((weak));
+/* iris handoff-4 P15: brackets the reader's inbound-wire re-dispatch
+ * so the published counter isn't inflated by deliveries. */
+void lotus_obs_begin_redispatch(void) __attribute__((weak));
+void lotus_obs_end_redispatch(void) __attribute__((weak));
 /* iris handoff-3 P11: observation seq header on the UDP wire.
  * Self-describing so a headerless (unobserved / older) sender is
  * still delivered correctly — the reader checks the magic and a
@@ -5582,6 +5589,24 @@ int lotus_obs_active(void) __attribute__((weak));
  * runs and non-Hale peers are byte-for-byte unchanged. */
 #define LOTUS_OBS_WIRE_MAGIC 0x48414c452d4f4253ULL /* "HALE-OBS" LE */
 void lotus_obs_restart(const char *subject) __attribute__((weak));
+
+/* iris handoff-4 P16: the observation wire header (the udp magic
+ * prefix and the framed-transport origin-widening) is a WIRE FORMAT
+ * change a pre-header receiver cannot parse — an observed sender would
+ * silently drop every datagram at a stale peer, partitioning the fleet
+ * invisibly. So LOTUS_OBS alone MUST NOT touch the wire: the (origin,
+ * seq) edge identity rides the wire only when the operator opts the
+ * whole fleet in with LOTUS_OBS_WIRE=1 (documented as a prerequisite
+ * for cross-process edges). Counters and local records are unaffected
+ * — they never touch the wire. Cached; the env is process-static. */
+static int lotus_obs_wire_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *s = getenv("LOTUS_OBS_WIRE");
+        cached = (s && s[0] && s[0] != '0') ? 1 : 0;
+    }
+    return cached;
+}
 
 /* GH #255 phase 2 — forward decls: the bound-enforcement hooks
  * are defined with the registry machinery further down. */
@@ -8370,6 +8395,15 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
                                      uint64_t key_lo,
                                      uint64_t key_hi) {
     if (!subject) return;
+    /* iris handoff-4 P15: the keyed dispatch flavors had NO publish
+     * probe (the non-keyed local/wire/static paths each did), so a
+     * keyed topic — the common shape for market-data-style routed
+     * feeds — recorded zero BUS_PUBLISH and a zero published counter.
+     * Emit here (publisher-only path; never a reader re-dispatch
+     * target) exactly as the non-keyed local fanout does. */
+    if (lotus_obs_bus_publish) {
+        lotus_obs_bus_publish(subject, NULL, (uint64_t)payload_size);
+    }
     int matched_specific = 0;
     size_t specific_subs_on_subject = 0;
     size_t unkeyed_subs_on_subject = 0;
@@ -8401,6 +8435,13 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
             lotus_bus_queue_enqueue(queue, e->handler, e->self_ptr,
                                     payload, payload_size);
         }
+        /* iris handoff-4 P15: BUS_DELIVER per matched keyed target
+         * (sibling of the non-keyed local_dispatch probe — the keyed
+         * flavor had none, so keyed deliveries never counted). */
+        if (lotus_obs_bus_deliver) {
+            lotus_obs_bus_deliver(subject, e->self_ptr,
+                                  (uint64_t)payload_size);
+        }
     }
     /* Phase 3 v0.2 hook: when no specific-key match fired AND
      * any fallback subscribers exist for this subject, fire
@@ -8422,6 +8463,10 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
             } else if (queue) {
                 lotus_bus_queue_enqueue(queue, e->handler, e->self_ptr,
                                         payload, payload_size);
+            }
+            if (lotus_obs_bus_deliver) {
+                lotus_obs_bus_deliver(subject, e->self_ptr,
+                                      (uint64_t)payload_size);
             }
         }
         if (lotus_bus_log_unmatched_enabled()) {
@@ -10129,7 +10174,13 @@ int lotus_transport_send(lotus_transport_t *t,
          * per-connection frame counter (first = 1). Both ends are
          * the same build after a uniform rebuild, so widening the
          * seq word is safe; gap accounting masks to the low 48. */
-        uint64_t o = lotus_obs_origin ? lotus_obs_origin() : 0;
+        /* P16: the origin rides the high 16 bits only when the fleet
+         * opted into the obs wire (LOTUS_OBS_WIRE=1). Otherwise o=0 and
+         * hdr[1] is seq-only — byte-identical to the pre-obs framing, so
+         * a stale peer is unaffected. The receiver always peels the high
+         * bits (reads 0 here), so this is symmetric either way. */
+        uint64_t o = (lotus_obs_origin && lotus_obs_wire_enabled())
+                         ? lotus_obs_origin() : 0;
         ++t->send_seq;
         hdr[1] = (t->send_seq & 0xFFFFFFFFFFFFULL) | ((o & 0xFFFFULL) << 48);
         if (lotus__transport_write_full(t->conn_fd, hdr, sizeof(hdr)) != 0
@@ -13027,9 +13078,14 @@ static void lotus_bus_unix_serve(lotus_bus_remote_entry_t *entry) {
             ssize_t struct_size = deserialize(
                 wire_buf, (size_t)n, struct_buf, sizeof(struct_buf));
             if (struct_size <= 0) continue;
+            /* iris handoff-4 P15: mark the inbound re-dispatch so the
+             * BUS_PUBLISH probe at the top of local_dispatch counts it
+             * as a delivery, not a publish. */
+            if (lotus_obs_begin_redispatch) lotus_obs_begin_redispatch();
             lotus_bus_local_dispatch(g_bus_queue_for_remote,
                                      entry->subject,
                                      struct_buf, (size_t)struct_size);
+            if (lotus_obs_end_redispatch) lotus_obs_end_redispatch();
             uint64_t dseq = LOTUS_CTR_BUMP(entry->ctr_msgs_delivered);
             LOTUS_CTR_ADD(entry->ctr_bytes_delivered, n);
             entry->ctr_seq_gaps = t->seq_gaps;   /* framed mode */
@@ -13053,6 +13109,7 @@ static void lotus_bus_unix_serve(lotus_bus_remote_entry_t *entry) {
                     uint64_t ws =
                         lotus_transport_recv_seq(entry->transport);
                     lotus_obs_net_deliver(
+                        entry->subject ? entry->subject : "?",
                         entry->obs_binding_id,
                         ws ? wo : 0,
                         ws ? ws : dseq,
@@ -13386,9 +13443,13 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
             }
             continue;
         }
+        /* iris handoff-4 P15: mark the inbound re-dispatch (delivery,
+         * not a publish) so it doesn't inflate the published counter. */
+        if (lotus_obs_begin_redispatch) lotus_obs_begin_redispatch();
         lotus_bus_local_dispatch(g_bus_queue_for_remote,
                                  args->entry->subject,
                                  struct_buf, (size_t)struct_size);
+        if (lotus_obs_end_redispatch) lotus_obs_end_redispatch();
         uint64_t dseq2 = LOTUS_CTR_BUMP(args->entry->ctr_msgs_delivered);
         LOTUS_CTR_ADD(args->entry->ctr_bytes_delivered, n);
         if (lotus_obs_net_deliver && lotus_obs_binding_register) {
@@ -13402,10 +13463,12 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
              * from the wire — this is what iris pairs with the
              * matching NET_SEND. Fall back to the local delivery
              * count only for a headerless peer (origin 0). */
-            lotus_obs_net_deliver(args->entry->obs_binding_id,
-                                  have_wire_seq ? w_origin : 0,
-                                  have_wire_seq ? w_seq : dseq2,
-                                  (uint64_t)n);
+            lotus_obs_net_deliver(
+                args->entry->subject ? args->entry->subject : "?",
+                args->entry->obs_binding_id,
+                have_wire_seq ? w_origin : 0,
+                have_wire_seq ? w_seq : dseq2,
+                (uint64_t)n);
         }
     }
     free(args);
@@ -14031,8 +14094,11 @@ void lotus_bus_remote_fanout(const char *subject,
              * and echoed by the reader so send/deliver pair on
              * (origin, seq). */
             uint64_t useq = LOTUS_CTR_BUMP(e->ctr_msgs_sent);
+            /* P16: header only when the operator opted the fleet into
+             * the wire change; LOTUS_OBS alone leaves the wire pristine. */
             int obs_hdr = (lotus_obs_active && lotus_obs_active()
-                           && lotus_obs_origin);
+                           && lotus_obs_origin
+                           && lotus_obs_wire_enabled());
             ssize_t sent;
             char *obuf = NULL;
             if (obs_hdr) {
@@ -14089,7 +14155,8 @@ void lotus_bus_remote_fanout(const char *subject,
                             e->subject ? e->subject : "?", 1);
                         e->obs_binding_id = (id > 0) ? id : -1;
                     }
-                    lotus_obs_net_send(e->obs_binding_id,
+                    lotus_obs_net_send(e->subject ? e->subject : "?",
+                                       e->obs_binding_id,
                                        lotus_obs_origin
                                            ? lotus_obs_origin() : 0,
                                        useq, (uint64_t)payload_size);
@@ -14130,6 +14197,7 @@ void lotus_bus_remote_fanout(const char *subject,
                      * field bug. send_seq is the framed wire seq
                      * the receiver echoes; origin is this process. */
                     lotus_obs_net_send(
+                        e->subject ? e->subject : "?",
                         e->obs_binding_id,
                         lotus_obs_origin ? lotus_obs_origin() : 0,
                         lotus_transport_send_seq(e->transport),
@@ -14272,6 +14340,12 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
                                     uint64_t key_lo,
                                     uint64_t key_hi) {
     if (!subject || !wire_bytes || wire_size == 0) return;
+    /* iris handoff-4 P15: keyed publish probe (sibling of the
+     * non-keyed dispatch_wire path). This is the serialize-present
+     * keyed local fanout — publisher-only, so no redispatch guard. */
+    if (lotus_obs_bus_publish) {
+        lotus_obs_bus_publish(subject, NULL, (uint64_t)wire_size);
+    }
     char *struct_buf = g_tls_bus_struct_buf;   /* off the coro stack */
     lotus_arena_t *prev_tls = lotus_current_caller_arena;
     int matched_specific = 0;
@@ -14307,6 +14381,10 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
                                         e->self_ptr, wire_bytes, wire_size);
             }
             g_bus_pending_wire_deser = NULL;
+            if (lotus_obs_bus_deliver) {
+                lotus_obs_bus_deliver(subject, e->self_ptr,
+                                      (uint64_t)wire_size);
+            }
             continue;
         }
         lotus_arena_t *sub_arena =
@@ -14333,6 +14411,11 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
                 g_bus_queue_for_remote, e->handler, e->self_ptr,
                 struct_buf, (size_t)struct_size);
         }
+        /* iris handoff-4 P15: BUS_DELIVER per matched keyed target. */
+        if (lotus_obs_bus_deliver) {
+            lotus_obs_bus_deliver(subject, e->self_ptr,
+                                  (uint64_t)wire_size);
+        }
     }
     if (!matched_specific) {
         for (size_t i = 0; i < g_bus_count; i++) {
@@ -14356,6 +14439,10 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
                                                             e->self_ptr, wire_bytes, wire_size);
                 }
                 g_bus_pending_wire_deser = NULL;
+                if (lotus_obs_bus_deliver) {
+                    lotus_obs_bus_deliver(subject, e->self_ptr,
+                                          (uint64_t)wire_size);
+                }
                 continue;
             }
             lotus_arena_t *sub_arena =
@@ -14376,6 +14463,10 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
                 lotus_bus_queue_enqueue(
                     g_bus_queue_for_remote, e->handler, e->self_ptr,
                     struct_buf, (size_t)struct_size);
+            }
+            if (lotus_obs_bus_deliver) {
+                lotus_obs_bus_deliver(subject, e->self_ptr,
+                                      (uint64_t)wire_size);
             }
         }
         if (lotus_bus_log_unmatched_enabled()) {
