@@ -41,7 +41,17 @@ locus Sampler {
             println("MISSED: sampler last=", self.last);
             std::process::exit(1);
         }
-        println("sampler kept the newest, saw ", self.seen);
+        // The exact seen count is drop_old-timing-dependent (it
+        // sheds against the live drain rate), so it must NOT reach
+        // stdout — the devirt differential harness requires static
+        // and dynamic runs to print identically. Assert the ring
+        // property (kept the newest) and that shedding happened,
+        // then print a fixed line.
+        if self.seen >= 40 {
+            println("BAD: sampler saw all, no shedding");
+            std::process::exit(1);
+        }
+        println("sampler kept the newest, shed the rest");
     }
     fn on_e(e: E) {
         self.seen = self.seen + 1;
