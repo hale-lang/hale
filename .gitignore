@@ -76,3 +76,8 @@ experiments/token-efficiency/workdirs/
 experiments/token-efficiency/harness/runs.db
 experiments/token-efficiency/.todo_storage*
 **/__pycache__/
+
+# Cross-session handoff / upstream working docs — not repo content
+# (per CLAUDE.md: no planning/status/progress markdown in-tree).
+HANDOFF-*.md
+UPSTREAM*.md
