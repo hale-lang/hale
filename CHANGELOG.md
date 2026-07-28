@@ -6,6 +6,26 @@ behavior.
 
 ---
 
+## Unreleased
+
+- **perf: publish hot path back to baseline — the obs
+  publisher-attribution note is now branch-gated.** v0.11.13's
+  iris P10 fix made `lower_send` emit an UNCONDITIONAL
+  `lotus_obs_note_publisher` call (a call + TLS store) before
+  every `<-`, violating the "dormant = one predictable branch"
+  observation cost contract: ~0.8ns on a ~1.9ns devirtualized
+  publish, +39% on the `bus_dispatch` microbench and +34% on
+  `stream_aggregator`, shipped unnoticed in v0.11.13–v0.11.16.
+  Codegen now branches on `lotus_obs_note_publisher_wanted` (an
+  i32 the obs TU sets when `LOTUS_OBS` resolves enabled), so an
+  unobserved publish pays one predictable load+branch — LLVM
+  hoists the check and the dormant publish loop is
+  instruction-identical to the pre-v0.11.13 one. Bench restored:
+  `bus_dispatch` 268→192µs, `stream_aggregator` ~600→~440µs
+  (baselines met). Attribution under `LOTUS_OBS=1` is unchanged
+  (the flag is set by the first probe — always a locus birth —
+  before any publish).
+
 ## v0.11.16 — Crumb batch-3: main-return teardown fix, takeover_raw, Duration scalars (2026-07-28)
 
 Crumb batch-3 handoff (UPSTREAM3.md): two design asks, one

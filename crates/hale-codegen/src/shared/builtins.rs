@@ -965,6 +965,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.context.void_type().fn_type(&[ptr_t.into()], false),
             None,
         );
+        // Dormant-cost gate for the note above (bench regression,
+        // 2026-07-28): an i32 the obs TU sets to 1 when LOTUS_OBS
+        // resolves enabled. lower_send branches on it so an
+        // unobserved publish pays one load+branch, not a call +
+        // TLS store. External declaration — defined in lotus_obs.c,
+        // which every codegen-linked binary carries.
+        {
+            let i32_t = self.context.i32_type();
+            self.module.add_global(
+                i32_t,
+                None,
+                "lotus_obs_note_publisher_wanted",
+            );
+        }
         self.module.add_function(
             "lotus_obs_topic_shape",
             self.context
