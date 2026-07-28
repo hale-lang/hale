@@ -427,7 +427,7 @@ pub const SURFACES: &[NsSurface] = &[
             "iter_find_int_field", "iter_find_string_field",
             "iter_find_string_field_range", "iter_substring",
             "next_non_ws", "next_quote_or_bs", "next_struct_or_quote",
-            "obj_key_eq", "obj_key_len", "obj_value_bool",
+            "obj_key_eq", "obj_key_len", "obj_key_string", "obj_value_bool",
             "obj_value_float", "obj_value_int", "obj_value_raw",
             "obj_value_string", "object_first", "object_next",
             "unescape_string",

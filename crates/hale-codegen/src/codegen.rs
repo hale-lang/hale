@@ -1264,6 +1264,7 @@ pub fn build_executable_with_options(
         current_cooperative_pool: None,
         coop_pool_locus_types: BTreeSet::new(),
         coop_pool_run_wrappers: BTreeMap::new(),
+        obs_live_cache: Vec::new(),
         reclaim_fns: BTreeMap::new(),
         handler_reclaim_wrappers: BTreeMap::new(),
         vtables: BTreeMap::new(),
@@ -3367,6 +3368,22 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// the main thread's drain loop handles them via the
     /// global cooperative queue.
     pub(crate) main_cooperative_pools: BTreeMap<String, String>,
+
+    /// iris handoff-5 P17 perf note: per-function cache of the
+    /// `lotus_obs_live` gate check (`load i32, icmp ne 0`). The
+    /// flag is written exactly once, when LOTUS_OBS resolves at
+    /// the FIRST probe — always a locus birth, which precedes any
+    /// user publish — so within a user fn body it is constant and
+    /// one entry-block check covers every publish site. Without
+    /// the cache, a per-site load after an opaque handler call
+    /// can't be hoisted out of a publish loop (~+10% on the
+    /// dormant bus_dispatch bench). Keyed by function; the i1 is
+    /// emitted in (or hoisted to) the fn's entry block, which
+    /// dominates all uses.
+    pub(crate) obs_live_cache: Vec<(
+        inkwell::values::FunctionValue<'ctx>,
+        inkwell::values::IntValue<'ctx>,
+    )>,
     /// F.35 Slice 2 (2026-05-28): cooperative pool names whose
     /// placement entries declare `where async_io`. The prelude
     /// emits one `lotus_coop_pool_enable_async_io(pool_ptr)` per
@@ -5906,6 +5923,66 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
+
+    /// The cached per-fn `lotus_obs_live != 0` check (see the
+    /// `obs_live_cache` field doc). First use in a fn emits the
+    /// load+icmp — into the entry block (before its terminator)
+    /// when we're already past it, so the value dominates every
+    /// later publish site; subsequent uses in the same fn reuse
+    /// the i1.
+    pub(crate) fn obs_live_check(
+        &mut self,
+    ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+        let func = self
+            .builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_parent())
+            .expect("inside a function");
+        if let Some((_, v)) =
+            self.obs_live_cache.iter().find(|(f, _)| *f == func)
+        {
+            return Ok(*v);
+        }
+        let entry_bb = func.get_first_basic_block().expect("fn entry block");
+        let cur_bb = self.builder.get_insert_block();
+        let in_entry = cur_bb == Some(entry_bb);
+        if !in_entry {
+            match entry_bb.get_terminator() {
+                Some(term) => self.builder.position_before(&term),
+                None => self.builder.position_at_end(entry_bb),
+            }
+        }
+        let i32_t = self.context.i32_type();
+        let flag_global = self
+            .module
+            .get_global("lotus_obs_live")
+            .expect("lotus_obs_live declared");
+        let flag = self
+            .builder
+            .build_load(
+                i32_t,
+                flag_global.as_pointer_value(),
+                "obs.live.flag",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let live = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                flag,
+                i32_t.const_zero(),
+                "obs.live",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        if !in_entry {
+            if let Some(bb) = cur_bb {
+                self.builder.position_at_end(bb);
+            }
+        }
+        self.obs_live_cache.push((func, live));
+        Ok(live)
+    }
 
     pub(crate) fn flush_dissolve_frame(&mut self) -> Result<(), CodegenError> {
         self.flush_dissolve_frame_kind(true)
@@ -23437,6 +23514,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let result = self.lower_user_fn_call("__json_obj_value_string", args, scope)?;
                 result.ok_or_else(|| CodegenError::Unsupported(
                     "std::json::obj_value_string returns String but called in a position that expects no value".to_string()))
+            }
+            ["std", "json", "obj_key_string"] => {
+                let result = self.lower_user_fn_call("__json_obj_key_string", args, scope)?;
+                result.ok_or_else(|| CodegenError::Unsupported(
+                    "std::json::obj_key_string returns String but called in a position that expects no value".to_string()))
             }
             ["std", "json", "iter_find_field_raw"] => {
                 let result = self.lower_user_fn_call("__json_iter_find_field_raw", args, scope)?;

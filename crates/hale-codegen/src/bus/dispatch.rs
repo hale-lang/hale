@@ -200,34 +200,12 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
         // a call + TLS store per `<-` even with LOTUS_OBS unset,
         // ~1ns on a ~1.7ns devirtualized publish (+55% on
         // bus_dispatch). Branch on the obs TU's
-        // `lotus_obs_note_publisher_wanted` flag instead: an
+        // `lotus_obs_live` flag instead: an
         // unobserved publish pays one predictable load+branch,
         // and the call only fires when observation is live.
         {
             let ptr_t = self.context.ptr_type(AddressSpace::default());
-            let i32_t = self.context.i32_type();
-            let flag_global = self
-                .module
-                .get_global("lotus_obs_note_publisher_wanted")
-                .expect("lotus_obs_note_publisher_wanted declared");
-            let flag = self
-                .builder
-                .build_load(
-                    i32_t,
-                    flag_global.as_pointer_value(),
-                    "obs.note_pub.wanted",
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                .into_int_value();
-            let wanted = self
-                .builder
-                .build_int_compare(
-                    inkwell::IntPredicate::NE,
-                    flag,
-                    i32_t.const_zero(),
-                    "obs.note_pub.on",
-                )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let wanted = self.obs_live_check()?;
             let func = self
                 .builder
                 .get_insert_block()
@@ -1234,6 +1212,63 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                         .get_insert_block()
                         .and_then(|bb| bb.get_parent())
                         .expect("inside a function");
+                    // iris handoff-5 P17: the fully-devirtualized
+                    // direct dispatch was the ONE probe-less flavor —
+                    // no BUS_PUBLISH/BUS_DELIVER records, no topic
+                    // registration, no counters; a subject on this
+                    // path was invisible to observation. Emit both
+                    // probes here, branch-gated on `lotus_obs_live`
+                    // (same dormant-cost discipline as the
+                    // note_publisher gate: an unobserved publish pays
+                    // one predictable load+branch, and LLVM hoists
+                    // the check). The publish probe passes the
+                    // publisher self EXPLICITLY (better than the TLS
+                    // fallback); the deliver probe fires per matched
+                    // target, enqueue-time-equivalent (the direct
+                    // call IS the delivery).
+                    let obs_live = self.obs_live_check()?;
+                    {
+                        let ptr_t =
+                            self.context.ptr_type(AddressSpace::default());
+                        let pub_bb = self.context.append_basic_block(
+                            current_fn,
+                            "bus.direct.obs.pub",
+                        );
+                        let pub_cont_bb = self.context.append_basic_block(
+                            current_fn,
+                            "bus.direct.obs.pub.cont",
+                        );
+                        self.builder
+                            .build_conditional_branch(
+                                obs_live, pub_bb, pub_cont_bb,
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        self.builder.position_at_end(pub_bb);
+                        let obs_pub_fn = self
+                            .module
+                            .get_function("lotus_obs_bus_publish")
+                            .expect("lotus_obs_bus_publish declared");
+                        let pub_self: inkwell::values::BasicValueEnum = self
+                            .current_self
+                            .as_ref()
+                            .map(|cs| cs.self_ptr.into())
+                            .unwrap_or_else(|| ptr_t.const_null().into());
+                        self.builder
+                            .build_call(
+                                obs_pub_fn,
+                                &[
+                                    subj_val.into(),
+                                    pub_self.into(),
+                                    payload_size_iv.into(),
+                                ],
+                                "bus.direct.obs.pub.call",
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        self.builder
+                            .build_unconditional_branch(pub_cont_bb)
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        self.builder.position_at_end(pub_cont_bb);
+                    }
                     let entry_bb = self
                         .builder
                         .get_insert_block()
@@ -1312,6 +1347,44 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     // call: handler(sp, &payload) — the BAKED direct call
                     self.builder.position_at_end(call_bb);
+                    // P17: BUS_DELIVER per matched target (the direct
+                    // call IS the delivery). Same obs_live gate; `sp`
+                    // is the subscriber's self for locus attribution.
+                    {
+                        let dlv_bb = self.context.append_basic_block(
+                            current_fn,
+                            "bus.direct.obs.dlv",
+                        );
+                        let dlv_cont_bb = self.context.append_basic_block(
+                            current_fn,
+                            "bus.direct.obs.dlv.cont",
+                        );
+                        self.builder
+                            .build_conditional_branch(
+                                obs_live, dlv_bb, dlv_cont_bb,
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        self.builder.position_at_end(dlv_bb);
+                        let obs_dlv_fn = self
+                            .module
+                            .get_function("lotus_obs_bus_deliver")
+                            .expect("lotus_obs_bus_deliver declared");
+                        self.builder
+                            .build_call(
+                                obs_dlv_fn,
+                                &[
+                                    subj_val.into(),
+                                    sp.into(),
+                                    payload_size_iv.into(),
+                                ],
+                                "bus.direct.obs.dlv.call",
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        self.builder
+                            .build_unconditional_branch(dlv_cont_bb)
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        self.builder.position_at_end(dlv_cont_bb);
+                    }
                     self.builder
                         .build_call(
                             handler_fn,

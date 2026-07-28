@@ -450,73 +450,24 @@ fn __json_find_bool_field(json: String, name: String) -> Bool {
 // outer field can be re-fed into find_*_field / find_field_raw for
 // deeper extraction without parsing the whole structure.
 fn __json_find_field_raw(json: String, name: String) -> String {
-    let needle = "\"" + name + "\"";
-    let needle_pos = std::str::index_of(json, needle);
-    if needle_pos < 0 { return ""; }
-    let total = len(json);
-    // Advance past `"name"`.
-    let mut p = needle_pos + len(needle);
-    // 2026-05-26: byte access via std::str::byte_at_unchecked on
-    // `json` directly — was allocating a fresh Bytes copy of the
-    // whole `json` per call via std::bytes::from_string.
-    // Skip whitespace + colon + whitespace.
-    while p < total {
-        let c = std::str::byte_at_unchecked(json, p);
-        if c == 32 || c == 9 || c == 10 || c == 13 { p = p + 1; }
-        else if c == 58 { p = p + 1; break; }
-        else { return ""; }
-    }
-    while p < total {
-        let c = std::str::byte_at_unchecked(json, p);
-        if c == 32 || c == 9 || c == 10 || c == 13 { p = p + 1; }
-        else { break; }
-    }
-    // p is now at start of value. Find end of value token.
-    let start_v = p;
-    let first = std::str::byte_at_unchecked(json, p);
-    if first == 34 {
-        // String value: walk until unescaped closing quote.
-        p = p + 1;
-        while p < total {
-            let c = std::str::byte_at_unchecked(json, p);
-            if c == 92 { p = p + 2; continue; }
-            if c == 34 { p = p + 1; break; }
-            p = p + 1;
+    // Crumb batch-4 item 2 (2026-07-28): rebuilt on the single-pass
+    // object cursor. The old lookup was `index_of(json, "\"name\"")`
+    // — the first occurrence of the key TEXT anywhere, so an earlier
+    // string VALUE that repeats a later key's name shadowed it (on a
+    // real npm packument, 12 of 35 version keys were invisible
+    // because version strings recur as dependency-range values).
+    // The cursor walks only the TOP-LEVEL object's members —
+    // depth-aware, string-safe — which is also what the documented
+    // chaining pattern (re-feed a returned object substring for the
+    // next level) always assumed. Non-object input returns "".
+    let mut it = __json_obj_first_span(json);
+    while !it.done {
+        if __json_obj_key_eq(it, json, name) {
+            return __json_obj_value_raw(it, json);
         }
-        return json[start_v..p];
+        it = __json_obj_next_span(it, json);
     }
-    if first == 123 || first == 91 {
-        // Object {...} or array [...]: bracket-balanced walk.
-        // Tracks nested braces/brackets, respects string contents
-        // so brackets inside string values don't shift the depth.
-        let mut depth = 0;
-        let mut in_string = false;
-        while p < total {
-            let c = std::str::byte_at_unchecked(json, p);
-            if in_string {
-                if c == 92 { p = p + 2; continue; }
-                if c == 34 { in_string = false; }
-            } else {
-                if c == 34 { in_string = true; }
-                else if c == 123 || c == 91 { depth = depth + 1; }
-                else if c == 125 || c == 93 {
-                    depth = depth - 1;
-                    if depth == 0 { p = p + 1; break; }
-                }
-            }
-            p = p + 1;
-        }
-        return json[start_v..p];
-    }
-    // Numeric / true / false / null — walk until separator.
-    while p < total {
-        let c = std::str::byte_at_unchecked(json, p);
-        if c == 44 || c == 125 || c == 93 || c == 32 || c == 9 || c == 10 || c == 13 {
-            break;
-        }
-        p = p + 1;
-    }
-    return json[start_v..p];
+    return "";
 }
 
 // 2026-05-16 — Iterate elements of a flat JSON array as
@@ -950,6 +901,18 @@ fn __json_obj_value_string(it: std::json::ObjectIterSpan, json: String) -> Strin
         return __json_unescape_string(raw[1..(n - 1)]);
     }
     return raw;
+}
+
+// Crumb batch-4 item 4 (2026-07-28) — the key-side sibling of
+// obj_value_string. Every consumer iterating unknown keys (a
+// packument's `versions`, a package.json's `dependencies`) was
+// hand-slicing `json[it.key_start..it.key_end]`, which silently
+// skips the unescaping obj_value_string does — an escaped key
+// yielded raw backslash bytes. Returns the decoded key text;
+// "" when the iterator is done.
+fn __json_obj_key_string(it: std::json::ObjectIterSpan, json: String) -> String {
+    if it.done { return ""; }
+    return __json_unescape_string(json[it.key_start..it.key_end]);
 }
 
 // 2026-05-26 — range-bearing iter_find variants. The existing

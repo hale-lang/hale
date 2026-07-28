@@ -225,7 +225,18 @@ the model: runtime is automatic; stdlib is explicit.
   memory); `LOTUS_BUS_LOG_DROP=1` surfaces them. A workload that
   must not lose such events coordinates completion explicitly
   ("exit when done" — poll a tally / await a completion event)
-  rather than relying on teardown ordering.
+  rather than relying on teardown ordering. **Deferred-path
+  completion (Crumb batch-4, 2026-07-28):** the contract holds
+  regardless of which teardown path the parent takes. Previously a
+  bus subscription on the main locus made it long-lived → deferred,
+  and the deferred flush processed the parent (cascading its
+  subscriber fields) BEFORE joining its own pinned children — the
+  exact inversion the contract forbids, triggered by the one-line
+  addition of a `subscribe` on the root, dropping every in-flight
+  result silently. A deferred parent's own pinned entries are now
+  re-ordered after its own frame entry, so the reverse-order flush
+  joins + drains them while every subscriber field is alive —
+  identical semantics to the eager path.
 - **Recovery primitives.** `restart`, `restart_in_place`,
   `quarantine`, `reorganize`, `bubble`, `dissolve`, `drain` —
   all language keywords; runtime implements the actual
@@ -1437,6 +1448,34 @@ Edge-emission correctness (iris handoff 4, v0.11.15):
   and local records need only `LOTUS_OBS=1`. The receiver always
   peels a header it recognizes (self-describing), so old→new and
   unobserved peers are unaffected either way.
+
+Flavor completeness + quiet-process replay (iris handoff 5,
+v0.11.18):
+
+- **The fully-devirtualized direct dispatch now carries probes.**
+  The single-quiet-subscriber same-thread flavor (the
+  `static_direct` bucket walk with the handler baked as a direct
+  call, and its multi-handler C sibling) emitted NO probes at all —
+  a subject on that path never registered its topic, counted
+  nothing, and produced no BUS records. Both direct flavors now
+  publish once + deliver per matched target like every other
+  flavor. Dormant cost is preserved by the `lotus_obs_live` gate:
+  codegen checks the flag ONCE per function entry (the flag is
+  final before any user publish can run — obs resolves at the
+  first probe, always a locus birth), so LLVM hoists the branch
+  and an unobserved publish loop is instruction-identical to the
+  probe-free lowering. The same per-fn check now also gates the
+  publisher-attribution TLS note.
+- **Observer attach no longer needs probe traffic.** The 0→1
+  birth replay was driven from inside probes, so a probe-quiet
+  process (a main parked in a read loop with pinned raw-fd
+  readers; hot paths on the direct flavor) never noticed an
+  observer and stayed silent — segment registered, zero records.
+  When `LOTUS_OBS=1`, a detached heartbeat thread drives the
+  replay check every 250ms under the obs lock (teardown takes the
+  same lock around the unmap, so the heartbeat never races it);
+  replay latency after attach is bounded at ~250ms even for a
+  process that never probes again.
 
 ### Time
 

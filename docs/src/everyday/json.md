@@ -31,6 +31,16 @@ let inner = std::json::find_field_raw(doc, "address");
 let city  = std::json::find_string_field(inner, "city");
 ```
 
+The lookup matches the name **as a top-level key only** — a string
+*value* elsewhere in the document that happens to repeat the key's
+text can't shadow it, and a key that only exists deeper down isn't
+found until you chain into its parent (as above). When you iterate
+an object whose keys you *don't* know — a `dependencies` map, a
+registry's `versions` — read each key with
+`std::json::obj_key_string(it, doc)`: it decodes escapes the same
+way `obj_value_string` does, which hand-slicing
+`doc[it.key_start..it.key_end]` silently skips.
+
 ## Parsing into a type
 
 Pulling fields one by one rescans the document per field. When you have
