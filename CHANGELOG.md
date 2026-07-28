@@ -6,6 +6,28 @@ behavior.
 
 ---
 
+## Unreleased
+
+- **Native observation: NET seq semantics + publish attribution
+  (iris handoff 3).** The last cross-process-edge blocker.
+  `NET_SEND`/`NET_DELIVER` now carry `origin:16 | seq:48` where
+  origin+seq are the **sender's** identity+counter, echoed
+  verbatim by the receiver from a self-describing 16-byte UDP
+  wire header — so a send pairs with its delivers on
+  `(origin, seq)` even when several senders multicast one
+  subject (the receiver-local delivery count summed across
+  senders was the zero-edges cause; P11). Origin is a nonzero
+  per-process id (P12, was `unknown:0`). The header is prepended
+  only when the sender is observed, so unobserved runs and
+  non-Hale peers are byte-for-byte unchanged. And `BUS_PUBLISH`
+  is attributed only for genuine local publishes (consume-once
+  TLS); the reader thread's inbound re-dispatch no longer stamps
+  a spurious `locus=0` publish record, so per-locus pub/dlv is
+  nonzero in the field (P13). Cross-segment pairing pinned by
+  `obs_net_seq.rs` (two real processes over loopback UDP);
+  `obs_emission.rs` gains an exact
+  publish-locus-equals-birth-instance assertion.
+
 ## v0.11.13 — C→Hale re-entry, iris observation field-hardening, Crumb bug fixes (2026-07-27)
 
 - **Native observation emission: field-report hardening (iris

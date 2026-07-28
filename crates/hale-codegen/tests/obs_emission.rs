@@ -267,6 +267,37 @@ fn births_carry_parentage_and_publishes_attribute_locus() {
         attributed,
         publishes
     );
+    // iris handoff-3 P13: every publish record must attribute its
+    // locus, and that id must be a real LOCUS_BIRTH instance (not a
+    // stray id space). DEMO publishes only from Pub (a non-first,
+    // pinned locus); inbound re-dispatch (which had stamped
+    // locus=0) is single-process-absent here — so zero
+    // unattributed publishes is the exact contract.
+    let mut birth_ids = std::collections::HashSet::new();
+    for rr in 0..ring_count {
+        for (ekind, id, _w1) in drain_ring(seg, rings_off, ring_slots, rr) {
+            if ekind == 5 {
+                birth_ids.insert(id);
+            }
+        }
+    }
+    for rr in 0..ring_count {
+        for (ekind, _id, w1) in drain_ring(seg, rings_off, ring_slots, rr) {
+            if ekind == 1 {
+                let locus = (w1 & 0xFFFFF) as u32;
+                assert!(
+                    locus != 0,
+                    "P13: a BUS_PUBLISH stamped locus=0 (unattributed \
+                     — the reader re-dispatch bug)"
+                );
+                assert!(
+                    birth_ids.contains(&locus),
+                    "P13: publish locus {} is not a LOCUS_BIRTH instance",
+                    locus
+                );
+            }
+        }
+    }
 }
 
 #[test]

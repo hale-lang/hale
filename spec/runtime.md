@@ -1373,6 +1373,28 @@ subject fuse into one manifest row; and each ring re-emits EPOCH
 every 1024 records so a high-rate ring that wraps its anchor never
 reconstructs timestamps from a stale base (the ~2^64 ns readings).
 
+NET seq semantics (iris handoff 3, v0.11.14): `NET_SEND` and
+`NET_DELIVER` carry `w1 = origin:16 | seq:48` where **origin is
+the SENDER's per-process identity and seq is the SENDER's
+per-binding counter** — the receiver echoes both verbatim from
+the wire, so a send and its delivers pair on `(origin, seq)`
+across segments (the cross-process edge). The UDP path carries
+this in a self-describing 16-byte header (`[u64 magic][u64
+origin|seq]`) prepended only when the sender's segment is live,
+so headerless/unobserved senders and non-Hale peers are
+byte-for-byte unchanged and a mixed-observation fleet degrades
+gracefully. Before this, the receiver stamped its LOCAL delivery
+counter, which sums across senders on a multicast subject — the
+send seq never equalled the deliver seq and iris rendered zero
+edges. (Stream transports are unicast — one sender per
+connection — so origin 0 + the framed wire seq already pairs
+correctly.) And `BUS_PUBLISH` is emitted only for a **genuine
+local publish** (attributed to the publishing locus via a
+consume-once TLS set at the `<-` site); the reader thread's
+re-dispatch of an inbound wire message is a delivery
+(NET_DELIVER + per-subscriber BUS_DELIVER), not a publish, and
+no longer stamps a spurious `locus=0` publish record.
+
 ### Time
 
 - **Monotonic + wall-clock.** `time::now()` and

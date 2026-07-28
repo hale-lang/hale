@@ -5565,10 +5565,22 @@ void lotus_obs_bus_deliver(const char *subject, void *subscriber_self,
 int64_t lotus_obs_binding_register(const char *subject,
                                    int64_t transport_kind)
     __attribute__((weak));
-void lotus_obs_net_send(int64_t binding_id, uint64_t seq,
-                        uint64_t bytes) __attribute__((weak));
-void lotus_obs_net_deliver(int64_t binding_id, uint64_t seq,
-                           uint64_t bytes) __attribute__((weak));
+void lotus_obs_net_send(int64_t binding_id, uint64_t origin,
+                        uint64_t seq, uint64_t bytes)
+    __attribute__((weak));
+void lotus_obs_net_deliver(int64_t binding_id, uint64_t origin,
+                           uint64_t seq, uint64_t bytes)
+    __attribute__((weak));
+uint64_t lotus_obs_origin(void) __attribute__((weak));
+int lotus_obs_active(void) __attribute__((weak));
+/* iris handoff-3 P11: observation seq header on the UDP wire.
+ * Self-describing so a headerless (unobserved / older) sender is
+ * still delivered correctly — the reader checks the magic and a
+ * length-consistency guard, never a bare prefix match. 16 bytes:
+ * [u64 magic][u64 origin:16 | seq:48], both LE. Present only when
+ * the sender's segment is live (lotus_obs_active); off-observation
+ * runs and non-Hale peers are byte-for-byte unchanged. */
+#define LOTUS_OBS_WIRE_MAGIC 0x48414c452d4f4253ULL /* "HALE-OBS" LE */
 void lotus_obs_restart(const char *subject) __attribute__((weak));
 
 /* GH #255 phase 2 — forward decls: the bound-enforcement hooks
@@ -13007,8 +13019,12 @@ static void lotus_bus_unix_serve(lotus_bus_remote_entry_t *entry) {
                     entry->obs_binding_id = (id > 0) ? id : -1;
                 }
                 if (entry->obs_binding_id > 0) {
-                    lotus_obs_net_deliver(entry->obs_binding_id, dseq,
-                                          (uint64_t)n);
+                    /* Stream is unicast (one sender per connection),
+                     * so origin 0 + the local seq pairs correctly;
+                     * the (origin, seq) fix is UDP-multicast-specific
+                     * (handoff-3 P11). */
+                    lotus_obs_net_deliver(entry->obs_binding_id, 0,
+                                          dseq, (uint64_t)n);
                 }
             }
         }
@@ -13272,6 +13288,26 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
             if (errno == EINTR) continue;
             break;  /* EBADF / ENOTCONN / shutdown-induced */
         }
+        /* iris handoff-3 P11: peel a leading observation seq
+         * header if present. Self-describing: magic + the implied
+         * payload length must be consistent, so a headerless
+         * (unobserved) datagram is never misread. wire/n below
+         * refer to the PAYLOAD after peeling. */
+        const char *wire = wire_buf;
+        uint64_t w_origin = 0, w_seq = 0;
+        int have_wire_seq = 0;
+        if (n >= 16) {
+            uint64_t magic, w1;
+            memcpy(&magic, wire_buf, 8);
+            if (magic == LOTUS_OBS_WIRE_MAGIC) {
+                memcpy(&w1, wire_buf + 8, 8);
+                w_origin = w1 & 0xFFFFULL;
+                w_seq = (w1 >> 16) & 0xFFFFFFFFFFFFULL;
+                have_wire_seq = 1;
+                wire += 16;
+                n -= 16;
+            }
+        }
         if (n == 0) {
             /* Two cases:
              *   - Legitimate zero-length datagram. Not meaningful
@@ -13308,7 +13344,7 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
             continue;
         }
         ssize_t struct_size = deserialize(
-            wire_buf, (size_t)n, struct_buf, sizeof(struct_buf));
+            wire, (size_t)n, struct_buf, sizeof(struct_buf));
         if (struct_size <= 0) {
             if (lotus_bus_log_deserialize_drop_enabled()) {
                 dprintf(2,
@@ -13330,10 +13366,14 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
                     1);
                 args->entry->obs_binding_id = (id > 0) ? id : -1;
             }
-            if (args->entry->obs_binding_id > 0) {
-                lotus_obs_net_deliver(args->entry->obs_binding_id,
-                                      dseq2, (uint64_t)n);
-            }
+            /* handoff-3 P11: echo the SENDER's (origin, seq) read
+             * from the wire — this is what iris pairs with the
+             * matching NET_SEND. Fall back to the local delivery
+             * count only for a headerless peer (origin 0). */
+            lotus_obs_net_deliver(args->entry->obs_binding_id,
+                                  have_wire_seq ? w_origin : 0,
+                                  have_wire_seq ? w_seq : dseq2,
+                                  (uint64_t)n);
         }
     }
     free(args);
@@ -13954,33 +13994,76 @@ void lotus_bus_remote_fanout(const char *subject,
              * reader thread for recvfrom. */
             if (e->role != LOTUS_TRANSPORT_CONNECT) continue;
             if (e->udp_fd < 0) continue;
-            ssize_t sent = sendto(e->udp_fd, payload, payload_size, 0,
+            /* iris handoff-3 P11: per-binding wire seq (this
+             * SENDER's per-subject counter) — carried on the wire
+             * and echoed by the reader so send/deliver pair on
+             * (origin, seq). */
+            uint64_t useq = LOTUS_CTR_BUMP(e->ctr_msgs_sent);
+            int obs_hdr = (lotus_obs_active && lotus_obs_active()
+                           && lotus_obs_origin);
+            ssize_t sent;
+            char *obuf = NULL;
+            if (obs_hdr) {
+                /* One contiguous [16B header][payload] datagram
+                 * (UDP is atomic per datagram, so it can't be
+                 * split across two sends). A heap temp only on
+                 * the observed path keeps this portable — sendmsg
+                 * isn't declared on the wasm target's headers,
+                 * and the udp path compiles for every target even
+                 * though it only runs on Linux. */
+                uint64_t origin = lotus_obs_origin();
+                uint64_t hdr[2] = {
+                    LOTUS_OBS_WIRE_MAGIC,
+                    ((origin & 0xFFFFULL)
+                     | ((useq & 0xFFFFFFFFFFFFULL) << 16)),
+                };
+                obuf = (char *)malloc(sizeof(hdr) + payload_size);
+                if (obuf) {
+                    memcpy(obuf, hdr, sizeof(hdr));
+                    if (payload_size) {
+                        memcpy(obuf + sizeof(hdr), payload,
+                               payload_size);
+                    }
+                    sent = sendto(e->udp_fd, obuf,
+                                  sizeof(hdr) + payload_size, 0,
                                   (struct sockaddr *)&e->udp_dest,
                                   sizeof(e->udp_dest));
+                } else {
+                    /* OOM on the header temp — fall back to a
+                     * headerless send so delivery still happens
+                     * (this datagram just won't seq-pair). */
+                    obs_hdr = 0;
+                    sent = sendto(e->udp_fd, payload, payload_size, 0,
+                                  (struct sockaddr *)&e->udp_dest,
+                                  sizeof(e->udp_dest));
+                }
+            } else {
+                sent = sendto(e->udp_fd, payload, payload_size, 0,
+                              (struct sockaddr *)&e->udp_dest,
+                              sizeof(e->udp_dest));
+            }
             if (sent < 0) {
                 LOTUS_CTR_BUMP(e->ctr_send_failures);
                 lotus_bus_udp_log_sendto_error(e->subject, errno);
             } else {
-                uint64_t useq = LOTUS_CTR_BUMP(e->ctr_msgs_sent);
                 LOTUS_CTR_ADD(e->ctr_bytes_sent, payload_size);
-                /* iris handoff-2 P5: NET_SEND for the UDP fanout —
-                 * this branch `continue`s before the stream-
-                 * transport probe below, so the fleet's multicast
-                 * publishes emitted no send-side records and the
-                 * seq matcher had nothing to pair (0 edges).
-                 * Mirrors the deliver-side placement. */
+                /* iris handoff-2 P5 + handoff-3 P11/P12: NET_SEND
+                 * carries (origin, seq) — the wire identity the
+                 * reader echoes. Manifest binding id kept for the
+                 * per-binding counter line only. */
                 if (lotus_obs_net_send && lotus_obs_binding_register) {
                     if (e->obs_binding_id == 0) {
                         int64_t id = lotus_obs_binding_register(
                             e->subject ? e->subject : "?", 1);
                         e->obs_binding_id = (id > 0) ? id : -1;
                     }
-                    if (e->obs_binding_id > 0) {
-                        lotus_obs_net_send(e->obs_binding_id, useq,
-                                           (uint64_t)payload_size);
-                    }
+                    lotus_obs_net_send(e->obs_binding_id,
+                                       lotus_obs_origin
+                                           ? lotus_obs_origin() : 0,
+                                       useq, (uint64_t)payload_size);
                 }
             }
+            if (obuf) free(obuf);
             continue;
         }
         if (!e->transport) continue;
@@ -14010,7 +14093,7 @@ void lotus_bus_remote_fanout(const char *subject,
                     e->obs_binding_id = (id > 0) ? id : -1;
                 }
                 if (e->obs_binding_id > 0) {
-                    lotus_obs_net_send(e->obs_binding_id, sent_seq,
+                    lotus_obs_net_send(e->obs_binding_id, 0, sent_seq,
                                        (uint64_t)payload_size);
                 }
             }
