@@ -121,6 +121,29 @@ void lotus_obs_note_publisher(void *self) {
   g_obs_tls_publisher = self;
 }
 
+/* iris handoff-4 P15: negative-marking of inbound wire re-dispatch.
+ * The reader thread re-dispatches every received wire message through
+ * the SAME lotus_bus_local_dispatch a genuine publish uses; those are
+ * deliveries (already covered by NET_DELIVER + BUS_DELIVER), NOT
+ * publishes, and must not inflate the published counter.
+ *
+ * handoff-3 P13 excluded them by POSITIVE marking — count a publish
+ * only when the publisher TLS is set. That was fragile: a cross-pool
+ * wire dispatch runs bus_publish on a worker thread that never saw
+ * the publishing thread's TLS, and a free-fn publish sets it NULL, so
+ * genuine publishes were silently dropped from the counter (the
+ * fleet's pub=0). The counter is the dormant-mode contract and must
+ * not depend on attribution at all.
+ *
+ * So invert it: the reader marks its re-dispatch window and
+ * bus_publish consumes the mark. Genuine publishes are the unmarked
+ * default and always count; attribution stays best-effort. The mark
+ * is consume-once so a nested publish from a subscriber handler
+ * running in the same fanout is still counted. */
+static __thread int g_obs_tls_redispatch = 0;
+void lotus_obs_begin_redispatch(void) { g_obs_tls_redispatch = 1; }
+void lotus_obs_end_redispatch(void) { g_obs_tls_redispatch = 0; }
+
 /* iris handoff-2 P6: canonical topic shapes, registered by
  * codegen at program start (before the segment exists — obs
  * init is lazy). shape_hash = fnv(subject, canonical payload
@@ -501,30 +524,33 @@ static uint32_t obs_inst_id_of(void *self) {
 void lotus_obs_bus_publish(const char *subject, void *publisher_self,
                            uint64_t payload_bytes) {
   if (!obs_on() || !subject) return;
-  obs_topic_slot_t *t = obs_topic_slot(subject, 0);
-  if (!t) return;
-  /* iris handoff-3 P13: consume-once publisher TLS. A genuine
-   * local publish set it in lower_send right before the dispatch
-   * that reaches here (same thread, synchronous). The reader
-   * thread re-dispatches INBOUND wire messages through this same
-   * lotus_bus_local_dispatch with no TLS — those are deliveries
-   * (already covered by NET_DELIVER + per-subscriber BUS_DELIVER),
-   * NOT local publishes, and were stamping every record locus=0
-   * (the fleet's pub=0 attribution). So: attribute + count + emit
-   * only when a real publisher is present; the re-dispatch path
-   * finds NULL and is skipped. Cleared after read so a stale value
-   * can't leak to the next (possibly re-dispatch) call. */
+  /* iris handoff-4 P15: consume the redispatch mark FIRST. An inbound
+   * wire message re-dispatched by the reader thread is a delivery, not
+   * a publish (it's covered by NET_DELIVER + per-subscriber
+   * BUS_DELIVER) — skip it entirely. Consume-once so a nested publish
+   * from a subscriber handler in the same fanout still counts. The
+   * publisher TLS is now an ATTRIBUTION hint only, never a gate: the
+   * published counter must fire for every genuine publish even when
+   * the locus can't be attributed (cross-pool worker thread / free-fn
+   * publish), which is what handoff-3 P13's positive gate broke. */
+  int redispatch = g_obs_tls_redispatch;
+  g_obs_tls_redispatch = 0;
   void *pub = publisher_self ? publisher_self : g_obs_tls_publisher;
   g_obs_tls_publisher = NULL;
-  if (!pub) return; /* inbound re-dispatch / unattributed — not a publish */
+  if (redispatch) return; /* inbound re-dispatch — not a publish */
+  obs_topic_slot_t *t = obs_topic_slot(subject, 0);
+  if (!t) return;
   uint64_t seq =
       atomic_fetch_add_explicit(&t->seq, 1, memory_order_relaxed);
+  /* Counters are the dormant-mode contract (P4: enabled-but-unobserved
+   * = counters only) — count before the observer gate and independent
+   * of attribution. */
   obs_count(MK_TOPIC, t->id, 0, 1);              /* published */
   obs_count(MK_TOPIC, t->id, 2, payload_bytes);  /* bytes */
   if (!obs_gate()) return;
   uint8_t mode = MODE[t->id & (OBS_ENTRY_CAP - 1)];
   if (mode < 2) return; /* OFF / COUNTERS */
-  uint32_t locus = obs_inst_id_of(pub);
+  uint32_t locus = pub ? obs_inst_id_of(pub) : 0; /* best-effort */
   obs_emit(EK_BUS_PUBLISH, (uint32_t)t->id,
            obs_size_class(payload_bytes),
            ((uint64_t)locus & 0xFFFFFu)
@@ -562,8 +588,21 @@ int64_t lotus_obs_binding_register(const char *subject,
   return id;
 }
 
-void lotus_obs_net_send(int64_t binding_id, uint64_t origin,
-                        uint64_t seq, uint64_t bytes) {
+/* iris handoff-4 P14: the record id field IS the topic id for ekinds
+ * 3/4 (PROTOCOL §8) — the join key the consumer uses to place the NET
+ * event on the fused topic row. It was hardcoded 0, so iris could not
+ * associate any NET event with any topic and edges were structurally
+ * impossible regardless of (origin, seq). The subject is in hand at
+ * every emit site; resolve the topic slot here. binding_id still
+ * drives the per-binding counter line only. */
+static uint32_t obs_net_topic_id(const char *subject) {
+  if (!subject) return 0;
+  obs_topic_slot_t *t = obs_topic_slot(subject, 1);
+  return t ? (uint32_t)t->id : 0;
+}
+
+void lotus_obs_net_send(const char *subject, int64_t binding_id,
+                        uint64_t origin, uint64_t seq, uint64_t bytes) {
   if (!obs_on()) return;
   if (binding_id >= 0) {
     obs_count(MK_BINDING, binding_id, 0, 1);
@@ -573,17 +612,18 @@ void lotus_obs_net_send(int64_t binding_id, uint64_t origin,
   /* w1 = origin:16 | seq:48 (PROTOCOL §8, handoff-3 amendment).
    * origin identifies the SENDER; the receiver echoes both from
    * the wire so (origin, seq) is a fleet-unique message id. */
-  obs_emit(EK_NET_SEND, 0, obs_size_class(bytes),
+  obs_emit(EK_NET_SEND, obs_net_topic_id(subject), obs_size_class(bytes),
            ((uint64_t)origin & 0xFFFFu)
                | ((seq & 0xFFFFFFFFFFFFULL) << 16));
 }
 
-void lotus_obs_net_deliver(int64_t binding_id, uint64_t origin,
-                           uint64_t seq, uint64_t bytes) {
+void lotus_obs_net_deliver(const char *subject, int64_t binding_id,
+                           uint64_t origin, uint64_t seq, uint64_t bytes) {
   if (!obs_on()) return;
   if (binding_id >= 0) obs_count(MK_BINDING, binding_id, 1, 1);
   if (!obs_gate()) return;
-  obs_emit(EK_NET_DELIVER, 0, obs_size_class(bytes),
+  obs_emit(EK_NET_DELIVER, obs_net_topic_id(subject),
+           obs_size_class(bytes),
            ((uint64_t)origin & 0xFFFFu)
                | ((seq & 0xFFFFFFFFFFFFULL) << 16));
 }

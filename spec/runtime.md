@@ -1350,7 +1350,10 @@ emitting thread (TLS assignment; overflow threads count into
 live-locus table replays as `LOCUS_BIRTH` records so a
 late-attaching observer reconstructs the tree. Knobs:
 `LOTUS_OBS_RINGS` (default 8), `LOTUS_OBS_SLOTS` (default
-4096). v0 notes: manifest ids are registration-order; publisher
+4096), `LOTUS_OBS_WIRE` (default off — see NET seq semantics:
+`LOTUS_OBS` alone never alters the wire; the cross-process edge
+header rides the wire only when the operator opts the whole fleet
+in with `LOTUS_OBS_WIRE=1`). v0 notes: manifest ids are registration-order; publisher
 locus attribution on BUS_PUBLISH is unattributed (0); pinned
 births render parent=root. `lotus_obs.c` is its own TU; the
 arena TU's probes are weak-guarded so helper binaries compiling
@@ -1378,22 +1381,47 @@ NET seq semantics (iris handoff 3, v0.11.14): `NET_SEND` and
 the SENDER's per-process identity and seq is the SENDER's
 per-binding counter** — the receiver echoes both verbatim from
 the wire, so a send and its delivers pair on `(origin, seq)`
-across segments (the cross-process edge). The UDP path carries
-this in a self-describing 16-byte header (`[u64 magic][u64
-origin|seq]`) prepended only when the sender's segment is live,
-so headerless/unobserved senders and non-Hale peers are
-byte-for-byte unchanged and a mixed-observation fleet degrades
-gracefully. Before this, the receiver stamped its LOCAL delivery
-counter, which sums across senders on a multicast subject — the
-send seq never equalled the deliver seq and iris rendered zero
-edges. (Stream transports are unicast — one sender per
-connection — so origin 0 + the framed wire seq already pairs
-correctly.) And `BUS_PUBLISH` is emitted only for a **genuine
-local publish** (attributed to the publishing locus via a
-consume-once TLS set at the `<-` site); the reader thread's
-re-dispatch of an inbound wire message is a delivery
-(NET_DELIVER + per-subscriber BUS_DELIVER), not a publish, and
-no longer stamps a spurious `locus=0` publish record.
+across segments (the cross-process edge). Before this, the
+receiver stamped its LOCAL delivery counter, which sums across
+senders on a multicast subject — the send seq never equalled the
+deliver seq and iris rendered zero edges. (Stream transports are
+unicast — one sender per connection — so origin 0 + the framed
+wire seq already pairs correctly.)
+
+Edge-emission correctness (iris handoff 4, v0.11.15):
+
+- **The record id field IS the topic id** for `NET_SEND` /
+  `NET_DELIVER` (as for the bus records) — it is the consumer's
+  join key onto the fused topic row. It was hardcoded 0, so no
+  NET event could be associated with any topic and edges were
+  structurally impossible regardless of `(origin, seq)`. The
+  probe now resolves the id from the subject (in hand at every
+  emit site); the per-binding counter line still keys off the
+  binding id.
+- **The published counter is never attribution-gated.** Counters
+  are the dormant-mode contract (enabled-but-unobserved = counters
+  only), so a genuine publish counts even when its locus can't be
+  attributed. handoff-3 gated the counter (and record) behind a
+  positive publisher-TLS that a cross-pool or free-fn publish never
+  set, zeroing the fleet's published counter. Inbound wire
+  re-dispatch is now excluded by NEGATIVE marking instead: the
+  reader brackets its re-dispatch (`lotus_obs_begin/end_redispatch`)
+  and the publish probe consumes the mark; genuine publishes are the
+  unmarked default and always count, with best-effort locus
+  attribution (0 when unknown). The keyed dispatch flavors, which
+  had no publish/deliver probe at all, now emit both.
+- **`LOTUS_OBS` never alters the wire.** The `(origin, seq)` edge
+  identity is a wire change a pre-header receiver cannot parse — an
+  observed sender would silently drop every datagram at a stale
+  peer, partitioning a mixed-version fleet invisibly. So the UDP
+  self-describing header (`[u64 magic][u64 origin|seq]`) and the
+  framed-transport origin word ride the wire ONLY when the operator
+  opts in with `LOTUS_OBS_WIRE=1`; with `LOTUS_OBS` alone the wire
+  is byte-for-byte identical to an unobserved run. Cross-process
+  edges therefore require `LOTUS_OBS_WIRE=1` fleet-wide; counters
+  and local records need only `LOTUS_OBS=1`. The receiver always
+  peels a header it recognizes (self-describing), so old→new and
+  unobserved peers are unaffected either way.
 
 ### Time
 
