@@ -1,0 +1,771 @@
+// fuse-hl — the Hale fuse: multi-segment fusion + the serve
+// surface, in Hale. glue.c wraps obs_attach (mmap'd shm can't
+// be pure Hale yet); everything above it — topic join by
+// (shape, name), NET_SEND<->NET_DELIVER seq matching into
+// cross-process edges, the live-locus table, snapshot JSON,
+// HTTP + SSE — lives here. consumer/fuse.c is the reference
+// implementation; same segments in, same tables out.
+//
+//   hale build .           # or hale run . -- 8787 ../../render/web
+//   ./fuse-hl [port] [webroot]
+//
+// Endpoints: /snapshot (JSON), /events (SSE, capped cadence),
+// / and /app.js (static, whitelist). Snapshots carry monotonic
+// TOTALS; the frontend derives rates from consecutive frames.
+//
+// Memory shape: all per-cycle work (event drain, FFI name
+// strings, snapshot JSON) happens inside a per-iteration Cycle
+// child locus — its region reclaims at dissolve, so the
+// long-running App region only holds the bounded tables. This
+// is the fix for `hale check`'s unbounded-allocation advisory
+// on the first draft, and it held: RSS is flat where the draft
+// leaked ~2 MB/s.
+
+import "attach" as fz;
+
+// ekinds / manifest kinds / counter cells (PROTOCOL.md)
+const EK_BUS_PUBLISH: Int = 1;
+const EK_BUS_DELIVER: Int = 2;
+const EK_NET_SEND: Int = 3;
+const EK_NET_DELIVER: Int = 4;
+const EK_LOCUS_BIRTH: Int = 5;
+const EK_LOCUS_DISSOLVE: Int = 6;
+const EK_RESTART: Int = 7;
+const EK_BINDING_DOWN: Int = 12;
+const MK_TOPIC: Int = 0;
+const MK_LOCUS_TYPE: Int = 1;
+const MK_BINDING: Int = 2;
+const CT_PUBLISHED: Int = 0;
+const CT_DELIVERED: Int = 1;
+const CG_RECORDS_TOTAL: Int = 2;
+
+// seq-match window: per net topic, WINDOW in-flight slots in
+// one flat vec (slot s owns [s*WINDOW, (s+1)*WINDOW)). The C
+// reference uses 65536; 16384 covers the same drain-interleave
+// spread at our poll cadence with 1/4 the memory.
+const WINDOW: Int = 16384;
+const NET_SLOTS: Int = 32;
+// pending-deliver windows: per (net topic, receiver seg), for
+// delivers that arrive before their send in drain interleave.
+// Sends live in the shared per-topic window and are NOT cleared
+// on match — multicast fan-out means one send matches a deliver
+// from EVERY listening seg (M2: mixed unix+udp).
+const PWINDOW: Int = 2048;
+const MAX_SEGS: Int = 16;
+const EV_TAIL: Int = 8;
+const SSE_SLOTS: Int = 8;
+const BATCH: Int = 512; // events per fz_next_batch call
+
+// meta cells (IntVec indices): mutable scalars shared between
+// App and the per-cycle child.
+const M_TAIL_HEAD: Int = 0;
+const M_NET_SLOTS: Int = 1;
+const M_WORKED: Int = 2;
+
+// ---- rows ----
+
+type SegRow { h: Int = -1; pid: Int = 0; name: String = ""; dead: Int = 0; restarts: Int = 0; reg: String = ""; }
+type LocusRow { seg: Int = -1; inst: Int = 0; tname: String = ""; parent: Int = 0; alive: Int = 0; pub: Int = 0; dlv: Int = 0; }
+type TopicRow { key: String = ""; name: String = ""; shape: String = ""; slot: Int = -1; }
+type TopicSeg { topic: Int = -1; seg: Int = -1; local_id: Int = -1; line: Int = -1; sends: Int = 0; delivers: Int = 0; }
+type EdgeRow { topic: Int = -1; from_seg: Int = -1; to_seg: Int = -1; matched: Int = 0; lat_sum: Int = 0; lat_max: Int = 0; }
+type SeqEnt { seq: Int = 0; ts: Int = 0; seg: Int = -1; kind: Int = 0; origin: Int = 0; }
+type SnapEntry { key: String = ""; val: String = ""; }
+type FdEntry { key: String = ""; fd: Int = -1; }
+
+@form(vec)
+locus SegVec { capacity { heap items of SegRow; } }
+@form(vec)
+locus LocusVec { capacity { heap items of LocusRow; } }
+@form(vec)
+locus TopicVec { capacity { heap items of TopicRow; } }
+@form(vec)
+locus TopicSegVec { capacity { heap items of TopicSeg; } }
+@form(vec)
+locus EdgeVec { capacity { heap items of EdgeRow; } }
+@form(vec)
+locus SeqVec { capacity { heap items of SeqEnt; } }
+@form(vec)
+locus StrVec { capacity { heap items of String; } }
+@form(vec)
+locus IntVec { capacity { heap items of Int; } }
+
+// cross-pool cells: the fusion loop writes, http handlers read
+// (and /events writes claimed fds) — serialized per metrics'
+// MetricMap discipline.
+@form(hashmap, sync = serialized)
+locus SnapMap { capacity { pool entries of SnapEntry indexed_by key; } }
+@form(hashmap, sync = serialized)
+locus FdMap { capacity { pool entries of FdEntry indexed_by key; } }
+
+// ---- http handler (io pool) ----
+
+locus FuseHandler {
+    params {
+        snaps: SnapMap;
+        fds: FdMap;
+        webroot: String = "render/web";
+    }
+
+    fn handle(req: std::http::Request) -> std::http::Response {
+        if req.path == "/snapshot" {
+            let e = self.snaps.get("snap") or SnapEntry { key: "snap", val: "{}" };
+            return std::http::Response {
+                status: 200,
+                content_type: "application/json",
+                headers: "Access-Control-Allow-Origin: *",
+                body: e.val
+            };
+        }
+        if req.path == "/events" {
+            let mut slot = 0;
+            let mut claimed = -1;
+            while slot < SSE_SLOTS {
+                let e = self.fds.get("" + slot) or FdEntry { key: "" + slot, fd: -1 };
+                if e.fd < 0 {
+                    self.fds.set(FdEntry { key: "" + slot, fd: req.conn_fd });
+                    claimed = slot;
+                    slot = SSE_SLOTS;
+                }
+                slot = slot + 1;
+            }
+            if claimed < 0 {
+                return std::http::Response { status: 503, body: "sse slots full" };
+            }
+            // a stalled client may cost the pump 200ms, never a stall
+            fz::fz_set_sndtimeo(req.conn_fd, 200);
+            // takeover: status line + these headers only; the
+            // fusion loop owns the fd from here and pumps frames.
+            return std::http::Response {
+                status: 200,
+                headers: "Content-Type: text/event-stream\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *",
+                body: "",
+                takeover: true
+            };
+        }
+        if req.path == "/" {
+            let html = std::io::fs::read_file(self.webroot + "/index.html")
+            or "<h1>fuse-hl: no webroot</h1>";
+            return std::http::Response {
+                status: 200, content_type: "text/html; charset=utf-8", body: html
+            };
+        }
+        if req.path == "/app.js" {
+            let js = std::io::fs::read_file(self.webroot + "/app.js") or "";
+            return std::http::Response {
+                status: 200, content_type: "text/javascript; charset=utf-8", body: js
+            };
+        }
+        return std::http::Response { status: 404, body: "not found" };
+    }
+}
+
+// ---- json helpers ----
+
+fn basename(p: String) -> String {
+    let mut i = std::str::index_of(p, "/");
+    let mut rest = p;
+    while i >= 0 {
+        rest = std::str::substring(rest, i + 1, len(rest));
+        i = std::str::index_of(rest, "/");
+    }
+    return rest;
+}
+
+fn jstr(s: String) -> String {
+    // names/events here are protocol identifiers and formatted
+    // lines; escape the two structural characters.
+    let a = std::str::replace(s, "\\", "\\\\");
+    return std::str::replace(a, "\"", "\\\"");
+}
+
+// ---- one fusion cycle (per-iteration child: region reclaims
+// at dissolve, keeping the long-running App region flat) ----
+
+locus Cycle {
+    params {
+        segs: SegVec;
+        loci: LocusVec;
+        topics: TopicVec;
+        tsegs: TopicSegVec;
+        edges: EdgeVec;
+        inflight: SeqVec;
+        tail: StrVec;
+        meta: IntVec;
+        evbuf: Bytes;
+        snaps: SnapMap;
+        fds: FdMap;
+        reg_dir: String = "/tmp/hale-obs";
+        do_disc: Bool = false;
+        do_snap: Bool = false;
+        now: Int = 0;
+    }
+
+    fn tail_push(line: String) {
+        let th = self.meta.get(M_TAIL_HEAD) or 0;
+        self.tail.set(th % EV_TAIL, line) or discard;
+        self.meta.set(M_TAIL_HEAD, th + 1) or discard;
+    }
+
+    // ---- discovery ----
+
+    fn known_reg(p: String) -> Bool {
+        let mut i = 0;
+        let mut hit = false;
+        while i < self.segs.len() {
+            let g = self.segs.get(i) or SegRow { };
+            if g.reg == p { hit = true; i = self.segs.len(); }
+            i = i + 1;
+        }
+        return hit;
+    }
+
+    fn discover() {
+        let n = std::io::fs::list_dir_count(self.reg_dir) or 0;
+        let mut i = 0;
+        while i < n {
+            let name = std::io::fs::list_dir_at(self.reg_dir, i) or "";
+            if std::str::index_of(name, ".json") >= 0 {
+                let p = self.reg_dir + "/" + name;
+                if !self.known_reg(p) {
+                    let h = fz::fz_attach(p);
+                    if h >= 0 {
+                        if fz::fz_alive(h) == 0 {
+                            // stale registration: dead at attach
+                            // time — GC file + segment, keep the
+                            // slot (PROTOCOL §1)
+                            let stale_pid = fz::fz_pid(h);
+                            fz::fz_detach(h);
+                            fz::fz_unlink(p);
+                            fz::fz_unlink("/dev/shm/hale-obs-" + stale_pid);
+                        } else {
+                            self.segs.push(SegRow {
+                                h: h, pid: fz::fz_pid(h),
+                                name: basename(fz::fz_exe(h)),
+                                dead: 0, restarts: 0, reg: p
+                            });
+                            self.index_topics(self.segs.len() - 1);
+                            println("fuse-hl: attached pid " + fz::fz_pid(h));
+                        }
+                    }
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    // ---- manifest join ----
+
+    fn tseg_index(si: Int, local_id: Int) -> Int {
+        let mut i = 0;
+        let mut found = -1;
+        while i < self.tsegs.len() {
+            let ts = self.tsegs.get(i) or TopicSeg { };
+            if ts.seg == si {
+                if ts.local_id == local_id { found = i; i = self.tsegs.len(); }
+            }
+            i = i + 1;
+        }
+        return found;
+    }
+
+    fn topic_index(key: String) -> Int {
+        let mut i = 0;
+        let mut found = -1;
+        while i < self.topics.len() {
+            let t = self.topics.get(i) or TopicRow { };
+            if t.key == key { found = i; i = self.topics.len(); }
+            i = i + 1;
+        }
+        return found;
+    }
+
+    fn index_topics(si: Int) {
+        let g = self.segs.get(si) or SegRow { };
+        let n = fz::fz_entry_count(g.h);
+        let mut i = 0;
+        while i < n {
+            if fz::fz_entry_kind(g.h, i) == MK_TOPIC {
+                let id = fz::fz_entry_id(g.h, i);
+                if self.tseg_index(si, id) < 0 {
+                    let nm = fz::fz_name(g.h, MK_TOPIC, id);
+                    if nm != "" {
+                        let shape = fz::fz_entry_shape_hex(g.h, i);
+                        let key = shape + "/" + nm;
+                        let mut ti = self.topic_index(key);
+                        if ti < 0 {
+                            self.topics.push(TopicRow {
+                                key: key, name: nm, shape: shape, slot: -1
+                            });
+                            ti = self.topics.len() - 1;
+                        }
+                        self.tsegs.push(TopicSeg {
+                            topic: ti, seg: si, local_id: id,
+                            line: fz::fz_counter_line(g.h, MK_TOPIC, id),
+                            sends: 0, delivers: 0
+                        });
+                    }
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    // ---- locus + edge tables ----
+
+    fn locus_upsert(si: Int, inst: Int, tname: String, parent: Int, alive: Int) {
+        let mut i = 0;
+        let mut slot = -1;
+        let mut dead_slot = -1;
+        while i < self.loci.len() {
+            let l = self.loci.get(i) or LocusRow { };
+            if l.seg == si {
+                if l.inst == inst { slot = i; i = self.loci.len(); }
+            }
+            if slot < 0 {
+                if l.alive == 0 { dead_slot = i; }
+            }
+            i = i + 1;
+        }
+        if slot >= 0 {
+            self.loci.set(slot, LocusRow {
+                seg: si, inst: inst, tname: tname, parent: parent, alive: alive
+            }) or discard;
+        } else {
+            if alive == 1 {
+                let row = LocusRow {
+                    seg: si, inst: inst, tname: tname, parent: parent, alive: 1
+                };
+                if dead_slot >= 0 { self.loci.set(dead_slot, row) or discard; }
+                else { self.loci.push(row); }
+            }
+        }
+    }
+
+    fn locus_row(si: Int, inst: Int) -> LocusRow {
+        let mut i = 0;
+        let mut out = LocusRow { };
+        while i < self.loci.len() {
+            let l = self.loci.get(i) or LocusRow { };
+            if l.seg == si {
+                if l.inst == inst { out = l; i = self.loci.len(); }
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    fn edge_bump(ti: Int, from_seg: Int, to_seg: Int, lat: Int) {
+        let mut i = 0;
+        let mut found = -1;
+        while i < self.edges.len() {
+            let e = self.edges.get(i) or EdgeRow { };
+            if e.topic == ti {
+                if e.from_seg == from_seg {
+                    if e.to_seg == to_seg { found = i; i = self.edges.len(); }
+                }
+            }
+            i = i + 1;
+        }
+        if found < 0 {
+            self.edges.push(EdgeRow {
+                topic: ti, from_seg: from_seg, to_seg: to_seg,
+                matched: 1, lat_sum: lat, lat_max: lat
+            });
+        } else {
+            let mut e = self.edges.get(found) or EdgeRow { };
+            e.matched = e.matched + 1;
+            e.lat_sum = e.lat_sum + lat;
+            if lat > e.lat_max { e.lat_max = lat; }
+            self.edges.set(found, e) or discard;
+        }
+    }
+
+    // ---- seq matching (order-independent, per C reference) ----
+
+    fn net_slot_for(ti: Int) -> Int {
+        let mut t = self.topics.get(ti) or TopicRow { };
+        if t.slot < 0 {
+            let used = self.meta.get(M_NET_SLOTS) or 0;
+            if used < NET_SLOTS {
+                t.slot = used;
+                self.meta.set(M_NET_SLOTS, used + 1) or discard;
+                self.topics.set(ti, t) or discard;
+            }
+        }
+        return t.slot;
+    }
+
+    fn pending_base(slot: Int, seg: Int) -> Int {
+        return NET_SLOTS * WINDOW + (slot * MAX_SEGS + seg) * PWINDOW;
+    }
+
+    fn net_event(si: Int, tsi: Int, is_send: Bool, ts: Int, seq: Int, origin: Int) {
+        let mut tseg = self.tsegs.get(tsi) or TopicSeg { };
+        if is_send { tseg.sends = tseg.sends + 1; }
+        else { tseg.delivers = tseg.delivers + 1; }
+        self.tsegs.set(tsi, tseg) or discard;
+
+        let slot = self.net_slot_for(tseg.topic);
+        if slot < 0 { return; }
+        let sidx = slot * WINDOW + (seq + origin * 7919) % WINDOW;
+
+        if is_send {
+            // store (overwrite on window wrap); kept after matches
+            // so every listener can pair against it
+            self.inflight.set(sidx, SeqEnt { seq: seq, ts: ts, seg: si, kind: 1, origin: origin }) or discard;
+            // sweep pending delivers parked by any other seg
+            let mut rs = 0;
+            while rs < self.segs.len() {
+                if rs != si {
+                    if rs < MAX_SEGS {
+                        let pidx = self.pending_base(slot, rs) + (seq + origin * 7919) % PWINDOW;
+                        let pe = self.inflight.get(pidx) or SeqEnt { };
+                        if pe.kind == 2 {
+                            if pe.seq == seq && pe.origin == origin {
+                                let mut lat = 0;
+                                if pe.ts > ts { lat = pe.ts - ts; }
+                                self.edge_bump(tseg.topic, si, rs, lat);
+                                self.inflight.set(pidx, SeqEnt { }) or discard;
+                            }
+                        }
+                    }
+                }
+                rs = rs + 1;
+            }
+        } else {
+            let e = self.inflight.get(sidx) or SeqEnt { };
+            if e.kind == 1 {
+                if e.seq == seq && e.origin == origin {
+                    if e.seg != si {
+                        let mut lat = 0;
+                        if ts > e.ts { lat = ts - e.ts; }
+                        self.edge_bump(tseg.topic, e.seg, si, lat);
+                        return; // send entry stays for other listeners
+                    }
+                }
+            }
+            // deliver-before-send: park in this seg's pending window
+            if si < MAX_SEGS {
+                let pidx = self.pending_base(slot, si) + (seq + origin * 7919) % PWINDOW;
+                self.inflight.set(pidx, SeqEnt { seq: seq, ts: ts, seg: si, kind: 2, origin: origin }) or discard;
+            }
+        }
+    }
+
+    // ---- event pump ----
+
+    fn locus_bump(si: Int, inst: Int, is_pub: Bool) {
+        let mut i = 0;
+        while i < self.loci.len() {
+            let l = self.loci.get(i) or LocusRow { };
+            if l.seg == si {
+                if l.inst == inst {
+                    let mut lm = l;
+                    if is_pub { lm.pub = lm.pub + 1; }
+                    else { lm.dlv = lm.dlv + 1; }
+                    self.loci.set(i, lm) or discard;
+                    i = self.loci.len();
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    fn handle_event(si: Int, k: Int, id: Int, ts: Int, w1: Int) {
+        let g = self.segs.get(si) or SegRow { };
+        if k == EK_BUS_PUBLISH {
+            let bl = (w1 >> 44) & 1048575;
+            if bl > 0 { self.locus_bump(si, bl, true); }
+        }
+        if k == EK_BUS_DELIVER {
+            let bl = (w1 >> 44) & 1048575;
+            if bl > 0 { self.locus_bump(si, bl, false); }
+        }
+        if k == EK_NET_SEND {
+            let tsi = self.tseg_index(si, id);
+            if tsi >= 0 {
+                self.net_event(si, tsi, true, ts, (w1 >> 16) & 281474976710655, w1 & 65535);
+            }
+        }
+        if k == EK_NET_DELIVER {
+            let tsi = self.tseg_index(si, id);
+            if tsi >= 0 {
+                self.net_event(si, tsi, false, ts, (w1 >> 16) & 281474976710655, w1 & 65535);
+            }
+        }
+        if k == EK_LOCUS_BIRTH {
+            let btype = (w1 >> 32) & 1048575;
+            let bparent = w1 & 4294967295;
+            let tname = fz::fz_name(g.h, MK_LOCUS_TYPE, btype);
+            self.locus_upsert(si, id, tname, bparent, 1);
+        }
+        if k == EK_LOCUS_DISSOLVE {
+            let l = self.locus_row(si, id);
+            self.locus_upsert(si, id, l.tname, l.parent, 0);
+            self.tail_push("pid " + g.pid + ": " + l.tname + "#" + id
+                    + " dissolved (reason " + w1 + ")");
+        }
+        if k == EK_RESTART {
+            let mut gm = self.segs.get(si) or SegRow { };
+            gm.restarts = gm.restarts + 1;
+            self.segs.set(si, gm) or discard;
+            self.tail_push("pid " + g.pid + ": restart -> locus#" + id);
+        }
+        if k == EK_BINDING_DOWN {
+            self.tail_push("pid " + g.pid + ": binding "
+                    + fz::fz_name(g.h, MK_BINDING, id) + " DOWN");
+        }
+    }
+
+    fn drain_rings() {
+        let mut si = 0;
+        while si < self.segs.len() {
+            let g = self.segs.get(si) or SegRow { };
+            if g.dead == 0 {
+                self.index_topics(si); // cheap; late manifest entries
+                let mut batches = 400; // <= 200k events per seg per cycle
+                while batches > 0 {
+                    let n = fz::fz_next_batch(g.h, self.evbuf);
+                    if n == 0 { batches = 0; }
+                    else {
+                        self.meta.set(M_WORKED, 1) or discard;
+                        let mut e = 0;
+                        while e < n {
+                            let off = e * 32;
+                            let ts = std::bytes::read_i64_le(self.evbuf, off) or 0;
+                            let k = std::bytes::read_u32_le(self.evbuf, off + 8) or 0;
+                            let id = std::bytes::read_u32_le(self.evbuf, off + 12) or 0;
+                            let w1 = std::bytes::read_i64_le(self.evbuf, off + 16) or 0;
+                            self.handle_event(si, k, id, ts, w1);
+                            e = e + 1;
+                        }
+                        if n < BATCH { batches = 0; }
+                        else { batches = batches - 1; }
+                    }
+                }
+                if fz::fz_alive(g.h) == 0 {
+                    let mut gm = self.segs.get(si) or SegRow { };
+                    gm.dead = 1;
+                    self.segs.set(si, gm) or discard;
+                    self.tail_push("pid " + g.pid + ": process EXITED");
+                }
+            }
+            si = si + 1;
+        }
+    }
+
+    // ---- snapshot ----
+
+    fn snapshot() -> String {
+        let mut s = "{\"ts\":" + self.now + ",\"processes\":[";
+        let mut i = 0;
+        while i < self.segs.len() {
+            let g = self.segs.get(i) or SegRow { };
+            if i > 0 { s = s + ","; }
+            let mut state = "live";
+            if g.dead == 1 { state = "dead"; }
+            s = s + "{\"pid\":" + g.pid + ",\"name\":\"" + jstr(g.name)
+                + "\",\"state\":\"" + state + "\""
+                + ",\"records\":" + fz::fz_counter(g.h, 0, CG_RECORDS_TOTAL)
+                + ",\"overruns\":" + fz::fz_overruns(g.h)
+                + ",\"restarts\":" + g.restarts + ",\"loci\":[";
+            let mut li = 0;
+            let mut nl = 0;
+            while li < self.loci.len() {
+                let l = self.loci.get(li) or LocusRow { };
+                if l.seg == i {
+                    if l.alive == 1 {
+                        if nl > 0 { s = s + ","; }
+                        s = s + "{\"id\":" + l.inst + ",\"type\":\"" + jstr(l.tname)
+                            + "\",\"parent\":" + l.parent
+                            + ",\"pub\":" + l.pub + ",\"dlv\":" + l.dlv + "}";
+                        nl = nl + 1;
+                    }
+                }
+                li = li + 1;
+            }
+            s = s + "]}";
+            i = i + 1;
+        }
+        s = s + "],\"topics\":[";
+        let mut ti = 0;
+        while ti < self.topics.len() {
+            let t = self.topics.get(ti) or TopicRow { };
+            if ti > 0 { s = s + ","; }
+            let mut pub = 0;
+            let mut dlv = 0;
+            let mut si2 = 0;
+            while si2 < self.tsegs.len() {
+                let ts2 = self.tsegs.get(si2) or TopicSeg { };
+                if ts2.topic == ti {
+                    let g2 = self.segs.get(ts2.seg) or SegRow { };
+                    pub = pub + fz::fz_counter(g2.h, ts2.line, CT_PUBLISHED);
+                    dlv = dlv + fz::fz_counter(g2.h, ts2.line, CT_DELIVERED);
+                }
+                si2 = si2 + 1;
+            }
+            s = s + "{\"name\":\"" + jstr(t.name) + "\",\"shape\":\"" + t.shape
+                + "\",\"pub\":" + pub + ",\"dlv\":" + dlv + "}";
+            ti = ti + 1;
+        }
+        s = s + "],\"edges\":[";
+        let mut ei = 0;
+        while ei < self.edges.len() {
+            let e = self.edges.get(ei) or EdgeRow { };
+            let t = self.topics.get(e.topic) or TopicRow { };
+            let gf = self.segs.get(e.from_seg) or SegRow { };
+            let gt = self.segs.get(e.to_seg) or SegRow { };
+            let mut sends = 0;
+            let mut delivers = 0;
+            let mut si3 = 0;
+            while si3 < self.tsegs.len() {
+                let ts3 = self.tsegs.get(si3) or TopicSeg { };
+                if ts3.topic == e.topic {
+                    if ts3.seg == e.from_seg { sends = ts3.sends; }
+                    if ts3.seg == e.to_seg { delivers = ts3.delivers; }
+                }
+                si3 = si3 + 1;
+            }
+            if ei > 0 { s = s + ","; }
+            s = s + "{\"topic\":\"" + jstr(t.name) + "\",\"from\":" + gf.pid
+                + ",\"to\":" + gt.pid + ",\"matched\":" + e.matched
+                + ",\"latSum\":" + e.lat_sum + ",\"latMax\":" + e.lat_max
+                + ",\"sends\":" + sends + ",\"delivers\":" + delivers + "}";
+            ei = ei + 1;
+        }
+        s = s + "],\"events\":[";
+        let th = self.meta.get(M_TAIL_HEAD) or 0;
+        let mut evi = 0;
+        let mut ne = 0;
+        while evi < EV_TAIL {
+            let line = self.tail.get((th + evi) % EV_TAIL) or "";
+            if line != "" {
+                if ne > 0 { s = s + ","; }
+                s = s + "\"" + jstr(line) + "\"";
+                ne = ne + 1;
+            }
+            evi = evi + 1;
+        }
+        s = s + "]}";
+        return s;
+    }
+
+    fn drop_sse(slot: Int) {
+        self.fds.set(FdEntry { key: "" + slot, fd: -1 });
+    }
+
+    fn pump_sse(snap: String) {
+        let frame = "data: " + snap + "\n\n";
+        let mut i = 0;
+        while i < SSE_SLOTS {
+            let e = self.fds.get("" + i) or FdEntry { key: "" + i, fd: -1 };
+            if e.fd >= 0 {
+                let st = std::io::tcp::Stream { conn_fd: e.fd, owns_fd: false };
+                st.send(frame) or self.drop_sse(i);
+            }
+            i = i + 1;
+        }
+    }
+
+    birth() {
+        if self.do_disc { self.discover(); }
+        self.drain_rings();
+        if self.do_snap {
+            let snap = self.snapshot();
+            self.snaps.set(SnapEntry { key: "snap", val: snap });
+            self.pump_sse(snap);
+        }
+    }
+}
+
+// ---- the long-running shell --------------------------------
+
+main locus App {
+    params {
+        segs: SegVec = SegVec { };
+        loci: LocusVec = LocusVec { };
+        topics: TopicVec = TopicVec { };
+        tsegs: TopicSegVec = TopicSegVec { };
+        edges: EdgeVec = EdgeVec { };
+        inflight: SeqVec = SeqVec { };
+        tail: StrVec = StrVec { };
+        meta: IntVec = IntVec { };
+        evbuf: Bytes;
+        snaps: SnapMap;
+        fds: FdMap;
+        srv: std::http::Server;
+        reg_dir: String = "/tmp/hale-obs";
+        snap_ns: Int = 100000000; // SSE cadence: 10 Hz
+    }
+
+    placement { srv: cooperative(pool = io); }
+
+    birth() {
+        let mut i = 0;
+        while i < NET_SLOTS * WINDOW + NET_SLOTS * MAX_SEGS * PWINDOW {
+            self.inflight.push(SeqEnt { });
+            i = i + 1;
+        }
+        let mut t = 0;
+        while t < EV_TAIL {
+            self.tail.push("");
+            t = t + 1;
+        }
+        let mut m = 0;
+        while m < 3 {
+            self.meta.push(0);
+            m = m + 1;
+        }
+    }
+
+    run() {
+        let mut last_disc = 0;
+        let mut last_snap = 0;
+        while true {
+            let now = fz::fz_now();
+            let mut do_disc = false;
+            if now - last_disc > 1000000000 { do_disc = true; last_disc = now; }
+            let mut do_snap = false;
+            if now - last_snap > self.snap_ns { do_snap = true; last_snap = now; }
+            self.meta.set(M_WORKED, 0) or discard;
+            Cycle {
+                segs: self.segs, loci: self.loci, topics: self.topics,
+                tsegs: self.tsegs, edges: self.edges, inflight: self.inflight,
+                tail: self.tail, meta: self.meta, evbuf: self.evbuf,
+                snaps: self.snaps,
+                fds: self.fds, reg_dir: self.reg_dir,
+                do_disc: do_disc, do_snap: do_snap, now: now
+            };
+            if (self.meta.get(M_WORKED) or 0) == 0 { std::time::sleep(2ms); }
+        }
+    }
+}
+
+fn main() {
+    let port = std::str::parse_int(std::env::arg_or(1, "8787")) or 8787;
+    let webroot = std::env::arg_or(2, "../../render/web");
+    let mut reg_dir = "/tmp/hale-obs";
+    if std::env::var_exists("XDG_RUNTIME_DIR") {
+        reg_dir = std::env::var("XDG_RUNTIME_DIR") + "/hale";
+    }
+    let snaps = SnapMap { };
+    let fds = FdMap { };
+    let bb = std::bytes::BytesBuilder { };
+    let mut zi = 0;
+    while zi < BATCH * 8 {
+        bb.append_u32_le(0);
+        zi = zi + 1;
+    }
+    App {
+        evbuf: bb.snapshot(),
+        snaps: snaps,
+        fds: fds,
+        reg_dir: reg_dir,
+        srv: std::http::Server {
+            port: port,
+            handler: FuseHandler { snaps: snaps, fds: fds, webroot: webroot },
+            ready_signal: "fuse-hl: listening"
+        }
+    };
+}

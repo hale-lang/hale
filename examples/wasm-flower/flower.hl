@@ -1,0 +1,74 @@
+// iris wasm spike: can hale's wasm target host the flower's render loop?
+//
+// Proves, in one module:
+//   - @export fn frame(t) driven by the host per requestAnimationFrame
+//   - persistent state across frames (frame counter in the state cell)
+//   - std::math trig on the hot path (petal layout is polar-coordinate math)
+//   - @ffi("js") draw calls out to a canvas-shaped host surface
+target wasm { }
+
+@ffi("c") fn lotus_wasm_state_set(b: Bytes);
+@ffi("c") fn lotus_wasm_state_get() -> Bytes;
+
+// Canvas-shaped host surface: clear, one petal draw primitive, an edge
+// line, and a frame-done marker the harness uses to count/validate.
+@ffi("js") fn ctx_clear(w: Float, h: Float);
+@ffi("js") fn ctx_petal(cx: Float, cy: Float, angle: Float, len: Float, bloom: Float, hue: Float);
+@ffi("js") fn ctx_edge(x1: Float, y1: Float, x2: Float, y2: Float, load: Float);
+@ffi("js") fn frame_done(n: Int, petals: Int);
+
+fn frames_so_far() -> Int {
+    let s = lotus_wasm_state_get();
+    if len(s) >= 4 { return std::bytes::read_u32_le(s, 0) or 0; }
+    return 0;
+}
+
+// One animated flower: PETALS petals around a locus center, each petal's
+// bloom phase offset so the flower "breathes"; two loci joined by an edge
+// whose load oscillates. Shape mirrors what the real renderer does per
+// fused-snapshot frame: polar layout + per-petal trig + draw emission.
+@export fn frame(t_ms: Float) {
+    let n = frames_so_far() + 1;
+    let b = std::bytes::BytesBuilder { };
+    b.append_u32_le(n);
+    lotus_wasm_state_set(b.snapshot());
+
+    let w = 800.0;
+    let h = 600.0;
+    ctx_clear(w, h);
+
+    let t = t_ms / 1000.0;
+    let tau = 6.283185307179586;
+    let petals = 24;
+
+    // locus A: the producer flower
+    let ax = w * 0.3;
+    let ay = h * 0.5;
+    let mut i = 0;
+    while i < petals {
+        let frac = std::math::int_to_float(i) / std::math::int_to_float(petals);
+        let angle = frac * tau + t * 0.3;
+        let bloom = 0.5 + 0.5 * std::math::sin(t * 2.0 + frac * tau);
+        let length = 60.0 + 20.0 * bloom;
+        ctx_petal(ax, ay, angle, length, bloom, frac * 360.0);
+        i = i + 1;
+    }
+
+    // locus B: the consumer flower, half the petals
+    let bx = w * 0.7;
+    let by = h * 0.5;
+    let mut j = 0;
+    while j < petals / 2 {
+        let frac = std::math::int_to_float(j) / std::math::int_to_float(petals / 2);
+        let angle = frac * tau - t * 0.5;
+        let bloom = 0.5 + 0.5 * std::math::cos(t * 1.5 + frac * tau);
+        ctx_petal(bx, by, angle, 40.0 + 15.0 * bloom, bloom, 200.0 + frac * 100.0);
+        j = j + 1;
+    }
+
+    // the binding edge between them, load breathing 0..1
+    let load = 0.5 + 0.5 * std::math::sin(t * 0.8);
+    ctx_edge(ax, ay, bx, by, load);
+
+    frame_done(n, petals + petals / 2);
+}

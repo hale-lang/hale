@@ -1,6 +1,0 @@
-[ffi]
-# Link surface for libraylib + the OS libraries it depends on.
-# Order works naturally now that hale places csrc before
-# -l flags in the clang invocation (FRICTION F.7 resolved).
-csrc = ["glue.c"]
-link = ["raylib", "GL", "m", "pthread", "dl", "rt", "X11"]

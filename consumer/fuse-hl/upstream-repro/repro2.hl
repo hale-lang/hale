@@ -1,0 +1,46 @@
+// Repro 2: where does `vec.get(i) or Default {}` allocate when
+// called from a CHILD locus reading a PARENT-owned form?
+// If in the child's region: flat RSS (child dissolves per
+// iteration). If in the form-owner's region: monotonic growth —
+// which would explain fuse-hl leaking ~3MB/s under event load
+// despite the per-cycle-child structure.
+
+type Row { a: Int = 0; b: Int = 0; c: Int = 0; s: String = ""; }
+
+@form(vec)
+locus RowVec { capacity { heap items of Row; } }
+
+locus Reader {
+    params { v: RowVec; }
+    birth() {
+        let mut i = 0;
+        let mut acc = 0;
+        while i < 1000 {
+            let r = self.v.get(i % 100) or Row { };
+            acc = acc + r.a;
+            i = i + 1;
+        }
+        if acc < 0 { println("never"); }
+    }
+}
+
+main locus App {
+    params { v: RowVec = RowVec { }; }
+    birth() {
+        let mut i = 0;
+        while i < 100 {
+            self.v.push(Row { a: i, b: i, c: i, s: "row-" + i });
+            i = i + 1;
+        }
+    }
+    run() {
+        let mut n = 0;
+        while n < 100000 {
+            Reader { v: self.v };
+            n = n + 1;
+        }
+        println("done: 100k children x 1k reads");
+    }
+}
+
+fn main() { App { }; }

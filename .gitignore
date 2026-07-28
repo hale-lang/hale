@@ -1,24 +1,8 @@
-# Compiled Hale binary — `hale build` produces this next to source.
-# Resolved per FRICTION F.3 (hale e75d2ef): `hale build .` now
-# produces ./<dir>/<dir> correctly; the stray /main entry is gone.
-/iris
-
-# Generated plugin-registry seed; emitted from plugins.toml at build time.
-/build/
-
-# Built test binaries. Hale puts binaries at <dir>/<basename>;
-# each test seed lives at tests/<name>/ and produces tests/<name>/<name>.
-/tests/stub_smoke/stub_smoke
-/tests/raylib_smoke/raylib_smoke
-
-# Workspace state Iris writes when run against a test workspace inside
-# this repo. Distinct from a user's `.iris/` outside the repo.
-.iris/
-
-# Toolchain-managed vendored dependencies (per spec/packages.md).
-/vendor/
-
-# OS / editor cruft.
-.DS_Store
-*.swp
-*~
+emitter/synth
+emitter/peek
+*.dump
+consumer/fuse
+examples/obs-smoke/obs-smoke
+consumer/fuse-hl/fuse-hl
+examples/wasm-flower/flower.wasm
+examples/wasm-flower/flower.mjs
