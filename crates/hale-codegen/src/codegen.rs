@@ -19087,25 +19087,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // truncates the i64 to i32 to match the declared
             // ABI. main itself returns void at the lotus level
             // OR Int (per spec/runtime.md), but at LLVM we always
-            // emit i32. Join cooperative-pool workers FIRST so a coro
-            // parked inside a locus's run() is woken+unwound while its
-            // arena is still valid — see the matching block in
-            // `lower_program`'s main-exit path (2026-05-30, extends
-            // the 2026-05-26 substrate-race fix). Then flush the
-            // dissolve frame, then tear down the arena.
-            // WASM plan (entry inversion): no worker threads on wasm, so
-            // skip the pool join/cancel (its body references
-            // pthread_join + the wake-fd close, which would otherwise
-            // survive as host imports).
-            if !self.is_wasm {
-                self.emit_coop_pool_shutdown_all()?;
-            }
-            self.flush_dissolve_frame()?;
-            self.emit_arena_destroy()?;
-            self.emit_bus_queue_destroy()?;
-            // Re-open an empty frame so the post-flush bookkeeping
-            // (popped in lower_program) stays balanced.
-            self.push_dissolve_frame();
+            // emit i32.
+            //
+            // Crumb batch-3 item 3 (2026-07-28): evaluate the
+            // return EXPRESSION before any teardown. The old
+            // order ran the full teardown (pool shutdown, dissolve
+            // flush, arena + bus-queue destroy) and THEN lowered
+            // the expr — so `return f();` in main called `f` into
+            // a torn-down world: `lotus_coop_pool_lookup` returned
+            // NULL (subscribers registered pool-less, children's
+            // run() forced onto the sync path) and the first bus
+            // enqueue wrote into the freed queue (SIGSEGV). The
+            // value is spec-enforced Int, so hoisting its
+            // evaluation has no lifetime dependency on anything
+            // the teardown below frees.
             let i32_t = self.context.i32_type();
             let code = match expr {
                 None => i32_t.const_int(0, false),
@@ -19127,6 +19122,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                 }
             };
+            // Join cooperative-pool workers FIRST so a coro
+            // parked inside a locus's run() is woken+unwound while its
+            // arena is still valid — see the matching block in
+            // `lower_program`'s main-exit path (2026-05-30, extends
+            // the 2026-05-26 substrate-race fix). Then flush the
+            // dissolve frame (which now includes any locus the return
+            // expr itself instantiated), then tear down the arena.
+            // WASM plan (entry inversion): no worker threads on wasm, so
+            // skip the pool join/cancel (its body references
+            // pthread_join + the wake-fd close, which would otherwise
+            // survive as host imports).
+            if !self.is_wasm {
+                self.emit_coop_pool_shutdown_all()?;
+            }
+            self.flush_dissolve_frame()?;
+            self.emit_arena_destroy()?;
+            self.emit_bus_queue_destroy()?;
+            // Re-open an empty frame so the post-flush bookkeeping
+            // (popped in lower_program) stays balanced.
+            self.push_dissolve_frame();
             self.builder
                 .build_return(Some(&code))
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -20058,6 +20073,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if lt == CodegenTy::Int && rt == CodegenTy::Float {
                     let lv2 = self.coerce_to_float(lv, &lt, "binop lhs")?;
                     return self.lower_binop(*op, lv2.into(), rv, &CodegenTy::Float);
+                }
+                // Crumb batch-3 item 5: Duration scalar arithmetic.
+                // `Int * Duration` (either order) scales the
+                // interval; `Duration / Int` divides it. Both
+                // sides are i64 at the LLVM level (Duration is
+                // nanoseconds), so no coercion — just route to
+                // the Duration arm.
+                if *op == BinOp::Mul
+                    && ((lt == CodegenTy::Int && rt == CodegenTy::Duration)
+                        || (lt == CodegenTy::Duration
+                            && rt == CodegenTy::Int))
+                {
+                    return self.lower_binop(
+                        *op, lv, rv, &CodegenTy::Duration,
+                    );
+                }
+                if *op == BinOp::Div
+                    && lt == CodegenTy::Duration
+                    && rt == CodegenTy::Int
+                {
+                    return self.lower_binop(
+                        *op, lv, rv, &CodegenTy::Duration,
+                    );
                 }
                 if lt != rt {
                     return Err(CodegenError::Unsupported(format!(
@@ -21005,16 +21043,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let v = v.map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 Ok((v.into(), CodegenTy::Int))
             }
-            // Duration arithmetic — add/sub produce Duration. Mul
-            // / div / mod don't have natural Duration semantics
-            // (multiply by a scalar would, but we don't have
-            // scalar-by-Duration overloads yet).
-            (BinOp::Add | BinOp::Sub, CodegenTy::Duration) => {
+            // Duration arithmetic — add/sub produce Duration.
+            // Mul/Div arrive here only via the scalar routing in
+            // Expr::Binary (Crumb batch-3 item 5: `Int * Duration`
+            // either order, `Duration / Int`) — Duration is i64
+            // nanoseconds, so scalar scale/divide are plain
+            // integer ops. Duration×Duration / Duration÷Duration
+            // never reach this arm (typecheck rejects them).
+            (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div, CodegenTy::Duration) => {
                 let l = lv.into_int_value();
                 let r = rv.into_int_value();
                 let v = match op {
                     BinOp::Add => self.builder.build_int_add(l, r, "dadd"),
                     BinOp::Sub => self.builder.build_int_sub(l, r, "dsub"),
+                    BinOp::Mul => self.builder.build_int_mul(l, r, "dscale"),
+                    BinOp::Div => {
+                        self.builder.build_int_signed_div(l, r, "ddiv")
+                    }
                     _ => unreachable!(),
                 };
                 let v = v.map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

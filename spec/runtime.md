@@ -667,6 +667,21 @@ inside the locus is unchanged — `recv_bytes(stream)` reads the
 same line of source whether the pool is `async_io` or not; the
 substrate picks the right lowering at the syscall boundary.
 
+**One worker thread per named cooperative pool — a promise, not
+an implementation detail** (Crumb batch-3, 2026-07-28). Every
+named cooperative pool (`async_io` or classic) has exactly one
+OS worker thread for the lifetime of the program. Consequences a
+consumer may depend on: every `run()`, bus handler, and parked-
+coro resume for loci on the pool executes on that one thread
+(coroutines interleave on it; they never migrate), so a
+thread-affine C library — a JS engine, SQLite in serialized
+mode, a GUI toolkit — placed on a named pool is entered from a
+single thread by construction, and `@export` re-entry from
+foreign code called on that thread stays on it. Concurrency
+within a pool is cooperative only. If a scale-out mechanism ever
+lands, it will be a new opt-in placement form; `cooperative(pool
+= name)` keeps the single-worker guarantee.
+
 Because parking yields the shared worker, N reader loci that each
 park on their own fd — the F.35 one-reader-per-signal shape —
 are serviced concurrently by a single pool. Two invariants make

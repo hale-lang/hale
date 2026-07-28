@@ -88,6 +88,22 @@ type __StdHttpResponse {
     /// (WebSocket), but takeover is status-agnostic (a CONNECT
     /// tunnel's 200 works the same way).
     takeover: Bool = false;
+    /// Raw takeover (Crumb batch-3, 2026-07-28): when true, the
+    /// Server writes NOTHING — no status line, no headers — and
+    /// ownership of `conn_fd` transfers exactly as with
+    /// `takeover`. For the deferred-response shape: the handler
+    /// doesn't know the status yet (the answer arrives later
+    /// from another locus — a resolved promise, a bus reply),
+    /// so whoever ends up owning the fd writes the entire
+    /// response including the status line, via the raw-fd
+    /// surface (`std::io::tcp::send_fd`). Also the shape for
+    /// CONNECT tunnels negotiated elsewhere and server-initiated
+    /// protocols. `status`/`headers`/`body` are ignored; the
+    /// conn loop's 5s recv timeout is still armed on the fd
+    /// (clear via `set_recv_timeout(fd, 0)`); a handler that
+    /// sets this without stashing `req.conn_fd` leaks the fd.
+    /// Takes precedence over `takeover` if both are set.
+    takeover_raw: Bool = false;
 }
 
 // Map a numeric HTTP status to its canonical reason phrase.
@@ -436,6 +452,15 @@ fn __http_handle_one_conn(conn_fd: Int, h: std::http::Handler) {
     let mut req = std::http::parse_request(raw);
     req.conn_fd = conn_fd;
     let resp = h.handle(req);
+    if resp.takeover_raw {
+        // Raw takeover: NOTHING is written — the fd leaves this
+        // Stream's ownership with the wire untouched, and the
+        // handler (which stashed req.conn_fd) writes the whole
+        // response later, status line included. The deferred-
+        // response / CONNECT-tunnel shape.
+        let _ = s.release_fd();
+        return;
+    }
     if resp.takeover {
         // Upgrade/takeover: status line + user headers only, then
         // the fd leaves this Stream's ownership — its scope-exit

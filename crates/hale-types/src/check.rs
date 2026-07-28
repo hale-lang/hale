@@ -11224,10 +11224,49 @@ impl<'a> Checker<'a> {
             (Ty::Prim(PrimType::Int), Ty::Prim(PrimType::Float))
                 | (Ty::Prim(PrimType::Float), Ty::Prim(PrimType::Int))
         );
+        // Crumb batch-3 item 5: Duration scalar arithmetic. A
+        // runtime-computed delay (`ms * 1ms` where ms is an Int
+        // from an FFI boundary) had no direct expression —
+        // Duration literals compose only with Durations. `Int *
+        // Duration` (either order) scales the interval; `Duration
+        // / Int` divides it. Duration is i64 nanoseconds
+        // internally, so both are plain integer ops in codegen.
+        let is_dur_scalar_mul = matches!(op, Mul)
+            && matches!(
+                (lt, rt),
+                (Ty::Prim(PrimType::Int), Ty::Prim(PrimType::Duration))
+                    | (Ty::Prim(PrimType::Duration), Ty::Prim(PrimType::Int))
+            );
+        let is_dur_scalar_div = matches!(op, Div)
+            && matches!(
+                (lt, rt),
+                (Ty::Prim(PrimType::Duration), Ty::Prim(PrimType::Int))
+            );
         match op {
             Add | Sub | Mul | Div | Mod | BitAnd | BitOr | BitXor | Shl | Shr => {
                 if is_int_float_mix {
                     return Ty::Prim(PrimType::Float);
+                }
+                if is_dur_scalar_mul || is_dur_scalar_div {
+                    return Ty::Prim(PrimType::Duration);
+                }
+                // Duration × Duration (and ÷ / %) has no unit-
+                // sane meaning (ns² / a dimensionless ratio) —
+                // reject with a pointer at the scalar forms
+                // instead of the codegen catch-all it used to
+                // die on.
+                if matches!(op, Mul | Div | Mod)
+                    && matches!(lt, Ty::Prim(PrimType::Duration))
+                    && matches!(rt, Ty::Prim(PrimType::Duration))
+                {
+                    self.diags.push(Diag::ty(
+                        span,
+                        "`Duration` cannot be multiplied or divided by \
+                         another `Duration` — scale with an Int instead \
+                         (`n * 1ms`, `d / 2`)"
+                            .to_string(),
+                    ));
+                    return Ty::Prim(PrimType::Duration);
                 }
                 if !lt.assignable_from(rt) && !rt.assignable_from(lt) {
                     self.diags.push(Diag::ty(

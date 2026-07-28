@@ -6,6 +6,57 @@ behavior.
 
 ---
 
+## Unreleased
+
+Crumb batch-3 handoff (UPSTREAM3.md): two design asks, one
+codegen bug with a second symptom, one paper cut.
+
+- **`fn main`'s `return f()` no longer tears the runtime down
+  before calling `f`** (batch-3 items 3+4). `lower_return`'s
+  in_main path emitted the full teardown — cooperative-pool
+  shutdown, dissolve flush, arena destroy, bus-queue destroy —
+  BEFORE lowering the return expression. A main written as
+  `return cmd_run();`, where `cmd_run` instantiates the main
+  locus, executed the whole program in a torn-down world:
+  `lotus_coop_pool_lookup` returned NULL (subscribers registered
+  pool-less; pool-placed children's `run()` forced onto the
+  synchronous inline path — item 4's surprise), and the first
+  bus enqueue wrote into the freed queue (item 3's SIGSEGV; in
+  small heaps a silent drop, which is why minimal repros looked
+  green). The return value is spec-enforced `Int`, so evaluation
+  is now hoisted before teardown with no lifetime hazard.
+  Regression test asserts on delivery output, not just exit
+  status.
+
+- **`std::http` raw takeover — `Response { takeover_raw: true }`**
+  (batch-3 item 1). The Server writes NOTHING — no status line,
+  no headers — and fd ownership transfers exactly as with
+  `takeover`. The deferred-response shape: the handler returns
+  before the answer exists (a promise resolved later, a bus
+  reply), and whoever ends up owning the fd writes the entire
+  response, status line included, via the raw-fd surface. Also
+  covers CONNECT tunnels and server-initiated protocols.
+  `status`/`headers`/`body` are ignored; same recv-timeout and
+  fd-leak caveats as `takeover`; takes precedence if both set.
+
+- **Duration scalar arithmetic** (batch-3 item 5). `Int *
+  Duration` (either order) scales the interval; `Duration / Int`
+  divides it — so a runtime-computed delay is `ms * 1ms` instead
+  of an O(ms/100) tiered sleep loop. `Duration * Duration` (and
+  `/`, `%`) is now rejected with a real diagnostic pointing at
+  the scalar forms (it previously died on a spanless codegen
+  catch-all).
+
+- **One worker per named cooperative pool is now a spec-level
+  promise** (batch-3 item 2). `spec/runtime.md` § `where
+  async_io`: every named cooperative pool has exactly one OS
+  worker thread for the program's lifetime; all `run()`s, bus
+  handlers, and coro resumes for the pool's loci execute on that
+  thread (coros never migrate). Thread-affine C libraries (JS
+  engines, SQLite serialized mode, GUI toolkits) placed on a
+  named pool are entered from one thread by construction, and
+  citable as such.
+
 ## v0.11.15 — iris observation edge-emission fixes (topic id, publish counter, wire opt-in) (2026-07-28)
 
 Three regressions the iris fleet caught in the v0.11.14 field test
