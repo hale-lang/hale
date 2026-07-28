@@ -9858,8 +9858,24 @@ typedef struct lotus_transport {
     int      framed;
     uint64_t send_seq;    /* stamped then incremented per send */
     uint64_t recv_seq;    /* last seq seen (0 = none yet) */
+    uint64_t recv_origin; /* iris handoff-3: sender origin read off the wire */
     uint64_t seq_gaps;    /* recv'd seq != last+1 occurrences */
 } lotus_transport_t;
+
+/* iris handoff-3 (transport branch): expose the framed wire seq +
+ * the sender origin the receiver read, so the fanout / reader emit
+ * NET_SEND/NET_DELIVER on the SAME (origin, seq) — the transport
+ * path was stamping origin 0 + a local counter (the field's
+ * unpaired-edges symptom). Non-framed transports leave these 0. */
+uint64_t lotus_transport_send_seq(const lotus_transport_t *t) {
+    return t ? t->send_seq : 0;
+}
+uint64_t lotus_transport_recv_seq(const lotus_transport_t *t) {
+    return t ? t->recv_seq : 0;
+}
+uint64_t lotus_transport_recv_origin(const lotus_transport_t *t) {
+    return t ? t->recv_origin : 0;
+}
 
 #define LOTUS_UNIX_MAX_MSG_BYTES (8u * 1024u * 1024u)
 
@@ -10108,7 +10124,14 @@ int lotus_transport_send(lotus_transport_t *t,
         /* GH #231/#236: [u64 LE len][u64 LE seq][payload]. */
         uint64_t hdr[2];
         hdr[0] = (uint64_t)len;
-        hdr[1] = ++t->send_seq;   /* first frame = 1; 0 = sentinel */
+        /* iris handoff-3: [len][origin:16 | seq:48]. origin = this
+         * process's obs identity (0 when unobserved); seq is the
+         * per-connection frame counter (first = 1). Both ends are
+         * the same build after a uniform rebuild, so widening the
+         * seq word is safe; gap accounting masks to the low 48. */
+        uint64_t o = lotus_obs_origin ? lotus_obs_origin() : 0;
+        ++t->send_seq;
+        hdr[1] = (t->send_seq & 0xFFFFFFFFFFFFULL) | ((o & 0xFFFFULL) << 48);
         if (lotus__transport_write_full(t->conn_fd, hdr, sizeof(hdr)) != 0
             || lotus__transport_write_full(t->conn_fd, buf, len) != 0) {
             perror("lotus_transport_send");
@@ -10140,7 +10163,8 @@ ssize_t lotus_transport_recv(lotus_transport_t *t,
             return 0;
         }
         uint64_t len = hdr[0];
-        uint64_t seq = hdr[1];
+        uint64_t seq = hdr[1] & 0xFFFFFFFFFFFFULL;
+        t->recv_origin = (hdr[1] >> 48) & 0xFFFFULL;
         if (len > LOTUS_UNIX_MAX_MSG_BYTES || len > (uint64_t)cap) {
             fprintf(stderr,
                     "lotus_transport_recv: framed length %llu exceeds "
@@ -13019,12 +13043,20 @@ static void lotus_bus_unix_serve(lotus_bus_remote_entry_t *entry) {
                     entry->obs_binding_id = (id > 0) ? id : -1;
                 }
                 if (entry->obs_binding_id > 0) {
-                    /* Stream is unicast (one sender per connection),
-                     * so origin 0 + the local seq pairs correctly;
-                     * the (origin, seq) fix is UDP-multicast-specific
-                     * (handoff-3 P11). */
-                    lotus_obs_net_deliver(entry->obs_binding_id, 0,
-                                          dseq, (uint64_t)n);
+                    /* iris handoff-3: echo the SENDER's (origin,
+                     * seq) read off the framed wire — the same
+                     * pair the transport-branch NET_SEND stamped.
+                     * Falls back to (0, local dseq) only for a
+                     * non-framed transport (no wire seq). */
+                    uint64_t wo =
+                        lotus_transport_recv_origin(entry->transport);
+                    uint64_t ws =
+                        lotus_transport_recv_seq(entry->transport);
+                    lotus_obs_net_deliver(
+                        entry->obs_binding_id,
+                        ws ? wo : 0,
+                        ws ? ws : dseq,
+                        (uint64_t)n);
                 }
             }
         }
@@ -14093,8 +14125,15 @@ void lotus_bus_remote_fanout(const char *subject,
                     e->obs_binding_id = (id > 0) ? id : -1;
                 }
                 if (e->obs_binding_id > 0) {
-                    lotus_obs_net_send(e->obs_binding_id, 0, sent_seq,
-                                       (uint64_t)payload_size);
+                    /* iris handoff-3: pair on (origin, wire seq),
+                     * not (0, local ctr) — the transport-branch
+                     * field bug. send_seq is the framed wire seq
+                     * the receiver echoes; origin is this process. */
+                    lotus_obs_net_send(
+                        e->obs_binding_id,
+                        lotus_obs_origin ? lotus_obs_origin() : 0,
+                        lotus_transport_send_seq(e->transport),
+                        (uint64_t)payload_size);
                 }
             }
         } else {
