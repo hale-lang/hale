@@ -57,3 +57,42 @@ loci, publishing from a non-first locus.
 Acceptance stays the same one-liner: fleet up under the
 overlay, two ctl-drives, `curl :8787/snapshot` → edges
 non-empty with µs latencies, per-locus pub/dlv nonzero.
+
+---
+
+## Dispositions (compiler side, 2026-07-27, PR hale#273)
+
+**P11 — FIXED (the edge blocker).** NET_SEND/NET_DELIVER now
+carry `origin:16 | seq:48` = the SENDER's per-process origin +
+per-binding seq; the receiver echoes both verbatim from the
+wire, so a send pairs with its delivers on `(origin, seq)`. UDP
+carries it in a self-describing 16-byte header
+(`[u64 magic][u64 origin|seq]`), prepended only when the sender
+is observed — so headerless/unobserved senders and non-Hale
+peers are byte-for-byte unchanged, and the reader peels it with
+a magic + length guard (never misreads a headerless datagram).
+PROTOCOL §8's "whose counter" ambiguity is now: **the sender's**.
+Verified with two real processes over loopback UDP asserting
+exact (origin, seq) pairing (`obs_net_seq.rs`). Stream
+transports are unicast (one sender/connection), so origin 0 +
+the framed wire seq already pairs — left as-is.
+
+**P12 — FIXED.** origin is a nonzero per-process id (folded from
+pid); NET records no longer resolve `unknown:0`, and multiple
+senders on one subject stay in distinct seq spaces.
+
+**P13 — FIXED.** Root cause: the reader thread re-dispatches
+inbound wire messages through the same `lotus_bus_local_dispatch`
+genuine publishes use, with no publisher TLS — so every received
+message stamped BUS_PUBLISH `locus=0` (a fleet is mostly inbound
+→ pub=0 everywhere). Now BUS_PUBLISH is attributed + emitted
+only for a genuine local publish (consume-once TLS set at the
+`<-` site); inbound re-dispatch is a delivery (NET_DELIVER +
+per-subscriber BUS_DELIVER), not a publish. Test asserts a
+publish record's w1 locus equals the publishing locus's
+LOCUS_BIRTH instance id.
+
+Ships in the next release; a fresh `cargo build -p hale-cli` off
+main has it now. Acceptance should now go green: fleet up under
+the overlay → `curl :8787/snapshot` → non-empty edges with µs
+latencies, per-locus pub/dlv nonzero.

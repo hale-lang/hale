@@ -14002,25 +14002,41 @@ void lotus_bus_remote_fanout(const char *subject,
             int obs_hdr = (lotus_obs_active && lotus_obs_active()
                            && lotus_obs_origin);
             ssize_t sent;
+            char *obuf = NULL;
             if (obs_hdr) {
+                /* One contiguous [16B header][payload] datagram
+                 * (UDP is atomic per datagram, so it can't be
+                 * split across two sends). A heap temp only on
+                 * the observed path keeps this portable — sendmsg
+                 * isn't declared on the wasm target's headers,
+                 * and the udp path compiles for every target even
+                 * though it only runs on Linux. */
                 uint64_t origin = lotus_obs_origin();
                 uint64_t hdr[2] = {
                     LOTUS_OBS_WIRE_MAGIC,
                     ((origin & 0xFFFFULL)
                      | ((useq & 0xFFFFFFFFFFFFULL) << 16)),
                 };
-                struct iovec iov[2];
-                iov[0].iov_base = hdr;
-                iov[0].iov_len = sizeof(hdr);
-                iov[1].iov_base = (void *)payload;
-                iov[1].iov_len = payload_size;
-                struct msghdr mh;
-                memset(&mh, 0, sizeof(mh));
-                mh.msg_name = &e->udp_dest;
-                mh.msg_namelen = sizeof(e->udp_dest);
-                mh.msg_iov = iov;
-                mh.msg_iovlen = 2;
-                sent = sendmsg(e->udp_fd, &mh, 0);
+                obuf = (char *)malloc(sizeof(hdr) + payload_size);
+                if (obuf) {
+                    memcpy(obuf, hdr, sizeof(hdr));
+                    if (payload_size) {
+                        memcpy(obuf + sizeof(hdr), payload,
+                               payload_size);
+                    }
+                    sent = sendto(e->udp_fd, obuf,
+                                  sizeof(hdr) + payload_size, 0,
+                                  (struct sockaddr *)&e->udp_dest,
+                                  sizeof(e->udp_dest));
+                } else {
+                    /* OOM on the header temp — fall back to a
+                     * headerless send so delivery still happens
+                     * (this datagram just won't seq-pair). */
+                    obs_hdr = 0;
+                    sent = sendto(e->udp_fd, payload, payload_size, 0,
+                                  (struct sockaddr *)&e->udp_dest,
+                                  sizeof(e->udp_dest));
+                }
             } else {
                 sent = sendto(e->udp_fd, payload, payload_size, 0,
                               (struct sockaddr *)&e->udp_dest,
@@ -14047,6 +14063,7 @@ void lotus_bus_remote_fanout(const char *subject,
                                        useq, (uint64_t)payload_size);
                 }
             }
+            if (obuf) free(obuf);
             continue;
         }
         if (!e->transport) continue;
