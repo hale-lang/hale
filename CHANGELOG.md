@@ -6,7 +6,7 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.11.16 — Crumb batch-3: main-return teardown fix, takeover_raw, Duration scalars (2026-07-28)
 
 Crumb batch-3 handoff (UPSTREAM3.md): two design asks, one
 codegen bug with a second symptom, one paper cut.
