@@ -6,7 +6,7 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.11.18 — Crumb batch-4 + iris handoff-5: teardown join order, direct-flavor obs, replay heartbeat, json keys (2026-07-28)
 
 Crumb batch-4 (UPSTREAM4.md) + iris handoff-5, delivered together.
 
