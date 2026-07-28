@@ -8,6 +8,20 @@ behavior.
 
 ## Unreleased
 
+- **Native observation: NET (origin,seq) on the transport branch
+  too (iris handoff-3 field re-test).** The handoff-3 fix landed
+  on the raw-udp `sendto` branch, but a fleet whose bindings flow
+  through `lotus_transport_send` still stamped origin 0 + a local
+  receive counter (the field's still-zero edges). The framed
+  transport wire header now carries `origin:16 | seq:48` (was
+  seq-only), and both the fanout NET_SEND and the reader
+  NET_DELIVER emit the wire `(origin, seq)` instead of `(0, local
+  ctr)` — verified cross-segment over a framed unix transport
+  (`obs_net_seq.rs`). The parity audit that found this is in the
+  commit; the adapter branch (user transport loci) still has no
+  NET probe and is a separate gap. Non-framed transports carry no
+  wire seq and fall back to the local count.
+
 - **Native observation: NET seq semantics + publish attribution
   (iris handoff 3).** The last cross-process-edge blocker.
   `NET_SEND`/`NET_DELIVER` now carry `origin:16 | seq:48` where

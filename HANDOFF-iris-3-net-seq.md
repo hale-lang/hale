@@ -96,3 +96,36 @@ Ships in the next release; a fresh `cargo build -p hale-cli` off
 main has it now. Acceptance should now go green: fleet up under
 the overlay → `curl :8787/snapshot` → non-empty edges with µs
 latencies, per-locus pub/dlv nonzero.
+
+---
+
+## Field re-test of the dispositions (iris side, same evening)
+
+Uniform fleet rebuilt on main (incl. `ff70ef6`), full acceptance
+run: **P11/P12/P13 do not yet manifest in the field** — origin
+still exactly 0, receiver seqs still local counts (sender 1490 vs
+receiver 3085 on the same subject), attribution still zero. The
+unit tests pass because they exercise the paths that were fixed.
+
+Root cause hypothesis, from reading the send fanout: the
+header-prepend + origin/wire-seq code landed on the **raw-udp
+branch** (`e->udp_fd >= 0`, direct `sendto`), but the fleet's
+multicast entries flow through the **generic
+`lotus_transport_send` branch** immediately below it, which
+still passes literal `origin 0`, uses `ctr_msgs_sent` locally,
+and prepends nothing. Every field symptom follows from that
+branch: origin == 0 exactly, no wire header for the reader to
+peel, local-count fallback at the receiver.
+
+P13 likely rhymes: the publisher-TLS stamp may be consumed on
+one BUS_PUBLISH emit flavor while the fleet's publishes take
+another (devirt/static/cross-thread). Suggest auditing every
+`lotus_obs_net_send`/`BUS_PUBLISH` emit site for parity with the
+fixed one — the recurring shape across P5, P11, and P13 is
+"fixed on one dispatch flavor, missed on its siblings." A grep
+inventory of emit sites with a checklist beats fixing the one a
+test happens to exercise.
+
+Evidence: /tmp/pk-mk2.txt, /tmp/pk-pv2.txt; acceptance snapshot
+showed 0 edges, 0 attributed, 449 loci / 418 parented (P8/P9
+still good), no duplicate rows (P6 still good).
