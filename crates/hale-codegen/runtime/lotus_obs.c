@@ -330,6 +330,20 @@ static int obs_create(int64_t rings, int64_t slots) {
   return 1;
 }
 
+/* Dormant-cost gate for the codegen-emitted publisher-attribution
+ * note (bench regression, v0.11.13→ found 2026-07-28). lower_send
+ * used to emit an UNCONDITIONAL `lotus_obs_note_publisher` call
+ * before every `<-` — a call + TLS store even with LOTUS_OBS
+ * unset, ~1ns on a ~1.7ns devirtualized publish (+55% on the
+ * bus_dispatch microbench). Codegen now loads this flag and only
+ * calls when observation is live, restoring the "dormant = one
+ * predictable branch" cost contract. Written once, under
+ * g_obs_lock, when the env gate resolves; plain int is fine (the
+ * transition happens before any publish that could care, and a
+ * momentarily-stale 0 only skips attribution on the first
+ * publishes of a not-yet-probed thread). */
+int lotus_obs_note_publisher_wanted = 0;
+
 /* Enable check + lazy init. Fast path after first call: one
  * relaxed load + compare. */
 static int obs_on(void) {
@@ -351,6 +365,7 @@ static int obs_on(void) {
     } else {
       st = 1;
     }
+    if (st == 2) lotus_obs_note_publisher_wanted = 1;
     atomic_store(&g_obs_state, st);
   }
   pthread_mutex_unlock(&g_obs_lock);

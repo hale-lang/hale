@@ -193,11 +193,54 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
         // iris handoff-2 P10: note the publishing locus in the obs
         // TLS so BUS_PUBLISH records carry locus attribution (the
         // C dispatch doesn't know self; petals don't pulse
-        // without it). Null from free-fn contexts. One relaxed
-        // TLS store per publish; the obs fn is a no-op branch
-        // when observation is off.
+        // without it). Null from free-fn contexts.
+        //
+        // Dormant-cost gate (bench regression, 2026-07-28): the
+        // original emission called note_publisher UNCONDITIONALLY —
+        // a call + TLS store per `<-` even with LOTUS_OBS unset,
+        // ~1ns on a ~1.7ns devirtualized publish (+55% on
+        // bus_dispatch). Branch on the obs TU's
+        // `lotus_obs_note_publisher_wanted` flag instead: an
+        // unobserved publish pays one predictable load+branch,
+        // and the call only fires when observation is live.
         {
             let ptr_t = self.context.ptr_type(AddressSpace::default());
+            let i32_t = self.context.i32_type();
+            let flag_global = self
+                .module
+                .get_global("lotus_obs_note_publisher_wanted")
+                .expect("lotus_obs_note_publisher_wanted declared");
+            let flag = self
+                .builder
+                .build_load(
+                    i32_t,
+                    flag_global.as_pointer_value(),
+                    "obs.note_pub.wanted",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_int_value();
+            let wanted = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::NE,
+                    flag,
+                    i32_t.const_zero(),
+                    "obs.note_pub.on",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let func = self
+                .builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_parent())
+                .expect("inside a function");
+            let note_bb =
+                self.context.append_basic_block(func, "obs.note_pub.do");
+            let cont_bb =
+                self.context.append_basic_block(func, "obs.note_pub.cont");
+            self.builder
+                .build_conditional_branch(wanted, note_bb, cont_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(note_bb);
             let note_fn = self
                 .module
                 .get_function("lotus_obs_note_publisher")
@@ -210,6 +253,10 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
             self.builder
                 .build_call(note_fn, &[pub_self.into()], "obs.note_pub")
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_unconditional_branch(cont_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(cont_bb);
         }
         // GH #255 phase 1: `or wait` — park through the binding's
         // loss window BEFORE the dispatch fanout, so the publish
