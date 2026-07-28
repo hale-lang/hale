@@ -6,7 +6,7 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.11.14 — iris observation NET seq pairing (edges), transport-branch parity (2026-07-28)
 
 - **Native observation: NET (origin,seq) on the transport branch
   too (iris handoff-3 field re-test).** The handoff-3 fix landed
