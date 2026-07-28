@@ -238,12 +238,48 @@ static size_t obs_page_up(size_t n) {
 
 void lotus_obs_teardown(void) {
   if (!g_seg) return;
+  /* Serialize against the P18 heartbeat: it probes the segment
+   * under g_obs_lock, so taking the lock here means the unmap
+   * never races a heartbeat mid-deref. */
+  pthread_mutex_lock(&g_obs_lock);
+  if (!g_seg) {
+    pthread_mutex_unlock(&g_obs_lock);
+    return;
+  }
   atomic_store(&H->flags, 0);
   unlink(g_reg_path);
   munmap(g_seg, g_seg_len);
   shm_unlink(g_shm_name);
   g_seg = NULL;
   atomic_store(&g_obs_state, 1);
+  pthread_mutex_unlock(&g_obs_lock);
+}
+
+/* iris handoff-5 P18: the observer-attach birth replay was driven
+ * lazily from INSIDE probes (obs_gate's 0→1 edge detection) — so a
+ * process whose steady state emits no probes (a quiet main parked
+ * in a read loop with pinned raw-fd readers; or hot paths on the
+ * fully-devirtualized direct dispatch) never noticed the observer
+ * and never replayed its live loci: segment registered, zero
+ * records, "silent" to the consumer. This thread exists ONLY when
+ * LOTUS_OBS=1 and does one obs_gate() probe per 250ms under
+ * g_obs_lock — the replay latency after attach is ≤250ms even if
+ * no probe ever fires again. Detached; exits with the process.
+ * It claims one SPSC ring slot for its replay emissions (TLS ring
+ * assignment), which the default of 8 rings accommodates. */
+static int obs_gate(void);
+static void *obs_heartbeat_main(void *arg) {
+  (void)arg;
+  for (;;) {
+    struct timespec ts = {0, 250 * 1000 * 1000};
+    nanosleep(&ts, NULL);
+    pthread_mutex_lock(&g_obs_lock);
+    if (g_seg && atomic_load(&g_obs_state) == 2) {
+      obs_gate();
+    }
+    pthread_mutex_unlock(&g_obs_lock);
+  }
+  return NULL;
 }
 
 static int obs_create(int64_t rings, int64_t slots) {
@@ -327,6 +363,17 @@ static int obs_create(int64_t rings, int64_t slots) {
     g_obs_origin = o ? o : (uint16_t)0xFFFFu;
   }
   atexit(lotus_obs_teardown);
+  /* P18: spawn the replay heartbeat (detached; see
+   * obs_heartbeat_main). Best-effort — a failed spawn degrades to
+   * the old probe-driven replay, never blocks obs creation. */
+  {
+    pthread_t hb;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    (void)pthread_create(&hb, &attr, obs_heartbeat_main, NULL);
+    pthread_attr_destroy(&attr);
+  }
   return 1;
 }
 
@@ -342,7 +389,7 @@ static int obs_create(int64_t rings, int64_t slots) {
  * transition happens before any publish that could care, and a
  * momentarily-stale 0 only skips attribution on the first
  * publishes of a not-yet-probed thread). */
-int lotus_obs_note_publisher_wanted = 0;
+int lotus_obs_live = 0;
 
 /* Enable check + lazy init. Fast path after first call: one
  * relaxed load + compare. */
@@ -365,7 +412,7 @@ static int obs_on(void) {
     } else {
       st = 1;
     }
-    if (st == 2) lotus_obs_note_publisher_wanted = 1;
+    if (st == 2) lotus_obs_live = 1;
     atomic_store(&g_obs_state, st);
   }
   pthread_mutex_unlock(&g_obs_lock);

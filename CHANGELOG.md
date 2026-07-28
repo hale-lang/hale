@@ -6,6 +6,65 @@ behavior.
 
 ---
 
+## Unreleased
+
+Crumb batch-4 (UPSTREAM4.md) + iris handoff-5, delivered together.
+
+- **A bus subscription on `main` no longer inverts the teardown
+  join order** (Crumb 4-1). The GH #253 delivery contract held on
+  the eager path but not the deferred one: a `subscribe` on the
+  main locus made it long-lived → deferred, and the deferred flush
+  tore the parent down (cascading its subscriber fields' dissolves)
+  BEFORE joining its own pinned children — every in-flight result
+  silently dropped, exit 0. A deferred parent's own pinned entries
+  are now re-ordered after its own frame entry so the reverse-order
+  flush joins + drains them while every subscriber field is alive
+  (identical semantics to the eager path). Regression-locked with
+  both shapes.
+
+- **The fully-devirtualized direct dispatch now carries obs
+  probes** (iris P17c). The single-quiet-subscriber same-thread
+  flavor (baked-handler bucket walk + the multi-handler C sibling)
+  emitted no probes at all — its subjects never registered,
+  counted, or produced BUS records; a fleet path on this flavor was
+  invisible to observation. Both direct flavors now publish once +
+  deliver per matched target with full locus attribution. Dormant
+  cost is BETTER than before: the `lotus_obs_live` gate is now
+  checked once per function entry (sound — the flag is final
+  before any user publish can run), LLVM hoists the branch, and
+  the dormant `bus_dispatch` bench lands at ~173µs (vs the 193.8µs
+  baseline and v0.11.17's 192µs).
+
+- **Observer attach no longer needs probe traffic** (iris P18).
+  The 0→1 birth replay was driven from inside probes, so a
+  probe-quiet process (main parked in a read loop, pinned raw-fd
+  readers, direct-flavor hot paths) never replayed its loci —
+  segment registered, zero records, "silent" to the consumer. A
+  detached heartbeat thread (spawned only under `LOTUS_OBS=1`)
+  drives the replay check every 250ms, bounding replay latency
+  after attach at ~250ms with no probe traffic at all.
+
+- **`std::json::find_field_raw` matches key positions, not key
+  text** (Crumb 4-2). The old lookup was
+  `index_of(json, "\"name\"")` — an earlier string VALUE repeating
+  a later key's name shadowed that key (on a real npm packument,
+  12 of 35 version keys were invisible). Rebuilt on the single-pass
+  object cursor: top-level members only, depth-aware, string-safe;
+  the documented re-feed-the-substring chaining contract is now
+  actually enforced.
+
+- **`std::json::obj_key_string(it, json) -> String`** (Crumb 4-4):
+  the key-side sibling of `obj_value_string` for unknown-key
+  iteration (a packument's `versions`, a `dependencies` map),
+  including the escape decoding that hand-slicing
+  `key_start..key_end` silently skips.
+
+- Crumb 4-3 (hash functions) closed as already-shipped:
+  `std::crypto::sha1/sha256/sha512/hmac_sha256/hmac_sha512/crc32`
+  have existed since v0.8.0 (spec § std::crypto; book
+  `everyday/crypto.md`); an npm `sha512-<base64>` integrity check
+  is `std::text::base64::encode(std::crypto::sha512(tarball))`.
+
 ## v0.11.17 — publish hot path back to baseline (obs note branch-gated) (2026-07-28)
 
 - **perf: publish hot path back to baseline — the obs

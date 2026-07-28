@@ -14878,6 +14878,13 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
     lotus_bus_static_bucket_t *b =
         (id < g_bus_static_bucket_count) ? &g_bus_static_buckets[id] : NULL;
     size_t delivered = 0;
+    /* iris handoff-5 P17: the direct flavors were probe-less — a
+     * subject on this path was invisible to observation (no topic
+     * registration, no counters, no BUS records). Publish once,
+     * deliver per matched target, exactly as the other flavors. */
+    if (lotus_obs_bus_publish) {
+        lotus_obs_bus_publish(subject, NULL, size);
+    }
     if (b) {
         for (size_t k = 0; k < b->count; k++) {
             lotus_bus_entry_t *e = &g_bus_entries[b->idx[k]];
@@ -14893,6 +14900,9 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
             } else {
                 /* same-thread: the whole point — run it now. */
                 ((lotus_handler_fn)e->handler)(e->self_ptr, (void *)payload);
+            }
+            if (lotus_obs_bus_deliver) {
+                lotus_obs_bus_deliver(subject, e->self_ptr, size);
             }
             delivered++;
         }

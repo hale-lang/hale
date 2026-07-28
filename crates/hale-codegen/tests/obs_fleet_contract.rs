@@ -513,3 +513,294 @@ fn keyed_publish_records_bus_publish() {
         "keyed publish emitted no BUS_PUBLISH record"
     );
 }
+
+/// iris handoff-5 P17 — per-locus attribution on the fleet's real
+/// publisher shapes. Petals read BUS_PUBLISH / BUS_DELIVER
+/// `w1 locus:20`, which must equal the LOCUS_BIRTH instance id of
+/// the publishing/consuming locus in the same segment. The fleet
+/// reads 0 fleet-wide; this pins the three shapes it actually has:
+///   1. a keyed-topic publish from an accept()-spawned child locus
+///      (dynamic spawn, not a param default);
+///   2. a plain publish with ZERO local subscribers (all consumers
+///      remote — the pure-fanout path);
+///   3. BUS_DELIVER stamped with the SUBSCRIBER's locus for a keyed
+///      `where key ==` subscription.
+#[test]
+fn attribution_on_fleet_publisher_shapes() {
+    const SRC: &str = r#"
+        type Ev { id: Int; v: Int; }
+        type Out { v: Int; }
+        topic K { payload: Ev; subject: "k.sig"; keyed_by id; }
+
+        locus KeySub {
+            params { my_id: Int = 1; }
+            bus { subscribe K as on_k where key == self.my_id; }
+            fn on_k(e: Ev) { println("got ", e.v); }
+        }
+
+        locus Pusher {
+            bus {
+                publish K;
+                publish "out" of type Out;
+            }
+            run() {
+                std::time::sleep(400ms);
+                let mut i = 0;
+                while i < 10 {
+                    // shape 1: keyed publish from an accept-spawned child
+                    K <- Ev { id: 1, v: i };
+                    // shape 2: zero local subscribers, remote-bound
+                    "out" <- Out { v: i };
+                    i = i + 1;
+                }
+            }
+        }
+
+        main locus App {
+            params { s: KeySub = KeySub { my_id: 1 }; }
+            accept(p: Pusher) { }
+            run() {
+                Pusher { };
+                std::time::sleep(1500ms);
+            }
+        }
+        fn main() { App { }; }
+    "#;
+    let bin = compile("attrib", SRC);
+    let dir = std::env::temp_dir()
+        .join(format!("hale_obsattrib_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = dir.join("bus.conf");
+    // "out" has no local subscriber; a connect binding makes it the
+    // pure remote-fanout path (no listener needed — attribution is
+    // asserted on the publisher's own segment).
+    std::fs::write(&cfg, "out = udp://127.0.0.1:57831:connect\n").unwrap();
+    let mut child = Command::new(&bin)
+        .env("LOTUS_BUS_CONFIG", &cfg)
+        .env("LOTUS_OBS", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn");
+    let pid = child.id();
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(25));
+        if std::path::Path::new(&format!("/dev/shm/hale-obs-{}", pid))
+            .exists()
+        {
+            break;
+        }
+    }
+    unsafe { attach_observer(pid) };
+    std::thread::sleep(Duration::from_millis(1100));
+    let seg = unsafe { snapshot_shm(pid) };
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_file(&bin);
+    let _ = std::fs::remove_dir_all(&dir);
+    let seg = seg.expect("segment");
+
+    let births: std::collections::HashSet<u32> =
+        records(&seg, 5).iter().map(|(id, _)| *id).collect();
+    let (k_id, _) = topic_id_and_line(&seg, b"k.sig").expect("topic k.sig");
+    let (out_id, _) = topic_id_and_line(&seg, b"out").expect("topic out");
+
+    // Shape 1: keyed publishes from the accept-spawned Pusher.
+    let k_pubs: Vec<u32> = records(&seg, 1)
+        .iter()
+        .filter(|(id, _)| *id == k_id)
+        .map(|(_, w1)| (*w1 & 0xFFFFF) as u32)
+        .collect();
+    assert!(!k_pubs.is_empty(), "no BUS_PUBLISH records for keyed topic");
+    assert!(
+        k_pubs.iter().all(|l| *l != 0 && births.contains(l)),
+        "P17 shape 1: keyed publish from accept-spawned child must \
+         attribute a birth instance; got loci {:?} (births {:?})",
+        k_pubs,
+        births
+    );
+
+    // Shape 2: pure remote-fanout publishes (zero local subscribers).
+    let out_pubs: Vec<u32> = records(&seg, 1)
+        .iter()
+        .filter(|(id, _)| *id == out_id)
+        .map(|(_, w1)| (*w1 & 0xFFFFF) as u32)
+        .collect();
+    assert!(
+        !out_pubs.is_empty(),
+        "no BUS_PUBLISH records for the zero-local-subscriber publish"
+    );
+    assert!(
+        out_pubs.iter().all(|l| *l != 0 && births.contains(l)),
+        "P17 shape 2: pure-fanout publish must attribute a birth \
+         instance; got loci {:?} (births {:?})",
+        out_pubs,
+        births
+    );
+
+    // Shape 3: keyed BUS_DELIVER stamped with the subscriber locus.
+    let k_dlvs: Vec<u32> = records(&seg, 2)
+        .iter()
+        .filter(|(id, _)| *id == k_id)
+        .map(|(_, w1)| (*w1 & 0xFFFFF) as u32)
+        .collect();
+    assert!(!k_dlvs.is_empty(), "no BUS_DELIVER records for keyed topic");
+    assert!(
+        k_dlvs.iter().all(|l| *l != 0 && births.contains(l)),
+        "P17 shape 3: keyed BUS_DELIVER must attribute the subscriber \
+         locus; got loci {:?} (births {:?})",
+        k_dlvs,
+        births
+    );
+    // And the deliver locus differs from the publish locus (it's the
+    // SUBSCRIBER, not an echo of the publisher).
+    assert!(
+        k_dlvs.iter().any(|d| !k_pubs.contains(d)),
+        "keyed BUS_DELIVER stamped the publisher, not the subscriber: \
+         dlv {:?} vs pub {:?}",
+        k_dlvs,
+        k_pubs
+    );
+}
+
+/// iris handoff-5 P17(c) — the fully-devirtualized DIRECT dispatch
+/// (single quiet subscriber, same thread: the `lotus_bus_static_
+/// direct_*` + baked-handler flavor) was completely probe-less: the
+/// topic never registered, counters stayed 0, and no BUS records
+/// fired — a subject on this path was invisible to observation.
+/// Asserts the flavor now registers, counts, and attributes both
+/// sides.
+#[test]
+fn direct_devirt_flavor_emits_attributed_probes() {
+    const SRC: &str = r#"
+        type Tick { n: Int; }
+        locus Counter {
+            params { count: Int = 0; }
+            bus { subscribe "t" as on_t of type Tick; }
+            fn on_t(t: Tick) { self.count = self.count + 1; }
+        }
+        locus Pub {
+            bus { publish "t" of type Tick; }
+            run() {
+                std::time::sleep(400ms);
+                let mut i = 0;
+                while i < 50 { "t" <- Tick { n: i }; i = i + 1; }
+            }
+        }
+        fn main() {
+            let c = Counter { };
+            Pub { };
+            std::time::sleep(300ms);
+            println("count=", c.count);
+        }
+    "#;
+    let bin = compile("direct", SRC);
+    let mut child = Command::new(&bin)
+        .env("LOTUS_OBS", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn");
+    let pid = child.id();
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(25));
+        if std::path::Path::new(&format!("/dev/shm/hale-obs-{}", pid))
+            .exists()
+        {
+            break;
+        }
+    }
+    unsafe { attach_observer(pid) };
+    std::thread::sleep(Duration::from_millis(550));
+    let seg = unsafe { snapshot_shm(pid) };
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_file(&bin);
+    let seg = seg.expect("segment");
+
+    let (pub_cnt, dlv_cnt, _) = topic_counters(&seg, b"t")
+        .expect("direct-flavor topic must REGISTER (was invisible)");
+    assert_eq!(pub_cnt, 50, "direct-flavor published counter");
+    assert_eq!(dlv_cnt, 50, "direct-flavor delivered counter");
+
+    let births: std::collections::HashSet<u32> =
+        records(&seg, 5).iter().map(|(id, _)| *id).collect();
+    let pubs: Vec<u32> = records(&seg, 1)
+        .iter()
+        .map(|(_, w1)| (*w1 & 0xFFFFF) as u32)
+        .collect();
+    let dlvs: Vec<u32> = records(&seg, 2)
+        .iter()
+        .map(|(_, w1)| (*w1 & 0xFFFFF) as u32)
+        .collect();
+    assert!(!pubs.is_empty(), "direct flavor emitted no BUS_PUBLISH");
+    assert!(!dlvs.is_empty(), "direct flavor emitted no BUS_DELIVER");
+    assert!(
+        pubs.iter().all(|l| *l != 0 && births.contains(l)),
+        "direct-flavor publish attribution: {:?} (births {:?})",
+        pubs,
+        births
+    );
+    assert!(
+        dlvs.iter().all(|l| *l != 0 && births.contains(l)),
+        "direct-flavor deliver attribution: {:?} (births {:?})",
+        dlvs,
+        births
+    );
+    // publisher and subscriber are distinct loci.
+    assert_ne!(pubs[0], dlvs[0], "pub and dlv attribute the same locus");
+}
+
+/// iris handoff-5 P18 — the observer-attach birth replay was driven
+/// from INSIDE probes, so a probe-quiet process (main parked in a
+/// long sleep/read loop, no bus traffic) never replayed its live
+/// loci: segment registered, zero records. The obs heartbeat now
+/// drives the 0→1 replay within ~250ms of attach even with no
+/// probe traffic at all.
+#[test]
+fn quiet_process_replays_births_via_heartbeat() {
+    const SRC: &str = r#"
+        locus Quiet {
+            params { n: Int = 0; }
+        }
+        fn main() {
+            let q = Quiet { n: 1 };
+            // probe-quiet steady state: no publishes, no births
+            // after this point — only the heartbeat can replay.
+            std::time::sleep(3000ms);
+            println("n=", q.n);
+        }
+    "#;
+    let bin = compile("quiet", SRC);
+    let mut child = Command::new(&bin)
+        .env("LOTUS_OBS", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn");
+    let pid = child.id();
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(25));
+        if std::path::Path::new(&format!("/dev/shm/hale-obs-{}", pid))
+            .exists()
+        {
+            break;
+        }
+    }
+    // Attach AFTER the birth already happened; the process makes no
+    // further probes, so only the heartbeat can notice us.
+    std::thread::sleep(Duration::from_millis(300));
+    unsafe { attach_observer(pid) };
+    std::thread::sleep(Duration::from_millis(800));
+    let seg = unsafe { snapshot_shm(pid) };
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_file(&bin);
+    let seg = seg.expect("segment");
+    let births = records(&seg, 5).len();
+    assert!(
+        births >= 1,
+        "P18: probe-quiet process replayed no births after observer \
+         attach (heartbeat missing?)"
+    );
+}

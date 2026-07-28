@@ -64,3 +64,56 @@ fn object_cursor_single_pass_extracts_fields() {
     assert!(out.contains("id=7 px=250 active=true side=buy"), "record 1 wrong:\n{}", out);
     assert!(out.contains("id=42 px=-3 active=false side=sell"), "record 2 wrong:\n{}", out);
 }
+
+/// Crumb batch-4 item 2 — `find_field_raw` must match key
+/// POSITIONS, not key text. The old implementation did
+/// `index_of(json, "\"name\"")`, so an earlier string VALUE
+/// repeating a later key's name shadowed that key (on a real npm
+/// packument, 12 of 35 version keys were invisible because version
+/// strings recur as dependency-range values). Now rebuilt on the
+/// object cursor: top-level members only, depth-aware, string-safe.
+#[test]
+fn find_field_raw_ignores_key_text_in_values() {
+    let src = r#"
+        fn main() {
+            let doc = "{\"a\":{\"who\":\"bob\"},\"bob\":{\"ok\":true}}";
+            // "bob" occurs first as a VALUE — the KEY must win.
+            println("bob=", std::json::find_field_raw(doc, "bob"));
+            // chaining into a returned sub-object still works.
+            let a = std::json::find_field_raw(doc, "a");
+            println("who=", std::json::find_string_field(a, "who"));
+            // absent key -> empty.
+            println("zed=[", std::json::find_field_raw(doc, "zed"), "]");
+            // a nested-only key is NOT found at the top level (the
+            // documented chaining contract: re-feed the sub-object).
+            println("nested=[", std::json::find_field_raw(doc, "who"), "]");
+        }
+    "#;
+    let (out, status) = build_and_run("ffr_shadow", src);
+    assert!(status.success());
+    assert!(out.contains("bob={\"ok\":true}"), "{}", out);
+    assert!(out.contains("who=bob"), "{}", out);
+    assert!(out.contains("zed=[]"), "{}", out);
+    assert!(out.contains("nested=[]"), "{}", out);
+}
+
+/// Crumb batch-4 item 4 — `obj_key_string`: the key-side sibling of
+/// `obj_value_string`, including the unescaping that hand-slicing
+/// `json[it.key_start..it.key_end]` silently skips.
+#[test]
+fn obj_key_string_returns_decoded_keys() {
+    let src = r#"
+        fn main() {
+            let doc = "{\"x\\\"y\": 1, \"plain\": 2}";
+            let mut it = std::json::object_first(doc);
+            while !it.done {
+                println("key=[", std::json::obj_key_string(it, doc), "]");
+                it = std::json::object_next(it, doc);
+            }
+        }
+    "#;
+    let (out, status) = build_and_run("key_string", src);
+    assert!(status.success());
+    assert!(out.contains("key=[x\"y]"), "escaped key must decode: {}", out);
+    assert!(out.contains("key=[plain]"), "{}", out);
+}

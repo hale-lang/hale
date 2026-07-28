@@ -3993,10 +3993,37 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             // ordering.
         } else if !self.deferred_dissolves.is_empty() {
             let slot = self.defer_dissolve_slot(self_ptr, locus_name)?;
-            self.deferred_dissolves
+            // GH #253 completion (Crumb batch-4 item 1): a DEFERRED
+            // parent's own pinned children (pushed during its param
+            // init above, i.e. since `deferred_frame_mark`) sat
+            // BEFORE it in the frame, so the reverse-order flush
+            // tore the parent down first — cascading its subscriber
+            // fields' dissolves — and only then joined the pinned
+            // threads, whose final publishes drained into dead
+            // subscribers (silently dropped). The EAGER path already
+            // steals its own pinned entries and joins them before
+            // its field cascade; mirror that here by re-ordering the
+            // parent's own pinned entries AFTER its own entry, so
+            // the reverse-order flush joins + drains them while
+            // every subscriber field is still alive. This is what
+            // made `main`-with-a-subscription (deferred, long-lived)
+            // behave differently from `main`-without (eager): the
+            // teardown delivery contract now holds on both paths.
+            let frame = self
+                .deferred_dissolves
                 .last_mut()
-                .expect("checked non-empty")
-                .push((slot, locus_name.to_string(), None));
+                .expect("checked non-empty");
+            let mut own_pinned = Vec::new();
+            let mut i = deferred_frame_mark.min(frame.len());
+            while i < frame.len() {
+                if frame[i].2.is_some() {
+                    own_pinned.push(frame.remove(i));
+                } else {
+                    i += 1;
+                }
+            }
+            frame.push((slot, locus_name.to_string(), None));
+            frame.extend(own_pinned);
         } else {
             // Should be unreachable: every fn body / lifecycle
             // body opens a frame in lower_program/method body

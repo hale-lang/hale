@@ -965,6 +965,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.context.void_type().fn_type(&[ptr_t.into()], false),
             None,
         );
+        // iris handoff-5 P17: the baked direct-dispatch loop emits
+        // the publish/deliver probes itself (the one flavor with no
+        // C dispatch fn to host them).
+        // declare void @lotus_obs_bus_publish(ptr subject, ptr self, i64 bytes)
+        // declare void @lotus_obs_bus_deliver(ptr subject, ptr self, i64 bytes)
+        {
+            let i64_t = self.context.i64_type();
+            self.module.add_function(
+                "lotus_obs_bus_publish",
+                self.context.void_type().fn_type(
+                    &[ptr_t.into(), ptr_t.into(), i64_t.into()],
+                    false,
+                ),
+                None,
+            );
+            self.module.add_function(
+                "lotus_obs_bus_deliver",
+                self.context.void_type().fn_type(
+                    &[ptr_t.into(), ptr_t.into(), i64_t.into()],
+                    false,
+                ),
+                None,
+            );
+        }
         // Dormant-cost gate for the note above (bench regression,
         // 2026-07-28): an i32 the obs TU sets to 1 when LOTUS_OBS
         // resolves enabled. lower_send branches on it so an
@@ -976,7 +1000,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.module.add_global(
                 i32_t,
                 None,
-                "lotus_obs_note_publisher_wanted",
+                "lotus_obs_live",
             );
         }
         self.module.add_function(
