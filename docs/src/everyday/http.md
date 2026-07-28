@@ -167,6 +167,30 @@ entering a push loop (an SSE/WS fan-out stalls its whole loop on
 one dead client otherwise); and a takeover response without
 stashing `req.conn_fd` leaks the connection.
 
+And sometimes the handler doesn't know the answer *yet* — the
+response will be produced later, by a different locus (a resolved
+promise, a bus reply, a job completing). For that, take the
+connection with **nothing** written:
+
+```hale,fragment
+return std::http::Response { status: 0, body: "", takeover_raw: true };
+```
+
+With `takeover_raw: true` the server writes no status line and no
+headers — the wire is untouched. Whoever ends up owning the fd
+writes the *entire* response, status line included:
+
+```hale,fragment
+std::io::tcp::send_fd(fd, std::bytes::from_string(
+    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")) or discard;
+std::io::tcp::close_fd(fd);
+```
+
+`status`, `headers`, and `body` on the response are ignored. The
+same three caveats as `takeover` apply — plus one more: until you
+write, the client is waiting on a silent connection, so bound the
+deferral or arm your own timeout.
+
 ## Calling out
 
 Outbound requests are one call:

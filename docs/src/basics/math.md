@@ -122,6 +122,18 @@ let total = timeout + frame;
 if elapsed > timeout { /* ... */ }
 ```
 
+They also scale by plain integers — the shape you need when the
+number of units arrives at runtime (a computed retry count, a
+millisecond value from an FFI boundary):
+
+```hale,fragment
+let backoff = tries * 100ms;    // Int * Duration → Duration
+let half    = timeout / 2;      // Duration / Int → Duration
+fn sleep_ms(ms: Int) { std::time::sleep(ms * 1ms); }
+```
+
+(`Duration * Duration` is rejected — ns² isn't a thing.)
+
 This is also what the runtime's sleep takes:
 
 ```hale,fragment
