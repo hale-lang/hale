@@ -38,7 +38,7 @@ own once you know which class you're chasing:
 | `LOTUS_BUS_LOG_DROP=1` | everything below, plus serialize-fail and no-post-target |
 | `LOTUS_BUS_LOG_UNMATCHED=1` | a keyed publish (`where key == …`) that matched no subscriber — prints subject, key, and the per-topic subscriber counts |
 | `LOTUS_BUS_LOG_DESERIALIZE_DROP=1` | the `udp://` reader thread dropping a frame (no deserializer registered, or a size-mismatched read) |
-| `LOTUS_BUS_COUNTERS_DUMP=1` | one line per remote binding at exit: messages/bytes sent and delivered, send failures, publishes dropped while a link was down, listener re-arms, reconnects |
+| `LOTUS_BUS_COUNTERS_DUMP=1` | one line per remote binding at exit: messages/bytes sent and delivered, send failures, publishes dropped while a link was down, publishes that parked on `or wait`, listener re-arms, reconnects |
 
 **The shape that produces no line at all.** If `LOTUS_BUS_LOG_DROP`
 is silent but the handler still never fires, the message *was*
@@ -214,6 +214,35 @@ RSS — see [Memory](#memory-my-rss-is-growing) above).
    (`self.f.x = v`) over whole-value replace (`self.f = T{…}`), which
    bump-allocates fresh each time. `--dump-alloc-summary` names the
    site at compile time.
+
+## Observing a running system
+
+Set `LOTUS_OBS=1` and any hale binary publishes an observation
+segment — a shared-memory ring of records emitted from the
+runtime's own choke points: bus publishes and deliveries (each
+attributed to the publishing/subscribing locus), transport
+sends and deliveries (paired across processes by a
+`(sender-origin, sequence)` key so a message's send and its
+deliveries line up into a cross-process edge), and locus
+lifecycle (birth with parentage, dissolve, restart). It is
+**dormant by default**: with the env var unset every probe is a
+single predictable branch, and even enabled it writes only
+counters until an observer attaches (`observer_count` on the
+segment's control page). One SPSC ring per emitting thread; a
+late-attaching observer gets the live locus tree replayed as
+births so it can reconstruct the supervision graph.
+
+The segment lives at `/hale-obs-<pid>` with a registration file
+under `$XDG_RUNTIME_DIR/hale/` (or `/tmp/hale-obs/`). The wire
+layout is the iris observation protocol — the canonical contract
+is `spec/runtime.md` § *Native observation emission*; the iris
+project is the reference consumer. Knobs: `LOTUS_OBS_RINGS`
+(default 8), `LOTUS_OBS_SLOTS` (default 4096). Cross-process
+edge pairing needs a framed transport (`udp://` carries the
+`(origin, seq)` header inline; `unix://` under
+`LOTUS_UNIX_STREAM=1` carries it in the frame header) — a
+non-framed unicast transport falls back to a local delivery
+count.
 
 ## Debugging with the native toolchain
 
