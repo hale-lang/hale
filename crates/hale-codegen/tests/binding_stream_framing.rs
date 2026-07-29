@@ -94,7 +94,7 @@ fn framed_stream_delivers_and_rearms_without_seq_gaps() {
     let sub_bin = build("sub", &sub_src);
     let pub_bin = build("pub", &pub_src);
 
-    let mut sub = Command::new(&sub_bin)
+    let sub = Command::new(&sub_bin)
         .env("LOTUS_UNIX_STREAM", "1")
         .env("LOTUS_BUS_COUNTERS_DUMP", "1")
         .stdout(Stdio::piped())

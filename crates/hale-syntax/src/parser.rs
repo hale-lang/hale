@@ -352,6 +352,7 @@ impl Parser {
         let mut locality: Option<LocalityAnnotation> = None;
         let mut export_locus = false;
         let mut bounded_locus = false;
+        let mut phase_effects: Option<PhaseEffects> = None;
         let mut leading_span: Option<Span> = None;
         loop {
             if !matches!(self.peek(), TokenKind::At) {
@@ -368,6 +369,10 @@ impl Parser {
             // out of it. Both are bare `@`-flags (no arglist).
             let is_bounded =
                 matches!(&kind_tok, TokenKind::Ident(s) if s == "bounded");
+            // #265 step 6: `@phase_effects(birth: {alloc}, run: {})`
+            // on a locus — effects indexed by lifecycle phase.
+            let is_phase_effects = matches!(&kind_tok,
+                TokenKind::Ident(s) if s == "phase_effects");
             let is_unbounded =
                 matches!(&kind_tok, TokenKind::Ident(s) if s == "unbounded");
             let is_budget =
@@ -442,6 +447,21 @@ impl Parser {
                 fn_decl.span = ffi.span.merge(fn_decl.span);
                 return Ok(TopDecl::Fn(fn_decl));
             }
+            if is_phase_effects {
+                if phase_effects.is_some() {
+                    return Err(Diag::parse(
+                        self.peek_token().span,
+                        "duplicate `@phase_effects` annotation",
+                    ));
+                }
+                let pe = self.parse_phase_effects_annotation()?;
+                leading_span = Some(match leading_span {
+                    Some(s) => s.merge(pe.span),
+                    None => pe.span,
+                });
+                phase_effects = Some(pe);
+                continue;
+            }
             if is_bounded {
                 if bounded_locus {
                     return Err(Diag::parse(
@@ -500,7 +520,7 @@ impl Parser {
                          `@export locus` (those precede `locus`)",
                     ));
                 }
-                let (budget, bspan) = self.parse_budget_annotation()?;
+                let (budget, qdims, bspan) = self.parse_budget_full()?;
                 if !matches!(self.peek(), TokenKind::Fn) {
                     return Err(Diag::parse(
                         self.peek_token().span,
@@ -509,7 +529,8 @@ impl Parser {
                     ));
                 }
                 let mut fn_decl = self.parse_fn_decl_with_ffi(None, false)?;
-                fn_decl.budget = Some(budget);
+                fn_decl.budget = budget;
+                fn_decl.quantities = qdims;
                 fn_decl.span = bspan.merge(fn_decl.span);
                 return Ok(TopDecl::Fn(fn_decl));
             }
@@ -528,7 +549,7 @@ impl Parser {
                 let budget = if matches!(self.peek(), TokenKind::At)
                     && matches!(self.peek_at(1), TokenKind::Ident(s) if s == "budget")
                 {
-                    Some(self.parse_budget_annotation()?)
+                    Some(self.parse_budget_full()?)
                 } else {
                     None
                 };
@@ -543,8 +564,9 @@ impl Parser {
                 let mut fn_decl = self.parse_fn_decl_with_ffi(None, false)?;
                 fn_decl.effects = effects;
                 fn_decl.hot = hot;
-                if let Some((b, _)) = budget {
-                    fn_decl.budget = Some(b);
+                if let Some((b, q, _)) = budget {
+                    fn_decl.budget = b;
+                    fn_decl.quantities = q;
                 }
                 fn_decl.span = espan.merge(fn_decl.span);
                 return Ok(TopDecl::Fn(fn_decl));
@@ -569,7 +591,7 @@ impl Parser {
                 let at = self.expect(TokenKind::At, "@")?;
                 self.bump(); // consume `hot`
                 let budget = if matches!(self.peek(), TokenKind::At) {
-                    Some(self.parse_budget_annotation()?)
+                    Some(self.parse_budget_full()?)
                 } else {
                     None
                 };
@@ -582,8 +604,9 @@ impl Parser {
                 }
                 let mut fn_decl = self.parse_fn_decl_with_ffi(None, false)?;
                 fn_decl.hot = true;
-                if let Some((b, _)) = budget {
-                    fn_decl.budget = Some(b);
+                if let Some((b, q, _)) = budget {
+                    fn_decl.budget = b;
+                    fn_decl.quantities = q;
                 }
                 fn_decl.span = at.span.merge(fn_decl.span);
                 return Ok(TopDecl::Fn(fn_decl));
@@ -626,7 +649,9 @@ impl Parser {
                  `budget`, or `ffi` after `@`",
             ));
         }
-        if form.is_some() || locality.is_some() || export_locus || bounded_locus {
+        if form.is_some() || locality.is_some() || export_locus || bounded_locus
+            || phase_effects.is_some()
+        {
             // Verify a `locus` (or contextual `main locus`)
             // follows.
             let next_is_locus = matches!(self.peek(), TokenKind::Locus);
@@ -649,6 +674,7 @@ impl Parser {
             locus.locality = locality;
             locus.export = export_locus;
             locus.bounded = bounded_locus;
+            locus.phase_effects = phase_effects;
             return Ok(TopDecl::Locus(locus));
         }
         match self.peek() {
@@ -1208,6 +1234,9 @@ impl Parser {
         // `@effects(none: {...})` — desugared here so the checker has
         // exactly one shape to interpret. `@deterministic` is the
         // named bundle (no clock, no entropy, no environment).
+        if name == "no_panic" {
+            return Some(EffectAssert::NoPanic);
+        }
         let classes = match name {
             "no_recursion" => vec![EffectClass::Recursion],
             "no_ffi" => vec![EffectClass::Ffi],
@@ -1376,49 +1405,144 @@ impl Parser {
     /// contract is enforced in `hale-types::budget_check`.
     ///
     /// Grammar: `'@' 'budget' '(' 'alloc_per_call' '=' INT ')'`.
-    fn parse_budget_annotation(&mut self) -> Result<(u32, Span), Diag> {
+    /// #265 step 5: `@budget` now accepts the quantitative
+    /// dimensions alongside `alloc_per_call`, comma-separated —
+    /// `@budget(alloc_per_call = 0, stack_bytes = 4096)`. Returns
+    /// the alloc budget (unchanged semantics) plus the other
+    /// dimensions.
+    /// #265 step 6: `@phase_effects(birth: {alloc}, run: {})` —
+    /// which effect classes each lifecycle phase may perform. A
+    /// phase listed with an empty set forbids everything; a phase
+    /// omitted is unconstrained.
+    fn parse_phase_effects_annotation(&mut self) -> Result<PhaseEffects, Diag> {
+        let at = self.expect(TokenKind::At, "@")?;
+        self.bump(); // `phase_effects`
+        self.expect(TokenKind::LParen, "(")?;
+        let mut phases: Vec<(String, Vec<EffectClass>)> = Vec::new();
+        loop {
+            let key_tok = self.peek_token().clone();
+            let phase = match &key_tok.kind {
+                TokenKind::Ident(s) => s.clone(),
+                // Lifecycle phase names are keywords elsewhere in
+                // the grammar; inside `@phase_effects(...)` they are
+                // the phase labels.
+                TokenKind::Birth => "birth".to_string(),
+                TokenKind::Run => "run".to_string(),
+                TokenKind::Drain => "drain".to_string(),
+                TokenKind::Dissolve => "dissolve".to_string(),
+                _ => {
+                    return Err(Diag::parse(
+                        key_tok.span,
+                        "expected a lifecycle phase name (`birth`, `run`, \
+                         `drain`, `dissolve`, or a handler name)",
+                    ))
+                }
+            };
+            self.bump();
+            self.expect(TokenKind::Colon, ":")?;
+            self.expect(TokenKind::LBrace, "{")?;
+            let mut classes = Vec::new();
+            while !matches!(self.peek(), TokenKind::RBrace) {
+                let t = self.peek_token().clone();
+                let name = match &t.kind {
+                    TokenKind::Ident(s) => s.clone(),
+                    TokenKind::Publish => "publish".to_string(),
+                    _ => {
+                        return Err(Diag::parse(
+                            t.span,
+                            "expected an effect class name",
+                        ))
+                    }
+                };
+                match EffectClass::from_ident(&name) {
+                    Some(c) => classes.push(c),
+                    None => {
+                        return Err(Diag::parse(
+                            t.span,
+                            format!("unknown effect class `{}`", name),
+                        ))
+                    }
+                }
+                self.bump();
+                if matches!(self.peek(), TokenKind::Comma) {
+                    self.bump();
+                }
+            }
+            self.expect(TokenKind::RBrace, "}")?;
+            phases.push((phase, classes));
+            if matches!(self.peek(), TokenKind::Comma) {
+                self.bump();
+                continue;
+            }
+            break;
+        }
+        let close = self.expect(TokenKind::RParen, ")")?;
+        Ok(PhaseEffects { phases, span: at.span.merge(close.span) })
+    }
+
+    fn parse_budget_full(
+        &mut self,
+    ) -> Result<(Option<u32>, Vec<(QuantDim, u64)>, Span), Diag> {
         let at = self.expect(TokenKind::At, "@")?;
         let next = self.peek_token().clone();
-        let is_budget = matches!(&next.kind, TokenKind::Ident(s) if s == "budget");
-        if !is_budget {
+        if !matches!(&next.kind, TokenKind::Ident(s) if s == "budget") {
             return Err(Diag::parse(next.span, "expected `budget` after `@`"));
         }
         self.bump();
         self.expect(TokenKind::LParen, "(")?;
-        let key_tok = self.peek_token().clone();
-        let key_ok =
-            matches!(&key_tok.kind, TokenKind::Ident(s) if s == "alloc_per_call");
-        if !key_ok {
-            return Err(Diag::parse(
-                key_tok.span,
-                "expected `alloc_per_call` inside `@budget(...)` — the only \
-                 budget dimension in v0.1 (per-call arena allocations)",
-            ));
+        let mut alloc: Option<u32> = None;
+        let mut dims: Vec<(QuantDim, u64)> = Vec::new();
+        loop {
+            let key_tok = self.peek_token().clone();
+            let key = match &key_tok.kind {
+                TokenKind::Ident(s) => s.clone(),
+                TokenKind::Publish => "publish".to_string(),
+                _ => {
+                    return Err(Diag::parse(
+                        key_tok.span,
+                        "expected a budget dimension (`alloc_per_call`, \
+                         `stack_bytes`, `block_points`, `publish`, `fanout`)",
+                    ))
+                }
+            };
+            self.bump();
+            self.expect(TokenKind::Eq, "=")?;
+            let n_tok = self.peek_token().clone();
+            let n = match &n_tok.kind {
+                TokenKind::IntLit(v) if *v >= 0 => *v as u64,
+                _ => {
+                    return Err(Diag::parse(
+                        n_tok.span,
+                        "expected a non-negative integer after `=`",
+                    ))
+                }
+            };
+            self.bump();
+            if key == "alloc_per_call" {
+                alloc = Some(n as u32);
+            } else if let Some(d) = QuantDim::from_ident(&key) {
+                dims.push((d, n));
+            } else {
+                return Err(Diag::parse(
+                    key_tok.span,
+                    format!(
+                        "unknown budget dimension `{}` — expected \
+                         `alloc_per_call`, `stack_bytes`, `block_points`, \
+                         `publish`, or `fanout`",
+                        key
+                    ),
+                ));
+            }
+            if matches!(self.peek(), TokenKind::Comma) {
+                self.bump();
+                continue;
+            }
+            break;
         }
-        self.bump();
-        self.expect(TokenKind::Eq, "=")?;
-        let n_tok = self.peek_token().clone();
-        let n = match &n_tok.kind {
-            TokenKind::IntLit(v) if *v >= 0 => *v as u32,
-            TokenKind::IntLit(_) => {
-                return Err(Diag::parse(
-                    n_tok.span,
-                    "`@budget(alloc_per_call = N)` needs a non-negative \
-                     integer (0 = the zero-alloc certificate)",
-                ));
-            }
-            _ => {
-                return Err(Diag::parse(
-                    n_tok.span,
-                    "expected an integer after `alloc_per_call =` (e.g. \
-                     `@budget(alloc_per_call = 0)`)",
-                ));
-            }
-        };
-        self.bump();
         let close = self.expect(TokenKind::RParen, ")")?;
-        Ok((n, at.span.merge(close.span)))
+        Ok((alloc, dims, at.span.merge(close.span)))
     }
+
 
     /// Stage-1 FFI (2026-05-22): parse `@ffi("c")` — the
     /// annotation prefix that marks the following `fn` declaration
@@ -1599,6 +1723,7 @@ impl Parser {
             }
         }
         Ok(LocusDecl {
+            phase_effects: None,
             name,
             is_main,
             export: false,
@@ -1857,7 +1982,7 @@ impl Parser {
                 // allocation contract. fn-only (a lifecycle `run()` is
                 // one-shot; the contract is about per-call cost).
                 if matches!(&kind_tok, TokenKind::Ident(s) if s == "budget") {
-                    let (budget, bspan) = self.parse_budget_annotation()?;
+                    let (budget, qdims, bspan) = self.parse_budget_full()?;
                     if !matches!(self.peek(), TokenKind::Fn) {
                         return Err(Diag::parse(
                             self.peek_token().span,
@@ -1867,7 +1992,8 @@ impl Parser {
                         ));
                     }
                     let mut fn_decl = self.parse_fn_decl()?;
-                    fn_decl.budget = Some(budget);
+                    fn_decl.budget = budget;
+                    fn_decl.quantities = qdims;
                     fn_decl.span = bspan.merge(fn_decl.span);
                     return Ok(LocusMember::Fn(fn_decl));
                 }
@@ -1890,7 +2016,7 @@ impl Parser {
                     let budget = if matches!(self.peek(), TokenKind::At)
                         && matches!(self.peek_at(1), TokenKind::Ident(s) if s == "budget")
                     {
-                        Some(self.parse_budget_annotation()?)
+                        Some(self.parse_budget_full()?)
                     } else {
                         None
                     };
@@ -1905,8 +2031,9 @@ impl Parser {
                     let mut fn_decl = self.parse_fn_decl()?;
                     fn_decl.effects = effects;
                     fn_decl.hot = hot;
-                    if let Some((b, _)) = budget {
-                        fn_decl.budget = Some(b);
+                    if let Some((b, q, _)) = budget {
+                        fn_decl.budget = b;
+                        fn_decl.quantities = q;
                     }
                     fn_decl.span = espan.merge(fn_decl.span);
                     return Ok(LocusMember::Fn(fn_decl));
@@ -1918,7 +2045,7 @@ impl Parser {
                     let at = self.expect(TokenKind::At, "@")?;
                     self.bump(); // consume `hot`
                     let budget = if matches!(self.peek(), TokenKind::At) {
-                        Some(self.parse_budget_annotation()?)
+                        Some(self.parse_budget_full()?)
                     } else {
                         None
                     };
@@ -1932,8 +2059,9 @@ impl Parser {
                     }
                     let mut fn_decl = self.parse_fn_decl()?;
                     fn_decl.hot = true;
-                    if let Some((b, _)) = budget {
-                        fn_decl.budget = Some(b);
+                    if let Some((b, q, _)) = budget {
+                        fn_decl.budget = b;
+                        fn_decl.quantities = q;
                     }
                     fn_decl.span = at.span.merge(fn_decl.span);
                     return Ok(LocusMember::Fn(fn_decl));
@@ -3987,6 +4115,7 @@ impl Parser {
                 budget: None,
                 hot: false,
                 effects: Vec::new(),
+                quantities: Vec::new(),
                 span: kw.span.merge(semi.span),
                 body,
             });
@@ -4014,6 +4143,7 @@ impl Parser {
                 budget: None,
                 hot: false,
                 effects: Vec::new(),
+                quantities: Vec::new(),
                 span: kw.span.merge(semi.span),
                 body,
             });
@@ -4037,6 +4167,7 @@ impl Parser {
             budget: None,
                 hot: false,
                 effects: Vec::new(),
+                quantities: Vec::new(),
             span: kw.span.merge(body.span),
             body,
         })

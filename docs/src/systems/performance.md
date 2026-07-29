@@ -220,6 +220,59 @@ effect assertion violated: `on_tick` must not reach `block`, but reaches
   on_tick -> helper -> nap [std::time::sleep — a blocking operation …].
 ```
 
+### Budgets beyond allocation
+
+`@budget` counts other dimensions too, comma-separated in one
+clause:
+
+```hale,fragment
+@budget(alloc_per_call = 0, stack_bytes = 4096, block_points = 0)
+fn on_frame(x: Int) -> Int { ... }
+
+@budget(publish = 1) fn reply(o: Order) { ... }   // exactly-once reply
+@budget(fanout = 8)  fn notify(e: Ev) { ... }     // bounded amplification
+```
+
+`stack_bytes` is the deepest call *chain*, not the sum of everything
+reachable — two 100-byte helpers called side by side cost 100, not
+200. Recursion makes it unbounded, which is why it pairs naturally
+with `@no_recursion`.
+
+`fanout` is the one that catches surprises: it counts transitive
+subscriber *deliveries*, so publishing once to a subject with 200
+subscribers is a fan-out of 200. That's the amplification a per-fn
+count can't show you.
+
+### Effects by lifecycle phase
+
+A locus can say which effects each phase may perform:
+
+```hale,fragment
+@phase_effects(birth: {alloc}, run: {})
+locus Engine { ... }
+```
+
+That single line is the "no dynamic memory after initialization"
+discipline: allocate while starting up, never in the steady state.
+Phases are the lifecycle hooks (`birth`, `run`, `drain`,
+`dissolve`, `accept`, `release`) or any handler by name; a phase you
+don't mention is unconstrained.
+
+### Never trapping
+
+`@no_panic` asks a different question from the effect classes — not
+"what do you reach?" but "can any path here fail?":
+
+```hale,fragment
+@no_panic fn parse_frame(b: Bytes) -> Frame {
+    return decode(b) or Frame { };   // handled — fine
+}
+```
+
+An explicit `violate`, an `or raise` (which propagates rather than
+handles), or a trapping index all violate it. `or discard`, a
+substitute value, and `or handler(err)` satisfy it.
+
 ### The assertion you don't have to write
 
 Placement already declares intent, so some contracts need no

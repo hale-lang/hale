@@ -418,6 +418,23 @@ pub fn check_bundle(
         // @no_ffi / @no_block) — same opt-in-contract discipline as
         // @budget, over the shared callgraph witness engine.
         diags.extend(crate::effects::effect_diags(&programs_vec));
+        // #265 step 5: quantitative budgets (stack_bytes,
+        // block_points, publish, fanout). Fan-out reads subscriber
+        // counts off the bus graph.
+        {
+            let graph = crate::bus_graph::build_bus_graph(bundle, top);
+            let fanout = |subj: &str| -> u64 {
+                graph
+                    .subjects
+                    .get(subj)
+                    .map(|si| si.subscribers.len().max(1) as u64)
+                    .unwrap_or(1)
+            };
+            diags.extend(crate::quantitative::quantitative_diags(
+                &programs_vec,
+                &fanout,
+            ));
+        }
     }
     // 2026-05-29: a bus-subscribing locus instantiated non-owned
     // inside another locus's method/handler body dissolves at that

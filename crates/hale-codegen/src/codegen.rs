@@ -7378,6 +7378,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     budget: None,
                     hot: false,
                     effects: Vec::new(),
+                    quantities: Vec::new(),
                     body: Block {
                         stmts: Vec::new(),
                         tail: None,
@@ -10746,6 +10747,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map(|m| Self::substitute_locus_member(m, &subst))
             .collect();
         Ok(LocusDecl {
+            phase_effects: None,
             name: Ident {
                 name: mangled_name.to_string(),
                 span: template.name.span.clone(),
@@ -10868,6 +10870,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 budget: fd.budget,
                 hot: fd.hot,
                 effects: Vec::new(),
+                quantities: Vec::new(),
                 body: Self::substitute_block_type_ascriptions(
                     &fd.body, subst,
                 ),
@@ -11116,6 +11119,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             budget: template.budget,
             hot: template.hot,
             effects: Vec::new(),
+            quantities: Vec::new(),
             body: new_body,
             span: template.span.clone(),
         })

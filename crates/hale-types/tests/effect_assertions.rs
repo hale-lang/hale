@@ -488,3 +488,56 @@ fn explicit_assertion_suppresses_the_placement_advisory() {
         ds
     );
 }
+
+// ---- @no_panic: disposition coverage, not leaf reachability ----
+
+#[test]
+fn no_panic_flags_an_explicit_violate() {
+    let src = r#"
+        @no_panic fn risky(n: Int) -> Int {
+            if n < 0 { violate bad_input; }
+            return n;
+        }
+        fn main() { println(risky(1)); }
+    "#;
+    let ds = diags_for(src);
+    assert!(
+        ds.iter().any(|m| m.contains("@no_panic` violated")
+            && m.contains("violate")),
+        "an explicit violate must trip @no_panic: {:?}",
+        ds
+    );
+}
+
+#[test]
+fn no_panic_flags_or_raise() {
+    let src = r#"
+        @no_panic fn readit(p: String) -> String {
+            return std::io::fs::read_file(p) or raise;
+        }
+        fn main() { println(readit("/tmp/x")); }
+    "#;
+    let ds = diags_for(src);
+    assert!(
+        ds.iter().any(|m| m.contains("@no_panic` violated")
+            && m.contains("or raise")),
+        "`or raise` propagates — it must trip @no_panic: {:?}",
+        ds
+    );
+}
+
+#[test]
+fn no_panic_accepts_handled_dispositions() {
+    let src = r#"
+        @no_panic fn readit(p: String) -> String {
+            return std::io::fs::read_file(p) or "";
+        }
+        fn main() { println(readit("/tmp/x")); }
+    "#;
+    let ds = diags_for(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("@no_panic")),
+        "a substitute disposition handles the failure: {:?}",
+        ds
+    );
+}

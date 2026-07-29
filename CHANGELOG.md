@@ -51,6 +51,45 @@ behavior.
     and placement-implied tiers, `AGENTS.md` updated, and
     `docs/src/systems/performance.md` documents the surface.
 
+## Unreleased
+
+- **GH #265 COMPLETE — the effect-assertion system, all seven build
+  steps.** The remaining phases land together on the substrate the
+  earlier ones established:
+  - **Quantitative budgets** (step 5): `@budget(stack_bytes = N,
+    block_points = N, publish = N, fanout = N)`, composable in one
+    clause with `alloc_per_call`. `stack_bytes` is a DAG longest-path
+    over estimated frames (acyclicity is the precondition — recursion
+    reports unbounded); `fanout` counts transitive subscriber
+    deliveries off the bus graph, the amplification property no
+    per-fn count reveals; `@budget(publish = 1)` **is** the
+    exactly-once-reply contract the issue sketched as `@replies`,
+    falling out as a count rather than a bespoke analysis.
+  - **Phase-indexed effects** (step 6): `@phase_effects(birth:
+    {alloc}, run: {})` on a locus — the DO-178 "no dynamic memory
+    after initialization" discipline stated directly rather than
+    assembled from two unrelated flags. `alloc` became a first-class
+    `EffectClass` (site-measured, like publish/spawn) so a phase can
+    name it.
+  - **`@no_panic`**: disposition coverage — explicit `violate`, an
+    `or raise` that propagates rather than handles, or a trapping
+    index. Deliberately not an effect class: it is a syntactic
+    property of a body, not a query over the frontier.
+  - **The conformance loop** (step 7): compile programs carrying
+    assertions, run them, and sample the runtime's own counters
+    around the certified call. A fn certified `@no_syscall` that
+    performs a syscall is a **caught soundness bug in the analysis
+    itself** — the defect class that expectation-based testing
+    structurally cannot find. A negative control proves the oracle
+    detects effects when they genuinely happen, so the checks can
+    never pass vacuously.
+  - **The `.hale.effects` manifest** (step 7): declared contracts in
+    a stable sorted format alongside `.hale.topo`, so an effect
+    regression shows up as a one-line diff in review.
+
+  34 effect tests across four suites; spec, book, and the annotation
+  inventory updated.
+
 ## v0.11.22 — iris handoff-8: adapter ingest lit + the refactor batch (2026-07-29)
 
 - **The adapter ingest path carries the full observation trio**

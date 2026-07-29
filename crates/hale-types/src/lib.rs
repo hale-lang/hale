@@ -30,6 +30,7 @@ pub mod check;
 pub mod stdlib_surface;
 pub mod ownership_graph;
 pub mod purity;
+pub mod quantitative;
 pub mod resolve;
 pub mod resource_budget;
 pub mod symbol;

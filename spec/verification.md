@@ -221,6 +221,66 @@ assume the others in a build:
   publish subject cannot be proven in-set and is reported. `@no_panic`
   remains a separate track — disposition coverage + index-op
   selection, not leaf reachability.
+- **Quantitative budgets — `@budget(<dim> = N)`** (GH #265 step 5,
+  2026-07-29). `@budget` counts more than allocations now; dimensions
+  compose in one clause, comma-separated:
+  - `stack_bytes` — worst-case stack depth as a **DAG longest path**
+    over estimated frame sizes. Acyclicity is the precondition, which
+    is why this pairs with `@no_recursion`: a cycle reports
+    *unbounded*. Frames are estimated from declared shapes and
+    over-approximate, so the bound is safe to assert on but is not
+    WCET.
+  - `block_points` — how many blocking operations one call may reach
+    (`0` is `@no_block`; `1` is "may wait once, on its own socket").
+  - `publish` — publishes per call. `@budget(publish = 1)` **is** the
+    exactly-once-reply contract the issue sketched as `@replies`,
+    falling out as a count rather than a bespoke analysis.
+  - `fanout` — transitive subscriber **deliveries** one call causes,
+    read off the bus graph. This is the amplification/backpressure
+    property no per-fn count reveals: a handler publishing to a
+    200-subscriber subject amplifies 200×.
+
+  A contributor inside a loop saturates to unbounded, matching
+  `alloc_per_call`'s per-call semantics.
+- **Phase-indexed effects — `@phase_effects(...)` on a locus**
+  (GH #265 step 6, 2026-07-29). The lifecycle model expresses what a
+  function-level effect system cannot:
+  `@phase_effects(birth: {alloc}, run: {})` **is** the DO-178 "no
+  dynamic memory after initialization" discipline, stated directly
+  rather than assembled from two unrelated flags. Each phase names
+  the classes it may perform (`alloc`, plus the `@effects` classes);
+  a phase omitted is unconstrained, a phase with `{}` forbids
+  everything. Phases resolve to lifecycle hooks (`birth`, `run`,
+  `drain`, `dissolve`, `accept`, `release`) or to any member fn /
+  handler by name.
+- **`@no_panic` — disposition coverage** (GH #265, 2026-07-29).
+  Deliberately *not* an effect class: this is a syntactic property of
+  a body, not a query over the classified frontier. A fn asserting
+  `@no_panic` must have no reachable trap — no explicit `violate`, no
+  fallible expression dispositioned `or raise` (which propagates
+  rather than handles), no trapping index form. `or discard`, a
+  substitute value, and `or handler(err)` all satisfy it.
+- **The conformance loop — checking the checker** (GH #265 step 7,
+  2026-07-29). Static classification is a *claim*; the running
+  binary is the oracle. `crates/hale-codegen/tests/
+  effects_conformance.rs` compiles programs carrying assertions,
+  runs them, and samples the runtime's own counters
+  (`std::diag::syscall_count` / `heap_alloc_count`) around the
+  certified call: a fn certified `@no_syscall` that performs a
+  syscall, or `@budget(alloc_per_call = 0)` that allocates, is **a
+  caught soundness bug in the analysis itself** — the one class of
+  defect that "the checker says what I expect" testing cannot find.
+  A negative control asserts the oracle detects the effect when it
+  genuinely happens, so the conformance checks can never pass
+  vacuously. Same philosophy as GenMC-in-CI, applied to effects.
+- **The `.hale.effects` manifest** (GH #265 step 7). `effect_manifest`
+  / `render_effect_manifest` emit the whole program's declared
+  contracts in a stable, sorted line format alongside `.hale.topo`.
+  Declaration-only at v1 (inferring a full effect set per fn is the
+  effect-rows-on-function-types slippery slope the issue defers);
+  what it buys today is that an effect **regression** — a handler
+  that quietly lost a contract — shows up as a one-line diff in
+  review, the way an API break shows in a `.d.ts` diff.
 - **Placement-implied contracts — the assertion you don't write**
   (GH #265, 2026-07-29). A locus placed
   `cooperative(pool = X) where async_io` shares that pool's single

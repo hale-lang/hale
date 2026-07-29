@@ -603,10 +603,12 @@ They attach to the declaration that follows.
 | `@bounded` | locus | opt into the memory-bound proof |
 | `@unbounded` | fn | acknowledge intentional unbounded allocation |
 | `@hot` | fn | certify a hot path (promotes advisories to errors) |
-| `@budget(alloc_per_call = N)` | fn | per-call allocation ceiling |
+| `@budget(alloc_per_call = N, stack_bytes = N, block_points = N, publish = N, fanout = N)` | fn | quantitative budgets, comma-separated |
 | `@effects(none: {…})` | fn | forbid effect classes, checked transitively |
+| `@phase_effects(phase: {…}, …)` | locus | per-lifecycle-phase effect contract |
 | `@effects(publish: {…})` | fn | the allowed publish set |
 | `@no_syscall` `@no_block` `@no_ffi` `@no_publish` `@no_spawn` `@no_recursion` `@deterministic` | fn | sugar for the `@effects(none: …)` forms |
+| `@no_panic` | fn | no reachable trap (disposition coverage — a different analysis) |
 
 Effect annotations stack with each other and with `@hot` /
 `@budget(...)`; see `spec/verification.md` for what each class
