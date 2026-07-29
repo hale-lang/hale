@@ -38,9 +38,9 @@
 use hale_syntax::ast::*;
 use hale_syntax::{Diag, Span};
 
-use crate::alloc_summary::{
-    self, AllocKind, AllocSummary, Callee, FnKey, FnSummary,
-};
+use crate::alloc_summary::{self, AllocKind, AllocSite, AllocSummary,
+    CallEdge, FnKey};
+use crate::callgraph::{self, FactVisitor};
 
 /// A per-call allocation count that saturates at `Unbounded` (a
 /// loop-nested allocation, a call in a loop, or recursion).
@@ -119,138 +119,136 @@ fn describe_kind(kind: &AllocKind) -> String {
 
 /// A DFS-work ceiling. A pathological wide call graph could re-count a
 /// shared callee exponentially; past this many steps we stop and report
-/// the fn as uncertifiable (conservatively over budget) rather than
-/// spin. Real call graphs are nowhere near this.
-const MAX_STEPS: u32 = 20_000;
+/// R1 (2026-07-29): the DFS that used to live here (`count_fn`) is
+/// now the shared engine in [`crate::callgraph`]; this visitor
+/// supplies exactly the contributions the old traversal hard-coded.
+/// Semantics and diagnostic text are unchanged — the engine was
+/// extracted from this file and this file is its reference customer.
+struct BudgetVisitor {
+    offenders: Vec<Offender>,
+}
 
-/// Count the arena allocations one call of `key` performs, collecting
-/// offenders for diagnostics. `path` is the current DFS ancestor stack
-/// (for cycle → recursion detection); a diamond (a callee reached by two
-/// distinct paths) is *not* on the path and is correctly counted once
-/// per reaching call site.
-fn count_fn(
-    key: &FnKey,
-    summary: &AllocSummary,
-    path: &mut Vec<FnKey>,
-    offenders: &mut Vec<Offender>,
-    steps: &mut u32,
-) -> Count {
-    let fs: &FnSummary = match summary.fns.get(key) {
-        Some(fs) => fs,
-        // An unresolved / external target has no summary — nothing we can
-        // see. (Callers already special-case the known-allocating recv
-        // family before recursing here.)
-        None => return Count::zero(),
-    };
+impl FactVisitor for BudgetVisitor {
+    type Fact = Count;
 
-    let mut total = Count::zero();
+    fn identity(&self) -> Count {
+        Count::zero()
+    }
+    fn combine(&self, a: Count, b: Count) -> Count {
+        a.add(b)
+    }
+    fn saturated(&self) -> Count {
+        Count::Unbounded
+    }
+    fn is_zero(&self, f: &Count) -> bool {
+        !f.nonzero()
+    }
 
-    // Direct allocation sites in this body.
-    for site in &fs.sites {
-        *steps += 1;
-        if *steps > MAX_STEPS {
-            return Count::Unbounded;
-        }
+    fn site(&mut self, _key: &FnKey, site: &AllocSite, emit: bool) -> Count {
         if site.loop_depth > 0 {
-            offenders.push(Offender {
-                span: site.span,
+            if emit {
+                self.offenders.push(Offender {
+                    span: site.span,
+                    note: format!(
+                        "{} inside a loop — a fresh allocation every iteration",
+                        describe_kind(&site.kind)
+                    ),
+                });
+            }
+            Count::Unbounded
+        } else {
+            if emit {
+                self.offenders.push(Offender {
+                    span: site.span,
+                    note: describe_kind(&site.kind),
+                });
+            }
+            Count::Finite(1)
+        }
+    }
+
+    fn unresolved(
+        &mut self,
+        _key: &FnKey,
+        edge: &CallEdge,
+        name: &str,
+        in_loop: bool,
+        emit: bool,
+    ) -> Count {
+        if !opaque_recv_allocates(name) {
+            // Any other opaque call is outside what the budget can
+            // see (documented boundary).
+            return Count::zero();
+        }
+        if in_loop {
+            if emit {
+                self.offenders.push(Offender {
+                    span: edge.span,
+                    note: format!(
+                        "`{}` inside a loop allocates a fresh buffer \
+                         every iteration — use `recv_into` with a \
+                         reused `BytesBuilder`",
+                        name
+                    ),
+                });
+            }
+            Count::Unbounded
+        } else {
+            if emit {
+                self.offenders.push(Offender {
+                    span: edge.span,
+                    note: format!(
+                        "`{}` allocates a fresh result buffer — use \
+                         `recv_into` with a reused `BytesBuilder` for \
+                         a zero-alloc read",
+                        name
+                    ),
+                });
+            }
+            Count::Finite(1)
+        }
+    }
+
+    fn recursion(
+        &mut self,
+        _key: &FnKey,
+        edge: &CallEdge,
+        callee: &FnKey,
+        emit: bool,
+    ) -> Count {
+        if emit {
+            self.offenders.push(Offender {
+                span: edge.span,
                 note: format!(
-                    "{} inside a loop — a fresh allocation every iteration",
-                    describe_kind(&site.kind)
+                    "recursive call to `{}` — unbounded allocation \
+                     per call",
+                    callee.display()
                 ),
             });
-            total = total.add(Count::Unbounded);
-        } else {
-            offenders.push(Offender {
-                span: site.span,
-                note: describe_kind(&site.kind),
-            });
-            total = total.add(Count::Finite(1));
         }
+        Count::Unbounded
     }
 
-    // Call edges.
-    path.push(key.clone());
-    for edge in &fs.calls {
-        *steps += 1;
-        if *steps > MAX_STEPS {
-            path.pop();
-            return Count::Unbounded;
+    fn loop_call(
+        &mut self,
+        _key: &FnKey,
+        edge: &CallEdge,
+        callee: &FnKey,
+        _sub: Count,
+        emit: bool,
+    ) -> Count {
+        if emit {
+            self.offenders.push(Offender {
+                span: edge.span,
+                note: format!(
+                    "calls `{}` inside a loop — its allocations \
+                     repeat every iteration",
+                    callee.display()
+                ),
+            });
         }
-        let in_loop = edge.loop_depth > 0;
-        match &edge.callee {
-            Callee::Resolved(callee_key) => {
-                if path.contains(callee_key) {
-                    // A cycle on the current path = recursion = unbounded
-                    // per call.
-                    offenders.push(Offender {
-                        span: edge.span,
-                        note: format!(
-                            "recursive call to `{}` — unbounded allocation \
-                             per call",
-                            callee_key.display()
-                        ),
-                    });
-                    total = total.add(Count::Unbounded);
-                    continue;
-                }
-                if in_loop {
-                    // The callee runs many times per call. If it allocates
-                    // at all, that's unbounded per call.
-                    let mut probe = Vec::new();
-                    let sub = count_fn(callee_key, summary, path, &mut probe, steps);
-                    if sub.nonzero() {
-                        offenders.push(Offender {
-                            span: edge.span,
-                            note: format!(
-                                "calls `{}` inside a loop — its allocations \
-                                 repeat every iteration",
-                                callee_key.display()
-                            ),
-                        });
-                        total = total.add(Count::Unbounded);
-                    }
-                } else {
-                    // A once-per-call callee: its allocations fold in
-                    // directly (offenders point into its body).
-                    total = total.add(count_fn(
-                        callee_key, summary, path, offenders, steps,
-                    ));
-                }
-            }
-            Callee::Unresolved(name) => {
-                if opaque_recv_allocates(name) {
-                    if in_loop {
-                        offenders.push(Offender {
-                            span: edge.span,
-                            note: format!(
-                                "`{}` inside a loop allocates a fresh buffer \
-                                 every iteration — use `recv_into` with a \
-                                 reused `BytesBuilder`",
-                                name
-                            ),
-                        });
-                        total = total.add(Count::Unbounded);
-                    } else {
-                        offenders.push(Offender {
-                            span: edge.span,
-                            note: format!(
-                                "`{}` allocates a fresh result buffer — use \
-                                 `recv_into` with a reused `BytesBuilder` for \
-                                 a zero-alloc read",
-                                name
-                            ),
-                        });
-                        total = total.add(Count::Finite(1));
-                    }
-                }
-                // Any other opaque call is outside what the budget can
-                // see (documented boundary).
-            }
-        }
+        Count::Unbounded
     }
-    path.pop();
-    total
 }
 
 /// The public entry: check every `@budget(...)`-annotated fn/method in
@@ -301,10 +299,9 @@ fn check_one(
     summary: &AllocSummary,
     diags: &mut Vec<Diag>,
 ) {
-    let mut offenders = Vec::new();
-    let mut path = Vec::new();
-    let mut steps = 0u32;
-    let count = count_fn(key, summary, &mut path, &mut offenders, &mut steps);
+    let mut visitor = BudgetVisitor { offenders: Vec::new() };
+    let count = callgraph::walk(summary, key, &mut visitor);
+    let offenders = visitor.offenders;
 
     if !count.exceeds(budget) {
         return;

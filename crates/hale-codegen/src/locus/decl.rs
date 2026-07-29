@@ -427,7 +427,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         // varies via the placement_override at instantiation
         // time; struct layout is type-level uniform.
         let is_pinned_locus_type =
-            self.pinned_locus_types.contains(&l.name.name);
+            self.deployment.pinned_locus_types.contains(&l.name.name);
         let has_subscribe = is_pinned_locus_type
             && l.members.iter().any(|m| match m {
                 LocusMember::Bus(b) => b.members.iter().any(|bm| {

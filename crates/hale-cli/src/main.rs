@@ -718,7 +718,8 @@ fn run_doc_stdlib(json: bool, out_path: Option<PathBuf>) -> ExitCode {
         .map(|e| e.name.clone())
         .collect();
     for surface in hale_types::stdlib_surface::SURFACES {
-        for f in surface.fns {
+        for entry in surface.fns {
+            let f = entry.name;
             if f.starts_with("__") {
                 continue;
             }

@@ -1073,7 +1073,8 @@ fn complete_std_path(
     // Free fns in the exact namespace, with signatures as detail.
     for surface in surf::SURFACES {
         if surface.ns == ns_refs.as_slice() {
-            for f in surface.fns {
+            for entry in surface.fns {
+                let f = entry.name;
                 if !f.starts_with(partial) {
                     continue;
                 }

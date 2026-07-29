@@ -65,22 +65,12 @@ pub enum Impurity {
     ImpureCalleeCall { callee_name: String, span: Span },
 }
 
-/// Identifies a fn for purity lookup. Free fns have `locus: None`;
-/// locus methods carry the enclosing locus's name.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct PurityKey {
-    pub locus: Option<String>,
-    pub fn_name: String,
-}
-
-impl PurityKey {
-    pub fn free_fn(name: impl Into<String>) -> Self {
-        Self { locus: None, fn_name: name.into() }
-    }
-    pub fn method(locus: impl Into<String>, name: impl Into<String>) -> Self {
-        Self { locus: Some(locus.into()), fn_name: name.into() }
-    }
-}
+/// Identifies a fn for purity lookup. R1 (2026-07-29): this was a
+/// byte-identical duplicate of `alloc_summary::FnKey` — the walkers
+/// are converging on one key type (see `crate::callgraph`), so
+/// purity now shares it. `free_fn` / `method` constructors come
+/// with it.
+pub use crate::alloc_summary::FnKey as PurityKey;
 
 /// Bundle-wide purity result keyed by [`PurityKey`].
 pub type PurityMap = BTreeMap<PurityKey, Purity>;

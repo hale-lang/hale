@@ -8302,6 +8302,39 @@ static int lotus_bus_log_drop_enabled(void);
  * reader thread can dispatch recv'd bytes into the same local-
  * handler set without going through transport fanout (which
  * would re-emit them remotely and loop forever). */
+/* R4 (2026-07-29) — the ONE per-entry post. Every dispatch flavor
+ * used to hand-copy the mailbox / coop_pool / queue routing triple
+ * (11 copies), and every cross-cutting concern had to be stitched
+ * into each — the "fixed one flavor, missed siblings" bug class
+ * that recurred through P5/P11/P13/P14/P15/P17 (obs probes missing
+ * on keyed, direct, and adapter flavors across five releases).
+ * Routing decisions live HERE now: pinned subscribers take their
+ * mailbox, pool-placed subscribers post to their pool's worker
+ * (single-threaded-method invariant), everything else enqueues on
+ * the supplied cooperative queue. Returns 1 when the cell was
+ * posted, 0 when no target existed (caller decides whether that is
+ * a drop worth logging). The static-devirt _st enqueue variant
+ * (build #3 no-pinned fast path) is the one deliberate exception —
+ * it stays open-coded at its single site with a pointer here. */
+static inline int lotus_bus_post_entry(lotus_bus_entry_t *e,
+                                       lotus_bus_queue_t *queue,
+                                       const void *payload,
+                                       size_t size) {
+    if (e->mailbox) {
+        lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
+                           payload, size);
+    } else if (e->coop_pool) {
+        lotus_coop_pool_post(e->coop_pool, e->handler, e->self_ptr,
+                             payload, size);
+    } else if (queue) {
+        lotus_bus_queue_enqueue(queue, e->handler, e->self_ptr,
+                                payload, size);
+    } else {
+        return 0;
+    }
+    return 1;
+}
+
 void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
                               const char *subject,
                               const void *payload,
@@ -8329,23 +8362,8 @@ void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
          * would deliver to filtered subscribers regardless of the
          * filter — bypassing the routing-key contract. */
         if (e->key_filter_kind != 0) continue;
-        if (e->mailbox) {
-            lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
-                               payload, payload_size);
-            delivered++;
-        } else if (e->coop_pool) {
-            /* F.31 Phase 4: subscriber's locus is on a named
-             * non-main cooperative pool. Route to that pool's
-             * queue so the handler fires on the pool's worker
-             * thread (single-threaded-method invariant). */
-            lotus_coop_pool_post(e->coop_pool, e->handler, e->self_ptr,
-                                 payload, payload_size);
-            delivered++;
-        } else if (queue) {
-            lotus_bus_queue_enqueue(queue, e->handler, e->self_ptr,
-                                    payload, payload_size);
-            delivered++;
-        }
+        delivered += (size_t)lotus_bus_post_entry(
+            e, queue, payload, payload_size);
         if (lotus_obs_bus_deliver) {
             lotus_obs_bus_deliver(subject, e->self_ptr,
                                   (uint64_t)payload_size);
@@ -8467,16 +8485,8 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
              * pass; the fallback pass below would dispatch it. */
             continue;
         }
-        if (e->mailbox) {
-            lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
-                               payload, payload_size);
-        } else if (e->coop_pool) {
-            lotus_coop_pool_post(e->coop_pool, e->handler, e->self_ptr,
-                                 payload, payload_size);
-        } else if (queue) {
-            lotus_bus_queue_enqueue(queue, e->handler, e->self_ptr,
-                                    payload, payload_size);
-        }
+        (void)lotus_bus_post_entry(e, queue,
+            payload, payload_size);
         /* iris handoff-4 P15: BUS_DELIVER per matched keyed target
          * (sibling of the non-keyed local_dispatch probe — the keyed
          * flavor had none, so keyed deliveries never counted). */
@@ -8496,16 +8506,7 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
             if (!e->subject) continue;
             if (!lotus_subject_match(e->subject, subject)) continue;
             if (e->key_filter_kind != 2) continue;
-            if (e->mailbox) {
-                lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
-                                   payload, payload_size);
-            } else if (e->coop_pool) {
-                lotus_coop_pool_post(e->coop_pool, e->handler,
-                                     e->self_ptr, payload, payload_size);
-            } else if (queue) {
-                lotus_bus_queue_enqueue(queue, e->handler, e->self_ptr,
-                                        payload, payload_size);
-            }
+            (void)lotus_bus_post_entry(e, queue, payload, payload_size);
             if (lotus_obs_bus_deliver) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
                                       (uint64_t)payload_size);
@@ -14425,16 +14426,8 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
          * fn; the owner thread materializes at drain. */
         if (!lotus_bus_target_owner_is_current(e, g_bus_queue_for_remote)) {
             g_bus_pending_wire_deser = (void *)e->deserialize;
-            if (e->mailbox) {
-                lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
-                                   wire_bytes, wire_size);
-            } else if (e->coop_pool) {
-                lotus_coop_pool_post(e->coop_pool, e->handler, e->self_ptr,
-                                     wire_bytes, wire_size);
-            } else if (g_bus_queue_for_remote) {
-                lotus_bus_queue_enqueue(g_bus_queue_for_remote, e->handler,
-                                        e->self_ptr, wire_bytes, wire_size);
-            }
+            (void)lotus_bus_post_entry(e, g_bus_queue_for_remote,
+                wire_bytes, wire_size);
             g_bus_pending_wire_deser = NULL;
             if (lotus_obs_bus_deliver) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
@@ -14483,16 +14476,8 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
              * fn; the owner thread materializes at drain. */
             if (!lotus_bus_target_owner_is_current(e, g_bus_queue_for_remote)) {
                 g_bus_pending_wire_deser = (void *)e->deserialize;
-                if (e->mailbox) {
-                        lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
-                                                   wire_bytes, wire_size);
-                } else if (e->coop_pool) {
-                        lotus_coop_pool_post(e->coop_pool, e->handler, e->self_ptr,
-                                                     wire_bytes, wire_size);
-                } else if (g_bus_queue_for_remote) {
-                        lotus_bus_queue_enqueue(g_bus_queue_for_remote, e->handler,
-                                                            e->self_ptr, wire_bytes, wire_size);
-                }
+                (void)lotus_bus_post_entry(e, g_bus_queue_for_remote,
+                    wire_bytes, wire_size);
                 g_bus_pending_wire_deser = NULL;
                 if (lotus_obs_bus_deliver) {
                     lotus_obs_bus_deliver(subject, e->self_ptr,
@@ -14599,16 +14584,8 @@ void lotus_bus_dispatch_wire(const char *subject,
          * drain (lotus_bus_cell_materialize). */
         if (!lotus_bus_target_owner_is_current(e, g_bus_queue_for_remote)) {
             g_bus_pending_wire_deser = (void *)e->deserialize;
-            if (e->mailbox) {
-                lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
-                                   wire_bytes, wire_size);
-            } else if (e->coop_pool) {
-                lotus_coop_pool_post(e->coop_pool, e->handler, e->self_ptr,
-                                     wire_bytes, wire_size);
-            } else if (g_bus_queue_for_remote) {
-                lotus_bus_queue_enqueue(g_bus_queue_for_remote, e->handler,
-                                        e->self_ptr, wire_bytes, wire_size);
-            }
+            (void)lotus_bus_post_entry(e, g_bus_queue_for_remote,
+                wire_bytes, wire_size);
             g_bus_pending_wire_deser = NULL;
             delivered++;
             continue;
@@ -14723,25 +14700,17 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                     lotus_obs_bus_deliver(subject, e->self_ptr,
                                           (uint64_t)struct_size);
                 }
-                if (e->mailbox) {
-                    lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
-                                       struct_payload, (size_t)struct_size);
+                /* R4 exception: the build #3 no-pinned fast path
+                 * takes the no-acquire-load _st enqueue; everything
+                 * else routes through lotus_bus_post_entry. */
+                if (no_pinned && !e->mailbox && !e->coop_pool && queue) {
+                    lotus_bus_queue_enqueue_st(queue, e->handler,
+                                               e->self_ptr, struct_payload,
+                                               (size_t)struct_size);
                     delivered++;
-                } else if (e->coop_pool) {
-                    lotus_coop_pool_post(e->coop_pool, e->handler, e->self_ptr,
-                                         struct_payload, (size_t)struct_size);
-                    delivered++;
-                } else if (queue) {
-                    if (no_pinned) {
-                        lotus_bus_queue_enqueue_st(queue, e->handler,
-                                                   e->self_ptr, struct_payload,
-                                                   (size_t)struct_size);
-                    } else {
-                        lotus_bus_queue_enqueue(queue, e->handler, e->self_ptr,
-                                                struct_payload,
-                                                (size_t)struct_size);
-                    }
-                    delivered++;
+                } else {
+                    delivered += (size_t)lotus_bus_post_entry(
+                        e, queue, struct_payload, (size_t)struct_size);
                 }
             }
         }
@@ -14779,25 +14748,17 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                 lotus_bus_entry_t *e = &g_bus_entries[b->idx[k]];
                 if (!e->subject) continue;
                 if (e->key_filter_kind != 0) continue;
-                if (e->mailbox) {
-                    lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
-                                       struct_payload, (size_t)struct_size);
+                /* R4 exception: the build #3 no-pinned fast path
+                 * takes the no-acquire-load _st enqueue; everything
+                 * else routes through lotus_bus_post_entry. */
+                if (no_pinned && !e->mailbox && !e->coop_pool && queue) {
+                    lotus_bus_queue_enqueue_st(queue, e->handler,
+                                               e->self_ptr, struct_payload,
+                                               (size_t)struct_size);
                     delivered++;
-                } else if (e->coop_pool) {
-                    lotus_coop_pool_post(e->coop_pool, e->handler, e->self_ptr,
-                                         struct_payload, (size_t)struct_size);
-                    delivered++;
-                } else if (queue) {
-                    if (no_pinned) {
-                        lotus_bus_queue_enqueue_st(queue, e->handler,
-                                                   e->self_ptr, struct_payload,
-                                                   (size_t)struct_size);
-                    } else {
-                        lotus_bus_queue_enqueue(queue, e->handler, e->self_ptr,
-                                                struct_payload,
-                                                (size_t)struct_size);
-                    }
-                    delivered++;
+                } else {
+                    delivered += (size_t)lotus_bus_post_entry(
+                        e, queue, struct_payload, (size_t)struct_size);
                 }
             }
         }
@@ -14838,18 +14799,8 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
             if (!lotus_bus_target_owner_is_current(e,
                                                    g_bus_queue_for_remote)) {
                 g_bus_pending_wire_deser = (void *)e->deserialize;
-                if (e->mailbox) {
-                    lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
-                                       wire_buf, (size_t)wire_size);
-                } else if (e->coop_pool) {
-                    lotus_coop_pool_post(e->coop_pool, e->handler,
-                                         e->self_ptr, wire_buf,
-                                         (size_t)wire_size);
-                } else if (g_bus_queue_for_remote) {
-                    lotus_bus_queue_enqueue(g_bus_queue_for_remote,
-                                            e->handler, e->self_ptr,
-                                            wire_buf, (size_t)wire_size);
-                }
+                (void)lotus_bus_post_entry(e, g_bus_queue_for_remote,
+                                           wire_buf, (size_t)wire_size);
                 g_bus_pending_wire_deser = NULL;
                 delivered++;
                 continue;
@@ -14860,25 +14811,17 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
             ssize_t ssz = e->deserialize(wire_buf, (size_t)wire_size,
                                          struct_buf, LOTUS_PAYLOAD_MAX);
             if (ssz <= 0) continue;
-            if (e->mailbox) {
-                lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
-                                   struct_buf, (size_t)ssz);
+            /* R4 exception: build #3 no-pinned _st fast path; the
+             * rest routes through lotus_bus_post_entry. */
+            if (no_pinned && !e->mailbox && !e->coop_pool
+                && g_bus_queue_for_remote) {
+                lotus_bus_queue_enqueue_st(g_bus_queue_for_remote,
+                                           e->handler, e->self_ptr,
+                                           struct_buf, (size_t)ssz);
                 delivered++;
-            } else if (e->coop_pool) {
-                lotus_coop_pool_post(e->coop_pool, e->handler, e->self_ptr,
-                                     struct_buf, (size_t)ssz);
-                delivered++;
-            } else if (g_bus_queue_for_remote) {
-                if (no_pinned) {
-                    lotus_bus_queue_enqueue_st(g_bus_queue_for_remote,
-                                               e->handler, e->self_ptr,
-                                               struct_buf, (size_t)ssz);
-                } else {
-                    lotus_bus_queue_enqueue(g_bus_queue_for_remote, e->handler,
-                                            e->self_ptr, struct_buf,
-                                            (size_t)ssz);
-                }
-                delivered++;
+            } else {
+                delivered += (size_t)lotus_bus_post_entry(
+                    e, g_bus_queue_for_remote, struct_buf, (size_t)ssz);
             }
         }
     }
@@ -14945,6 +14888,10 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
             lotus_bus_entry_t *e = &g_bus_entries[b->idx[k]];
             if (!e->subject) continue;           /* quarantined */
             if (e->key_filter_kind != 0) continue;
+            /* R4 note: deliberately NOT lotus_bus_post_entry — the
+             * direct flavor's identity is the same-thread handler
+             * CALL in the else branch (no queue). Off-thread targets
+             * (defensive; the gate excludes them) still enqueue. */
             if (e->mailbox) {
                 /* off-thread; gate should have excluded — enqueue. */
                 lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
