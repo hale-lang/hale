@@ -42,6 +42,19 @@ let pinned = null;         // same shape, click-to-pin
 let hoverTopic = null, pinnedTopic = null;
 const deadSince = new Map();
 
+// topic-family palette: hues for the bus planes (md.*, risk.*,
+// strategy.*, ...). 8 muted-but-distinct hues on dark; red is
+// reserved for alerts, amber/cyan for petal activity accents.
+const FAM_HUES = [210, 265, 320, 165, 130, 95, 20, 240];
+const famOf = (t) => t.split(".")[0];
+function famHue(fam) {
+  let h = 0;
+  for (const ch of fam) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return FAM_HUES[h % FAM_HUES.length];
+}
+const famColor = (fam, a) => `hsla(${famHue(fam)}, 60%, 58%, ${a})`;
+let colorMode = "topic"; // 'topic' | 'latency' (key c)
+
 const fmt = (n) =>
   n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "k" : Math.round(n);
 const isPlumbing = (t) => t === "heartbeat" || t.startsWith("ctl.");
@@ -121,6 +134,7 @@ function buildRibbons() {
     r.mean = r.rate > 0 ? r.latW / r.rate
       : r.topics.reduce((a, t) => a + t.mean, 0) / Math.max(1, r.topics.length);
     r.topics.sort((a, b) => b.rate - a.rate);
+    r.fam = famOf(r.topics[0]?.name || "?");
   }
   return { ribbons: [...ribbons.values()], plumbs: [...plumbs.values()] };
 }
@@ -553,22 +567,32 @@ function frame(now) {
     ctx.beginPath();
     ctx.moveTo(g[0], g[1]);
     ctx.bezierCurveTo(g[2], g[3], g[4], g[5], g[6], g[7]);
+    const col = (al) => colorMode === "topic" ? famColor(r.fam, al) : latColor(r.mean, al);
     // heavy flows get an under-glow first
     if (tier > 2.2) {
       ctx.lineWidth = 2.5 + 3.2 * tier;
-      ctx.strokeStyle = latColor(r.mean, 0.05 + 0.03 * tier);
+      ctx.strokeStyle = col(0.05 + 0.03 * tier);
       ctx.stroke();
     }
     ctx.lineWidth = (tier <= 0 ? 0.7 : 1.1 + 1.9 * tier) + (sel ? 1 : 0);
     ctx.strokeStyle = sel ? "rgba(230,237,243,0.8)"
-      : latColor(r.mean, tier <= 0 ? 0.12 : Math.min(0.7, 0.22 + 0.11 * tier));
+      : col(tier <= 0 ? 0.12 : Math.min(0.7, 0.22 + 0.11 * tier));
     ctx.stroke();
+    // latency ALERT: a slow path earns red regardless of mode
+    if (r.mean > 300 && r.rate > 0) {
+      ctx.save();
+      ctx.setLineDash([6, 8]);
+      ctx.lineWidth = 1.2;
+      ctx.strokeStyle = `rgba(${RED}, 0.55)`;
+      ctx.stroke();
+      ctx.restore();
+    }
     for (const p of stepPulses(r.key, r.rate, dt)) {
       const [px, py] = cbez(p.u, ...g);
       const fade = Math.sin(Math.PI * Math.min(1, Math.max(0, p.u)));
       ctx.beginPath();
       ctx.arc(px, py, 1.6 + 1.1 * tier, 0, Math.PI * 2);
-      ctx.fillStyle = sel ? `rgba(230,237,243,${0.9 * fade})` : latColor(r.mean, 0.9 * fade);
+      ctx.fillStyle = sel ? `rgba(230,237,243,${0.9 * fade})` : col(0.9 * fade);
       ctx.fill();
     }
     ctx.globalAlpha = 1;
@@ -611,7 +635,8 @@ function renderTopics() {
       const rate = rt >= 0.5
         ? `<span style="color:#9ecbff">${fmt(rt)}/s</span>`
         : `<span class="z">idle</span>`;
-      return `<div class="${cls}" data-t="${tp.name}">${tp.name} ${rate} <span class="z">· ${fmt(Math.max(tp.pub, tp.dlv))}</span></div>`;
+      const dot = `<span style="color:${famColor(famOf(tp.name), 0.9)}">●</span>`;
+      return `<div class="${cls}" data-t="${tp.name}">${dot} ${tp.name} ${rate} <span class="z">· ${fmt(Math.max(tp.pub, tp.dlv))}</span></div>`;
     }).join("");
   if (rows !== topicsHtml) { topicsHtml = rows; topicsEl.innerHTML = rows; }
 }
@@ -654,7 +679,7 @@ function tipFor(h) {
     const f = (snap.processes || []).find(p => p.pid === r.from);
     const t = (snap.processes || []).find(p => p.pid === r.to);
     const rows = r.topics.map(tp =>
-      `${tp.name} — ${fmt(tp.rate)}/s · ${tp.mean.toFixed(0)}µs${tp.lost ? ` · <span style="color:rgb(${RED})">${fmt(tp.lost)} lost</span>` : ""}`
+      `<span style="color:${famColor(famOf(tp.name), 0.9)}">●</span> ${tp.name} — ${fmt(tp.rate)}/s · ${tp.mean.toFixed(0)}µs${tp.lost ? ` · <span style="color:rgb(${RED})">${fmt(tp.lost)} lost</span>` : ""}`
     ).join("<br>");
     return `<b>${f?.name || r.from} → ${t?.name || r.to}</b><br>${rows}`;
   }
@@ -706,5 +731,6 @@ canvas.addEventListener("wheel", (e) => {
 canvas.addEventListener("dblclick", () => { view.k = 1; view.x = 0; view.y = 0; pinned = null; });
 addEventListener("keydown", (e) => {
   if (e.key === "h") showPlumbing = !showPlumbing;
+  if (e.key === "c") colorMode = colorMode === "topic" ? "latency" : "topic";
   if (e.key === "Escape") { pinned = null; pinnedTopic = null; }
 });
