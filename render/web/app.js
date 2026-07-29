@@ -41,6 +41,14 @@ let hover = null;          // {type:'flower',pid} | {type:'ribbon',key}
 let pinned = null;         // same shape, click-to-pin
 let hoverTopic = null, pinnedTopic = null;
 const deadSince = new Map();
+// phosphor afterglow: rare events must outlive their instant.
+// key = topic|pair -> {born, topic, pair}
+const afterglow = new Map();
+const GLOW_MS = 12000;
+// burn-in: paths get ETCHED in proportion to cumulative recent
+// volume — a heavily-used path stays vivid through lulls,
+// decaying with ~30s half-life. pair -> heat (messages).
+const burnHeat = new Map();
 
 // per-TOPIC hues (field-requested: tracing one topic across the
 // canvas by color beats family grouping). Name-hash anchor, then
@@ -86,6 +94,15 @@ function ingest(s) {
   for (const e of snap.edges) {
     const p = pe.get(e.topic + e.from + e.to);
     rates.edges.set(e.topic + e.from + e.to, p ? Math.max(0, (e.matched - p.matched) / dt) : 0);
+    const delta = p ? e.matched - p.matched : (e.matched > 0 ? 1 : 0);
+    if (delta > 0 && !isPlumbing(e.topic)) {
+      const pk = e.from + ">" + e.to;
+      burnHeat.set(pk, (burnHeat.get(pk) || 0) + delta);
+    }
+    if (delta > 0 && (rates.topics.get(e.topic) || 0) < 3 && !isPlumbing(e.topic)) {
+      afterglow.set(e.topic + "|" + e.from + ">" + e.to,
+        { born: performance.now(), topic: e.topic, pair: e.from + ">" + e.to });
+    }
   }
   const pt = new Map((prev.topics || []).map(tp => [tp.name, tp]));
   for (const tp of snap.topics || []) {
@@ -560,6 +577,13 @@ function frame(now) {
     return now - deadSince.get(p.pid) < 60000;
   });
 
+  for (const [k, gl] of afterglow) if (now - gl.born > GLOW_MS) afterglow.delete(k);
+  const bdecay = Math.exp(-dt / 45);
+  for (const [k, h] of burnHeat) {
+    const h2 = h * bdecay;
+    if (h2 < 1) burnHeat.delete(k); else burnHeat.set(k, h2);
+  }
+
   // plumbing hairlines (toggle 'h')
   if (showPlumbing) {
     ctx.lineWidth = 0.6;
@@ -600,6 +624,36 @@ function frame(now) {
     ctx.strokeStyle = sel ? "rgba(230,237,243,0.8)"
       : col(tier <= 0 ? 0.12 : Math.min(0.7, 0.22 + 0.11 * tier));
     ctx.stroke();
+    // burn-in: cumulative recent volume etches a hot core that
+    // survives lulls (~30s half-life). More volume = more vivid.
+    const heat = burnHeat.get(r.key) || 0;
+    const burn = Math.min(1, Math.log10(1 + heat) / 5.5);
+    if (burn > 0.06) {
+      const hue = colorMode === "topic" ? topicHue(r.top)
+        : 130 - 90 * Math.min(1, r.mean / 200);
+      ctx.lineWidth = Math.max(0.8, (1.1 + 1.9 * tier) * 0.45);
+      ctx.strokeStyle = `hsla(${hue}, 70%, ${58 + 24 * burn}%, ${0.10 + 0.55 * burn})`;
+      ctx.stroke();
+    }
+    // afterglow: a rare message's 12s of persistence, in its
+    // topic's own hue, decaying — so one-off control/state
+    // messages are seeable without staring at the instant.
+    for (const gl of afterglow.values()) {
+      if (gl.pair !== r.key) continue;
+      const f = 1 - (now - gl.born) / GLOW_MS;
+      if (f <= 0) continue;
+      const ease = f * f;
+      ctx.beginPath();
+      ctx.moveTo(g[0], g[1]);
+      ctx.bezierCurveTo(g[2], g[3], g[4], g[5], g[6], g[7]);
+      ctx.lineWidth = 3 + 5 * ease;
+      ctx.strokeStyle = topicColor(gl.topic, 0.30 * ease);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(g[6], g[7], 3 + 6 * ease, 0, Math.PI * 2);
+      ctx.fillStyle = topicColor(gl.topic, 0.5 * ease);
+      ctx.fill();
+    }
     // latency ALERT: a slow path earns red regardless of mode
     if (r.mean > 300 && r.rate > 0) {
       ctx.save();
@@ -660,7 +714,15 @@ function renderTopics() {
         ? `<span style="color:#9ecbff">${fmt(rt)}/s</span>`
         : `<span class="z">idle</span>`;
       const dot = `<span style="color:${topicColor(tp.name, 0.9)}">●</span>`;
-      return `<div class="${cls}" data-t="${tp.name}">${dot} ${tp.name} ${rate} <span class="z">· ${fmt(Math.max(tp.pub, tp.dlv))}</span></div>`;
+      let bg = "";
+      let best = 0;
+      for (const gl of afterglow.values())
+        if (gl.topic === tp.name) best = Math.max(best, 1 - (now - gl.born) / GLOW_MS);
+      if (best > 0) {
+        const q = Math.ceil(best * 8) / 8; // quantize: rebuild ~1x/1.5s
+        bg = ` style="background:hsla(${topicHue(tp.name)},60%,50%,${(0.22 * q).toFixed(2)})"`;
+      }
+      return `<div class="${cls}"${bg} data-t="${tp.name}">${dot} ${tp.name} ${rate} <span class="z">· ${fmt(Math.max(tp.pub, tp.dlv))}</span></div>`;
     }).join("");
   if (rows !== topicsHtml) { topicsHtml = rows; topicsEl.innerHTML = rows; }
 }
