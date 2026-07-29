@@ -772,7 +772,7 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                         coop_pool_for_hint
                     {
                         let hint = chunk_hint_for_coop_pool(
-                            &self.main_cooperative_pools,
+                            &self.deployment.main_cooperative_pools,
                             pool_name,
                         );
                         let sized_fn = self
@@ -1721,7 +1721,7 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         // lower_expr, consumed by the recursive call to
         // lower_locus_instantiation).
         let is_main_locus = self
-            .main_locus_name
+            .deployment.main_locus_name
             .as_ref()
             .map(|n| n == locus_name)
             .unwrap_or(false);
@@ -1827,21 +1827,21 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             // own schedule_class — Cooperative under F.31).
             if is_main_locus {
                 self.placement_for_next_locus_instantiation = self
-                    .main_placement_map
+                    .deployment.main_placement_map
                     .get(fname.as_str())
                     .cloned();
                 // F.31 Phase 4: parallel pool-name set. None when
                 // the field has no cooperative-pool entry (either
                 // pinned, default-pool main, or no placement).
                 self.cooperative_pool_for_next_locus_instantiation = self
-                    .main_cooperative_pools
+                    .deployment.main_cooperative_pools
                     .get(fname.as_str())
                     .cloned();
                 // Topology arena-on-node: parallel NUMA-node set for
                 // `pinned(node/l3)` fields; None for every other
                 // placement (arena stays unbound).
                 self.numa_node_for_next_locus_instantiation = self
-                    .main_placement_node
+                    .deployment.main_placement_node
                     .get(fname.as_str())
                     .copied();
             }
@@ -1863,7 +1863,7 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     .cloned()
                 {
                     let node =
-                        self.main_placement_node.get(fname.as_str()).copied();
+                        self.deployment.main_placement_node.get(fname.as_str()).copied();
                     let DefaultInit::Expr(rep_expr) = default else {
                         return Err(CodegenError::Unsupported(format!(
                             "locus `{}` field `{}`: `replicas = K` needs a \
@@ -1898,7 +1898,7 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     // Restore replica 0's overrides for the normal path
                     // below — the loop clobbered them.
                     self.placement_for_next_locus_instantiation = self
-                        .main_placement_map
+                        .deployment.main_placement_map
                         .get(fname.as_str())
                         .cloned();
                     self.numa_node_for_next_locus_instantiation = node;
@@ -4337,7 +4337,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .expect("cross-pool owner is a declared locus");
         let owner_pinned =
             matches!(owner_info.schedule_class, ScheduleClass::Pinned(_))
-                || self.pinned_locus_types.contains(owner_name);
+                || self.deployment.pinned_locus_types.contains(owner_name);
         if owner_pinned {
             // Pinned A: post to A's mailbox (drained by A's pthread).
             let mb_idx = owner_info.mailbox_field_idx.ok_or_else(|| {

@@ -175,7 +175,7 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
         // F.31 Phase 4: free pool structs + ring buffers. Runs
         // after shutdown_all (workers joined) + router_destroy
         // (no more dispatch attempts).
-        if !self.main_cooperative_pools.is_empty() {
+        if !self.deployment.main_cooperative_pools.is_empty() {
             let destroy_all_fn = self
                 .module
                 .get_function("lotus_coop_pool_destroy_all")

@@ -1250,20 +1250,14 @@ pub fn build_executable_with_options(
         instantiating_into_payload_arena: false,
         placement_for_next_locus_instantiation: None,
         numa_node_for_next_locus_instantiation: None,
-        main_placement_map: BTreeMap::new(),
-        main_placement_node: BTreeMap::new(),
         main_placement_replicas: BTreeMap::new(),
-        main_locus_name: None,
-        pinned_locus_types: BTreeSet::new(),
         params_init_self: None,
         in_params_default: false,
         params_init_initialized: None,
-        main_cooperative_pools: BTreeMap::new(),
-        async_io_pools: BTreeSet::new(),
         cooperative_pool_for_next_locus_instantiation: None,
         current_cooperative_pool: None,
-        coop_pool_locus_types: BTreeSet::new(),
         coop_pool_run_wrappers: BTreeMap::new(),
+        deployment: Default::default(),
         obs_live_cache: Vec::new(),
         reclaim_fns: BTreeMap::new(),
         handler_reclaim_wrappers: BTreeMap::new(),
@@ -3276,20 +3270,6 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// co-locates with its thread's node. Consumed via `mem::take`
     /// like its sibling.
     pub(crate) numa_node_for_next_locus_instantiation: Option<i64>,
-    /// F.31: per-main-locus map of `params` field name →
-    /// effective placement. Built once at codegen startup from
-    /// `main locus`'s `placement { }` block. Used by the
-    /// main-locus params-init loop to set
-    /// `placement_for_next_locus_instantiation` per field. An
-    /// absent field defaults to `Cooperative` (placement
-    /// pool routing comes in Phase 4).
-    pub(crate) main_placement_map: BTreeMap<String, ScheduleClass>,
-    /// Topology arena-on-node: per-main-locus map of `params`
-    /// field name → resolved NUMA node, for the `pinned(node/l3)`
-    /// entries whose arena binds to a node. Built alongside
-    /// `main_placement_map` in `collect_main_placement`; absent
-    /// fields (no node placement) simply don't appear.
-    pub(crate) main_placement_node: BTreeMap<String, i64>,
     /// Topology Phase 1c (replicas): per-main-locus map of `params`
     /// field name → `(count, cores)` for a `pinned(..., replicas =
     /// K)` entry with `K > 1`. `cores` is the resolved affinity set
@@ -3299,14 +3279,6 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `K > 1`; `K <= 1` behaves as an ordinary single instance.
     pub(crate) main_placement_replicas:
         BTreeMap<String, (i64, Vec<i64>)>,
-    /// F.31: name of the main locus (if any) for the bundle.
-    /// Cached at startup so the params-init loop can detect
-    /// "we're instantiating main" without re-walking the
-    /// program. None when the bundle has no `main` locus
-    /// (free-fn-main shape with statement-position
-    /// instantiations) — placement entries have nowhere to live
-    /// in that case.
-    pub(crate) main_locus_name: Option<String>,
     /// F.31 Phase 3b (2026-05-23): transient parent context set
     /// during a locus's params-init loop. Children instantiated
     /// as field defaults consult this via
@@ -3343,31 +3315,6 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// lowering, frame exit). Typecheck currently skips default
     /// exprs entirely (Milestone-2 cut), so codegen owns this rule.
     pub(crate) params_init_initialized: Option<BTreeSet<String>>,
-    /// F.31 Phase 3b: set of locus type names that are
-    /// instantiated pinned-equivalent SOMEWHERE in the bundle.
-    /// Populated from: (a) `placement { field: pinned[(core=N)]; }`
-    /// entries on main locus — resolves the field's params-
-    /// declared locus type; (b) `bindings { Topic: AdapterLocus
-    /// { ... }; }` entries — adapter loci are pinned-equivalent
-    /// by construction (recv-loop on own thread).
-    ///
-    /// `declare_locus_struct` reads this set: any locus type
-    /// in the set gets the pinned-required struct fields
-    /// (mailbox slot for subscribers, etc.) regardless of the
-    /// locus's own `: schedule` annotation (which is gone in
-    /// F.31). Per-instance core affinity stays per-instance via
-    /// the placement_override mechanism in
-    /// `lower_locus_instantiation`.
-    pub(crate) pinned_locus_types: BTreeSet<String>,
-    /// F.31 Phase 4: cooperative pool name per main-locus
-    /// params field. Mirrors `main_placement_map` but carries
-    /// the pool name string for `PlacementSpec::Cooperative {
-    /// pool: Some(name) }` entries. Fields with explicit
-    /// pool-less cooperative placement, or no placement entry
-    /// at all, default to pool "main" and don't appear here —
-    /// the main thread's drain loop handles them via the
-    /// global cooperative queue.
-    pub(crate) main_cooperative_pools: BTreeMap<String, String>,
 
     /// iris handoff-5 P17 perf note: per-function cache of the
     /// `lotus_obs_live` gate check (`load i32, icmp ne 0`). The
@@ -3384,14 +3331,6 @@ pub(crate) struct Cx<'ctx, 'p> {
         inkwell::values::FunctionValue<'ctx>,
         inkwell::values::IntValue<'ctx>,
     )>,
-    /// F.35 Slice 2 (2026-05-28): cooperative pool names whose
-    /// placement entries declare `where async_io`. The prelude
-    /// emits one `lotus_coop_pool_enable_async_io(pool_ptr)` per
-    /// entry in this set, right after the pool's
-    /// `lotus_coop_pool_register` call. Typecheck has already
-    /// verified mode-consistency across same-pool entries; this
-    /// set carries the canonical truth for codegen.
-    pub(crate) async_io_pools: BTreeSet<String>,
     /// F.31 Phase 4: set by the parent's params-init loop
     /// before recursing into a child's
     /// `lower_locus_instantiation`. The recursion consumes it
@@ -3408,18 +3347,17 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// to the prior value at function exit. None means
     /// "default — main pool / global queue."
     pub(crate) current_cooperative_pool: Option<String>,
-    /// F.31 Phase 4b: set of locus types that need a
-    /// `__coop_pool_run_<L>` wrapper because they appear as
-    /// non-main-cooperative-pool main-locus params fields.
-    /// Populated in `collect_main_placement`; consumed by the
-    /// wrapper-synthesis pass (`synthesize_coop_pool_run_wrappers`)
-    /// before any locus instantiation runs.
-    coop_pool_locus_types: BTreeSet<String>,
     /// F.31 Phase 4b: synthesized `__coop_pool_run_<L>` fn ptrs.
     /// Each wrapper takes `(self_ptr, _payload_ptr)` matching
     /// the pool-handler signature and calls the locus's run()
     /// method. Indexed by locus type name.
     pub(crate) coop_pool_run_wrappers: BTreeMap<String, FunctionValue<'ctx>>,
+
+    /// R3 (2026-07-29): the reified deployment arrangement — see
+    /// `crate::deployment::DeploymentPlan`. Populated by
+    /// `collect_main_placement`; consumed by the prelude emission
+    /// and instantiation lowering. #262's seed artifact.
+    pub(crate) deployment: crate::deployment::DeploymentPlan,
     /// 2026-06-01: synthesized `__reclaim_<L>(self_ptr)` fns — the
     /// single per-child teardown spine. Idempotent (gated on the
     /// `__arena`-null latch at entry), so the three callers that can
@@ -5911,7 +5849,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// worker threads. Idempotent + no-op when no pools were
     /// registered.
     pub(crate) fn emit_coop_pool_shutdown_all(&mut self) -> Result<(), CodegenError> {
-        if !self.main_cooperative_pools.is_empty() {
+        if !self.deployment.main_cooperative_pools.is_empty() {
             let shutdown_fn = self
                 .module
                 .get_function("lotus_coop_pool_shutdown_all")
@@ -8115,7 +8053,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // happen here so worker threads exist by the time the
         // first bus dispatch posts a cell.
         let mut distinct_pools: BTreeSet<String> = BTreeSet::new();
-        for name in self.main_cooperative_pools.values() {
+        for name in self.deployment.main_cooperative_pools.values() {
             distinct_pools.insert(name.clone());
         }
         if !distinct_pools.is_empty() {
@@ -8158,7 +8096,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // emission too guarantees codegen never references the
                 // async_io C path on a host where it's a -1 stub — a clean
                 // diagnostic instead of a surprising runtime no-op.
-                if self.async_io_pools.contains(name)
+                if self.deployment.async_io_pools.contains(name)
                     && !cfg!(target_os = "macos")
                 {
                     self.builder
@@ -8667,7 +8605,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             _ => None,
         });
         let Some(l) = main_locus else { return };
-        self.main_locus_name = Some(l.name.name.clone());
+        self.deployment.main_locus_name = Some(l.name.name.clone());
 
         // Build a name → locus-type-name map for main's params so
         // we can resolve placement entries' field references back
@@ -8741,7 +8679,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             if let Some(node) =
                                 Self::resolve_pin_node(affinity, topology)
                             {
-                                self.main_placement_node.insert(
+                                self.deployment.main_placement_node.insert(
                                     entry.field.name.clone(),
                                     node,
                                 );
@@ -8781,7 +8719,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // queue handles main-pool subscribers).
                             if let Some(name) = pool {
                                 if name.name != "main" {
-                                    self.main_cooperative_pools.insert(
+                                    self.deployment.main_cooperative_pools.insert(
                                         entry.field.name.clone(),
                                         name.name.clone(),
                                     );
@@ -8792,7 +8730,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                     if let Some(locus_ty) =
                                         params_locus_types.get(&entry.field.name)
                                     {
-                                        self.coop_pool_locus_types
+                                        self.deployment.coop_pool_locus_types
                                             .insert(locus_ty.clone());
                                     }
                                 }
@@ -8800,7 +8738,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             ScheduleClass::Cooperative
                         }
                     };
-                    self.main_placement_map
+                    self.deployment.main_placement_map
                         .insert(entry.field.name.clone(), sc.clone());
                     // F.31 Phase 3b: if the entry pins the field,
                     // mark the field's locus TYPE as pinned-
@@ -8810,7 +8748,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         if let Some(locus_ty) =
                             params_locus_types.get(&entry.field.name)
                         {
-                            self.pinned_locus_types
+                            self.deployment.pinned_locus_types
                                 .insert(locus_ty.clone());
                         }
                     }
@@ -8829,7 +8767,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             &entry.spec
                         {
                             if name.name != "main" {
-                                self.async_io_pools
+                                self.deployment.async_io_pools
                                     .insert(name.name.clone());
                             }
                         }
@@ -8850,7 +8788,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     if let TransportSpec::Adapter { locus, .. } =
                         &entry.transport
                     {
-                        self.pinned_locus_types.insert(locus.name.clone());
+                        self.deployment.pinned_locus_types.insert(locus.name.clone());
                     }
                 }
             }
@@ -9118,7 +9056,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // dispatcher needed.
         if any_connect_binding {
             let main_handler = self
-                .main_locus_name
+                .deployment.main_locus_name
                 .as_ref()
                 .and_then(|n| self.user_loci.get(n))
                 .and_then(|info| info.failure_handler.as_ref())

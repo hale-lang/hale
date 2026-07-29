@@ -30,6 +30,7 @@
 //! lowered.
 
 pub(crate) mod bus;
+pub mod deployment;
 pub(crate) mod channels;
 pub mod codegen;
 pub(crate) mod form;

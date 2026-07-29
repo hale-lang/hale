@@ -318,7 +318,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         // pthread_join + arena_destroy happen via the
         // deferred-dissolve frame's flush at fn-scope exit.
         let is_main_locus = self
-            .main_locus_name
+            .deployment.main_locus_name
             .as_ref()
             .map(|n| n == locus_name)
             .unwrap_or(false);
@@ -338,7 +338,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             // F.31 Phase 3b: skip cascade for pinned-placed fields.
             if is_main_locus
                 && matches!(
-                    self.main_placement_map.get(&fname),
+                    self.deployment.main_placement_map.get(&fname),
                     Some(ScheduleClass::Pinned(_))
                 )
             {
@@ -532,7 +532,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         // F.31 Phase 3b: skip cascade drain for pinned-placed
         // fields. See emit_locus_field_dissolves's matching guard.
         let is_main_locus = self
-            .main_locus_name
+            .deployment.main_locus_name
             .as_ref()
             .map(|n| n == locus_name)
             .unwrap_or(false);
@@ -549,7 +549,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
             };
             if is_main_locus
                 && matches!(
-                    self.main_placement_map.get(&fname),
+                    self.deployment.main_placement_map.get(&fname),
                     Some(ScheduleClass::Pinned(_))
                 )
             {
