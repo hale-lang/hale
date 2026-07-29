@@ -17,6 +17,10 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/obs.rs"]
+mod obs;
+use obs::{obs_bus_locus, read_u32, read_u64};
+
 fn build(name: &str, src: &str) -> PathBuf {
     let program = hale_syntax::parse_source(src).expect("parse");
     let mut bin = std::env::temp_dir();
@@ -50,20 +54,6 @@ const DEMO: &str = r#"
     }
     fn main() { App { }; }
 "#;
-
-/// Vendored from iris emitter/protocol.h (PROTOCOL §8): BUS w1 =
-/// locus:20 in bits 44..63, seq:44 low — see the handoff-7 note in
-/// obs_fleet_contract.rs.
-fn obs_bus_locus(w1: u64) -> u32 {
-    ((w1 >> 44) & 0xFFFFF) as u32
-}
-
-fn read_u64(seg: &[u8], off: usize) -> u64 {
-    u64::from_le_bytes(seg[off..off + 8].try_into().unwrap())
-}
-fn read_u32(seg: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes(seg[off..off + 4].try_into().unwrap())
-}
 
 #[test]
 fn emits_protocol_segment_with_matching_counters() {
