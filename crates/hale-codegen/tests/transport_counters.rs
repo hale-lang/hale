@@ -88,7 +88,7 @@ fn counters_dump_reflects_rearm_scenario() {
     let sub_bin = build("sub", &sub_src);
     let pub_bin = build("pub", &pub_src);
 
-    let mut sub = Command::new(&sub_bin)
+    let sub = Command::new(&sub_bin)
         .env("LOTUS_BUS_COUNTERS_DUMP", "1")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())

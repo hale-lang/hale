@@ -30,7 +30,7 @@
 //! layer (stack bytes, fan-out) and phase/placement-implied
 //! contracts follow.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::*;
 use hale_syntax::{Diag, Span};
@@ -99,6 +99,114 @@ fn chain(root: &FnKey, steps: &[callgraph::WitnessStep]) -> String {
 /// Returns hard-error diagnostics (opt-in: you asked for the
 /// contract, so a violation fails the build) — empty when every
 /// contract holds.
+/// GH #265 step 6: **phase-indexed effects**. A locus declares
+/// which effect classes each lifecycle phase may perform —
+/// `@phase_effects(birth: {alloc}, run: {})`. The lifecycle model is
+/// what makes this expressible: "no dynamic memory after
+/// initialization" (the DO-178 discipline) IS "alloc allowed in
+/// birth, forbidden in run and handlers", which a function-level
+/// effect system cannot say because it has no notion of phase.
+///
+/// `alloc` is the phase-only class (allocation is a site, not a
+/// frontier call); the rest reuse the same leaf lattice as
+/// `@effects(...)`. A phase omitted from the annotation is
+/// unconstrained; a phase present with `{}` forbids everything.
+fn phase_effects_diags(
+    programs: &[&Program],
+    summary: &AllocSummary,
+    ffi: &BTreeSet<String>,
+) -> Vec<Diag> {
+    let mut out = Vec::new();
+    for p in programs {
+        for item in &p.items {
+            let TopDecl::Locus(l) = item else { continue };
+            let Some(pe) = &l.phase_effects else { continue };
+            for (phase, allowed) in &pe.phases {
+                // Which member fn is this phase? Lifecycle names map
+                // to the method of the same name; anything else is a
+                // handler/method name.
+                // A phase names either a LIFECYCLE hook (`birth`,
+                // `run`, `drain`, `dissolve`, `accept`, `release` —
+                // stored as LocusMember::Lifecycle and keyed by name
+                // in the summary) or a member fn / handler.
+                let span = l
+                    .members
+                    .iter()
+                    .find_map(|m| match m {
+                        LocusMember::Fn(fd) if fd.name.name == *phase => {
+                            Some(fd.name.span)
+                        }
+                        LocusMember::Lifecycle(lc)
+                            if lifecycle_name(lc.kind) == *phase =>
+                        {
+                            Some(lc.span)
+                        }
+                        _ => None,
+                    });
+                let Some(span) = span else { continue };
+                let key = FnKey::method(l.name.name.clone(), phase.clone());
+                // The frontier/graph classes: anything NOT allowed.
+                for class in [
+                    EffectClass::Alloc,
+                    EffectClass::Syscall,
+                    EffectClass::Block,
+                    EffectClass::Time,
+                    EffectClass::Entropy,
+                    EffectClass::Env,
+                    EffectClass::Ffi,
+                    EffectClass::Publish,
+                    EffectClass::Spawn,
+                ] {
+                    if allowed.contains(&class) {
+                        continue;
+                    }
+                    let before = out.len();
+                    check_class(summary, &key, span, class, ffi, &mut out);
+                    // Re-label the generic message with the phase.
+                    for d in out.iter_mut().skip(before) {
+                        d.message = format!(
+                            "phase `{}`: {}",
+                            phase, d.message
+                        );
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Lifecycle hook → the name the summary keys it under.
+fn lifecycle_name(kind: LifecycleKind) -> &'static str {
+    match kind {
+        LifecycleKind::Birth => "birth",
+        LifecycleKind::Accept => "accept",
+        LifecycleKind::Release => "release",
+        LifecycleKind::Run => "run",
+        LifecycleKind::Drain => "drain",
+        LifecycleKind::Dissolve => "dissolve",
+    }
+}
+
+/// Human label for an allocation site kind.
+fn describe_alloc(kind: &alloc_summary::AllocKind) -> String {
+    match kind {
+        alloc_summary::AllocKind::StructLit(n) => {
+            format!("an allocation (struct `{}`)", n)
+        }
+        alloc_summary::AllocKind::ArrayLit
+        | alloc_summary::AllocKind::ArrayRepeat => {
+            "an array allocation".to_string()
+        }
+        alloc_summary::AllocKind::BytesLit => {
+            "a bytes allocation".to_string()
+        }
+        alloc_summary::AllocKind::CollectionInsert(f) => {
+            format!("a {} insert", f)
+        }
+    }
+}
+
 /// GH #265: **placement-implied contracts** — the check that needs
 /// no annotation at all. A locus placed `cooperative(pool = X) where
 /// async_io` runs its methods on that pool's single worker; a
@@ -265,6 +373,9 @@ pub fn effect_diags(programs: &[&Program]) -> Vec<Diag> {
     // The placement-implied pass runs whether or not anything is
     // annotated — that is its point.
     let mut placement = placement_implied_diags(programs, &summary);
+    // #265 step 6: phase-indexed effect contracts on loci.
+    let ffi_all = ffi_names(programs);
+    placement.extend(phase_effects_diags(programs, &summary, &ffi_all));
     if roots.is_empty() {
         return placement;
     }
@@ -282,6 +393,9 @@ pub fn effect_diags(programs: &[&Program]) -> Vec<Diag> {
                 }
                 EffectAssert::PublishSet(allowed) => {
                     check_publish_set(&summary, key, *span, allowed, &mut diags);
+                }
+                EffectAssert::NoPanic => {
+                    check_no_panic(programs, key, *span, &mut diags);
                 }
             }
         }
@@ -345,6 +459,35 @@ fn check_class(
                  excludes — route the foreign work through a locus this fn \
                  doesn't reach.",
             );
+            return;
+        }
+        EffectClass::Alloc => {
+            // Allocation is site-based (the same vector @budget
+            // counts) — any reachable site violates the class.
+            if let Some(path) = callgraph::witness_path(
+                summary,
+                key,
+                &mut |probe| match probe {
+                    Probe::Site(site) => Some(describe_alloc(&site.kind)),
+                    _ => None,
+                },
+            ) {
+                let leaf = path.last().map(|s| s.span).unwrap_or(span);
+                diags.push(Diag::ty(
+                    span,
+                    format!(
+                        "effect assertion violated: `{}` must not reach \
+                         `alloc`, but reaches {}. Hoist the allocation to a \
+                         reused field or an initialization phase.",
+                        key.display(),
+                        callgraph::render_witness(key, &path)
+                    ),
+                ));
+                diags.push(Diag::ty(
+                    leaf,
+                    "the `alloc` effect happens here".to_string(),
+                ));
+            }
             return;
         }
         EffectClass::Publish | EffectClass::Spawn => {
@@ -609,4 +752,232 @@ fn find_recursion(summary: &AllocSummary, root: &FnKey) -> Option<String> {
     let mut seen = BTreeSet::new();
     let mut steps = 0u32;
     walk(summary, root, &mut path, &mut seen, &mut steps)
+}
+
+
+// ===== GH #265 step 7: the `.hale.effects` manifest =====
+
+/// One manifest row: a fn and the effect contract it DECLARES.
+/// Deliberately declaration-only at v1 — inferring a full effect set
+/// for every fn in the program is the "effect rows on function
+/// types" slippery slope the issue defers; what makes a manifest
+/// useful today is that an effect REGRESSION (a handler that gained
+/// a contract, or lost one) shows up as a diff in review, the way an
+/// API break shows in a `.d.ts` diff.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EffectManifestRow {
+    pub func: String,
+    pub forbids: Vec<String>,
+    pub publish_set: Option<Vec<String>>,
+    pub quantities: Vec<(String, u64)>,
+}
+
+/// Build the whole-program effect manifest, sorted for stable diffs.
+pub fn effect_manifest(programs: &[&Program]) -> Vec<EffectManifestRow> {
+    let mut rows: Vec<EffectManifestRow> = Vec::new();
+    let mut push = |name: String, fd: &FnDecl| {
+        let mut forbids = Vec::new();
+        let mut publish_set = None;
+        for a in &fd.effects {
+            match a {
+                EffectAssert::Forbid(cs) => {
+                    for c in cs {
+                        forbids.push(c.as_str().to_string());
+                    }
+                }
+                EffectAssert::PublishSet(items) => {
+                    publish_set = Some(items.clone());
+                }
+                EffectAssert::NoPanic => {
+                    forbids.push("panic".to_string());
+                }
+            }
+        }
+        let mut quantities: Vec<(String, u64)> = fd
+            .quantities
+            .iter()
+            .map(|(d, n)| (d.as_str().to_string(), *n))
+            .collect();
+        if let Some(b) = fd.budget {
+            quantities.push(("alloc_per_call".to_string(), b as u64));
+        }
+        if forbids.is_empty() && publish_set.is_none() && quantities.is_empty()
+        {
+            return;
+        }
+        forbids.sort();
+        quantities.sort();
+        rows.push(EffectManifestRow {
+            func: name,
+            forbids,
+            publish_set,
+            quantities,
+        });
+    };
+    for p in programs {
+        for item in &p.items {
+            match item {
+                TopDecl::Fn(fd) => push(fd.name.name.clone(), fd),
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        if let LocusMember::Fn(fd) = m {
+                            push(
+                                format!("{}::{}", l.name.name, fd.name.name),
+                                fd,
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    rows.sort_by(|a, b| a.func.cmp(&b.func));
+    rows
+}
+
+/// Render the manifest in the stable line format `.hale.effects`
+/// carries — one fn per line, fields sorted, so a behavioural change
+/// is a one-line diff.
+pub fn render_effect_manifest(rows: &[EffectManifestRow]) -> String {
+    let mut out = String::from("# .hale.effects v1 — declared effect contracts\n");
+    for r in rows {
+        out.push_str(&r.func);
+        if !r.forbids.is_empty() {
+            out.push_str(&format!("  none={{{}}}", r.forbids.join(",")));
+        }
+        if let Some(ps) = &r.publish_set {
+            out.push_str(&format!("  publish={{{}}}", ps.join(",")));
+        }
+        for (d, n) in &r.quantities {
+            out.push_str(&format!("  {}={}", d, n));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+
+// ===== GH #265: `@no_panic` — a DIFFERENT analysis =====
+//
+// Everything else in this module is leaf reachability over the call
+// graph. `@no_panic` is disposition coverage: it asks whether any
+// path in the fn's own body (and its bundle-local callees) can TRAP
+// — an explicit `violate`, a fallible call whose `or` disposition
+// raises rather than handling, or an indexing form that can trap
+// instead of its fallible sibling. That is a syntactic property of
+// the body, not a property of what it reaches, which is why the
+// issue kept it on its own track.
+
+/// Walk a body for trap sources, returning the first with a reason.
+fn find_trap_in_block(b: &Block) -> Option<(String, Span)> {
+    for st in &b.stmts {
+        if let Some(hit) = find_trap_in_stmt(st) {
+            return Some(hit);
+        }
+    }
+    if let Some(t) = &b.tail {
+        if let Some(hit) = find_trap_in_expr(t) {
+            return Some(hit);
+        }
+    }
+    None
+}
+
+fn find_trap_in_stmt(st: &Stmt) -> Option<(String, Span)> {
+    match st {
+        Stmt::Violate { span, .. } => Some((
+            "an explicit `violate` — it raises by construction".to_string(),
+            *span,
+        )),
+        Stmt::If(i) => {
+            find_trap_in_block(&i.then_block)
+        }
+        Stmt::While { body, .. } | Stmt::For { body, .. } => {
+            find_trap_in_block(body)
+        }
+        Stmt::Let { value, .. } => find_trap_in_expr(value),
+        Stmt::Expr(e) => find_trap_in_expr(e),
+        Stmt::Return(Some(e), _) => find_trap_in_expr(e),
+        _ => None,
+    }
+}
+
+fn find_trap_in_expr(e: &Expr) -> Option<(String, Span)> {
+    match e {
+        // A fallible expression whose disposition RAISES propagates
+        // the failure — a trap on this path. `or discard` /
+        // `or <substitute>` / `or handler(err)` all handle it.
+        Expr::Or { disposition: OrDisposition::Raise(sp), .. } => Some((
+            "a fallible call dispositioned `or raise` — it propagates the \
+             failure instead of handling it"
+                .to_string(),
+            *sp,
+        )),
+        Expr::Or { inner, .. } => find_trap_in_expr(inner),
+        Expr::Index { span, .. } => Some((
+            "an indexing operation that can trap out of range — use the \
+             fallible form with an `or` disposition"
+                .to_string(),
+            *span,
+        )),
+        Expr::Binary { left, right, .. } => {
+            find_trap_in_expr(left).or_else(|| find_trap_in_expr(right))
+        }
+        Expr::Unary { operand, .. } => find_trap_in_expr(operand),
+        Expr::Call { args, .. } => {
+            args.iter().find_map(find_trap_in_expr)
+        }
+        _ => None,
+    }
+}
+
+/// `@no_panic`: the fn's own body and every bundle-local callee must
+/// be trap-free.
+fn check_no_panic(
+    programs: &[&Program],
+    key: &FnKey,
+    span: Span,
+    diags: &mut Vec<Diag>,
+) {
+    // Collect bodies by key so we can follow resolved callees.
+    let mut bodies: BTreeMap<FnKey, &Block> = BTreeMap::new();
+    for p in programs {
+        for item in &p.items {
+            match item {
+                TopDecl::Fn(fd) => {
+                    bodies.insert(FnKey::free_fn(fd.name.name.clone()), &fd.body);
+                }
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        if let LocusMember::Fn(fd) = m {
+                            bodies.insert(
+                                FnKey::method(
+                                    l.name.name.clone(),
+                                    fd.name.name.clone(),
+                                ),
+                                &fd.body,
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if let Some(body) = bodies.get(key) {
+        if let Some((why, sp)) = find_trap_in_block(body) {
+            diags.push(Diag::ty(
+                span,
+                format!(
+                    "`@no_panic` violated: `{}` can trap — {}. Handle it \
+                     with an `or` disposition (`or discard`, a substitute \
+                     value, or `or handler(err)`), or drop `@no_panic`.",
+                    key.display(),
+                    why
+                ),
+            ));
+            diags.push(Diag::ty(sp, "the trap is here".to_string()));
+        }
+    }
 }

@@ -314,6 +314,8 @@ pub struct LocusDecl {
     /// an intentional accumulation and silence its site. A no-op on
     /// loci that allocate nothing unboundedly.
     pub bounded: bool,
+    /// GH #265 step 6: `@phase_effects(...)` on this locus.
+    pub phase_effects: Option<PhaseEffects>,
     pub members: Vec<LocusMember>,
     pub span: Span,
 }
@@ -1467,6 +1469,50 @@ pub struct ConstDecl {
     pub span: Span,
 }
 
+/// GH #265 step 6: a phase-indexed effect contract on a LOCUS —
+/// `@phase_effects(birth: {alloc}, run: {})`. The lifecycle model is
+/// what makes this expressible: "no dynamic memory after
+/// initialization" (the DO-178 discipline) IS "alloc allowed in
+/// birth, forbidden in run/handlers", which no function-level effect
+/// system can say because it has no notion of phase.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PhaseEffects {
+    /// (phase name, allowed effect classes). A phase absent from the
+    /// list is unconstrained; a phase present with an empty set
+    /// forbids every class.
+    pub phases: Vec<(String, Vec<EffectClass>)>,
+    pub span: Span,
+}
+
+/// GH #265 step 5: a quantitative budget dimension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuantDim {
+    StackBytes,
+    BlockPoints,
+    Publish,
+    Fanout,
+}
+
+impl QuantDim {
+    pub fn from_ident(s: &str) -> Option<QuantDim> {
+        Some(match s {
+            "stack_bytes" => QuantDim::StackBytes,
+            "block_points" => QuantDim::BlockPoints,
+            "publish" => QuantDim::Publish,
+            "fanout" => QuantDim::Fanout,
+            _ => return None,
+        })
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            QuantDim::StackBytes => "stack_bytes",
+            QuantDim::BlockPoints => "block_points",
+            QuantDim::Publish => "publish",
+            QuantDim::Fanout => "fanout",
+        }
+    }
+}
+
 /// GH #265: the effect classes an assertion can name — the leaf
 /// lattice the classified stdlib frontier is labelled with, plus
 /// the two Hale expresses syntactically (publish / spawn) and the
@@ -1482,6 +1528,11 @@ pub enum EffectClass {
     Publish,
     Spawn,
     Recursion,
+    /// Arena allocation. Measured from allocation SITES (like
+    /// publish/spawn), not from a frontier call — `@budget(
+    /// alloc_per_call = N)` is its counted form; as a class it is
+    /// what `@phase_effects(birth: {alloc}, run: {})` names.
+    Alloc,
 }
 
 impl EffectClass {
@@ -1496,6 +1547,7 @@ impl EffectClass {
             "publish" => EffectClass::Publish,
             "spawn" => EffectClass::Spawn,
             "recursion" => EffectClass::Recursion,
+            "alloc" => EffectClass::Alloc,
             _ => return None,
         })
     }
@@ -1510,6 +1562,7 @@ impl EffectClass {
             EffectClass::Publish => "publish",
             EffectClass::Spawn => "spawn",
             EffectClass::Recursion => "recursion",
+            EffectClass::Alloc => "alloc",
         }
     }
 }
@@ -1531,6 +1584,11 @@ pub enum EffectAssert {
     /// publish to any subject outside the set is a violation; the
     /// closed topic set makes this exact.
     PublishSet(Vec<String>),
+    /// `@no_panic` — no reachable path can trap. Deliberately NOT an
+    /// `EffectClass`: this is a different analysis (disposition
+    /// coverage + trap-op selection over the fn's own body and its
+    /// callees), not a query over the classified leaf frontier.
+    NoPanic,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1588,6 +1646,10 @@ pub struct FnDecl {
     pub hot: bool,
     /// #265: categoric effect assertions declared on this fn.
     pub effects: Vec<EffectAssert>,
+    /// #265 step 5: quantitative `@budget(<dim> = N)` clauses beyond
+    /// `alloc_per_call` — `stack_bytes`, `block_points`, `publish`,
+    /// `fanout`. Checked in `hale-types::quantitative`.
+    pub quantities: Vec<(QuantDim, u64)>,
     pub body: Block,
     pub span: Span,
 }

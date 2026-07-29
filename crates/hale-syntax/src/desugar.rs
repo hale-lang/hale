@@ -121,6 +121,7 @@ pub fn wrap_main_as_wasm_export(program: &mut Program) -> bool {
         span: main_span,
     };
     let locus = LocusDecl {
+        phase_effects: None,
         name: Ident { name: "__Main".to_string(), span: main_span },
         is_main: false,
         export: true,
