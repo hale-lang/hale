@@ -14,6 +14,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use hale_codegen::build_executable;
 
+#[path = "support/transport.rs"]
+mod transport_support;
+
 fn build(name: &str, src: &str) -> std::path::PathBuf {
     let program = hale_syntax::parse_source(src).expect("parse");
     let mut bin = std::env::temp_dir();
@@ -91,6 +94,18 @@ fn counters_dump_reflects_rearm_scenario() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn subscriber");
+    // Deterministic readiness handshake — see support/transport.rs.
+    // Without this the publisher races the listener's bind and
+    // depends on the runtime's ~1s connect-retry budget, which a
+    // loaded CI runner can exceed.
+    assert!(
+        transport_support::wait_for_listener(
+            &sock,
+            std::time::Duration::from_secs(30)
+        ),
+        "subscriber never bound its listen socket at {}",
+        sock
+    );
     let p1 = Command::new(&pub_bin)
         .env("LOTUS_BUS_COUNTERS_DUMP", "1")
         .output()
@@ -107,6 +122,12 @@ fn counters_dump_reflects_rearm_scenario() {
     let _ = std::fs::remove_file(&pub_bin);
     let _ = std::fs::remove_file(&sock);
 
+    // Distinguish "the exchange never completed" (in-Hale wait cap →
+    // exit 3) from "ran but dumped nothing" — the former used to
+    // surface as the latter's misleading message.
+    if let Some(why) = transport_support::describe_sub_exit(&sub_out.status) {
+        panic!("{}", why);
+    }
     let sub_err = String::from_utf8_lossy(&sub_out.stderr);
     let pub_err = String::from_utf8_lossy(&p1.stderr);
     let sub_line = sub_err
