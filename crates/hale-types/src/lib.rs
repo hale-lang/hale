@@ -3130,3 +3130,15 @@ mod unowned_subscriber_tests {
         assert!(!flagged(src, false));
     }
 }
+
+
+/// GH #265: render the whole-bundle `.hale.effects` manifest —
+/// declared contracts plus inferred effect sets, sorted for stable
+/// diffs. The CLI writes this next to `.hale.topo`; a diff in review
+/// is an effect regression.
+pub fn dump_effects_manifest(bundle: &Bundle<'_>) -> String {
+    let programs: Vec<&hale_syntax::ast::Program> =
+        bundle.programs.values().copied().collect();
+    let rows = crate::effects::effect_manifest_with_inference(&programs);
+    crate::effects::render_effect_manifest(&rows)
+}

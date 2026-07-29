@@ -110,6 +110,19 @@ behavior.
     `cost_expression` renders a structural `O(n^k)` estimate —
     explicitly not WCET.
 
+- **GH #265: the effect manifest is wired end-to-end.**
+  `hale check --dump-effects-manifest` emits the behavioural
+  fingerprint — declared contracts **plus inferred effect sets**
+  (`does={syscall,publish}`) for every fn, stable-sorted;
+  `--check-effects-manifest <baseline>` diffs against a committed
+  copy and fails the build on change, naming the fn and the gained
+  effect. That catches what annotations can't: a handler that
+  quietly starts doing filesystem I/O is a one-line review diff even
+  though nothing was annotated. Plus a **corpus-wide conformance
+  sweep** asserting, across every in-tree `.hl` program, that no
+  reachable stdlib call is unclassified, that inference is
+  deterministic, and that declared contracts hold.
+
 ## v0.11.22 — iris handoff-8: adapter ingest lit + the refactor batch (2026-07-29)
 
 - **The adapter ingest path carries the full observation trio**

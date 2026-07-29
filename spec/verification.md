@@ -273,6 +273,26 @@ assume the others in a build:
   A negative control asserts the oracle detects the effect when it
   genuinely happens, so the conformance checks can never pass
   vacuously. Same philosophy as GenMC-in-CI, applied to effects.
+- **The `.hale.effects` manifest + CI gate** (GH #265 step 7). The
+  manifest is a **behavioural fingerprint**: every fn's declared
+  contracts *and* its INFERRED effect set (`does={…}`), stable-sorted
+  for diffs. `hale check <target> --dump-effects-manifest` writes it;
+  `--check-effects-manifest <path>` diffs against a committed
+  baseline and **fails the build** when the program's effects change,
+  printing which fn gained or lost what. That catches the case
+  annotations cannot: a handler that quietly starts doing filesystem
+  I/O shows up as `+ Api::emit … does={syscall,publish,alloc}` in
+  review even though no annotation changed. Regenerate deliberately
+  with the dump flag when the change is intended.
+- **Corpus-wide conformance** (GH #265 step 7). Beyond the per-test
+  runtime oracle, a sweep over the whole in-tree `.hl` corpus asserts
+  three properties everywhere real code lives: no reachable stdlib
+  call lands on an **unclassified** registry row (an unclassified
+  leaf silently weakens every assertion over it, so frontier
+  completeness must not rot as the corpus grows); inference is
+  **deterministic** (the same program inferred twice yields identical
+  sets — otherwise manifests diff spuriously); and every corpus
+  program carrying an assertion **satisfies** it.
 - **The `.hale.effects` manifest** (GH #265 step 7). `effect_manifest`
   / `render_effect_manifest` emit the whole program's declared
   contracts in a stable, sorted line format alongside `.hale.topo`.
