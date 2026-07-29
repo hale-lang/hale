@@ -7515,6 +7515,13 @@ int lotus_coop_park_on_fd_deadline(int fd, uint32_t events,
     (void)deadline_ns;
     return -1;
 }
+/* Crumb batch-5: no async_io on this platform → never park; the
+ * sleep lowering's preflight sees 0 and takes the classic
+ * chunked-nanosleep path. */
+int64_t lotus_time_sleep_park_try(int64_t ns) {
+    (void)ns;
+    return 0;
+}
 #endif /* LOTUS_HAVE_ASYNC_IO */
 
 static void *lotus_coop_pool_worker(void *arg) {
