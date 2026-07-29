@@ -29,7 +29,7 @@ const CYAN = "94,220,244";
 const RED = "248,81,73";
 
 let snap = null, prev = null;
-const rates = { edges: new Map(), procs: new Map(), loci: new Map() };
+const rates = { edges: new Map(), procs: new Map(), loci: new Map(), topics: new Map() };
 let lastDraw = 0, lastFrameT = 0;
 let showPlumbing = false;
 let dpr = 1;
@@ -66,6 +66,11 @@ function ingest(s) {
   for (const e of snap.edges) {
     const p = pe.get(e.topic + e.from + e.to);
     rates.edges.set(e.topic + e.from + e.to, p ? Math.max(0, (e.matched - p.matched) / dt) : 0);
+  }
+  const pt = new Map((prev.topics || []).map(tp => [tp.name, tp]));
+  for (const tp of snap.topics || []) {
+    const o = pt.get(tp.name);
+    rates.topics.set(tp.name, o ? Math.max(0, ((tp.dlv - o.dlv) + (tp.pub - o.pub)) / 2 / dt) : 0);
   }
   const pp = new Map(prev.processes.map(p => [p.pid, p]));
   for (const p of snap.processes) {
@@ -401,7 +406,8 @@ function drawFlower(p, t, focus) {
     const tx = Math.min(1, Math.log10(1 + act.pub) / 4);
     const rx = Math.min(1, Math.log10(1 + act.dlv) / 4);
     if (tx + rx > 0.02) hot.push({ l, q, v: act.pub + act.dlv });
-    const scale = l.agg ? 1 + Math.min(1.2, Math.log2(1 + l.count) / 4) : 1;
+    const actScale = 1 + 0.18 * Math.max(tx, rx);
+    const scale = (l.agg ? 1 + Math.min(1.2, Math.log2(1 + l.count) / 4) : 1) * actScale;
     const pw = (ring * 0.42) * scale, ph = (ring * 0.16 + 2) * scale;
     const bloom = dead ? 0 : 0.5 + 0.5 * Math.sin(t * 1.6 + (l.id % 97) * 1.7);
 
@@ -450,28 +456,43 @@ function drawFlower(p, t, focus) {
   ctx.lineWidth = 2;
   ctx.stroke();
 
-  // labels: name always; hot loci at rest; all loci on focus
+  // labels: SCREEN-constant size (divide by zoom — zoom grows
+  // geometry, not text), side-anchored at petal tips so they
+  // never cross the flower, instance ids only when the type is
+  // duplicated within this flower. Semantic zoom: a flower
+  // filling enough screen reveals all its labels unaided.
+  const fs = (px) => `${(px / view.k).toFixed(2)}px ui-monospace, monospace`;
   ctx.textAlign = "center";
-  ctx.font = "600 12px ui-monospace, monospace";
+  ctx.font = "600 " + fs(12);
   ctx.fillStyle = dead ? `rgba(${RED},0.8)` : "rgba(230,237,243,0.92)";
-  ctx.fillText(p.name || "pid " + p.pid, cx, cy + n.r + 16);
+  ctx.fillText(p.name || "pid " + p.pid, cx, cy + n.r + 16 / view.k);
   const bits = [];
   if (!dead && rec > 500) bits.push(fmt(rec) + "/s");
   if (p.restarts > 0) bits.push(p.restarts + " restarts");
   if (bits.length) {
-    ctx.font = "10px ui-monospace, monospace";
+    ctx.font = fs(10);
     ctx.fillStyle = p.restarts > 0 ? `rgba(${RED},0.75)` : `rgba(${SLATE},0.6)`;
-    ctx.fillText(bits.join(" · "), cx, cy + n.r + 29);
+    ctx.fillText(bits.join(" · "), cx, cy + n.r + 29 / view.k);
   }
+  const typeCount = new Map();
+  for (const l of loci) typeCount.set(l.type, (typeCount.get(l.type) || 0) + 1);
+  const nameOf = (l) => l.agg ? `${l.type} ×${l.count}`
+    : (typeCount.get(l.type) > 1 ? `${l.type}#${l.id}` : l.type);
   hot.sort((a, b) => b.v - a.v);
-  const labelSet = focused ? loci.map(l => ({ l, q: pos.get(l.id) })).filter(e => e.q && e.q.depth > 0)
-    : hot.slice(0, 3);
-  ctx.font = "9.5px ui-monospace, monospace";
+  const zoomed = n.r * view.k > 130;           // semantic zoom
+  const showAll = focused || zoomed;
+  const labelSet = showAll
+    ? loci.map(l => ({ l, q: pos.get(l.id) })).filter(e => e.q && e.q.depth > 0)
+    : (view.k < 0.55 ? [] : hot.slice(0, 3));  // fleet altitude: names only
+  ctx.font = fs(9.5);
   for (const { l, q } of labelSet) {
-    const lx = cx + Math.cos(q.angle) * (q.depth * ring + ring * 0.62);
-    const ly = cy + Math.sin(q.angle) * (q.depth * ring + ring * 0.62);
-    ctx.fillStyle = focused ? `rgba(${SLATE},0.85)` : `rgba(${SLATE},0.55)`;
-    ctx.fillText(l.agg ? `${l.type} ×${l.count}` : `${l.type}#${l.id}`, lx, ly + 3);
+    const tipR = q.depth * ring + ring * 0.55 + 6 / view.k;
+    const dx = Math.cos(q.angle), dy = Math.sin(q.angle);
+    const lx = cx + dx * tipR, ly = cy + dy * tipR;
+    ctx.textAlign = dx > 0.3 ? "left" : dx < -0.3 ? "right" : "center";
+    const voff = Math.abs(dx) <= 0.3 ? (dy > 0 ? 9 : -4) / view.k : 3 / view.k;
+    ctx.fillStyle = showAll ? `rgba(${SLATE},0.85)` : `rgba(${SLATE},0.55)`;
+    ctx.fillText(nameOf(l), lx, ly + voff);
   }
   ctx.globalAlpha = 1;
 }
@@ -515,27 +536,37 @@ function frame(now) {
     }
   }
 
-  // ribbons: width = rate, color = latency, pulses = flow
+  // ribbons: volume must read across ORDERS OF MAGNITUDE, so
+  // width, brightness, glow, and pulse size all step with
+  // log10(rate): 1/s, 100/s, and 10k/s are three different
+  // animals at a glance. Color stays latency.
   for (const r of ribbons) {
     const g = ribbonGeom(r);
     if (!g) continue;
     const dim = dimFor("ribbon", r);
-    const load = Math.min(1, r.rate / 15000);
+    const tier = r.rate <= 0 ? 0 : Math.log10(1 + r.rate); // 0..~5
     const sel = (pinned?.type === "ribbon" && pinned.key === r.key)
       || (hover?.type === "ribbon" && hover.key === r.key);
     ctx.globalAlpha = dim;
     ctx.beginPath();
     ctx.moveTo(g[0], g[1]);
     ctx.bezierCurveTo(g[2], g[3], g[4], g[5], g[6], g[7]);
-    ctx.lineWidth = 1 + 5 * load + (sel ? 1 : 0);
-    ctx.strokeStyle = sel ? "rgba(230,237,243,0.75)" : latColor(r.mean, r.rate > 0 ? 0.38 : 0.14);
+    // heavy flows get an under-glow first
+    if (tier > 2.2) {
+      ctx.lineWidth = 2.5 + 3.2 * tier;
+      ctx.strokeStyle = latColor(r.mean, 0.05 + 0.03 * tier);
+      ctx.stroke();
+    }
+    ctx.lineWidth = (tier <= 0 ? 0.7 : 1.1 + 1.9 * tier) + (sel ? 1 : 0);
+    ctx.strokeStyle = sel ? "rgba(230,237,243,0.8)"
+      : latColor(r.mean, tier <= 0 ? 0.12 : Math.min(0.7, 0.22 + 0.11 * tier));
     ctx.stroke();
     for (const p of stepPulses(r.key, r.rate, dt)) {
       const [px, py] = cbez(p.u, ...g);
       const fade = Math.sin(Math.PI * Math.min(1, Math.max(0, p.u)));
       ctx.beginPath();
-      ctx.arc(px, py, 2 + 2.5 * load, 0, Math.PI * 2);
-      ctx.fillStyle = sel ? `rgba(230,237,243,${0.9 * fade})` : latColor(r.mean, 0.85 * fade);
+      ctx.arc(px, py, 1.6 + 1.1 * tier, 0, Math.PI * 2);
+      ctx.fillStyle = sel ? `rgba(230,237,243,${0.9 * fade})` : latColor(r.mean, 0.9 * fade);
       ctx.fill();
     }
     ctx.globalAlpha = 1;
@@ -561,11 +592,15 @@ let topicsHtml = "";
 function renderTopics() {
   const rows = (snap.topics || [])
     .filter(tp => tp.pub > 0 || tp.dlv > 0)
-    .sort((a, b) => (b.pub + b.dlv) - (a.pub + a.dlv))
+    .sort((a, b) => (rates.topics.get(b.name) || 0) - (rates.topics.get(a.name) || 0)
+                 || (b.pub + b.dlv) - (a.pub + a.dlv))
     .map(tp => {
       const cls = tp.name === pinnedTopic ? "trow pinned" : "trow";
-      const pub = tp.pub ? fmt(tp.pub) : `<span class="z">·</span>`;
-      return `<div class="${cls}" data-t="${tp.name}">${tp.name} <span style="color:#5c6773">${pub} → ${fmt(tp.dlv)}</span></div>`;
+      const rt = rates.topics.get(tp.name) || 0;
+      const rate = rt >= 0.5
+        ? `<span style="color:#9ecbff">${fmt(rt)}/s</span>`
+        : `<span class="z">idle</span>`;
+      return `<div class="${cls}" data-t="${tp.name}">${tp.name} ${rate} <span class="z">· ${fmt(Math.max(tp.pub, tp.dlv))}</span></div>`;
     }).join("");
   if (rows !== topicsHtml) { topicsHtml = rows; topicsEl.innerHTML = rows; }
 }
