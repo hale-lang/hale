@@ -51,8 +51,6 @@ behavior.
     and placement-implied tiers, `AGENTS.md` updated, and
     `docs/src/systems/performance.md` documents the surface.
 
-## Unreleased
-
 - **GH #265 COMPLETE — the effect-assertion system, all seven build
   steps.** The remaining phases land together on the substrate the
   earlier ones established:
