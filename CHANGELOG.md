@@ -6,7 +6,7 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.11.19 — Crumb batch-5: sleep parks on async_io, stdlib builtin-namespace README (2026-07-28)
 
 Crumb batch-5 (UPSTREAM5.md).
 
