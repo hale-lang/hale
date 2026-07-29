@@ -6,7 +6,7 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.11.23 — effect assertions (GH #265, complete) + the #265/#262 refactor substrate (2026-07-29)
 
 - **GH #265: effect assertions — one surface, one engine, one
   classified frontier.** `@budget`'s discipline generalized from
