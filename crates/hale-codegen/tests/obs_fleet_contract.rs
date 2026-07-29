@@ -178,6 +178,18 @@ fn records(seg: &[u8], want_ekind: u32) -> Vec<(u32, u64)> {
     out
 }
 
+/// Vendored from iris `emitter/protocol.h` (PROTOCOL §8, the
+/// executable reference): BUS_PUBLISH / BUS_DELIVER pack
+/// `w1 = locus:20 (bits 44..63) | seq:44 (low)`. The handoff-7 bug
+/// was the emitter transposing these fields while this test decoded
+/// with the emitter's own layout — self-consistent and green while
+/// every protocol-conformant consumer read locus 0. Emitter and
+/// tests now share THIS decode; if protocol.h changes, change both
+/// in one commit (PROTOCOL.md's own rule).
+fn obs_bus_locus(w1: u64) -> u32 {
+    ((w1 >> 44) & 0xFFFFF) as u32
+}
+
 fn net_origin_seq(w1: u64) -> (u32, u64) {
     ((w1 & 0xFFFF) as u32, (w1 >> 16) & 0xFFFF_FFFF_FFFF)
 }
@@ -323,14 +335,14 @@ fn fleet_multicast_full_contract() {
     let attributed = publishes
         .iter()
         .filter(|(_, w1)| {
-            let locus = (*w1 & 0xFFFFF) as u32;
+            let locus = obs_bus_locus(*w1);
             locus != 0 && births.contains(&locus)
         })
         .count();
     assert!(
         attributed > 0,
         "BUS_PUBLISH must attribute a real birth instance (got loci {:?}, births {:?})",
-        publishes.iter().map(|(_, w1)| (*w1 & 0xFFFFF) as u32).collect::<Vec<_>>(),
+        publishes.iter().map(|(_, w1)| obs_bus_locus(*w1)).collect::<Vec<_>>(),
         births
     );
 
@@ -609,7 +621,7 @@ fn attribution_on_fleet_publisher_shapes() {
     let k_pubs: Vec<u32> = records(&seg, 1)
         .iter()
         .filter(|(id, _)| *id == k_id)
-        .map(|(_, w1)| (*w1 & 0xFFFFF) as u32)
+        .map(|(_, w1)| obs_bus_locus(*w1))
         .collect();
     assert!(!k_pubs.is_empty(), "no BUS_PUBLISH records for keyed topic");
     assert!(
@@ -624,7 +636,7 @@ fn attribution_on_fleet_publisher_shapes() {
     let out_pubs: Vec<u32> = records(&seg, 1)
         .iter()
         .filter(|(id, _)| *id == out_id)
-        .map(|(_, w1)| (*w1 & 0xFFFFF) as u32)
+        .map(|(_, w1)| obs_bus_locus(*w1))
         .collect();
     assert!(
         !out_pubs.is_empty(),
@@ -642,7 +654,7 @@ fn attribution_on_fleet_publisher_shapes() {
     let k_dlvs: Vec<u32> = records(&seg, 2)
         .iter()
         .filter(|(id, _)| *id == k_id)
-        .map(|(_, w1)| (*w1 & 0xFFFFF) as u32)
+        .map(|(_, w1)| obs_bus_locus(*w1))
         .collect();
     assert!(!k_dlvs.is_empty(), "no BUS_DELIVER records for keyed topic");
     assert!(
@@ -727,11 +739,11 @@ fn direct_devirt_flavor_emits_attributed_probes() {
         records(&seg, 5).iter().map(|(id, _)| *id).collect();
     let pubs: Vec<u32> = records(&seg, 1)
         .iter()
-        .map(|(_, w1)| (*w1 & 0xFFFFF) as u32)
+        .map(|(_, w1)| obs_bus_locus(*w1))
         .collect();
     let dlvs: Vec<u32> = records(&seg, 2)
         .iter()
-        .map(|(_, w1)| (*w1 & 0xFFFFF) as u32)
+        .map(|(_, w1)| obs_bus_locus(*w1))
         .collect();
     assert!(!pubs.is_empty(), "direct flavor emitted no BUS_PUBLISH");
     assert!(!dlvs.is_empty(), "direct flavor emitted no BUS_DELIVER");
@@ -864,7 +876,7 @@ fn late_attach_still_attributes_publishes() {
         records(&seg, 5).iter().map(|(id, _)| *id).collect();
     let pubs: Vec<u32> = records(&seg, 1)
         .iter()
-        .map(|(_, w1)| (*w1 & 0xFFFFF) as u32)
+        .map(|(_, w1)| obs_bus_locus(*w1))
         .collect();
     assert!(!pubs.is_empty(), "no post-attach BUS_PUBLISH records");
     assert!(
@@ -953,7 +965,7 @@ fn adapter_inbound_dispatch_is_not_a_publish() {
         records(&seg, 5).iter().map(|(id, _)| *id).collect();
     let pubs: Vec<u32> = records(&seg, 1)
         .iter()
-        .map(|(_, w1)| (*w1 & 0xFFFFF) as u32)
+        .map(|(_, w1)| obs_bus_locus(*w1))
         .collect();
     assert!(
         pubs.iter().all(|l| *l != 0 && births.contains(l)),

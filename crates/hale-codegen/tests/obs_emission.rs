@@ -51,6 +51,13 @@ const DEMO: &str = r#"
     fn main() { App { }; }
 "#;
 
+/// Vendored from iris emitter/protocol.h (PROTOCOL §8): BUS w1 =
+/// locus:20 in bits 44..63, seq:44 low — see the handoff-7 note in
+/// obs_fleet_contract.rs.
+fn obs_bus_locus(w1: u64) -> u32 {
+    ((w1 >> 44) & 0xFFFFF) as u32
+}
+
 fn read_u64(seg: &[u8], off: usize) -> u64 {
     u64::from_le_bytes(seg[off..off + 8].try_into().unwrap())
 }
@@ -239,9 +246,10 @@ fn births_carry_parentage_and_publishes_attribute_locus() {
                     }
                 }
                 1 => {
-                    // BUS_PUBLISH: w1 = locus:20 | seq:44
+                    // BUS_PUBLISH: w1 = locus:20 (high, bits
+                    // 44..63) | seq:44 (low) — PROTOCOL §8.
                     publishes += 1;
-                    if (w1 & 0xFFFFF) != 0 {
+                    if obs_bus_locus(w1) != 0 {
                         attributed += 1;
                     }
                 }
@@ -284,7 +292,7 @@ fn births_carry_parentage_and_publishes_attribute_locus() {
     for rr in 0..ring_count {
         for (ekind, _id, w1) in drain_ring(seg, rings_off, ring_slots, rr) {
             if ekind == 1 {
-                let locus = (w1 & 0xFFFFF) as u32;
+                let locus = obs_bus_locus(w1);
                 assert!(
                     locus != 0,
                     "P13: a BUS_PUBLISH stamped locus=0 (unattributed \

@@ -628,10 +628,17 @@ void lotus_obs_bus_publish(const char *subject, void *publisher_self,
   uint8_t mode = MODE[t->id & (OBS_ENTRY_CAP - 1)];
   if (mode < 2) return; /* OFF / COUNTERS */
   uint32_t locus = pub ? obs_inst_id_of(pub) : 0; /* best-effort */
+  /* iris handoff-7: w1 = locus:20 (HIGH bits 44..63) | seq:44
+   * (low) — PROTOCOL §8 / iris emitter/protocol.h `obs_bus_w1`.
+   * The original pack transposed the fields (locus low, seq<<20),
+   * so every protocol-conformant consumer decoded `w1 >> 44` and
+   * read the top of a small seq → 0: attribution was CORRECT all
+   * along and unreadable. protocol.h is the executable reference;
+   * the contract tests decode with these same shifts. */
   obs_emit(EK_BUS_PUBLISH, (uint32_t)t->id,
            obs_size_class(payload_bytes),
-           ((uint64_t)locus & 0xFFFFFu)
-               | ((seq & 0xFFFFFFFFFFFULL) << 20));
+           (((uint64_t)locus & 0xFFFFFu) << 44)
+               | (seq & 0xFFFFFFFFFFFULL));
 }
 
 void lotus_obs_bus_deliver(const char *subject, void *subscriber_self,
@@ -646,10 +653,11 @@ void lotus_obs_bus_deliver(const char *subject, void *subscriber_self,
   uint8_t mode = MODE[t->id & (OBS_ENTRY_CAP - 1)];
   if (mode < 2) return;
   uint32_t locus = subscriber_self ? obs_inst_id_of(subscriber_self) : 0;
+  /* handoff-7: same protocol packing as the publish probe. */
   obs_emit(EK_BUS_DELIVER, (uint32_t)t->id,
            obs_size_class(payload_bytes),
-           ((uint64_t)locus & 0xFFFFFu)
-               | (((seq ? seq - 1 : 0) & 0xFFFFFFFFFFFULL) << 20));
+           (((uint64_t)locus & 0xFFFFFu) << 44)
+               | ((seq ? seq - 1 : 0) & 0xFFFFFFFFFFFULL));
 }
 
 /* binding_obs_id: cached on the remote entry by the caller (the

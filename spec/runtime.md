@@ -1482,6 +1482,16 @@ v0.11.18):
   replay latency after attach is bounded at ~250ms even for a
   process that never probes again.
 
+BUS record w1 layout (iris handoff 7, v0.11.21): `BUS_PUBLISH` /
+`BUS_DELIVER` pack `w1 = locus:20 (bits 44..63) | seq:44 (low)` —
+PROTOCOL §8, executable reference `iris emitter/protocol.h`
+(`obs_bus_w1`). The emitter had these fields transposed (locus
+low, seq shifted) since handoff-3; attribution was computed
+correctly and packed unreadably, and the contract tests stayed
+green because they decoded with the emitter's own layout. The
+tests now vendor protocol.h's decode, so emitter and consumers
+cannot disagree silently.
+
 Attribution ordering + the adapter inbound path (iris handoff 6,
 v0.11.20):
 
