@@ -713,6 +713,67 @@ void lotus_obs_net_deliver(const char *subject, int64_t binding_id,
                | ((seq & 0xFFFFFFFFFFFFULL) << 16));
 }
 
+/* iris handoff-8 P21: the adapter (Hale-owned-wire) ingest probe.
+ * The C reader threads cache their obs binding id on the transport
+ * entry struct; adapter inbound has no such struct, so the dedupe
+ * cache lives here: subject -> (binding id, local seq). Called once
+ * per inbound message from lotus_bus_dispatch_wire_inbound with the
+ * wire (origin, seq) when the self-describing obs header was
+ * present, or (0, 0) when headerless — the local per-subject
+ * counter then supplies a monotonic seq so per-binding counting
+ * still works (it just won't cross-process pair, same contract as
+ * a non-framed transport). */
+typedef struct {
+  char *subject;
+  int64_t id;
+  uint64_t local_seq;
+} obs_adapter_binding_t;
+static obs_adapter_binding_t g_adapter_bindings[256];
+static _Atomic int g_adapter_binding_count = 0;
+
+void lotus_obs_adapter_net_deliver(const char *subject, uint64_t origin,
+                                   uint64_t seq, uint64_t bytes) {
+  if (!obs_on() || !subject) return;
+  int n = atomic_load_explicit(&g_adapter_binding_count,
+                               memory_order_acquire);
+  obs_adapter_binding_t *row = NULL;
+  for (int i = 0; i < n; i++) {
+    if (strcmp(g_adapter_bindings[i].subject, subject) == 0) {
+      row = &g_adapter_bindings[i];
+      break;
+    }
+  }
+  if (!row) {
+    pthread_mutex_lock(&g_obs_lock);
+    n = atomic_load(&g_adapter_binding_count);
+    for (int i = 0; i < n; i++) {
+      if (strcmp(g_adapter_bindings[i].subject, subject) == 0) {
+        row = &g_adapter_bindings[i];
+        break;
+      }
+    }
+    if (!row && n < 256) {
+      int64_t id = obs_manifest_add(MK_BINDING, 1, subject,
+                                    2 /* adapter */, 0, 0);
+      char *copy = strdup(subject);
+      if (id >= 0 && copy) {
+        g_adapter_bindings[n].subject = copy;
+        g_adapter_bindings[n].id = id;
+        g_adapter_bindings[n].local_seq = 0;
+        row = &g_adapter_bindings[n];
+        atomic_store_explicit(&g_adapter_binding_count, n + 1,
+                              memory_order_release);
+      } else if (copy) {
+        free(copy);
+      }
+    }
+    pthread_mutex_unlock(&g_obs_lock);
+  }
+  if (!row) return;
+  uint64_t use_seq = seq ? seq : ++row->local_seq;
+  lotus_obs_net_deliver(subject, row->id, origin, use_seq, bytes);
+}
+
 void lotus_obs_locus_birth(void *self, const char *type_name,
                            void *parent_self) {
   if (!obs_on() || !self || !type_name) return;

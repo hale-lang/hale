@@ -8,6 +8,27 @@ behavior.
 
 ## Unreleased
 
+- **The adapter ingest path carries the full observation trio**
+  (iris handoff-8 P21 — "the last dark ingestion path"). The
+  Hale-owned-wire ingest (`std::bus::__local_dispatch`) emitted no
+  NET_DELIVER and its fanout no per-target BUS_DELIVER — a
+  dynamically-subscribed plane was invisible (zero `net<`, zero
+  dlv) while the same segment's statically-configured listens
+  paired fully. The inbound wrapper now peels the magic-guarded
+  obs wire header when present (which also FIXES headered
+  datagrams reaching a Hale adapter — they previously failed
+  deserialization), emits NET_DELIVER echoing the wire
+  (origin, seq), and plain `dispatch_wire` gains the per-target
+  BUS_DELIVER its keyed sibling got in v0.11.18. Pinned by a
+  two-process producer→adapter-consumer test asserting paired
+  net records, attributed deliveries, and published == 0.
+
+- iris handoff-8 P20 (remote-only publishes show CT_PUBLISHED=0)
+  **did not reproduce** on any of four flavors (adapter binding,
+  udp config, framed transport, keyed) — the counter is correct on
+  all; likely a carry from the pre-v0.11.15 keyed-probe-gap era.
+  The keyed+udp shape is pinned as a regression test.
+
 - **Refactor batch (R1/R2/R3/R4/R6) — the substrate for #265 and
   #262.** Behavior-neutral; full workspace suite + the dispatch
   bench gate every piece.
