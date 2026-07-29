@@ -3,7 +3,7 @@
 //! A struct that carries at least one `json:"<key>"` field tag opts into a
 //! generated `Type::from_json(s) -> Type fallible(JsonError)`. For each such
 //! type we synthesize a `__json_parse_<Type>` function that drives the
-//! single-pass `std::json` object cursor (see `runtime/stdlib/json.hl`),
+//! single-pass `std::json` object cursor (see `../../hale-stdlib/hl/json.hl`),
 //! dispatching each key (length-gated) and reading the value by the field's
 //! declared type — one pass, no per-field rescan, unknown keys skipped.
 //! `Type::from_json(s)` calls are rewritten to the generated function.

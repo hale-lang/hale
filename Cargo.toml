@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/hale-stdlib",
     "crates/hale-syntax",
     "crates/hale-types",
     "crates/hale-codegen",

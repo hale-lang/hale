@@ -38,42 +38,6 @@ use hale_syntax::{Diag, Span};
 use crate::alloc_summary::{self, AllocSummary, FnKey};
 use crate::callgraph::{self, Probe};
 
-/// Blocking stdlib operations — the closed leaf set for
-/// `@no_block`. These are the calls that park or block the calling
-/// thread for an unbounded (or caller-controlled) time. On an
-/// `async_io` pool the parking ones yield the worker; on every
-/// other placement they hold it — and a handler asserting
-/// `@no_block` is asserting it does neither.
-///
-/// Matched against the qualified path the alloc summary records for
-/// an unresolved callee (`std::io::tcp::recv`), and against the
-/// bare trailing name for method-call syntax on a stdlib handle
-/// (`s.recv(...)`), the same two shapes `budget_check`'s recv set
-/// matches.
-fn blocking_leaf(name: &str) -> Option<&'static str> {
-    let bare = name.rsplit("::").next().unwrap_or(name);
-    let label = match bare {
-        "sleep" if name.starts_with("std::time") || name == "sleep" => {
-            "std::time::sleep blocks/parks for the full duration"
-        }
-        "recv" | "recv_bytes" | "recv_into" | "recv_with_source"
-        | "recv_stamped_into" => {
-            "a blocking receive — waits for data or the socket timeout"
-        }
-        "accept" | "accept_one" => {
-            "accept blocks until a connection arrives"
-        }
-        "connect" => "connect blocks through the TCP/TLS handshake",
-        "wait" | "try_wait" if name.contains("process") => {
-            "waiting on a subprocess blocks"
-        }
-        "next" if name.contains("udp") || name.contains("Reader") => {
-            "Reader.next() blocks/parks until a datagram arrives"
-        }
-        _ => return None,
-    };
-    Some(label)
-}
 
 /// Is this an `@ffi`-declared fn in the bundle?
 fn ffi_names(programs: &[&Program]) -> BTreeSet<String> {
@@ -92,7 +56,22 @@ fn ffi_names(programs: &[&Program]) -> BTreeSet<String> {
 
 /// Render `root -> hop -> hop [leaf]` for a witness chain.
 fn chain(root: &FnKey, steps: &[callgraph::WitnessStep]) -> String {
-    callgraph::render_witness(root, steps)
+    demangle_stdlib(&callgraph::render_witness(root, steps))
+}
+
+/// Stdlib loci are declared under mangled names (`__StdCliResolver`)
+/// so they cannot collide with user identifiers. A witness path that
+/// runs through one must still read in the spelling the user wrote,
+/// or the diagnostic points at a name that appears nowhere in their
+/// program — and nowhere they could look it up either.
+fn demangle_stdlib(rendered: &str) -> String {
+    let mut out = rendered.to_string();
+    for (path, mangled) in hale_stdlib::PATH_RENAMES {
+        if out.contains(mangled) {
+            out = out.replace(mangled, &path.join("::"));
+        }
+    }
+    out
 }
 
 /// The public entry: check every effect assertion in `programs`.
@@ -369,7 +348,7 @@ pub fn effect_diags(programs: &[&Program]) -> Vec<Diag> {
             }
         }
     }
-    let summary = alloc_summary::summarize_programs(programs);
+    let summary = crate::stdlib_bodies::summarize_with_stdlib(programs);
     // The placement-implied pass runs whether or not anything is
     // annotated — that is its point.
     let mut placement = placement_implied_diags(programs, &summary);
@@ -556,7 +535,28 @@ fn check_class(
     let mut pred = |probe: &Probe<'_>| match probe {
         Probe::Unresolved(name, _) => {
             let segs: Vec<&str> = name.split("::").collect();
-            let eff = crate::stdlib_surface::effects_for(&segs)?;
+            let Some(eff) = crate::stdlib_surface::effects_for(&segs) else {
+                // ABSENT must fail closed, exactly like UNCLASSIFIED.
+                // The old `?` here made them asymmetric: an
+                // unclassified ROW violated every assertion, but a
+                // path with no row at all silently contributed
+                // nothing — so a whole unregistered namespace
+                // (`std::ts`, `std::shm`) read as pure. An assertion
+                // is a claim about everything reachable; a leaf we
+                // cannot classify is exactly what it must not
+                // certify. Non-`std::` names are ordinary unresolved
+                // callees (a bare method on a value whose type we
+                // could not infer), not frontier leaves.
+                return if segs.first() == Some(&"std") {
+                    Some(format!(
+                        "{} is not in the stdlib effect registry, so its \
+                         effects are unknown and cannot be certified",
+                        name
+                    ))
+                } else {
+                    None
+                };
+            };
             if eff.is_unclassified() {
                 return Some(format!("{} is not yet effect-classified", name));
             }
@@ -867,7 +867,7 @@ pub fn effect_manifest(programs: &[&Program]) -> Vec<EffectManifestRow> {
 pub fn effect_manifest_with_inference(
     programs: &[&Program],
 ) -> Vec<EffectManifestRow> {
-    let summary = alloc_summary::summarize_programs(programs);
+    let summary = crate::stdlib_bodies::summarize_with_stdlib(programs);
     let ffi = ffi_names(programs);
     let declared: BTreeMap<String, EffectManifestRow> = effect_manifest(programs)
         .into_iter()

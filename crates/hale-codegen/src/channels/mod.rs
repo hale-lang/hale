@@ -1363,7 +1363,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // File primitives: only the `__`-prefixed forms map
             // here. The user-facing `open` / `write_bytes` / `seek`
             // resolve via STDLIB_FN_RENAMES to the Hale-level
-            // wrappers in runtime/stdlib/file.hl that bridge
+            // wrappers in ../../hale-stdlib/hl/file.hl that bridge
             // File ↔ fd (open returns a File, write_bytes/seek
             // take a File).
             ["std", "io", "file", "__open"] => Ok(Some(

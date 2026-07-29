@@ -196,13 +196,47 @@ assume the others in a build:
   residue (pinned by a test). The classification distinguishes
   *reading* an effect source from operating on a *supplied value*:
   `time_from_unix(n)` is deterministic while `monotonic_ns()` is not;
-  `http::parse_request` is pure while `http::get` is blocking I/O. An
-  unclassified entry is treated as may-do-anything and violates every
-  assertion, so incompleteness can never silently pass. `ffi` matches
+  `http::parse_request` is pure while `http::get` is blocking I/O.
+
+  **Incompleteness fails closed, in both of its forms.** An entry
+  present but *unclassified* is treated as may-do-anything and
+  violates every assertion. So is a `std::` path with **no registry
+  row at all** — the two used to be asymmetric, and that asymmetry
+  was a soundness hole: an unclassified row failed closed while a
+  whole unregistered namespace read as pure, silently certifying
+  calls into it. "Absent" and "unknown" are the same claim, and
+  neither can be certified.
+
+  The **language builtins that write to a stream** (`println`,
+  `print`, `eprintln`, `eprint`) are syscall-class. They are not
+  `std::` paths, so they once sat outside the frontier entirely and
+  a `@no_syscall` fn could print freely — while the diagnostic for
+  `std::io::fs::*` described the syscall class as covering "stdio".
+  Writing to a stream is a `write(2)`; it can block, and a hot-path
+  certificate that permits it is not certifying what it claims.
+
+  `ffi` matches
   bundle-local `@ffi` declarations. `publish` and `spawn` are
   **syntactic** — `Topic <- v` and `Child { … }` are effects the
   language expresses directly, recorded as effect *sites* on the
   summary rather than as call edges. `recursion` is a graph property.
+
+  **Reachability follows handles, not just paths.** A call made on a
+  value — `reader.slurp()`, `resolver.get(…)` — is a real edge, and
+  the analysis resolves the receiver's declared type to walk into
+  the method body. This includes the part of the standard library
+  that is **written in Hale** (`hale-stdlib`): those bodies are fed
+  to the callgraph, so their effects are *inferred from the
+  implementation* rather than declared in a table that can drift.
+  Witness paths through a stdlib locus are rendered in the public
+  spelling (`std::cli::Resolver::get`), never the internal mangled
+  name.
+
+  This matters more than it sounds: the locus-with-methods shape is
+  the idiomatic way to do I/O in Hale — the same shape a violation
+  diagnostic recommends as the fix. Moving an effect behind a locus
+  the asserting fn still calls does not make it unreachable, and the
+  checker must not confuse the two.
 
   **Diagnostics carry the witness path** — the call chain from the
   asserting root to the offending leaf, which `@budget`'s fixpoint

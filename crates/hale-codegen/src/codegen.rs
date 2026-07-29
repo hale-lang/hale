@@ -913,7 +913,7 @@ pub fn build_executable_with_options(
     // `user_loci` alongside user-declared loci with no special
     // casing in the lowering passes; collision with user names is
     // prevented by the `__Std*` mangled prefix on bundled decls.
-    let stdlib_program = hale_syntax::parse_source(STDLIB_AP_SOURCE)
+    let stdlib_program = hale_syntax::parse_source(hale_stdlib::AP_SOURCE)
         .map_err(|diags| {
             let summary = diags
                 .iter()
@@ -2304,322 +2304,7 @@ fn locate_ts_shim_staticlib() -> Option<PathBuf> {
     None
 }
 
-/// Bundled Hale source for the stdlib. m73a established the
-/// concat-with-user-source mechanism: the parsed stdlib `Program`
-/// has its `items` appended to the user's `Program.items` before
-/// `lower_program` runs, so each stdlib locus sits in `user_loci`
-/// exactly like user-declared loci. Path-qualified references
-/// (`std::io::tcp::Listener`) are rewritten at struct-literal
-/// codegen sites to the mangled locus names declared in this
-/// source via the `STDLIB_PATH_RENAMES` table below.
-///
-/// m93 split the single stdlib.hl into one file per domain.
-/// Order matters: pass A1 walks loci in source order and resolves
-/// each locus's param types as it goes. Listener references
-/// Stream, so io_tcp.hl (which declares both, Stream first) lands
-/// before http.hl (which references Stream in fn signatures).
-/// core.hl lands first because text.hl depends on its
-/// __replace_all / __html_escape helpers. test.hl is standalone
-/// and could go anywhere — it ends up last by convention.
-const STDLIB_AP_SOURCE: &str = concat!(
-    include_str!("../runtime/stdlib/core.hl"),
-    "\n",
-    include_str!("../runtime/stdlib/io_tcp.hl"),
-    "\n",
-    // io_udp.hl declares the `Reader` handle and references `IoError`
-    // (declared in io_tcp.hl) in its fn signatures, so it must land
-    // after io_tcp.hl for pass A1 type resolution. Only path-call
-    // primitives otherwise, so its position past io_tcp is the only
-    // ordering constraint.
-    include_str!("../runtime/stdlib/io_udp.hl"),
-    "\n",
-    include_str!("../runtime/stdlib/http.hl"),
-    "\n",
-    // Client surface (promoted from pond/http/client, 2026-07-17).
-    // References http.hl's __http_find_header_in_block and
-    // io_tcp.hl's IoError, so it lands after both.
-    include_str!("../runtime/stdlib/http_client.hl"),
-    "\n",
-    // std::metrics (promoted from pond/metrics, 2026-07-18) —
-    // Endpoint references std::http types, so it lands after http.hl.
-    include_str!("../runtime/stdlib/metrics.hl"),
-    "\n",
-    include_str!("../runtime/stdlib/text.hl"),
-    "\n",
-    include_str!("../runtime/stdlib/test.hl"),
-    "\n",
-    include_str!("../runtime/stdlib/log.hl"),
-    "\n",
-    // m96: tree-sitter substrate. Standalone — references only
-    // path-call primitives (`std::ts::*`) plus core builtins
-    // (`println`, while, assignment), so order is flexible.
-    // Lands last by convention.
-    include_str!("../runtime/stdlib/ts.hl"),
-    "\n",
-    // Post-m102: language-agnostic AST query interface.
-    // Wraps `std::ts::*` + per-language node-kind strings
-    // behind a single `Lang` locus. Depends on `std::ts::*`
-    // path calls and `std::str::index_of`; both are path
-    // calls that resolve at codegen time, so source-order
-    // dependency on ts.hl is just stylistic — the
-    // path-call resolution is independent of bundle order.
-    include_str!("../runtime/stdlib/lang.hl"),
-    "\n",
-    // Corpus-extraction pass: cross-cutting helpers lifted from
-    // the apps/ tree into the std seed so they stop being
-    // hand-rolled per consumer. Each is a namespace lotus
-    // (empty params, methods only). Order between these is
-    // flexible — they reference only path-call primitives.
-    include_str!("../runtime/stdlib/iter.hl"),
-    "\n",
-    // tagged.hl depends on iter.hl (Lines is used internally in
-    // every Accumulator method), so it must land after.
-    include_str!("../runtime/stdlib/tagged.hl"),
-    "\n",
-    // name.hl is independent — only uses std::str::index_of.
-    include_str!("../runtime/stdlib/name.hl"),
-    "\n",
-    // json.hl depends on iter.hl for build_array's line walk.
-    include_str!("../runtime/stdlib/json.hl"),
-    "\n",
-    // yaml.hl depends on iter.hl for Reader's line walks.
-    // Mirrors json.hl's shape (Builder is a namespace lotus
-    // returning Strings).
-    include_str!("../runtime/stdlib/yaml.hl"),
-    "\n",
-    // cli.hl is independent — only uses std::str::index_of,
-    // std::str::parse_int / can_parse_int, and std::env::*
-    // path calls. Lands after the other corpus helpers by
-    // convention.
-    include_str!("../runtime/stdlib/cli.hl"),
-    "\n",
-    // source.hl depends on iter.hl (Lines for entry iteration)
-    // and references std::lang::Lang in its on_file fn-pointer
-    // type — lang.hl must be declared before this file's parse
-    // pass A1 resolves param types. lang.hl lands at line ~385
-    // above, so source.hl lands here without issue.
-    include_str!("../runtime/stdlib/source.hl"),
-    "\n",
-    // C2 — std::process. References std::io::tcp::__close_fd for
-    // pipe-fd cleanup in Child.dissolve(), so io_tcp.hl (declared
-    // near the top of this concat) must precede it. Independent
-    // of other stdlib files otherwise.
-    include_str!("../runtime/stdlib/process.hl"),
-    "\n",
-    // std::bus::Adapter interface contract for user-supplied
-    // protocol-layer transports. No concrete impls live in std;
-    // the runtime side of the binding variant lands in Wave B
-    // of the bus-transport redesign (gated on F.20 Phase B
-    // interface-value storage). Standalone — references only
-    // Bytes and String, both core types.
-    include_str!("../runtime/stdlib/bus.hl"),
-    "\n",
-    // std::io::file::File — held-open file I/O locus that
-    // complements the one-shot std::io::fs::* path-calls.
-    // Lifecycle (birth/dissolve) closes the fd at scope-exit
-    // per the m82 deferred-dissolve mechanism. Returned String
-    // data lives in the bus payload arena (program-lifetime).
-    include_str!("../runtime/stdlib/file.hl"),
-    "\n",
-    // std::bytes::BytesBuilder — long-lived growing-byte-buffer
-    // locus. Replaces the prior `std::bytes::builder_*` free-fn
-    // surface so the typechecker can distinguish builder handles
-    // from regular Bytes blobs (the two have incompatible runtime
-    // ABIs). Lifecycle (birth/dissolve) wraps malloc /free of the
-    // underlying lotus_str_builder_t header + buffer. References
-    // only path-call primitives (`std::bytes::builder::__*`) that
-    // resolve at codegen time; independent of order.
-    include_str!("../runtime/stdlib/bytes_builder.hl"),
-    "\n",
-    // std::io::MirrorRing (#3): double-mmap wrap-free ring. Calls the
-    // std::io::mirror::__* path-call primitives; order-independent.
-    include_str!("../runtime/stdlib/mirror_ring.hl"),
-    "\n",
-    // std::term::RawMode guard locus (pond P4 stage 3). Calls the
-    // std::term::__raw_* path-call primitives; order-independent.
-    include_str!("../runtime/stdlib/term.hl"),
-);
 
-/// Maps each user-facing stdlib path (locus OR type) to the
-/// mangled name declared in `STDLIB_AP_SOURCE`. The mangled
-/// prefix (`__StdIo...`, `__StdHttp...`) makes collision with
-/// user-declared identifiers impossible at v0. Each entry is
-/// `&[&"std", ...]` → flat string. Whether the resolved name
-/// refers to a locus or a type is determined downstream by
-/// looking it up in `user_loci` / `user_types` — this table
-/// is just the path → name mapping. Keep sorted by path for
-/// review.
-/// 2026-05-26 — named socket-option constants exposed via
-/// `std::io::sockopt::<NAME>()`. Each value is fetched at runtime
-/// from a C getter (so platform-correct: Linux SOL_SOCKET=1,
-/// macOS SOL_SOCKET=0xffff, etc.). Keep alphabetized; add new
-/// entries here AND in `lotus_arena.c`'s LOTUS_SOCKOPT_GETTER
-/// block. Used by both the extern-declaration loop and the
-/// path-call dispatch matcher.
-pub(crate) const SOCKOPT_NAMES: &[&str] = &[
-    "IPPROTO_IP",
-    "IPPROTO_IPV6",
-    "IPPROTO_TCP",
-    "IPPROTO_UDP",
-    "IP_ADD_MEMBERSHIP",
-    "IP_DROP_MEMBERSHIP",
-    "IP_MTU_DISCOVER",
-    "IP_MULTICAST_IF",
-    "IP_MULTICAST_LOOP",
-    "IP_MULTICAST_TTL",
-    "IP_PKTINFO",
-    "IP_PMTUDISC_DO",
-    "IP_PMTUDISC_DONT",
-    "IP_PMTUDISC_PROBE",
-    "IP_PMTUDISC_WANT",
-    "IP_TOS",
-    "IP_TTL",
-    "SOL_SOCKET",
-    "SO_BINDTODEVICE",
-    "SO_BROADCAST",
-    "SO_KEEPALIVE",
-    "SO_LINGER",
-    "SO_PRIORITY",
-    "SO_RCVBUF",
-    "SO_RCVTIMEO",
-    "SO_REUSEADDR",
-    "SO_REUSEPORT",
-    "SO_SNDBUF",
-    "SO_SNDTIMEO",
-    "TCP_NODELAY",
-];
-
-/// Public accessors for `hale doc --stdlib` (hale-cli): the
-/// concatenated stdlib source (for /// doc-comment recovery and
-/// decl parsing) and the public-path → mangled-name table (to
-/// display entries under their `std::` names).
-pub fn stdlib_doc_source() -> &'static str {
-    STDLIB_AP_SOURCE
-}
-pub fn stdlib_path_renames() -> &'static [(&'static [&'static str], &'static str)] {
-    STDLIB_PATH_RENAMES
-}
-
-const STDLIB_PATH_RENAMES: &[(&[&str], &str)] = &[
-    (&["std", "bus", "Adapter"], "__StdBusAdapter"),
-    // GH #233 steps 3-4: the connect-side substrate transport is
-    // user-nameable so main can declare
-    // `on_failure(t: std::bus::UnixTransport, err: ClosureViolation)`.
-    // (The listen side re-arms instead of getting lost, so it
-    // stays internal.)
-    (&["std", "bus", "UnixTransport"], "__StdBusUnixConnectTransport"),
-    (&["std", "bytes", "BytesBuilder"], "__StdBytesBytesBuilder"),
-    (&["std", "cli", "Resolver"], "__StdCliResolver"),
-    (&["std", "http", "Handler"], "__StdHttpHandler"),
-    (&["std", "http", "Request"], "__StdHttpRequest"),
-    (&["std", "http", "Response"], "__StdHttpResponse"),
-    (&["std", "http", "Server"], "__StdHttpServer"),
-    // Router battery (promoted from pond/router, 2026-07-17). The
-    // free-fn surface (path_param / query_param) routes through
-    // this table to its bare implementations in http.hl, same as
-    // the std::process fns below.
-    (&["std", "http", "Router"], "__StdHttpRouter"),
-    (&["std", "http", "Context"], "__StdHttpContext"),
-    (&["std", "http", "RouteParams"], "__StdHttpRouteParams"),
-    (&["std", "http", "RouteHandler"], "__StdHttpRouteHandler"),
-    (&["std", "http", "Middleware"], "__StdHttpMiddleware"),
-    (&["std", "http", "RouteEntry"], "__StdHttpRouteEntry"),
-    (&["std", "http", "NotFound404"], "__StdHttpNotFound404"),
-    (&["std", "http", "path_param"], "__http_path_param"),
-    (&["std", "http", "query_param"], "__http_query_param"),
-    // Client surface (promoted from pond/http/client, 2026-07-17).
-    (&["std", "http", "Client"], "__StdHttpClient"),
-    (&["std", "http", "ClientRequest"], "__StdHttpClientRequest"),
-    (&["std", "http", "ClientResponse"], "__StdHttpClientResponse"),
-    (&["std", "http", "HttpError"], "__StdHttpError"),
-    (&["std", "http", "Url"], "__StdHttpUrl"),
-    (&["std", "http", "get"], "__http_client_get"),
-    (&["std", "http", "post"], "__http_client_post"),
-    (&["std", "http", "request"], "__http_client_request"),
-    (&["std", "http", "parse_url"], "__http_parse_url"),
-    (&["std", "io", "file", "File"], "__StdIoFileFile"),
-    (&["std", "io", "MirrorRing"], "__StdIoMirrorRing"),
-    (&["std", "io", "file", "open"], "__std_io_file_open"),
-    (&["std", "io", "file", "read_line"], "__std_io_file_read_line"),
-    (&["std", "io", "file", "at_eof"], "__std_io_file_at_eof"),
-    (&["std", "io", "file", "write_bytes"], "__std_io_file_write_bytes"),
-    (&["std", "io", "file", "write_line"], "__std_io_file_write_line"),
-    (&["std", "io", "file", "seek"], "__std_io_file_seek"),
-    (&["std", "term", "RawMode"], "__StdTermRawMode"),
-    (&["std", "term", "TermSize"], "__StdTermTermSize"),
-    (&["std", "term", "size"], "__std_term_size"),
-    (&["std", "io", "tcp", "Listener"], "__StdIoTcpListener"),
-    (&["std", "io", "tcp", "Stream"], "__StdIoTcpStream"),
-    (&["std", "io", "tcp", "LogEvent"], "__StdIoTcpLogEvent"),
-    // hale-bun upstream item 4b: public raw-fd send for takeover
-    // consumers (the write-side companion to `close_fd`).
-    (&["std", "io", "tcp", "send_fd"], "__std_io_tcp_send_fd"),
-    (&["std", "io", "udp", "Reader"], "__StdIoUdpReader"),
-    (&["std", "iter", "Lines"], "__StdIterLines"),
-    (&["std", "json", "ArrayIter"], "__JsonArrayIter"),
-    (&["std", "json", "ArrayIterSpan"], "__JsonArrayIterSpan"),
-    (&["std", "json", "ObjectIterSpan"], "__JsonObjectIterSpan"),
-    (&["std", "json", "Builder"], "__StdJsonBuilder"),
-    (&["std", "json", "JsonFieldRange"], "__JsonFieldRange"),
-    (&["std", "lang", "Lang"], "__StdLangLang"),
-    (&["std", "lang", "Morpheme"], "__StdLangMorpheme"),
-    (&["std", "log", "ConsoleSink"], "__StdLogConsoleSink"),
-    (&["std", "log", "FileSink"], "__StdLogFileSink"),
-    (&["std", "log", "LogEvent"], "__StdLogEvent"),
-    (&["std", "log", "Logger"], "__StdLogLogger"),
-    (&["std", "log", "StdoutSink"], "__StdLogStdoutSink"),
-    // std::metrics (promoted from pond/metrics, 2026-07-18).
-    (&["std", "metrics", "Counter"], "__StdMetricsCounter"),
-    (&["std", "metrics", "Endpoint"], "__StdMetricsEndpoint"),
-    (&["std", "metrics", "Gauge"], "__StdMetricsGauge"),
-    (&["std", "metrics", "Histogram"], "__StdMetricsHistogram"),
-    (&["std", "metrics", "HistogramData"], "__StdMetricsHistogramData"),
-    (&["std", "metrics", "HistogramList"], "__StdMetricsHistogramList"),
-    (&["std", "metrics", "Labels"], "__StdMetricsLabels"),
-    (&["std", "metrics", "MetricEntry"], "__StdMetricsEntry"),
-    (&["std", "metrics", "MetricMap"], "__StdMetricsMap"),
-    (&["std", "metrics", "Registry"], "__StdMetricsRegistry"),
-    (&["std", "metrics", "counter"], "__metrics_counter"),
-    (&["std", "metrics", "gauge"], "__metrics_gauge"),
-    (&["std", "metrics", "histogram"], "__metrics_histogram"),
-    (&["std", "metrics", "labels_append"], "__metrics_labels_append"),
-    (&["std", "metrics", "labels_empty"], "__metrics_labels_empty"),
-    (&["std", "metrics", "labels_one"], "__metrics_labels_one"),
-    (&["std", "metrics", "labels_two"], "__metrics_labels_two"),
-    (&["std", "metrics", "metric_key"], "__metrics_key"),
-    (&["std", "name", "Convention"], "__StdNameConvention"),
-    // C2 — subprocess. ProcessOutput is the captured-output struct
-    // returned by `std::process::run`; Child is the lifecycle-bound
-    // handle returned by `std::process::spawn`. The free-fn surface
-    // (spawn/wait/kill/write_stdin/read_stdout/read_stderr) is
-    // routed through this table too: each path-call resolves to
-    // its bare `__std_process_*` implementation in process.hl.
-    (&["std", "process", "Child"], "__StdProcessChild"),
-    (&["std", "process", "ProcessOutput"], "__StdProcessOutput"),
-    (&["std", "process", "kill"], "__std_process_kill"),
-    (&["std", "process", "read_stderr"], "__std_process_read_stderr"),
-    (&["std", "process", "read_stdout"], "__std_process_read_stdout"),
-    (&["std", "process", "signal"], "__std_process_signal"),
-    (&["std", "process", "spawn"], "__std_process_spawn"),
-    (&["std", "process", "try_wait"], "__std_process_try_wait"),
-    (&["std", "process", "wait"], "__std_process_wait"),
-    (&["std", "process", "write_stdin"], "__std_process_write_stdin"),
-    (&["std", "source", "Walk"], "__StdSourceWalk"),
-    // v1.x polish (2026-05-20): qualified `std::str::ParseError`
-    // resolves to the same bare ParseError the stdlib's parse_*
-    // fns inject. Lets users disambiguate explicitly in fn
-    // signatures and `or raise as e: std::str::ParseError`
-    // bindings — useful when a project also has its own
-    // local error types.
-    (&["std", "str", "ParseError"], "ParseError"),
-    (&["std", "tagged", "Accumulator"], "__StdTaggedAccumulator"),
-    (&["std", "text", "Sink"], "__StdTextSink"),
-    (&["std", "text", "StdoutSink"], "__StdTextStdoutSink"),
-    (&["std", "text", "StringSink"], "__StdTextStringSink"),
-    (&["std", "text", "FileSink"], "__StdTextFileSink"),
-    (&["std", "yaml", "Builder"], "__StdYamlBuilder"),
-    (&["std", "yaml", "Reader"], "__StdYamlReader"),
-];
 
 /// Look up the mangled name for a bundled-stdlib path (`std::*`).
 /// Returns `None` when the path isn't recognized; callers then
@@ -2628,7 +2313,7 @@ fn stdlib_mangled_for_path(segs: &[&str]) -> Option<&'static str> {
     if !matches!(segs.first(), Some(&"std")) {
         return None;
     }
-    let table: &[(&[&str], &str)] = STDLIB_PATH_RENAMES;
+    let table: &[(&[&str], &str)] = hale_stdlib::PATH_RENAMES;
     table
         .iter()
         .find(|(p, _)| *p == segs)
@@ -2915,7 +2600,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `user_consts` (scalar-literal fast path).
     user_const_exprs: BTreeMap<String, (Expr, TypeExpr)>,
     /// v1.x-IMPORT: per-build path-rename table for cross-seed
-    /// imports. Same shape as `STDLIB_PATH_RENAMES` but populated
+    /// imports. Same shape as `hale_stdlib::PATH_RENAMES` but populated
     /// per build from the user's `import "lib/X" as foo;`
     /// declarations. Maps a qualified segment vector (e.g.
     /// `["foo", "Bar"]`) to the mangler-generated symbol name
@@ -5630,7 +5315,7 @@ pub(crate) struct SelfCx<'ctx> {
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// v1.x-IMPORT: resolve a qualified-name path to its mangled
-    /// symbol name. Consults the static `STDLIB_PATH_RENAMES`
+    /// symbol name. Consults the static `hale_stdlib::PATH_RENAMES`
     /// table (via `stdlib_mangled_for_path`) first, then the
     /// per-build `import_renames` table populated from the user's
     /// `import "..." as alias;` declarations.
@@ -5668,7 +5353,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (prefix, last) = segs.split_at(segs.len() - 1);
         let last = last[0];
         let mut siblings: Vec<String> = Vec::new();
-        for (key, _) in STDLIB_PATH_RENAMES {
+        for (key, _) in hale_stdlib::PATH_RENAMES {
             if key.len() == segs.len() && key[..key.len() - 1] == *prefix {
                 siblings.push(key[key.len() - 1].to_string());
             }
@@ -14334,7 +14019,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// Set the debug location for a statement about to lower.
     /// Returns true iff a stack frame was pushed (di_exit_stmt must
     /// run). Skips stdlib-mangled functions (their spans live in the
-    /// separately-parsed STDLIB_AP_SOURCE coordinate space, which
+    /// separately-parsed hale_stdlib::AP_SOURCE coordinate space, which
     /// overlaps user file ranges) and spans outside every known
     /// file.
     fn di_enter_stmt(&mut self, span: hale_syntax::Span) -> bool {
@@ -14347,7 +14032,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         };
         let fn_name = func.get_name().to_string_lossy().into_owned();
         // No debug info for (a) stdlib bodies — their spans live in
-        // the separately-parsed STDLIB_AP_SOURCE coordinate space,
+        // the separately-parsed hale_stdlib::AP_SOURCE coordinate space,
         // which overlaps user file ranges — and (b) synthesized
         // `__*` helpers (json parsers / __replace_all / serializers /
         // wrappers), whose ASTs carry copied or zero spans that map
@@ -14927,7 +14612,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Stmt::Expr(Expr::Struct { path, inits, .. }) => {
                 // m73a: rewrite recognized `std::*` paths to the
                 // mangled stdlib locus name declared in
-                // STDLIB_AP_SOURCE. Unknown qualified paths still
+                // hale_stdlib::AP_SOURCE. Unknown qualified paths still
                 // error below, just with the better
                 // "no locus or type by that name" message.
                 let segs: Vec<&str> = path
@@ -22447,7 +22132,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(())
             }
             // Internal C-primitive bridges for the BytesBuilder
-            // locus (runtime/stdlib/bytes_builder.hl). The `__`
+            // locus (../../hale-stdlib/hl/bytes_builder.hl). The `__`
             // prefix marks these as not-for-user-code: user code
             // constructs `std::bytes::BytesBuilder { }` and calls
             // `.append() / .len() / .snapshot()` etc.; the locus's
@@ -23279,7 +22964,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.lower_std_str_builder_finish(args, scope)
             }
             // Internal C-primitive bridges for the BytesBuilder
-            // locus (runtime/stdlib/bytes_builder.hl). See the
+            // locus (../../hale-stdlib/hl/bytes_builder.hl). See the
             // statement-position dispatch above for the routing
             // rationale.
             ["std", "bytes", "builder", "__new"] => {
@@ -23360,7 +23045,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             // 2026-05-16: std::json helpers — escape/unescape +
             // flat-shape parse. All implementations live in
-            // runtime/stdlib/json.hl under __json_* bare names;
+            // ../../hale-stdlib/hl/json.hl under __json_* bare names;
             // these path-call arms surface them under std::json::*.
             ["std", "json", "escape_string"] => {
                 let result = self.lower_user_fn_call("__json_escape_string", args, scope)?;
@@ -23407,7 +23092,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // json; `iter_find_*` helpers scan bounded by the
             // current element's range so per-iter allocation drops
             // from O(element_size) to O(value_size). See
-            // `runtime/stdlib/json.hl` § "the zero-element-copy walker friction".
+            // `../../hale-stdlib/hl/json.hl` § "the zero-element-copy walker friction".
             ["std", "json", "array_first_span"] => {
                 let result = self.lower_user_fn_call("__json_array_first_span", args, scope)?;
                 result.ok_or_else(|| CodegenError::Unsupported(
@@ -23829,13 +23514,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             _ => {
                 // Fallback: stdlib paths that rename to an Hale-
-                // side user fn (via STDLIB_PATH_RENAMES) get
+                // side user fn (via hale_stdlib::PATH_RENAMES) get
                 // dispatched through user_fns. The fallible side
                 // (lower_fallible_call) already has this fallback;
                 // mirror it here for non-fallible callsites. Used
                 // by `std::io::file::at_eof(f)`, `std::io::file::
                 // read_line(f)`, etc. — the user-facing wrappers
-                // in runtime/stdlib/file.hl.
+                // in ../../hale-stdlib/hl/file.hl.
                 if let Some(mangled) = self.mangled_for_path(segs) {
                     if self.user_fns.contains_key(&mangled) {
                         let result =
@@ -24137,7 +23822,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         // `buf` must be a BytesBuilder locus (see
-        // runtime/stdlib/bytes_builder.hl). The locus is passed
+        // ../../hale-stdlib/hl/bytes_builder.hl). The locus is passed
         // by pointer; we GEP+load the internal `handle` field to
         // recover the underlying lotus_str_builder_t pointer that
         // the C primitive expects as `void *builder`. Rejecting
@@ -25016,7 +24701,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // Demangle the stdlib handle name for the message
             // (`__StdIoTcpStream` → `std::io::tcp::Stream`); user loci
             // pass through unchanged.
-            let display_locus = STDLIB_PATH_RENAMES
+            let display_locus = hale_stdlib::PATH_RENAMES
                 .iter()
                 .find(|(_, mangled)| *mangled == locus_name)
                 .map(|(segs, _)| segs.join("::"))
@@ -29203,4 +28888,55 @@ mod tests {
         assert_eq!(chunk_hint_for_coop_pool(&mixed, "io"), 65536);
         assert_eq!(chunk_hint_for_coop_pool(&mixed, "compute"), 65536);
     }
+}
+
+/// 2026-05-26 — named socket-option constants exposed via
+/// `std::io::sockopt::<NAME>()`. Each value is fetched at runtime
+/// from a C getter (so platform-correct: Linux SOL_SOCKET=1,
+/// macOS SOL_SOCKET=0xffff, etc.). Keep alphabetized; add new
+/// entries here AND in `lotus_arena.c`'s LOTUS_SOCKOPT_GETTER
+/// block. Used by both the extern-declaration loop and the
+/// path-call dispatch matcher.
+pub(crate) const SOCKOPT_NAMES: &[&str] = &[
+    "IPPROTO_IP",
+    "IPPROTO_IPV6",
+    "IPPROTO_TCP",
+    "IPPROTO_UDP",
+    "IP_ADD_MEMBERSHIP",
+    "IP_DROP_MEMBERSHIP",
+    "IP_MTU_DISCOVER",
+    "IP_MULTICAST_IF",
+    "IP_MULTICAST_LOOP",
+    "IP_MULTICAST_TTL",
+    "IP_PKTINFO",
+    "IP_PMTUDISC_DO",
+    "IP_PMTUDISC_DONT",
+    "IP_PMTUDISC_PROBE",
+    "IP_PMTUDISC_WANT",
+    "IP_TOS",
+    "IP_TTL",
+    "SOL_SOCKET",
+    "SO_BINDTODEVICE",
+    "SO_BROADCAST",
+    "SO_KEEPALIVE",
+    "SO_LINGER",
+    "SO_PRIORITY",
+    "SO_RCVBUF",
+    "SO_RCVTIMEO",
+    "SO_REUSEADDR",
+    "SO_REUSEPORT",
+    "SO_SNDBUF",
+    "SO_SNDTIMEO",
+    "TCP_NODELAY",
+];
+
+/// Public accessors for `hale doc --stdlib` (hale-cli): the
+/// concatenated stdlib source (for /// doc-comment recovery and
+/// decl parsing) and the public-path → mangled-name table (to
+/// display entries under their `std::` names).
+pub fn stdlib_doc_source() -> &'static str {
+    hale_stdlib::AP_SOURCE
+}
+pub fn stdlib_path_renames() -> &'static [(&'static [&'static str], &'static str)] {
+    hale_stdlib::PATH_RENAMES
 }

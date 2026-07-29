@@ -17,16 +17,21 @@ fn diags_for(src: &str) -> Vec<String> {
 fn alloc_in_birth_allowed_but_not_in_run() {
     let src = r#"
         type Buf { n: Int; }
+        // No `println` in either phase: writing to a stream is a
+        // syscall (classified since the frontier gained builtins),
+        // and an unrelated syscall violation in both phases would
+        // muddy what this test is actually isolating — that `alloc`
+        // is legal in birth and illegal in run.
         @phase_effects(birth: {alloc}, run: {})
         locus Engine {
             params { seen: Int = 0; }
             birth() {
                 let b = Buf { n: 1 };
-                println(b.n);
+                self.seen = b.n;
             }
             run() {
                 let bad = Buf { n: 2 };
-                println(bad.n);
+                self.seen = bad.n;
             }
         }
         fn main() { Engine { }; }

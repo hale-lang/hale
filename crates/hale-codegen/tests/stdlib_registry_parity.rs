@@ -20,6 +20,23 @@
 //! each other**, and any deliberate exception must be named here
 //! with a reason, so drift is a failing build rather than a
 //! downstream mystery.
+//!
+//! **There are THREE lowering structures, not two.** The first cut of
+//! this test scraped only `match` arms — and passed, because
+//! `hale_stdlib::PATH_RENAMES` rows are *also* `["std", …]` literals
+//! and the scraper counted them by accident. Moving that table into
+//! its own crate exposed the conflation. The three are:
+//!
+//!   1. codegen `["std", ns, fn] =>` match arms — native lowering;
+//!   2. `PATH_RENAMES` — the path is rewritten to a **Hale-source**
+//!      fn/locus declared in `hale_stdlib::AP_SOURCE`;
+//!   3. prefix-pattern arms (`bytes::read_*`) covering a family.
+//!
+//! Counting (2) as coverage is correct — it IS a lowering — but only
+//! if the target it names actually exists. `rename_targets_exist`
+//! checks that, which the accidental version could not: a row
+//! pointing at a deleted Hale fn used to "cover" a registry entry
+//! while failing at codegen.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -128,6 +145,62 @@ fn dispatch_arm_paths() -> BTreeSet<String> {
     out
 }
 
+/// Structure (2): paths lowered by rewriting to a Hale-source
+/// fn/locus. Just as much a lowering as a match arm.
+fn rename_paths() -> BTreeSet<String> {
+    hale_stdlib::PATH_RENAMES
+        .iter()
+        .map(|(path, _)| path.join("::"))
+        .collect()
+}
+
+/// Every name a rename row points at must actually be declared in
+/// the Hale-source stdlib. Without this, a stale row silently
+/// "covers" a registry entry that cannot lower.
+#[test]
+fn rename_targets_exist() {
+    let src = hale_stdlib::AP_SOURCE;
+    let declared: BTreeSet<&str> = src
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim_start();
+            for kw in ["fn ", "locus ", "type ", "interface ", "perspective "] {
+                if let Some(rest) = l.strip_prefix(kw) {
+                    let name: &str = rest
+                        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                        .next()
+                        .unwrap_or("");
+                    if !name.is_empty() {
+                        return Some(name);
+                    }
+                }
+            }
+            None
+        })
+        .collect();
+    // Compiler-SYNTHESIZED types: declared by codegen at lowering
+    // time (`declare_builtin_parse_error_type`), not by Hale source,
+    // so they are legitimately absent from AP_SOURCE.
+    const SYNTHESIZED: &[&str] = &["ParseError"];
+    let missing: Vec<String> = hale_stdlib::PATH_RENAMES
+        .iter()
+        .filter(|(_, target)| {
+            !declared.contains(target) && !SYNTHESIZED.contains(target)
+        })
+        .map(|(path, target)| format!("{} -> {}", path.join("::"), target))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these `PATH_RENAMES` rows point at names that are NOT declared \
+         anywhere in `hale_stdlib::AP_SOURCE` ({} of {}):\n{:#?}\n\n\
+         A stale rename row makes the parity check think the path is \
+         lowered while codegen will fail on it.",
+        missing.len(),
+        hale_stdlib::PATH_RENAMES.len(),
+        missing
+    );
+}
+
 fn registry_paths() -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for s in hale_types::stdlib_surface::SURFACES {
@@ -157,10 +230,12 @@ fn every_registry_entry_has_a_dispatch_arm() {
                 .unwrap_or(false)
         })
     };
+    let renames = rename_paths();
     let missing: Vec<&String> = registry
         .iter()
         .filter(|p| {
             !arms.contains(*p)
+                && !renames.contains(*p)
                 && !exempt.contains(*p)
                 && !covered_by_prefix(p)
         })
