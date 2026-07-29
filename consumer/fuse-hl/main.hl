@@ -60,7 +60,8 @@ const BATCH: Int = 512; // events per fz_next_batch call
 // App and the per-cycle child.
 const M_TAIL_HEAD: Int = 0;
 const M_NET_SLOTS: Int = 1;
-const M_WORKED: Int = 2;
+const M_WORKED: Int = 2; // 0 idle · 1 worked · 2 budget-exhausted (behind)
+const M_RSS_LOG: Int = 3;
 
 // ---- rows ----
 
@@ -529,7 +530,8 @@ locus Cycle {
                     let n = fz::fz_next_batch(g.h, self.evbuf);
                     if n == 0 { batches = 0; }
                     else {
-                        self.meta.set(M_WORKED, 1) or discard;
+                        if batches == 1 { self.meta.set(M_WORKED, 2) or discard; }
+                        else { self.meta.set(M_WORKED, 1) or discard; }
                         let mut e = 0;
                         while e < n {
                             let off = e * 32;
@@ -651,6 +653,22 @@ locus Cycle {
         return s;
     }
 
+    fn rss_note(now: Int) {
+        let last = self.meta.get(M_RSS_LOG) or 0;
+        if now - last < 60000000000 { return; }
+        self.meta.set(M_RSS_LOG, now) or discard;
+        let statm = std::io::fs::read_file("/proc/self/statm") or "";
+        let sp1 = std::str::index_of(statm, " ");
+        if sp1 < 0 { return; }
+        let rest = std::str::substring(statm, sp1 + 1, len(statm));
+        let sp2 = std::str::index_of(rest, " ");
+        if sp2 < 0 { return; }
+        let pages = std::str::parse_int(std::str::substring(rest, 0, sp2)) or 0;
+        println("fuse-hl: rss " + (pages * 4096 / 1048576) + "MB, segs "
+            + self.segs.len() + ", topics " + self.topics.len()
+            + ", loci " + self.loci.len() + ", edges " + self.edges.len());
+    }
+
     fn drop_sse(slot: Int) {
         self.fds.set(FdEntry { key: "" + slot, fd: -1 });
     }
@@ -675,6 +693,7 @@ locus Cycle {
             let snap = self.snapshot();
             self.snaps.set(SnapEntry { key: "snap", val: snap });
             self.pump_sse(snap);
+            self.rss_note(self.now);
         }
     }
 }
@@ -713,7 +732,7 @@ main locus App {
             t = t + 1;
         }
         let mut m = 0;
-        while m < 3 {
+        while m < 4 {
             self.meta.push(0);
             m = m + 1;
         }
@@ -737,7 +756,7 @@ main locus App {
                 fds: self.fds, reg_dir: self.reg_dir,
                 do_disc: do_disc, do_snap: do_snap, now: now
             };
-            if (self.meta.get(M_WORKED) or 0) == 0 { std::time::sleep(2ms); }
+            if (self.meta.get(M_WORKED) or 0) < 2 { std::time::sleep(2ms); }
         }
     }
 }
