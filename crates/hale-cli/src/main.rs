@@ -2206,6 +2206,48 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
     }
     // GH #18 item 5: dump the per-program resource budget (pinned threads,
     // cooperative pools, bus subjects) and exit.
+    // GH #265 step 7: the `.hale.effects` manifest — declared
+    // contracts + inferred effect sets, stable-sorted. Emit it for
+    // review, or DIFF it against a committed copy so an effect
+    // regression (a handler that quietly gained a syscall) fails CI
+    // the way an API break does.
+    if std::env::args().any(|a| a == "--dump-effects-manifest") {
+        print!("{}", hale_types::dump_effects_manifest(&bundle));
+    }
+    if let Some(path) = std::env::args()
+        .position(|a| a == "--check-effects-manifest")
+        .and_then(|i| std::env::args().nth(i + 1))
+    {
+        let current = hale_types::dump_effects_manifest(&bundle);
+        match std::fs::read_to_string(&path) {
+            Ok(expected) => {
+                if expected != current {
+                    eprintln!(
+                        "effect manifest changed — {} no longer matches the \
+                         program's effects.",
+                        path
+                    );
+                    for line in diff_lines(&expected, &current) {
+                        eprintln!("{}", line);
+                    }
+                    eprintln!(
+                        "\nIf the change is intended, regenerate:\n  \
+                         hale check <target> --dump-effects-manifest > {}",
+                        path
+                    );
+                    return ExitCode::from(1);
+                }
+            }
+            Err(_) => {
+                eprintln!(
+                    "effect manifest baseline not found: {}\nCreate it:\n  \
+                     hale check <target> --dump-effects-manifest > {}",
+                    path, path
+                );
+                return ExitCode::from(1);
+            }
+        }
+    }
     if std::env::args().any(|a| a == "--dump-resource-budget") {
         print!("{}", hale_types::dump_resource_budget(&bundle));
         return ExitCode::SUCCESS;
@@ -3535,4 +3577,23 @@ fn compute_codegen_src_hash(codegen_dir: &Path) -> String {
         }
     }
     format!("{:016x}", hasher.finish())
+}
+
+
+/// GH #265: minimal line diff for the effect-manifest gate — enough
+/// to show WHICH fn's effects changed without pulling in a diff
+/// crate. Lines are stable-sorted by fn name, so a set difference is
+/// an accurate rendering.
+fn diff_lines(expected: &str, current: &str) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let a: BTreeSet<&str> = expected.lines().collect();
+    let b: BTreeSet<&str> = current.lines().collect();
+    let mut out = Vec::new();
+    for gone in a.difference(&b) {
+        out.push(format!("  - {}", gone));
+    }
+    for added in b.difference(&a) {
+        out.push(format!("  + {}", added));
+    }
+    out
 }

@@ -777,6 +777,13 @@ pub struct EffectManifestRow {
     pub forbids: Vec<String>,
     pub publish_set: Option<Vec<String>>,
     pub quantities: Vec<(String, u64)>,
+    /// GH #265: the INFERRED effect set — what the fn actually does,
+    /// transitively, whether or not it declares anything. This is
+    /// what makes the manifest a behavioural fingerprint rather than
+    /// a restatement of the annotations: a handler that silently
+    /// gains a syscall shows up here as a one-line diff even though
+    /// no annotation changed.
+    pub inferred: Vec<String>,
 }
 
 /// Build the whole-program effect manifest, sorted for stable diffs.
@@ -813,6 +820,10 @@ pub fn effect_manifest(programs: &[&Program]) -> Vec<EffectManifestRow> {
         if let Some(b) = fd.budget {
             quantities.push(("alloc_per_call".to_string(), b as u64));
         }
+        // Rows with no declaration are still emitted when the
+        // caller fills in an inferred set (see
+        // `effect_manifest_with_inference`); the declaration-only
+        // builder skips them.
         if forbids.is_empty() && publish_set.is_none() && quantities.is_empty()
         {
             return;
@@ -824,6 +835,7 @@ pub fn effect_manifest(programs: &[&Program]) -> Vec<EffectManifestRow> {
             forbids,
             publish_set,
             quantities,
+            inferred: Vec::new(),
         });
     };
     for p in programs {
@@ -836,6 +848,73 @@ pub fn effect_manifest(programs: &[&Program]) -> Vec<EffectManifestRow> {
                             push(
                                 format!("{}::{}", l.name.name, fd.name.name),
                                 fd,
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    rows.sort_by(|a, b| a.func.cmp(&b.func));
+    rows
+}
+
+/// GH #265: the manifest with INFERRED sets filled in for every fn
+/// in the bundle — declared contracts plus what the compiler can see
+/// each fn actually does. This is the diffable behavioural
+/// fingerprint; `effect_manifest` alone reports declarations only.
+pub fn effect_manifest_with_inference(
+    programs: &[&Program],
+) -> Vec<EffectManifestRow> {
+    let summary = alloc_summary::summarize_programs(programs);
+    let ffi = ffi_names(programs);
+    let declared: BTreeMap<String, EffectManifestRow> = effect_manifest(programs)
+        .into_iter()
+        .map(|r| (r.func.clone(), r))
+        .collect();
+    let mut rows: Vec<EffectManifestRow> = Vec::new();
+    let mut add = |name: String, key: FnKey| {
+        let inferred = crate::frontier::render_effects(
+            crate::frontier::infer_effects(&summary, &key, &ffi),
+        );
+        let mut row = declared.get(&name).cloned().unwrap_or(
+            EffectManifestRow {
+                func: name.clone(),
+                forbids: Vec::new(),
+                publish_set: None,
+                quantities: Vec::new(),
+                inferred: Vec::new(),
+            },
+        );
+        row.inferred = inferred;
+        // A fn with neither a declaration nor an observable effect
+        // adds nothing to the fingerprint.
+        if row.forbids.is_empty()
+            && row.publish_set.is_none()
+            && row.quantities.is_empty()
+            && row.inferred.is_empty()
+        {
+            return;
+        }
+        rows.push(row);
+    };
+    for p in programs {
+        for item in &p.items {
+            match item {
+                TopDecl::Fn(fd) => {
+                    let n = fd.name.name.clone();
+                    add(n.clone(), FnKey::free_fn(n));
+                }
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        if let LocusMember::Fn(fd) = m {
+                            add(
+                                format!("{}::{}", l.name.name, fd.name.name),
+                                FnKey::method(
+                                    l.name.name.clone(),
+                                    fd.name.name.clone(),
+                                ),
                             );
                         }
                     }
@@ -863,6 +942,9 @@ pub fn render_effect_manifest(rows: &[EffectManifestRow]) -> String {
         }
         for (d, n) in &r.quantities {
             out.push_str(&format!("  {}={}", d, n));
+        }
+        if !r.inferred.is_empty() {
+            out.push_str(&format!("  does={{{}}}", r.inferred.join(",")));
         }
         out.push('\n');
     }
