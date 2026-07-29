@@ -22,6 +22,9 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -41,8 +44,7 @@ fn ring_c_path() -> PathBuf {
 }
 
 fn build_driver(tag: &str) -> PathBuf {
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("lotus_shm_ring_driver_{}", tag));
+    let bin = harness::unique_bin(&format!("lotus_shm_ring_driver_{}", tag));
     let status = Command::new("clang")
         .arg(driver_c_path())
         .arg(ring_c_path())

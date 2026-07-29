@@ -15,10 +15,12 @@ use std::time::Duration;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build_hale(name: &str, source: &str) -> std::path::PathBuf {
     let program = hale_syntax::parse_source(source).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_test_http_resp_{}", name));
+    let bin = harness::unique_bin(&format!("hale_test_http_resp_{}", name));
     build_executable(&program, &bin).expect("build");
     bin
 }

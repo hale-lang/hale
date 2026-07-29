@@ -28,6 +28,9 @@ use hale_codegen::mangle;
 use hale_syntax::ast::{Program, TopDecl};
 use hale_syntax::parse_source;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn fixtures_dir() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.push("tests");
@@ -97,8 +100,7 @@ fn cross_seed_struct_literal_from_bus_deserialized_decimal() {
     let mut renames = intent_renames;
     renames.extend(grease_renames);
 
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_ws1_xseed_bus_decimal_{}", std::process::id()));
+    let bin = harness::unique_bin(&format!("hale_ws1_xseed_bus_decimal_{}", std::process::id()));
     build_executable_with_imports(&consumer_prog, &bin, &renames)
         .expect("build consumer + two libs");
 

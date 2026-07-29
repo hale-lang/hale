@@ -15,10 +15,12 @@
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build_err(src: &str) -> Option<String> {
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale-stream-unaddr-{}", std::process::id()));
+    let bin = harness::unique_bin(&format!("hale-stream-unaddr-{}", std::process::id()));
     match build_executable(&program, &bin) {
         Ok(()) => {
             let _ = std::fs::remove_file(&bin);

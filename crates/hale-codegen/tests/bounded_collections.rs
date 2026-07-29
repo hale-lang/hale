@@ -7,18 +7,12 @@ use std::process::Command;
 use hale_codegen::build_executable;
 use hale_syntax::parse_source;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build_and_run(name: &str, src: &str) -> String {
     let program = parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    static NEXT: std::sync::atomic::AtomicU64 =
-        std::sync::atomic::AtomicU64::new(0);
-    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    bin.push(format!(
-        "hale_bounded_{}_{}_{}",
-        name,
-        std::process::id(),
-        n
-    ));
+    let bin = harness::unique_bin(name);
     build_executable(&program, &bin).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

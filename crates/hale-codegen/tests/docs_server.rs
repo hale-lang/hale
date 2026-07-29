@@ -18,6 +18,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn examples_dir() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.push("tests");
@@ -35,15 +38,7 @@ fn build_docs_server() -> PathBuf {
     let src_path = examples_dir().join("docs-server").join("main.hl");
     let src = std::fs::read_to_string(&src_path).expect("read example");
     let program = hale_syntax::parse_source(&src).expect("parse example");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!(
-        "hale_docs_server_{}_{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
+    let bin = harness::unique_bin("docs_server");
     build_executable(&program, &bin).expect("build example");
     bin
 }
@@ -53,8 +48,7 @@ fn unique_dir(tag: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let mut p = std::env::temp_dir();
-    p.push(format!(
+    let p = harness::unique_bin(&format!(
         "hale_docs_fixture_{}_{}_{}",
         tag,
         std::process::id(),

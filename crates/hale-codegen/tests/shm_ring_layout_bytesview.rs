@@ -18,6 +18,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -37,8 +40,7 @@ fn build_producer() -> PathBuf {
     let mut ring_c = manifest_dir();
     ring_c.push("runtime");
     ring_c.push("lotus_shm_ring.c");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("lotus_{}", unique_tag("producer")));
+    let bin = harness::unique_bin(&format!("lotus_{}", unique_tag("producer")));
     let status = Command::new("clang")
         .arg(&driver_c)
         .arg(&ring_c)
@@ -103,8 +105,7 @@ fn hale_bytesview_subscriber_decodes_heterogeneous_ring() {
     );
 
     let program = hale_syntax::parse_source(&src).expect("parse");
-    let mut consumer_bin = std::env::temp_dir();
-    consumer_bin.push(format!("lotus_{}.bin", unique_tag("consumer")));
+    let consumer_bin = harness::unique_bin(&format!("lotus_{}.bin", unique_tag("consumer")));
     build_executable(&program, &consumer_bin).expect("build consumer");
 
     let producer_bin = build_producer();

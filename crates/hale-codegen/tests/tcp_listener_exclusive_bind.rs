@@ -20,6 +20,9 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn free_tcp_port() -> u16 {
     let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
     l.local_addr().expect("local_addr").port()
@@ -42,8 +45,7 @@ fn second_bind_of_same_port_fails() {
         "#,
     );
     let program = hale_syntax::parse_source(&src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale-listener-exclusive-{}", std::process::id()));
+    let bin = harness::unique_bin(&format!("hale-listener-exclusive-{}", std::process::id()));
     build_executable(&program, &bin).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

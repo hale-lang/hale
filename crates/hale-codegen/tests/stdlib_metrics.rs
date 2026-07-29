@@ -16,6 +16,9 @@ use std::time::Duration;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn pick_free_port() -> u16 {
     let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
     probe.local_addr().expect("local_addr").port()
@@ -52,8 +55,7 @@ fn registry_renders_counter_gauge_histogram() {
         }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_metrics_direct_{}", std::process::id()));
+    let bin = harness::unique_bin(&format!("hale_metrics_direct_{}", std::process::id()));
     build_executable(&program, &bin).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
@@ -98,8 +100,7 @@ fn endpoint_scrapes_through_server_over_tcp() {
     "#
     );
     let program = hale_syntax::parse_source(&src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_metrics_wire_{}", std::process::id()));
+    let bin = harness::unique_bin(&format!("hale_metrics_wire_{}", std::process::id()));
     build_executable(&program, &bin).expect("build");
     let mut child = Command::new(&bin)
         .stdout(std::process::Stdio::piped())

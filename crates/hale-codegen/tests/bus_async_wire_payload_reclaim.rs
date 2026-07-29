@@ -33,6 +33,9 @@ use hale_codegen::build_executable;
 /// exits. The publisher is `pinned`, so every publish crosses a thread
 /// boundary and posts a wire cell that the subscriber's pool worker
 /// materializes — the exact path that leaked.
+#[path = "support/harness.rs"]
+mod harness;
+
 fn flood_src(body_expr: &str, n: u32) -> String {
     format!(
         r#"
@@ -85,8 +88,7 @@ fn flood_src(body_expr: &str, n: u32) -> String {
 
 fn build_and_rss(name: &str, src: &str) -> i64 {
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_bus_async_reclaim_{}", name));
+    let bin = harness::unique_bin(&format!("hale_bus_async_reclaim_{}", name));
     build_executable(&program, &bin).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

@@ -22,6 +22,9 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 #[test]
 fn qualified_stdlib_locus_on_non_main_pool_does_not_starve_main_run() {
     // Same shape as the a downstream app: main locus with a
@@ -65,8 +68,7 @@ fn qualified_stdlib_locus_on_non_main_pool_does_not_starve_main_run() {
         }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push("hale_test_qualified_locus_coop_pool");
+    let bin = harness::unique_bin("hale_test_qualified_locus_coop_pool");
     build_executable(&program, &bin).expect("build");
     // Run with a short timeout via `timeout` — the listener's
     // forever-accept loop on the io pool keeps the program alive

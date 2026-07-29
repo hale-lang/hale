@@ -7,6 +7,9 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 #[test]
 fn failure_reports_earlier_passing_assertions() {
     let src = r#"
@@ -18,8 +21,7 @@ fn failure_reports_earlier_passing_assertions() {
         }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push("hale_test_assert_granularity");
+    let bin = harness::unique_bin("hale_test_assert_granularity");
     build_executable(&program, &bin).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
@@ -42,8 +44,7 @@ fn passing_file_stays_silent() {
         }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push("hale_test_assert_silent");
+    let bin = harness::unique_bin("hale_test_assert_silent");
     build_executable(&program, &bin).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

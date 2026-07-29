@@ -15,10 +15,12 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build_and_run(name: &str, src: &str) -> (String, std::process::ExitStatus) {
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_test_http_server_bus_logging_{}", name));
+    let bin = harness::unique_bin(&format!("hale_test_http_server_bus_logging_{}", name));
     build_executable(&program, &bin).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

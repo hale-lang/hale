@@ -9,6 +9,9 @@ use std::time::Instant;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn examples_dir() -> PathBuf {
     // CARGO_MANIFEST_DIR is `crates/hale-codegen`; the example
     // fixtures live under `tests/fixtures/examples/` inside that
@@ -25,8 +28,7 @@ fn examples_dir() -> PathBuf {
 /// (stdout, status). Caller asserts on the output.
 fn build_and_run(name: &str, source: &str) -> (String, std::process::ExitStatus) {
     let program = hale_syntax::parse_source(source).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("lotus_test_{}", name));
+    let bin = harness::unique_bin(&format!("lotus_test_{}", name));
     build_executable(&program, &bin).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
@@ -382,8 +384,7 @@ fn build_time_sleep_blocks_for_at_least_requested_duration() {
         }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push("lotus_test_time_sleep");
+    let bin = harness::unique_bin("lotus_test_time_sleep");
     build_executable(&program, &bin).expect("build");
 
     let start = Instant::now();
@@ -427,8 +428,7 @@ fn build_time_sleep_in_loop_accumulates() {
         }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push("lotus_test_time_sleep_loop");
+    let bin = harness::unique_bin("lotus_test_time_sleep_loop");
     build_executable(&program, &bin).expect("build");
 
     let start = Instant::now();

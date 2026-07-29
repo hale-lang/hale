@@ -17,6 +17,9 @@ use hale_codegen::build_executable;
 
 // Echo server: responds 200 with the request body it parsed, so the
 // client can observe exactly what the server-side reassembly saw.
+#[path = "support/harness.rs"]
+mod harness;
+
 const ECHO_SERVER: &str = r#"
     locus Echo {
         fn handle(req: std::http::Request) -> std::http::Response {
@@ -42,8 +45,7 @@ fn pick_free_port() -> u16 {
 
 fn build_echo(name: &str) -> PathBuf {
     let program = hale_syntax::parse_source(ECHO_SERVER).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_http_split_write_{}_{}", name, std::process::id()));
+    let bin = harness::unique_bin(&format!("hale_http_split_write_{}_{}", name, std::process::id()));
     build_executable(&program, &bin).expect("build");
     bin
 }

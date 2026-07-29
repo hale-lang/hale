@@ -9,6 +9,9 @@ use std::process::{Command, Stdio};
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn pick_free_port() -> u16 {
     let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
     let port = probe.local_addr().expect("local_addr").port();
@@ -18,8 +21,7 @@ fn pick_free_port() -> u16 {
 
 fn build_hale_binary(name: &str, source: &str) -> std::path::PathBuf {
     let program = hale_syntax::parse_source(source).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_test_recv_into_{}", name));
+    let bin = harness::unique_bin(&format!("hale_test_recv_into_{}", name));
     build_executable(&program, &bin).expect("build");
     bin
 }

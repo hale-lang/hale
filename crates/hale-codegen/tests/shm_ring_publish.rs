@@ -20,6 +20,9 @@ use hale_codegen::build_executable;
 /// `/dev/shm/<name>` (with the leading slash from the name
 /// stripped). Used to confirm the K-cleanup atexit hook
 /// actually shm_unlink'd creator-owned rings.
+#[path = "support/harness.rs"]
+mod harness;
+
 fn shm_object_exists(shm_name: &str) -> bool {
     let stripped = shm_name.trim_start_matches('/');
     PathBuf::from(format!("/dev/shm/{}", stripped)).exists()
@@ -46,8 +49,7 @@ fn build_reader(tag: &str) -> PathBuf {
     ring_c.push("runtime");
     ring_c.push("lotus_shm_ring.c");
 
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("lotus_shm_ring_reader_{}", tag));
+    let bin = harness::unique_bin(&format!("lotus_shm_ring_reader_{}", tag));
     let status = Command::new("clang")
         .arg(&driver)
         .arg(&ring_c)
@@ -112,8 +114,7 @@ fn hale_publisher_routes_through_shm_ring() {
     );
 
     let program = hale_syntax::parse_source(&hale_src).expect("parse");
-    let mut publisher_bin = std::env::temp_dir();
-    publisher_bin.push(format!("lotus_shm_pub_{}.bin", tag));
+    let publisher_bin = harness::unique_bin(&format!("lotus_shm_pub_{}.bin", tag));
     build_executable(&program, &publisher_bin).expect("build publisher");
 
     let reader_bin = build_reader(&tag);
@@ -194,8 +195,7 @@ fn shm_object_unlinked_on_clean_exit() {
         slot_count = slot_count,
     );
     let program = hale_syntax::parse_source(&hale_src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("lotus_shm_unlink_{}.bin", tag));
+    let bin = harness::unique_bin(&format!("lotus_shm_unlink_{}.bin", tag));
     build_executable(&program, &bin).expect("build");
 
     // Pre-condition: name doesn't exist yet (unique per test).

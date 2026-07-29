@@ -81,3 +81,6 @@ experiments/token-efficiency/.todo_storage*
 # (per CLAUDE.md: no planning/status/progress markdown in-tree).
 HANDOFF-*.md
 UPSTREAM*.md
+
+# Agent worktrees (transient; can hold root-owned build artifacts)
+.claude/worktrees/

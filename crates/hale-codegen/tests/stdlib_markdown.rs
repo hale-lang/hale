@@ -9,6 +9,9 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn render(source_md: &str) -> String {
     // Each test compiles a tiny Hale program that calls
     // std::text::md_to_html on the supplied markdown and
@@ -29,15 +32,7 @@ fn render(source_md: &str) -> String {
         escaped
     );
     let program = hale_syntax::parse_source(&src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!(
-        "hale_md_test_{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
+    let bin = harness::unique_bin("stdlib_markdown");
     build_executable(&program, &bin).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

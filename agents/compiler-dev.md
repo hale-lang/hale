@@ -185,11 +185,13 @@ After non-trivial changes:
 
 ```sh
 cargo build --release
-cargo test --release --workspace -- --test-threads=1
+cargo nextest run --release --workspace
 ```
 
-The serial flag avoids "text file busy" flakes from parallel
-builds racing each other on the same temp binary path. Phase-2
+Parallel is correct here: every test's compiled binary goes to a
+collision-proof path via `harness::unique_bin`, enforced by
+`harness_paths_are_unique.rs`. The `--test-threads=1` this used
+to require was working around hand-rolled temp paths. Phase-2
 topic tests (`crates/hale-codegen/tests/topic_phase2.rs`) and
 the examples-parse acceptance test
 (`crates/hale-syntax/tests/examples.rs`) are the broadest

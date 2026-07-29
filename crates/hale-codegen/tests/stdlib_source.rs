@@ -9,17 +9,18 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build_hale(name: &str, source: &str) -> std::path::PathBuf {
     let program = hale_syntax::parse_source(source).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_test_stdlib_source_{}", name));
+    let bin = harness::unique_bin(&format!("hale_test_stdlib_source_{}", name));
     build_executable(&program, &bin).expect("build");
     bin
 }
 
 fn make_fixture(test_name: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
-    let mut dir = std::env::temp_dir();
-    dir.push(format!("hale_test_source_walk_{}", test_name));
+    let dir = harness::unique_bin(&format!("hale_test_source_walk_{}", test_name));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create fixture dir");
     for (name, body) in files {

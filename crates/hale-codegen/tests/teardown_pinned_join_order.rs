@@ -21,10 +21,12 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build_and_count(tag: &str, src: &str) -> usize {
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_teardown_join_{}_{}", tag, std::process::id()));
+    let bin = harness::unique_bin(&format!("hale_teardown_join_{}_{}", tag, std::process::id()));
     build_executable(&program, &bin).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

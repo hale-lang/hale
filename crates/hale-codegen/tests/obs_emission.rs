@@ -17,14 +17,16 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 #[path = "support/obs.rs"]
 mod obs;
 use obs::{obs_bus_locus, read_u32, read_u64};
 
 fn build(name: &str, src: &str) -> PathBuf {
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_test_obs_{}", name));
+    let bin = harness::unique_bin(&format!("hale_test_obs_{}", name));
     build_executable(&program, &bin).expect("build");
     bin
 }

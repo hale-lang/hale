@@ -17,6 +17,9 @@ use std::time::{Duration, Instant};
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn pick_free_port() -> u16 {
     let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
     l.local_addr().expect("local_addr").port()
@@ -24,8 +27,7 @@ fn pick_free_port() -> u16 {
 
 fn build(name: &str, src: &str) -> std::path::PathBuf {
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!(
+    let bin = harness::unique_bin(&format!(
         "hale_async_recv_into_park_{}_{}",
         name,
         std::process::id()

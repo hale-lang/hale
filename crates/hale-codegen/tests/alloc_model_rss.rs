@@ -22,6 +22,9 @@ use std::process::Command;
 use hale_codegen::build_executable;
 use hale_types::alloc_summary::{summarize_programs, SiteVerdict};
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn model_has_unbounded_site(src: &str) -> bool {
     let program = hale_syntax::parse_source(src).expect("parse");
     let summary = summarize_programs(&[&program]);
@@ -34,8 +37,7 @@ fn model_has_unbounded_site(src: &str) -> bool {
 
 fn build_and_rss(name: &str, src: &str) -> i64 {
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_alloc_rss_{}", name));
+    let bin = harness::unique_bin(&format!("hale_alloc_rss_{}", name));
     build_executable(&program, &bin).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

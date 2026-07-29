@@ -27,13 +27,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn unique_path(tag: &str, ext: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let mut p = std::env::temp_dir();
-    p.push(format!("lt-nopin-{}-{}-{}.{}", tag, std::process::id(), nanos, ext));
+    let p = harness::unique_bin(&format!("lt-nopin-{}-{}-{}.{}", tag, std::process::id(), nanos, ext));
     p
 }
 

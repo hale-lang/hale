@@ -7,13 +7,12 @@
 use hale_codegen::build_executable;
 use hale_syntax::parse_source;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn ir_for(src: &str) -> String {
     let program = parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    static NEXT: std::sync::atomic::AtomicU64 =
-        std::sync::atomic::AtomicU64::new(0);
-    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    bin.push(format!("hale_noalias_{}_{}", std::process::id(), n));
+    let bin = harness::unique_bin("noalias_self");
     std::env::set_var("LOTUS_DUMP_IR", "1");
     build_executable(&program, &bin).expect("build");
     std::env::remove_var("LOTUS_DUMP_IR");

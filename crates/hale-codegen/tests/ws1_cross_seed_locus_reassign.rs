@@ -25,6 +25,9 @@ use hale_codegen::mangle;
 use hale_syntax::ast::{Program, TopDecl};
 use hale_syntax::parse_source;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn fixtures_dir() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.push("tests");
@@ -84,8 +87,7 @@ fn cross_seed_nested_locus_param_whole_reassignment_is_fully_initialized() {
     let (conn_items, renames) = resolve_and_mangle_lib(&conn_dir, "wsx");
     consumer_prog.items.extend(conn_items);
 
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_ws1_xseed_reassign_{}", std::process::id()));
+    let bin = harness::unique_bin(&format!("hale_ws1_xseed_reassign_{}", std::process::id()));
     build_executable_with_imports(&consumer_prog, &bin, &renames)
         .expect("build consumer + lib");
 

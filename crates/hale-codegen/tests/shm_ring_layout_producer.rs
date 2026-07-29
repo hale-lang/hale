@@ -24,6 +24,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn unique_tag(label: &str) -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -97,8 +100,7 @@ fn hale_producer_roundtrips_through_foreign_layout() {
     );
 
     let program = hale_syntax::parse_source(&src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("lotus_{}.bin", unique_tag("bin")));
+    let bin = harness::unique_bin(&format!("lotus_{}.bin", unique_tag("bin")));
     build_executable(&program, &bin).expect("build");
 
     let out = Command::new(&bin).output().expect("run");

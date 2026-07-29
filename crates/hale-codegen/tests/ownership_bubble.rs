@@ -30,10 +30,12 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build_named(name: &str, src: &str) -> std::path::PathBuf {
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_test_ownership_bubble_{}", name));
+    let bin = harness::unique_bin(&format!("hale_test_ownership_bubble_{}", name));
     build_executable(&program, &bin).expect("build");
     bin
 }

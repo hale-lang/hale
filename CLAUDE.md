@@ -17,16 +17,26 @@ apply:
 
 ```sh
 cargo build --release
-cargo test --release --workspace -- --test-threads=1
+cargo nextest run --release --workspace
 ```
 
-The serial flag avoids "text file busy" flakes from parallel
-test binaries racing each other on the same temp path. Keep it
-on single-crate runs too:
+**Run the suite in parallel.** It used to require
+`--test-threads=1` because ~131 test files wrote their compiled
+binary to a temp path with no uniquifier (mostly
+`temp_dir()/lotus_test_{name}`), so two tests could race on one
+path — "text file busy", or worse, a test silently executing
+another test's binary.
+
+That is fixed structurally: every test builds through
+`harness::unique_bin` (pid + process-local counter), and
+`harness_paths_are_unique.rs` fails the build if a new test
+rolls its own. Ports come from `harness::free_port()` rather
+than the hand-maintained 57xxx/47xxx registry. Serial runs still
+work, they are just slower and no longer buy anything:
 
 ```sh
 # one integration test in hale-codegen
-cargo test --release -p hale-codegen --test topic_phase2 -- --test-threads=1
+cargo test --release -p hale-codegen --test topic_phase2
 ```
 
 Codegen requires **LLVM 18** dev libs with `llvm-config-18` on

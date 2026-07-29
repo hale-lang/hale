@@ -9,6 +9,9 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build(name: &str, src: &str) -> std::path::PathBuf {
     use std::time::{SystemTime, UNIX_EPOCH};
     let program = hale_syntax::parse_source(src).expect("parse");
@@ -16,8 +19,7 @@ fn build(name: &str, src: &str) -> std::path::PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let mut bin = std::env::temp_dir();
-    bin.push(format!(
+    let bin = harness::unique_bin(&format!(
         "hale_test_recpool_{}_{}_{}",
         name,
         std::process::id(),

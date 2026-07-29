@@ -16,10 +16,12 @@ use hale_codegen::build_executable;
 /// Build, run, and read `final_rss_mb=` from stdout (MB). Panics if the
 /// program crashes or never prints the line — which also asserts the flood
 /// ran to completion (the line is only printed once the count reaches N).
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build_and_rss(name: &str, src: &str) -> i64 {
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_bus_bp_{}", name));
+    let bin = harness::unique_bin(&format!("hale_bus_bp_{}", name));
     build_executable(&program, &bin).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

@@ -11,10 +11,12 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build_and_run(name: &str, src: &str) -> (String, std::process::ExitStatus) {
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!(
+    let bin = harness::unique_bin(&format!(
         "hale_test_str_esc_{}_{}",
         name,
         std::process::id()
@@ -119,8 +121,7 @@ fn unresolved_callee_ident_suggests_close_match() {
         }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!(
+    let bin = harness::unique_bin(&format!(
         "hale_test_typo_diag_{}",
         std::process::id()
     ));

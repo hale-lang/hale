@@ -25,6 +25,9 @@ use hale_codegen::build_executable;
 use hale_syntax::{parse_source, ast::*};
 use hale_syntax::desugar::desugar_topics;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn parse(src: &str) -> Program {
     parse_source(src).expect("parse")
 }
@@ -154,8 +157,7 @@ fn desugar_rewrites_topic_refs_to_literals() {
 
 fn build(name: &str, src: &str) -> std::path::PathBuf {
     let program = parse(src);
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_test_topic_{}", name));
+    let bin = harness::unique_bin(&format!("hale_test_topic_{}", name));
     build_executable(&program, &bin).expect("build");
     bin
 }

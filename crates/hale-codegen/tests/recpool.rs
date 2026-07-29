@@ -11,6 +11,9 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -35,8 +38,7 @@ fn build_driver(tag: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let mut bin = std::env::temp_dir();
-    bin.push(format!(
+    let bin = harness::unique_bin(&format!(
         "hale_recpool_driver_{}_{}_{}",
         tag,
         std::process::id(),

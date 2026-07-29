@@ -129,7 +129,7 @@ file busy" flakes from parallel test binaries racing on the same
 temp path):
 
 ```sh
-cargo test --release --workspace -- --test-threads=1
+cargo nextest run --release --workspace
 ```
 
 ## The two ways to run a program
