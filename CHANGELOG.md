@@ -6,6 +6,20 @@ behavior.
 
 ---
 
+## Unreleased
+
+- **BUS record w1 packed per PROTOCOL §8** (iris handoff-7 — the
+  one-liner). `BUS_PUBLISH`/`BUS_DELIVER` emitted `locus` in bits
+  0..19 with seq shifted high; the protocol (and every consumer)
+  puts **locus in bits 44..63, seq low**. Attribution has been
+  computed correctly since handoff-6 and packed unreadably —
+  consumers decoded `w1 >> 44` and read the top of a small seq
+  → 0. Both probes now pack `locus:20 << 44 | seq:44`, and the
+  contract tests vendor protocol.h's decode
+  (`obs_bus_locus = w1 >> 44`) instead of the emitter's own
+  layout, closing the self-consistent-but-wrong loophole that
+  kept them green.
+
 ## v0.11.20 — iris handoff-6: constructor-resolved obs gate, marked adapter inbound (2026-07-29)
 
 iris handoff-6 (P17/P19 — attribution in the field).
