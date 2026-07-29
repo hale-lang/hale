@@ -353,6 +353,7 @@ impl Parser {
         let mut export_locus = false;
         let mut bounded_locus = false;
         let mut phase_effects: Option<PhaseEffects> = None;
+        let mut supervised_locus = false;
         let mut leading_span: Option<Span> = None;
         loop {
             if !matches!(self.peek(), TokenKind::At) {
@@ -373,6 +374,9 @@ impl Parser {
             // on a locus — effects indexed by lifecycle phase.
             let is_phase_effects = matches!(&kind_tok,
                 TokenKind::Ident(s) if s == "phase_effects");
+            // GH #265: `@supervised locus` — supervision coverage.
+            let is_supervised = matches!(&kind_tok,
+                TokenKind::Ident(s) if s == "supervised");
             let is_unbounded =
                 matches!(&kind_tok, TokenKind::Ident(s) if s == "unbounded");
             let is_budget =
@@ -446,6 +450,16 @@ impl Parser {
                 let mut fn_decl = self.parse_fn_decl_with_ffi(Some(ffi.clone()), false)?;
                 fn_decl.span = ffi.span.merge(fn_decl.span);
                 return Ok(TopDecl::Fn(fn_decl));
+            }
+            if is_supervised {
+                let at = self.expect(TokenKind::At, "@")?;
+                self.bump();
+                supervised_locus = true;
+                leading_span = Some(match leading_span {
+                    Some(s) => s.merge(at.span),
+                    None => at.span,
+                });
+                continue;
             }
             if is_phase_effects {
                 if phase_effects.is_some() {
@@ -650,7 +664,7 @@ impl Parser {
             ));
         }
         if form.is_some() || locality.is_some() || export_locus || bounded_locus
-            || phase_effects.is_some()
+            || phase_effects.is_some() || supervised_locus
         {
             // Verify a `locus` (or contextual `main locus`)
             // follows.
@@ -675,6 +689,7 @@ impl Parser {
             locus.export = export_locus;
             locus.bounded = bounded_locus;
             locus.phase_effects = phase_effects;
+            locus.supervised = supervised_locus;
             return Ok(TopDecl::Locus(locus));
         }
         match self.peek() {
@@ -1298,6 +1313,12 @@ impl Parser {
                         items.push(s.clone());
                         self.bump();
                     }
+                    // `publish` is a bus keyword elsewhere; inside an
+                    // `@effects` set it is the effect-class name.
+                    TokenKind::Publish => {
+                        items.push("publish".to_string());
+                        self.bump();
+                    }
                     _ => {
                         return Err(Diag::parse(
                             t.span,
@@ -1334,12 +1355,27 @@ impl Parser {
                 "publish" => {
                     out.push(EffectAssert::PublishSet(items));
                 }
+                "causes" => {
+                    let mut classes = Vec::new();
+                    for it in &items {
+                        match EffectClass::from_ident(it) {
+                            Some(c) => classes.push(c),
+                            None => {
+                                return Err(Diag::parse(
+                                    key_tok.span,
+                                    format!("unknown effect class `{}`", it),
+                                ))
+                            }
+                        }
+                    }
+                    out.push(EffectAssert::Causes(classes));
+                }
                 _ => {
                     return Err(Diag::parse(
                         key_tok.span,
                         format!(
-                            "unknown `@effects` key `{}` — expected `none:` \
-                             or `publish:`",
+                            "unknown `@effects` key `{}` — expected \
+                             `none:`, `publish:`, or `causes:`",
                             key
                         ),
                     ))
@@ -1724,6 +1760,7 @@ impl Parser {
         }
         Ok(LocusDecl {
             phase_effects: None,
+            supervised: false,
             name,
             is_main,
             export: false,
@@ -3547,6 +3584,15 @@ impl Parser {
     }
 
     fn parse_param(&mut self) -> Result<Param, Diag> {
+        // GH #265: `@secret name: T` — taint the parameter.
+        let mut secret = false;
+        if matches!(self.peek(), TokenKind::At)
+            && matches!(self.peek_at(1), TokenKind::Ident(s) if s == "secret")
+        {
+            self.bump();
+            self.bump();
+            secret = true;
+        }
         let name = self.expect_ident("parameter name")?;
         self.expect(TokenKind::Colon, ":")?;
         let ty = self.parse_type_expr()?;
@@ -3560,6 +3606,7 @@ impl Parser {
             name,
             ty,
             default,
+            secret,
             span,
         })
     }

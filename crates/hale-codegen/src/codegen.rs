@@ -10748,6 +10748,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .collect();
         Ok(LocusDecl {
             phase_effects: None,
+            supervised: false,
             name: Ident {
                 name: mangled_name.to_string(),
                 span: template.name.span.clone(),
@@ -10826,6 +10827,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             name: p.name.clone(),
                             ty: Self::substitute_type_expr(&p.ty, subst),
                             default: p.default.clone(),
+                            secret: false,
                             span: p.span.clone(),
                         })
                         .collect(),
@@ -10850,6 +10852,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         name: p.name.clone(),
                         ty: Self::substitute_type_expr(&p.ty, subst),
                         default: p.default.clone(),
+                        secret: false,
                         span: p.span.clone(),
                     })
                     .collect(),
@@ -11086,6 +11089,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 name: p.name.clone(),
                 ty: Self::substitute_type_expr(&p.ty, &subst),
                 default: p.default.clone(),
+                secret: false,
                 span: p.span.clone(),
             })
             .collect();

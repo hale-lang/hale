@@ -606,6 +606,9 @@ They attach to the declaration that follows.
 | `@budget(alloc_per_call = N, stack_bytes = N, block_points = N, publish = N, fanout = N)` | fn | quantitative budgets, comma-separated |
 | `@effects(none: {…})` | fn | forbid effect classes, checked transitively |
 | `@phase_effects(phase: {…}, …)` | locus | per-lifecycle-phase effect contract |
+| `@effects(causes: {…})` | fn | effect classes this fn may cause via bus edges |
+| `@supervised` | locus | every locus in the subtree has a failure policy |
+| `@secret` | fn param | the value must not reach a publish or log/file sink |
 | `@effects(publish: {…})` | fn | the allowed publish set |
 | `@no_syscall` `@no_block` `@no_ffi` `@no_publish` `@no_spawn` `@no_recursion` `@deterministic` | fn | sugar for the `@effects(none: …)` forms |
 | `@no_panic` | fn | no reachable trap (disposition coverage — a different analysis) |

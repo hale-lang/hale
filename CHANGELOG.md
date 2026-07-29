@@ -90,6 +90,26 @@ behavior.
   34 effect tests across four suites; spec, book, and the annotation
   inventory updated.
 
+- **GH #265 frontier items — the deferred set, delivered.**
+  - **Cross-actor causality** (`@effects(causes: {…})`): the call
+    graph stops at a publish, the bus graph continues. Publishing to
+    a subject whose subscriber writes a file *causes* a syscall, and
+    the diagnostic names the path (`Api::handle -> subject Orders ->
+    Audit::on_order`). Checkable only because Hale's message graph is
+    declared over a closed topic set.
+  - **Supervision coverage** (`@supervised`): every locus in a
+    subtree must have a failure policy in scope; uncovered loci are
+    named. A tree walk over the declared ownership tree.
+  - **Coarse secret taint** (`@secret` params): a secret must not
+    reach a bus publish or a log/file sink. Parameter-granular by
+    design — the honest reach, and enough to catch a key in a log
+    line.
+  - **Inferred effect sets + symbolic cost**: `infer_effects`
+    computes any fn's transitive effect set with no declaration
+    (feeding causality and the manifest's inferred column);
+    `cost_expression` renders a structural `O(n^k)` estimate —
+    explicitly not WCET.
+
 ## v0.11.22 — iris handoff-8: adapter ingest lit + the refactor batch (2026-07-29)
 
 - **The adapter ingest path carries the full observation trio**

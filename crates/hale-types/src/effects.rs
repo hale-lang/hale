@@ -397,6 +397,13 @@ pub fn effect_diags(programs: &[&Program]) -> Vec<Diag> {
                 EffectAssert::NoPanic => {
                     check_no_panic(programs, key, *span, &mut diags);
                 }
+                EffectAssert::Causes(classes) => {
+                    // Cross-actor causality needs the bus graph;
+                    // effect_diags is graph-free, so the check runs
+                    // in `check.rs` where the graph is built (see
+                    // `frontier::causes_diags`). Nothing to do here.
+                    let _ = classes;
+                }
             }
         }
     }
@@ -790,6 +797,11 @@ pub fn effect_manifest(programs: &[&Program]) -> Vec<EffectManifestRow> {
                 }
                 EffectAssert::NoPanic => {
                     forbids.push("panic".to_string());
+                }
+                EffectAssert::Causes(cs) => {
+                    for c in cs {
+                        forbids.push(format!("causes:{}", c.as_str()));
+                    }
                 }
             }
         }

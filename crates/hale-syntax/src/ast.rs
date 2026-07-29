@@ -316,6 +316,10 @@ pub struct LocusDecl {
     pub bounded: bool,
     /// GH #265 step 6: `@phase_effects(...)` on this locus.
     pub phase_effects: Option<PhaseEffects>,
+    /// GH #265: `@supervised` — every locus in this subtree must
+    /// have a failure policy in scope. Supervision coverage as a
+    /// checked property.
+    pub supervised: bool,
     pub members: Vec<LocusMember>,
     pub span: Span,
 }
@@ -1584,6 +1588,10 @@ pub enum EffectAssert {
     /// publish to any subject outside the set is a violation; the
     /// closed topic set makes this exact.
     PublishSet(Vec<String>),
+    /// `@effects(causes: {…})` — the effect classes this fn may
+    /// cause ANYWHERE, following bus edges into subscribers. Reaches
+    /// past the call graph because the message graph is declared.
+    Causes(Vec<EffectClass>),
     /// `@no_panic` — no reachable path can trap. Deliberately NOT an
     /// `EffectClass`: this is a different analysis (disposition
     /// coverage + trap-op selection over the fn's own body and its
@@ -1673,6 +1681,11 @@ pub struct Param {
     pub name: Ident,
     pub ty: TypeExpr,
     pub default: Option<Expr>,
+    /// GH #265: `@secret name: T` — the value must not reach a bus
+    /// publish or a log/file sink. Coarse (parameter-granular)
+    /// taint; the choke-pointed sinks make it catch the real
+    /// mistake (a key or token in a log line).
+    pub secret: bool,
     pub span: Span,
 }
 

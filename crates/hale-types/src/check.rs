@@ -430,6 +430,11 @@ pub fn check_bundle(
                     .map(|si| si.subscribers.len().max(1) as u64)
                     .unwrap_or(1)
             };
+            // GH #265 frontier: cross-actor causality (needs the
+            // bus graph), supervision coverage, and secret taint.
+            diags.extend(crate::frontier::causes_diags(&programs_vec, &graph));
+            diags.extend(crate::frontier::supervised_diags(&programs_vec));
+            diags.extend(crate::frontier::secret_taint_diags(&programs_vec));
             diags.extend(crate::quantitative::quantitative_diags(
                 &programs_vec,
                 &fanout,
