@@ -6,6 +6,30 @@ behavior.
 
 ---
 
+## Unreleased
+
+Crumb batch-5 (UPSTREAM5.md).
+
+- **`std::time::sleep` parks on `async_io` pools** (batch-5
+  item 1). Sleep blocked the pool's single worker in nanosleep, so
+  N sleeping coros serialized (400/800/1200ms instead of all
+  waking at ~400ms) and one sleeping handler held the pool against
+  unrelated requests (a JS `await sleep(400)` turned an unrelated
+  `GET /` into 329ms) — invisible until concurrency made it
+  latency. On an async_io pool sleep now parks the coroutine on a
+  deadline (timer-only park, no fd; the drain loop's existing
+  deadline sweep services it), yielding the worker for the full
+  duration. Off async pools the classic chunked-nanosleep +
+  per-slice bus drain is unchanged. All three repro waiters wake
+  at ~401ms; regression-locked.
+
+- **`runtime/stdlib/README.md`** (batch-5 item 2): the stdlib
+  directory now documents the namespaces that exist only as
+  compiler builtins (`std::crypto`, `std::str`, `std::math`,
+  `std::time`, `std::text::base64`, …) and have no `.hl` file —
+  the exact search that finds every other module found nothing for
+  them, which twice read downstream as "doesn't exist".
+
 ## v0.11.18 — Crumb batch-4 + iris handoff-5: teardown join order, direct-flavor obs, replay heartbeat, json keys (2026-07-28)
 
 Crumb batch-4 (UPSTREAM4.md) + iris handoff-5, delivered together.

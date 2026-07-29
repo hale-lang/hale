@@ -877,6 +877,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.context.void_type().fn_type(&[], false),
             None,
         );
+        // Crumb batch-5 item 1 — async_io sleep park:
+        // declare i64 @lotus_time_sleep_park_try(i64 ns)
+        // 1 = slept via a timer-only coro park (async_io context);
+        // 0 = not applicable, caller runs the classic chunked
+        // nanosleep lowering.
+        self.module.add_function(
+            "lotus_time_sleep_park_try",
+            i64_t2.fn_type(&[i64_t2.into()], false),
+            None,
+        );
         // GH #255 phase 2 — bounded topics:
         // declare void @lotus_bus_set_sub_bound(ptr subject, ptr self,
         //     i64 shed_bound, i64 shed_policy, i64 refuse_bound)

@@ -264,9 +264,43 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
         let drain_bb = self.context.append_basic_block(func, "sleep.drain");
         let done_bb = self.context.append_basic_block(func, "sleep.done");
 
-        self.builder
-            .build_unconditional_branch(chunk_bb)
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // Crumb batch-5 item 1 (2026-07-28): on a `where async_io`
+        // pool, sleep must PARK the coro (deadline, no fd) instead
+        // of blocking the shared worker in nanosleep — N sleeping
+        // coros were serializing (400/800/1200ms instead of all
+        // waking at ~400ms), and one sleeping handler held the pool
+        // against unrelated requests. The C preflight parks and
+        // returns 1 in an async coro context; 0 falls through to
+        // the classic chunked-nanosleep + per-slice bus drain below
+        // (main-thread starvation semantics unchanged). While a
+        // coro is parked the worker keeps draining cells, so the
+        // async path needs no slicing at all.
+        {
+            let park_try = self
+                .module
+                .get_function("lotus_time_sleep_park_try")
+                .expect("lotus_time_sleep_park_try declared");
+            let parked = self
+                .builder
+                .build_call(park_try, &[ns.into()], "sleep.park.try")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("returns i64")
+                .into_int_value();
+            let did_park = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::NE,
+                    parked,
+                    zero64,
+                    "sleep.parked",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_conditional_branch(did_park, done_bb, chunk_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
 
         // chunk_bb (loop header): chunk = clamp(min(remaining, 100ms), 0);
         // store req from chunk; branch into the EINTR sleep loop.

@@ -708,7 +708,12 @@ arena the sibling has since torn down. Every blocking-recv
 primitive on the pool honors invariant (1) by parking rather than
 blocking `recvfrom`/`read` (the `std::io::udp` recv family joined
 the `tcp`/`tls` siblings here in the 2026-07-15 downstream
-handoff).
+handoff, and `std::time::sleep` joined them 2026-07-28 (Crumb
+batch-5) via a timer-only park — a deadline with no fd, serviced
+by the same expiry sweep — so sleeping coros overlap on one
+worker and a `sleep` inside a handler never blocks the pool; the
+timer half of an event loop now costs what the design always
+claimed).
 
 Each bus delivery to a subscriber on an `async_io` pool runs its
 handler on a coroutine (a struct + a 64 KiB stack). Rather than
