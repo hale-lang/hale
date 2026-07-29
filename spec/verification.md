@@ -281,6 +281,43 @@ assume the others in a build:
   what it buys today is that an effect **regression** — a handler
   that quietly lost a contract — shows up as a one-line diff in
   review, the way an API break shows in a `.d.ts` diff.
+- **Cross-actor causality — `@effects(causes: {…})`** (GH #265,
+  2026-07-29). The call graph stops at a publish; the **bus graph
+  continues**. Because Hale's message graph is declared over a closed
+  topic set, "this handler, by publishing `orders`, can transitively
+  cause a filesystem write in the audit subscriber" is a checkable
+  property — the compiler walks publish sites → subject → each
+  subscriber's inferred effect set. The diagnostic names the causal
+  path (`Api::handle -> subject Orders -> Audit::on_order`). Only
+  effects reached THROUGH the bus are reported; direct effects are
+  the `none:` form's job. Actor systems without a declared message
+  graph structurally cannot offer this.
+- **Supervision coverage — `@supervised`** (GH #265, 2026-07-29). A
+  locus marked `@supervised` asserts that every locus in its subtree
+  has a failure policy in scope — an `on_failure` on itself or an
+  ancestor. A locus with children and no policy above it is reported
+  by name: a failure there has nowhere to go. The declared ownership
+  tree makes this a tree walk; it is the static supervision-coverage
+  property the actor world has wanted for decades.
+- **Coarse secret taint — `@secret` params** (GH #265, 2026-07-29).
+  A parameter declared `@secret name: T` must not reach a bus publish
+  or a log / file sink. Deliberately **coarse** — parameter-granular,
+  not value-flow-complete — which the issue asked be assessed rather
+  than deferred to a "v2 horizon"; the choke-pointed sinks make even
+  this catch the mistake that matters (a key or token in a log line
+  or on the wire). Constant-time / full information flow remains out
+  of scope: value-dependent control flow and microarchitecture are a
+  different shape of analysis.
+- **Inferred effect sets + symbolic cost** (GH #265, 2026-07-29).
+  `frontier::infer_effects` computes the transitive effect set of ANY
+  fn — no declaration required — which is what feeds the causality
+  check and lets the `.hale.effects` manifest report inferred sets
+  alongside declared contracts. (Effect rows on function *types*
+  remain the deferred slippery slope; a manifest is a report, not a
+  type.) `cost_expression` renders a structural cost —
+  `O(n^k)` in nesting depth with a step estimate — explicitly **not
+  WCET**: the first-filter triage shape, meaningful only for a fn
+  already proven bounded.
 - **Placement-implied contracts — the assertion you don't write**
   (GH #265, 2026-07-29). A locus placed
   `cooperative(pool = X) where async_io` shares that pool's single
