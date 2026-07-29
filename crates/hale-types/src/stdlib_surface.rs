@@ -1,6 +1,15 @@
 //! Typecheck M3 stage 1 (2026-07-02): the stdlib path-call NAME
 //! surface — typo detection for `std::<ns>::<fn>(...)` calls.
 //!
+//! R2 (2026-07-29): this table is becoming THE stdlib registry —
+//! the single row per fn that the four parallel structures (this
+//! surface, `signature_for`, the codegen dispatch arms, the docs)
+//! converge on. Each entry now carries an [`EffectSet`] column:
+//! the classified frontier #265's effect assertions query. Every
+//! entry starts `UNCLASSIFIED`; #265 step 4 classifies the
+//! surface, after which an unclassified entry becomes a build
+//! error (the "frontier stays true forever" discipline).
+//!
 //! Names only, deliberately: a wrong name entry here produces a
 //! cheap, obvious false "unknown stdlib function" that's fixed by
 //! adding the name; a wrong SIGNATURE entry (stage 2) produces an
@@ -157,14 +166,58 @@ impl FnSig {
 }
 
 /// One namespace's accepted surface.
+/// R2/#265: one effect-class bitmask per stdlib fn — the leaf
+/// lattice of the effect-assertion engine (`crate::callgraph`).
+/// Const-constructible so the registry stays a static table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectSet(pub u32);
+
+impl EffectSet {
+    pub const PURE: EffectSet = EffectSet(0);
+    pub const SYSCALL: EffectSet = EffectSet(1 << 0);
+    pub const BLOCK: EffectSet = EffectSet(1 << 1);
+    pub const PUBLISH: EffectSet = EffectSet(1 << 2);
+    pub const TIME: EffectSet = EffectSet(1 << 3);
+    pub const ENTROPY: EffectSet = EffectSet(1 << 4);
+    pub const ENV: EffectSet = EffectSet(1 << 5);
+    pub const ALLOC: EffectSet = EffectSet(1 << 6);
+    /// Not yet classified (#265 step 4 turns the surface; until
+    /// then queries must treat this as "may do anything").
+    pub const UNCLASSIFIED: EffectSet = EffectSet(u32::MAX);
+
+    pub const fn union(self, o: EffectSet) -> EffectSet {
+        EffectSet(self.0 | o.0)
+    }
+    pub fn contains(self, o: EffectSet) -> bool {
+        (self.0 & o.0) == o.0
+    }
+    pub fn is_unclassified(self) -> bool {
+        self.0 == u32::MAX
+    }
+}
+
+/// One registry row: the fn name plus its effect classification.
+#[derive(Debug, Clone, Copy)]
+pub struct FnEntry {
+    pub name: &'static str,
+    pub effects: EffectSet,
+}
+
+/// Row constructor for the (current) unclassified default — keeps
+/// the table visually close to the old bare-name lists.
+const fn f(name: &'static str) -> FnEntry {
+    FnEntry { name, effects: EffectSet::UNCLASSIFIED }
+}
+
 pub struct NsSurface {
     /// Path segments after `std` identifying the namespace
     /// (e.g. `["io", "fs"]` for `std::io::fs`). Longest match wins,
     /// so `std::io::fs` shadows a hypothetical `std::io` table for
     /// three-segment paths.
     pub ns: &'static [&'static str],
-    /// Accepted function names within the namespace.
-    pub fns: &'static [&'static str],
+    /// Accepted functions within the namespace (name + effect
+    /// classification).
+    pub fns: &'static [FnEntry],
     /// Prefixes the dispatch accepts open-endedly (rare). A name
     /// starting with one of these passes without being listed.
     pub open_prefixes: &'static [&'static str],
@@ -251,280 +304,280 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["bus"],
         fns: &[
-            "__local_dispatch",
+            f("__local_dispatch"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["bytes"],
         fns: &[
-            "__is_alloc_fail", "at", "clone", "concat", "find_byte",
-            "from_int", "from_string", "read_f32_le", "read_f64_be",
-            "read_f64_le", "read_i16_be", "read_i16_le", "read_i32_be",
-            "read_i32_le", "read_i64_be", "read_i64_le", "read_i8",
-            "read_u16_be", "read_u16_le", "read_u32_be", "read_u32_le",
-            "read_u64_be", "read_u64_le", "read_u8", "slice",
-            "write_f32_le", "write_f64_be", "write_f64_le", "write_i16_be",
-            "write_i16_le", "write_i32_be", "write_i32_le", "write_i64_be",
-            "write_i64_le", "write_i8", "write_u16_be", "write_u16_le",
-            "write_u32_be", "write_u32_le", "write_u64_be", "write_u64_le",
-            "write_u8",
+            f("__is_alloc_fail"), f("at"), f("clone"), f("concat"), f("find_byte"),
+            f("from_int"), f("from_string"), f("read_f32_le"), f("read_f64_be"),
+            f("read_f64_le"), f("read_i16_be"), f("read_i16_le"), f("read_i32_be"),
+            f("read_i32_le"), f("read_i64_be"), f("read_i64_le"), f("read_i8"),
+            f("read_u16_be"), f("read_u16_le"), f("read_u32_be"), f("read_u32_le"),
+            f("read_u64_be"), f("read_u64_le"), f("read_u8"), f("slice"),
+            f("write_f32_le"), f("write_f64_be"), f("write_f64_le"), f("write_i16_be"),
+            f("write_i16_le"), f("write_i32_be"), f("write_i32_le"), f("write_i64_be"),
+            f("write_i64_le"), f("write_i8"), f("write_u16_be"), f("write_u16_le"),
+            f("write_u32_be"), f("write_u32_le"), f("write_u64_be"), f("write_u64_le"),
+            f("write_u8"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["bytes", "builder"],
         fns: &[
-            "__append", "__append_f32", "__append_f64", "__append_pad",
-            "__append_scalar", "__append_slice", "__append_str", "__clear",
-            "__finish", "__free", "__len", "__new", "__shift_front",
-            "__snapshot", "__text_view", "__view", "__xor_mask_into",
+            f("__append"), f("__append_f32"), f("__append_f64"), f("__append_pad"),
+            f("__append_scalar"), f("__append_slice"), f("__append_str"), f("__clear"),
+            f("__finish"), f("__free"), f("__len"), f("__new"), f("__shift_front"),
+            f("__snapshot"), f("__text_view"), f("__view"), f("__xor_mask_into"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["tar"],
         fns: &[
-            "entries", "entry_data", "entry_name", "entry_size",
-            "entry_type", "finish", "pack", "pack_dir",
+            f("entries"), f("entry_data"), f("entry_name"), f("entry_size"),
+            f("entry_type"), f("finish"), f("pack"), f("pack_dir"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["compress"],
         fns: &[
-            "gunzip", "gzip", "unzstd", "zstd",
+            f("gunzip"), f("gzip"), f("unzstd"), f("zstd"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["crypto"],
         fns: &[
-            "crc32", "ecdsa_p256_sign", "ecdsa_p256_verify", "hmac_sha256",
-            "hmac_sha512", "sha1", "sha256", "sha512",
+            f("crc32"), f("ecdsa_p256_sign"), f("ecdsa_p256_verify"), f("hmac_sha256"),
+            f("hmac_sha512"), f("sha1"), f("sha256"), f("sha512"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["ring"],
         fns: &[
-            "__spsc_emit",
-            "__spsc_init",
-            "__spsc_note_drop",
-            "__spsc_read",
-            "__spsc_set_tag_b",
+            f("__spsc_emit"),
+            f("__spsc_init"),
+            f("__spsc_note_drop"),
+            f("__spsc_read"),
+            f("__spsc_set_tag_b"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["decimal"],
         fns: &[
-            "format",
-            "to_float",
+            f("format"),
+            f("to_float"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["diag"],
         fns: &[
-            "heap_alloc_count", "syscall_count",
+            f("heap_alloc_count"), f("syscall_count"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["env"],
         fns: &[
-            "arg", "arg_or", "args_count", "var", "var_exists",
+            f("arg"), f("arg_or"), f("args_count"), f("var"), f("var_exists"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["http"],
         fns: &[
-            "get", "header", "parse_request", "parse_url", "path_param",
-            "post", "query_param", "request", "write_response",
+            f("get"), f("header"), f("parse_request"), f("parse_url"), f("path_param"),
+            f("post"), f("query_param"), f("request"), f("write_response"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["io", "file"],
         fns: &[
-            "__at_eof", "__close", "__open", "__read_line", "__seek",
-            "__write_bytes", "at_eof", "open", "read_line", "seek",
-            "write_bytes", "write_line",
+            f("__at_eof"), f("__close"), f("__open"), f("__read_line"), f("__seek"),
+            f("__write_bytes"), f("at_eof"), f("open"), f("read_line"), f("seek"),
+            f("write_bytes"), f("write_line"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["io", "fs"],
         fns: &[
-            "extension", "file_exists", "file_size", "list_dir",
-            "list_dir_at", "list_dir_count", "mkdir", "mktemp",
-            "read_bytes", "read_file", "rename", "unlink", "write_bytes",
-            "write_file",
-            "write_file_append",
+            f("extension"), f("file_exists"), f("file_size"), f("list_dir"),
+            f("list_dir_at"), f("list_dir_count"), f("mkdir"), f("mktemp"),
+            f("read_bytes"), f("read_file"), f("rename"), f("unlink"), f("write_bytes"),
+            f("write_file"),
+            f("write_file_append"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["io", "stdin"],
         fns: &[
-            "read_byte", "read_line", "read_line_status",
+            f("read_byte"), f("read_line"), f("read_line_status"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["io", "stdout"],
         fns: &[
-            "write_bytes",
+            f("write_bytes"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["io", "tcp"],
         fns: &[
-            "__accept_one", "__close_fd", "__connect", "__io_error_kind",
-            "__last_io_status", "__listen_socket",
-            "__recv", "__recv_bytes", "__send", "__send_bytes",
-            "__set_recv_timeout_ns", "__shutdown_listen_socket",
-            "accept_one", "close_fd", "connect", "last_recv_kernel_ns",
-            "last_recv_user_ns", "listen_socket", "recv_into",
-            "recv_stamped_into", "send_fd", "set_nodelay",
-            "set_recv_timeout", "set_rx_timestamps", "set_send_timeout",
+            f("__accept_one"), f("__close_fd"), f("__connect"), f("__io_error_kind"),
+            f("__last_io_status"), f("__listen_socket"),
+            f("__recv"), f("__recv_bytes"), f("__send"), f("__send_bytes"),
+            f("__set_recv_timeout_ns"), f("__shutdown_listen_socket"),
+            f("accept_one"), f("close_fd"), f("connect"), f("last_recv_kernel_ns"),
+            f("last_recv_user_ns"), f("listen_socket"), f("recv_into"),
+            f("recv_stamped_into"), f("send_fd"), f("set_nodelay"),
+            f("set_recv_timeout"), f("set_rx_timestamps"), f("set_send_timeout"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["io", "tls"],
         fns: &[
-            "close", "connect", "last_recv_kernel_ns", "last_recv_user_ns",
-            "recv_bytes", "recv_into", "recv_stamped_into", "send_bytes",
-            "set_nodelay", "set_recv_timeout", "set_rx_timestamps",
-            "set_send_timeout", "upgrade",
+            f("close"), f("connect"), f("last_recv_kernel_ns"), f("last_recv_user_ns"),
+            f("recv_bytes"), f("recv_into"), f("recv_stamped_into"), f("send_bytes"),
+            f("set_nodelay"), f("set_recv_timeout"), f("set_rx_timestamps"),
+            f("set_send_timeout"), f("upgrade"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["io", "udp"],
         fns: &[
-            "__bind", "__close", "__recv", "__send", "bind", "close",
-            "get_option_int", "join_group", "last_source_host",
-            "last_source_port", "leave_group", "recv", "recv_into",
-            "recv_with_source", "send", "set_multicast_iface",
-            "set_multicast_loop", "set_multicast_ttl", "set_option_bool",
-            "set_option_int", "set_recv_timeout", "set_send_timeout",
+            f("__bind"), f("__close"), f("__recv"), f("__send"), f("bind"), f("close"),
+            f("get_option_int"), f("join_group"), f("last_source_host"),
+            f("last_source_port"), f("leave_group"), f("recv"), f("recv_into"),
+            f("recv_with_source"), f("send"), f("set_multicast_iface"),
+            f("set_multicast_loop"), f("set_multicast_ttl"), f("set_option_bool"),
+            f("set_option_int"), f("set_recv_timeout"), f("set_send_timeout"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["json"],
         fns: &[
-            "array_first", "array_first_span", "array_next",
-            "array_next_span", "escape_string", "find_bool_field",
-            "find_field_range_in", "find_field_raw", "find_field_raw_in",
-            "find_int_field", "find_string_field", "iter_find_bool_field",
-            "iter_find_field_range", "iter_find_field_raw",
-            "iter_find_int_field", "iter_find_string_field",
-            "iter_find_string_field_range", "iter_substring",
-            "next_non_ws", "next_quote_or_bs", "next_struct_or_quote",
-            "obj_key_eq", "obj_key_len", "obj_key_string", "obj_value_bool",
-            "obj_value_float", "obj_value_int", "obj_value_raw",
-            "obj_value_string", "object_first", "object_next",
-            "unescape_string",
+            f("array_first"), f("array_first_span"), f("array_next"),
+            f("array_next_span"), f("escape_string"), f("find_bool_field"),
+            f("find_field_range_in"), f("find_field_raw"), f("find_field_raw_in"),
+            f("find_int_field"), f("find_string_field"), f("iter_find_bool_field"),
+            f("iter_find_field_range"), f("iter_find_field_raw"),
+            f("iter_find_int_field"), f("iter_find_string_field"),
+            f("iter_find_string_field_range"), f("iter_substring"),
+            f("next_non_ws"), f("next_quote_or_bs"), f("next_struct_or_quote"),
+            f("obj_key_eq"), f("obj_key_len"), f("obj_key_string"), f("obj_value_bool"),
+            f("obj_value_float"), f("obj_value_int"), f("obj_value_raw"),
+            f("obj_value_string"), f("object_first"), f("object_next"),
+            f("unescape_string"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["math"],
         fns: &[
-            "acos", "asin", "atan", "atan2", "ceil", "cos", "exp",
-            "float_to_int", "floor", "inf", "int_to_float", "is_nan",
-            "log", "nan", "pow", "round", "sin", "sqrt", "tan", "tanh",
-            "trunc",
+            f("acos"), f("asin"), f("atan"), f("atan2"), f("ceil"), f("cos"), f("exp"),
+            f("float_to_int"), f("floor"), f("inf"), f("int_to_float"), f("is_nan"),
+            f("log"), f("nan"), f("pow"), f("round"), f("sin"), f("sqrt"), f("tan"), f("tanh"),
+            f("trunc"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["os"],
         fns: &[
-            "getrandom",
+            f("getrandom"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["process"],
         fns: &[
-            "__kill_escalate", "__pipe_read", "__pipe_write",
-            "__signal_pid", "__spawn", "__try_wait_pid", "__wait_pid",
-            "dump_arena_residency", "dump_pool_residency",
-            "exit", "kill", "pid", "read_stderr", "read_stdout",
-            "rss_bytes", "run", "signal", "spawn", "try_wait", "wait",
-            "write_stdin",
+            f("__kill_escalate"), f("__pipe_read"), f("__pipe_write"),
+            f("__signal_pid"), f("__spawn"), f("__try_wait_pid"), f("__wait_pid"),
+            f("dump_arena_residency"), f("dump_pool_residency"),
+            f("exit"), f("kill"), f("pid"), f("read_stderr"), f("read_stdout"),
+            f("rss_bytes"), f("run"), f("signal"), f("spawn"), f("try_wait"), f("wait"),
+            f("write_stdin"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["metrics"],
         fns: &[
-            "counter", "gauge", "histogram", "labels_append",
-            "labels_empty", "labels_one", "labels_two", "metric_key",
+            f("counter"), f("gauge"), f("histogram"), f("labels_append"),
+            f("labels_empty"), f("labels_one"), f("labels_two"), f("metric_key"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["rand"],
         fns: &[
-            "next_int", "seed_from_time",
+            f("next_int"), f("seed_from_time"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["str"],
         fns: &[
-            "builder_append", "builder_finish", "builder_len",
-            "builder_new", "byte_at_unchecked", "can_parse_decimal",
-            "can_parse_float", "can_parse_int", "clone", "from_bytes",
-            "index_of", "lower", "pad_left", "pad_right", "parse_decimal",
-            "parse_float", "parse_int", "range_eq", "range_parse_decimal",
-            "range_parse_int", "repeat", "replace", "substring", "trim",
-            "upper",
+            f("builder_append"), f("builder_finish"), f("builder_len"),
+            f("builder_new"), f("byte_at_unchecked"), f("can_parse_decimal"),
+            f("can_parse_float"), f("can_parse_int"), f("clone"), f("from_bytes"),
+            f("index_of"), f("lower"), f("pad_left"), f("pad_right"), f("parse_decimal"),
+            f("parse_float"), f("parse_int"), f("range_eq"), f("range_parse_decimal"),
+            f("range_parse_int"), f("repeat"), f("replace"), f("substring"), f("trim"),
+            f("upper"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["term"],
         fns: &[
-            "__raw_disable", "__raw_enable", "__size_packed", "is_tty",
-            "size",
+            f("__raw_disable"), f("__raw_enable"), f("__size_packed"), f("is_tty"),
+            f("size"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["test"],
         fns: &[
-            "assert", "assert_eq_int", "assert_eq_str",
+            f("assert"), f("assert_eq_int"), f("assert_eq_str"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["text"],
         fns: &[
-            "is_alnum", "is_alpha", "is_digit", "is_whitespace",
-            "is_word_char", "md_to_html", "tokenize_words_into",
+            f("is_alnum"), f("is_alpha"), f("is_digit"), f("is_whitespace"),
+            f("is_word_char"), f("md_to_html"), f("tokenize_words_into"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["text", "base64"],
         fns: &[
-            "decode", "encode", "url_encode",
+            f("decode"), f("encode"), f("url_encode"),
         ],
         open_prefixes: &[],
     },
     NsSurface {
         ns: &["time"],
         fns: &[
-            "monotonic", "monotonic_ns", "now", "sleep", "time_from_unix",
+            f("monotonic"), f("monotonic_ns"), f("now"), f("sleep"), f("time_from_unix"),
         ],
         open_prefixes: &[],
     },
@@ -562,7 +615,8 @@ pub fn is_locus_path(segs: &[&str]) -> bool {
 /// the name length (a distance-2 match on a 3-char name is noise).
 pub fn suggest(surface: &NsSurface, name: &str) -> Option<&'static str> {
     let mut best: Option<(&'static str, usize)> = None;
-    for cand in surface.fns {
+    for entry in surface.fns {
+        let cand = &entry.name;
         let d = edit_distance(name, cand);
         match best {
             Some((_, bd)) if bd <= d => {}
@@ -628,7 +682,7 @@ pub fn unknown_fn_error(segs: &[&str]) -> Option<String> {
     }
     let (surface, fn_idx) = lookup(segs)?;
     let name = segs[fn_idx];
-    if surface.fns.contains(&name) {
+    if surface.fns.iter().any(|e| e.name == name) {
         return None;
     }
     if surface
@@ -933,3 +987,28 @@ pub const SIGS: &[FnSig] = &[
     sig!(NS_DIAG, "syscall_count", [Str], Int),
     sig!(NS_OS, "getrandom", [Int], Bytes, "IoError"),
 ];
+
+
+/// R2/#265: the effect classification for a fully-qualified stdlib
+/// path (`["std", ns.., fn]`), or None when the path isn't in the
+/// registry. UNCLASSIFIED entries are exactly that — the caller
+/// must treat them as may-do-anything until #265 classifies the
+/// surface.
+pub fn effects_for(segs: &[&str]) -> Option<EffectSet> {
+    if segs.len() < 2 || segs[0] != "std" {
+        return None;
+    }
+    let (ns_segs, name) = (&segs[1..segs.len() - 1], segs[segs.len() - 1]);
+    let surface = SURFACES
+        .iter()
+        .filter(|s| {
+            s.ns.len() == ns_segs.len()
+                && s.ns.iter().zip(ns_segs).all(|(a, b)| a == b)
+        })
+        .next()?;
+    surface
+        .fns
+        .iter()
+        .find(|e| e.name == name)
+        .map(|e| e.effects)
+}

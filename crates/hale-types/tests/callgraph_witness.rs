@@ -76,3 +76,18 @@ fn witness_path_negative_when_nothing_matches() {
     );
     assert!(path.is_none(), "clean must reach no allocation site");
 }
+
+/// R2 — the registry's effect column is queryable by path; every
+/// entry is UNCLASSIFIED until #265 classifies the surface.
+#[test]
+fn stdlib_registry_effects_lookup() {
+    use hale_types::stdlib_surface::{effects_for, EffectSet};
+    let e = effects_for(&["std", "crypto", "sha256"])
+        .expect("sha256 in registry");
+    assert!(e.is_unclassified());
+    assert_eq!(effects_for(&["std", "crypto", "sha9000"]), None);
+    assert_eq!(
+        effects_for(&["std", "time", "sleep"]),
+        Some(EffectSet::UNCLASSIFIED)
+    );
+}
