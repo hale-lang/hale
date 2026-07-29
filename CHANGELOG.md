@@ -6,7 +6,7 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.11.22 — iris handoff-8: adapter ingest lit + the refactor batch (2026-07-29)
 
 - **The adapter ingest path carries the full observation trio**
   (iris handoff-8 P21 — "the last dark ingestion path"). The
