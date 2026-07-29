@@ -118,6 +118,35 @@ behavior.
   dispatch arms** (`["std", "io", "mirror", op]`), which the literal
   scraper counted as zero coverage.
 
+
+- **`err.kind` did not compile.** Reading a stdlib error payload in
+  an `or` block — `parse_int(s) or { println(err.kind); -1 }`, a
+  shape `docs/src/everyday/http.md` and `spec/decisions.md` both
+  show — failed with `no field 'kind' on 'ParseError'`. The stdlib
+  error types (IoError, ParseError, CryptoError, …) were injected
+  into scope only when a program used `@form` machinery, which has
+  nothing to do with reading an error field. Now injected
+  unconditionally; a user declaration still wins.
+- **The compiler now tests itself in its own language.** `hale test`
+  shipped in the same binary as `hale build`, and the repo contained
+  four `*_test.hl` files — all of them fixtures for testing the
+  runner. `tests/hale/` is the real suite, run by `hale test` and
+  wired into the workspace run. The first two files replace nine
+  Rust tests in `stdlib_str.rs`.
+- The move is not cosmetic. The expectation stops being transcribed
+  (and gets stricter: `assert_eq_int(n, 42)` rejects what
+  `stdout.contains("a=42")` accepts, since that also passes on
+  `a=421`), and the program gets **typechecked** —
+  `build_executable`, which every Rust codegen test calls, parses
+  and lowers but never runs the checker. Converting the first test
+  is what surfaced the `err.kind` bug above.
+- **Measured that gap:** 8.5% of the ~1,000 programs embedded in
+  codegen tests do not pass `hale check` while compiling and running
+  fine. Some is deliberate (a codegen test may lower a shape the
+  checker rejects), so this ships a guard on the part that should
+  hold unconditionally — the on-disk example corpus typechecks
+  clean — rather than a blanket assertion.
+
 ---
 
 ## v0.11.24 — stdlib registry/dispatch parity enforced; effect-classification hole closed (2026-07-29)

@@ -1,0 +1,43 @@
+// std::str decimal parsing. Mantissa is i128 at implicit scale 9,
+// so trailing precision survives where parse_float's IEEE-754
+// rounding would not.
+
+fn main() {
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("100.5") or raise), "100.5", "100.5");
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("0") or raise), "0", "zero");
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("-7.25") or raise), "-7.25", "negative");
+    // Past 9 fractional digits truncates; 8 round-trip.
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("0.00005100") or raise),
+        "0.000051", "trailing zeros truncate at scale 9");
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("12345.678901234") or raise),
+        "12345.678901234", "full scale-9 precision");
+
+    // Garbage substitutes rather than silently yielding a value.
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("abc") or 0.0d), "0", "letters");
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("12.3abc") or 0.0d), "0", "trailing junk");
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal("") or 0.0d), "0", "empty");
+    std::test::assert_eq_str(
+        "" + (std::str::parse_decimal(".") or 0.0d), "0", "bare dot");
+
+    // A parsed Decimal behaves as a Decimal — i128 mantissa
+    // arithmetic survives the fallible flip.
+    let p = std::str::parse_decimal("100.40") or raise;
+    let q = std::str::parse_decimal("0.005") or raise;
+    std::test::assert_eq_str("" + (p + q), "100.405", "decimal addition");
+
+    // The payload names which parser rejected, and what it saw.
+    let v = std::str::parse_decimal("not a number") or {
+        std::test::assert_eq_str(err.kind, "parse_decimal", "err.kind");
+        std::test::assert_eq_str(err.input, "not a number", "err.input");
+        -1.0d
+    };
+    std::test::assert_eq_str("" + v, "-1", "substitute value");
+}
