@@ -2030,6 +2030,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             bus_dispatch_wire_ty,
             None,
         );
+        // iris handoff-6: the redispatch-marked adapter-inbound
+        // entry (a delivery, not a publish) —
+        // `std::bus::__local_dispatch` lowers to this.
+        self.module.add_function(
+            "lotus_bus_dispatch_wire_inbound",
+            bus_dispatch_wire_ty,
+            None,
+        );
 
         // m59: subscriber-side reader threads need access to the
         // cooperative bus queue to dispatch incoming bytes into

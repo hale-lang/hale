@@ -804,3 +804,160 @@ fn quiet_process_replays_births_via_heartbeat() {
          attach (heartbeat missing?)"
     );
 }
+
+/// iris handoff-6 (P19 companion) — the ORDERING case the field has:
+/// publishers reach steady-state publish loops FIRST, the observer
+/// attaches minutes later. Every prior test attached before the
+/// burst. Asserts BUS_PUBLISH records captured AFTER a late attach
+/// carry nonzero locus == a birth instance (the fn-entry gate hoist
+/// must not have snapshotted a stale dormant flag — `lotus_obs_live`
+/// is resolved in a constructor, before any function entry).
+#[test]
+fn late_attach_still_attributes_publishes() {
+    const SRC: &str = r#"
+        type Ev { id: Int; v: Int; }
+        topic K { payload: Ev; subject: "k.late"; keyed_by id; }
+        locus KeySub {
+            params { my_id: Int = 1; }
+            bus { subscribe K as on_k where key == self.my_id; }
+            fn on_k(e: Ev) { }
+        }
+        locus Reader {
+            bus { publish K; }
+            run() {
+                let mut i = 0;
+                while i < 300 {
+                    K <- Ev { id: 1, v: i };
+                    std::time::sleep(10ms);
+                    i = i + 1;
+                }
+            }
+        }
+        main locus App {
+            params {
+                s: KeySub = KeySub { my_id: 1 };
+                r: Reader = Reader { };
+            }
+            placement { r: pinned(core = 0); }
+            run() { std::time::sleep(3500ms); }
+        }
+        fn main() { App { }; }
+    "#;
+    let bin = compile("lateattach", SRC);
+    let mut child = Command::new(&bin)
+        .env("LOTUS_OBS", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn");
+    let pid = child.id();
+    // Let the publisher run deep into steady state UNOBSERVED.
+    std::thread::sleep(Duration::from_millis(1200));
+    unsafe { attach_observer(pid) };
+    std::thread::sleep(Duration::from_millis(1200));
+    let seg = unsafe { snapshot_shm(pid) };
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_file(&bin);
+    let seg = seg.expect("segment");
+    let births: std::collections::HashSet<u32> =
+        records(&seg, 5).iter().map(|(id, _)| *id).collect();
+    let pubs: Vec<u32> = records(&seg, 1)
+        .iter()
+        .map(|(_, w1)| (*w1 & 0xFFFFF) as u32)
+        .collect();
+    assert!(!pubs.is_empty(), "no post-attach BUS_PUBLISH records");
+    assert!(
+        pubs.iter().all(|l| *l != 0 && births.contains(l)),
+        "P19: post-late-attach publishes unattributed: loci {:?} \
+         (births {:?})",
+        pubs,
+        births
+    );
+}
+
+/// iris handoff-6 — the ADAPTER inbound path (`std::bus::
+/// __local_dispatch`, the Hale-owned-wire ingest) is a DELIVERY:
+/// it must not stamp locus=0 BUS_PUBLISH records or inflate the
+/// published counter (the reader-thread path has marked its
+/// re-dispatch since P15; this entry was unmarked). Loopback
+/// adapter: 2 genuine publishes, each relayed once → published
+/// counter must be exactly 2 and every publish record attributed.
+#[test]
+fn adapter_inbound_dispatch_is_not_a_publish() {
+    const SRC: &str = r#"
+        type Tick { n: Int; }
+        topic Beat { payload: Tick; subject: "beat"; }
+        locus Loopback {
+            fn send(subject: String, bytes: Bytes) {
+                std::bus::__local_dispatch(subject, bytes);
+            }
+        }
+        locus Receiver {
+            bus { subscribe Beat as on_beat; }
+            fn on_beat(t: Tick) { }
+        }
+        locus Producer {
+            bus { publish Beat; }
+            run() {
+                std::time::sleep(300ms);
+                Beat <- Tick { n: 7 };
+                Beat <- Tick { n: 42 };
+            }
+        }
+        main locus App {
+            bindings { Beat: Loopback { }; }
+            // NOTE: App is the main locus and its run() executes
+            // INLINE at the `App { }` statement — keep it short or
+            // Producer never instantiates until it returns.
+            run() { std::time::sleep(50ms); }
+        }
+        fn main() {
+            App { };
+            Receiver { };
+            Producer { };
+            std::time::sleep(1200ms);
+        }
+    "#;
+    let bin = compile("adapterobs", SRC);
+    let mut child = Command::new(&bin)
+        .env("LOTUS_OBS", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn");
+    let pid = child.id();
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(25));
+        if std::path::Path::new(&format!("/dev/shm/hale-obs-{}", pid))
+            .exists()
+        {
+            break;
+        }
+    }
+    unsafe { attach_observer(pid) };
+    std::thread::sleep(Duration::from_millis(900));
+    let seg = unsafe { snapshot_shm(pid) };
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_file(&bin);
+    let seg = seg.expect("segment");
+    let (published, _, _) =
+        topic_counters(&seg, b"beat").expect("beat topic");
+    assert_eq!(
+        published, 2,
+        "adapter inbound re-dispatch inflated the published counter \
+         (2 genuine publishes, each relayed once)"
+    );
+    let births: std::collections::HashSet<u32> =
+        records(&seg, 5).iter().map(|(id, _)| *id).collect();
+    let pubs: Vec<u32> = records(&seg, 1)
+        .iter()
+        .map(|(_, w1)| (*w1 & 0xFFFFF) as u32)
+        .collect();
+    assert!(
+        pubs.iter().all(|l| *l != 0 && births.contains(l)),
+        "adapter inbound stamped locus=0 publish records: {:?}",
+        pubs
+    );
+}

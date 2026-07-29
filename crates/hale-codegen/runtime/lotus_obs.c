@@ -391,6 +391,21 @@ static int obs_create(int64_t rings, int64_t slots) {
  * publishes of a not-yet-probed thread). */
 int lotus_obs_live = 0;
 
+/* iris handoff-6 P19: codegen snapshots this flag at FUNCTION ENTRY
+ * (the dormant-cost hoist), so it must be final before ANY user code
+ * — including `fn main`'s own body, whose entry block runs BEFORE
+ * the first locus-birth probe that used to set it. A publish lowered
+ * into main's body therefore snapshotted 0 forever. Resolve the env
+ * in a constructor instead: the flag is process-constant from before
+ * main, which is the exact property the hoist's soundness argument
+ * claimed. (Segment creation stays lazy at the first probe; if it
+ * later fails, the flag stays 1 and the probes early-out on
+ * !obs_on() — a few dead branches in a broken-obs process.) */
+__attribute__((constructor)) static void obs_live_ctor(void) {
+  const char *e = getenv("LOTUS_OBS");
+  if (e && e[0] == '1') lotus_obs_live = 1;
+}
+
 /* Enable check + lazy init. Fast path after first call: one
  * relaxed load + compare. */
 static int obs_on(void) {

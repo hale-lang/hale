@@ -1482,6 +1482,29 @@ v0.11.18):
   replay latency after attach is bounded at ~250ms even for a
   process that never probes again.
 
+Attribution ordering + the adapter inbound path (iris handoff 6,
+v0.11.20):
+
+- **`lotus_obs_live` is resolved in a constructor**, before
+  `main`. The fn-entry gate hoist's soundness argument requires
+  the flag to be final before ANY function entry — previously it
+  was set at the first probe (a locus birth inside main's body),
+  so a publish lowered into `fn main` itself would snapshot a
+  stale dormant flag forever. Constructor resolution makes the
+  flag genuinely process-constant. The field-shaped ordering case
+  (publishers deep in steady-state loops, observer attaching much
+  later) is pinned in `obs_fleet_contract.rs`.
+- **`std::bus::__local_dispatch` (the adapter-inbound ingest) is
+  redispatch-MARKED.** An adapter locus dispatching received wire
+  bytes is a delivery, exactly like the reader-thread path — the
+  unmarked entry stamped a spurious `locus=0` BUS_PUBLISH per
+  inbound message and inflated the published counter, so a fleet
+  ingesting via the std adapter surface read as "everything
+  publishes unattributed." Lowers to
+  `lotus_bus_dispatch_wire_inbound`, which brackets the dispatch
+  with the P15 negative marking. Per-subscriber BUS_DELIVER and
+  the topic registration are unchanged.
+
 ### Time
 
 - **Monotonic + wall-clock.** `time::now()` and

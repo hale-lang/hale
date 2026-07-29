@@ -86,10 +86,15 @@ impl<'ctx, 'p> BusStdlib<'ctx> for Cx<'ctx, 'p> {
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
         };
+        // iris handoff-6: route through the redispatch-MARKED inbound
+        // entry. An adapter dispatching received wire bytes is a
+        // delivery — the unmarked entry stamped a spurious locus=0
+        // BUS_PUBLISH per inbound message and inflated the published
+        // counter (the fleet's "everything publishes unattributed").
         let f = self
             .module
-            .get_function("lotus_bus_dispatch_wire")
-            .expect("lotus_bus_dispatch_wire declared");
+            .get_function("lotus_bus_dispatch_wire_inbound")
+            .expect("lotus_bus_dispatch_wire_inbound declared");
         self.builder
             .build_call(
                 f,

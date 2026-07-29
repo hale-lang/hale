@@ -8552,6 +8552,19 @@ void lotus_bus_dispatch_wire(const char *subject,
                              const void *wire_bytes,
                              size_t wire_size);
 
+/* iris handoff-6: the adapter-driven inbound entry. An adapter
+ * locus dispatching received wire bytes is a DELIVERY, not a local
+ * publish — exactly like the reader-thread path, which brackets its
+ * re-dispatch so the BUS_PUBLISH probe skips it (P15 negative
+ * marking). This entry was unmarked, so every adapter-inbound
+ * message stamped a spurious locus=0 BUS_PUBLISH and inflated the
+ * published counter — a fleet whose gateways ingest via the std
+ * adapter surface read as "everything publishes unattributed."
+ * `std::bus::__local_dispatch` lowers to this wrapper. */
+void lotus_bus_dispatch_wire_inbound(const char *subject,
+                                     const void *wire_bytes,
+                                     size_t wire_size);
+
 /* Phase-3 Task 9 (2026-05-20): forward decl of the caller-arena
  * TLS pointer. Defined further down alongside the other
  * caller_arena helpers; needed here because lotus_bus_dispatch_wire
@@ -19251,4 +19264,15 @@ double lotus_math_inf(void) {
  * pattern lotus_fs_file_exists uses for its 0/1 -> Bool. */
 int lotus_math_is_nan(double f) {
     return f != f ? 1 : 0;
+}
+
+
+/* iris handoff-6: marked adapter-inbound entry — see the forward
+ * declaration's comment near lotus_bus_dispatch_wire. */
+void lotus_bus_dispatch_wire_inbound(const char *subject,
+                                     const void *wire_bytes,
+                                     size_t wire_size) {
+    if (lotus_obs_begin_redispatch) lotus_obs_begin_redispatch();
+    lotus_bus_dispatch_wire(subject, wire_bytes, wire_size);
+    if (lotus_obs_end_redispatch) lotus_obs_end_redispatch();
 }
