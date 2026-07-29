@@ -6,6 +6,31 @@ behavior.
 
 ---
 
+## Unreleased
+
+- **Registry/dispatch parity is enforced (R2 completion), and it
+  found real drift.** The R2 refactor made `stdlib_surface` the
+  single table for the stdlib surface, but the *lowering* stayed in
+  hand-written `["std", ns, fn]` match arms with nothing forcing the
+  two to agree — the four-parallel-structures problem, only
+  half-solved. `stdlib_registry_parity.rs` now asserts mutual
+  coverage in both directions (with a non-vacuity guard, and
+  prefix-pattern arms like `bytes::read_*` understood rather than
+  hand-listed). What it caught:
+  - **`std::ts` and `std::shm` were absent from the registry
+    entirely** — real namespaces, called from stdlib `.hl`, typing
+    as `Ty::Unknown` (no arity/fallibility checking) **and escaping
+    effect classification**, which would have let a `@no_syscall`
+    fn call them unchallenged. Now registered and classified.
+  - **`std::io::fs::list_dir` and `std::str::can_parse_decimal`
+    were in the typecheck surface with no lowering** — they passed
+    `hale check` and then failed at codegen with
+    `unsupported in codegen v0`. (The spec already admitted
+    `list_dir` was "listed in older notes but not dispatched".)
+    Both removed; they now fail cleanly at typecheck with a
+    did-you-mean.
+  - `std::io::udp::Reader` was missing from `LOCUS_PATHS`.
+
 ## v0.11.23 — effect assertions (GH #265, complete) + the #265/#262 refactor substrate (2026-07-29)
 
 - **GH #265: effect assertions — one surface, one engine, one

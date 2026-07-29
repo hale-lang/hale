@@ -235,6 +235,11 @@ pub struct NsSurface {
 /// calls (`std::io::file::File { ... }` etc.) — never flagged.
 pub const LOCUS_PATHS: &[&[&str]] = &[
     &["std", "bus", "Adapter"],
+    // R2 parity: the event-driven datagram ingest handle is a
+    // LOCUS (`std::io::udp::Reader { addr, port, cap }`), not a
+    // path-call — it was missing from this list, so the parity
+    // check saw it as an unregistered lowered path.
+    &["std", "io", "udp", "Reader"],
     &["std", "bytes", "BytesBuilder"],
     &["std", "cli", "Resolver"],
     &["std", "http", "Client"],
@@ -419,8 +424,7 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["io", "fs"],
         fns: &[
-            e("extension", EffectSet::SYSCALL), e("file_exists", EffectSet::SYSCALL), e("file_size", EffectSet::SYSCALL), e("list_dir", EffectSet::SYSCALL),
-            e("list_dir_at", EffectSet::SYSCALL), e("list_dir_count", EffectSet::SYSCALL), e("mkdir", EffectSet::SYSCALL), e("mktemp", EffectSet::SYSCALL),
+            e("extension", EffectSet::SYSCALL), e("file_exists", EffectSet::SYSCALL), e("file_size", EffectSet::SYSCALL),             e("list_dir_at", EffectSet::SYSCALL), e("list_dir_count", EffectSet::SYSCALL), e("mkdir", EffectSet::SYSCALL), e("mktemp", EffectSet::SYSCALL),
             e("read_bytes", EffectSet::SYSCALL), e("read_file", EffectSet::SYSCALL), e("rename", EffectSet::SYSCALL), e("unlink", EffectSet::SYSCALL), e("write_bytes", EffectSet::SYSCALL),
             e("write_file", EffectSet::SYSCALL),
             e("write_file_append", EffectSet::SYSCALL),
@@ -495,6 +499,39 @@ pub const SURFACES: &[NsSurface] = &[
         ],
         open_prefixes: &[],
     },
+    // GH #265 / R2 parity: `std::ts` (tree-sitter parsing) and
+    // `std::shm` (shared-memory ring reads) are lowered by codegen
+    // and called from stdlib `.hl`, but were absent from this table
+    // — so they typed as `Ty::Unknown` (no arity/fallibility
+    // checking) AND escaped effect classification entirely, which
+    // would let a `@no_syscall` fn call them unchallenged. Parsing
+    // and shm reads both touch the OS.
+    NsSurface {
+        ns: &["ts"],
+        fns: &[
+            e("node_child", EffectSet::PURE),
+            e("node_child_count", EffectSet::PURE),
+            e("node_end_byte", EffectSet::PURE),
+            e("node_is_named", EffectSet::PURE),
+            e("node_kind", EffectSet::PURE),
+            e("node_named_child", EffectSet::PURE),
+            e("node_named_child_count", EffectSet::PURE),
+            e("node_start_byte", EffectSet::PURE),
+            e("node_text", EffectSet::PURE),
+            e("parse_go", EffectSet::ALLOC),
+            e("root_node", EffectSet::PURE),
+        ],
+        open_prefixes: &[],
+    },
+    NsSurface {
+        ns: &["shm"],
+        fns: &[
+            e("last_record_kernel_ns", EffectSet::PURE),
+            e("last_record_seq", EffectSet::PURE),
+            e("last_record_user_ns", EffectSet::PURE),
+        ],
+        open_prefixes: &[],
+    },
     NsSurface {
         ns: &["math"],
         fns: &[
@@ -543,8 +580,7 @@ pub const SURFACES: &[NsSurface] = &[
         ns: &["str"],
         fns: &[
             e("builder_append", EffectSet::PURE), e("builder_finish", EffectSet::PURE), e("builder_len", EffectSet::PURE),
-            e("builder_new", EffectSet::PURE), e("byte_at_unchecked", EffectSet::PURE), e("can_parse_decimal", EffectSet::PURE),
-            e("can_parse_float", EffectSet::PURE), e("can_parse_int", EffectSet::PURE), e("clone", EffectSet::PURE), e("from_bytes", EffectSet::PURE),
+            e("builder_new", EffectSet::PURE), e("byte_at_unchecked", EffectSet::PURE),             e("can_parse_float", EffectSet::PURE), e("can_parse_int", EffectSet::PURE), e("clone", EffectSet::PURE), e("from_bytes", EffectSet::PURE),
             e("index_of", EffectSet::PURE), e("lower", EffectSet::PURE), e("pad_left", EffectSet::PURE), e("pad_right", EffectSet::PURE), e("parse_decimal", EffectSet::PURE),
             e("parse_float", EffectSet::PURE), e("parse_int", EffectSet::PURE), e("range_eq", EffectSet::PURE), e("range_parse_decimal", EffectSet::PURE),
             e("range_parse_int", EffectSet::PURE), e("repeat", EffectSet::PURE), e("replace", EffectSet::PURE), e("substring", EffectSet::PURE), e("trim", EffectSet::PURE),
