@@ -6,7 +6,7 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.11.21 — iris handoff-7: BUS w1 packed per PROTOCOL §8 (2026-07-29)
 
 - **BUS record w1 packed per PROTOCOL §8** (iris handoff-7 — the
   one-liner). `BUS_PUBLISH`/`BUS_DELIVER` emitted `locus` in bits
