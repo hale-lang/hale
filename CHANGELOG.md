@@ -6,6 +6,35 @@ behavior.
 
 ---
 
+## Unreleased
+
+- **Refactor batch (R1/R2/R3/R4/R6) — the substrate for #265 and
+  #262.** Behavior-neutral; full workspace suite + the dispatch
+  bench gate every piece.
+  - *R1*: `hale-types::callgraph` — the shared, witness-path-
+    preserving call-graph engine (extracted verbatim from
+    `budget_check`'s DFS, which is its first ported customer with
+    byte-identical diagnostics); `witness_path` renders the
+    `root -> mid -> leaf [alloc]` chains #265's diagnostics
+    specify. `PurityKey` unified onto `alloc_summary::FnKey`.
+  - *R2*: `stdlib_surface` is now the stdlib registry — structured
+    per-fn entries carrying an `EffectSet` column (UNCLASSIFIED
+    until #265 classifies the frontier) with `effects_for(path)`
+    as the query hook.
+  - *R3*: the deployment arrangement (placement, NUMA nodes,
+    pools, async_io set, pinned/pool locus types) is one
+    `DeploymentPlan` value on Cx instead of seven loose fields —
+    #262's seed artifact.
+  - *R4*: `lotus_bus_post_entry` — the one per-entry
+    mailbox/coop_pool/queue post, replacing 9 of 11 hand-copies
+    across dispatch flavors (the "fixed one flavor, missed
+    siblings" class from P5..P17); the two exceptions (_st
+    fast path, direct same-thread call) are annotated. Dispatch
+    bench unchanged (~173µs dormant).
+  - *R6*: one obs-segment reader for the three test files that
+    each carried a drifting copy of the PROTOCOL v0.1 decode; the
+    protocol.h-vendored decodes live in exactly one place.
+
 ## v0.11.21 — iris handoff-7: BUS w1 packed per PROTOCOL §8 (2026-07-29)
 
 - **BUS record w1 packed per PROTOCOL §8** (iris handoff-7 — the
