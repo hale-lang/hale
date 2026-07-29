@@ -150,6 +150,38 @@ assume the others in a build:
   contract with `recv_into` + a reused `BytesBuilder`. fn-only; mutually
   exclusive with `@unbounded`. A violation reports the measured count and
   points at every offending allocation with the fast-path fix.
+- **Categoric effect assertions — `@no_recursion` / `@no_ffi` /
+  `@no_block`** (GH #265 phase 1, 2026-07-29). `@budget`'s discipline
+  generalized from *allocation count* to *effect classes*: an opt-in
+  contract at a root the author cares about, inferred everywhere else,
+  enforced as a hard error over the resolved call graph. All three are
+  bare `@`-flags before a `fn` (free or method), stackable with each
+  other and with `@hot` / `@budget(...)`.
+  - `@no_recursion` — no cycle reachable from this root (the
+    static-stack precondition). Diamonds are not cycles.
+  - `@no_ffi` — no `@ffi` fn transitively reachable ("pure managed
+    Hale", the `forbid(unsafe)` analog).
+  - `@no_block` — no blocking stdlib operation reachable (`sleep`, the
+    blocking `recv` family, `accept`, `connect`, subprocess waits,
+    `Reader.next`). This is the contract an `async_io`-placed handler
+    needs: a blocking call there stalls the pool's single worker.
+
+  Unlike `@budget`'s fixpoint (which reports a count and the offending
+  sites), an effect violation reports the **witness chain** — the call
+  path from the asserting root to the offending leaf,
+  `on_tick -> helper -> nap [std::time::sleep — …]` — plus a second
+  diagnostic at the leaf itself. Both run on the shared
+  witness-preserving engine (`hale-types::callgraph`), which is also
+  what `@budget` now walks.
+
+  Boundaries, unchanged from the issue: opaque callees other than the
+  classified leaf sets are outside what an assertion sees (the same
+  soundness boundary the escape analysis and `@budget` draw); `@ffi`
+  labels are trusted, not verified. `@no_panic`, `@no_syscall`, and
+  `@deterministic` are later phases — the first is a different analysis
+  (disposition coverage), the latter two wait on the full `lotus_*`
+  frontier classification (the `EffectSet` column on the stdlib
+  registry is where it lands).
 - **Hot-path allocation lint — default-on advisory** (2026-07-16). Two
   loop-scoped anti-patterns get a **warning** (never a build failure), so
   the allocation-free shape is the path of least resistance rather than

@@ -163,6 +163,33 @@ as a **hard error** (this is the one allocation check that fails the
 build — because you asked for it). The two stack:
 `@hot @budget(alloc_per_call = 0) fn send(...)`.
 
+## Saying what a function may *do*
+
+Beyond counting allocations, a fn can assert what it's allowed to
+*reach*:
+
+```hale,fragment
+@no_block fn on_tick(t: Tick) { ... }        // nothing blocking reachable
+@no_recursion fn step(n: Int) -> Int { ... } // no cycle under this root
+@no_ffi fn managed(x: Int) -> Int { ... }    // no @ffi call reachable
+```
+
+They stack with each other and with the contracts above —
+`@no_block @hot @budget(alloc_per_call = 0) fn handle(...)` is the
+full hot-path certificate.
+
+`@no_block` is the one to reach for on an `async_io`-placed handler:
+a blocking call there holds the pool's single worker, which is
+invisible until something else wants it. If a violation exists the
+compiler shows you the path, not just the verdict:
+
+```
+`@no_block` violated: `on_tick` reaches
+on_tick -> helper -> nap [std::time::sleep — blocks/parks for the
+full duration].
+```
+
+
 ```hale
 @budget(alloc_per_call = 0)
 fn decode(buf: Bytes) -> Tick {

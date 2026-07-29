@@ -374,6 +374,11 @@ impl Parser {
                 matches!(&kind_tok, TokenKind::Ident(s) if s == "budget");
             let is_hot =
                 matches!(&kind_tok, TokenKind::Ident(s) if s == "hot");
+            // #265: `@no_recursion` / `@no_ffi` / `@no_block` — bare
+            // flags before a fn, stackable with each other and with
+            // `@hot` / `@budget(...)`.
+            let is_effect = matches!(&kind_tok,
+                TokenKind::Ident(s) if Self::effect_assert_for(s).is_some());
             if is_export {
                 // WASM entry-inversion. `@export fn …` is a free-fn
                 // module export; `@export locus …` is the persistent
@@ -505,6 +510,42 @@ impl Parser {
                 let mut fn_decl = self.parse_fn_decl_with_ffi(None, false)?;
                 fn_decl.budget = Some(budget);
                 fn_decl.span = bspan.merge(fn_decl.span);
+                return Ok(TopDecl::Fn(fn_decl));
+            }
+            if is_effect {
+                let (effects, espan) = self.parse_effect_asserts()?;
+                let espan = espan.expect("at least one assertion parsed");
+                // Optional `@hot` and/or `@budget(...)` may follow.
+                let mut hot = false;
+                if matches!(self.peek(), TokenKind::At)
+                    && matches!(self.peek_at(1), TokenKind::Ident(s) if s == "hot")
+                {
+                    self.bump();
+                    self.bump();
+                    hot = true;
+                }
+                let budget = if matches!(self.peek(), TokenKind::At)
+                    && matches!(self.peek_at(1), TokenKind::Ident(s) if s == "budget")
+                {
+                    Some(self.parse_budget_annotation()?)
+                } else {
+                    None
+                };
+                if !matches!(self.peek(), TokenKind::Fn) {
+                    return Err(Diag::parse(
+                        self.peek_token().span,
+                        "expected `fn` after an effect assertion \
+                         (`@no_recursion` / `@no_ffi` / `@no_block`) — they \
+                         are contracts over what a fn can reach",
+                    ));
+                }
+                let mut fn_decl = self.parse_fn_decl_with_ffi(None, false)?;
+                fn_decl.effects = effects;
+                fn_decl.hot = hot;
+                if let Some((b, _)) = budget {
+                    fn_decl.budget = Some(b);
+                }
+                fn_decl.span = espan.merge(fn_decl.span);
                 return Ok(TopDecl::Fn(fn_decl));
             }
             if is_hot {
@@ -1158,6 +1199,53 @@ impl Parser {
         })
     }
 
+    /// #265 (2026-07-29): is this ident one of the categoric effect
+    /// assertions? They are bare `@`-flags before a `fn`, stackable
+    /// with each other and with `@hot` / `@budget(...)`.
+    fn effect_assert_for(name: &str) -> Option<EffectAssert> {
+        match name {
+            "no_recursion" => Some(EffectAssert::NoRecursion),
+            "no_ffi" => Some(EffectAssert::NoFfi),
+            "no_block" => Some(EffectAssert::NoBlock),
+            _ => None,
+        }
+    }
+
+    /// Consume a run of stacked `@no_*` effect assertions, returning
+    /// them plus their merged span. Stops at the first `@` that isn't
+    /// an effect assertion (so `@no_block @hot fn` and
+    /// `@no_block @budget(...) fn` both parse).
+    fn parse_effect_asserts(&mut self) -> Result<(Vec<EffectAssert>, Option<Span>), Diag> {
+        let mut out = Vec::new();
+        let mut span: Option<Span> = None;
+        loop {
+            if !matches!(self.peek(), TokenKind::At) {
+                break;
+            }
+            let name = match self.peek_at(1) {
+                TokenKind::Ident(s) => s.clone(),
+                _ => break,
+            };
+            let Some(eff) = Self::effect_assert_for(&name) else {
+                break;
+            };
+            let at = self.expect(TokenKind::At, "@")?;
+            self.bump(); // the assertion ident
+            if out.contains(&eff) {
+                return Err(Diag::parse(
+                    at.span,
+                    format!("duplicate `@{}` assertion", name),
+                ));
+            }
+            out.push(eff);
+            span = Some(match span {
+                Some(prev) => prev.merge(at.span),
+                None => at.span,
+            });
+        }
+        Ok((out, span))
+    }
+
     /// Lever 2 (2026-07-16): `@budget(alloc_per_call = N)` — an opt-in
     /// hot-path contract on a free fn or locus method. Returns the
     /// per-call allocation budget `N` and the annotation span. The
@@ -1657,6 +1745,45 @@ impl Parser {
                     let mut fn_decl = self.parse_fn_decl()?;
                     fn_decl.budget = Some(budget);
                     fn_decl.span = bspan.merge(fn_decl.span);
+                    return Ok(LocusMember::Fn(fn_decl));
+                }
+                // #265: effect assertions on a method/handler (the
+                // common placement — a bus handler is a member fn).
+                if matches!(&kind_tok,
+                    TokenKind::Ident(s) if Self::effect_assert_for(s).is_some())
+                {
+                    let (effects, espan) = self.parse_effect_asserts()?;
+                    let espan = espan.expect("at least one assertion parsed");
+                    let mut hot = false;
+                    if matches!(self.peek(), TokenKind::At)
+                        && matches!(self.peek_at(1), TokenKind::Ident(s) if s == "hot")
+                    {
+                        self.bump();
+                        self.bump();
+                        hot = true;
+                    }
+                    let budget = if matches!(self.peek(), TokenKind::At)
+                        && matches!(self.peek_at(1), TokenKind::Ident(s) if s == "budget")
+                    {
+                        Some(self.parse_budget_annotation()?)
+                    } else {
+                        None
+                    };
+                    if !matches!(self.peek(), TokenKind::Fn) {
+                        return Err(Diag::parse(
+                            self.peek_token().span,
+                            "expected `fn` after an effect assertion on a \
+                             method (`@no_recursion` / `@no_ffi` / \
+                             `@no_block`)",
+                        ));
+                    }
+                    let mut fn_decl = self.parse_fn_decl()?;
+                    fn_decl.effects = effects;
+                    fn_decl.hot = hot;
+                    if let Some((b, _)) = budget {
+                        fn_decl.budget = Some(b);
+                    }
+                    fn_decl.span = espan.merge(fn_decl.span);
                     return Ok(LocusMember::Fn(fn_decl));
                 }
                 // Gap D (2026-07-17): `@hot fn` on a method/handler —
@@ -3734,6 +3861,7 @@ impl Parser {
                 unbounded: false,
                 budget: None,
                 hot: false,
+                effects: Vec::new(),
                 span: kw.span.merge(semi.span),
                 body,
             });
@@ -3760,6 +3888,7 @@ impl Parser {
                 unbounded: false,
                 budget: None,
                 hot: false,
+                effects: Vec::new(),
                 span: kw.span.merge(semi.span),
                 body,
             });
@@ -3782,6 +3911,7 @@ impl Parser {
             unbounded: false,
             budget: None,
                 hot: false,
+                effects: Vec::new(),
             span: kw.span.merge(body.span),
             body,
         })

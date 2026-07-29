@@ -1467,6 +1467,23 @@ pub struct ConstDecl {
     pub span: Span,
 }
 
+/// #265 (2026-07-29): one asserted effect-class contract
+/// (`@no_recursion` / `@no_ffi` / `@no_block` before a fn). Checked
+/// in `hale-types::effects` over the callgraph witness engine; a
+/// violation is a hard error carrying the offending call chain.
+/// Extensible — the set grows with the frontier classification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectAssert {
+    /// Call-graph acyclicity under this root (static stack story).
+    NoRecursion,
+    /// No `@ffi` fn transitively reachable ("pure managed Hale").
+    NoFfi,
+    /// No blocking stdlib operation reachable — the contract an
+    /// `async_io`-placed handler needs (a blocking call there stalls
+    /// the pool's single worker).
+    NoBlock,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FnDecl {
     pub name: Ident,
@@ -1520,6 +1537,8 @@ pub struct FnDecl {
     /// self-field replace). Stacks with `@budget(...)`:
     /// `@hot @budget(alloc_per_call = 0) fn send(...)`.
     pub hot: bool,
+    /// #265: categoric effect assertions declared on this fn.
+    pub effects: Vec<EffectAssert>,
     pub body: Block,
     pub span: Span,
 }

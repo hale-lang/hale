@@ -414,6 +414,10 @@ pub fn check_bundle(
     {
         let programs_vec: Vec<&Program> = bundle.programs.values().copied().collect();
         diags.extend(crate::budget_check::budget_diags(&programs_vec));
+        // #265: categoric effect assertions (@no_recursion /
+        // @no_ffi / @no_block) — same opt-in-contract discipline as
+        // @budget, over the shared callgraph witness engine.
+        diags.extend(crate::effects::effect_diags(&programs_vec));
     }
     // 2026-05-29: a bus-subscribing locus instantiated non-owned
     // inside another locus's method/handler body dissolves at that

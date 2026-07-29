@@ -47,7 +47,7 @@ fn witness_path_carries_the_call_chain() {
         &root,
         &mut |probe| match probe {
             Probe::Site(_) => Some("alloc".to_string()),
-            Probe::Unresolved(..) => None,
+            Probe::Unresolved(..) | Probe::Resolved(..) => None,
         },
     )
     .expect("an alloc is reachable from root");
@@ -71,7 +71,7 @@ fn witness_path_negative_when_nothing_matches() {
         &root,
         &mut |probe| match probe {
             Probe::Site(_) => Some("alloc".to_string()),
-            Probe::Unresolved(..) => None,
+            Probe::Unresolved(..) | Probe::Resolved(..) => None,
         },
     );
     assert!(path.is_none(), "clean must reach no allocation site");

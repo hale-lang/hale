@@ -6,6 +6,26 @@ behavior.
 
 ---
 
+## Unreleased
+
+- **GH #265 phase 1: categoric effect assertions —
+  `@no_recursion`, `@no_ffi`, `@no_block`.** `@budget`'s discipline
+  generalized from allocation *count* to effect *classes*: an opt-in
+  contract at a root, inferred everywhere else, enforced as a hard
+  error. Bare `@`-flags before a `fn` (free or method), stackable
+  with each other and with `@hot` / `@budget(...)`. Violations
+  report the **witness chain** — `on_tick -> helper -> nap
+  [std::time::sleep — …]` — the diagnostic shape `@budget`'s
+  fixpoint structurally could not produce, now available because
+  both run on the shared `hale-types::callgraph` engine (shipped in
+  the v0.11.22 refactor batch). `@no_block`'s leaf set is the
+  closed blocking-stdlib family; `@no_ffi` matches bundle-local
+  `@ffi` declarations; `@no_recursion` is call-graph acyclicity
+  (diamonds pass). Later phases — `@no_panic` (a different
+  analysis), `@no_syscall` / `@deterministic` (need the full
+  `lotus_*` frontier classification) — are unchanged in the issue's
+  build order.
+
 ## v0.11.22 — iris handoff-8: adapter ingest lit + the refactor batch (2026-07-29)
 
 - **The adapter ingest path carries the full observation trio**
