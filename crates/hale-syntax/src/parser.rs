@@ -378,7 +378,8 @@ impl Parser {
             // flags before a fn, stackable with each other and with
             // `@hot` / `@budget(...)`.
             let is_effect = matches!(&kind_tok,
-                TokenKind::Ident(s) if Self::effect_assert_for(s).is_some());
+                TokenKind::Ident(s) if Self::effect_assert_for(s).is_some()
+                    || Self::is_effects_form(s));
             if is_export {
                 // WASM entry-inversion. `@export fn …` is a free-fn
                 // module export; `@export locus …` is the persistent
@@ -1203,14 +1204,126 @@ impl Parser {
     /// assertions? They are bare `@`-flags before a `fn`, stackable
     /// with each other and with `@hot` / `@budget(...)`.
     fn effect_assert_for(name: &str) -> Option<EffectAssert> {
-        match name {
-            "no_recursion" => Some(EffectAssert::NoRecursion),
-            "no_ffi" => Some(EffectAssert::NoFfi),
-            "no_block" => Some(EffectAssert::NoBlock),
-            "no_syscall" => Some(EffectAssert::NoSyscall),
-            "deterministic" => Some(EffectAssert::Deterministic),
-            _ => None,
+        // GH #265: the `@no_*` family is documented SUGAR over
+        // `@effects(none: {...})` — desugared here so the checker has
+        // exactly one shape to interpret. `@deterministic` is the
+        // named bundle (no clock, no entropy, no environment).
+        let classes = match name {
+            "no_recursion" => vec![EffectClass::Recursion],
+            "no_ffi" => vec![EffectClass::Ffi],
+            "no_block" => vec![EffectClass::Block],
+            "no_syscall" => vec![EffectClass::Syscall],
+            "no_publish" => vec![EffectClass::Publish],
+            "no_spawn" => vec![EffectClass::Spawn],
+            "deterministic" => vec![
+                EffectClass::Time,
+                EffectClass::Entropy,
+                EffectClass::Env,
+            ],
+            _ => return None,
+        };
+        Some(EffectAssert::Forbid(classes))
+    }
+
+    /// Is this the general `@effects(...)` form?
+    fn is_effects_form(name: &str) -> bool {
+        name == "effects"
+    }
+
+    /// GH #265: `@effects(none: {a, b})` / `@effects(publish: {A, B})`.
+    /// The general surface the `@no_*` flags are sugar for.
+    fn parse_effects_annotation(&mut self) -> Result<(Vec<EffectAssert>, Span), Diag> {
+        let at = self.expect(TokenKind::At, "@")?;
+        self.bump(); // `effects`
+        self.expect(TokenKind::LParen, "(")?;
+        let mut out = Vec::new();
+        loop {
+            let key_tok = self.peek_token().clone();
+            let key = match &key_tok.kind {
+                TokenKind::Ident(s) => s.clone(),
+                // `publish` is a bus keyword elsewhere in the grammar;
+                // inside `@effects(...)` it is the key name.
+                TokenKind::Publish => "publish".to_string(),
+                _ => {
+                    return Err(Diag::parse(
+                        key_tok.span,
+                        "expected `none:` or `publish:` inside `@effects(...)`",
+                    ))
+                }
+            };
+            self.bump();
+            self.expect(TokenKind::Colon, ":")?;
+            self.expect(TokenKind::LBrace, "{")?;
+            let mut items: Vec<String> = Vec::new();
+            loop {
+                if matches!(self.peek(), TokenKind::RBrace) {
+                    break;
+                }
+                let t = self.peek_token().clone();
+                match &t.kind {
+                    TokenKind::Ident(s) => {
+                        items.push(s.clone());
+                        self.bump();
+                    }
+                    TokenKind::StringLit(s) => {
+                        items.push(s.clone());
+                        self.bump();
+                    }
+                    _ => {
+                        return Err(Diag::parse(
+                            t.span,
+                            "expected an effect class / topic name",
+                        ))
+                    }
+                }
+                if matches!(self.peek(), TokenKind::Comma) {
+                    self.bump();
+                }
+            }
+            self.expect(TokenKind::RBrace, "}")?;
+            match key.as_str() {
+                "none" => {
+                    let mut classes = Vec::new();
+                    for it in &items {
+                        match EffectClass::from_ident(it) {
+                            Some(c) => classes.push(c),
+                            None => {
+                                return Err(Diag::parse(
+                                    key_tok.span,
+                                    format!(
+                                        "unknown effect class `{}` — expected \
+                                         one of syscall, block, time, entropy, \
+                                         env, ffi, publish, spawn, recursion",
+                                        it
+                                    ),
+                                ))
+                            }
+                        }
+                    }
+                    out.push(EffectAssert::Forbid(classes));
+                }
+                "publish" => {
+                    out.push(EffectAssert::PublishSet(items));
+                }
+                _ => {
+                    return Err(Diag::parse(
+                        key_tok.span,
+                        format!(
+                            "unknown `@effects` key `{}` — expected `none:` \
+                             or `publish:`",
+                            key
+                        ),
+                    ))
+                }
+            }
+            if matches!(self.peek(), TokenKind::Comma) {
+                self.bump();
+                continue;
+            }
+            break;
         }
+        let close = self.expect(TokenKind::RParen, ")")?;
+        Ok((out, at.span.merge(close.span)))
     }
 
     /// Consume a run of stacked `@no_*` effect assertions, returning
@@ -1228,6 +1341,15 @@ impl Parser {
                 TokenKind::Ident(s) => s.clone(),
                 _ => break,
             };
+            if Self::is_effects_form(&name) {
+                let (mut asserts, aspan) = self.parse_effects_annotation()?;
+                out.append(&mut asserts);
+                span = Some(match span {
+                    Some(prev) => prev.merge(aspan),
+                    None => aspan,
+                });
+                continue;
+            }
             let Some(eff) = Self::effect_assert_for(&name) else {
                 break;
             };
@@ -1752,7 +1874,8 @@ impl Parser {
                 // #265: effect assertions on a method/handler (the
                 // common placement — a bus handler is a member fn).
                 if matches!(&kind_tok,
-                    TokenKind::Ident(s) if Self::effect_assert_for(s).is_some())
+                    TokenKind::Ident(s) if Self::effect_assert_for(s).is_some()
+                        || Self::is_effects_form(s))
                 {
                     let (effects, espan) = self.parse_effect_asserts()?;
                     let espan = espan.expect("at least one assertion parsed");

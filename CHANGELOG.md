@@ -8,37 +8,48 @@ behavior.
 
 ## Unreleased
 
-- **GH #265 phase 1: categoric effect assertions —
-  `@no_recursion`, `@no_ffi`, `@no_block`.** `@budget`'s discipline
-  generalized from allocation *count* to effect *classes*: an opt-in
-  contract at a root, inferred everywhere else, enforced as a hard
-  error. Bare `@`-flags before a `fn` (free or method), stackable
-  with each other and with `@hot` / `@budget(...)`. Violations
-  report the **witness chain** — `on_tick -> helper -> nap
-  [std::time::sleep — …]` — the diagnostic shape `@budget`'s
-  fixpoint structurally could not produce, now available because
-  both run on the shared `hale-types::callgraph` engine (shipped in
-  the v0.11.22 refactor batch). `@no_block`'s leaf set is the
-  closed blocking-stdlib family; `@no_ffi` matches bundle-local
-  `@ffi` declarations; `@no_recursion` is call-graph acyclicity
-  (diamonds pass). Later phases — `@no_panic` (a different
-  analysis), `@no_syscall` / `@deterministic` (need the full
-  `lotus_*` frontier classification) — are unchanged in the issue's
-  build order.
-
-- **GH #265 phase 2: the frontier is classified —
-  `@no_syscall`, `@deterministic`.** All 327 stdlib registry entries
-  now carry a real `EffectSet` (SYSCALL / BLOCK / PUBLISH / TIME /
-  ENTROPY / ENV / ALLOC / PURE) — zero unclassified residue — and the
-  two new assertions are predicates over that column rather than
-  hand-lists. The classification distinguishes reading an effect
-  source from operating on a supplied value (`time_from_unix(n)` is
-  deterministic, `monotonic_ns()` is not; `http::parse_request` is
-  pure, `http::get` is blocking I/O). An unclassified entry would
-  violate every assertion by construction, so incompleteness can never
-  silently pass. The full certificate composes and is checked in one
-  pass: `@no_block @no_syscall @deterministic @no_recursion @hot
-  @budget(alloc_per_call = 0)`.
+- **GH #265: effect assertions — one surface, one engine, one
+  classified frontier.** `@budget`'s discipline generalized from
+  allocation *count* to effect *classes*, delivered as a system
+  rather than a family of flags.
+  - **The general form**: `@effects(none: {syscall, block, time,
+    entropy, env, ffi, publish, spawn, recursion})` and
+    `@effects(publish: {Topic, …})` (the allowed publish set —
+    exact, because the topic set is closed). The `@no_syscall` /
+    `@no_block` / `@no_ffi` / `@no_publish` / `@no_spawn` /
+    `@no_recursion` / `@deterministic` family is **documented
+    sugar**, desugared at parse time so the checker has one shape to
+    interpret and a flag can never drift from the general form. The
+    general form also expresses contracts the sugar can't name —
+    `@effects(none: {time})` forbids the clock while allowing
+    jitter.
+  - **The frontier is classified**: all 327 stdlib registry entries
+    carry an `EffectSet`, zero unclassified residue (pinned by a
+    test). Reading an effect source is distinguished from operating
+    on a supplied value — `time_from_unix(n)` is deterministic,
+    `monotonic_ns()` is not. An unclassified entry violates every
+    assertion by construction, so incompleteness can't silently
+    pass.
+  - **Syntactic effects**: `publish` and `spawn` are carried by
+    `Topic <- v` and `Child { … }`, not by any call, so the summary
+    now records effect *sites* alongside allocation sites.
+  - **Diagnostics carry the witness path** — the call chain from the
+    asserting root to the offending leaf, which `@budget`'s fixpoint
+    structurally could not produce.
+  - **Placement-implied contracts — the assertion you don't write.**
+    A handler on a `cooperative(pool = X) where async_io` locus that
+    reaches a blocking call stalls every other locus on that pool;
+    the placement already declared the intent, so the compiler warns
+    with **no annotation at all**, naming the chain and both fixes.
+    Writing `@no_block` upgrades it to an enforced error and
+    suppresses the advisory. This is the class of bug that shipped
+    as a downstream latency mystery (a sleeping handler holding an
+    engine pool), now visible at compile time.
+  - Docs: `spec/verification.md` rewritten as one systematic entry,
+    `spec/tokens.md` gains an annotation inventory,
+    `spec/styleguide.md`'s enforcement ladder gains the `@effects`
+    and placement-implied tiers, `AGENTS.md` updated, and
+    `docs/src/systems/performance.md` documents the surface.
 
 ## v0.11.22 — iris handoff-8: adapter ingest lit + the refactor batch (2026-07-29)
 

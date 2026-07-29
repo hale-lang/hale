@@ -150,62 +150,92 @@ assume the others in a build:
   contract with `recv_into` + a reused `BytesBuilder`. fn-only; mutually
   exclusive with `@unbounded`. A violation reports the measured count and
   points at every offending allocation with the fast-path fix.
-- **Categoric effect assertions — `@no_recursion` / `@no_ffi` /
-  `@no_block`** (GH #265 phase 1, 2026-07-29). `@budget`'s discipline
-  generalized from *allocation count* to *effect classes*: an opt-in
-  contract at a root the author cares about, inferred everywhere else,
-  enforced as a hard error over the resolved call graph. All three are
-  bare `@`-flags before a `fn` (free or method), stackable with each
-  other and with `@hot` / `@budget(...)`.
-  - `@no_recursion` — no cycle reachable from this root (the
-    static-stack precondition). Diamonds are not cycles.
-  - `@no_ffi` — no `@ffi` fn transitively reachable ("pure managed
-    Hale", the `forbid(unsafe)` analog).
-  - `@no_block` — no blocking stdlib operation reachable (`sleep`, the
-    blocking `recv` family, `accept`, `connect`, subprocess waits,
-    `Reader.next`). This is the contract an `async_io`-placed handler
-    needs: a blocking call there stalls the pool's single worker.
+- **Effect assertions — `@effects(...)` and its `@no_*` sugar**
+  (GH #265, 2026-07-29). `@budget`'s discipline generalized from
+  allocation *count* to effect *classes*: an opt-in contract at a root
+  the author cares about, inferred everywhere else, enforced as a hard
+  error. **One surface, one engine, one classified frontier** — not a
+  family of independent flags.
 
-  Unlike `@budget`'s fixpoint (which reports a count and the offending
-  sites), an effect violation reports the **witness chain** — the call
-  path from the asserting root to the offending leaf,
-  `on_tick -> helper -> nap [std::time::sleep — …]` — plus a second
-  diagnostic at the leaf itself. Both run on the shared
-  witness-preserving engine (`hale-types::callgraph`), which is also
-  what `@budget` now walks.
+  The general form is `@effects(...)`:
 
-  Boundaries, unchanged from the issue: opaque callees other than the
-  classified leaf sets are outside what an assertion sees (the same
-  soundness boundary the escape analysis and `@budget` draw); `@ffi`
-  labels are trusted, not verified. `@no_panic` remains a later phase —
-  it is a different analysis (disposition coverage + index-op
-  selection), not leaf reachability.
-- **Registry-driven assertions — `@no_syscall` / `@deterministic`**
-  (GH #265 phase 2, 2026-07-29). The stdlib surface is now **fully
-  effect-classified**: every one of its entries carries an `EffectSet`
-  (`SYSCALL` / `BLOCK` / `PUBLISH` / `TIME` / `ENTROPY` / `ENV` /
-  `ALLOC` / `PURE`) in `hale-types::stdlib_surface`, and these two
-  assertions are predicates over it rather than hand-lists:
-  - `@no_syscall` — nothing syscall-class reachable (filesystem,
-    sockets, process, terminal, stdio). The compute-only contract.
-  - `@deterministic` — no clock read, no entropy, no environment: the
-    fn is a function of its inputs. The contract replicated /
-    replayable workloads need; with a message log it buys exact replay
-    debugging.
+  ```hale
+  @effects(none: {syscall, block})   fn decode(b: Bytes) -> Msg { ... }
+  @effects(none: {time})             fn backoff(n: Int) -> Int { ... }
+  @effects(publish: {OrderFill})     fn route(o: Order) { ... }
+  ```
 
-  The classification distinguishes *reading* an effect source from
-  *operating on a supplied value*: `std::time::time_from_unix(n)`
-  formats a caller-provided instant and is deterministic, while
-  `monotonic_ns()` is not; `std::http::parse_request` is pure while
-  `std::http::get` is blocking I/O. An **unclassified** registry entry
-  is treated as may-do-anything and therefore violates every
-  assertion — incompleteness can never silently pass, which is what
-  keeps the frontier true as the stdlib grows.
+  `none: {…}` forbids effect classes; `publish: {…}` declares the
+  allowed publish set (exact, because the topic set is closed). The
+  classes are `syscall`, `block`, `time`, `entropy`, `env`, `ffi`,
+  `publish`, `spawn`, `recursion`.
 
-  Composing the set gives the certificates the issue names:
+  The `@no_*` family is **documented sugar**, desugared at parse time
+  so the checker has exactly one shape to interpret (a flag can never
+  drift from the general form):
+
+  | sugar | means |
+  |---|---|
+  | `@no_syscall` | `@effects(none: {syscall})` |
+  | `@no_block` | `@effects(none: {block})` |
+  | `@no_ffi` | `@effects(none: {ffi})` |
+  | `@no_publish` | `@effects(none: {publish})` |
+  | `@no_spawn` | `@effects(none: {spawn})` |
+  | `@no_recursion` | `@effects(none: {recursion})` |
+  | `@deterministic` | `@effects(none: {time, entropy, env})` |
+
+  All stack with each other and with `@hot` / `@budget(...)`, so the
+  full hot-path certificate is one line:
   `@no_block @no_syscall @deterministic @no_recursion @hot
-  @budget(alloc_per_call = 0)` is the complete hot-path contract, and
-  it is checked in one whole-seed pass.
+  @budget(alloc_per_call = 0)`.
+
+  **Where each class's truth comes from.** `syscall` / `block` /
+  `time` / `entropy` / `env` are queries against the **fully
+  classified stdlib registry** — all 327 surface entries carry an
+  `EffectSet` in `hale-types::stdlib_surface`, with zero unclassified
+  residue (pinned by a test). The classification distinguishes
+  *reading* an effect source from operating on a *supplied value*:
+  `time_from_unix(n)` is deterministic while `monotonic_ns()` is not;
+  `http::parse_request` is pure while `http::get` is blocking I/O. An
+  unclassified entry is treated as may-do-anything and violates every
+  assertion, so incompleteness can never silently pass. `ffi` matches
+  bundle-local `@ffi` declarations. `publish` and `spawn` are
+  **syntactic** — `Topic <- v` and `Child { … }` are effects the
+  language expresses directly, recorded as effect *sites* on the
+  summary rather than as call edges. `recursion` is a graph property.
+
+  **Diagnostics carry the witness path** — the call chain from the
+  asserting root to the offending leaf, which `@budget`'s fixpoint
+  structurally could not produce:
+
+  ```
+  effect assertion violated: `on_tick` must not reach `block`, but reaches
+    on_tick -> helper -> nap [std::time::sleep — a blocking operation …].
+  ```
+
+  plus a second diagnostic at the leaf itself.
+
+  **Boundaries:** opaque callees outside the classified frontier are
+  not seen (the same soundness boundary the escape analysis and
+  `@budget` draw); `@ffi` labels are trusted, not verified; a computed
+  publish subject cannot be proven in-set and is reported. `@no_panic`
+  remains a separate track — disposition coverage + index-op
+  selection, not leaf reachability.
+- **Placement-implied contracts — the assertion you don't write**
+  (GH #265, 2026-07-29). A locus placed
+  `cooperative(pool = X) where async_io` shares that pool's single
+  worker; a blocking operation reachable from one of its handlers
+  holds the worker and stalls every other locus on the pool. Since
+  the placement already declares the intent, the compiler enforces it
+  **with no annotation at all**: an unannotated handler on an
+  async_io pool that reaches a blocking call gets a warning naming
+  the chain and both fixes (move the work to its own pool, or assert
+  `@no_block` to have it enforced as an error). Advisory rather than
+  hard, because a lone locus owning its pool may block deliberately;
+  writing an explicit assertion suppresses the advisory (the author
+  is engaged, and the enforced error replaces it). This is the class
+  of bug that shipped as a downstream latency mystery — a sleeping
+  handler holding an engine pool — now visible at compile time.
 - **Hot-path allocation lint — default-on advisory** (2026-07-16). Two
   loop-scoped anti-patterns get a **warning** (never a build failure), so
   the allocation-free shape is the path of least resistance rather than

@@ -165,94 +165,78 @@ build — because you asked for it). The two stack:
 
 ## Saying what a function may *do*
 
-Beyond counting allocations, a fn can assert what it's allowed to
-*reach*:
+A fn can declare what it's allowed to *reach*, and the compiler
+enforces it across everything reachable from it:
 
 ```hale,fragment
-@no_block fn on_tick(t: Tick) { ... }        // nothing blocking reachable
-@no_syscall fn compute(n: Int) -> Int { ... } // no file/socket/process I/O
-@deterministic fn decide(seed: Int) -> Int { ... } // no clock, entropy, or env
-@no_recursion fn step(n: Int) -> Int { ... } // no cycle under this root
-@no_ffi fn managed(x: Int) -> Int { ... }    // no @ffi call reachable
+@effects(none: {syscall, block}) fn decode(b: Bytes) -> Msg { ... }
+@effects(none: {time})           fn backoff(n: Int) -> Int { ... }
+@effects(publish: {OrderFill})   fn route(o: Order) { ... }
 ```
 
-`@deterministic` is the one worth knowing about for replay: a fn that
-reads no clock, no randomness and no environment is a function of its
-inputs, so replaying its inputs replays its behavior exactly. The
-compiler knows the difference between reading a source and using a
-supplied value — `std::time::time_from_unix(at)` formats an instant
-you passed in and is fine; `std::time::monotonic_ns()` is not.
+`none: {…}` forbids effect classes — `syscall`, `block`, `time`,
+`entropy`, `env`, `ffi`, `publish`, `spawn`, `recursion`.
+`publish: {…}` declares which topics a fn may publish to (exact,
+because Hale's topic set is closed).
 
-They stack with each other and with the contracts above —
-`@no_block @hot @budget(alloc_per_call = 0) fn handle(...)` is the
-full hot-path certificate.
+The common contracts have short names, which are exactly the same
+thing spelled shorter:
 
-`@no_block` is the one to reach for on an `async_io`-placed handler:
-a blocking call there holds the pool's single worker, which is
-invisible until something else wants it. If a violation exists the
-compiler shows you the path, not just the verdict:
+| shorthand | full form |
+|---|---|
+| `@no_syscall` | `@effects(none: {syscall})` |
+| `@no_block` | `@effects(none: {block})` |
+| `@no_ffi` | `@effects(none: {ffi})` |
+| `@no_publish` | `@effects(none: {publish})` |
+| `@no_spawn` | `@effects(none: {spawn})` |
+| `@no_recursion` | `@effects(none: {recursion})` |
+| `@deterministic` | `@effects(none: {time, entropy, env})` |
 
-```
-`@no_block` violated: `on_tick` reaches
-on_tick -> helper -> nap [std::time::sleep — blocks/parks for the
-full duration].
-```
+They stack with each other and with the contracts above, so the full
+hot-path certificate is one line:
 
-
-```hale
+```hale,fragment
+@no_block @no_syscall @deterministic @no_recursion @hot
 @budget(alloc_per_call = 0)
-fn decode(buf: Bytes) -> Tick {
-    // no arena allocation reachable from here — the compiler proves it.
-    // reads via reused fields / recv_into; parses in place.
-}
+fn on_tick(a: Int, b: Int) -> Int { ... }
 ```
 
-`N = 0` is the zero-alloc certificate — exactly what you want on a
-per-datagram handler or decode helper. The check counts the arena
-allocations it can see (literals, `@form` inserts) transitively through
-resolved callees, plus the known-allocating `recv` family; a loop-nested
-allocation or a call to an allocating fn in a loop is unbounded per call
-and busts any finite budget. On a violation it reports the count and
-points at every offending line. It's the dual of `@unbounded` — one
-acknowledges intentional allocation, the other forbids it — and the two
-are mutually exclusive on a fn.
+`@deterministic` is the one to know for replay: a fn that reads no
+clock, no randomness and no environment is a function of its inputs,
+so replaying its inputs replays its behavior exactly. The compiler
+knows the difference between reading a source and using a supplied
+value — `std::time::time_from_unix(at)` formats an instant you
+passed in and is fine; `std::time::monotonic_ns()` is not.
 
-The same idea extends to file descriptors and resource budgets. The
-full diagnostic surface — runtime residency dumps,
-`--dump-alloc-summary`, the fd-leak and resource-budget checks, and
-the `@unbounded` carve-out — is the operator's toolkit, documented in
-[Operations & debugging](./operations.md). This chapter is about
-writing code that doesn't accumulate in the first place; that one is
-about pinning it down when it does.
+Reach for the general form when the shorthand doesn't say what you
+mean. "No wall clock, but jitter is fine" is a real contract for a
+retry loop, and it's `@effects(none: {time})` — entropy stays
+allowed.
 
-For the resource *surface* — thread / pool / subject / fd counts,
-not a leak — there's a budget you can read or gate on:
+When an assertion fails you get the path, not just the verdict:
 
-```sh
-hale check app.hl --dump-resource-budget
-# OS threads (pinned loci):  1
-# cooperative pools:         1  [io]
-# bus subjects:              4
-# fd acquisition sites:      2
+```
+effect assertion violated: `on_tick` must not reach `block`, but reaches
+  on_tick -> helper -> nap [std::time::sleep — a blocking operation …].
 ```
 
-Drop a ceiling file in CI and the build fails when a count climbs
-past it — *"this PR added a pinned thread; bump the ceiling if you
-meant to."* Every key is optional:
+### The assertion you don't have to write
 
-```toml
-# budget.toml
-pinned_threads = 4
-bus_subjects   = 16
+Placement already declares intent, so some contracts need no
+annotation. A locus placed `cooperative(pool = web) where async_io`
+shares that pool's single worker — so a handler on it that blocks
+holds up every other locus on the pool:
+
+```
+`Worker::on_e` is placed on the async_io pool `web`, whose single worker
+it shares — but it reaches Worker::on_e -> nap [std::time::sleep …].
+A blocking call here stalls every other locus on `web` until it returns.
 ```
 
-```sh
-hale check app.hl --check-resource-budget budget.toml
-```
+That's a warning, not an error: a locus that owns its pool may block
+on purpose. Writing `@no_block` on the handler says "I mean it" and
+upgrades the check to an enforced error.
 
-None of these run by default — they're tools you reach for when a
-program's memory or fd surface is something you want to hold the
-line on.
 
 ## Knobs for when it's not your code
 

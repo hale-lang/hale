@@ -380,6 +380,8 @@ a rolled one — log the friction, don't ship the invention.
 Each rule is tagged with its enforcement status:
 **[error]** the compiler rejects it, **[warn]** the compiler
 warns by default, **[@hot]** checked only inside `@hot` fns,
+**[@effects]** checked when the fn declares the matching effect
+assertion (`@effects(none: {…})` or its `@no_*` sugar),
 **[convention]** nothing checks it — the guide is the enforcement.
 
 ### C1. Value ownership on assignment — trust it, know the edges
@@ -712,9 +714,10 @@ is regression-tested. **[convention]**
 
 ## 5. The enforcement ladder
 
-The compiler backs this guide in four tiers. Everything default
-is advisory or genuinely-broken-only; strictness is opt-in where
-you certify a path.
+The compiler backs this guide in tiers. Everything default is
+advisory or genuinely-broken-only; strictness is opt-in where you
+certify a path — plus one tier you get for free because your
+*placement* already declared the intent.
 
 | Tier | Check | Status |
 |---|---|---|
@@ -722,6 +725,8 @@ you certify a path.
 | **warn** (default) | unbounded-alloc survey (self-escaping allocs in unbounded contexts; retirement-aware since v0.11.3); subscription nothing publishes to; locus/builder in a loop **or bus handler**; allocating recv in a loop; blocking call on a cooperative pool (interprocedural); accept-without-release on a daemon | advisory |
 | **@hot** (opt-in) | all of the above as errors within the fn; `snapshot()`/`finish()` in a loop; whole-struct self-field replace | errors in certified fns |
 | **@budget** (opt-in) | `alloc_per_call = N` counted transitively; `N=0` zero-alloc certificate | build fails on violation |
+| **@effects** (opt-in) | `@effects(none: {syscall, block, time, entropy, env, ffi, publish, spawn, recursion})` / `@effects(publish: {T})`, and the `@no_*` / `@deterministic` sugar — checked transitively; diagnostics carry the call chain to the offending leaf | build fails on violation |
+| **placement-implied** (automatic) | a handler on a `cooperative(pool = X) where async_io` locus that reaches a blocking call — the placement *is* the assertion, so no annotation is needed; writing `@no_block` upgrades it to an enforced error | advisory |
 | **fmt** (CI gate) | `hale fmt --check` — canonical mechanical form (§2, "Canonical form"); exit 1 lists offenders | gate in CI; `hale fmt` fixes |
 | escape hatches | `@unbounded` (fn or lifecycle hook) acknowledges intentional accumulation; `--allow-unowned-subscriber`; `--no-warn-unbounded-alloc` | |
 

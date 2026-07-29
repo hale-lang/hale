@@ -403,6 +403,34 @@ pub struct FnSummary {
     pub sites: Vec<AllocSite>,
     pub calls: Vec<CallEdge>,
     pub loops: Vec<LoopInfo>,
+    /// GH #265: non-call effect sites in this fn's own body — effects
+    /// carried by SYNTAX rather than by a stdlib call, so a leaf
+    /// predicate over call edges alone can never see them. Today:
+    /// `Topic <- value` publishes and locus instantiations.
+    pub effect_sites: Vec<EffectSite>,
+}
+
+/// GH #265: an effect a fn performs directly in its own body,
+/// syntactically. The classified stdlib frontier covers effects
+/// reached by CALLING something; these are the ones Hale expresses
+/// as language constructs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectSite {
+    pub kind: EffectSiteKind,
+    pub loop_depth: u32,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EffectSiteKind {
+    /// `Topic <- value` / `"subject" <- value`. Carries the subject
+    /// as written when it is a compile-time-constant string or a
+    /// declared topic name (the closed topic set makes publish-set
+    /// assertions exact); None for a computed subject.
+    Publish(Option<String>),
+    /// A locus instantiation (`Child { ... }`) — an arena creation
+    /// plus, depending on placement, a thread spawn or a pool post.
+    Spawn(String),
 }
 
 /// A distilled view of a locus's storage shape (GH #18 item 1, Phase D —
@@ -912,6 +940,15 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
     let mut bodies: Vec<BodyEntry> = Vec::new();
     let mut known: BTreeSet<FnKey> = BTreeSet::new();
     // GH #18 item 1 — the `@bounded` / `@unbounded` opt-in/carve-out sets.
+    // GH #265: every declared locus type name (spawn-site detection).
+    let mut locus_type_names: BTreeSet<String> = BTreeSet::new();
+    for p in programs {
+        for item in &p.items {
+            if let TopDecl::Locus(l) = item {
+                locus_type_names.insert(l.name.name.clone());
+            }
+        }
+    }
     let mut bounded_loci: BTreeSet<String> = BTreeSet::new();
     let mut unbounded_fns: BTreeSet<FnKey> = BTreeSet::new();
     // Phase D / D1 — the per-locus storage shape.
@@ -1202,6 +1239,8 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
             .unwrap_or(&empty_inline_arrays);
         let mut w = Walker {
             sites: Vec::new(),
+            effect_sites: Vec::new(),
+            locus_types: &locus_type_names,
             calls: Vec::new(),
             loops: Vec::new(),
             escaping: &escaping,
@@ -1227,6 +1266,7 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
                 sites: w.sites,
                 calls: w.calls,
                 loops: w.loops,
+                effect_sites: w.effect_sites,
             },
         );
     }
@@ -1444,6 +1484,12 @@ fn init_is_scalar_or_static(e: &Expr) -> bool {
 
 struct Walker<'a> {
     sites: Vec<AllocSite>,
+    /// GH #265: syntactic effect sites (publish / spawn).
+    effect_sites: Vec<EffectSite>,
+    /// GH #265: declared locus type names — a struct literal of one
+    /// of these is a locus INSTANTIATION (arena create + possibly a
+    /// thread spawn / pool post), not a plain data allocation.
+    locus_types: &'a BTreeSet<String>,
     calls: Vec<CallEdge>,
     loops: Vec<LoopInfo>,
     escaping: &'a BTreeMap<String, Escape>,
@@ -1488,6 +1534,21 @@ struct Walker<'a> {
 }
 
 impl<'a> Walker<'a> {
+    /// GH #265: record a syntactic effect site (publish / spawn) in
+    /// the fn currently being summarized.
+    fn push_effect_site(
+        &mut self,
+        kind: EffectSiteKind,
+        depth: u32,
+        span: Span,
+    ) {
+        self.effect_sites.push(EffectSite {
+            kind,
+            loop_depth: depth,
+            span,
+        });
+    }
+
     fn push_site(&mut self, kind: AllocKind, escape: Escape, depth: u32, span: Span) {
         // Only a StoredToSelf escape carries a target field — that's the
         // `self.<field> = <alloc>` whole-value replace the solver bounds.
@@ -1633,7 +1694,27 @@ impl<'a> Walker<'a> {
             // walk for the alloc summary.
             Stmt::Reperspective { .. } => {}
             Stmt::Fail { value, .. } => self.walk_diverging_payload(value),
-            Stmt::Send { subject, value, .. } => {
+            Stmt::Send { subject, value, span, .. } => {
+                // GH #265: a publish is an effect the language
+                // expresses syntactically — record it so publish-set
+                // assertions (and @no_publish) can see it. The
+                // subject is exact when it is a literal / declared
+                // topic name, which is the common case and what makes
+                // the closed-topic-set claim hold.
+                let subj = match subject {
+                    Expr::Literal(Literal::String(s), _) => {
+                        Some(s.clone())
+                    }
+                    // A declared topic name (`Sig <- v`) parses as a
+                    // bare identifier.
+                    Expr::Ident(id) => Some(id.name.clone()),
+                    _ => None,
+                };
+                self.push_effect_site(
+                    EffectSiteKind::Publish(subj),
+                    depth,
+                    *span,
+                );
                 self.walk_expr(subject, depth, Escape::Local);
                 self.walk_expr(value, depth, Escape::Sent);
             }
@@ -1736,6 +1817,17 @@ impl<'a> Walker<'a> {
                 // the site — that's the TP-3 anchor-clone class.
                 let inplace_no_heap = matches!(escape, Escape::StoredToSelf)
                     && inits.iter().all(|si| init_is_scalar_or_static(&si.value));
+                if self.locus_types.contains(&name) {
+                    // GH #265: locus instantiation — an effect in its
+                    // own right (arena create, possibly a thread or
+                    // pool post), recorded whether or not the alloc
+                    // site below is elided.
+                    self.push_effect_site(
+                        EffectSiteKind::Spawn(name.clone()),
+                        depth,
+                        *span,
+                    );
+                }
                 if !inplace_no_heap {
                     self.push_site(AllocKind::StructLit(name), escape, depth, *span);
                 }
