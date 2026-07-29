@@ -321,6 +321,31 @@ pub const SURFACES: &[NsSurface] = &[
         ],
         open_prefixes: &[],
     },
+    // The `std::io::MirrorRing` locus's backing primitives. Internal
+    // (`__`-prefixed, not a user-facing surface) but still frontier
+    // LEAVES — `mirror_ring.hl` calls them, so an effect assertion
+    // reaching a MirrorRing method reaches these. An unregistered
+    // namespace is invisible to classification, which is the hole
+    // this whole pass exists to close; "internal" is not a reason to
+    // leave a leaf unclassified.
+    NsSurface {
+        ns: &["io", "mirror"],
+        fns: &[
+            // Double-mmap setup and teardown: mmap/munmap.
+            e("__new", EffectSet::SYSCALL),
+            e("__free", EffectSet::SYSCALL),
+            // Datagram read straight into the ring.
+            e("__recv_into", EffectSet::SYSCALL),
+            // Cursor arithmetic over an already-mapped region.
+            e("__commit", EffectSet::PURE),
+            e("__consume", EffectSet::PURE),
+            e("__readable", EffectSet::PURE),
+            e("__writable", EffectSet::PURE),
+            e("__len", EffectSet::PURE),
+            e("__capacity", EffectSet::PURE),
+        ],
+        open_prefixes: &[],
+    },
     NsSurface {
         ns: &["bytes"],
         fns: &[

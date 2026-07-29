@@ -82,3 +82,58 @@ fn corpus_formats_and_is_idempotent() {
         non_idempotent.join("\n")
     );
 }
+
+/// The same two properties, over the **embedded** corpus — the ~1.2k
+/// programs that live in Rust string literals inside the test suite.
+///
+/// That is 3× more Hale than the on-disk fixtures, and until the
+/// corpus provider existed no property could see any of it. Fixtures
+/// are written to be tidy examples; these are written to hit feature
+/// intersections and regressions, so they are the harder input and
+/// exactly where a formatter bug would hide.
+///
+/// Only parseable programs: the suite keeps intentional negative
+/// fixtures, and "the formatter rejects a program the parser also
+/// rejects" is not a finding.
+#[test]
+fn embedded_corpus_formats_and_is_idempotent() {
+    let programs =
+        hale_corpus::parseable(|s| hale_syntax::parse_source(s).is_ok());
+    assert!(
+        programs.len() > 900,
+        "corpus provider yielded only {} programs",
+        programs.len()
+    );
+    let mut gate_failures = Vec::new();
+    let mut non_idempotent = Vec::new();
+    for p in &programs {
+        let once = match format_source(&p.source) {
+            Ok(o) => o,
+            Err(e) => {
+                gate_failures.push(format!("{}: {:?}", p.origin, e));
+                continue;
+            }
+        };
+        match format_source(&once) {
+            Ok(twice) if twice != once => {
+                non_idempotent.push(p.origin.clone())
+            }
+            Ok(_) => {}
+            Err(e) => gate_failures
+                .push(format!("{} (2nd pass): {:?}", p.origin, e)),
+        }
+    }
+    assert!(
+        gate_failures.is_empty(),
+        "fmt tripped the token-equivalence gate on {} embedded \
+         programs:\n{}",
+        gate_failures.len(),
+        gate_failures.join("\n")
+    );
+    assert!(
+        non_idempotent.is_empty(),
+        "fmt is not a fixed point on {} embedded programs:\n{}",
+        non_idempotent.len(),
+        non_idempotent.join("\n")
+    );
+}

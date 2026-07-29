@@ -97,6 +97,57 @@ fn prefix_pattern_covers() -> Vec<(String, String)> {
     out
 }
 
+/// Whole-namespace dispatch arms: `["std", "io", "mirror", op] =>`
+/// binds the leaf and handles every fn in that namespace with one
+/// arm. The literal scraper cannot see those (the last segment is an
+/// identifier, not a string), so without this a fully-dispatched
+/// namespace reads as entirely uncovered.
+fn namespace_wildcard_arms() -> Vec<Vec<String>> {
+    let src_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut out = Vec::new();
+    let mut stack = vec![src_dir];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            if p.extension().map(|x| x != "rs").unwrap_or(true) {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&p) else { continue };
+            for line in text.lines() {
+                let Some(s) = line.find("[\"std\", \"") else { continue };
+                let Some(e_rel) = line[s..].find(']') else { continue };
+                let inner = &line[s + 1..s + e_rel];
+                let parts: Vec<&str> =
+                    inner.split(',').map(|x| x.trim()).collect();
+                // literal segments then exactly one bare identifier
+                let (last, head) = match parts.split_last() {
+                    Some(x) => x,
+                    None => continue,
+                };
+                let head_literal = head
+                    .iter()
+                    .all(|x| x.len() >= 2 && x.starts_with('"') && x.ends_with('"'));
+                let last_is_ident = !last.starts_with('"')
+                    && last.chars().all(|c| c.is_alphanumeric() || c == '_')
+                    && !last.is_empty();
+                if head_literal && last_is_ident && head.len() >= 2 {
+                    out.push(
+                        head.iter()
+                            .map(|x| x.trim_matches('"').to_string())
+                            .collect(),
+                    );
+                }
+            }
+        }
+    }
+    out
+}
+
 fn dispatch_arm_paths() -> BTreeSet<String> {
     let src_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut out = BTreeSet::new();
@@ -223,6 +274,13 @@ fn every_registry_entry_has_a_dispatch_arm() {
     let registry = registry_paths();
     let exempt = registry_only_exemptions();
     let prefixes = prefix_pattern_covers();
+    let wildcards = namespace_wildcard_arms();
+    let covered_by_wildcard = |path: &str| -> bool {
+        wildcards.iter().any(|ns| {
+            path.starts_with(&format!("{}::", ns.join("::")))
+                && path.split("::").count() == ns.len() + 1
+        })
+    };
     let covered_by_prefix = |path: &str| -> bool {
         prefixes.iter().any(|(ns, pre)| {
             path.strip_prefix(&format!("std::{}::", ns))
@@ -238,6 +296,7 @@ fn every_registry_entry_has_a_dispatch_arm() {
                 && !renames.contains(*p)
                 && !exempt.contains(*p)
                 && !covered_by_prefix(p)
+                && !covered_by_wildcard(p)
         })
         .collect();
     assert!(

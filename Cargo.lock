@@ -62,11 +62,16 @@ dependencies = [
 name = "hale-codegen"
 version = "0.11.24"
 dependencies = [
+ "hale-corpus",
  "hale-stdlib",
  "hale-syntax",
  "hale-types",
  "inkwell",
 ]
+
+[[package]]
+name = "hale-corpus"
+version = "0.11.24"
 
 [[package]]
 name = "hale-lsp"
@@ -84,6 +89,9 @@ version = "0.11.24"
 [[package]]
 name = "hale-syntax"
 version = "0.11.24"
+dependencies = [
+ "hale-corpus",
+]
 
 [[package]]
 name = "hale-ts-shim"
@@ -97,6 +105,7 @@ dependencies = [
 name = "hale-types"
 version = "0.11.24"
 dependencies = [
+ "hale-corpus",
  "hale-stdlib",
  "hale-syntax",
 ]
