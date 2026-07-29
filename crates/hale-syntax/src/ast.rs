@@ -1467,30 +1467,70 @@ pub struct ConstDecl {
     pub span: Span,
 }
 
+/// GH #265: the effect classes an assertion can name — the leaf
+/// lattice the classified stdlib frontier is labelled with, plus
+/// the two Hale expresses syntactically (publish / spawn) and the
+/// graph property (recursion).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectClass {
+    Syscall,
+    Block,
+    Time,
+    Entropy,
+    Env,
+    Ffi,
+    Publish,
+    Spawn,
+    Recursion,
+}
+
+impl EffectClass {
+    pub fn from_ident(s: &str) -> Option<EffectClass> {
+        Some(match s {
+            "syscall" => EffectClass::Syscall,
+            "block" => EffectClass::Block,
+            "time" => EffectClass::Time,
+            "entropy" => EffectClass::Entropy,
+            "env" => EffectClass::Env,
+            "ffi" => EffectClass::Ffi,
+            "publish" => EffectClass::Publish,
+            "spawn" => EffectClass::Spawn,
+            "recursion" => EffectClass::Recursion,
+            _ => return None,
+        })
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EffectClass::Syscall => "syscall",
+            EffectClass::Block => "block",
+            EffectClass::Time => "time",
+            EffectClass::Entropy => "entropy",
+            EffectClass::Env => "env",
+            EffectClass::Ffi => "ffi",
+            EffectClass::Publish => "publish",
+            EffectClass::Spawn => "spawn",
+            EffectClass::Recursion => "recursion",
+        }
+    }
+}
+
 /// #265 (2026-07-29): one asserted effect-class contract
 /// (`@no_recursion` / `@no_ffi` / `@no_block` before a fn). Checked
 /// in `hale-types::effects` over the callgraph witness engine; a
 /// violation is a hard error carrying the offending call chain.
 /// Extensible — the set grows with the frontier classification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EffectAssert {
-    /// Call-graph acyclicity under this root (static stack story).
-    NoRecursion,
-    /// No `@ffi` fn transitively reachable ("pure managed Hale").
-    NoFfi,
-    /// No blocking stdlib operation reachable — the contract an
-    /// `async_io`-placed handler needs (a blocking call there stalls
-    /// the pool's single worker).
-    NoBlock,
-    /// #265 phase 2: no syscall-class stdlib operation reachable
-    /// (filesystem, sockets, process, terminal, stdio). The
-    /// compute-only contract.
-    NoSyscall,
-    /// #265 phase 2: no nondeterminism reachable — no clock read, no
-    /// entropy, no environment. The contract replicated/replayable
-    /// workloads need; combined with a message log it buys exact
-    /// replay debugging.
-    Deterministic,
+    /// GH #265: the GENERAL form — `@effects(none: {syscall, block})`
+    /// / `@effects(publish: {A, B})` / `@effects(none: {publish})`.
+    /// Every `@no_*` flag below is documented sugar over this; the
+    /// general form exists so a contract the sugar doesn't name
+    /// (e.g. "no clock, but entropy is fine") is still expressible.
+    Forbid(Vec<EffectClass>),
+    /// `@effects(publish: {A, B})` — the allowed publish set. A
+    /// publish to any subject outside the set is a violation; the
+    /// closed topic set makes this exact.
+    PublishSet(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

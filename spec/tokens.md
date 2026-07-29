@@ -586,3 +586,28 @@ lexer errors if encountered outside a string or comment:
 
 (Backticks are reserved for time literals only; bare backslash
 outside a string literal is illegal.)
+
+
+## Annotation inventory
+
+Annotations are `@`-prefixed contextual idents (never reserved
+words), so a program may still use these names as identifiers.
+They attach to the declaration that follows.
+
+| annotation | attaches to | meaning |
+|---|---|---|
+| `@ffi("c")` | free fn | external C-ABI binding |
+| `@export` | fn / locus | WASM module export; persistent singleton |
+| `@form(kind)` | locus | storage form (vec / hashmap / ring_buffer / lru_cache) |
+| `@locality(tier)` | locus | placement locality tier |
+| `@bounded` | locus | opt into the memory-bound proof |
+| `@unbounded` | fn | acknowledge intentional unbounded allocation |
+| `@hot` | fn | certify a hot path (promotes advisories to errors) |
+| `@budget(alloc_per_call = N)` | fn | per-call allocation ceiling |
+| `@effects(none: {…})` | fn | forbid effect classes, checked transitively |
+| `@effects(publish: {…})` | fn | the allowed publish set |
+| `@no_syscall` `@no_block` `@no_ffi` `@no_publish` `@no_spawn` `@no_recursion` `@deterministic` | fn | sugar for the `@effects(none: …)` forms |
+
+Effect annotations stack with each other and with `@hot` /
+`@budget(...)`; see `spec/verification.md` for what each class
+means and where its truth comes from.

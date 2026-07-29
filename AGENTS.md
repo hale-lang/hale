@@ -294,8 +294,14 @@ innocent at the call site can leak into a locus's lifetime arena
 — but the substrate closes more of those shapes than you'd
 expect, and the "What's already free" list preempts overcautious
 code. The compiler backs the rules with a layered enforcement
-ladder (default warnings → `@hot` → `@budget`); see styleguide
-§5.
+ladder (default warnings → `@hot` → `@budget` → `@effects`); see
+styleguide §5. `@effects(none: {…})` — with the `@no_block` /
+`@no_syscall` / `@deterministic` / `@no_publish` / `@no_spawn` /
+`@no_ffi` / `@no_recursion` shorthands — asserts what a fn may
+*reach*, checked transitively with the offending call chain in
+the diagnostic. And a handler on a `where async_io` locus is
+checked for blocking calls with no annotation at all: the
+placement is the contract.
 
 ## Binding an external C library
 
