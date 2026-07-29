@@ -1593,19 +1593,26 @@ impl<'a> Walker<'a> {
         self.infinite_stack = saved_infinite;
     }
 
-    /// D2: if `recv` is a value whose *declared* type is a growing
-    /// `@form(vec | hashmap)` locus, the form name. Resolves a bare var via
-    /// `var_types` and a `self.<field>` via `field_types`.
-    fn growing_form_of_receiver(&self, recv: &Expr) -> Option<String> {
-        let ty_name = match recv {
-            Expr::Ident(v) => self.var_types.get(&v.name)?,
+    /// The *declared* type name of a receiver expression: a bare var
+    /// via `var_types`, a `self.<field>` via `field_types`. Used both
+    /// to spot growing-`@form` receivers (D2) and to resolve
+    /// handle-method call edges (`record_call`).
+    fn receiver_type_name(&self, recv: &Expr) -> Option<&String> {
+        match recv {
+            Expr::Ident(v) => self.var_types.get(&v.name),
             Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. }
                 if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
             {
-                self.field_types.get(&name.name)?
+                self.field_types.get(&name.name)
             }
-            _ => return None,
-        };
+            _ => None,
+        }
+    }
+
+    /// D2: if `recv` is a value whose *declared* type is a growing
+    /// `@form(vec | hashmap)` locus, the form name.
+    fn growing_form_of_receiver(&self, recv: &Expr) -> Option<String> {
+        let ty_name = self.receiver_type_name(recv)?;
         let form = self.form_of.get(ty_name)?;
         if form_grows(form) {
             Some(form.clone())
@@ -1650,6 +1657,27 @@ impl<'a> Walker<'a> {
                 // later `v.push(x)` can resolve `v`'s form.
                 if let Some(tn) = ty.as_ref().and_then(type_expr_name) {
                     self.var_types.insert(name.name.clone(), tn);
+                } else if let Expr::Struct { path, .. } = value {
+                    // GH #265: `let r = Reader { … }` is the common
+                    // shape — an annotated `let` is the exception, not
+                    // the rule. Without inferring the type from the
+                    // struct literal, `r.method()` stays an unresolved
+                    // edge and every effect assertion is blind to it.
+                    // A std path (`std::io::file::File`) names a locus
+                    // the Hale-source stdlib declares under a MANGLED
+                    // name (`__StdIoFileFile`), so go through the
+                    // rename table; a user type is just its last
+                    // segment.
+                    let segs: Vec<&str> =
+                        path.segments.iter().map(|s| s.name.as_str()).collect();
+                    let ty = crate::stdlib_bodies::mangled_locus_name(&segs)
+                        .map(|m| m.to_string())
+                        .or_else(|| {
+                            path.segments.last().map(|s| s.name.clone())
+                        });
+                    if let Some(ty) = ty {
+                        self.var_types.insert(name.name.clone(), ty);
+                    }
                 }
                 let esc = self.escaping.get(&name.name).copied().unwrap_or(Escape::Local);
                 self.walk_expr(value, depth, esc);
@@ -1939,15 +1967,30 @@ impl<'a> Walker<'a> {
                 Callee::Unresolved(path)
             }
             Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } => {
-                if let (Expr::KwSelf(_), Some(locus)) = (receiver.as_ref(), &self.enclosing_locus) {
-                    let key = FnKey::method(locus.clone(), name.name.clone());
-                    if self.known.contains(&key) {
-                        Callee::Resolved(key)
-                    } else {
-                        Callee::Unresolved(name.name.clone())
-                    }
+                // `self.m()` — the enclosing locus is the receiver type.
+                let owner = if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
+                    self.enclosing_locus.clone()
                 } else {
-                    Callee::Unresolved(name.name.clone())
+                    // GH #265 soundness: a call through a HANDLE
+                    // (`r.slurp()`, `f.read_all()`) is a real callgraph
+                    // edge, but resolving it needs the receiver's type.
+                    // Dropping to `Unresolved(<bare name>)` lost that
+                    // edge entirely, so every effect assertion was blind
+                    // to method calls on loci — which is the idiomatic
+                    // way to do I/O in Hale, making `@no_syscall`
+                    // decorative outside free-fn code.
+                    self.receiver_type_name(receiver).cloned()
+                };
+                match owner {
+                    Some(ty) => {
+                        let key = FnKey::method(ty, name.name.clone());
+                        if self.known.contains(&key) {
+                            Callee::Resolved(key)
+                        } else {
+                            Callee::Unresolved(name.name.clone())
+                        }
+                    }
+                    None => Callee::Unresolved(name.name.clone()),
                 }
             }
             _ => Callee::Unresolved("<expr>".to_string()),

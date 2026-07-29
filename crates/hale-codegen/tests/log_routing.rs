@@ -1,6 +1,6 @@
 //! `std::log::StdoutSink` routes WARN/ERROR events to stderr;
 //! INFO/DEBUG/TRACE stay on stdout. Verifies the routing fix
-//! in `runtime/stdlib/log.hl`.
+//! in `../../hale-stdlib/hl/log.hl`.
 
 use std::process::Command;
 

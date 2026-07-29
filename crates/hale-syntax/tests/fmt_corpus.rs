@@ -39,7 +39,7 @@ fn corpus_formats_and_is_idempotent() {
         &mut files,
     );
     collect_hl(
-        &root.join("crates/hale-codegen/runtime/stdlib"),
+        &root.join("crates/hale-stdlib/hl"),
         &mut files,
     );
     assert!(

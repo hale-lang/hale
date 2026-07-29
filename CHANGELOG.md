@@ -6,6 +6,57 @@ behavior.
 
 ---
 
+## Unreleased
+
+- **Effect assertions were blind to calls made through a handle —
+  fixed (GH #265 soundness).** `@no_syscall` and the rest resolved
+  free fns, `self.m()`, and `std::ns::fn(…)` path calls, but a call
+  on a *value* (`reader.slurp()`, `resolver.get(…)`) was reduced to
+  an unresolved edge carrying only the bare method name. The
+  callgraph never reached the body, the effect contributed nothing,
+  and the assertion passed. Since locus-with-methods is the
+  idiomatic way to do I/O in Hale, this made the contracts largely
+  decorative outside free-fn code — and the shape it missed is the
+  same one the violation diagnostic recommends as the fix. Moving an
+  effect behind a locus you still call does not make it unreachable.
+  The analysis now resolves the receiver's declared type (including
+  from the struct literal, `let r = Reader { … }`, which is the
+  common shape) and walks into the method body.
+- **The Hale-source stdlib is visible to the analyzer
+  (new `crates/hale-stdlib`).** Part of the standard library is
+  written in Hale, and those `.hl` modules lived in a `const` inside
+  `hale-codegen` — *downstream* of `hale-types`, so the effect
+  analysis structurally could not read them. They are now their own
+  upstream crate that both the compiler and the analyzer consume, so
+  the effects of `std::cli::Resolver`, `std::log::Logger`,
+  `std::io::file::File` and friends are **inferred from their
+  bodies** rather than hand-transcribed into a table that drifts.
+  Witness paths through them render in the public spelling
+  (`std::cli::Resolver::get`), not the internal mangled name.
+- **An absent frontier row now fails closed, like an unclassified
+  one.** These were asymmetric: an unclassified registry entry
+  violated every assertion, but a `std::` path with *no row at all*
+  short-circuited to "no effect", so an entire unregistered
+  namespace read as pure. Absent and unknown are the same claim, and
+  neither can be certified. (`std::ts`/`std::shm` were the instance
+  fixed in v0.11.24; this is the class.)
+- **`println` / `print` / `eprintln` / `eprint` are syscall-class.**
+  They are language builtins, not `std::` paths, so they sat outside
+  the frontier entirely — while the diagnostic emitted for
+  `std::io::fs::*` described the syscall class as covering "stdio".
+  Writing to a stream is a `write(2)`: it can block, and a hot-path
+  certificate that permits it is not certifying what it claims.
+- **The registry/dispatch parity test knows all three lowering
+  structures.** Its first cut scraped only `match` arms and passed
+  partly by accident: `PATH_RENAMES` rows are also `["std", …]`
+  literals and were being counted as arms. Renames are now counted
+  deliberately — they *are* a lowering — and a new
+  `rename_targets_exist` check asserts every rename points at a name
+  the Hale-source stdlib actually declares, which the accidental
+  version could not do.
+
+---
+
 ## v0.11.24 — stdlib registry/dispatch parity enforced; effect-classification hole closed (2026-07-29)
 
 - **Registry/dispatch parity is enforced (R2 completion), and it

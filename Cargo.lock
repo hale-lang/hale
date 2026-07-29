@@ -62,6 +62,7 @@ dependencies = [
 name = "hale-codegen"
 version = "0.11.24"
 dependencies = [
+ "hale-stdlib",
  "hale-syntax",
  "hale-types",
  "inkwell",
@@ -75,6 +76,10 @@ dependencies = [
  "hale-types",
  "serde_json",
 ]
+
+[[package]]
+name = "hale-stdlib"
+version = "0.11.24"
 
 [[package]]
 name = "hale-syntax"
@@ -92,6 +97,7 @@ dependencies = [
 name = "hale-types"
 version = "0.11.24"
 dependencies = [
+ "hale-stdlib",
  "hale-syntax",
 ]
 

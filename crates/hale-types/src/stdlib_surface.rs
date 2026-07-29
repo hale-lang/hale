@@ -1038,7 +1038,27 @@ pub const SIGS: &[FnSig] = &[
 /// registry. UNCLASSIFIED entries are exactly that — the caller
 /// must treat them as may-do-anything until #265 classifies the
 /// surface.
+/// Language BUILTINS that carry effects. These are not `std::` paths
+/// — they are bare idents the parser knows — so they sit outside
+/// `SURFACES` and were invisible to the frontier: a `@no_syscall` fn
+/// could `println` freely while the violation diagnostic for
+/// `std::io::fs::*` described the syscall class as covering "stdio".
+/// The surface contradicted itself; writing to a stream is a
+/// `write(2)`, it can block, and a hot-path certificate that permits
+/// it is not certifying what it claims.
+pub fn builtin_effects(name: &str) -> Option<EffectSet> {
+    match name {
+        "println" | "print" | "eprintln" | "eprint" => {
+            Some(EffectSet::SYSCALL)
+        }
+        _ => None,
+    }
+}
+
 pub fn effects_for(segs: &[&str]) -> Option<EffectSet> {
+    if segs.len() == 1 {
+        return builtin_effects(segs[0]);
+    }
     if segs.len() < 2 || segs[0] != "std" {
         return None;
     }

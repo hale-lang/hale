@@ -7,4 +7,5 @@ license.workspace = true
 description = "Hale language: type checker (Phase 1 milestone 2)"
 
 [dependencies]
+hale-stdlib = { path = "../hale-stdlib" }
 hale-syntax = { path = "../hale-syntax" }

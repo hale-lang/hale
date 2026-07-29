@@ -112,7 +112,7 @@ jobs:
         run: |
           ./target/release/hale fmt --check \
             crates/hale-codegen/tests/fixtures/examples \
-            crates/hale-codegen/runtime/stdlib \
+            crates/hale-stdlib/hl \
             crates/hale-cli/tests/fixtures \
             assets/readme play
 

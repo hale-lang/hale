@@ -179,6 +179,19 @@ enforces it across everything reachable from it:
 `publish: {…}` declares which topics a fn may publish to (exact,
 because Hale's topic set is closed).
 
+Two things are worth knowing up front, because both surprise people:
+
+- **`println` is a syscall.** Writing to a stream is a `write(2)`,
+  it can block, and a `@no_syscall` fn that printed would not be
+  certifying what it claims. Debug printing inside a certified fn is
+  a contract violation — which is the point.
+- **The check follows handles.** `reader.slurp()` is a call like any
+  other; the compiler resolves the receiver's type and walks into
+  the method. Putting an effect behind a locus that the asserting fn
+  still calls does not hide it. (Putting it behind a locus the fn
+  *doesn't* call — a separate reader/writer locus it publishes to —
+  is the real fix, and is what the diagnostic suggests.)
+
 The common contracts have short names, which are exactly the same
 thing spelled shorter:
 
