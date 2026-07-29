@@ -1,14 +1,18 @@
 // iris render/web — the flower over real fused state.
-// Data: SSE /events (10Hz snapshots of monotonic totals from
-// fuse-hl). Rates are derived here from consecutive frames.
-// Render: 2D canvas, frame-capped at 30fps (DESIGN §11: the
-// observer must not be the CPU hog in the system it observes).
 //
-// Perspectives — same fused ground truth, different bases:
-//   [1] process: one flower per pid; petals laid out by the
-//       supervision tree (parent chains -> stems + depth rings)
-//   [2] flow: topics are the bases; processes orbit the topics
-//       they publish/consume, edges route through their topic
+// Design (DESIGN §11: an instrument, not a scene):
+//   LAYOUT    layered left->right by observed data flow (the
+//             pipeline IS the x-axis), quiet strip for unwired
+//             processes, smooth reflow on topology change.
+//   HIERARCHY structure is slate and quiet; color is EARNED by
+//             activity: amber = emitting, cyan = reacting,
+//             ribbon color = latency, red = alerts, white =
+//             focus. Plumbing (heartbeat/ctl.*) is hairlines.
+//   LABELS    on demand: at rest only flower names + the few
+//             hottest loci; hover/pin a flower or ribbon for
+//             everything else. No labels stamped over labels.
+//   ALTITUDE  wheel zoom + drag pan; 30fps cap; rates derived
+//             client-side from consecutive SSE snapshots.
 
 const canvas = document.getElementById("c");
 const ctx = canvas.getContext("2d");
@@ -16,31 +20,41 @@ const connEl = document.getElementById("conn");
 const statsEl = document.getElementById("stats");
 const topicsEl = document.getElementById("topics");
 const eventsEl = document.getElementById("events");
+const tipEl = document.getElementById("tip");
 
-let snap = null, prev = null, rates = { edges: new Map(), procs: new Map(), loci: new Map() };
-let lastDraw = 0, lastFrameT = 0;
-let view = 1;
 const FRAME_MS = 1000 / 30;
+const SLATE = "148,163,184";
+const AMBER = "252,190,88";
+const CYAN = "94,220,244";
+const RED = "248,81,73";
 
-addEventListener("keydown", (e) => {
-  if (e.key === "1") view = 1;
-  if (e.key === "2") view = 2;
-});
+let snap = null, prev = null;
+const rates = { edges: new Map(), procs: new Map(), loci: new Map() };
+let lastDraw = 0, lastFrameT = 0;
+let showPlumbing = false;
+let dpr = 1;
 
-const hue = (s) => { let h = 0; for (const ch of s) h = (h * 31 + ch.charCodeAt(0)) % 360; return h; };
+// view transform (world -> screen: s = w*k + o)
+const view = { k: 1, x: 0, y: 0 };
+let mouse = { x: 0, y: 0, wx: 0, wy: 0, down: false, dragged: false };
+let hover = null;          // {type:'flower',pid} | {type:'ribbon',key}
+let pinned = null;         // same shape, click-to-pin
+let hoverTopic = null, pinnedTopic = null;
+const deadSince = new Map();
+
 const fmt = (n) =>
   n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "k" : Math.round(n);
+const isPlumbing = (t) => t === "heartbeat" || t.startsWith("ctl.");
 
 function resize() {
-  const dpr = window.devicePixelRatio || 1;
+  dpr = window.devicePixelRatio || 1;
   canvas.width = innerWidth * dpr;
   canvas.height = innerHeight * dpr;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 addEventListener("resize", resize);
 resize();
 
-// ---- data ingestion ----------------------------------------
+// ---- ingest ------------------------------------------------
 
 function ingest(s) {
   prev = snap;
@@ -57,7 +71,6 @@ function ingest(s) {
   for (const p of snap.processes) {
     const q = pp.get(p.pid);
     rates.procs.set(p.pid, q ? Math.max(0, (p.records - q.records) / dt) : 0);
-    // per-locus activity: which petals are emitting / reacting
     const prevLoci = new Map((q?.loci || []).map(l => [l.id, l]));
     for (const l of p.loci || []) {
       const o = prevLoci.get(l.id);
@@ -77,111 +90,175 @@ function connect() {
 }
 connect();
 
-// ---- directional pulses ------------------------------------
-// One particle pool per edge key; spawn ∝ message rate, travel
-// from -> to. This is what makes flow DIRECTION legible.
+// ---- pair ribbons ------------------------------------------
+// One ribbon per (from,to) process pair; per-topic detail lives
+// in the tooltip. Plumbing pairs render as hairlines.
 
-const pulses = new Map(); // key -> [{u}] progress along curve
-
-function stepPulses(key, rate, dt) {
-  let list = pulses.get(key);
-  if (!list) { list = []; pulses.set(key, list); }
-  const speed = 0.55; // curve lengths per second
-  for (const p of list) p.u += speed * dt;
-  while (list.length && list[0].u > 1) list.shift();
-  // spawn: visible pulse count tracks rate (log-ish, capped)
-  const want = rate <= 0 ? 0 : Math.min(14, 2 + Math.log10(1 + rate) * 3);
-  const gap = 1 / Math.max(want, 1);
-  if (want > 0 && (!list.length || 1 - Math.max(...list.map(p => p.u)) > gap * 0.9)) {
-    // steady cadence: newest pulse enters when the last has
-    // travelled one gap — approximates a constant stream
+function buildRibbons() {
+  const ribbons = new Map(), plumbs = new Map();
+  for (const e of snap.edges || []) {
+    const key = e.from + ">" + e.to;
+    const bucket = isPlumbing(e.topic) ? plumbs : ribbons;
+    if (!bucket.has(key))
+      bucket.set(key, { key, from: e.from, to: e.to, topics: [], rate: 0, latW: 0, lost: 0 });
+    const r = bucket.get(key);
+    const er = rates.edges.get(e.topic + e.from + e.to) || 0;
+    const mean = e.matched ? e.latSum / e.matched / 1000 : 0;
+    r.topics.push({ name: e.topic, rate: er, mean, matched: e.matched,
+                    lost: Math.max(0, e.sends - e.delivers) });
+    r.rate += er;
+    r.latW += mean * er;
+    r.lost += Math.max(0, e.sends - e.delivers);
   }
-  if (want > 0 && (!list.length || list[list.length - 1].u > gap)) list.push({ u: 0 });
-  return list;
+  for (const r of ribbons.values()) {
+    r.mean = r.rate > 0 ? r.latW / r.rate
+      : r.topics.reduce((a, t) => a + t.mean, 0) / Math.max(1, r.topics.length);
+    r.topics.sort((a, b) => b.rate - a.rate);
+  }
+  return { ribbons: [...ribbons.values()], plumbs: [...plumbs.values()] };
 }
 
-const qbez = (u, x1, y1, cx, cy, x2, y2) => {
-  const v = 1 - u;
-  return [v * v * x1 + 2 * v * u * cx + u * u * x2,
-          v * v * y1 + 2 * v * u * cy + u * u * y2];
-};
+// ---- layered layout ----------------------------------------
+// x = layer (longest path over non-plumbing pair edges),
+// y = barycenter-ordered, packed by flower radius. Unwired
+// processes sit in a quiet strip along the bottom. Positions
+// lerp toward targets; layout recomputes on topology change.
 
-function drawEdgeCurve(key, x1, y1, cx, cy, x2, y2, rate, meanUs, dt) {
-  const load = Math.min(1, rate / 20000);
-  const h = 130 - 90 * Math.min(1, meanUs / 200);
-  ctx.beginPath();
-  ctx.moveTo(x1, y1);
-  ctx.quadraticCurveTo(cx, cy, x2, y2);
-  ctx.lineWidth = 1 + 4 * load;
-  ctx.strokeStyle = `hsla(${h}, 70%, 50%, ${rate > 0 ? .35 : .15})`;
-  ctx.stroke();
-  // pulses ride the same curve, from -> to
-  for (const p of stepPulses(key, rate, dt)) {
-    const [px, py] = qbez(p.u, x1, y1, cx, cy, x2, y2);
-    const fade = Math.sin(Math.PI * Math.min(1, Math.max(0, p.u))); // ease in/out
-    ctx.beginPath();
-    ctx.arc(px, py, 2.5 + 3 * load, 0, Math.PI * 2);
-    ctx.fillStyle = `hsla(${h}, 90%, 70%, ${0.9 * fade})`;
-    ctx.fill();
-    // short comet tail pointing backwards along travel
-    const [tx, ty] = qbez(Math.max(0, p.u - 0.04), x1, y1, cx, cy, x2, y2);
-    ctx.beginPath();
-    ctx.moveTo(tx, ty);
-    ctx.lineTo(px, py);
-    ctx.lineWidth = 2 + 2 * load;
-    ctx.strokeStyle = `hsla(${h}, 90%, 70%, ${0.35 * fade})`;
-    ctx.stroke();
+const nodePos = new Map();   // pid -> {x,y,tx,ty,r}
+let topoSig = "";
+
+function flowerRadius(p) {
+  const n = (p.loci || []).length;
+  if (n === 0) return 26;
+  const ring = n <= 8 ? 40 : n <= 16 ? 32 : 24;
+  const depth = Math.min(3, 1 + (n > 1 ? 1 : 0) + (n > 12 ? 1 : 0));
+  return 26 + ring * depth * 0.9;
+}
+
+function relayout(ribbons) {
+  const procs = (snap.processes || []).filter(p => p.state === "live");
+  const pids = procs.map(p => p.pid);
+  const idset = new Set(pids);
+  const adj = new Map(pids.map(p => [p, []]));
+  const radj = new Map(pids.map(p => [p, []]));
+  for (const r of ribbons) {
+    if (!idset.has(r.from) || !idset.has(r.to) || r.from === r.to) continue;
+    adj.get(r.from).push(r.to);
+    radj.get(r.to).push(r.from);
+  }
+  const wired = new Set();
+  for (const r of ribbons) { wired.add(r.from); wired.add(r.to); }
+
+  // longest-path layering with cycle guard
+  const layer = new Map();
+  const state = new Map();
+  const depth = (p, stack) => {
+    if (layer.has(p)) return layer.get(p);
+    if (stack.has(p)) return 0;
+    stack.add(p);
+    let d = 0;
+    for (const q of radj.get(p) || []) d = Math.max(d, depth(q, stack) + 1);
+    stack.delete(p);
+    layer.set(p, d);
+    return d;
+  };
+  for (const p of pids) if (wired.has(p)) depth(p, new Set());
+
+  const layers = [];
+  for (const p of pids) {
+    if (!wired.has(p)) continue;
+    const d = layer.get(p) || 0;
+    (layers[d] = layers[d] || []).push(p);
+  }
+  // barycenter ordering, two sweeps
+  const orderOf = new Map();
+  layers.forEach(L => L.forEach((p, i) => orderOf.set(p, i)));
+  for (let sweep = 0; sweep < 2; sweep++) {
+    for (let li = 0; li < layers.length; li++) {
+      const L = layers[li];
+      L.sort((a, b) => {
+        const ma = meanOrder(a), mb = meanOrder(b);
+        return ma - mb || a - b;
+      });
+      L.forEach((p, i) => orderOf.set(p, i));
+    }
+  }
+  function meanOrder(p) {
+    const ns = [...(radj.get(p) || []), ...(adj.get(p) || [])];
+    if (!ns.length) return orderOf.get(p) || 0;
+    return ns.reduce((s, q) => s + (orderOf.get(q) || 0), 0) / ns.length;
+  }
+
+  const byPid = new Map(procs.map(p => [p.pid, p]));
+  const W = innerWidth, H = innerHeight;
+  const nL = Math.max(1, layers.length);
+  const colW = Math.max(230, (W - 200) / nL);
+  const x0 = 130;
+  layers.forEach((L, li) => {
+    const rs = L.map(p => flowerRadius(byPid.get(p)));
+    const gap = 56;
+    const total = rs.reduce((a, r) => a + 2 * r + gap, -gap);
+    let cy = Math.max(90, (H - 130) / 2 - total / 2);
+    L.forEach((p, i) => {
+      const r = rs[i];
+      setTarget(p, x0 + li * colW + colW / 2, cy + r, r);
+      cy += 2 * r + gap;
+    });
+  });
+  // quiet strip: unwired, small, along the bottom
+  const quiet = pids.filter(p => !wired.has(p));
+  quiet.forEach((p, i) => {
+    setTarget(p, 150 + i * 150, H - 70, Math.min(30, flowerRadius(byPid.get(p))));
+  });
+}
+
+function setTarget(pid, tx, ty, r) {
+  const n = nodePos.get(pid);
+  if (n) { n.tx = tx; n.ty = ty; n.r = r; }
+  else nodePos.set(pid, { x: tx, y: ty, tx, ty, r });
+}
+
+function layoutTick(ribbons, dt) {
+  const sig = (snap.processes || []).filter(p => p.state === "live").map(p => p.pid).sort().join(",")
+    + "|" + ribbons.map(r => r.key).sort().join(",");
+  if (sig !== topoSig) { topoSig = sig; relayout(ribbons); }
+  const a = Math.min(1, dt * 3.5);
+  for (const n of nodePos.values()) {
+    n.x += (n.tx - n.x) * a;
+    n.y += (n.ty - n.y) * a;
   }
 }
 
-// ---- supervision-tree flower layout ------------------------
-// The base of a flower is the process; WITHIN it, layout is the
-// supervision tree: root at core, children fan out in their
-// parent's angular sector, one ring per depth. Stems draw the
-// parentage, so restarts visibly re-grow from the supervisor.
+// ---- flower internals (tree + aggregation, from v1) --------
 
-function treeLayout(loci, cx, cy) {
+function treeLayout(loci, cx, cy, ring) {
   const byId = new Map(loci.map(l => [l.id, l]));
-  const kids = new Map();
-  const roots = [];
+  const kids = new Map(); const roots = [];
   for (const l of loci) {
     if (l.parent && byId.has(l.parent)) {
       if (!kids.has(l.parent)) kids.set(l.parent, []);
       kids.get(l.parent).push(l);
     } else roots.push(l);
   }
-  const pos = new Map(); // id -> {x, y, angle, depth}
-  const RING = 46;
+  const pos = new Map();
   const place = (l, a0, a1, depth) => {
-    const a = (a0 + a1) / 2;
-    const r = depth * RING;
+    const a = (a0 + a1) / 2, r = depth * ring;
     pos.set(l.id, { x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r, angle: a, depth });
     const c = kids.get(l.id) || [];
     c.forEach((k, i) => {
-      const span = (a1 - a0);
-      // children own the parent's sector; a lone child fans a
-      // little wider so deep chains don't collapse to a line
-      const w = span / c.length;
+      const w = (a1 - a0) / c.length;
       place(k, a0 + i * w, a0 + (i + 1) * w, depth + 1);
     });
   };
   roots.forEach((rt, i) => {
-    const w = Math.PI * 2 / roots.length;
+    const w = Math.PI * 2 / Math.max(1, roots.length);
     place(rt, i * w - Math.PI / 2, (i + 1) * w - Math.PI / 2, 0);
   });
-  return { pos, kids, byId };
+  return pos;
 }
 
-// ---- same-type aggregation ---------------------------------
-// Many sibling loci of one type under one parent (worker pools)
-// drown the flower. Keep the K most-active as individuals and
-// collapse the rest into one aggregate petal sized by count.
 const KEEP = 2, AGG_MIN = 5;
-
 function condenseLoci(pid, loci) {
-  // runtime/stdlib internals (__-prefixed types) are real loci
-  // but the wrong altitude for petals — demote each flower's
-  // internals to one dim aggregate.
   const internal = loci.filter(l => l.type.startsWith("__"));
   loci = loci.filter(l => !l.type.startsWith("__"));
   const groups = new Map();
@@ -198,21 +275,16 @@ function condenseLoci(pid, loci) {
   for (const [k, members] of groups) {
     if (members.length < AGG_MIN) { out.push(...members); continue; }
     members.sort((x, y) => act(y.id) - act(x.id));
-    const kept = members.slice(0, KEEP);
+    out.push(...members.slice(0, KEEP));
     const rest = members.slice(KEEP);
-    out.push(...kept);
     let pub = 0, dlv = 0;
     for (const m of rest) {
       const r = rates.loci.get(pid + ":" + m.id) || { pub: 0, dlv: 0 };
       pub += r.pub; dlv += r.dlv;
     }
-    let hh = 0;
-    for (const ch of k) hh = (hh * 31 + ch.charCodeAt(0)) % 100000;
-    out.push({
-      id: -(hh + 1), // stable synthetic id -> stable layout slot
-      type: members[0].type, parent: members[0].parent,
-      agg: true, count: rest.length, aggPub: pub, aggDlv: dlv,
-    });
+    let hh = 0; for (const ch of k) hh = (hh * 31 + ch.charCodeAt(0)) % 100000;
+    out.push({ id: -(hh + 1), type: members[0].type, parent: members[0].parent,
+               agg: true, count: rest.length, aggPub: pub, aggDlv: dlv });
   }
   if (internal.length) {
     let pub = 0, dlv = 0;
@@ -220,203 +292,373 @@ function condenseLoci(pid, loci) {
       const r = rates.loci.get(pid + ":" + m.id) || { pub: 0, dlv: 0 };
       pub += r.pub; dlv += r.dlv;
     }
-    out.push({ id: -999999, type: "runtime", parent: 0, agg: true,
-               internal: true, count: internal.length, aggPub: pub, aggDlv: dlv });
+    out.push({ id: -999999, type: "runtime", parent: 0, agg: true, internal: true,
+               count: internal.length, aggPub: pub, aggDlv: dlv });
   }
   return out;
 }
 
-function drawFlower(p, cx, cy, t) {
+// ---- drawing helpers ---------------------------------------
+
+const cbez = (u, x1, y1, cx1, cy1, cx2, cy2, x2, y2) => {
+  const v = 1 - u;
+  const a = v * v * v, b = 3 * v * v * u, c = 3 * v * u * u, d = u * u * u;
+  return [a * x1 + b * cx1 + c * cx2 + d * x2,
+          a * y1 + b * cy1 + c * cy2 + d * y2];
+};
+
+function ribbonGeom(r) {
+  const f = nodePos.get(r.from), t = nodePos.get(r.to);
+  if (!f || !t) return null;
+  const x1 = f.x + f.r * 0.9, y1 = f.y, x2 = t.x - t.r * 0.9, y2 = t.y;
+  if (t.x >= f.x) {
+    const dx = Math.max(60, (x2 - x1) * 0.45);
+    return [x1, y1, x1 + dx, y1, x2 - dx, y2, x2, y2];
+  }
+  // back-edge: arc below everything
+  const dy = Math.max(120, Math.abs(y2 - y1) * 0.5 + 140);
+  return [f.x, f.y + f.r * 0.9, f.x, f.y + dy, t.x, t.y + dy, t.x, t.y + t.r * 0.9];
+}
+
+const pulses = new Map();
+function stepPulses(key, rate, dt) {
+  let list = pulses.get(key);
+  if (!list) { list = []; pulses.set(key, list); }
+  for (const p of list) p.u += 0.5 * dt;
+  while (list.length && list[0].u > 1) list.shift();
+  const want = rate <= 0 ? 0 : Math.min(12, 1.5 + Math.log10(1 + rate) * 2.6);
+  const gap = 1 / Math.max(want, 1);
+  if (want > 0 && (!list.length || list[list.length - 1].u > gap)) list.push({ u: 0 });
+  return list;
+}
+
+function latColor(meanUs, a) {
+  const h = 130 - 90 * Math.min(1, meanUs / 200);
+  return `hsla(${h}, 65%, 52%, ${a})`;
+}
+
+function dimFor(kind, id) {
+  // focus model: when something is hovered/pinned, everything
+  // else recedes. Returns an alpha multiplier.
+  const f = pinned || hover;
+  const topicSel = pinnedTopic || hoverTopic;
+  if (!f && !topicSel) return 1;
+  if (topicSel) {
+    if (kind === "ribbon") return id.topics.some(t => t.name === topicSel) ? 1 : 0.12;
+    if (kind === "flower") {
+      const touches = (snap.edges || []).some(e => e.topic === topicSel && (e.from === id || e.to === id));
+      return touches ? 1 : 0.22;
+    }
+    return 0.4;
+  }
+  if (f.type === "flower") {
+    if (kind === "flower") return id === f.pid ? 1 : 0.22;
+    if (kind === "ribbon") return (id.from === f.pid || id.to === f.pid) ? 1 : 0.10;
+  }
+  if (f.type === "ribbon") {
+    if (kind === "ribbon") return id.key === f.key ? 1 : 0.10;
+    if (kind === "flower") {
+      const [a, b] = f.key.split(">").map(Number);
+      return (id === a || id === b) ? 1 : 0.22;
+    }
+  }
+  return 1;
+}
+
+// ---- flower ------------------------------------------------
+
+function drawFlower(p, t, focus) {
+  const n = nodePos.get(p.pid);
+  if (!n) return;
+  const { x: cx, y: cy } = n;
+  const dim = dimFor("flower", p.pid);
   const dead = p.state === "dead";
   const loci = condenseLoci(p.pid, p.loci || []);
-  const { pos, kids } = treeLayout(loci, cx, cy);
+  const nLoci = loci.length;
+  const ring = nLoci <= 8 ? 40 : nLoci <= 16 ? 32 : 24;
+  const pos = treeLayout(loci, cx, cy, ring);
+  const focused = focus || (hover?.type === "flower" && hover.pid === p.pid)
+    || (pinned?.type === "flower" && pinned.pid === p.pid);
 
-  // stems: parent -> child, the supervision structure itself
+  ctx.globalAlpha = dim;
+
+  // stems
   ctx.lineWidth = 1;
+  ctx.strokeStyle = `rgba(${SLATE}, ${dead ? 0.10 : 0.20})`;
   for (const l of loci) {
     const a = pos.get(l.parent), b = pos.get(l.id);
     if (!a || !b) continue;
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.strokeStyle = dead ? "rgba(92,103,115,.25)" : "rgba(120,140,170,.35)";
-    ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
   }
 
-  let maxDepth = 0;
+  // petals: slate at rest, colored only by activity
+  const hot = [];
   for (const l of loci) {
     const q = pos.get(l.id);
-    if (!q) continue;
-    maxDepth = Math.max(maxDepth, q.depth);
-    const h = hue(l.type);
-    const bloom = dead ? 0.15 : 0.55 + 0.35 * Math.sin(t * 1.8 + l.id * 1.7);
-    if (q.depth === 0) continue; // root rendered as the core below
-    const act = l.agg
-      ? { pub: l.aggPub, dlv: l.aggDlv }
+    if (!q || q.depth === 0) continue;
+    const act = l.agg ? { pub: l.aggPub, dlv: l.aggDlv }
       : rates.loci.get(p.pid + ":" + l.id) || { pub: 0, dlv: 0 };
-    const rxI = Math.min(1, Math.log10(1 + act.dlv) / 4.5); // reacting (incoming)
-    const txI = Math.min(1, Math.log10(1 + act.pub) / 4.5); // emitting (outgoing)
-    const scale = l.agg ? 1 + Math.min(1.4, Math.log2(1 + l.count) / 4) : 1;
+    const tx = Math.min(1, Math.log10(1 + act.pub) / 4);
+    const rx = Math.min(1, Math.log10(1 + act.dlv) / 4);
+    if (tx + rx > 0.02) hot.push({ l, q, v: act.pub + act.dlv });
+    const scale = l.agg ? 1 + Math.min(1.2, Math.log2(1 + l.count) / 4) : 1;
+    const pw = (ring * 0.42) * scale, ph = (ring * 0.16 + 2) * scale;
+    const bloom = dead ? 0 : 0.5 + 0.5 * Math.sin(t * 1.6 + (l.id % 97) * 1.7);
+
     ctx.save();
     ctx.translate(q.x, q.y);
     ctx.rotate(q.angle);
-    // emitting: warm halo behind the petal
-    if (!dead && txI > 0) {
+    // emit halo (amber) under the petal
+    if (!dead && tx > 0.02) {
       ctx.beginPath();
-      ctx.ellipse(10 * scale, 0, (20 + 6 * bloom) * scale, (9 + 5 * bloom) * scale, 0, 0, Math.PI * 2);
-      ctx.fillStyle = `hsla(38, 95%, 60%, ${0.10 + 0.16 * txI})`;
+      ctx.ellipse(pw * 0.55, 0, pw * 1.15, ph * 1.9, 0, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${AMBER}, ${0.10 + 0.22 * tx})`;
       ctx.fill();
     }
     ctx.beginPath();
-    ctx.ellipse(10 * scale, 0, (16 + 6 * bloom) * scale, (5 + 5 * bloom) * scale, 0, 0, Math.PI * 2);
-    ctx.fillStyle = dead
-      ? `hsla(${h}, 12%, 34%, .35)`
-      : l.internal
-        ? `hsla(220, 8%, 45%, ${0.12 + 0.2 * bloom})`
-        : `hsla(${h}, 68%, 62%, ${0.3 + 0.5 * bloom})`;
+    ctx.ellipse(pw * 0.55, 0, pw * (0.9 + 0.1 * bloom), ph * (0.9 + 0.25 * bloom), 0, 0, Math.PI * 2);
+    if (l.internal) ctx.fillStyle = `rgba(${SLATE}, 0.07)`;
+    else if (dead) ctx.fillStyle = `rgba(${SLATE}, 0.08)`;
+    else {
+      const warm = Math.min(0.55, tx * 0.7);
+      ctx.fillStyle = warm > 0.05
+        ? `rgba(${AMBER}, ${0.10 + warm * 0.5})`
+        : `rgba(${SLATE}, ${0.13 + 0.05 * bloom})`;
+    }
     ctx.fill();
-    // reacting: perimeter pulse, flicker rate rises with load
-    if (!dead && rxI > 0) {
-      const flick = 0.55 + 0.45 * Math.sin(t * (6 + 10 * rxI) + l.id * 2.1);
-      ctx.lineWidth = 1.2 + 1.8 * rxI;
-      ctx.strokeStyle = `hsla(185, 90%, 70%, ${(0.25 + 0.7 * rxI) * flick})`;
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = l.internal ? `rgba(${SLATE},0.10)` : `rgba(${SLATE},${dead ? 0.12 : 0.28})`;
+    ctx.stroke();
+    // react ring (cyan), flicker rises with load
+    if (!dead && rx > 0.02) {
+      const flick = 0.55 + 0.45 * Math.sin(t * (5 + 9 * rx) + (l.id % 31));
+      ctx.lineWidth = 1.2 + 1.6 * rx;
+      ctx.strokeStyle = `rgba(${CYAN}, ${(0.25 + 0.6 * rx) * flick})`;
       ctx.stroke();
     }
     ctx.restore();
-    ctx.fillStyle = dead ? "rgba(92,103,115,.5)" : `hsla(${h}, 55%, 75%, .85)`;
-    ctx.textAlign = "center";
-    ctx.font = "10px ui-monospace, monospace";
-    ctx.fillText(l.agg ? `${l.type} ×${l.count}` : `${l.type}#${l.id}`,
-      cx + Math.cos(q.angle) * (q.depth * 46 + 34 + (l.agg ? 14 : 0)),
-      cy + Math.sin(q.angle) * (q.depth * 46 + 34 + (l.agg ? 14 : 0)) + 3);
   }
 
-  // core = the root locus (Main) + process vitals
+  // core
   const rec = rates.procs.get(p.pid) || 0;
-  const pulse = dead ? 0 : Math.min(1, rec / 500000);
+  const pulse = dead ? 0 : Math.min(1, rec / 300000);
   ctx.beginPath();
-  ctx.arc(cx, cy, 12 + 4 * pulse, 0, Math.PI * 2);
-  ctx.fillStyle = dead ? "#3d2226" : `hsl(${140 - 80 * pulse}, 60%, ${38 + 12 * pulse}%)`;
+  ctx.arc(cx, cy, 9 + 3 * pulse, 0, Math.PI * 2);
+  ctx.fillStyle = dead ? "rgba(60,34,38,0.8)" : `hsl(${145 - 60 * pulse}, 45%, ${34 + 14 * pulse}%)`;
   ctx.fill();
-  ctx.strokeStyle = dead ? "#f85149" : "#1c2430";
+  ctx.strokeStyle = dead ? `rgba(${RED},0.7)` : "rgba(28,36,48,1)";
   ctx.lineWidth = 2;
   ctx.stroke();
 
-  const labelR = (maxDepth + 1) * 46 + 28;
-  ctx.fillStyle = dead ? "#f85149" : "#e6edf3";
+  // labels: name always; hot loci at rest; all loci on focus
   ctx.textAlign = "center";
-  ctx.font = "12px ui-monospace, monospace";
-  ctx.fillText(`${p.name || "pid " + p.pid}${dead ? " ✝" : ""}`, cx, cy + labelR);
-  ctx.fillStyle = "#5c6773";
-  ctx.font = "10px ui-monospace, monospace";
-  ctx.fillText(dead ? "dissolved" : `pid ${p.pid} · ${fmt(rec)} rec/s · ${p.restarts} restarts`,
-    cx, cy + labelR + 14);
-}
-
-// ---- perspectives ------------------------------------------
-
-function flowerCenters(n, w, h) {
-  if (n === 1) return [[w / 2, h / 2]];
-  if (n === 2) return [[w * 0.28, h * 0.5], [w * 0.72, h * 0.5]];
-  const r = Math.min(w, h) * 0.33;
-  return Array.from({ length: n }, (_, i) => {
-    const a = (i / n) * Math.PI * 2 - Math.PI / 2;
-    return [w / 2 + r * Math.cos(a), h / 2 + r * Math.sin(a)];
-  });
-}
-
-function drawProcessView(t, dt, w, h) {
-  const procs = snap.processes || [];
-  const centers = flowerCenters(procs.length, w, h);
-  const byPid = new Map(procs.map((p, i) => [p.pid, centers[i]]));
-  for (const e of snap.edges || []) {
-    const f = byPid.get(e.from), g = byPid.get(e.to);
-    if (!f || !g) continue;
-    const rate = rates.edges.get(e.topic + e.from + e.to) || 0;
-    const meanUs = e.matched ? e.latSum / e.matched / 1000 : 0;
-    const mx = (f[0] + g[0]) / 2, my = (f[1] + g[1]) / 2 - 46;
-    drawEdgeCurve(e.topic + e.from + e.to, f[0], f[1], mx, my, g[0], g[1], rate, meanUs, dt);
-    ctx.textAlign = "center";
-    ctx.fillStyle = "#e6edf3";
-    ctx.font = "11px ui-monospace, monospace";
-    ctx.fillText(e.topic, mx, my + 16);
-    ctx.fillStyle = "#5c6773";
+  ctx.font = "600 12px ui-monospace, monospace";
+  ctx.fillStyle = dead ? `rgba(${RED},0.8)` : "rgba(230,237,243,0.92)";
+  ctx.fillText(p.name || "pid " + p.pid, cx, cy + n.r + 16);
+  const bits = [];
+  if (!dead && rec > 500) bits.push(fmt(rec) + "/s");
+  if (p.restarts > 0) bits.push(p.restarts + " restarts");
+  if (bits.length) {
     ctx.font = "10px ui-monospace, monospace";
-    ctx.fillText(`${fmt(rate)}/s · ${meanUs.toFixed(0)}µs · ${fmt(Math.max(0, e.sends - e.delivers))} lost`,
-      mx, my + 30);
+    ctx.fillStyle = p.restarts > 0 ? `rgba(${RED},0.75)` : `rgba(${SLATE},0.6)`;
+    ctx.fillText(bits.join(" · "), cx, cy + n.r + 29);
   }
-  procs.forEach((p, i) => drawFlower(p, centers[i][0], centers[i][1], t));
+  hot.sort((a, b) => b.v - a.v);
+  const labelSet = focused ? loci.map(l => ({ l, q: pos.get(l.id) })).filter(e => e.q && e.q.depth > 0)
+    : hot.slice(0, 3);
+  ctx.font = "9.5px ui-monospace, monospace";
+  for (const { l, q } of labelSet) {
+    const lx = cx + Math.cos(q.angle) * (q.depth * ring + ring * 0.62);
+    const ly = cy + Math.sin(q.angle) * (q.depth * ring + ring * 0.62);
+    ctx.fillStyle = focused ? `rgba(${SLATE},0.85)` : `rgba(${SLATE},0.55)`;
+    ctx.fillText(l.agg ? `${l.type} ×${l.count}` : `${l.type}#${l.id}`, lx, ly + 3);
+  }
+  ctx.globalAlpha = 1;
 }
 
-// flow view: the TOPIC is the base. Topics sit as hubs in the
-// middle; processes orbit; every edge routes through its topic.
-function drawFlowView(t, dt, w, h) {
-  const procs = snap.processes || [];
-  const topics = (snap.topics || []).filter(tp => tp.pub > 0 || tp.dlv > 0);
-  const pcenters = flowerCenters(procs.length, w, h);
-  const byPid = new Map(procs.map((p, i) => [p.pid, pcenters[i]]));
-
-  const hubs = new Map();
-  topics.forEach((tp, i) => {
-    const y = h * (topics.length === 1 ? 0.5 : 0.22 + 0.56 * (i / (topics.length - 1)));
-    hubs.set(tp.name, [w / 2, y]);
-  });
-
-  for (const e of snap.edges || []) {
-    const f = byPid.get(e.from), g = byPid.get(e.to), hub = hubs.get(e.topic);
-    if (!f || !g || !hub) continue;
-    const rate = rates.edges.get(e.topic + e.from + e.to) || 0;
-    const meanUs = e.matched ? e.latSum / e.matched / 1000 : 0;
-    drawEdgeCurve("A" + e.topic + e.from, f[0], f[1],
-      (f[0] + hub[0]) / 2, (f[1] + hub[1]) / 2 - 24, hub[0], hub[1], rate, meanUs, dt);
-    drawEdgeCurve("B" + e.topic + e.to, hub[0], hub[1],
-      (hub[0] + g[0]) / 2, (hub[1] + g[1]) / 2 - 24, g[0], g[1], rate, meanUs, dt);
-  }
-
-  for (const tp of topics) {
-    const [hx, hy] = hubs.get(tp.name);
-    const th = hue(tp.name);
-    ctx.beginPath();
-    ctx.arc(hx, hy, 9, 0, Math.PI * 2);
-    ctx.fillStyle = `hsla(${th}, 70%, 55%, .9)`;
-    ctx.fill();
-    ctx.textAlign = "center";
-    ctx.fillStyle = "#e6edf3";
-    ctx.font = "11px ui-monospace, monospace";
-    ctx.fillText(tp.name, hx, hy - 16);
-    ctx.fillStyle = "#5c6773";
-    ctx.font = "10px ui-monospace, monospace";
-    ctx.fillText(`pub ${fmt(tp.pub)} · dlv ${fmt(tp.dlv)}`, hx, hy + 22);
-  }
-  procs.forEach((p, i) => drawFlower(p, pcenters[i][0], pcenters[i][1], t));
-}
-
-// ---- frame loop (capped) -----------------------------------
+// ---- frame -------------------------------------------------
 
 function frame(now) {
   requestAnimationFrame(frame);
-  if (now - lastDraw < FRAME_MS) return; // 30fps cap
+  if (now - lastDraw < FRAME_MS) return;
   const dt = Math.min(0.1, (now - lastFrameT) / 1000 || 0.033);
-  lastDraw = now;
-  lastFrameT = now;
+  lastDraw = now; lastFrameT = now;
   const t = now / 1000;
-  const w = innerWidth, h = innerHeight;
-  ctx.clearRect(0, 0, w, h);
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, innerWidth, innerHeight);
   if (!snap) return;
 
-  if (view === 1) drawProcessView(t, dt, w, h);
-  else drawFlowView(t, dt, w, h);
+  const { ribbons, plumbs } = buildRibbons();
+  layoutTick(ribbons, dt);
 
-  const procs = snap.processes || [];
-  const totRec = procs.reduce((a, p) => a + (rates.procs.get(p.pid) || 0), 0);
+  ctx.setTransform(dpr * view.k, 0, 0, dpr * view.k, dpr * view.x, dpr * view.y);
+
+  // ghosts age out
+  const procs = (snap.processes || []).filter(p => {
+    if (p.state !== "dead") { deadSince.delete(p.pid); return true; }
+    if (!deadSince.has(p.pid)) deadSince.set(p.pid, now);
+    return now - deadSince.get(p.pid) < 60000;
+  });
+
+  // plumbing hairlines (toggle 'h')
+  if (showPlumbing) {
+    ctx.lineWidth = 0.6;
+    for (const r of plumbs) {
+      const g = ribbonGeom(r);
+      if (!g) continue;
+      ctx.beginPath();
+      ctx.moveTo(g[0], g[1]);
+      ctx.bezierCurveTo(g[2], g[3], g[4], g[5], g[6], g[7]);
+      ctx.strokeStyle = `rgba(${SLATE}, 0.10)`;
+      ctx.stroke();
+    }
+  }
+
+  // ribbons: width = rate, color = latency, pulses = flow
+  for (const r of ribbons) {
+    const g = ribbonGeom(r);
+    if (!g) continue;
+    const dim = dimFor("ribbon", r);
+    const load = Math.min(1, r.rate / 15000);
+    const sel = (pinned?.type === "ribbon" && pinned.key === r.key)
+      || (hover?.type === "ribbon" && hover.key === r.key);
+    ctx.globalAlpha = dim;
+    ctx.beginPath();
+    ctx.moveTo(g[0], g[1]);
+    ctx.bezierCurveTo(g[2], g[3], g[4], g[5], g[6], g[7]);
+    ctx.lineWidth = 1 + 5 * load + (sel ? 1 : 0);
+    ctx.strokeStyle = sel ? "rgba(230,237,243,0.75)" : latColor(r.mean, r.rate > 0 ? 0.38 : 0.14);
+    ctx.stroke();
+    for (const p of stepPulses(r.key, r.rate, dt)) {
+      const [px, py] = cbez(p.u, ...g);
+      const fade = Math.sin(Math.PI * Math.min(1, Math.max(0, p.u)));
+      ctx.beginPath();
+      ctx.arc(px, py, 2 + 2.5 * load, 0, Math.PI * 2);
+      ctx.fillStyle = sel ? `rgba(230,237,243,${0.9 * fade})` : latColor(r.mean, 0.85 * fade);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  for (const p of procs) drawFlower(p, t, false);
+
+  // HUD
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const live = procs.filter(p => p.state === "live");
+  const totRec = live.reduce((a, p) => a + (rates.procs.get(p.pid) || 0), 0);
   statsEl.textContent =
-    `${procs.filter(p => p.state === "live").length}/${procs.length} processes · ${fmt(totRec)} records/s` +
-    ` · view [${view === 1 ? "1" : "2"}] ${view === 1 ? "process" : "flow"} (keys 1/2)`;
-  topicsEl.innerHTML = (snap.topics || [])
-    .map(tp => `${tp.name} <span style="color:#5c6773">pub ${fmt(tp.pub)} · dlv ${fmt(tp.dlv)}</span>`)
-    .join("<br>");
+    `${live.length} processes · ${fmt(totRec)} records/s · ${ribbons.length} flows`;
+  renderTopics();
   eventsEl.innerHTML = (snap.events || [])
-    .filter(x => !x.includes("__"))
-    .slice(-6).map(x => `<div>${x}</div>`).join("");
+    .filter(x => !x.includes("__")).slice(-5).map(x => `<div>${x}</div>`).join("");
 }
 requestAnimationFrame(frame);
+
+// ---- topic panel -------------------------------------------
+
+let topicsHtml = "";
+function renderTopics() {
+  const rows = (snap.topics || [])
+    .filter(tp => tp.pub > 0 || tp.dlv > 0)
+    .sort((a, b) => (b.pub + b.dlv) - (a.pub + a.dlv))
+    .map(tp => {
+      const cls = tp.name === pinnedTopic ? "trow pinned" : "trow";
+      const pub = tp.pub ? fmt(tp.pub) : `<span class="z">·</span>`;
+      return `<div class="${cls}" data-t="${tp.name}">${tp.name} <span style="color:#5c6773">${pub} → ${fmt(tp.dlv)}</span></div>`;
+    }).join("");
+  if (rows !== topicsHtml) { topicsHtml = rows; topicsEl.innerHTML = rows; }
+}
+topicsEl.addEventListener("mouseover", (e) => {
+  hoverTopic = e.target.closest(".trow")?.dataset.t || null;
+});
+topicsEl.addEventListener("mouseout", () => { hoverTopic = null; });
+topicsEl.addEventListener("click", (e) => {
+  const t = e.target.closest(".trow")?.dataset.t;
+  pinnedTopic = pinnedTopic === t ? null : (t || null);
+});
+
+// ---- interaction -------------------------------------------
+
+function hitTest(wx, wy) {
+  if (!snap) return null;
+  for (const p of snap.processes || []) {
+    const n = nodePos.get(p.pid);
+    if (!n) continue;
+    const d = Math.hypot(wx - n.x, wy - n.y);
+    if (d < n.r + 14) return { type: "flower", pid: p.pid };
+  }
+  const { ribbons } = buildRibbons();
+  let best = null, bestD = 9 / view.k + 3;
+  for (const r of ribbons) {
+    const g = ribbonGeom(r);
+    if (!g) continue;
+    for (let i = 1; i < 24; i++) {
+      const [px, py] = cbez(i / 24, ...g);
+      const d = Math.hypot(wx - px, wy - py);
+      if (d < bestD) { bestD = d; best = { type: "ribbon", key: r.key, r }; }
+    }
+  }
+  return best;
+}
+
+function tipFor(h) {
+  if (h.type === "ribbon") {
+    const r = h.r;
+    const f = (snap.processes || []).find(p => p.pid === r.from);
+    const t = (snap.processes || []).find(p => p.pid === r.to);
+    const rows = r.topics.map(tp =>
+      `${tp.name} — ${fmt(tp.rate)}/s · ${tp.mean.toFixed(0)}µs${tp.lost ? ` · <span style="color:rgb(${RED})">${fmt(tp.lost)} lost</span>` : ""}`
+    ).join("<br>");
+    return `<b>${f?.name || r.from} → ${t?.name || r.to}</b><br>${rows}`;
+  }
+  const p = (snap.processes || []).find(q => q.pid === h.pid);
+  if (!p) return "";
+  const rec = rates.procs.get(p.pid) || 0;
+  return `<b>${p.name}</b> · pid ${p.pid}<br>` +
+    `${(p.loci || []).length} loci · ${fmt(rec)} rec/s · ${p.restarts} restarts` +
+    (p.state === "dead" ? `<br><span style="color:rgb(${RED})">dissolved</span>` : "");
+}
+
+canvas.addEventListener("mousemove", (e) => {
+  mouse.wx = (e.clientX - view.x) / view.k;
+  mouse.wy = (e.clientY - view.y) / view.k;
+  if (mouse.down) {
+    view.x += e.clientX - mouse.x; view.y += e.clientY - mouse.y;
+    mouse.x = e.clientX; mouse.y = e.clientY;
+    mouse.dragged = true;
+    tipEl.style.display = "none";
+    return;
+  }
+  mouse.x = e.clientX; mouse.y = e.clientY;
+  hover = hitTest(mouse.wx, mouse.wy);
+  canvas.style.cursor = hover ? "pointer" : "default";
+  if (hover) {
+    tipEl.innerHTML = tipFor(hover);
+    tipEl.style.display = "block";
+    tipEl.style.left = Math.min(innerWidth - 320, e.clientX + 14) + "px";
+    tipEl.style.top = (e.clientY + 14) + "px";
+  } else tipEl.style.display = "none";
+});
+canvas.addEventListener("mousedown", (e) => {
+  mouse.down = true; mouse.dragged = false;
+  mouse.x = e.clientX; mouse.y = e.clientY;
+});
+addEventListener("mouseup", () => {
+  if (mouse.down && !mouse.dragged) {
+    pinned = hover ? { ...hover } : null;
+  }
+  mouse.down = false;
+});
+canvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const k2 = Math.min(3, Math.max(0.3, view.k * Math.exp(-e.deltaY * 0.0012)));
+  view.x = e.clientX - (e.clientX - view.x) * (k2 / view.k);
+  view.y = e.clientY - (e.clientY - view.y) * (k2 / view.k);
+  view.k = k2;
+}, { passive: false });
+canvas.addEventListener("dblclick", () => { view.k = 1; view.x = 0; view.y = 0; pinned = null; });
+addEventListener("keydown", (e) => {
+  if (e.key === "h") showPlumbing = !showPlumbing;
+  if (e.key === "Escape") { pinned = null; pinnedTopic = null; }
+});
