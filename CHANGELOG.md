@@ -8,6 +8,32 @@ behavior.
 
 ## v0.11.19 — Crumb batch-5: sleep parks on async_io, stdlib builtin-namespace README (2026-07-28)
 
+iris handoff-6 (P17/P19 — attribution in the field).
+
+- **The obs gate flag is resolved in a constructor** (P19). The
+  fn-entry hoist of `lotus_obs_live` claimed the flag was final
+  before any user publish; it was set at the FIRST PROBE (a locus
+  birth inside main's body), so a publish lowered into `fn main`
+  itself snapshotted a stale dormant flag forever. `LOTUS_OBS` is
+  now read in a `__attribute__((constructor))` before `main` — the
+  flag is genuinely process-constant, which is the exact property
+  the hoist's soundness requires. The field's ordering shape
+  (publishers deep in steady-state loops, observer attaching much
+  later) is pinned in `obs_fleet_contract.rs`.
+
+- **The adapter inbound path no longer stamps `locus=0` publishes**
+  (the fleet's remaining attribution zero). `std::bus::
+  __local_dispatch` — the Hale-owned-wire ingest adapters use —
+  called the UNMARKED `lotus_bus_dispatch_wire`: every inbound
+  message recorded a spurious unattributed BUS_PUBLISH and
+  inflated the published counter (measured: 2 genuine publishes +
+  2 adapter relays = `pub=4` on v0.11.19; now exactly 2, all
+  attributed). It now lowers to `lotus_bus_dispatch_wire_inbound`,
+  which brackets the dispatch with the P15 redispatch marking —
+  deliveries deliver, publishes publish.
+
+## v0.11.19 — Crumb batch-5: sleep parks on async_io, stdlib builtin-namespace README (2026-07-28)
+
 Crumb batch-5 (UPSTREAM5.md).
 
 - **`std::time::sleep` parks on `async_io` pools** (batch-5
