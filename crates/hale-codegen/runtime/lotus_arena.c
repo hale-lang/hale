@@ -7210,6 +7210,41 @@ int lotus_coop_park_on_fd(int fd, uint32_t events) {
     return lotus_coop_park_on_fd_deadline(fd, events, 0);
 }
 
+/* Crumb batch-5 item 1 (2026-07-28): timer-only park — the sleep
+ * half of the async_io premise. `std::time::sleep` on an async_io
+ * pool blocked the worker in nanosleep, so N sleeping coros
+ * serialized (400/800/1200ms instead of all waking at ~400ms) and
+ * one JS `await sleep(400)` held the pool against unrelated
+ * requests. This parks the coro on a DEADLINE with no fd: the
+ * drain loop's existing machinery does the rest (epoll timeout is
+ * bounded by the earliest parked deadline; the expiry sweep
+ * resumes deadline-passed coros and already guards `parked_fd >=
+ * 0` before the epoll deregister, so an fd-less park needs no new
+ * resume path). Returns 1 after sleeping via park; 0 when not in
+ * an async_io coro context (caller falls back to the classic
+ * chunked-nanosleep lowering); ns <= 0 returns 1 immediately. */
+int64_t lotus_time_sleep_park_try(int64_t ns) {
+    lotus_coop_pool_t *p = g_current_pool_tls;
+    lotus_coro_t      *c = g_current_coro_tls;
+    if (!p || !c || !p->async_io_enabled || p->epoll_fd < 0) {
+        return 0;
+    }
+    if (ns <= 0) return 1;
+    c->parked_fd        = -1;
+    c->park_deadline_ns = lotus_now_mono_ns() + ns;
+    c->park_timed_out   = 0;
+    c->next = p->parked_head;
+    p->parked_head = c;
+    /* Same caller-arena snapshot discipline as the fd park: the
+     * worker runs other coros while we're parked. */
+    c->saved_caller_arena = lotus_current_caller_arena;
+    swapcontext(&c->ctx, &p->drain_ctx);
+    lotus_current_caller_arena = c->saved_caller_arena;
+    c->park_deadline_ns = 0;
+    c->park_timed_out   = 0;
+    return 1;
+}
+
 /* F.35 Slice 1: async-aware drain. Runs in the pool worker thread.
  * Each iteration:
  *   1. epoll_wait if there are parked coros (with timeout 0 if the
