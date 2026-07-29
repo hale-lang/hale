@@ -1492,6 +1492,22 @@ green because they decoded with the emitter's own layout. The
 tests now vendor protocol.h's decode, so emitter and consumers
 cannot disagree silently.
 
+Adapter ingest completeness (iris handoff 8, v0.11.22): the
+Hale-owned-wire ingest (`std::bus::__local_dispatch` →
+`lotus_bus_dispatch_wire_inbound`) now carries the full probe trio
+the C reader threads have. The wrapper peels the self-describing
+obs wire header when the producer emitted one (magic-guarded — a
+headerless or non-Hale producer is byte-for-byte unaffected, and
+headered bytes reaching a Hale adapter previously failed
+deserialization outright), emits `NET_DELIVER` echoing the wire
+`(origin, seq)` (or `(0, local per-subject seq)` when headerless —
+countable, not pairable), and the plain `dispatch_wire` fanout
+gains the per-target `BUS_DELIVER` its keyed sibling received in
+v0.11.18. Adapter bindings register lazily in the manifest
+(`aux = 2`). Dynamically-ingested planes now form producer→consumer
+edges and attribute subscriber loci exactly like statically
+configured listens.
+
 Attribution ordering + the adapter inbound path (iris handoff 6,
 v0.11.20):
 

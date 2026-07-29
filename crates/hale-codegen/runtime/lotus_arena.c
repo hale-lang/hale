@@ -5580,6 +5580,11 @@ int lotus_obs_active(void) __attribute__((weak));
  * so the published counter isn't inflated by deliveries. */
 void lotus_obs_begin_redispatch(void) __attribute__((weak));
 void lotus_obs_end_redispatch(void) __attribute__((weak));
+/* iris handoff-8 P21: adapter-ingest NET_DELIVER (binding dedupe +
+ * counters + record live in the obs TU). */
+void lotus_obs_adapter_net_deliver(const char *subject, uint64_t origin,
+                                   uint64_t seq, uint64_t bytes)
+    __attribute__((weak));
 /* iris handoff-3 P11: observation seq header on the UDP wire.
  * Self-describing so a headerless (unobserved / older) sender is
  * still delivered correctly — the reader checks the magic and a
@@ -14587,6 +14592,13 @@ void lotus_bus_dispatch_wire(const char *subject,
             (void)lotus_bus_post_entry(e, g_bus_queue_for_remote,
                 wire_bytes, wire_size);
             g_bus_pending_wire_deser = NULL;
+            /* handoff-8 P21: BUS_DELIVER per matched target — the
+             * plain wire flavor was the one fanout without it (its
+             * keyed sibling gained the probe in handoff-4). */
+            if (lotus_obs_bus_deliver) {
+                lotus_obs_bus_deliver(subject, e->self_ptr,
+                                      (uint64_t)wire_size);
+            }
             delivered++;
             continue;
         }
@@ -14608,24 +14620,14 @@ void lotus_bus_dispatch_wire(const char *subject,
             }
             continue;
         }
-        if (e->mailbox) {
-            lotus_mailbox_post(
-                e->mailbox, e->handler, e->self_ptr,
-                struct_buf, (size_t)struct_size);
-            delivered++;
-        } else if (e->coop_pool) {
-            /* F.31 Phase 4 (2026-05-28): same fix as the keyed
-             * variant above — wire-dispatch was missing the
-             * coop_pool branch that lotus_bus_local_dispatch ships
-             * with, so subscribers on non-main cooperative pools
-             * silently routed to the global queue. */
-            lotus_coop_pool_post(e->coop_pool, e->handler, e->self_ptr,
-                                 struct_buf, (size_t)struct_size);
-            delivered++;
-        } else if (g_bus_queue_for_remote) {
-            lotus_bus_queue_enqueue(
-                g_bus_queue_for_remote, e->handler, e->self_ptr,
-                struct_buf, (size_t)struct_size);
+        if (lotus_bus_post_entry(e, g_bus_queue_for_remote,
+                                 struct_buf, (size_t)struct_size)) {
+            /* handoff-8 P21: BUS_DELIVER per matched target (see the
+             * cross-thread branch above). */
+            if (lotus_obs_bus_deliver) {
+                lotus_obs_bus_deliver(subject, e->self_ptr,
+                                      (uint64_t)wire_size);
+            }
             delivered++;
         } else if (lotus_bus_log_drop_enabled()) {
             fprintf(stderr,
@@ -19219,7 +19221,37 @@ int lotus_math_is_nan(double f) {
 void lotus_bus_dispatch_wire_inbound(const char *subject,
                                      const void *wire_bytes,
                                      size_t wire_size) {
+    /* iris handoff-8 P21: the last dark ingestion path. Peel the
+     * self-describing obs wire header when the producer emitted one
+     * (a C-fanout sender under LOTUS_OBS_WIRE=1) and echo its
+     * (origin, seq) into NET_DELIVER so adapter-ingested messages
+     * pair into cross-process edges exactly like the C reader's.
+     * Headerless bytes probe with (0, local seq) — countable, not
+     * pairable, the non-framed-transport contract. The peel is
+     * magic-guarded, so non-Hale and unobserved producers are
+     * byte-for-byte unaffected; it also FIXES the previously-broken
+     * case of headered bytes reaching a Hale adapter (deserialize
+     * saw 16 stray bytes and dropped). */
+    const unsigned char *b = (const unsigned char *)wire_bytes;
+    size_t sz = wire_size;
+    uint64_t origin = 0, seq = 0;
+    if (sz >= 16) {
+        uint64_t magic;
+        memcpy(&magic, b, 8);
+        if (magic == LOTUS_OBS_WIRE_MAGIC) {
+            uint64_t w;
+            memcpy(&w, b + 8, 8);
+            origin = w & 0xFFFFULL;
+            seq = (w >> 16) & 0xFFFFFFFFFFFFULL;
+            b += 16;
+            sz -= 16;
+        }
+    }
+    if (lotus_obs_adapter_net_deliver) {
+        lotus_obs_adapter_net_deliver(subject, origin, seq,
+                                      (uint64_t)sz);
+    }
     if (lotus_obs_begin_redispatch) lotus_obs_begin_redispatch();
-    lotus_bus_dispatch_wire(subject, wire_bytes, wire_size);
+    lotus_bus_dispatch_wire(subject, b, sz);
     if (lotus_obs_end_redispatch) lotus_obs_end_redispatch();
 }

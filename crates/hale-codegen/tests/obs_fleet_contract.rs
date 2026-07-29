@@ -823,3 +823,233 @@ fn adapter_inbound_dispatch_is_not_a_publish() {
         pubs
     );
 }
+
+/// iris handoff-8 P21 — the adapter (Hale-owned-wire) ingest path
+/// gets the full trio. A producer fans out over the C udp path
+/// under LOTUS_OBS_WIRE=1 (headered datagrams); the consumer does
+/// NOT use LOTUS_BUS_CONFIG — its own Hale code reads the socket
+/// and hands bytes to `std::bus::__local_dispatch` (the adapter
+/// ingest). Before this fix that path was dark: no NET_DELIVER, no
+/// BUS_DELIVER, and a headered datagram didn't even deserialize.
+/// Asserts on the consumer's segment: NET_DELIVER records carrying
+/// the producer's wire (origin, seq); BUS_DELIVER attributed to the
+/// subscriber's birth instance; published == 0 (ingest is not a
+/// publish).
+#[test]
+fn adapter_ingest_pairs_and_attributes() {
+    const PRODUCER: &str = r#"
+        type Sig { v: Int; }
+        locus Pub {
+            bus { publish "sig.plane" of type Sig; }
+            run() {
+                std::time::sleep(600ms);
+                let mut i = 0;
+                while i < 20 {
+                    "sig.plane" <- Sig { v: i };
+                    std::time::sleep(10ms);
+                    i = i + 1;
+                }
+            }
+        }
+        main locus App {
+            params { p: Pub = Pub { }; }
+            placement { p: pinned(core = 0); }
+            run() { std::time::sleep(2500ms); }
+        }
+        fn main() { App { }; }
+    "#;
+    const CONSUMER: &str = r#"
+        type Sig { v: Int; }
+        fn __empty(e: IoError) -> Bytes { return b""; }
+        locus Sub {
+            params { got: Int = 0; }
+            bus { subscribe "sig.plane" as on_s of type Sig; }
+            fn on_s(s: Sig) { self.got = self.got + 1; }
+        }
+        locus Ingest {
+            params { port: Int = 0; }
+            bus { publish "sig.plane" of type Sig; }
+            run() {
+                let fd = std::io::udp::bind("127.0.0.1", self.port) or -1;
+                if fd < 0 { return; }
+                std::io::udp::set_recv_timeout(fd, 200ms) or discard;
+                let mut i = 0;
+                while i < 200 {
+                    let b = std::io::udp::recv(fd, 4096) or __empty(err);
+                    if len(b) > 0 {
+                        std::bus::__local_dispatch("sig.plane", b);
+                    }
+                    i = i + 1;
+                }
+                std::io::udp::close(fd);
+            }
+        }
+        fn main() {
+            Sub { };
+            Ingest { port: 57845 };
+            std::time::sleep(200ms);
+        }
+    "#;
+    let pub_bin = compile("adppub", PRODUCER);
+    let sub_bin = compile("adpsub", CONSUMER);
+    let dir = std::env::temp_dir()
+        .join(format!("hale_obsadp_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = dir.join("pub.conf");
+    std::fs::write(&cfg, "sig.plane = udp://127.0.0.1:57845:connect\n")
+        .unwrap();
+
+    // Consumer first (its Ingest loop binds the port), NO bus config
+    // — its only ingest is the adapter path.
+    let mut sub = Command::new(&sub_bin)
+        .env("LOTUS_OBS", "1")
+        .env("LOTUS_OBS_WIRE", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn consumer");
+    std::thread::sleep(Duration::from_millis(200));
+    let mut pubc = Command::new(&pub_bin)
+        .env("LOTUS_BUS_CONFIG", &cfg)
+        .env("LOTUS_OBS", "1")
+        .env("LOTUS_OBS_WIRE", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn producer");
+    let (pub_pid, sub_pid) = (pubc.id(), sub.id());
+    std::thread::sleep(Duration::from_millis(150));
+    attach_observer(pub_pid);
+    attach_observer(sub_pid);
+    // Burst runs pub t+600..800ms; snapshot both while alive.
+    std::thread::sleep(Duration::from_millis(1300));
+    let pub_seg = snapshot_shm(pub_pid);
+    let sub_seg = snapshot_shm(sub_pid);
+    let _ = pubc.kill();
+    let _ = pubc.wait();
+    let _ = sub.kill();
+    let _ = sub.wait();
+    let _ = std::fs::remove_file(&pub_bin);
+    let _ = std::fs::remove_file(&sub_bin);
+    let _ = std::fs::remove_dir_all(&dir);
+    let pub_seg = pub_seg.expect("producer segment");
+    let sub_seg = sub_seg.expect("consumer segment");
+
+    // Producer side: headered NET_SENDs with nonzero origin.
+    let sends: std::collections::HashSet<(u32, u64)> = records(&pub_seg, 3)
+        .iter()
+        .map(|(_, w1)| net_origin_seq(*w1))
+        .collect();
+    assert!(!sends.is_empty(), "producer emitted no NET_SEND");
+
+    // Consumer side: the adapter ingest trio.
+    let delivers: Vec<(u32, u64)> = records(&sub_seg, 4)
+        .iter()
+        .map(|(_, w1)| net_origin_seq(*w1))
+        .collect();
+    assert!(
+        !delivers.is_empty(),
+        "P21: adapter ingest emitted no NET_DELIVER (dark path)"
+    );
+    let paired = delivers.iter().filter(|d| sends.contains(d)).count();
+    assert!(
+        paired > 0,
+        "P21: adapter NET_DELIVER did not echo the wire (origin, seq): \
+         sends {:?} delivers {:?}",
+        sends,
+        delivers
+    );
+    let births: std::collections::HashSet<u32> =
+        records(&sub_seg, 5).iter().map(|(id, _)| *id).collect();
+    let dlvs: Vec<u32> = records(&sub_seg, 2)
+        .iter()
+        .map(|(_, w1)| obs_bus_locus(*w1))
+        .collect();
+    assert!(
+        !dlvs.is_empty(),
+        "P21: adapter ingest produced no BUS_DELIVER"
+    );
+    assert!(
+        dlvs.iter().all(|l| *l != 0 && births.contains(l)),
+        "P21: adapter BUS_DELIVER unattributed: {:?} (births {:?})",
+        dlvs,
+        births
+    );
+    // Ingest is a delivery, not a publish.
+    let (published, delivered, _) =
+        topic_counters(&sub_seg, b"sig.plane").expect("topic on consumer");
+    assert_eq!(
+        published, 0,
+        "adapter ingest inflated the published counter"
+    );
+    assert!(delivered > 0, "delivered counter is 0");
+}
+
+/// iris handoff-8 P20 — remote-only publishes MUST count. The field
+/// report ("every purely-remote subject shows CT_PUBLISHED = 0")
+/// did not reproduce on any of four flavors (adapter binding, udp
+/// config, framed transport, keyed); this pins the keyed+udp shape
+/// (their signal plane's) so the counter can never regress to the
+/// pre-v0.11.15 keyed-probe-gap behavior the report likely carried.
+#[test]
+fn remote_only_publish_counts() {
+    const SRC: &str = r#"
+        type Out { id: Int; v: Int; }
+        type Keep { n: Int; }
+        topic Sig { payload: Out; subject: "sig.keyed"; keyed_by id; }
+        locus KeepAlive {
+            bus { subscribe "keep" as on_k of type Keep; }
+            fn on_k(k: Keep) { }
+        }
+        locus Pub {
+            bus { publish Sig; }
+            run() {
+                std::time::sleep(100ms);
+                let mut i = 0;
+                while i < 20 { Sig <- Out { id: 1, v: i }; i = i + 1; }
+            }
+        }
+        fn main() {
+            KeepAlive { };
+            Pub { };
+            std::time::sleep(700ms);
+        }
+    "#;
+    let bin = compile("remoteonly", SRC);
+    let dir = std::env::temp_dir()
+        .join(format!("hale_obsro_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = dir.join("bus.conf");
+    std::fs::write(&cfg, "sig.keyed = udp://127.0.0.1:57849:connect\n")
+        .unwrap();
+    let mut child = Command::new(&bin)
+        .env("LOTUS_BUS_CONFIG", &cfg)
+        .env("LOTUS_OBS", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn");
+    let pid = child.id();
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(25));
+        if std::path::Path::new(&format!("/dev/shm/hale-obs-{}", pid))
+            .exists()
+        {
+            break;
+        }
+    }
+    attach_observer(pid);
+    std::thread::sleep(Duration::from_millis(500));
+    let seg = snapshot_shm(pid);
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_file(&bin);
+    let _ = std::fs::remove_dir_all(&dir);
+    let seg = seg.expect("segment");
+    let (published, _, _) =
+        topic_counters(&seg, b"sig.keyed").expect("remote-only topic");
+    assert_eq!(
+        published, 20,
+        "P20: remote-only keyed publishes must bump CT_PUBLISHED"
+    );
+}
