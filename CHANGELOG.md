@@ -6,7 +6,7 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.11.24 — stdlib registry/dispatch parity enforced; effect-classification hole closed (2026-07-29)
 
 - **Registry/dispatch parity is enforced (R2 completion), and it
   found real drift.** The R2 refactor made `stdlib_surface` the
