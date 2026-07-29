@@ -70,7 +70,9 @@ function ingest(s) {
   const pt = new Map((prev.topics || []).map(tp => [tp.name, tp]));
   for (const tp of snap.topics || []) {
     const o = pt.get(tp.name);
-    rates.topics.set(tp.name, o ? Math.max(0, ((tp.dlv - o.dlv) + (tp.pub - o.pub)) / 2 / dt) : 0);
+    const inst = o ? Math.max(0, ((tp.dlv - o.dlv) + (tp.pub - o.pub)) / 2 / dt) : 0;
+    const ema = rates.topics.get(tp.name) || 0;
+    rates.topics.set(tp.name, ema * 0.8 + inst * 0.2);
   }
   const pp = new Map(prev.processes.map(p => [p.pid, p]));
   for (const p of snap.processes) {
@@ -589,11 +591,20 @@ requestAnimationFrame(frame);
 // ---- topic panel -------------------------------------------
 
 let topicsHtml = "";
+let topicOrder = [], lastRank = 0;
 function renderTopics() {
-  const rows = (snap.topics || [])
-    .filter(tp => tp.pub > 0 || tp.dlv > 0)
-    .sort((a, b) => (rates.topics.get(b.name) || 0) - (rates.topics.get(a.name) || 0)
-                 || (b.pub + b.dlv) - (a.pub + a.dlv))
+  const now = performance.now();
+  const active = (snap.topics || []).filter(tp => tp.pub > 0 || tp.dlv > 0);
+  if (now - lastRank > 5000 || !topicOrder.length) {
+    lastRank = now;
+    topicOrder = active.slice()
+      .sort((a, b) => (rates.topics.get(b.name) || 0) - (rates.topics.get(a.name) || 0)
+                   || (b.pub + b.dlv) - (a.pub + a.dlv))
+      .map(tp => tp.name);
+  }
+  const pos = new Map(topicOrder.map((n, i) => [n, i]));
+  const rows = active
+    .sort((a, b) => (pos.has(a.name) ? pos.get(a.name) : 999) - (pos.has(b.name) ? pos.get(b.name) : 999))
     .map(tp => {
       const cls = tp.name === pinnedTopic ? "trow pinned" : "trow";
       const rt = rates.topics.get(tp.name) || 0;
