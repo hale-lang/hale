@@ -7377,6 +7377,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     unbounded: false,
                     budget: None,
                     hot: false,
+                    effects: Vec::new(),
                     body: Block {
                         stmts: Vec::new(),
                         tail: None,
@@ -10866,6 +10867,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 unbounded: fd.unbounded,
                 budget: fd.budget,
                 hot: fd.hot,
+                effects: Vec::new(),
                 body: Self::substitute_block_type_ascriptions(
                     &fd.body, subst,
                 ),
@@ -11113,6 +11115,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             unbounded: template.unbounded,
             budget: template.budget,
             hot: template.hot,
+            effects: Vec::new(),
             body: new_body,
             span: template.span.clone(),
         })

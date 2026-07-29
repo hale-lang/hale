@@ -201,8 +201,15 @@ pub struct WitnessStep {
 pub enum Probe<'a> {
     /// An allocation site in the current fn's body.
     Site(&'a AllocSite),
-    /// An unresolved callee by name (the classified frontier).
+    /// An unresolved callee by name (the classified frontier:
+    /// stdlib path-calls, unknown externals).
     Unresolved(&'a str, &'a CallEdge),
+    /// A RESOLVED callee, tested before descending into it. An
+    /// `@ffi` fn is resolved (it has a summary entry with an empty
+    /// body), so `@no_ffi`-style predicates match here rather than
+    /// on the unresolved frontier. Returning a label stops the walk
+    /// with the callee as the leaf; returning None descends.
+    Resolved(&'a FnKey, &'a CallEdge),
 }
 
 /// The #265 primitive: the FIRST chain of calls from `root` to a
@@ -251,6 +258,16 @@ fn witness_inner(
             Callee::Resolved(callee_key) => {
                 if path.contains(callee_key) {
                     continue;
+                }
+                if let Some(label) =
+                    pred(&Probe::Resolved(callee_key, edge))
+                {
+                    path.pop();
+                    return Some(vec![WitnessStep {
+                        in_fn: key.clone(),
+                        span: edge.span,
+                        label,
+                    }]);
                 }
                 if let Some(mut tail) =
                     witness_inner(summary, callee_key, pred, path, steps)

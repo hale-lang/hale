@@ -6,6 +6,40 @@ behavior.
 
 ---
 
+## Unreleased
+
+- **GH #265 phase 1: categoric effect assertions —
+  `@no_recursion`, `@no_ffi`, `@no_block`.** `@budget`'s discipline
+  generalized from allocation *count* to effect *classes*: an opt-in
+  contract at a root, inferred everywhere else, enforced as a hard
+  error. Bare `@`-flags before a `fn` (free or method), stackable
+  with each other and with `@hot` / `@budget(...)`. Violations
+  report the **witness chain** — `on_tick -> helper -> nap
+  [std::time::sleep — …]` — the diagnostic shape `@budget`'s
+  fixpoint structurally could not produce, now available because
+  both run on the shared `hale-types::callgraph` engine (shipped in
+  the v0.11.22 refactor batch). `@no_block`'s leaf set is the
+  closed blocking-stdlib family; `@no_ffi` matches bundle-local
+  `@ffi` declarations; `@no_recursion` is call-graph acyclicity
+  (diamonds pass). Later phases — `@no_panic` (a different
+  analysis), `@no_syscall` / `@deterministic` (need the full
+  `lotus_*` frontier classification) — are unchanged in the issue's
+  build order.
+
+- **GH #265 phase 2: the frontier is classified —
+  `@no_syscall`, `@deterministic`.** All 327 stdlib registry entries
+  now carry a real `EffectSet` (SYSCALL / BLOCK / PUBLISH / TIME /
+  ENTROPY / ENV / ALLOC / PURE) — zero unclassified residue — and the
+  two new assertions are predicates over that column rather than
+  hand-lists. The classification distinguishes reading an effect
+  source from operating on a supplied value (`time_from_unix(n)` is
+  deterministic, `monotonic_ns()` is not; `http::parse_request` is
+  pure, `http::get` is blocking I/O). An unclassified entry would
+  violate every assertion by construction, so incompleteness can never
+  silently pass. The full certificate composes and is checked in one
+  pass: `@no_block @no_syscall @deterministic @no_recursion @hot
+  @budget(alloc_per_call = 0)`.
+
 ## v0.11.22 — iris handoff-8: adapter ingest lit + the refactor batch (2026-07-29)
 
 - **The adapter ingest path carries the full observation trio**

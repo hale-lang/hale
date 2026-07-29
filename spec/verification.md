@@ -150,6 +150,62 @@ assume the others in a build:
   contract with `recv_into` + a reused `BytesBuilder`. fn-only; mutually
   exclusive with `@unbounded`. A violation reports the measured count and
   points at every offending allocation with the fast-path fix.
+- **Categoric effect assertions — `@no_recursion` / `@no_ffi` /
+  `@no_block`** (GH #265 phase 1, 2026-07-29). `@budget`'s discipline
+  generalized from *allocation count* to *effect classes*: an opt-in
+  contract at a root the author cares about, inferred everywhere else,
+  enforced as a hard error over the resolved call graph. All three are
+  bare `@`-flags before a `fn` (free or method), stackable with each
+  other and with `@hot` / `@budget(...)`.
+  - `@no_recursion` — no cycle reachable from this root (the
+    static-stack precondition). Diamonds are not cycles.
+  - `@no_ffi` — no `@ffi` fn transitively reachable ("pure managed
+    Hale", the `forbid(unsafe)` analog).
+  - `@no_block` — no blocking stdlib operation reachable (`sleep`, the
+    blocking `recv` family, `accept`, `connect`, subprocess waits,
+    `Reader.next`). This is the contract an `async_io`-placed handler
+    needs: a blocking call there stalls the pool's single worker.
+
+  Unlike `@budget`'s fixpoint (which reports a count and the offending
+  sites), an effect violation reports the **witness chain** — the call
+  path from the asserting root to the offending leaf,
+  `on_tick -> helper -> nap [std::time::sleep — …]` — plus a second
+  diagnostic at the leaf itself. Both run on the shared
+  witness-preserving engine (`hale-types::callgraph`), which is also
+  what `@budget` now walks.
+
+  Boundaries, unchanged from the issue: opaque callees other than the
+  classified leaf sets are outside what an assertion sees (the same
+  soundness boundary the escape analysis and `@budget` draw); `@ffi`
+  labels are trusted, not verified. `@no_panic` remains a later phase —
+  it is a different analysis (disposition coverage + index-op
+  selection), not leaf reachability.
+- **Registry-driven assertions — `@no_syscall` / `@deterministic`**
+  (GH #265 phase 2, 2026-07-29). The stdlib surface is now **fully
+  effect-classified**: every one of its entries carries an `EffectSet`
+  (`SYSCALL` / `BLOCK` / `PUBLISH` / `TIME` / `ENTROPY` / `ENV` /
+  `ALLOC` / `PURE`) in `hale-types::stdlib_surface`, and these two
+  assertions are predicates over it rather than hand-lists:
+  - `@no_syscall` — nothing syscall-class reachable (filesystem,
+    sockets, process, terminal, stdio). The compute-only contract.
+  - `@deterministic` — no clock read, no entropy, no environment: the
+    fn is a function of its inputs. The contract replicated /
+    replayable workloads need; with a message log it buys exact replay
+    debugging.
+
+  The classification distinguishes *reading* an effect source from
+  *operating on a supplied value*: `std::time::time_from_unix(n)`
+  formats a caller-provided instant and is deterministic, while
+  `monotonic_ns()` is not; `std::http::parse_request` is pure while
+  `std::http::get` is blocking I/O. An **unclassified** registry entry
+  is treated as may-do-anything and therefore violates every
+  assertion — incompleteness can never silently pass, which is what
+  keeps the frontier true as the stdlib grows.
+
+  Composing the set gives the certificates the issue names:
+  `@no_block @no_syscall @deterministic @no_recursion @hot
+  @budget(alloc_per_call = 0)` is the complete hot-path contract, and
+  it is checked in one whole-seed pass.
 - **Hot-path allocation lint — default-on advisory** (2026-07-16). Two
   loop-scoped anti-patterns get a **warning** (never a build failure), so
   the allocation-free shape is the path of least resistance rather than
