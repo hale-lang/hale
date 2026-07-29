@@ -162,9 +162,11 @@ static void print_event(uint64_t ts, uint64_t w0, uint64_t w1) {
   double t = (double)(ts - H->started_mono_ns) / 1e9;
   switch (ek) {
   case OBS_EK_BUS_PUBLISH:
-    printf("%10.6f  pub   %-14s ~%uB\n", t, nm(OBS_MK_TOPIC, id), 1u << sc); break;
+    printf("%10.6f  pub   %-14s ~%uB locus=%u\n", t, nm(OBS_MK_TOPIC, id), 1u << sc,
+           (unsigned)obs_bus_locus(w1)); break;
   case OBS_EK_BUS_DELIVER:
-    printf("%10.6f  dlv   %-14s\n", t, nm(OBS_MK_TOPIC, id)); break;
+    printf("%10.6f  dlv   %-14s locus=%u\n", t, nm(OBS_MK_TOPIC, id),
+           (unsigned)obs_bus_locus(w1)); break;
   case OBS_EK_NET_SEND:
     printf("%10.6f  net>  %-14s %s seq=%" PRIu64 "\n", t, nm(OBS_MK_TOPIC, id),
            nm(OBS_MK_BINDING, obs_net_binding(w1)), obs_net_seq(w1)); break;
