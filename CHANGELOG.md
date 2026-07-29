@@ -6,7 +6,7 @@ behavior.
 
 ---
 
-## v0.11.19 — Crumb batch-5: sleep parks on async_io, stdlib builtin-namespace README (2026-07-28)
+## v0.11.20 — iris handoff-6: constructor-resolved obs gate, marked adapter inbound (2026-07-29)
 
 iris handoff-6 (P17/P19 — attribution in the field).
 
