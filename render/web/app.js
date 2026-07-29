@@ -42,17 +42,24 @@ let pinned = null;         // same shape, click-to-pin
 let hoverTopic = null, pinnedTopic = null;
 const deadSince = new Map();
 
-// topic-family palette: hues for the bus planes (md.*, risk.*,
-// strategy.*, ...). 8 muted-but-distinct hues on dark; red is
-// reserved for alerts, amber/cyan for petal activity accents.
-const FAM_HUES = [210, 265, 320, 165, 130, 95, 20, 240];
-const famOf = (t) => t.split(".")[0];
-function famHue(fam) {
+// per-TOPIC hues (field-requested: tracing one topic across the
+// canvas by color beats family grouping). Name-hash anchor, then
+// golden-angle steps until >=18deg from every assigned hue —
+// distinct by construction, stable within a session. Red band
+// avoided (alerts); amber/cyan stay petal-activity accents.
+const topicHues = new Map();
+function topicHue(name) {
+  if (topicHues.has(name)) return topicHues.get(name);
   let h = 0;
-  for (const ch of fam) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return FAM_HUES[h % FAM_HUES.length];
+  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  let hue = h % 360;
+  const bad = (x) => x < 15 || x > 345 ||
+    [...topicHues.values()].some(u => Math.min(Math.abs(u - x), 360 - Math.abs(u - x)) < 18);
+  for (let i = 0; i < 24 && bad(hue); i++) hue = (hue + 137.5) % 360;
+  topicHues.set(name, hue);
+  return hue;
 }
-const famColor = (fam, a) => `hsla(${famHue(fam)}, 60%, 58%, ${a})`;
+const topicColor = (name, a) => `hsla(${topicHue(name)}, 62%, 58%, ${a})`;
 let colorMode = "topic"; // 'topic' | 'latency' (key c)
 
 const fmt = (n) =>
@@ -134,7 +141,7 @@ function buildRibbons() {
     r.mean = r.rate > 0 ? r.latW / r.rate
       : r.topics.reduce((a, t) => a + t.mean, 0) / Math.max(1, r.topics.length);
     r.topics.sort((a, b) => b.rate - a.rate);
-    r.fam = famOf(r.topics[0]?.name || "?");
+    r.top = r.topics[0]?.name || "?";
   }
   return { ribbons: [...ribbons.values()], plumbs: [...plumbs.values()] };
 }
@@ -342,14 +349,29 @@ function ribbonGeom(r) {
 }
 
 const pulses = new Map();
-function stepPulses(key, rate, dt) {
+const pulseCounters = new Map();
+function pickTopic(r, n) {
+  // deterministic weighted round-robin over the pair's topics,
+  // so pulse colors appear in proportion to each topic's rate
+  if (!r || !r.topics.length) return null;
+  const tot = r.topics.reduce((a, t) => a + t.rate, 0);
+  if (tot <= 0) return r.topics[0].name;
+  let u = ((n * 0.6180339887) % 1) * tot;
+  for (const t of r.topics) { u -= t.rate; if (u <= 0) return t.name; }
+  return r.topics[0].name;
+}
+function stepPulses(key, rate, dt, r) {
   let list = pulses.get(key);
   if (!list) { list = []; pulses.set(key, list); }
   for (const p of list) p.u += 0.5 * dt;
   while (list.length && list[0].u > 1) list.shift();
   const want = rate <= 0 ? 0 : Math.min(12, 1.5 + Math.log10(1 + rate) * 2.6);
   const gap = 1 / Math.max(want, 1);
-  if (want > 0 && (!list.length || list[list.length - 1].u > gap)) list.push({ u: 0 });
+  if (want > 0 && (!list.length || list[list.length - 1].u > gap)) {
+    const n = (pulseCounters.get(key) || 0) + 1;
+    pulseCounters.set(key, n);
+    list.push({ u: 0, t: pickTopic(r, n) });
+  }
   return list;
 }
 
@@ -567,7 +589,7 @@ function frame(now) {
     ctx.beginPath();
     ctx.moveTo(g[0], g[1]);
     ctx.bezierCurveTo(g[2], g[3], g[4], g[5], g[6], g[7]);
-    const col = (al) => colorMode === "topic" ? famColor(r.fam, al) : latColor(r.mean, al);
+    const col = (al) => colorMode === "topic" ? topicColor(r.top, al) : latColor(r.mean, al);
     // heavy flows get an under-glow first
     if (tier > 2.2) {
       ctx.lineWidth = 2.5 + 3.2 * tier;
@@ -587,12 +609,14 @@ function frame(now) {
       ctx.stroke();
       ctx.restore();
     }
-    for (const p of stepPulses(r.key, r.rate, dt)) {
+    for (const p of stepPulses(r.key, r.rate, dt, r)) {
       const [px, py] = cbez(p.u, ...g);
       const fade = Math.sin(Math.PI * Math.min(1, Math.max(0, p.u)));
       ctx.beginPath();
       ctx.arc(px, py, 1.6 + 1.1 * tier, 0, Math.PI * 2);
-      ctx.fillStyle = sel ? `rgba(230,237,243,${0.9 * fade})` : col(0.9 * fade);
+      ctx.fillStyle = sel ? `rgba(230,237,243,${0.9 * fade})`
+        : colorMode === "topic" && p.t ? topicColor(p.t, 0.9 * fade)
+        : col(0.9 * fade);
       ctx.fill();
     }
     ctx.globalAlpha = 1;
@@ -635,7 +659,7 @@ function renderTopics() {
       const rate = rt >= 0.5
         ? `<span style="color:#9ecbff">${fmt(rt)}/s</span>`
         : `<span class="z">idle</span>`;
-      const dot = `<span style="color:${famColor(famOf(tp.name), 0.9)}">●</span>`;
+      const dot = `<span style="color:${topicColor(tp.name, 0.9)}">●</span>`;
       return `<div class="${cls}" data-t="${tp.name}">${dot} ${tp.name} ${rate} <span class="z">· ${fmt(Math.max(tp.pub, tp.dlv))}</span></div>`;
     }).join("");
   if (rows !== topicsHtml) { topicsHtml = rows; topicsEl.innerHTML = rows; }
@@ -679,7 +703,7 @@ function tipFor(h) {
     const f = (snap.processes || []).find(p => p.pid === r.from);
     const t = (snap.processes || []).find(p => p.pid === r.to);
     const rows = r.topics.map(tp =>
-      `<span style="color:${famColor(famOf(tp.name), 0.9)}">●</span> ${tp.name} — ${fmt(tp.rate)}/s · ${tp.mean.toFixed(0)}µs${tp.lost ? ` · <span style="color:rgb(${RED})">${fmt(tp.lost)} lost</span>` : ""}`
+      `<span style="color:${topicColor(tp.name, 0.9)}">●</span> ${tp.name} — ${fmt(tp.rate)}/s · ${tp.mean.toFixed(0)}µs${tp.lost ? ` · <span style="color:rgb(${RED})">${fmt(tp.lost)} lost</span>` : ""}`
     ).join("<br>");
     return `<b>${f?.name || r.from} → ${t?.name || r.to}</b><br>${rows}`;
   }
