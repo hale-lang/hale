@@ -16,6 +16,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use hale_codegen::build_executable;
 
+#[path = "support/transport.rs"]
+mod transport_support;
+
 fn build(name: &str, src: &str) -> std::path::PathBuf {
     let program = hale_syntax::parse_source(src).expect("parse");
     let mut bin = std::env::temp_dir();
@@ -98,6 +101,18 @@ fn framed_stream_delivers_and_rearms_without_seq_gaps() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn subscriber");
+    // Deterministic readiness handshake — see support/transport.rs.
+    // Without this the publisher races the listener's bind and
+    // depends on the runtime's ~1s connect-retry budget, which a
+    // loaded CI runner can exceed.
+    assert!(
+        transport_support::wait_for_listener(
+            &sock,
+            std::time::Duration::from_secs(30)
+        ),
+        "subscriber never bound its listen socket at {}",
+        sock
+    );
     for i in 0..2 {
         let p = Command::new(&pub_bin)
             .env("LOTUS_UNIX_STREAM", "1")
