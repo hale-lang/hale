@@ -1482,6 +1482,15 @@ pub enum EffectAssert {
     /// `async_io`-placed handler needs (a blocking call there stalls
     /// the pool's single worker).
     NoBlock,
+    /// #265 phase 2: no syscall-class stdlib operation reachable
+    /// (filesystem, sockets, process, terminal, stdio). The
+    /// compute-only contract.
+    NoSyscall,
+    /// #265 phase 2: no nondeterminism reachable — no clock read, no
+    /// entropy, no environment. The contract replicated/replayable
+    /// workloads need; combined with a message log it buys exact
+    /// replay debugging.
+    Deterministic,
 }
 
 #[derive(Debug, Clone, PartialEq)]

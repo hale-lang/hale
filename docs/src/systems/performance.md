@@ -170,9 +170,18 @@ Beyond counting allocations, a fn can assert what it's allowed to
 
 ```hale,fragment
 @no_block fn on_tick(t: Tick) { ... }        // nothing blocking reachable
+@no_syscall fn compute(n: Int) -> Int { ... } // no file/socket/process I/O
+@deterministic fn decide(seed: Int) -> Int { ... } // no clock, entropy, or env
 @no_recursion fn step(n: Int) -> Int { ... } // no cycle under this root
 @no_ffi fn managed(x: Int) -> Int { ... }    // no @ffi call reachable
 ```
+
+`@deterministic` is the one worth knowing about for replay: a fn that
+reads no clock, no randomness and no environment is a function of its
+inputs, so replaying its inputs replays its behavior exactly. The
+compiler knows the difference between reading a source and using a
+supplied value — `std::time::time_from_unix(at)` formats an instant
+you passed in and is fine; `std::time::monotonic_ns()` is not.
 
 They stack with each other and with the contracts above —
 `@no_block @hot @budget(alloc_per_call = 0) fn handle(...)` is the

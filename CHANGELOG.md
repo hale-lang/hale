@@ -26,6 +26,20 @@ behavior.
   `lotus_*` frontier classification) — are unchanged in the issue's
   build order.
 
+- **GH #265 phase 2: the frontier is classified —
+  `@no_syscall`, `@deterministic`.** All 327 stdlib registry entries
+  now carry a real `EffectSet` (SYSCALL / BLOCK / PUBLISH / TIME /
+  ENTROPY / ENV / ALLOC / PURE) — zero unclassified residue — and the
+  two new assertions are predicates over that column rather than
+  hand-lists. The classification distinguishes reading an effect
+  source from operating on a supplied value (`time_from_unix(n)` is
+  deterministic, `monotonic_ns()` is not; `http::parse_request` is
+  pure, `http::get` is blocking I/O). An unclassified entry would
+  violate every assertion by construction, so incompleteness can never
+  silently pass. The full certificate composes and is checked in one
+  pass: `@no_block @no_syscall @deterministic @no_recursion @hot
+  @budget(alloc_per_call = 0)`.
+
 ## v0.11.22 — iris handoff-8: adapter ingest lit + the refactor batch (2026-07-29)
 
 - **The adapter ingest path carries the full observation trio**

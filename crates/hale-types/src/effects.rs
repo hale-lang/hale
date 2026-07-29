@@ -195,6 +195,33 @@ pub fn effect_diags(programs: &[&Program]) -> Vec<Diag> {
                          a locus this fn doesn't reach, or drop `@no_ffi`.",
                     );
                 }
+                EffectAssert::NoSyscall => {
+                    check_registry(
+                        &summary, key, *span, "@no_syscall",
+                        crate::stdlib_surface::EffectSet::SYSCALL,
+                        "a syscall-class operation (filesystem, socket, \
+                         process, terminal, stdio)",
+                        &mut diags,
+                        "Move the I/O behind a locus this fn doesn't reach \
+                         (the reader/writer-locus shape), or drop \
+                         `@no_syscall`.",
+                    );
+                }
+                EffectAssert::Deterministic => {
+                    check_registry(
+                        &summary, key, *span, "@deterministic",
+                        crate::stdlib_surface::EffectSet::TIME
+                            .union(crate::stdlib_surface::EffectSet::ENTROPY)
+                            .union(crate::stdlib_surface::EffectSet::ENV),
+                        "a nondeterministic read (clock, entropy, or \
+                         environment)",
+                        &mut diags,
+                        "Pass the value in as a parameter (a captured \
+                         timestamp, a seeded generator, resolved config) so \
+                         the fn is a function of its inputs, or drop \
+                         `@deterministic`.",
+                    );
+                }
                 EffectAssert::NoRecursion => {
                     if let Some(cyc) = find_recursion(&summary, key) {
                         diags.push(Diag::ty(
@@ -215,6 +242,44 @@ pub fn effect_diags(programs: &[&Program]) -> Vec<Diag> {
         }
     }
     diags
+}
+
+/// #265 phase 2: assertions whose leaf set comes from the CLASSIFIED
+/// stdlib registry rather than a hand-list. `mask` is the effect
+/// classes the contract forbids; any reachable stdlib call whose
+/// registry row intersects it is a violation, reported with the
+/// witness chain. An UNCLASSIFIED row is treated conservatively as
+/// may-do-anything — it violates every assertion, which is the
+/// "frontier stays true forever" discipline: an unclassified entry
+/// can never silently pass.
+fn check_registry(
+    summary: &AllocSummary,
+    key: &FnKey,
+    span: Span,
+    label: &str,
+    mask: crate::stdlib_surface::EffectSet,
+    what: &str,
+    diags: &mut Vec<Diag>,
+    advice: &str,
+) {
+    let mut pred = |probe: &Probe<'_>| match probe {
+        Probe::Unresolved(name, _) => {
+            let segs: Vec<&str> = name.split("::").collect();
+            let eff = crate::stdlib_surface::effects_for(&segs)?;
+            if eff.is_unclassified() {
+                return Some(format!(
+                    "{} is not yet effect-classified", name
+                ));
+            }
+            if (eff.0 & mask.0) != 0 {
+                Some(format!("{} — {}", name, what))
+            } else {
+                None
+            }
+        }
+        Probe::Site(_) | Probe::Resolved(..) => None,
+    };
+    check_leaf(summary, key, span, label, diags, &mut pred, advice);
 }
 
 /// Shared shape for the reachability assertions: find the first

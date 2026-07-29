@@ -1207,6 +1207,8 @@ impl Parser {
             "no_recursion" => Some(EffectAssert::NoRecursion),
             "no_ffi" => Some(EffectAssert::NoFfi),
             "no_block" => Some(EffectAssert::NoBlock),
+            "no_syscall" => Some(EffectAssert::NoSyscall),
+            "deterministic" => Some(EffectAssert::Deterministic),
             _ => None,
         }
     }

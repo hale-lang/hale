@@ -165,3 +165,133 @@ fn assertion_on_a_locus_method_is_checked() {
         ds
     );
 }
+
+// ---- #265 phase 2: registry-driven assertions ----
+
+#[test]
+fn no_syscall_reports_the_chain_to_the_io() {
+    let src = r#"
+        fn persist(path: String, body: String) {
+            std::io::fs::write_file(path, body) or discard;
+        }
+        fn stage(body: String) {
+            persist("/tmp/x", body);
+        }
+        @no_syscall fn compute(body: String) {
+            stage(body);
+        }
+        fn main() { compute("hi"); }
+    "#;
+    let ds = diags_for(src);
+    let hit = ds
+        .iter()
+        .find(|m| m.contains("@no_syscall` violated"))
+        .unwrap_or_else(|| panic!("expected @no_syscall error; got {:?}", ds));
+    assert!(
+        hit.contains("compute -> stage -> persist"),
+        "witness chain missing: {}",
+        hit
+    );
+    assert!(hit.contains("write_file"), "leaf missing: {}", hit);
+}
+
+#[test]
+fn no_syscall_pure_computation_passes() {
+    let src = r#"
+        fn scale(n: Int) -> Int { return n * 3; }
+        @no_syscall fn compute(n: Int) -> Int {
+            return scale(n) + std::math::float_to_int(2.0);
+        }
+        fn main() { println(compute(2)); }
+    "#;
+    let ds = diags_for(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("@no_syscall")),
+        "pure computation must pass: {:?}",
+        ds
+    );
+}
+
+#[test]
+fn deterministic_rejects_clock_entropy_and_env() {
+    for (call, what) in [
+        ("std::time::monotonic_ns()", "clock"),
+        ("std::rand::next_int(10)", "entropy"),
+        ("std::env::args_count()", "env"),
+    ] {
+        let src = format!(
+            r#"
+            fn peek() -> Int {{ return {}; }}
+            @deterministic fn decide() -> Int {{
+                return peek();
+            }}
+            fn main() {{ println(decide()); }}
+        "#,
+            call
+        );
+        let ds = diags_for(&src);
+        assert!(
+            ds.iter().any(|m| m.contains("@deterministic` violated")
+                && m.contains("decide -> peek")),
+            "{} read must violate @deterministic with a chain: {:?}",
+            what,
+            ds
+        );
+    }
+}
+
+#[test]
+fn deterministic_pure_function_of_inputs_passes() {
+    let src = r#"
+        fn blend(a: Int, b: Int) -> Int { return a * 31 + b; }
+        @deterministic fn decide(seed: Int, n: Int) -> Int {
+            return blend(seed, n);
+        }
+        fn main() { println(decide(7, 2)); }
+    "#;
+    let ds = diags_for(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("@deterministic")),
+        "a function of its inputs must pass: {:?}",
+        ds
+    );
+}
+
+/// `time_from_unix` FORMATS a caller-supplied instant — it reads no
+/// clock, so it must not trip `@deterministic` (the classification
+/// distinguishes reading the clock from formatting a given value).
+#[test]
+fn deterministic_allows_formatting_a_supplied_instant() {
+    let src = r#"
+        @deterministic fn render(at: Int) -> Time {
+            return std::time::time_from_unix(at);
+        }
+        fn main() { println(render(0)); }
+    "#;
+    let ds = diags_for(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("@deterministic")),
+        "formatting a supplied instant is deterministic: {:?}",
+        ds
+    );
+}
+
+/// The full hot-path certificate from the issue composes.
+#[test]
+fn full_certificate_composes() {
+    let src = r#"
+        fn blend(a: Int, b: Int) -> Int { return a * 31 + b; }
+        @no_block @no_syscall @deterministic @no_recursion @hot
+        @budget(alloc_per_call = 0)
+        fn on_tick(a: Int, b: Int) -> Int {
+            return blend(a, b);
+        }
+        fn main() { println(on_tick(1, 2)); }
+    "#;
+    let ds = diags_for(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("violated") || m.contains("budget")),
+        "the stacked certificate must pass on a clean fn: {:?}",
+        ds
+    );
+}

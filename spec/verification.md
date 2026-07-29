@@ -177,11 +177,35 @@ assume the others in a build:
   Boundaries, unchanged from the issue: opaque callees other than the
   classified leaf sets are outside what an assertion sees (the same
   soundness boundary the escape analysis and `@budget` draw); `@ffi`
-  labels are trusted, not verified. `@no_panic`, `@no_syscall`, and
-  `@deterministic` are later phases — the first is a different analysis
-  (disposition coverage), the latter two wait on the full `lotus_*`
-  frontier classification (the `EffectSet` column on the stdlib
-  registry is where it lands).
+  labels are trusted, not verified. `@no_panic` remains a later phase —
+  it is a different analysis (disposition coverage + index-op
+  selection), not leaf reachability.
+- **Registry-driven assertions — `@no_syscall` / `@deterministic`**
+  (GH #265 phase 2, 2026-07-29). The stdlib surface is now **fully
+  effect-classified**: every one of its entries carries an `EffectSet`
+  (`SYSCALL` / `BLOCK` / `PUBLISH` / `TIME` / `ENTROPY` / `ENV` /
+  `ALLOC` / `PURE`) in `hale-types::stdlib_surface`, and these two
+  assertions are predicates over it rather than hand-lists:
+  - `@no_syscall` — nothing syscall-class reachable (filesystem,
+    sockets, process, terminal, stdio). The compute-only contract.
+  - `@deterministic` — no clock read, no entropy, no environment: the
+    fn is a function of its inputs. The contract replicated /
+    replayable workloads need; with a message log it buys exact replay
+    debugging.
+
+  The classification distinguishes *reading* an effect source from
+  *operating on a supplied value*: `std::time::time_from_unix(n)`
+  formats a caller-provided instant and is deterministic, while
+  `monotonic_ns()` is not; `std::http::parse_request` is pure while
+  `std::http::get` is blocking I/O. An **unclassified** registry entry
+  is treated as may-do-anything and therefore violates every
+  assertion — incompleteness can never silently pass, which is what
+  keeps the frontier true as the stdlib grows.
+
+  Composing the set gives the certificates the issue names:
+  `@no_block @no_syscall @deterministic @no_recursion @hot
+  @budget(alloc_per_call = 0)` is the complete hot-path contract, and
+  it is checked in one whole-seed pass.
 - **Hot-path allocation lint — default-on advisory** (2026-07-16). Two
   loop-scoped anti-patterns get a **warning** (never a build failure), so
   the allocation-free shape is the path of least resistance rather than

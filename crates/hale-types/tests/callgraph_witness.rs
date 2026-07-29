@@ -77,17 +77,41 @@ fn witness_path_negative_when_nothing_matches() {
     assert!(path.is_none(), "clean must reach no allocation site");
 }
 
-/// R2 — the registry's effect column is queryable by path; every
-/// entry is UNCLASSIFIED until #265 classifies the surface.
+/// R2 + #265 phase 2 — the registry's effect column is queryable by
+/// path, and the frontier is now CLASSIFIED: every surface entry
+/// carries a real effect set, so an assertion can never silently
+/// pass an unclassified leaf.
 #[test]
 fn stdlib_registry_effects_lookup() {
-    use hale_types::stdlib_surface::{effects_for, EffectSet};
-    let e = effects_for(&["std", "crypto", "sha256"])
-        .expect("sha256 in registry");
-    assert!(e.is_unclassified());
+    use hale_types::stdlib_surface::{effects_for, EffectSet, SURFACES};
+    // unknown paths stay None (permissive, as before)
     assert_eq!(effects_for(&["std", "crypto", "sha9000"]), None);
-    assert_eq!(
-        effects_for(&["std", "time", "sleep"]),
-        Some(EffectSet::UNCLASSIFIED)
+    // pure computation
+    let sha = effects_for(&["std", "crypto", "sha256"]).expect("sha256");
+    assert_eq!(sha, EffectSet::PURE);
+    // syscall-class I/O
+    let w = effects_for(&["std", "io", "fs", "write_file"]).expect("write_file");
+    assert!(w.contains(EffectSet::SYSCALL));
+    // sleep is both blocking and a clock effect
+    let sl = effects_for(&["std", "time", "sleep"]).expect("sleep");
+    assert!(sl.contains(EffectSet::BLOCK) && sl.contains(EffectSet::TIME));
+    // nondeterminism classes
+    assert!(effects_for(&["std", "rand", "next_int"])
+        .expect("rand")
+        .contains(EffectSet::ENTROPY));
+    assert!(effects_for(&["std", "env", "var"])
+        .expect("env")
+        .contains(EffectSet::ENV));
+    // the whole frontier is classified — no residue
+    let unclassified: Vec<&str> = SURFACES
+        .iter()
+        .flat_map(|s| s.fns.iter())
+        .filter(|e| e.effects.is_unclassified())
+        .map(|e| e.name)
+        .collect();
+    assert!(
+        unclassified.is_empty(),
+        "unclassified stdlib entries remain: {:?}",
+        unclassified
     );
 }
