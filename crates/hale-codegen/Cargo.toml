@@ -11,3 +11,6 @@ hale-stdlib = { path = "../hale-stdlib" }
 hale-syntax = { path = "../hale-syntax" }
 hale-types = { path = "../hale-types" }
 inkwell = { version = "0.5", features = ["llvm18-0"] }
+
+[dev-dependencies]
+hale-corpus = { path = "../hale-corpus" }

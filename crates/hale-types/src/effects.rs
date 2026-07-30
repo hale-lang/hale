@@ -908,14 +908,35 @@ pub fn effect_manifest_with_inference(
                 }
                 TopDecl::Locus(l) => {
                     for m in &l.members {
-                        if let LocusMember::Fn(fd) = m {
-                            add(
+                        match m {
+                            LocusMember::Fn(fd) => add(
                                 format!("{}::{}", l.name.name, fd.name.name),
                                 FnKey::method(
                                     l.name.name.clone(),
                                     fd.name.name.clone(),
                                 ),
-                            );
+                            ),
+                            // Lifecycle hooks belong in the
+                            // fingerprint too. Leaving them out made
+                            // the manifest miss most of what a
+                            // program does: in Hale the work lives in
+                            // `birth` / `run` / `dissolve` and in bus
+                            // handlers, not in free functions. A
+                            // fingerprint blind to `run()` cannot
+                            // notice a handler that starts doing
+                            // filesystem I/O, which is the exact
+                            // regression the CI gate exists to catch.
+                            LocusMember::Lifecycle(lc) => {
+                                let phase = lifecycle_name(lc.kind);
+                                add(
+                                    format!("{}::{}", l.name.name, phase),
+                                    FnKey::method(
+                                        l.name.name.clone(),
+                                        phase.to_string(),
+                                    ),
+                                )
+                            }
+                            _ => {}
                         }
                     }
                 }

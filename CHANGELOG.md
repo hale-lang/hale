@@ -78,6 +78,46 @@ behavior.
   almost entirely in where they put the binary; at least three had
   independently rediscovered the pid+counter fix and left a comment
   about it. That is a missing invariant, not a missing convention.
+
+- **The test corpus was 3× bigger than anything tested it
+  (`crates/hale-corpus`).** Every corpus-wide property — `fmt`
+  idempotence, effect totality, the parse sweep — walked the on-disk
+  fixtures and stdlib: 7,032 lines. The suite also carries **1,391
+  Hale programs embedded in Rust string literals, 21,621 lines**,
+  invisible to all of them. That is where the interesting code is:
+  fixtures are written to be tidy examples, embedded programs are
+  written to hit feature intersections and regressions. One provider
+  now yields both, and the properties consume it.
+- **Two new whole-corpus properties**: the analysis never panics on
+  a parseable program (an ICE is never the right answer to a bad
+  program), and it is deterministic run-to-run (non-determinism is
+  what makes an effects manifest diff-noisy, and a noisy gate gets
+  switched off).
+- **Frontier completeness is now asked from the corpus side.** The
+  old phrasing — "no reachable stdlib call is UNCLASSIFIED" — could
+  only see paths that had a registry row, so an absent namespace was
+  invisible to the check meant to guarantee coverage. Asking instead
+  "every `std::` namespace the corpus calls must be registered"
+  closes that, and immediately found `std::io::mirror` (the
+  `MirrorRing` primitives) unclassified. Now registered.
+- **The `#265` effect gate finally guards something.**
+  `--check-effects-manifest` shipped as a CI gate exercised on two
+  toy inputs, with no baseline committed for this repo.
+  `.effects-baseline/corpus.effects` is now that baseline — the
+  inferred effect set of every function in every in-tree example —
+  with `scripts/effects-baseline.sh` to regenerate and a test that
+  fails on drift.
+- **The manifest covers lifecycle hooks.** It listed free fns and
+  locus `fn`s only, so for most programs it emitted a single line:
+  in Hale the work lives in `birth` / `run` / `dissolve` and in bus
+  handlers. A fingerprint blind to `run()` cannot notice a handler
+  that starts doing filesystem I/O, which is the regression the gate
+  exists to catch. 157 effect rows across 86 programs, up from ~86
+  near-empty ones.
+- The registry/dispatch parity check understands **whole-namespace
+  dispatch arms** (`["std", "io", "mirror", op]`), which the literal
+  scraper counted as zero coverage.
+
 ---
 
 ## v0.11.24 — stdlib registry/dispatch parity enforced; effect-classification hole closed (2026-07-29)
