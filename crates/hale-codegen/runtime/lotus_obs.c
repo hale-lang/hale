@@ -292,7 +292,8 @@ static void *obs_heartbeat_main(void *arg) {
  * A SIGKILLed process cannot: by definition it runs no handler. The
  * segments are ~570 KB each, so a fleet stopped with `docker stop`
  * (which never reaches dissolve) accumulates them on the host —
- * fathom measured 442 stale segments, 245 MB of tmpfs, from one run.
+ * A downstream fleet measured 442 stale segments, 245 MB of tmpfs,
+ * from one run.
  *
  * PROTOCOL §1 already says consumers may GC a stale REGISTRATION by
  * pid liveness; that covers the small JSON file, not the segment.

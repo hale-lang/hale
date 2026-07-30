@@ -19,10 +19,9 @@ behavior.
   now reported where they are actionable — when that seed is the
   check target — and **errors are never filtered**, wherever they
   originate.
-- **Observation shm segments no longer leak on SIGKILL (fathom
-  FRICTION P3).** A clean exit unlinks the segment and its
+- **Observation shm segments no longer leak on SIGKILL (downstream handoff).** A clean exit unlinks the segment and its
   registration via `atexit`; a SIGKILLed process by definition runs no
-  handler. fathom measured **442 stale segments, 245 MB of host
+  handler. A downstream fleet measured **442 stale segments, 245 MB of host
   tmpfs** from one fleet run, because `docker stop` never reaches
   `dissolve` and their compose bind-mounts `/dev/shm`. A dead emitter
   cannot clean up after itself, so the next observed process to start
@@ -30,7 +29,7 @@ behavior.
   skips anything alive — blinding a running observer would be far
   worse than leaving a file behind. (Our own suite had accumulated 69
   of these on a dev box, so this was never only a downstream problem.)
-- **A cross-seed observation fixture is in-tree.** fathom reported
+- **A cross-seed observation fixture is in-tree.** A downstream handoff reported
   `CT_PUBLISHED` always 0 for a topic declared in an imported seed,
   and correctly identified why we could not see it: every in-tree obs
   test declares its topics inline. The bug did **not** reproduce at
@@ -39,16 +38,17 @@ behavior.
   standing guard with an inline control rather than a fix, and the
   open question goes back to them with what was ruled out.
 - **Effect assertions now resolve through an F.20 interface-typed
-  slot (fathom FRICTION P1).** `self.sink.emit()` where `sink`'s
+  slot (downstream handoff).** `self.sink.emit()` where `sink`'s
   declared type is an interface resolved to nothing — an interface
   has no body — so every effect behind the slot was invisible. The
   concrete locus in the slot's default is what actually runs, and the
   witness now reads `certified -> Manifest::reach ->
-  LoudEmitter::emit`. This is the venue-tier design: consumers see
+  LoudEmitter::emit`. This is the plug-in-implementation design:
+  consumers see
   only the abstract type, so a contract reaching a venue surface
   through a slot was vacuous.
-- **A publish set can name a qualified topic (fathom FRICTION).**
-  `@effects(publish: {t::ExecOrderRequest})` was a parse error, so the
+- **A publish set can name a qualified topic (downstream handoff).**
+  `@effects(publish: {t::SharedTopic})` was a parse error, so the
   contract could only name app-local topics — and the contract worth
   having most, "this binary is the only one permitted to publish X",
   was the one it could not state. Two halves had to agree: the parser
@@ -56,7 +56,7 @@ behavior.
   records a qualified subject instead of writing it off as a computed
   one (which had made every shared-topic publish unprovable).
 - **Effect assertions were silently vacuous across a seed boundary
-  (fathom FRICTION P0), and `hale check` rejected cross-seed types it
+  (downstream handoff), and `hale check` rejected cross-seed types it
   could not see (P2). Same root cause.** `hale check` collected only
   the target directory's own `.hl` files and never followed
   `import` — so an imported seed's bodies were absent from the

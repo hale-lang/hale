@@ -6266,7 +6266,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // hands the SLOT pointer; load the aggregate before
                 // the call. Passing the ptr raw was unverified-IR
                 // UB (garbage len half) until the DWARF verify gate
-                // exposed it (magus-md, 2026-07-03).
+                // exposed it (downstream handoff, 2026-07-03).
                 // Gate on the DECLARED payload type, not ABI shape:
                 // non-view by-value struct params (cross-pool bubble
                 // cells) are already passed correctly by the queue,

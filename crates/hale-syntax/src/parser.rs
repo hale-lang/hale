@@ -1308,7 +1308,7 @@ impl Parser {
                     TokenKind::Ident(s) => {
                         // A topic shared between binaries lives in a
                         // central catalog and is imported under an
-                        // alias (`t::ExecOrderRequest`). Accepting
+                        // alias (`t::SharedTopic`). Accepting
                         // only a bare ident meant the declared
                         // publish set could name app-local topics
                         // only — so the contract worth having most

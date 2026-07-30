@@ -1795,7 +1795,7 @@ impl<'a> Walker<'a> {
                     // bare identifier.
                     Expr::Ident(id) => Some(id.name.clone()),
                     // A topic imported from a shared catalog
-                    // (`t::ExecOrderRequest <- v`) is a qualified
+                    // (`t::SharedTopic <- v`) is a qualified
                     // path. Treating it as "computed" made every
                     // publish of a SHARED topic unprovable — which is
                     // every topic that crosses a binary, and so the

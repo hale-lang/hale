@@ -1,6 +1,6 @@
 //! Observation counters for a topic declared in an IMPORTED seed.
 //!
-//! fathom (FRICTION P1) reported `CT_PUBLISHED` always 0 for a
+//! A downstream handoff reported `CT_PUBLISHED` always 0 for a
 //! cross-seed topic declaration, with deliveries and NET edges
 //! unaffected — and correctly identified why the substrate could not
 //! see it: **every in-tree obs test declares its topics inline in the
@@ -9,7 +9,7 @@
 //! was untested.
 //!
 //! That corpus gap is what this file closes. The bug itself did NOT
-//! reproduce at the tree fathom measured (`8e1af0f`) in either shape
+//! reproduce at the tree the report measured (`8e1af0f`) in either shape
 //! tried here — in-process with a local subscriber, and
 //! transport-bound with no local subscriber. Both count correctly.
 //! So this is a standing guard rather than a fix: if the counter
@@ -157,7 +157,7 @@ fn imported_topic_publishes_are_counted() {
 }
 
 /// A SIGKILLed emitter leaks its shm segment: by definition it runs
-/// no atexit handler. fathom measured **442 stale segments, 245 MB
+/// no atexit handler. A downstream fleet measured **442 stale segments, 245 MB
 /// of host tmpfs** from a single fleet run, because `docker stop`
 /// never reaches `dissolve` and their compose bind-mounts /dev/shm.
 ///
