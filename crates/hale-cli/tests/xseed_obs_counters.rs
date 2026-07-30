@@ -129,6 +129,34 @@ fn imported_topic_publishes_are_counted() {
         Err(e) => panic!("no obs segment at {}: {}", seg_path, e),
     };
 
+    // The differential that isolates payload SHAPE from decl SITE.
+    // These two properties were perfectly correlated in the codebase
+    // that first reported this, so a cross-seed cause was assumed for
+    // a whole round. `xseed.xscalar` — cross-seed decl AND cross-seed
+    // payload, scalars only — is what exonerates the seed boundary.
+    for (subject, what) in [
+        ("xseed.inline.str", "in-seed decl, payload contains a String"),
+        ("xseed.xscalar", "cross-seed decl AND payload, scalars only"),
+        ("xseed.xpayload", "in-seed decl, cross-seed payload with a String"),
+    ] {
+        let c = counters(&seg, subject)
+            .unwrap_or_else(|| panic!("{} missing from the manifest", subject));
+        assert_eq!(
+            c.0, 10,
+            "{} ({}): publishes must be counted whatever the payload \
+             shape — the probe used to sit only on the flat branch, so \
+             a String or Bytes field meant pub=0 and the topic never \
+             entered the manifest at all. Got {:?}",
+            subject, what, c
+        );
+        assert_eq!(
+            c.1, 10,
+            "{} ({}): and deliveries too — the same omission cost both \
+             counters. Got {:?}",
+            subject, what, c
+        );
+    }
+
     let inline = counters(&seg, "xseed.inline")
         .unwrap_or_else(|| panic!("inline topic missing from the manifest"));
     let shared = counters(&seg, "xseed.shared")
