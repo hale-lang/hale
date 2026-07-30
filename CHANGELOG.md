@@ -8,6 +8,66 @@ behavior.
 
 ## Unreleased
 
+- **Observation shm segments no longer leak on SIGKILL (fathom
+  FRICTION P3).** A clean exit unlinks the segment and its
+  registration via `atexit`; a SIGKILLed process by definition runs no
+  handler. fathom measured **442 stale segments, 245 MB of host
+  tmpfs** from one fleet run, because `docker stop` never reaches
+  `dissolve` and their compose bind-mounts `/dev/shm`. A dead emitter
+  cannot clean up after itself, so the next observed process to start
+  now sweeps segments and registrations belonging to dead pids. It
+  skips anything alive — blinding a running observer would be far
+  worse than leaving a file behind. (Our own suite had accumulated 69
+  of these on a dev box, so this was never only a downstream problem.)
+- **A cross-seed observation fixture is in-tree.** fathom reported
+  `CT_PUBLISHED` always 0 for a topic declared in an imported seed,
+  and correctly identified why we could not see it: every in-tree obs
+  test declares its topics inline. The bug did **not** reproduce at
+  their measured tree in either shape tried — in-process with a local
+  subscriber, and transport-bound with none — so this ships as a
+  standing guard with an inline control rather than a fix, and the
+  open question goes back to them with what was ruled out.
+- **Effect assertions now resolve through an F.20 interface-typed
+  slot (fathom FRICTION P1).** `self.sink.emit()` where `sink`'s
+  declared type is an interface resolved to nothing — an interface
+  has no body — so every effect behind the slot was invisible. The
+  concrete locus in the slot's default is what actually runs, and the
+  witness now reads `certified -> Manifest::reach ->
+  LoudEmitter::emit`. This is the venue-tier design: consumers see
+  only the abstract type, so a contract reaching a venue surface
+  through a slot was vacuous.
+- **A publish set can name a qualified topic (fathom FRICTION).**
+  `@effects(publish: {t::ExecOrderRequest})` was a parse error, so the
+  contract could only name app-local topics — and the contract worth
+  having most, "this binary is the only one permitted to publish X",
+  was the one it could not state. Two halves had to agree: the parser
+  now accepts `alias::Name` in an effects set, and the publish SITE
+  records a qualified subject instead of writing it off as a computed
+  one (which had made every shared-topic publish unprovable).
+- **Effect assertions were silently vacuous across a seed boundary
+  (fathom FRICTION P0), and `hale check` rejected cross-seed types it
+  could not see (P2). Same root cause.** `hale check` collected only
+  the target directory's own `.hl` files and never followed
+  `import` — so an imported seed's bodies were absent from the
+  program the analysis walked, and a cross-seed payload type rendered
+  as `?`. Separately, a call written `alias::name` reaches the
+  callgraph as a qualified path while the imported decl was merged
+  under a mangled symbol, so even with bodies present the two never
+  met. Codegen had the rename table all along; the analysis phases
+  did not. `check` now resolves imports the way `build` and `run` do,
+  and `Bundle` carries the table so the callgraph links across the
+  boundary. Diagnostics render the alias spelling (`p::far_syscall`),
+  never the merged symbol.
+- Worth stating plainly why this survived: **every in-tree effect
+  test declares its types, topics and loci inline in one seed.** The
+  one shape the corpus never exercised is the only shape a real
+  multi-seed codebase has. A cross-seed fixture now lives in-tree.
+- **A repeated `@budget` dimension silently kept the last value.**
+  `@budget(alloc_per_call = 0, alloc_per_call = 5)` enforced **5** —
+  you wrote a zero-alloc certificate and got a ceiling of five, with
+  nothing said. Rejected now: whichever way precedence fell would be
+  a guess, and the annotation is simply ambiguous. Distinct
+  dimensions in one clause are untouched.
 - **A typo'd `@phase_effects` phase was silently ignored.**
   `@phase_effects(disolve: {})` typechecked clean and checked
   nothing — you declared a contract and got no contract and no

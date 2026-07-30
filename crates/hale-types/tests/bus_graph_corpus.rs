@@ -79,9 +79,7 @@ fn graph_for_project(project: &Path) -> Option<(String, BusGraph)> {
     }
     let bundle_programs: BTreeMap<String, &Program> =
         programs.iter().map(|(k, v)| (k.clone(), v)).collect();
-    let bundle = Bundle {
-        programs: bundle_programs,
-    };
+    let bundle = Bundle::new(bundle_programs);
 
     // Typecheck first (so payload types resolve), then build the
     // graph off the same resolved scope.
@@ -378,7 +376,7 @@ fn build_synthetic(src: &str) -> BusGraph {
     let prog = parse_source(src).expect("parse failed");
     let mut programs: BTreeMap<String, &Program> = BTreeMap::new();
     programs.insert(String::new(), &prog);
-    let bundle = Bundle { programs };
+    let bundle = Bundle::new(programs);
     let _ = check_bundle(&bundle);
     let (top, _) = build_top_scope(&bundle);
     build_bus_graph(&bundle, &top)

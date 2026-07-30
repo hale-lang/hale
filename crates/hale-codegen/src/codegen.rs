@@ -947,9 +947,7 @@ pub fn build_executable_with_options(
     //     which the placement-only probe omitted).
     let mut bg_programs: BTreeMap<String, &Program> = BTreeMap::new();
     bg_programs.insert("__codegen_merged".to_string(), &merged);
-    let bundle = hale_types::symbol::Bundle {
-        programs: bg_programs,
-    };
+    let bundle = hale_types::symbol::Bundle::new(bg_programs);
     let has_adapter_binding = merged.items.iter().any(|item| {
         matches!(item, TopDecl::Locus(l) if l.is_main && l.members.iter().any(|m| {
             matches!(m, LocusMember::Bindings(b) if b.entries.iter().any(|e| {

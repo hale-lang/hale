@@ -931,6 +931,22 @@ impl AllocSummary {
 /// Entry point. Walks every free fn, locus method, and lifecycle hook in
 /// the bundle and returns the per-fn allocation summary + call graph.
 pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
+    summarize_programs_with_renames(programs, &[])
+}
+
+/// Same, with the bundle's cross-seed import renames.
+///
+/// A call written `alias::name` reaches the callgraph as a qualified
+/// path, while the imported decl was merged under a MANGLED symbol.
+/// Without the table the two never meet, so every cross-seed call was
+/// an unresolved edge — which is why effect assertions, budgets and
+/// taint all stopped dead at a seed boundary while still reporting
+/// success. Codegen has always had this table; the analysis phases
+/// did not.
+pub fn summarize_programs_with_renames(
+    programs: &[&Program],
+    import_renames: &[(Vec<String>, String)],
+) -> AllocSummary {
     // Phase 1 — collect every body with its key + entry classification.
     // For loci we first gather the set of bus-handler method names so a
     // method referenced by `subscribe ... -> handler` is tagged BusHandler.
@@ -1167,7 +1183,10 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
                         bounded_loci.insert(locus.clone());
                     }
                     locus_shapes.insert(locus.clone(), locus_shape_of(l));
-                    locus_field_types.insert(locus.clone(), locus_param_field_types(l));
+                    locus_field_types.insert(
+                        locus.clone(),
+                        locus_param_field_types(l, &locus_type_names),
+                    );
                     locus_inline_arrays
                         .insert(locus.clone(), locus_inline_array_fields(l));
                     let handlers = bus_handler_names(l);
@@ -1224,6 +1243,12 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
     let empty_fields: BTreeMap<String, String> = BTreeMap::new();
     let empty_inline_arrays: BTreeSet<String> = BTreeSet::new();
 
+    // `alias::name` -> mangled symbol, for cross-seed call resolution.
+    let rename_map: BTreeMap<String, String> = import_renames
+        .iter()
+        .map(|(segs, mangled)| (segs.join("::"), mangled.clone()))
+        .collect();
+
     // Phase 2 — walk each body.
     let mut summary = AllocSummary::default();
     summary.eager_only_loci = eager_only_loci;
@@ -1246,6 +1271,7 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
             escaping: &escaping,
             enclosing_locus: enclosing_locus.clone(),
             known: &known,
+            rename_map: &rename_map,
             loop_stack: Vec::new(),
             infinite_stack: Vec::new(),
             fn_body: body,
@@ -1287,12 +1313,42 @@ fn param_var_types(params: &[Param]) -> Vec<(String, String)> {
 
 /// D2: a locus's `params { … }` fields as field → declared-type-name, so a
 /// `self.<field>.push(x)` can resolve `<field>`'s form.
-fn locus_param_field_types(l: &LocusDecl) -> BTreeMap<String, String> {
+fn locus_param_field_types(
+    l: &LocusDecl,
+    locus_types: &BTreeSet<String>,
+) -> BTreeMap<String, String> {
     let mut m = BTreeMap::new();
     for member in &l.members {
         if let LocusMember::Params(pb) = member {
             for pd in &pb.params {
-                if let Some(tn) = pd.ty.as_ref().and_then(type_expr_name) {
+                let declared = pd.ty.as_ref().and_then(type_expr_name);
+                // F.20 interface-typed slot: the DECLARED type is an
+                // interface, which has no body, so `self.sink.emit()`
+                // resolved to nothing and every effect behind the slot
+                // was invisible. The concrete locus in the default is
+                // what actually runs, so resolve through it.
+                //
+                // Keyed on "declared type is not a declared locus, but
+                // the default instantiates one" — no interface table
+                // needed, and it cannot mis-fire on an ordinary field
+                // whose declared type IS a locus.
+                let concrete_default = match &pd.init {
+                    ParamInit::Value(Expr::Struct { path, .. }) => path
+                        .segments
+                        .last()
+                        .map(|s| s.name.clone())
+                        .filter(|n| locus_types.contains(n)),
+                    _ => None,
+                };
+                let resolved = match (&declared, &concrete_default) {
+                    (Some(d), Some(c)) if !locus_types.contains(d) => {
+                        Some(c.clone())
+                    }
+                    (Some(d), _) => Some(d.clone()),
+                    (None, Some(c)) => Some(c.clone()),
+                    (None, None) => None,
+                };
+                if let Some(tn) = resolved {
                     m.insert(pd.name.name.clone(), tn);
                 }
             }
@@ -1495,6 +1551,8 @@ struct Walker<'a> {
     escaping: &'a BTreeMap<String, Escape>,
     enclosing_locus: Option<String>,
     known: &'a BTreeSet<FnKey>,
+    /// `alias::name` -> mangled symbol (cross-seed imports).
+    rename_map: &'a BTreeMap<String, String>,
     /// One entry per enclosing loop: `true` if that loop has a const trip
     /// count. A value alloc is in an unbounded loop iff any entry is false.
     loop_stack: Vec<bool>,
@@ -1736,6 +1794,19 @@ impl<'a> Walker<'a> {
                     // A declared topic name (`Sig <- v`) parses as a
                     // bare identifier.
                     Expr::Ident(id) => Some(id.name.clone()),
+                    // A topic imported from a shared catalog
+                    // (`t::ExecOrderRequest <- v`) is a qualified
+                    // path. Treating it as "computed" made every
+                    // publish of a SHARED topic unprovable — which is
+                    // every topic that crosses a binary, and so the
+                    // only ones a publish-set contract is really for.
+                    Expr::Path(qp) => Some(
+                        qp.segments
+                            .iter()
+                            .map(|s| s.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join("::"),
+                    ),
                     _ => None,
                 };
                 self.push_effect_site(
@@ -1963,8 +2034,27 @@ impl<'a> Walker<'a> {
                 }
             }
             Expr::Path(qp) => {
-                let path = qp.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
-                Callee::Unresolved(path)
+                let path = qp
+                    .segments
+                    .iter()
+                    .map(|s| s.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                // A cross-seed `alias::name` names a decl merged under
+                // a mangled symbol. Resolving it here is what lets the
+                // callgraph walk INTO an imported seed instead of
+                // stopping at the boundary and reporting nothing.
+                match self.rename_map.get(&path) {
+                    Some(mangled) => {
+                        let key = FnKey::free_fn(mangled.clone());
+                        if self.known.contains(&key) {
+                            Callee::Resolved(key)
+                        } else {
+                            Callee::Unresolved(path)
+                        }
+                    }
+                    None => Callee::Unresolved(path),
+                }
             }
             Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } => {
                 // `self.m()` — the enclosing locus is the receiver type.

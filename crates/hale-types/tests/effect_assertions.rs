@@ -541,3 +541,45 @@ fn no_panic_accepts_handled_dispositions() {
         ds
     );
 }
+
+/// A publish set must be able to name a QUALIFIED topic (fathom
+/// FRICTION). Topics shared between binaries live in a central
+/// catalog and are imported under an alias, so accepting only bare
+/// idents meant the contract worth having most — "this binary is the
+/// only one permitted to publish X" — was the one it could not
+/// state. Two halves had to agree: the parser must accept
+/// `t::Name` in the set, and the publish SITE must record a
+/// qualified subject instead of writing it off as computed.
+#[test]
+fn publish_set_accepts_and_enforces_a_qualified_topic() {
+    let src = r#"
+        type Order { n: Int; }
+        topic ExecOrderRequest { payload: Order; subject: "exec.order.request"; }
+        locus Api {
+            bus { publish ExecOrderRequest; }
+            @effects(publish: {})
+            fn go() { ExecOrderRequest <- Order { n: 1 }; }
+        }
+        locus S { bus { subscribe ExecOrderRequest as on_o; } fn on_o(o: Order) { } }
+        main locus App { params { a: Api = Api { }; s: S = S { }; } }
+        fn main() { App { }; }
+    "#;
+    let ds = diags_for(src);
+    assert!(
+        ds.iter().any(|m| m.contains("declared publish set violated")),
+        "an undeclared publish must violate: {:?}",
+        ds
+    );
+}
+
+/// The parser half on its own: a qualified name in any `@effects`
+/// set must parse. It used to die on the `::`.
+#[test]
+fn qualified_names_parse_inside_an_effects_set() {
+    let src = "@effects(publish: {t::ExecOrderRequest, LocalTopic})\n\
+               fn go() -> Int { return 1; }\nfn main() { println(go()); }";
+    assert!(
+        hale_syntax::parse_source(src).is_ok(),
+        "a qualified topic name must parse in a publish set"
+    );
+}

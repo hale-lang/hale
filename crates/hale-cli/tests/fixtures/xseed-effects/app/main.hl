@@ -1,0 +1,22 @@
+// Each contract is violated one seed away. Before the analysis
+// resolved cross-seed calls, `hale check` was silent on all three
+// while the binary happily performed every effect.
+import "lib/probe" as p;
+
+@no_syscall
+fn certified_no_syscall() -> Int { return p::far_syscall(); }
+
+@budget(alloc_per_call = 0)
+fn certified_zero_alloc() -> Int { return p::far_alloc(); }
+
+@deterministic
+fn certified_deterministic() -> Int { return p::far_time(); }
+
+// In-seed control: genuinely clean, must stay silent.
+@no_syscall
+fn control_clean() -> Int { return 7; }
+
+fn main() {
+    println(certified_no_syscall() + certified_zero_alloc()
+            + certified_deterministic() + control_clean());
+}

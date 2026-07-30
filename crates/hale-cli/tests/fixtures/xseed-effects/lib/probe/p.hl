@@ -1,0 +1,17 @@
+// The far side of a cross-seed effect probe. The effects here are
+// the fixture — do not "clean them up".
+type Buf { n: Int; }
+
+fn far_alloc() -> Int {
+    let b = Buf { n: 1 };
+    return b.n;
+}
+
+fn far_syscall() -> Int {
+    println("far side");
+    return 1;
+}
+
+fn far_time() -> Int {
+    return std::time::monotonic_ns();
+}

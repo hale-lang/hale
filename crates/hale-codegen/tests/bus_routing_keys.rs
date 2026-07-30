@@ -383,7 +383,7 @@ fn fallback_sentinel_rejected_on_non_fallback_topic() {
     let program = hale_syntax::parse_source(src).expect("parse");
     let mut programs = std::collections::BTreeMap::new();
     programs.insert("main".to_string(), &program);
-    let bundle = hale_types::Bundle { programs };
+    let bundle = hale_types::Bundle::new(programs);
     let (scope, _) = hale_types::resolve::build_top_scope(&bundle);
     let diags = hale_types::check::check_bundle(&bundle, &scope, true);
     assert!(
@@ -416,7 +416,7 @@ fn fallback_topic_without_catchall_rejected() {
     let program = hale_syntax::parse_source(src).expect("parse");
     let mut programs = std::collections::BTreeMap::new();
     programs.insert("main".to_string(), &program);
-    let bundle = hale_types::Bundle { programs };
+    let bundle = hale_types::Bundle::new(programs);
     let (scope, _) = hale_types::resolve::build_top_scope(&bundle);
     let diags = hale_types::check::check_bundle(&bundle, &scope, true);
     assert!(
@@ -545,7 +545,7 @@ fn fail_topic_requires_or_disposition() {
     let program = hale_syntax::parse_source(src).expect("parse");
     let mut programs = std::collections::BTreeMap::new();
     programs.insert("main".to_string(), &program);
-    let bundle = hale_types::Bundle { programs };
+    let bundle = hale_types::Bundle::new(programs);
     let (scope, _) = hale_types::resolve::build_top_scope(&bundle);
     let diags = hale_types::check::check_bundle(&bundle, &scope, true);
     assert!(
@@ -573,7 +573,7 @@ fn or_disposition_rejected_on_non_fail_topic() {
     let program = hale_syntax::parse_source(src).expect("parse");
     let mut programs = std::collections::BTreeMap::new();
     programs.insert("main".to_string(), &program);
-    let bundle = hale_types::Bundle { programs };
+    let bundle = hale_types::Bundle::new(programs);
     let (scope, _) = hale_types::resolve::build_top_scope(&bundle);
     let diags = hale_types::check::check_bundle(&bundle, &scope, true);
     assert!(

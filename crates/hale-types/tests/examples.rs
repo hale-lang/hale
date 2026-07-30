@@ -158,9 +158,7 @@ fn all_examples_parse_and_check() {
                 .join(" + ");
             let bundle_programs: BTreeMap<String, &Program> =
                 bundle_files.into_iter().collect();
-            let bundle = Bundle {
-                programs: bundle_programs,
-            };
+            let bundle = Bundle::new(bundle_programs);
             let diags = check_bundle(&bundle);
             // Warnings (e.g. blocking-syscall-on-cooperative-pool) are
             // advisory and don't fail the corpus typecheck — only

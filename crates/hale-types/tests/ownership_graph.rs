@@ -29,7 +29,7 @@ fn graph(src: &str) -> OwnershipGraph {
     let prog = parse_source(src).expect("parse failed");
     let mut programs: BTreeMap<String, &Program> = BTreeMap::new();
     programs.insert(String::new(), &prog);
-    let bundle = Bundle { programs };
+    let bundle = Bundle::new(programs);
     // Typecheck first (mirrors the corpus harness), then build off the
     // same resolved scope.
     let _ = check_bundle(&bundle);
@@ -458,9 +458,7 @@ fn corpus_graph(project: &str) -> Option<OwnershipGraph> {
     }
     let bundle_programs: BTreeMap<String, &Program> =
         programs.iter().map(|(k, v)| (k.clone(), v)).collect();
-    let bundle = Bundle {
-        programs: bundle_programs,
-    };
+    let bundle = Bundle::new(bundle_programs);
     let _ = check_bundle(&bundle);
     let (top, _diags) = build_top_scope(&bundle);
     Some(build_ownership_graph(&bundle, &top))

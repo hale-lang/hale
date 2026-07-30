@@ -378,6 +378,27 @@ fn placement_implied_diags(
 }
 
 pub fn effect_diags(programs: &[&Program]) -> Vec<Diag> {
+    effect_diags_with_renames(programs, &[])
+}
+
+/// Same, with the bundle's cross-seed import renames so the
+/// callgraph can walk into an imported seed.
+pub fn effect_diags_with_renames(
+    programs: &[&Program],
+    import_renames: &[(Vec<String>, String)],
+) -> Vec<Diag> {
+    let mut out = effect_diags_inner(programs, import_renames);
+    // A witness path through an imported seed would otherwise name
+    // the merged symbol (`__lib_foo_bar_baz`), which appears nowhere
+    // in the user's source.
+    crate::stdlib_bodies::demangle_imports(&mut out, import_renames);
+    out
+}
+
+fn effect_diags_inner(
+    programs: &[&Program],
+    import_renames: &[(Vec<String>, String)],
+) -> Vec<Diag> {
     let mut roots: Vec<(FnKey, Vec<EffectAssert>, Span)> = Vec::new();
     for program in programs {
         for item in &program.items {
@@ -409,7 +430,8 @@ pub fn effect_diags(programs: &[&Program]) -> Vec<Diag> {
             }
         }
     }
-    let summary = crate::stdlib_bodies::summarize_with_stdlib(programs);
+    let summary =
+        crate::stdlib_bodies::summarize_with_stdlib_and_renames(programs, import_renames);
     // The placement-implied pass runs whether or not anything is
     // annotated — that is its point.
     let mut placement = placement_implied_diags(programs, &summary);

@@ -1,0 +1,31 @@
+import "lib/topics" as t;
+
+// An inline topic published the same number of times, as the
+// in-file control: if the cross-seed counter is broken, this one
+// still counts and the asymmetry is the finding.
+type Local { n: Int = 0; }
+topic Inline { payload: Local; subject: "xseed.inline"; }
+
+locus Sink {
+    params { seen: Int = 0; }
+    bus { subscribe t::Shared as on_s; subscribe Inline as on_i; }
+    fn on_s(v: t::Tick) { self.seen = self.seen + 1; }
+    fn on_i(v: Local) { self.seen = self.seen + 1; }
+}
+
+locus Pub {
+    bus { publish t::Shared; publish Inline; }
+    run() {
+        std::time::sleep(300ms);
+        let mut i = 0;
+        while i < 10 {
+            t::Shared <- t::Tick { n: i };
+            Inline <- Local { n: i };
+            i = i + 1;
+        }
+        std::time::sleep(300ms);
+    }
+}
+
+main locus App { params { s: Sink = Sink { }; p: Pub = Pub { }; } }
+fn main() { App { }; }

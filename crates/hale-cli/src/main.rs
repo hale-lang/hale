@@ -2192,6 +2192,106 @@ fn parse_files(
     Ok((programs, sources, file_bases))
 }
 
+/// Parse a check target, resolving cross-seed imports.
+///
+/// Returns the program map the analysis walks plus the
+/// `alias::name -> mangled` table it needs to link calls into an
+/// imported seed. A single file follows its own `import`s; a
+/// directory bundles its `.hl` files as one seed and resolves the
+/// union of their imports — the same shapes `hale build` handles, so
+/// `check` and `build` finally agree about what a program contains.
+#[allow(clippy::type_complexity)]
+fn collect_checkable(
+    target: &Path,
+) -> Result<
+    (
+        BTreeMap<PathBuf, Program>,
+        BTreeMap<PathBuf, String>,
+        Vec<(u32, PathBuf, u32)>,
+        ImportRenames,
+    ),
+    ExitCode,
+> {
+    let files = match collect_ap_files(target) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("{}", e);
+            return Err(ExitCode::from(1));
+        }
+    };
+    let (programs, sources, file_bases) = parse_files(&files)?;
+
+    // Nothing imported: the old behaviour, exactly.
+    let has_imports = programs.values().any(|p| !p.imports.is_empty());
+    if !has_imports {
+        return Ok((programs, sources, file_bases, Vec::new()));
+    }
+
+    let union_imports: Vec<hale_syntax::ast::Import> = programs
+        .values()
+        .flat_map(|p| p.imports.iter().cloned())
+        .collect();
+    let merged = match merge_programs(programs.values()) {
+        Some(m) => m,
+        None => {
+            eprintln!("no .hl files in {}", target.display());
+            return Err(ExitCode::from(1));
+        }
+    };
+    let workspace_root = find_workspace_root(target);
+    let mut merged_items = merged.items;
+    let mut renames: ImportRenames = Vec::new();
+    let mut seed_cache: BTreeMap<
+        PathBuf,
+        std::collections::HashMap<String, String>,
+    > = BTreeMap::new();
+    let mut path_sources: BTreeMap<PathBuf, String> =
+        sources.clone().into_iter().collect();
+    let mut visited: std::collections::BTreeSet<PathBuf> =
+        files.iter().filter_map(|f| f.canonicalize().ok()).collect();
+    let mut file_bases = file_bases;
+    let mut errors: Vec<(PathBuf, hale_syntax::Diag, String)> = Vec::new();
+    let importer_dir = if target.is_dir() {
+        target.to_path_buf()
+    } else {
+        target.parent().unwrap_or(Path::new(".")).to_path_buf()
+    };
+    if resolve_imports(
+        &union_imports,
+        &importer_dir,
+        workspace_root.as_deref(),
+        &mut visited,
+        &mut path_sources,
+        &mut file_bases,
+        &mut errors,
+        &mut merged_items,
+        &mut renames,
+        &mut seed_cache,
+    )
+    .is_err()
+    {
+        for (path, d, src) in &errors {
+            eprintln!("{}:", path.display());
+            eprintln!("  {}", d.render(src));
+        }
+        return Err(ExitCode::from(1));
+    }
+
+    let mut program = Program {
+        imports: Vec::new(),
+        items: merged_items,
+        span: merged.span,
+    };
+    // Same pre-pass `run`/`build` apply: rewrite qualified-path
+    // TypeExprs to their mangled targets, so a cross-seed payload
+    // type resolves instead of rendering as `?`.
+    hale_codegen::mangle::apply_qualified_path_renames(&mut program, &renames);
+
+    let mut out: BTreeMap<PathBuf, Program> = BTreeMap::new();
+    out.insert(target.to_path_buf(), program);
+    Ok((out, path_sources, file_bases, renames))
+}
+
 fn run_check(target: &Path) -> ExitCode {
     run_check_impl(target, false)
 }
@@ -2200,17 +2300,20 @@ fn run_check(target: &Path) -> ExitCode {
 /// fail) and `hale verify` (every finding fails — the CI
 /// discipline gate; same ~10 ms analysis, no execution).
 fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
-    let files = match collect_ap_files(target) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("{}", e);
-            return ExitCode::from(1);
-        }
-    };
-    let (mut programs, sources, file_bases) = match parse_files(&files) {
-        Ok(x) => x,
-        Err(code) => return code,
-    };
+    // `check` MUST resolve cross-seed imports the same way `build`
+    // and `run` do. It used to bundle only the target's own `.hl`
+    // files, so an imported seed's bodies were never in the program
+    // the analysis walked — and every cross-seed call was an
+    // unresolved edge. Effect assertions, budgets and taint therefore
+    // stopped dead at a seed boundary while still reporting success,
+    // and a cross-seed payload type rendered as `?`. Codegen resolved
+    // these names all along; only the analysis phases could not see
+    // them.
+    let (mut programs, sources, file_bases, import_renames) =
+        match collect_checkable(target) {
+            Ok(x) => x,
+            Err(code) => return code,
+        };
 
     // FUv0.8.2 #4: auto-apply sync inference before typecheck so
     // `hale check` validates the post-inference shape the build
@@ -2236,9 +2339,8 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
         .iter()
         .map(|(p, prog)| (p.display().to_string(), prog))
         .collect();
-    let bundle = hale_types::Bundle {
-        programs: bundle_programs,
-    };
+    let mut bundle = hale_types::Bundle::new(bundle_programs);
+    bundle.import_renames = import_renames.clone();
     // GH #18 item 1 (step 1): dump the per-method allocation summary +
     // call graph and exit. A diagnostic view of the scaffold; no
     // bound-proving yet.
@@ -2404,9 +2506,9 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
     }
     if !json_mode {
         if gate_warnings {
-            eprintln!("verified: {} file(s), 0 findings", files.len());
+            eprintln!("verified: {} file(s), 0 findings", programs.len());
         } else {
-            eprintln!("ok: {} file(s) typechecked", files.len());
+            eprintln!("ok: {} file(s) typechecked", programs.len());
         }
     }
     ExitCode::SUCCESS
@@ -2579,7 +2681,7 @@ fn compile_test_binary(entry: &Path) -> Result<PathBuf, String> {
     };
     let mut bundle_programs: BTreeMap<String, &Program> = BTreeMap::new();
     bundle_programs.insert(entry.display().to_string(), &program);
-    let bundle = hale_types::Bundle { programs: bundle_programs };
+    let bundle = hale_types::Bundle::new(bundle_programs);
     let diags = hale_types::check_bundle_opts(&bundle, false);
     if diags.iter().any(|d| d.is_error()) {
         let mut msg = String::new();
@@ -2816,7 +2918,7 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
         };
         let mut bundle_programs: BTreeMap<String, &Program> = BTreeMap::new();
         bundle_programs.insert(target.display().to_string(), &program);
-        let bundle = hale_types::Bundle { programs: bundle_programs };
+        let bundle = hale_types::Bundle::new(bundle_programs);
         let allow_unowned =
             std::env::args().any(|a| a == "--allow-unowned-subscriber");
         let diags = hale_types::check_bundle_opts(&bundle, allow_unowned);
@@ -2923,9 +3025,7 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
 
     let bundle_programs: BTreeMap<String, &Program> =
         std::iter::once((target.display().to_string(), &program)).collect();
-    let bundle = hale_types::Bundle {
-        programs: bundle_programs,
-    };
+    let bundle = hale_types::Bundle::new(bundle_programs);
     let allow_unowned =
         std::env::args().any(|a| a == "--allow-unowned-subscriber");
     let diags = hale_types::check_bundle_opts(&bundle, allow_unowned);
@@ -3134,9 +3234,7 @@ fn run_build(target: &Path) -> ExitCode {
     // string; this is good enough for v0.
     let mut bundle_programs: BTreeMap<String, &Program> = BTreeMap::new();
     bundle_programs.insert(target.display().to_string(), &program);
-    let bundle = hale_types::Bundle {
-        programs: bundle_programs,
-    };
+    let bundle = hale_types::Bundle::new(bundle_programs);
     let allow_unowned =
         std::env::args().any(|a| a == "--allow-unowned-subscriber");
     let diags = hale_types::check_bundle_opts(&bundle, allow_unowned);

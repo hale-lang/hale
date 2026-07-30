@@ -45,11 +45,19 @@ pub fn program() -> Option<&'static Program> {
 pub fn summarize_with_stdlib(
     programs: &[&Program],
 ) -> crate::alloc_summary::AllocSummary {
+    summarize_with_stdlib_and_renames(programs, &[])
+}
+
+/// Same, additionally resolving cross-seed `alias::name` calls.
+pub fn summarize_with_stdlib_and_renames(
+    programs: &[&Program],
+    import_renames: &[(Vec<String>, String)],
+) -> crate::alloc_summary::AllocSummary {
     let mut all: Vec<&Program> = programs.to_vec();
     if let Some(std_prog) = program() {
         all.push(std_prog);
     }
-    crate::alloc_summary::summarize_programs(&all)
+    crate::alloc_summary::summarize_programs_with_renames(&all, import_renames)
 }
 
 /// `["std","io","file","File"]` → `"__StdIoFileFile"`, the mangled
@@ -61,4 +69,32 @@ pub fn mangled_locus_name(segs: &[&str]) -> Option<&'static str> {
         .iter()
         .find(|(path, _)| *path == segs)
         .map(|(_, name)| *name)
+}
+
+/// Rewrite merged cross-seed symbols back to the spelling the user
+/// wrote (`__lib_foo_bar_Baz` -> `alias::Baz`).
+///
+/// A diagnostic naming a mangled symbol points at something that
+/// appears nowhere in their source and cannot be searched for.
+/// Longest-mangled-first so a symbol that is a prefix of another
+/// cannot partially rewrite it.
+pub fn demangle_imports(
+    diags: &mut [hale_syntax::Diag],
+    import_renames: &[(Vec<String>, String)],
+) {
+    if import_renames.is_empty() {
+        return;
+    }
+    let mut table: Vec<(&str, String)> = import_renames
+        .iter()
+        .map(|(segs, mangled)| (mangled.as_str(), segs.join("::")))
+        .collect();
+    table.sort_by_key(|(m, _)| std::cmp::Reverse(m.len()));
+    for d in diags.iter_mut() {
+        for (mangled, public) in &table {
+            if d.message.contains(mangled) {
+                d.message = d.message.replace(mangled, public);
+            }
+        }
+    }
 }

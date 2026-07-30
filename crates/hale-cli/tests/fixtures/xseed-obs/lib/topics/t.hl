@@ -1,0 +1,5 @@
+// A topic declared in a shared catalog — the shape every real
+// multi-binary codebase uses, and the one the substrate's own obs
+// tests never exercised (they all declare topics inline).
+type Tick { n: Int = 0; }
+topic Shared { payload: Tick; subject: "xseed.shared"; }

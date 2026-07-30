@@ -44,6 +44,9 @@
  *     probe thread notices the edge.
  */
 #define _GNU_SOURCE
+#include <dirent.h>
+#include <errno.h>
+#include <signal.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -282,6 +285,68 @@ static void *obs_heartbeat_main(void *arg) {
   return NULL;
 }
 
+
+/* ---- stale-segment sweep ---------------------------------------
+ *
+ * Clean exit unlinks the segment and its registration via atexit.
+ * A SIGKILLed process cannot: by definition it runs no handler. The
+ * segments are ~570 KB each, so a fleet stopped with `docker stop`
+ * (which never reaches dissolve) accumulates them on the host —
+ * fathom measured 442 stale segments, 245 MB of tmpfs, from one run.
+ *
+ * PROTOCOL §1 already says consumers may GC a stale REGISTRATION by
+ * pid liveness; that covers the small JSON file, not the segment.
+ * A dead emitter can't clean up after itself, so someone else must,
+ * and the cheapest reliable "someone else" is the next process to
+ * start: it is already paying init cost, it has the same uid, and a
+ * restarting fleet sweeps itself.
+ *
+ * Conservative on purpose. A pid that is ALIVE is skipped even
+ * though it might be a recycled pid whose segment is stale —
+ * unlinking a live process's segment would blind its observer,
+ * which is far worse than leaving one file behind. Failures are
+ * ignored throughout: another process sweeping concurrently, or a
+ * segment owned by a different uid, are both fine.
+ */
+static void obs_sweep_stale(void) {
+  DIR *d = opendir("/dev/shm");
+  if (d) {
+    struct dirent *e;
+    int self = (int)getpid();
+    while ((e = readdir(d)) != NULL) {
+      int pid = 0;
+      if (sscanf(e->d_name, "hale-obs-%d", &pid) != 1) continue;
+      if (pid <= 0 || pid == self) continue;
+      /* ESRCH => no such process. EPERM => alive, other uid: skip. */
+      if (kill((pid_t)pid, 0) == 0 || errno != ESRCH) continue;
+      char nm[64];
+      snprintf(nm, sizeof nm, "/hale-obs-%d", pid);
+      shm_unlink(nm);
+    }
+    closedir(d);
+  }
+  /* The registration files alongside them. */
+  const char *xdg = getenv("XDG_RUNTIME_DIR");
+  char dir[192];
+  if (xdg) snprintf(dir, sizeof dir, "%s/hale", xdg);
+  else snprintf(dir, sizeof dir, "/tmp/hale-obs");
+  DIR *rd = opendir(dir);
+  if (!rd) return;
+  struct dirent *e;
+  int self = (int)getpid();
+  while ((e = readdir(rd)) != NULL) {
+    int pid = 0;
+    if (sscanf(e->d_name, "%d.json", &pid) != 1) continue;
+    if (pid <= 0 || pid == self) continue;
+    if (kill((pid_t)pid, 0) == 0 || errno != ESRCH) continue;
+    char path[280];
+    snprintf(path, sizeof path, "%s/%d.json", dir, pid);
+    unlink(path);
+  }
+  closedir(rd);
+}
+
+
 static int obs_create(int64_t rings, int64_t slots) {
   size_t manifest_len =
       obs_page_up(sizeof(obs_mh_t) + OBS_ENTRY_CAP * 32 + 8192);
@@ -297,6 +362,7 @@ static int obs_create(int64_t rings, int64_t slots) {
   size_t rings_off    = (off += counters_len);
   g_seg_len = rings_off + rings_hdr + (size_t)rings * ring_bytes;
 
+  obs_sweep_stale();
   snprintf(g_shm_name, sizeof g_shm_name, "/hale-obs-%d", (int)getpid());
   shm_unlink(g_shm_name);
   int fd = shm_open(g_shm_name, O_CREAT | O_EXCL | O_RDWR, 0600);

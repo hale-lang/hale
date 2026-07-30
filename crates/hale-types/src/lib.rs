@@ -81,7 +81,7 @@ pub use crate::ty::Ty;
 pub fn check_program(program: &Program) -> Vec<Diag> {
     let mut programs: BTreeMap<String, &Program> = BTreeMap::new();
     programs.insert(String::new(), program);
-    check_bundle(&Bundle { programs })
+    check_bundle(&Bundle::new(programs))
 }
 
 /// Check a bundle of programs (one logical compilation unit
@@ -191,7 +191,7 @@ pub fn apply_sync_inference(
     let inferred = {
         let mut programs = BTreeMap::new();
         programs.insert(String::new(), &*program);
-        let bundle = Bundle { programs };
+        let bundle = Bundle::new(programs);
         let (top, diags) = resolve::build_top_scope(&bundle);
         if !diags.is_empty() {
             // Resolver errors will be re-raised by
@@ -272,7 +272,7 @@ mod flat_shapeable_tests {
         let p = parse_source(src).expect("parses");
         let mut programs = BTreeMap::new();
         programs.insert(String::new(), &p);
-        let bundle = Bundle { programs };
+        let bundle = Bundle::new(programs);
         let (scope, _) = build_top_scope(&bundle);
         f(&scope);
     }
@@ -3040,7 +3040,7 @@ mod unowned_subscriber_tests {
         let p = parse_source(src).expect("parses");
         let mut programs: BTreeMap<String, &Program> = BTreeMap::new();
         programs.insert(String::new(), &p);
-        let diags = check_bundle_opts(&Bundle { programs }, allow);
+        let diags = check_bundle_opts(&Bundle::new(programs), allow);
         diags.iter().any(|d| d.message.contains("instantiated unowned"))
     }
 
