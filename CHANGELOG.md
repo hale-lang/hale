@@ -8,6 +8,23 @@ behavior.
 
 ## Unreleased
 
+- **Effect assertions now resolve through an F.20 interface-typed
+  slot (fathom FRICTION P1).** `self.sink.emit()` where `sink`'s
+  declared type is an interface resolved to nothing — an interface
+  has no body — so every effect behind the slot was invisible. The
+  concrete locus in the slot's default is what actually runs, and the
+  witness now reads `certified -> Manifest::reach ->
+  LoudEmitter::emit`. This is the venue-tier design: consumers see
+  only the abstract type, so a contract reaching a venue surface
+  through a slot was vacuous.
+- **A publish set can name a qualified topic (fathom FRICTION).**
+  `@effects(publish: {t::ExecOrderRequest})` was a parse error, so the
+  contract could only name app-local topics — and the contract worth
+  having most, "this binary is the only one permitted to publish X",
+  was the one it could not state. Two halves had to agree: the parser
+  now accepts `alias::Name` in an effects set, and the publish SITE
+  records a qualified subject instead of writing it off as a computed
+  one (which had made every shared-topic publish unprovable).
 - **Effect assertions were silently vacuous across a seed boundary
   (fathom FRICTION P0), and `hale check` rejected cross-seed types it
   could not see (P2). Same root cause.** `hale check` collected only

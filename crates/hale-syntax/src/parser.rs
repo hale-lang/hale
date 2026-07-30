@@ -1306,8 +1306,38 @@ impl Parser {
                 let t = self.peek_token().clone();
                 match &t.kind {
                     TokenKind::Ident(s) => {
-                        items.push(s.clone());
+                        // A topic shared between binaries lives in a
+                        // central catalog and is imported under an
+                        // alias (`t::ExecOrderRequest`). Accepting
+                        // only a bare ident meant the declared
+                        // publish set could name app-local topics
+                        // only — so the contract worth having most
+                        // ("this binary is the only one permitted to
+                        // publish X") was the one it could not state.
+                        let mut name = s.clone();
                         self.bump();
+                        while matches!(self.peek(), TokenKind::ColonColon) {
+                            self.bump();
+                            let seg = self.peek_token().clone();
+                            match &seg.kind {
+                                TokenKind::Ident(s2) => {
+                                    name.push_str("::");
+                                    name.push_str(s2);
+                                    self.bump();
+                                }
+                                _ => {
+                                    return Err(Diag::parse(
+                                        seg.span,
+                                        "expected a name after `::` in an                                          `@effects` set",
+                                    ))
+                                }
+                            }
+                        }
+                        items.push(name);
+                        if matches!(self.peek(), TokenKind::Comma) {
+                            self.bump();
+                        }
+                        continue;
                     }
                     TokenKind::StringLit(s) => {
                         items.push(s.clone());

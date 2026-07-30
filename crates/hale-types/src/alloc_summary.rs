@@ -1183,7 +1183,10 @@ pub fn summarize_programs_with_renames(
                         bounded_loci.insert(locus.clone());
                     }
                     locus_shapes.insert(locus.clone(), locus_shape_of(l));
-                    locus_field_types.insert(locus.clone(), locus_param_field_types(l));
+                    locus_field_types.insert(
+                        locus.clone(),
+                        locus_param_field_types(l, &locus_type_names),
+                    );
                     locus_inline_arrays
                         .insert(locus.clone(), locus_inline_array_fields(l));
                     let handlers = bus_handler_names(l);
@@ -1310,12 +1313,42 @@ fn param_var_types(params: &[Param]) -> Vec<(String, String)> {
 
 /// D2: a locus's `params { … }` fields as field → declared-type-name, so a
 /// `self.<field>.push(x)` can resolve `<field>`'s form.
-fn locus_param_field_types(l: &LocusDecl) -> BTreeMap<String, String> {
+fn locus_param_field_types(
+    l: &LocusDecl,
+    locus_types: &BTreeSet<String>,
+) -> BTreeMap<String, String> {
     let mut m = BTreeMap::new();
     for member in &l.members {
         if let LocusMember::Params(pb) = member {
             for pd in &pb.params {
-                if let Some(tn) = pd.ty.as_ref().and_then(type_expr_name) {
+                let declared = pd.ty.as_ref().and_then(type_expr_name);
+                // F.20 interface-typed slot: the DECLARED type is an
+                // interface, which has no body, so `self.sink.emit()`
+                // resolved to nothing and every effect behind the slot
+                // was invisible. The concrete locus in the default is
+                // what actually runs, so resolve through it.
+                //
+                // Keyed on "declared type is not a declared locus, but
+                // the default instantiates one" — no interface table
+                // needed, and it cannot mis-fire on an ordinary field
+                // whose declared type IS a locus.
+                let concrete_default = match &pd.init {
+                    ParamInit::Value(Expr::Struct { path, .. }) => path
+                        .segments
+                        .last()
+                        .map(|s| s.name.clone())
+                        .filter(|n| locus_types.contains(n)),
+                    _ => None,
+                };
+                let resolved = match (&declared, &concrete_default) {
+                    (Some(d), Some(c)) if !locus_types.contains(d) => {
+                        Some(c.clone())
+                    }
+                    (Some(d), _) => Some(d.clone()),
+                    (None, Some(c)) => Some(c.clone()),
+                    (None, None) => None,
+                };
+                if let Some(tn) = resolved {
                     m.insert(pd.name.name.clone(), tn);
                 }
             }
@@ -1761,6 +1794,19 @@ impl<'a> Walker<'a> {
                     // A declared topic name (`Sig <- v`) parses as a
                     // bare identifier.
                     Expr::Ident(id) => Some(id.name.clone()),
+                    // A topic imported from a shared catalog
+                    // (`t::ExecOrderRequest <- v`) is a qualified
+                    // path. Treating it as "computed" made every
+                    // publish of a SHARED topic unprovable — which is
+                    // every topic that crosses a binary, and so the
+                    // only ones a publish-set contract is really for.
+                    Expr::Path(qp) => Some(
+                        qp.segments
+                            .iter()
+                            .map(|s| s.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join("::"),
+                    ),
                     _ => None,
                 };
                 self.push_effect_site(

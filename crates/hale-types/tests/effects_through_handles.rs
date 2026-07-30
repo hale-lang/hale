@@ -194,3 +194,62 @@ fn eprintln_is_a_syscall_too() {
     "#;
     assert!(violation(src, "syscall").contains("eprintln"));
 }
+
+/// F.20 interface-typed slot (fathom FRICTION P1). The declared type
+/// of `self.sink` is an INTERFACE, which has no body — so
+/// `self.sink.emit()` resolved to nothing and every effect behind the
+/// slot was invisible. The concrete locus in the slot's default is
+/// what actually runs.
+///
+/// This is the venue tier's entire design: consumers see only the
+/// abstract type, so a contract on a consumer that reaches a venue
+/// surface through a slot was vacuous.
+#[test]
+fn syscall_through_an_interface_typed_slot_is_caught() {
+    let src = r#"
+        interface Emitter { fn emit(tag: String) -> Int; }
+        locus LoudEmitter {
+            params { n: Int = 0; }
+            fn emit(tag: String) -> Int { println("loud: ", tag); return 1; }
+        }
+        locus Manifest {
+            params { sink: Emitter = LoudEmitter { }; }
+            fn reach(t: String) -> Int { return self.sink.emit(t); }
+        }
+        @no_syscall
+        fn certified(m: Manifest) -> Int { return m.reach("x"); }
+        fn main() { let m = Manifest { }; println(certified(m)); }
+    "#;
+    let hit = violation(src, "syscall");
+    assert!(
+        hit.contains("Manifest::reach") && hit.contains("LoudEmitter::emit"),
+        "the witness must run through the slot into the bound locus: {}",
+        hit
+    );
+}
+
+/// …and a slot bound to a genuinely pure implementation must stay
+/// silent, or the check above would just be rejecting all interfaces.
+#[test]
+fn a_pure_interface_slot_is_not_flagged() {
+    let src = r#"
+        interface Emitter { fn emit(tag: String) -> Int; }
+        locus QuietEmitter {
+            params { n: Int = 0; }
+            fn emit(tag: String) -> Int { return self.n; }
+        }
+        locus Manifest {
+            params { sink: Emitter = QuietEmitter { }; }
+            fn reach(t: String) -> Int { return self.sink.emit(t); }
+        }
+        @no_syscall
+        fn certified(m: Manifest) -> Int { return m.reach("x"); }
+        fn main() { let m = Manifest { }; println(certified(m)); }
+    "#;
+    let ds = diags_for(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("must not reach")),
+        "a pure binding must not trip the assertion: {:?}",
+        ds
+    );
+}
