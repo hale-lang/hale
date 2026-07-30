@@ -98,9 +98,23 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
     // structs (IndexError fields) into the scope so call sites
     // that use them resolve. Idempotent — user-declared
     // IndexError wins.
-    if bundle_uses_form_machinery(bundle) {
-        inject_form_stdlib_types(&mut scope);
-    }
+    // 2026-07-29: this used to be gated on
+    // `bundle_uses_form_machinery(bundle)`, but the function injects
+    // the stdlib ERROR types (IoError, ParseError, CryptoError, …)
+    // as well as the form ones — and reading `err.kind` in an `or`
+    // block has nothing to do with `@form`. A program that only
+    // called `std::str::parse_int(s) or { println(err.kind); … }`
+    // never triggered the gate, so `ParseError` resolved with no
+    // fields and the documented pattern failed to compile:
+    //
+    //     type error: no field `kind` on `ParseError`
+    //
+    // That shape is in `docs/src/everyday/http.md` and
+    // `spec/decisions.md`, and the codegen tests exercise it — but
+    // `build_executable` does not typecheck, so nothing caught it.
+    // Injection is idempotent and a user declaration still wins, so
+    // running it unconditionally only ever adds the stdlib names.
+    inject_form_stdlib_types(&mut scope);
     // Phase 3 routing-keys v0.2 (2026-05-26): inject
     // BusUnmatchedKey for `on_unmatched: fail` topics whose
     // publishes use `or handler(err)` / `or fail <payload>`

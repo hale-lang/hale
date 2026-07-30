@@ -308,10 +308,33 @@ The test-runner contract is exit-code based:
   stdout. The first failure short-circuits — `std::process::exit`
   terminates immediately.
 
-A `.hl` test program is just an ordinary Hale binary. The
-current test runner is the Rust integration harness in
-`crates/hale-codegen/tests/`; future `hale test` CLI runs
-the same `.hl` programs unchanged.
+A `.hl` test program is just an ordinary Hale binary.
+
+### The compiler's own Hale-language suite
+
+`tests/hale/` holds `*_test.hl` programs that test the language in
+the language, run by `hale test` and wired into the workspace suite
+(`crates/hale-cli/tests/hale_native_suite.rs`). Run them directly
+with `hale test tests/hale`.
+
+A behaviour test belongs there rather than in a Rust integration
+test when it is "run a program, check what it computed". Two things
+change in the move:
+
+- **The expectation stops being transcribed.** The Rust form
+  compiles a program that *prints*, then substring-matches the
+  output from another language. The Hale form asserts next to the
+  code — no second copy to drift. It is also stricter:
+  `assert_eq_int(n, 42)` rejects what `stdout.contains("a=42")`
+  accepts, because the latter also passes on `a=421`.
+- **The program gets typechecked.** `build_executable`, which the
+  Rust codegen tests call, parses and lowers but never runs the
+  checker, so those programs are compiled and executed without ever
+  being checked.
+
+What stays in Rust is anything asserting on *compiler output* rather
+than program behaviour: diagnostics, IR shape, leak counts,
+observation records.
 
 ### What landed vs what's still aspirational
 

@@ -1,0 +1,49 @@
+// std::str integer parsing — the Hale-native form of what
+// `crates/hale-codegen/tests/stdlib_str.rs` checked by printing and
+// substring-matching from Rust.
+//
+// Two things get better in the translation. The expectation lives
+// next to the code, in the same language, so there is no transcription
+// to drift. And `assert_eq_int(n, 42)` is strictly stronger than
+// `stdout.contains("a=42")`, which also passes on `a=421`.
+
+fn main() {
+    // Known-good inputs: `or raise` turns a parser regression into a
+    // failure here rather than a silently-substituted value.
+    std::test::assert_eq_int(std::str::parse_int("42") or raise, 42, "42");
+    std::test::assert_eq_int(std::str::parse_int("0") or raise, 0, "zero");
+    std::test::assert_eq_int(std::str::parse_int("-7") or raise, -7, "negative");
+    std::test::assert_eq_int(
+        std::str::parse_int("9999999999") or raise,
+        9999999999,
+        "beyond 32 bits"
+    );
+
+    // Garbage routes through `or` rather than silently returning 0.
+    // strtoll-ish: unconsumed trailing characters reject, which is
+    // why the padded "  42  " is a rejection and not 42.
+    std::test::assert_eq_int(std::str::parse_int("abc") or 0, 0, "letters");
+    std::test::assert_eq_int(std::str::parse_int("12abc") or 0, 0, "trailing junk");
+    std::test::assert_eq_int(std::str::parse_int("") or 0, 0, "empty");
+    std::test::assert_eq_int(std::str::parse_int("  42  ") or 0, 0, "padded");
+
+    // The error payload is readable in the substitute's scope.
+    let n = std::str::parse_int("totally bogus") or {
+        std::test::assert_eq_str(err.kind, "parse_int", "err.kind");
+        std::test::assert_eq_str(err.input, "totally bogus", "err.input");
+        -1
+    };
+    std::test::assert_eq_int(n, -1, "substitute value");
+
+    // can_parse_int agrees with parse_int on the same inputs.
+    std::test::assert(std::str::can_parse_int("42"), "can_parse 42");
+    std::test::assert(std::str::can_parse_int("-7"), "can_parse -7");
+    std::test::assert(!std::str::can_parse_int("abc"), "can_parse abc");
+    std::test::assert(!std::str::can_parse_int(""), "can_parse empty");
+    std::test::assert(std::str::can_parse_int("0"), "can_parse 0");
+
+    // A parsed Int is a real Int, not an opaque handle.
+    let parsed = std::str::parse_int("100") or raise;
+    std::test::assert_eq_int(parsed * 2, 200, "arithmetic on a parsed Int");
+    std::test::assert(parsed > 50, "comparison on a parsed Int");
+}

@@ -39,6 +39,19 @@ work, they are just slower and no longer buy anything:
 cargo test --release -p hale-codegen --test topic_phase2
 ```
 
+The repo also tests the language *in* the language:
+
+```sh
+hale test tests/hale        # or: cargo test -p hale-cli --test hale_native_suite
+```
+
+Prefer a `*_test.hl` there for "run a program, check what it
+computed" — the assertion sits next to the code instead of being
+transcribed into a Rust substring match, and it gets typechecked
+(`build_executable`, which the Rust codegen tests use, does not run
+the checker). Keep assertions about *compiler output* — diagnostics,
+IR shape, leak counts — in Rust.
+
 Codegen requires **LLVM 18** dev libs with `llvm-config-18` on
 PATH (or `LLVM_SYS_180_PREFIX` set); `inkwell` is pinned to
 `llvm18-0`. LLVM 17 / 19 / 20 will not link.
