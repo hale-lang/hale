@@ -6,7 +6,54 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.12.0 — the effect system becomes trustworthy (2026-07-30)
+
+Minor bump. `@effects` shipped in v0.11.23, but it could be walked
+around in four different ways — and this release is mostly the work of
+finding that out and closing them. A contract that reads as verified
+and isn't is worse than no contract, so the headline is not a new
+feature: it is that the existing one now means what it says.
+
+**The four holes, all found downstream and all closed:**
+
+1. **Calls through a handle were invisible.** `reader.slurp()` was an
+   unresolved edge, so `@no_syscall` passed over real I/O. Since
+   locus-with-methods is how Hale does I/O, the contracts were largely
+   decorative outside free-fn code — and the shape they missed is the
+   one the violation diagnostic recommends as the fix.
+2. **Seed boundaries stopped the analysis.** `hale check` never
+   followed `import`, so a contract violated one seed away was silent.
+   Then `hale build` still didn't enforce it after `check` did.
+3. **Interface-typed slots resolved to nothing**, an interface having
+   no body — so any contract reaching a plug-in implementation through
+   a slot was vacuous.
+4. **Absent frontier rows failed open.** An unclassified registry entry
+   violated every assertion, but a `std::` path with *no row at all*
+   contributed nothing, so an unregistered namespace read as pure.
+
+**Also in the effect system:** `println` is syscall-class (writing to
+a stream is a `write(2)`); a typo'd `@phase_effects` phase and a
+repeated `@budget` dimension are errors instead of silent no-ops; a
+publish set can name a qualified topic, so the "only this binary may
+publish X" contract is finally expressible; and `hale doc --stdlib`
+publishes every function's effect classes, generated from the same
+registry the checker queries so the catalogue cannot drift from the
+enforcement.
+
+**Why none of this was caught here:** every in-tree effect test
+declared its types, topics and loci inline in one seed. The shapes the
+corpus never exercised were the only shapes a real multi-seed codebase
+has. That is now fixed structurally — cross-seed fixtures are in-tree,
+and `crates/hale-corpus` exposes the ~1.2k Hale programs embedded in
+test string literals (3× more Hale than the on-disk corpus) to every
+corpus-wide property.
+
+**Test-suite and tooling work** landed alongside: a collision-proof
+build-path harness (the suite no longer needs `--test-threads=1`,
+because the hazard is gone rather than avoided), a committed effect
+baseline the CI gate actually checks, the compiler testing itself in
+its own language via `hale test`, and observation counters fixed for
+payloads carrying a `String` or `Bytes`.
 
 - **Observation counters were missing for any payload containing a
   variable-size field.** `lotus_bus_dispatch_static` probed
