@@ -126,6 +126,121 @@ threads, cooperative pools, and bus subjects, with a
 `--check-resource-budget budget.toml` ceiling gate for CI and fd-leak
 detection.
 
+## Effects you forbid, proven absent
+
+The checks above run whether you ask for them or not. **Effect
+assertions** are the opt-in half: you name something a function must
+never do, and the compiler proves it over the call graph.
+
+```hale,fragment
+@no_syscall @deterministic
+fn price(book: OrderBook, qty: Int) -> Decimal { ... }
+```
+
+The classes are `syscall`, `block`, `time`, `entropy`, `env`, `ffi`,
+`publish`, `spawn`, `recursion` and `alloc`. The full surface — the
+general `@effects(none: {…})` form, the `@no_*` shorthands, quantitative
+`@budget(...)`, and per-lifecycle-phase contracts — is taught in
+[Performance](./systems/performance.md#saying-what-a-function-may-do),
+where the hot-path certificate is the motivating use.
+
+Two properties matter for *verification* specifically, and neither is a
+performance concern.
+
+### The proof follows the call graph, including through handles
+
+A violation names the **path**, not just the function:
+
+```
+type error: effect assertion violated: `quiet` must not reach `syscall`,
+but reaches quiet -> Reader::slurp [std::io::fs::file_size — a
+syscall-class operation (filesystem, socket, process, terminal, stdio)].
+Move the effect behind a locus this fn doesn't reach (the
+reader/writer-locus shape), or pass the value in as a parameter.
+```
+
+That chain crosses ordinary calls, `self` methods, and calls made
+through a **handle** (`reader.slurp()`) — including into the part of the
+standard library that is itself written in Hale, whose effects are
+inferred from its implementation rather than declared in a table.
+
+Read the suggestion precisely. Moving an effect behind a locus your
+function *still calls* does not remove it; the checker follows the
+handle. What works is a locus your function does not reach — a
+reader/writer locus it publishes to — or passing the value in already
+computed.
+
+Incompleteness fails closed. A stdlib call the registry cannot classify
+— or does not know at all — is treated as "may do anything" and
+violates the assertion, rather than being quietly assumed pure. An
+assertion is a claim about everything reachable, so anything unknown is
+exactly what it must not certify.
+
+### What the compiler infers, as a reviewable artifact
+
+Annotations only describe the functions someone remembered to annotate.
+The manifest describes **every** function:
+
+```sh
+hale check app.hl --dump-effects-manifest > .hale.effects
+```
+
+Each line carries the declared contract plus a `does={…}` column — what
+the compiler sees the function actually do, transitively, annotated or
+not, for free functions, locus methods and lifecycle hooks alike:
+
+```
+# .hale.effects v1 — declared effect contracts
+App::run     does={syscall,block,time}
+Pusher::run  does={syscall,block,publish,time,alloc}
+```
+
+Commit that file and a later build can diff against it:
+
+```sh
+hale check app.hl --check-effects-manifest .hale.effects
+```
+
+```
+- Api::emit  none={block}  does={publish,alloc}
++ Api::emit  none={block}  does={syscall,publish,alloc}
+```
+
+This catches what annotations structurally cannot. `Api::emit` gained
+filesystem I/O and *nothing in its source changed* — a helper three
+calls away did. No contract was violated, because none was declared;
+the behaviour simply drifted. As a CI gate it turns that into a
+one-line review diff. (The Hale compiler runs this against its own
+example corpus.)
+
+### Effects that travel over the bus
+
+A call graph stops at a publish. The **bus graph continues** — and
+because Hale's message graph is declared over a closed topic set, the
+compiler can walk it:
+
+```hale,fragment
+@effects(causes: {publish, syscall})
+fn handle(o: Order) { Orders <- o; }
+```
+
+`causes:` is a **complete declaration**, like `publish:` — not a list
+of things to forbid. You state everything publishing can transitively
+set off, and omitting one is the error:
+
+```
+type error: declared causal set violated: `Api::handle` can transitively
+cause syscall through the bus, which its `@effects(causes: …)` does not
+declare. Path: `Api::handle` -> subject `Orders` -> `Audit::on_order`.
+Add the class to the declaration, or route the publish to a subject
+whose subscribers don't perform it.
+```
+
+Only effects reached *through* the bus count here; direct ones are
+`none:`'s job. "Publishing is cheap" is often false because of what
+runs downstream, and this is the only place the compiler can see it —
+a system built on opaque message sends cannot ask the question.
+
 ## Invariants you declare, checked as it runs
 
 The checks above are the compiler's. You can add your own with a

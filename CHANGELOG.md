@@ -8,6 +8,18 @@ behavior.
 
 ## Unreleased
 
+- **The book documents the effect system.**
+  `docs/src/verification.md` — the chapter named Verification — had
+  zero mentions of effects; the whole surface lived in
+  `systems/performance.md`, which is a placement problem as much as a
+  coverage one, since `@no_syscall` and `@phase_effects` are
+  correctness contracts. Two surfaces were in the spec and nowhere in
+  the book at all: the **effects manifest**
+  (`--dump-effects-manifest` / `--check-effects-manifest`, the CI
+  gate) and **bus causality** (`@effects(causes: …)`). Both are now
+  taught, with real compiler output rather than paraphrase, and the
+  hot-path angle stays cross-linked to Performance instead of
+  duplicated.
 - **Effect assertions were blind to calls made through a handle —
   fixed (GH #265 soundness).** `@no_syscall` and the rest resolved
   free fns, `self.m()`, and `std::ns::fn(…)` path calls, but a call
