@@ -8,6 +8,25 @@ behavior.
 
 ## Unreleased
 
+- **Observation shm segments no longer leak on SIGKILL (fathom
+  FRICTION P3).** A clean exit unlinks the segment and its
+  registration via `atexit`; a SIGKILLed process by definition runs no
+  handler. fathom measured **442 stale segments, 245 MB of host
+  tmpfs** from one fleet run, because `docker stop` never reaches
+  `dissolve` and their compose bind-mounts `/dev/shm`. A dead emitter
+  cannot clean up after itself, so the next observed process to start
+  now sweeps segments and registrations belonging to dead pids. It
+  skips anything alive — blinding a running observer would be far
+  worse than leaving a file behind. (Our own suite had accumulated 69
+  of these on a dev box, so this was never only a downstream problem.)
+- **A cross-seed observation fixture is in-tree.** fathom reported
+  `CT_PUBLISHED` always 0 for a topic declared in an imported seed,
+  and correctly identified why we could not see it: every in-tree obs
+  test declares its topics inline. The bug did **not** reproduce at
+  their measured tree in either shape tried — in-process with a local
+  subscriber, and transport-bound with none — so this ships as a
+  standing guard with an inline control rather than a fix, and the
+  open question goes back to them with what was ruled out.
 - **Effect assertions now resolve through an F.20 interface-typed
   slot (fathom FRICTION P1).** `self.sink.emit()` where `sink`'s
   declared type is an interface resolved to nothing — an interface
