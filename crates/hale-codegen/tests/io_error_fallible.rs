@@ -11,10 +11,12 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build_and_run(name: &str, src: &str) -> (String, String, std::process::ExitStatus) {
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_test_io_err_{}_{}", name, std::process::id()));
+    let bin = harness::unique_bin(&format!("hale_test_io_err_{}_{}", name, std::process::id()));
     build_executable(&program, &bin).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
@@ -27,8 +29,7 @@ fn build_and_run(name: &str, src: &str) -> (String, String, std::process::ExitSt
 
 #[test]
 fn read_file_ok_path_returns_contents() {
-    let mut tmp = std::env::temp_dir();
-    tmp.push(format!("ioerr_ok_{}.txt", std::process::id()));
+    let tmp = harness::unique_bin(&format!("ioerr_ok_{}.txt", std::process::id()));
     std::fs::write(&tmp, "hello world").unwrap();
     let path_str = tmp.to_string_lossy().to_string();
     let src = format!(
@@ -112,8 +113,7 @@ fn ioerror_carries_errno_and_path_fields() {
 
 #[test]
 fn write_file_then_read_roundtrip_via_fallible() {
-    let mut tmp = std::env::temp_dir();
-    tmp.push(format!("ioerr_wf_{}.txt", std::process::id()));
+    let tmp = harness::unique_bin(&format!("ioerr_wf_{}.txt", std::process::id()));
     let path_str = tmp.to_string_lossy().to_string();
     let src = format!(
         r#"
@@ -135,8 +135,7 @@ fn write_file_then_read_roundtrip_via_fallible() {
 fn mkdir_fallible_emits_already_exists_kind_on_existing_dir() {
     // mkdir's success is Unit, so the `or` substitute RHS has to
     // be Unit-typed too — a void helper that prints the IoError.
-    let mut tmp = std::env::temp_dir();
-    tmp.push(format!("ioerr_md_{}", std::process::id()));
+    let tmp = harness::unique_bin(&format!("ioerr_md_{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
     let path_str = tmp.to_string_lossy().to_string();
     let src = format!(
@@ -162,8 +161,7 @@ fn mkdir_fallible_emits_already_exists_kind_on_existing_dir() {
 
 #[test]
 fn file_size_ok_path_returns_size() {
-    let mut tmp = std::env::temp_dir();
-    tmp.push(format!("ioerr_fs_{}.txt", std::process::id()));
+    let tmp = harness::unique_bin(&format!("ioerr_fs_{}.txt", std::process::id()));
     std::fs::write(&tmp, "12345").unwrap();
     let path_str = tmp.to_string_lossy().to_string();
     let src = format!(
@@ -211,8 +209,7 @@ fn or_over_non_fallible_path_call_has_clear_diagnostic() {
         }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_test_or_diag_{}", std::process::id()));
+    let bin = harness::unique_bin(&format!("hale_test_or_diag_{}", std::process::id()));
     let err = hale_codegen::build_executable(&program, &bin).expect_err("should reject");
     let _ = std::fs::remove_file(&bin);
     let msg = format!("{:?}", err);
@@ -229,8 +226,7 @@ fn str_bytes_mismatch_diagnostic_suggests_converter() {
         }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_test_str_diag_{}", std::process::id()));
+    let bin = harness::unique_bin(&format!("hale_test_str_diag_{}", std::process::id()));
     let err = hale_codegen::build_executable(&program, &bin).expect_err("should reject");
     let _ = std::fs::remove_file(&bin);
     let msg = format!("{:?}", err);
@@ -246,8 +242,7 @@ fn bytes_str_mismatch_diagnostic_suggests_converter() {
         }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_test_bytes_diag_{}", std::process::id()));
+    let bin = harness::unique_bin(&format!("hale_test_bytes_diag_{}", std::process::id()));
     let err = hale_codegen::build_executable(&program, &bin).expect_err("should reject");
     let _ = std::fs::remove_file(&bin);
     let msg = format!("{:?}", err);
@@ -265,8 +260,7 @@ fn missing_std_prefix_diagnostic_suggests_correction() {
         }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_test_typo_{}", std::process::id()));
+    let bin = harness::unique_bin(&format!("hale_test_typo_{}", std::process::id()));
     let err = hale_codegen::build_executable(&program, &bin).expect_err("should reject");
     let _ = std::fs::remove_file(&bin);
     let msg = format!("{:?}", err);

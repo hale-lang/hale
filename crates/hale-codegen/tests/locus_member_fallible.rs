@@ -17,13 +17,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn unique_path(tag: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let mut p = std::env::temp_dir();
-    p.push(format!(
+    let p = harness::unique_bin(&format!(
         "lt-locus-member-fallible-{}-{}-{}.bin",
         tag,
         std::process::id(),

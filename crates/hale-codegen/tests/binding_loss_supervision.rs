@@ -12,10 +12,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build(name: &str, src: &str) -> PathBuf {
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_test_loss_{}", name));
+    let bin = harness::unique_bin(&format!("hale_test_loss_{}", name));
     build_executable(&program, &bin).expect("build");
     bin
 }
@@ -25,8 +27,7 @@ fn build(name: &str, src: &str) -> PathBuf {
 /// EPIPE on the publisher's next send.
 fn build_peer_driver(tag: &str) -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_loss_peer_{}", tag));
+    let bin = harness::unique_bin(&format!("hale_loss_peer_{}", tag));
     let status = Command::new("clang")
         .arg(manifest.join("tests").join("transport_driver.c"))
         .arg(manifest.join("runtime").join("lotus_arena.c"))
@@ -150,7 +151,7 @@ fn on_failure_restart_reconnects_and_resumes() {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn peer 1");
-    let mut publisher = Command::new(&bin)
+    let publisher = Command::new(&bin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

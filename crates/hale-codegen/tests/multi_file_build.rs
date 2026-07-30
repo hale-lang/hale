@@ -10,13 +10,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use hale_codegen::build_executable;
 use hale_syntax::ast::Program;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn unique_dir(tag: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let mut p = std::env::temp_dir();
-    p.push(format!(
+    let p = harness::unique_bin(&format!(
         "hale_multi_file_{}_{}_{}",
         tag,
         std::process::id(),

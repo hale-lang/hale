@@ -18,10 +18,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build_and_run(name: &str, source: &str) -> (String, std::process::ExitStatus) {
     let program = hale_syntax::parse_source(source).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_test_stdlib_fs_{}", name));
+    let bin = harness::unique_bin(&format!("hale_test_stdlib_fs_{}", name));
     build_executable(&program, &bin).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
@@ -33,8 +35,7 @@ fn unique_tempfile(tag: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let mut p = std::env::temp_dir();
-    p.push(format!(
+    let p = harness::unique_bin(&format!(
         "hale_fs_test_{}_{}_{}.tmp",
         tag,
         std::process::id(),

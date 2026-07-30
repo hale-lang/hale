@@ -27,6 +27,9 @@ use std::time::{Duration, Instant};
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 const DEADLINE: Duration = Duration::from_secs(20);
 
 /// Servers never self-terminate — out of scope (matches corpus_oracle).
@@ -139,8 +142,7 @@ fn run(bin: &Path, cwd: &Path) -> Option<RunOutcome> {
 /// failure, since both arms must compile identically).
 fn build(src: &str, tag: &str, devirt: bool) -> Option<PathBuf> {
     let program = hale_syntax::parse_source(src).ok()?;
-    let mut bin = std::env::temp_dir();
-    bin.push(format!(
+    let bin = harness::unique_bin(&format!(
         "lotus_devirt_{}_{}_{}",
         tag.replace(['/', '-', '.'], "_"),
         if devirt { "stat" } else { "dyn" },

@@ -21,6 +21,9 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 #[test]
 fn http_server_on_classic_pool_shuts_down_cleanly() {
     let src = r#"
@@ -44,8 +47,7 @@ fn http_server_on_classic_pool_shuts_down_cleanly() {
         fn main() { App { }; }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_http_classic_shutdown_{}", std::process::id()));
+    let bin = harness::unique_bin(&format!("hale_http_classic_shutdown_{}", std::process::id()));
     build_executable(&program, &bin).expect("build");
 
     for run in 0..4 {

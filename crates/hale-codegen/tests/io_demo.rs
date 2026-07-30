@@ -15,6 +15,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn examples_dir() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.push("tests");
@@ -35,8 +38,7 @@ fn unique_path(tag: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let mut p = std::env::temp_dir();
-    p.push(format!(
+    let p = harness::unique_bin(&format!(
         "hale_io_demo_{}_{}_{}.tmp",
         tag,
         std::process::id(),
@@ -70,8 +72,7 @@ impl Demo {
         src_path.push("main.hl");
         let source = std::fs::read_to_string(&src_path).expect("read source");
         let program = hale_syntax::parse_source(&source).expect("parse");
-        let mut bin = std::env::temp_dir();
-        bin.push(format!("hale_io_demo_bin_{}_{}", std::process::id(), tag));
+        let bin = harness::unique_bin(&format!("hale_io_demo_bin_{}_{}", std::process::id(), tag));
         build_executable(&program, &bin).expect("build");
         Self {
             port: pick_free_port(),
@@ -194,8 +195,7 @@ fn io_demo_falls_back_to_default_port_on_garbage_argv() {
     src_path.push("main.hl");
     let source = std::fs::read_to_string(&src_path).expect("read source");
     let program = hale_syntax::parse_source(&source).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_io_demo_bin_garbage_{}", std::process::id()));
+    let bin = harness::unique_bin(&format!("hale_io_demo_bin_garbage_{}", std::process::id()));
     build_executable(&program, &bin).expect("build");
 
     let log_path = unique_path("garbage_log");

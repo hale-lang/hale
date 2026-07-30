@@ -16,6 +16,9 @@ use std::time::Duration;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn examples_dir() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.push("tests");
@@ -33,8 +36,7 @@ fn build_http_hello() -> PathBuf {
     let src_path = examples_dir().join("http-hello").join("main.hl");
     let src = std::fs::read_to_string(&src_path).expect("read example");
     let program = hale_syntax::parse_source(&src).expect("parse example");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!(
+    let bin = harness::unique_bin(&format!(
         "hale_http_hello_{}",
         std::process::id()
     ));

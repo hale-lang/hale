@@ -28,6 +28,9 @@ use hale_codegen::mangle;
 use hale_syntax::ast::{Program, TopDecl};
 use hale_syntax::parse_source;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn fixtures_dir() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.push("tests");
@@ -108,8 +111,7 @@ fn or_on_path_callee_for_imported_fallible_fn() {
     let (lib_items, renames) = resolve_and_mangle_lib(&lib_dir, "lp");
     consumer_prog.items.extend(lib_items);
 
-    let mut bin = std::env::temp_dir();
-    bin.push(format!(
+    let bin = harness::unique_bin(&format!(
         "hale_or_on_path_callee_{}",
         std::process::id()
     ));
@@ -150,8 +152,7 @@ fn cross_seed_form_vec_split_across_two_files() {
     let (lib_items, renames) = resolve_and_mangle_lib(&lib_dir, "lib");
     consumer_prog.items.extend(lib_items);
 
-    let mut bin = std::env::temp_dir();
-    bin.push(format!(
+    let bin = harness::unique_bin(&format!(
         "hale_cross_seed_form_vec_multi_{}",
         std::process::id()
     ));
@@ -188,8 +189,7 @@ fn cross_seed_topic_subscribe_and_publish() {
     let (lib_items, renames) = resolve_and_mangle_lib(&lib_dir, "source");
     consumer_prog.items.extend(lib_items);
 
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_cross_seed_topic_{}", std::process::id()));
+    let bin = harness::unique_bin(&format!("hale_cross_seed_topic_{}", std::process::id()));
     build_executable_with_imports(&consumer_prog, &bin, &renames)
         .expect("build consumer + lib");
 
@@ -248,8 +248,7 @@ fn three_file_lib_exposes_decls_from_every_file() {
         rename_strings
     );
 
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_three_file_lib_{}", std::process::id()));
+    let bin = harness::unique_bin(&format!("hale_three_file_lib_{}", std::process::id()));
     build_executable_with_imports(&consumer_prog, &bin, &renames)
         .expect("build consumer + lib");
 
@@ -292,8 +291,7 @@ fn cross_seed_non_fallible_free_fn_call_in_expr_and_stmt_positions() {
     let (lib_items, renames) = resolve_and_mangle_lib(&lib_dir, "h");
     consumer_prog.items.extend(lib_items);
 
-    let mut bin = std::env::temp_dir();
-    bin.push(format!(
+    let bin = harness::unique_bin(&format!(
         "hale_cross_seed_nonfallible_{}",
         std::process::id()
     ));
@@ -357,8 +355,7 @@ fn consumer_uses_greeter_and_formatted_from_lib_toy() {
 
     consumer_prog.items.extend(lib_items);
 
-    let mut bin = std::env::temp_dir();
-    bin.push(format!(
+    let bin = harness::unique_bin(&format!(
         "hale_cross_seed_imports_{}",
         std::process::id()
     ));
@@ -425,8 +422,7 @@ fn method_name_shadowed_by_top_level_fn_resolves() {
     consumer.imports.clear();
     consumer.items.extend(lib_prog.items);
 
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_p1_method_shadow_{}", std::process::id()));
+    let bin = harness::unique_bin(&format!("hale_p1_method_shadow_{}", std::process::id()));
     build_executable_with_imports(&consumer, &bin, &renames).expect("build consumer + lib");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

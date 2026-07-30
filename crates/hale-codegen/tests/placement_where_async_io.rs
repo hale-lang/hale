@@ -15,6 +15,9 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn typecheck_diags(source: &str) -> Vec<String> {
     let program = hale_syntax::parse_source(source).expect("parse");
     let mut programs = std::collections::BTreeMap::new();
@@ -196,8 +199,7 @@ fn placement_where_async_io_builds_and_runs() {
     // here. The "with async_io" path needs an actual long-running
     // sibling shape — covered by the standalone smoke below.
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push("hale_test_placement_where_no_async");
+    let bin = harness::unique_bin("hale_test_placement_where_no_async");
     build_executable(&program, &bin).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
@@ -243,8 +245,7 @@ fn placement_where_async_io_emits_enable_call() {
         }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push("hale_test_placement_where_async_io_e2e");
+    let bin = harness::unique_bin("hale_test_placement_where_async_io_e2e");
     build_executable(&program, &bin).expect("build");
     let output = Command::new("timeout")
         .arg("3")

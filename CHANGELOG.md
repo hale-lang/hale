@@ -55,6 +55,29 @@ behavior.
   the Hale-source stdlib actually declares, which the accidental
   version could not do.
 
+  hazard is gone rather than avoided.** ~131 codegen test files wrote
+  their compiled binary to a temp path with no uniquifier — most of
+  them `temp_dir()/lotus_test_{name}`, a template eleven files shared
+  verbatim (nine more shared `lotus_{name}`). Nothing made those
+  distinct; the suite passed only because the `name` arguments
+  happened not to overlap. One `build_and_run("basic", …)` in the
+  wrong file and two tests write and exec the same path.
+  `harness::unique_bin` (pid + process-local counter) now supplies
+  every build-artifact path, and `harness_paths_are_unique.rs` fails
+  the build if a test rolls its own. `harness::free_port()` replaces
+  the hand-maintained 57xxx/47xxx port registry spread across 159
+  files (`9876` was already used six times).
+- **Two docs disagreed about that hazard and neither was right.**
+  `CLAUDE.md` mandated the serial flag because of it; `tests.yml`
+  claimed nextest's process-per-test made the shared paths safe.
+  Process isolation is not filesystem isolation — two processes
+  writing one path are *more* concurrent than two threads, not less.
+  Both are corrected, and the guidance is now "run it in parallel"
+  because that is finally true.
+- ~115 copies of `build_and_run` (104 textually distinct) had drifted
+  almost entirely in where they put the binary; at least three had
+  independently rediscovered the pid+counter fix and left a comment
+  about it. That is a missing invariant, not a missing convention.
 ---
 
 ## v0.11.24 — stdlib registry/dispatch parity enforced; effect-classification hole closed (2026-07-29)

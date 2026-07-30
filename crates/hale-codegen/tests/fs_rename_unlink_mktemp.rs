@@ -17,10 +17,12 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build_and_run(name: &str, src: &str) -> (String, String, std::process::ExitStatus) {
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!(
+    let bin = harness::unique_bin(&format!(
         "hale_test_fs_c9_{}_{}",
         name,
         std::process::id()

@@ -17,23 +17,16 @@
 //! ensures cargo materializes it before these tests run.
 
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build_and_run(name: &str, source: &str) -> (String, std::process::ExitStatus) {
     let program = hale_syntax::parse_source(source).expect("parse");
-    let mut bin = std::env::temp_dir();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    bin.push(format!(
-        "hale_test_stdlib_ts_{}_{}_{}",
-        name,
-        std::process::id(),
-        nanos
-    ));
+    let bin = harness::unique_bin(name);
     build_executable(&program, &bin).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

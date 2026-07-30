@@ -8,14 +8,16 @@
 use hale_codegen::build_executable;
 use std::process::Command;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build_and_run(name: &str, src: &str) -> (String, std::process::ExitStatus) {
     build_and_run_argv(name, src, &[])
 }
 
 fn build_and_run_argv(name: &str, src: &str, argv: &[&str]) -> (String, std::process::ExitStatus) {
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_mirror_{}", name));
+    let bin = harness::unique_bin(&format!("hale_mirror_{}", name));
     build_executable(&program, &bin).expect("build");
     let out = Command::new(&bin).args(argv).output().expect("run");
     let _ = std::fs::remove_file(&bin);

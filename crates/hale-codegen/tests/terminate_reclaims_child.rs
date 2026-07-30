@@ -20,6 +20,9 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 #[test]
 fn terminate_reclaims_each_accepted_child() {
     // Manager (async_io pool) accepts a Worker per trigger; each
@@ -66,8 +69,7 @@ fn terminate_reclaims_each_accepted_child() {
     "#
     );
     let program = hale_syntax::parse_source(&src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push("hale_test_terminate_reclaims_child");
+    let bin = harness::unique_bin("hale_test_terminate_reclaims_child");
     build_executable(&program, &bin).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

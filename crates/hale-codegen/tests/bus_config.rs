@@ -21,6 +21,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -42,8 +45,7 @@ fn driver_c_path() -> PathBuf {
 /// Compile transport_driver.c + lotus_arena.c into a one-off
 /// listener binary in $TMPDIR. Same recipe as tests/transport.rs.
 fn build_listener_driver(tag: &str) -> PathBuf {
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("lotus_m58_listener_{}", tag));
+    let bin = harness::unique_bin(&format!("lotus_m58_listener_{}", tag));
     let status = Command::new("clang")
         .arg(driver_c_path())
         .arg(runtime_c_path())
@@ -62,8 +64,7 @@ fn unique_path(tag: &str, ext: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let mut p = std::env::temp_dir();
-    p.push(format!(
+    let p = harness::unique_bin(&format!(
         "lt-m58-{}-{}-{}.{}",
         tag,
         std::process::id(),
@@ -138,15 +139,7 @@ fn deployment_config_routes_publisher_to_remote_listener() {
         .expect("spawn listener");
 
     let program = hale_syntax::parse_source(&src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!(
-        "lotus_m58_publisher_{}_{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0),
-    ));
+    let bin = harness::unique_bin("m58_publisher");
     build_executable(&program, &bin).expect("build publisher");
 
     let pub_out = Command::new(&bin)
@@ -241,15 +234,7 @@ fn no_config_set_behaves_as_pre_m58() {
         }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!(
-        "lotus_m58_no_config_{}_{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0),
-    ));
+    let bin = harness::unique_bin("m58_publisher");
     build_executable(&program, &bin).expect("build");
 
     let out = Command::new(&bin).output().expect("run");

@@ -21,6 +21,9 @@ use std::process::Command;
 use hale_codegen::build_executable;
 
 // Fixed P-256 test keypair (NOT a secret — generated for this test).
+#[path = "support/harness.rs"]
+mod harness;
+
 const PRIV_SEC1_PEM: &str = r#"-----BEGIN EC PRIVATE KEY-----
 MHcCAQEEIJrK0USBk0pXfFnQtXL9xFkQSdZ9C1OUbBcO5dnIWy8/oAoGCCqGSM49
 AwEHoUQDQgAEiGxPneeFcgjIV3jH5esGYi0uNMCRw16VEVuDZZbkiQ05htqoeEZY
@@ -43,8 +46,7 @@ const EXTERNAL_SIG_STD_B64: &str =
 
 fn build_and_run(name: &str, source: &str) -> String {
     let program = hale_syntax::parse_source(source).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("lotus_ecdsa_{}", name));
+    let bin = harness::unique_bin(&format!("lotus_ecdsa_{}", name));
     build_executable(&program, &bin).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

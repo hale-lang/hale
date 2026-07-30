@@ -26,10 +26,12 @@ use hale_codegen::build_executable;
 /// binding below needs a real listener peer — the pre-#227
 /// version of this test silently relied on the broker tolerating
 /// a dead transport.
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build_peer_driver(tag: &str) -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_codec_e2e_peer_{}", tag));
+    let bin = harness::unique_bin(&format!("hale_codec_e2e_peer_{}", tag));
     let status = Command::new("clang")
         .arg(manifest.join("tests").join("transport_driver.c"))
         .arg(manifest.join("runtime").join("lotus_arena.c"))
@@ -98,8 +100,7 @@ fn xor_codec_round_trip_through_in_process_wire_path() {
         sock
     );
     let program = hale_syntax::parse_source(&src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push("hale_test_codec_dispatch_roundtrip");
+    let bin = harness::unique_bin("hale_test_codec_dispatch_roundtrip");
     build_executable(&program, &bin).expect("build");
     // Listener peer first so the app's connect-with-retry lands.
     // The peer just absorbs the (scrambled) wire bytes; the

@@ -17,14 +17,16 @@ use std::process::Command;
 
 use hale_codegen::{build_executable_with_options, BuildOptions};
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build_with_csrc(
     name: &str,
     hale_src: &str,
     csrc_body: &str,
 ) -> std::path::PathBuf {
     let program = hale_syntax::parse_source(hale_src).expect("parse");
-    let mut tmpdir = std::env::temp_dir();
-    tmpdir.push(format!("hale_test_ffi_basic_{}", name));
+    let tmpdir = harness::unique_bin(&format!("hale_test_ffi_basic_{}", name));
     let _ = std::fs::create_dir_all(&tmpdir);
 
     let csrc_path = tmpdir.join("glue.c");

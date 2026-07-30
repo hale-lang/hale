@@ -23,11 +23,12 @@ LLVM 17 / 19 / 20 will not link.
 
 ```sh
 cargo build --release
-cargo test --release --workspace -- --test-threads=1
+cargo nextest run --release --workspace
 ```
 
-The serial flag avoids "text file busy" flakes from parallel test
-binaries racing on the same temp path. To spot-check a change against a
+Run it in parallel — `harness::unique_bin` gives every compiled
+test binary a collision-proof path, so the `--test-threads=1`
+this used to need is no longer necessary. To spot-check a change against a
 real program without installing:
 
 ```sh

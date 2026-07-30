@@ -17,10 +17,12 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build_and_run(name: &str, src: &str, argv: &[&str]) -> (String, std::process::ExitStatus) {
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_libshape_{}_{}", name, std::process::id()));
+    let bin = harness::unique_bin(&format!("hale_libshape_{}_{}", name, std::process::id()));
     build_executable(&program, &bin).expect("build");
     let out = Command::new(&bin).args(argv).output().expect("run");
     let _ = std::fs::remove_file(&bin);
@@ -73,8 +75,7 @@ fn hashmap_bump_rejects_three_field_cells() {
         }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_libshape_bump_bad_{}", std::process::id()));
+    let bin = harness::unique_bin(&format!("hale_libshape_bump_bad_{}", std::process::id()));
     let err = hale_codegen::build_executable(&program, &bin).expect_err("should reject");
     let _ = std::fs::remove_file(&bin);
     let msg = format!("{:?}", err);
@@ -208,8 +209,7 @@ fn or_discard_rejects_value_bearing_call() {
         }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_test_discard_bad_{}", std::process::id()));
+    let bin = harness::unique_bin(&format!("hale_test_discard_bad_{}", std::process::id()));
     let err = hale_codegen::build_executable(&program, &bin).expect_err("should reject");
     let _ = std::fs::remove_file(&bin);
     let msg = format!("{:?}", err);

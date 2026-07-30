@@ -19,6 +19,9 @@ use std::time::{Duration, Instant};
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 #[test]
 fn program_with_coro_parked_at_shutdown_exits_cleanly() {
     // A lone async_io listener that no client ever connects to, so
@@ -44,8 +47,7 @@ fn program_with_coro_parked_at_shutdown_exits_cleanly() {
         fn main() { App { }; }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push("hale_test_async_io_shutdown_parked");
+    let bin = harness::unique_bin("hale_test_async_io_shutdown_parked");
     build_executable(&program, &bin).expect("build");
 
     let mut child = Command::new(&bin).spawn().expect("spawn");

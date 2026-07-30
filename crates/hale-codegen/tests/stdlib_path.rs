@@ -13,10 +13,12 @@ use std::process::Command;
 use hale_codegen::build_executable;
 
 /// Compile `source`, run the binary, return (stdout, status).
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build_and_run(name: &str, source: &str) -> (String, std::process::ExitStatus) {
     let program = hale_syntax::parse_source(source).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_test_stdlib_{}", name));
+    let bin = harness::unique_bin(&format!("hale_test_stdlib_{}", name));
     build_executable(&program, &bin).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
@@ -66,8 +68,7 @@ fn std_process_pid_matches_runtime_pid() {
         }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push("hale_test_stdlib_process_pid_match");
+    let bin = harness::unique_bin("hale_test_stdlib_process_pid_match");
     build_executable(&program, &bin).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
@@ -106,8 +107,7 @@ fn unknown_std_path_errors_with_useful_message() {
         }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push("hale_test_stdlib_unknown_path");
+    let bin = harness::unique_bin("hale_test_stdlib_unknown_path");
     let result = build_executable(&program, &bin);
     let _ = std::fs::remove_file(&bin);
     assert!(result.is_err(), "expected build error for unknown std path");

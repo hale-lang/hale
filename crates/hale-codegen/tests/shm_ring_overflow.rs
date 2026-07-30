@@ -19,6 +19,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn unique_tag(label: &str) -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -29,8 +32,7 @@ fn unique_tag(label: &str) -> String {
 
 fn build_binary(src: &str, label: &str) -> PathBuf {
     let prog = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("lotus_shm_k7_{}.bin", unique_tag(label)));
+    let bin = harness::unique_bin(&format!("lotus_shm_k7_{}.bin", unique_tag(label)));
     build_executable(&prog, &bin).expect("build");
     bin
 }

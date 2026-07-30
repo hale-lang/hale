@@ -7,10 +7,17 @@ name: tests
 # at tag time.
 #
 # Uses cargo-nextest (drop-in replacement for `cargo test`) for
-# smarter scheduling: each test runs in its own process, so the
-# shared `/tmp/lotus_test_*` paths that historically required
-# `--test-threads=1` no longer collide. Workspace-wide test time
-# drops ~2-3x vs libtest.
+# smarter scheduling: each test runs in its own process.
+# Workspace-wide test time drops ~2-3x vs libtest.
+#
+# NB: an earlier version of this comment claimed process-per-test
+# was what made the shared `/tmp/lotus_test_*` paths safe. That was
+# wrong — process isolation is not filesystem isolation, and two
+# processes writing one path are MORE concurrent than two threads,
+# not less. The suite passed because the `name` arguments happened
+# not to overlap; nothing enforced it. Uniqueness now comes from
+# `harness::unique_bin` (pid + counter), enforced by
+# `harness_paths_are_unique.rs`.
 #
 # Build-and-run-per-partition shape: N parallel `test` jobs each
 # build the workspace from the shared cargo cache and run a

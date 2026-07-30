@@ -25,6 +25,9 @@ use std::time::Duration;
 use hale_codegen::build_executable;
 
 /// Find two free TCP ports for the listeners.
+#[path = "support/harness.rs"]
+mod harness;
+
 fn pick_two_free_ports() -> (u16, u16) {
     use std::net::TcpListener;
     let a = TcpListener::bind("127.0.0.1:0").expect("bind a");
@@ -102,8 +105,7 @@ fn async_io_pool_multiplexes_two_listeners() {
         port_a = port_a, port_b = port_b
     );
     let program = hale_syntax::parse_source(&src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push("hale_test_async_io_park_resume");
+    let bin = harness::unique_bin("hale_test_async_io_park_resume");
     build_executable(&program, &bin).expect("build");
     // Spawn the binary in the background.
     let mut child = Command::new(&bin)

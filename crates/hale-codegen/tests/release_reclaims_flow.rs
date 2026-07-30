@@ -17,6 +17,9 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 #[test]
 fn release_fires_and_reclaims_each_flow_child_on_run_completion() {
     const N: usize = 20;
@@ -60,8 +63,7 @@ fn release_fires_and_reclaims_each_flow_child_on_run_completion() {
     "#
     );
     let program = hale_syntax::parse_source(&src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push("hale_test_release_reclaims_flow");
+    let bin = harness::unique_bin("hale_test_release_reclaims_flow");
     build_executable(&program, &bin).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

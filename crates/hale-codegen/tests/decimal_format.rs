@@ -8,6 +8,9 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 #[test]
 fn format_renders_fixed_places_with_half_up_rounding() {
     let src = r#"
@@ -21,8 +24,7 @@ fn format_renders_fixed_places_with_half_up_rounding() {
         }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push("hale_test_decimal_format");
+    let bin = harness::unique_bin("hale_test_decimal_format");
     build_executable(&program, &bin).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

@@ -21,18 +21,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build(name: &str, src: &str) -> PathBuf {
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_test_orwait_{}", name));
+    let bin = harness::unique_bin(&format!("hale_test_orwait_{}", name));
     build_executable(&program, &bin).expect("build");
     bin
 }
 
 fn build_peer_driver(tag: &str) -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_orwait_peer_{}", tag));
+    let bin = harness::unique_bin(&format!("hale_orwait_peer_{}", tag));
     let status = Command::new("clang")
         .arg(manifest.join("tests").join("transport_driver.c"))
         .arg(manifest.join("runtime").join("lotus_arena.c"))
@@ -102,7 +103,7 @@ fn or_wait_parks_through_loss_window_no_drops() {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn peer 1");
-    let mut publisher = Command::new(&bin)
+    let publisher = Command::new(&bin)
         .env("LOTUS_BUS_COUNTERS_DUMP", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

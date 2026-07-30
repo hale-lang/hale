@@ -19,6 +19,9 @@ use hale_codegen::mangle;
 use hale_syntax::ast::{Program, TopDecl};
 use hale_syntax::parse_source;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn fixtures_dir() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.push("tests");
@@ -78,8 +81,7 @@ fn topic_decl_and_publisher_in_separate_lib_files() {
     let (lib_items, renames) = resolve_and_mangle_lib(&lib_dir, "hb");
     consumer_prog.items.extend(lib_items);
 
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_ws33_topic_split_{}", std::process::id()));
+    let bin = harness::unique_bin(&format!("hale_ws33_topic_split_{}", std::process::id()));
     build_executable_with_imports(&consumer_prog, &bin, &renames)
         .expect("build consumer + split-topic lib");
 

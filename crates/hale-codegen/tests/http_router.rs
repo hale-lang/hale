@@ -16,6 +16,9 @@ use std::time::Duration;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn pick_free_port() -> u16 {
     let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
     probe.local_addr().expect("local_addr").port()
@@ -23,8 +26,7 @@ fn pick_free_port() -> u16 {
 
 fn build_and_run(name: &str, src: &str) -> (String, std::process::ExitStatus) {
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_http_router_{}_{}", name, std::process::id()));
+    let bin = harness::unique_bin(&format!("hale_http_router_{}_{}", name, std::process::id()));
     build_executable(&program, &bin).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
@@ -129,8 +131,7 @@ fn router_serves_through_server_over_tcp() {
     "#
     );
     let program = hale_syntax::parse_source(&src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_http_router_wire_{}", std::process::id()));
+    let bin = harness::unique_bin(&format!("hale_http_router_wire_{}", std::process::id()));
     build_executable(&program, &bin).expect("build");
     let mut child = Command::new(&bin)
         .stdout(std::process::Stdio::piped())

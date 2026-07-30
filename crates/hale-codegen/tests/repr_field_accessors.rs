@@ -12,6 +12,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn tag(label: &str) -> String {
     let n = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     format!("rfa-{}-{}-{}", label, std::process::id(), n)
@@ -87,8 +90,7 @@ fn repr_accessors_round_trip_through_a_foreign_ring() {
         shm = shm,
     );
     let program = hale_syntax::parse_source(&src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("lotus_{}.bin", tag("bin")));
+    let bin = harness::unique_bin(&format!("lotus_{}.bin", tag("bin")));
     build_executable(&program, &bin).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

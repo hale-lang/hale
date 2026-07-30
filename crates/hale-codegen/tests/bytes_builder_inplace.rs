@@ -10,10 +10,12 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build_and_run(name: &str, source: &str) -> (String, std::process::ExitStatus) {
     let program = hale_syntax::parse_source(source).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("lotus_test_{}", name));
+    let bin = harness::unique_bin(&format!("lotus_test_{}", name));
     build_executable(&program, &bin).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
@@ -164,8 +166,7 @@ fn builder_append_slice_out_of_range_violates() {
         }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push("lotus_test_bb_append_slice_oob");
+    let bin = harness::unique_bin("lotus_test_bb_append_slice_oob");
     build_executable(&program, &bin).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
@@ -211,8 +212,7 @@ fn builder_append_slice_oob_distinguishable_from_alloc_failed() {
         fn main() { Catcher { }; }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push("lotus_test_bb_append_slice_oob_distinguishable");
+    let bin = harness::unique_bin("lotus_test_bb_append_slice_oob_distinguishable");
     build_executable(&program, &bin).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

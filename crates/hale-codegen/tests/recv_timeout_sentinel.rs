@@ -14,6 +14,9 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn pick_free_port() -> u16 {
     let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
     l.local_addr().expect("local_addr").port()
@@ -21,8 +24,7 @@ fn pick_free_port() -> u16 {
 
 fn build_and_run_argv(name: &str, src: &str, argv: &[&str]) -> (String, std::process::ExitStatus) {
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_recv_timeout_{}", name));
+    let bin = harness::unique_bin(&format!("hale_recv_timeout_{}", name));
     build_executable(&program, &bin).expect("build");
     let out = Command::new(&bin).args(argv).output().expect("run");
     let _ = std::fs::remove_file(&bin);

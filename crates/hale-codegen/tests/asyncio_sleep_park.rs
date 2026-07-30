@@ -15,6 +15,9 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 const SRC: &str = r#"
     type Go { n: Int; }
 
@@ -63,8 +66,7 @@ const SRC: &str = r#"
 #[test]
 fn asyncio_sleeps_park_and_overlap() {
     let program = hale_syntax::parse_source(SRC).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_sleep_park_{}", std::process::id()));
+    let bin = harness::unique_bin(&format!("hale_sleep_park_{}", std::process::id()));
     build_executable(&program, &bin).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

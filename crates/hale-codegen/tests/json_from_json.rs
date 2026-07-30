@@ -9,10 +9,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build_and_run(name: &str, src: &str) -> (String, std::process::ExitStatus) {
     let n = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("lt-fromjson-{}-{}-{}.bin", name, std::process::id(), n));
+    let bin = harness::unique_bin(&format!("lt-fromjson-{}-{}-{}.bin", name, std::process::id(), n));
     let program = hale_syntax::parse_source(src).expect("parse");
     build_executable(&program, &bin).expect("build");
     let out = Command::new(&bin).output().expect("run");

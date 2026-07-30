@@ -7,10 +7,12 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build(name: &str, src: &str) -> std::path::PathBuf {
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_test_f22_cell_io_{}", name));
+    let bin = harness::unique_bin(&format!("hale_test_f22_cell_io_{}", name));
     build_executable(&program, &bin).expect("build");
     bin
 }
@@ -87,8 +89,7 @@ fn primitive_cell_field_access_rejected() {
         fn main() { }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push("hale_test_f22_cell_io_primitive_rejected");
+    let bin = harness::unique_bin("hale_test_f22_cell_io_primitive_rejected");
     let err = build_executable(&program, &bin)
         .expect_err("primitive cell field access should reject");
     let msg = format!("{}", err);

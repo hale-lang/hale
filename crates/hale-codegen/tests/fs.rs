@@ -13,6 +13,9 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -32,8 +35,7 @@ fn driver_c_path() -> PathBuf {
 }
 
 fn build_driver(name: &str) -> PathBuf {
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_fs_driver_{}", name));
+    let bin = harness::unique_bin(&format!("hale_fs_driver_{}", name));
     let status = Command::new("clang")
         .arg(driver_c_path())
         .arg(runtime_c_path())
@@ -55,8 +57,7 @@ fn unique_tempfile(tag: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let mut p = std::env::temp_dir();
-    p.push(format!(
+    let p = harness::unique_bin(&format!(
         "hale_fs_test_{}_{}_{}.tmp",
         tag,
         std::process::id(),

@@ -12,18 +12,12 @@ use hale_codegen::build_executable;
 use hale_syntax::parse_source;
 use hale_types::check_program;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build(name: &str, src: &str) -> std::path::PathBuf {
     let program = parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    static NEXT: std::sync::atomic::AtomicU64 =
-        std::sync::atomic::AtomicU64::new(0);
-    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    bin.push(format!(
-        "hale_or_fallible_{}_{}_{}",
-        name,
-        std::process::id(),
-        n
-    ));
+    let bin = harness::unique_bin(name);
     build_executable(&program, &bin).expect("build");
     bin
 }

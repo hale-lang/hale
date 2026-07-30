@@ -12,10 +12,12 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn build(name: &str, src: &str) -> std::path::PathBuf {
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("hale_test_f22_acc_{}", name));
+    let bin = harness::unique_bin(&format!("hale_test_f22_acc_{}", name));
     build_executable(&program, &bin).expect("build");
     bin
 }
@@ -201,8 +203,7 @@ fn cell_value_cannot_print_or_arithmetic() {
         fn main() { }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push("hale_test_f22_acc_no_print");
+    let bin = harness::unique_bin("hale_test_f22_acc_no_print");
     let err = build_executable(&program, &bin)
         .expect_err("expected cell-not-printable diagnostic");
     let msg = format!("{}", err);

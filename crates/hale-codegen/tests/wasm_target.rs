@@ -20,13 +20,15 @@ use hale_codegen::{build_executable_with_options, BuildOptions, CompileTarget};
 use std::path::PathBuf;
 use std::process::Command;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn wasm_opts() -> BuildOptions {
     BuildOptions { target: CompileTarget::Wasm32, ..Default::default() }
 }
 
 fn tmp(name: &str) -> PathBuf {
-    let mut p = std::env::temp_dir();
-    p.push(format!("hale_wasm_target_{}", name));
+    let p = harness::unique_bin(&format!("hale_wasm_target_{}", name));
     p
 }
 

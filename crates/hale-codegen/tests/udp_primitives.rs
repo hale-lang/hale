@@ -8,9 +8,12 @@
 //! two sockets in the same process).
 
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+
 
 use hale_codegen::build_executable;
+
+#[path = "support/harness.rs"]
+mod harness;
 
 fn pick_free_port() -> u16 {
     // We can't bind a UDP socket here easily without pulling in
@@ -26,16 +29,7 @@ fn pick_free_port() -> u16 {
 
 fn build_and_run(name: &str, source: &str) -> (String, String, std::process::ExitStatus) {
     let program = hale_syntax::parse_source(source).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!(
-        "hale_udp_test_{}_{}_{}",
-        name,
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0),
-    ));
+    let bin = harness::unique_bin(name);
     build_executable(&program, &bin).expect("build");
     let output = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

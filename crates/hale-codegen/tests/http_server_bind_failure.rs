@@ -16,6 +16,9 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 #[test]
 fn http_server_violates_on_bind_failure() {
     // Take a port. The Rust listener doesn't set SO_REUSEPORT,
@@ -45,8 +48,7 @@ fn http_server_violates_on_bind_failure() {
     );
 
     let prog = hale_syntax::parse_source(&src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push(format!(
+    let bin = harness::unique_bin(&format!(
         "hale_test_http_bind_fail_{}_{}",
         std::process::id(),
         port,

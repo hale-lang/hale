@@ -10,11 +10,13 @@ use std::process::Command;
 
 use hale_codegen::build_executable;
 
+#[path = "support/harness.rs"]
+mod harness;
+
 #[test]
 fn spsc_driver_concurrent_contract_holds() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let mut bin = std::env::temp_dir();
-    bin.push("lotus_spsc_driver_test");
+    let bin = harness::unique_bin("lotus_spsc_driver_test");
     let status = Command::new("clang")
         .arg(manifest.join("tests").join("spsc_driver.c"))
         .arg(manifest.join("runtime").join("lotus_arena.c"))
@@ -58,8 +60,7 @@ fn hale_surface_lowers_and_links() {
         }
     "#;
     let program = hale_syntax::parse_source(src).expect("parse");
-    let mut bin = std::env::temp_dir();
-    bin.push("hale_test_spsc_surface");
+    let bin = harness::unique_bin("hale_test_spsc_surface");
     build_executable(&program, &bin).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);

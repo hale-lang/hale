@@ -22,6 +22,9 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[path = "support/harness.rs"]
+mod harness;
+
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -44,8 +47,7 @@ fn driver_c_path() -> PathBuf {
 /// in $TMPDIR. Returns the path; caller is responsible for the
 /// best-effort cleanup at the end of the test.
 fn build_driver(name: &str) -> PathBuf {
-    let mut bin = std::env::temp_dir();
-    bin.push(format!("lotus_transport_driver_{}", name));
+    let bin = harness::unique_bin(&format!("lotus_transport_driver_{}", name));
     let status = Command::new("clang")
         .arg(driver_c_path())
         .arg(runtime_c_path())
@@ -67,8 +69,7 @@ fn unique_socket_path(tag: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let mut p = std::env::temp_dir();
-    p.push(format!("lt-m57-{}-{}-{}.sock", tag, std::process::id(), nanos));
+    let p = harness::unique_bin(&format!("lt-m57-{}-{}-{}.sock", tag, std::process::id(), nanos));
     p
 }
 
