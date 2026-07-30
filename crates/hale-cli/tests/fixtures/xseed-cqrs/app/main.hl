@@ -1,0 +1,7 @@
+import "lib/mat" as mx;
+locus Book {
+    params { n: Int = 0; }
+    fn query_bulk() -> mx::Matrix { return mx::Matrix { n: 1 }; }
+}
+main locus App { params { b: Book = Book { }; } }
+fn main() { App { }; }

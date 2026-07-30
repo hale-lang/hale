@@ -8,6 +8,24 @@ behavior.
 
 ## Unreleased
 
+- **An app's effects manifest describes the app, not its imports.**
+  Once `check` resolved imports, every imported fn emitted a row under
+  its merged symbol — one downstream fleet's committed baseline went
+  from 1,319 rows to 8,021, and 131 of one app's 151 rows were mangled
+  names. That defeats the artifact: an effect regression is meant to
+  be a one-line diff in review. Merged symbols are excluded; a
+  library's rows come from checking the library, and what an import
+  contributes here is already folded into the caller's `does={…}`.
+- **Every diagnostic renders the alias spelling**, not only effect
+  witnesses. The no-locus-return rule was naming
+  `__lib_lib_a_b_OrderBook.query_bulk` — a symbol appearing nowhere in
+  the user's program.
+- **A framework keyword is legal as a struct-literal field name.**
+  `tier` was declarable, readable and assignable, but `Row { tier: 1 }`
+  failed with `expected ;, got LBrace` pointing at `Row {` and never
+  naming `tier`. `parse_struct_init` already accepted these keywords;
+  the struct-literal *lookahead* did not, so the literal fell through
+  to "expression followed by a block". The two now agree.
 - **Advisories from an imported seed are not reported on the
   importer.** Making `check` resolve imports is what exposes
   cross-seed errors — and it also drags every advisory lint in every

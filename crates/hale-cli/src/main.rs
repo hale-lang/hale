@@ -2553,6 +2553,13 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
     // With `hale check` at ~10 ms on the largest apps, an
     // on-save/on-keystroke loop needs nothing more than this.
     let json_mode = std::env::args().any(|a| a == "--json");
+    // Every diagnostic renders in the spelling the author wrote.
+    // Effect witnesses were demangled at their source, but any other
+    // check that names a type or method — the no-locus-return rule,
+    // for one — still emitted `__lib_lib_a_b_OrderBook.query_bulk`,
+    // a symbol that appears nowhere in their program. Doing it once
+    // here covers every pass rather than each remembering.
+    hale_types::stdlib_bodies::demangle_imports(&mut diags, &import_renames);
     retain_owned_advisories(&mut diags, &own_files, &file_bases);
     if !diags.is_empty() {
         for d in &diags {

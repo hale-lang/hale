@@ -5588,11 +5588,21 @@ impl Parser {
         if !matches!(self.peek(), TokenKind::LBrace) {
             return false;
         }
-        // Peek inside the brace.
+        // Peek inside the brace. The field-name position accepts the
+        // same framework keywords `parse_struct_init` does — the two
+        // disagreed, so `Row { tier: 1 }` failed the lookahead, fell
+        // through to "expression followed by a block", and reported
+        // `expected ;, got LBrace` pointing at `Row {` without ever
+        // mentioning `tier`. The field was declarable, readable and
+        // assignable; only naming it in a literal was blocked, which
+        // is the strangest possible surface for the restriction.
         match self.peek_at(1) {
             TokenKind::RBrace => true,
             TokenKind::Ident(_) => matches!(self.peek_at(2), TokenKind::Colon),
-            _ => false,
+            other => {
+                try_member_keyword_as_name(other).is_some()
+                    && matches!(self.peek_at(2), TokenKind::Colon)
+            }
         }
     }
 
