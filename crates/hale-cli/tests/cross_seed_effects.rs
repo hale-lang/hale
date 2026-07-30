@@ -236,3 +236,83 @@ fn the_targets_own_advisories_survive_the_filter() {
         text
     );
 }
+
+/// An app's effects manifest describes the APP, not the libraries it
+/// imports.
+///
+/// Once `check` resolved imports, every imported fn emitted its own
+/// row under its merged symbol: one downstream fleet's committed
+/// baseline went from 1,319 rows to 8,021, and 131 of one app's 151
+/// rows were mangled names. That defeats the artifact's purpose — an
+/// effect regression is meant to be a one-line diff in review, and a
+/// mangled name is unreadable and encodes an internal scheme that
+/// churns.
+///
+/// Nothing is lost: a library's rows come from checking the library,
+/// and what an imported fn contributes here is already folded into
+/// the caller's inferred `does={…}`.
+#[test]
+fn the_manifest_carries_no_merged_symbols() {
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .arg("check")
+        .arg(fixture())
+        .arg("--dump-effects-manifest")
+        .output()
+        .expect("invoke hale check --dump-effects-manifest");
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        !text.contains("__lib_"),
+        "no merged cross-seed symbol may appear in a manifest:\n{}",
+        text
+    );
+    // Non-vacuous: the app's OWN annotated fns must still be listed.
+    assert!(
+        text.contains("certified_no_syscall"),
+        "the app's own rows must survive the filter:\n{}",
+        text
+    );
+}
+
+/// Every diagnostic renders in the spelling the author wrote — not
+/// only effect witnesses. The no-locus-return rule was naming
+/// `__lib_lib_a_b_OrderBook.query_bulk`, a symbol appearing nowhere
+/// in the user's program and impossible to search for.
+#[test]
+fn non_effect_diagnostics_are_demangled_too() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/xseed-cqrs");
+    std::fs::create_dir_all(dir.join("lib/mat")).ok();
+    std::fs::create_dir_all(dir.join("app")).ok();
+    std::fs::write(dir.join("hale.toml"), "name = \"xseed-cqrs\"\n").ok();
+    std::fs::write(
+        dir.join("lib/mat/m.hl"),
+        "locus Matrix { params { n: Int = 0; } }\n",
+    )
+    .ok();
+    std::fs::write(
+        dir.join("app/main.hl"),
+        "import \"lib/mat\" as mx;\n\
+         locus Book {\n\
+         \x20   params { n: Int = 0; }\n\
+         \x20   fn query_bulk() -> mx::Matrix { return mx::Matrix { n: 1 }; }\n\
+         }\n\
+         main locus App { params { b: Book = Book { }; } }\n\
+         fn main() { App { }; }\n",
+    )
+    .ok();
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .arg("check")
+        .arg(dir.join("app"))
+        .output()
+        .expect("invoke hale check");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.contains("mx::Matrix") && !text.contains("__lib_"),
+        "the no-locus-return diagnostic must name the alias spelling:\n{}",
+        text
+    );
+}

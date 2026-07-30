@@ -3140,6 +3140,28 @@ mod unowned_subscriber_tests {
 pub fn dump_effects_manifest(bundle: &Bundle<'_>) -> String {
     let programs: Vec<&hale_syntax::ast::Program> =
         bundle.programs.values().copied().collect();
-    let rows = crate::effects::effect_manifest_with_inference(&programs);
+    let mut rows = crate::effects::effect_manifest_with_inference(&programs);
+    // An app's manifest describes the APP, not the libraries it
+    // imports.
+    //
+    // Once `check` began resolving imports, every imported fn started
+    // emitting its own row: one downstream fleet's committed baseline
+    // went from 1,319 rows to 8,021, with 131 of one app's 151 rows
+    // being merged symbols. That defeats the artifact's whole purpose
+    // — an effect regression is supposed to be a one-line diff in
+    // review, and a mangled name is both unreadable and encodes an
+    // internal scheme that churns.
+    //
+    // Dropping them loses nothing. A library's own rows come from
+    // checking that library (how a multi-seed project is baselined
+    // anyway), and what an imported fn contributes to THIS app is
+    // already visible in the caller's inferred `does={…}`.
+    rows.retain(|r| !is_merged_symbol(&r.func));
     crate::effects::render_effect_manifest(&rows)
+}
+
+/// Merged cross-seed symbols carry the `__lib_` prefix the import
+/// resolver mangles them with — on the fn itself or on its locus.
+fn is_merged_symbol(name: &str) -> bool {
+    name.split("::").any(|seg| seg.starts_with("__lib_"))
 }
