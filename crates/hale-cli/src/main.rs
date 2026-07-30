@@ -2209,6 +2209,7 @@ fn collect_checkable(
         BTreeMap<PathBuf, String>,
         Vec<(u32, PathBuf, u32)>,
         ImportRenames,
+        std::collections::BTreeSet<PathBuf>,
     ),
     ExitCode,
 > {
@@ -2221,10 +2222,15 @@ fn collect_checkable(
     };
     let (programs, sources, file_bases) = parse_files(&files)?;
 
+    // The files the target itself owns — everything else reached
+    // from here arrived through an `import`.
+    let own: std::collections::BTreeSet<PathBuf> =
+        files.iter().filter_map(|f| f.canonicalize().ok()).collect();
+
     // Nothing imported: the old behaviour, exactly.
     let has_imports = programs.values().any(|p| !p.imports.is_empty());
     if !has_imports {
-        return Ok((programs, sources, file_bases, Vec::new()));
+        return Ok((programs, sources, file_bases, Vec::new(), own));
     }
 
     let union_imports: Vec<hale_syntax::ast::Import> = programs
@@ -2289,8 +2295,48 @@ fn collect_checkable(
 
     let mut out: BTreeMap<PathBuf, Program> = BTreeMap::new();
     out.insert(target.to_path_buf(), program);
-    Ok((out, path_sources, file_bases, renames))
+    Ok((out, path_sources, file_bases, renames, own))
 }
+
+/// Drop WARNING-level diagnostics whose span resolves to a file the
+/// check target does not own. Errors always survive.
+fn retain_owned_advisories(
+    diags: &mut Vec<hale_syntax::Diag>,
+    own_files: &std::collections::BTreeSet<PathBuf>,
+    file_bases: &[(u32, PathBuf, u32)],
+) {
+    if own_files.is_empty() || file_bases.len() <= 1 {
+        return;
+    }
+    diags.retain(|d| {
+        if d.is_error() {
+            return true;
+        }
+        match file_of_span(d.span.start.0, file_bases) {
+            Some(p) => own_files.contains(&p),
+            // Unattributable span: keep it rather than silently drop.
+            None => true,
+        }
+    });
+}
+
+/// Which file a merged span belongs to, via the per-file virtual
+/// base offsets `resolve_imports` records.
+fn file_of_span(
+    pos: u32,
+    file_bases: &[(u32, PathBuf, u32)],
+) -> Option<PathBuf> {
+    let mut best: Option<(u32, &PathBuf)> = None;
+    for (base, path, len) in file_bases {
+        if pos >= *base && pos < base.saturating_add(*len + 1) {
+            if best.map(|(b, _)| *base >= b).unwrap_or(true) {
+                best = Some((*base, path));
+            }
+        }
+    }
+    best.map(|(_, p)| p.clone())
+}
+
 
 fn run_check(target: &Path) -> ExitCode {
     run_check_impl(target, false)
@@ -2309,7 +2355,7 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
     // and a cross-seed payload type rendered as `?`. Codegen resolved
     // these names all along; only the analysis phases could not see
     // them.
-    let (mut programs, sources, file_bases, import_renames) =
+    let (mut programs, sources, file_bases, import_renames, own_files) =
         match collect_checkable(target) {
             Ok(x) => x,
             Err(code) => return code,
@@ -2450,6 +2496,23 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
     let allow_unowned =
         std::env::args().any(|a| a == "--allow-unowned-subscriber");
     let mut diags = hale_types::check_bundle_opts(&bundle, allow_unowned);
+    // Advisories about code the target does not own are dropped.
+    //
+    // `check` resolving imports is what makes cross-seed ERRORS
+    // visible, and that is the point — a soundness violation reached
+    // through an import is still your violation. But the same change
+    // drags every advisory lint in every imported seed into the
+    // target's output: checking one fathom app began reporting 47
+    // hot-path warnings from `lib/` and `pond/`, and since `hale
+    // verify` gates on ANY finding, 10 of 12 apps that passed it
+    // started failing. A gate that goes red for library internals
+    // you cannot edit from here is a gate people switch off.
+    //
+    // Nothing is lost: an advisory about a seed is reported when that
+    // seed is checked, which is how a multi-seed project is checked
+    // anyway (fathom walks all 58 `lib/` seeds plus 107 apps).
+    // Errors are NEVER filtered, wherever they originate.
+
     // GH #18 item 1 → M3 stage 5 (2026-07-02): unbounded-allocation
     // warnings are DEFAULT-ON (Riley's flip call after the 402-warning
     // audit: every audited true positive preserved, every residual FP
@@ -2480,6 +2543,7 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
     // With `hale check` at ~10 ms on the largest apps, an
     // on-save/on-keystroke loop needs nothing more than this.
     let json_mode = std::env::args().any(|a| a == "--json");
+    retain_owned_advisories(&mut diags, &own_files, &file_bases);
     if !diags.is_empty() {
         for d in &diags {
             if json_mode {
