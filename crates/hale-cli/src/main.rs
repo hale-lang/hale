@@ -772,6 +772,9 @@ fn run_doc_stdlib(json: bool, out_path: Option<PathBuf>) -> ExitCode {
                 "\n### {}\n\n```hale\n{}\n```\n",
                 e.name, e.signature
             ));
+            if let Some(cls) = effect_line(&e.name) {
+                md.push_str(&format!("\n{}\n", cls));
+            }
             if !e.doc.is_empty() {
                 md.push_str(&format!("\n{}\n", e.doc));
             }
@@ -791,6 +794,7 @@ fn run_doc_stdlib(json: bool, out_path: Option<PathBuf>) -> ExitCode {
                     "kind": e.kind,
                     "name": e.name,
                     "signature": e.signature,
+                    "effects": effect_classes(&e.name),
                     "doc": e.doc,
                     "members": e.members.iter().map(|m| serde_json::json!({
                         "signature": m.signature, "doc": m.doc
@@ -830,6 +834,44 @@ struct DocEntry {
     signature: String,
     doc: String,
     members: Vec<DocMember>,
+}
+
+/// The effect classes for a `std::` path, for `--json` consumers.
+/// Empty vec = pure; `None` = no registry row (a locus or type).
+fn effect_classes(path: &str) -> Option<Vec<String>> {
+    let segs: Vec<&str> = path.split("::").collect();
+    let set = hale_types::stdlib_surface::effects_for(&segs)?;
+    Some(hale_types::frontier::render_effects(set))
+}
+
+/// The effect classification for a `std::` path, as a doc line.
+///
+/// Read straight out of the registry rather than written down here:
+/// every surface entry already carries an `EffectSet`, and the
+/// generator was walking those entries to print signatures while
+/// ignoring the column sitting next to them. Deriving it means the
+/// published catalogue cannot drift from what the checker enforces —
+/// a hand-maintained table of 327 rows certainly would.
+///
+/// `None` for anything with no registry row (locus and type paths,
+/// which are tracked separately) so those entries render unchanged.
+fn effect_line(path: &str) -> Option<String> {
+    let segs: Vec<&str> = path.split("::").collect();
+    let set = hale_types::stdlib_surface::effects_for(&segs)?;
+    let classes = hale_types::frontier::render_effects(set);
+    if classes.is_empty() {
+        // PURE is a real answer, and a useful one: it is what makes a
+        // fn callable from a `@no_syscall` / `@deterministic` context.
+        return Some("**Effects:** none — callable under any assertion.".into());
+    }
+    Some(format!(
+        "**Effects:** {}",
+        classes
+            .iter()
+            .map(|c| format!("`{}`", c))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
 }
 
 /// The `///` block directly above the line holding `anchor`
