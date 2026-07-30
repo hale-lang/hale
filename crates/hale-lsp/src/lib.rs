@@ -399,9 +399,7 @@ fn check_and_publish(
             .iter()
             .map(|(p, prog)| (p.display().to_string(), prog))
             .collect();
-        let bundle = hale_types::Bundle {
-            programs: bundle_programs,
-        };
+        let bundle = hale_types::Bundle::new(bundle_programs);
         let mut diags = hale_types::check_bundle_opts(&bundle, false);
         diags.extend(hale_types::unbounded_alloc_warnings(&bundle, true));
         for d in &diags {
@@ -565,13 +563,12 @@ impl SeedAnalysis {
             .map(|(b, _, _)| *b)
     }
     fn bundle(&self) -> hale_types::Bundle<'_> {
-        hale_types::Bundle {
-            programs: self
-                .programs
+        hale_types::Bundle::new(
+            self.programs
                 .iter()
                 .map(|(p, prog)| (p.display().to_string(), prog))
                 .collect(),
-        }
+        )
     }
 }
 

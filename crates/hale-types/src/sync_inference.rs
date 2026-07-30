@@ -500,7 +500,7 @@ mod tests {
         let prog = parse_source(src).expect("parse");
         let mut programs = BTreeMap::new();
         programs.insert(String::new(), &prog);
-        let bundle = Bundle { programs };
+        let bundle = Bundle::new(programs);
         let (top, _) = build_top_scope(&bundle);
         // Build pool_of_locus_type the same way
         // check_placement_single_thread does — walk

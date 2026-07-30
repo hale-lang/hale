@@ -413,11 +413,17 @@ pub fn check_bundle(
     // certificate). Reuses the `alloc_summary` call graph.
     {
         let programs_vec: Vec<&Program> = bundle.programs.values().copied().collect();
-        diags.extend(crate::budget_check::budget_diags(&programs_vec));
+        diags.extend(crate::budget_check::budget_diags_with_renames(
+            &programs_vec,
+            &bundle.import_renames,
+        ));
         // #265: categoric effect assertions (@no_recursion /
         // @no_ffi / @no_block) — same opt-in-contract discipline as
         // @budget, over the shared callgraph witness engine.
-        diags.extend(crate::effects::effect_diags(&programs_vec));
+        diags.extend(crate::effects::effect_diags_with_renames(
+            &programs_vec,
+            &bundle.import_renames,
+        ));
         // #265 step 5: quantitative budgets (stack_bytes,
         // block_points, publish, fanout). Fan-out reads subscriber
         // counts off the bus graph.

@@ -931,6 +931,22 @@ impl AllocSummary {
 /// Entry point. Walks every free fn, locus method, and lifecycle hook in
 /// the bundle and returns the per-fn allocation summary + call graph.
 pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
+    summarize_programs_with_renames(programs, &[])
+}
+
+/// Same, with the bundle's cross-seed import renames.
+///
+/// A call written `alias::name` reaches the callgraph as a qualified
+/// path, while the imported decl was merged under a MANGLED symbol.
+/// Without the table the two never meet, so every cross-seed call was
+/// an unresolved edge — which is why effect assertions, budgets and
+/// taint all stopped dead at a seed boundary while still reporting
+/// success. Codegen has always had this table; the analysis phases
+/// did not.
+pub fn summarize_programs_with_renames(
+    programs: &[&Program],
+    import_renames: &[(Vec<String>, String)],
+) -> AllocSummary {
     // Phase 1 — collect every body with its key + entry classification.
     // For loci we first gather the set of bus-handler method names so a
     // method referenced by `subscribe ... -> handler` is tagged BusHandler.
@@ -1224,6 +1240,12 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
     let empty_fields: BTreeMap<String, String> = BTreeMap::new();
     let empty_inline_arrays: BTreeSet<String> = BTreeSet::new();
 
+    // `alias::name` -> mangled symbol, for cross-seed call resolution.
+    let rename_map: BTreeMap<String, String> = import_renames
+        .iter()
+        .map(|(segs, mangled)| (segs.join("::"), mangled.clone()))
+        .collect();
+
     // Phase 2 — walk each body.
     let mut summary = AllocSummary::default();
     summary.eager_only_loci = eager_only_loci;
@@ -1246,6 +1268,7 @@ pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
             escaping: &escaping,
             enclosing_locus: enclosing_locus.clone(),
             known: &known,
+            rename_map: &rename_map,
             loop_stack: Vec::new(),
             infinite_stack: Vec::new(),
             fn_body: body,
@@ -1495,6 +1518,8 @@ struct Walker<'a> {
     escaping: &'a BTreeMap<String, Escape>,
     enclosing_locus: Option<String>,
     known: &'a BTreeSet<FnKey>,
+    /// `alias::name` -> mangled symbol (cross-seed imports).
+    rename_map: &'a BTreeMap<String, String>,
     /// One entry per enclosing loop: `true` if that loop has a const trip
     /// count. A value alloc is in an unbounded loop iff any entry is false.
     loop_stack: Vec<bool>,
@@ -1963,8 +1988,27 @@ impl<'a> Walker<'a> {
                 }
             }
             Expr::Path(qp) => {
-                let path = qp.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
-                Callee::Unresolved(path)
+                let path = qp
+                    .segments
+                    .iter()
+                    .map(|s| s.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                // A cross-seed `alias::name` names a decl merged under
+                // a mangled symbol. Resolving it here is what lets the
+                // callgraph walk INTO an imported seed instead of
+                // stopping at the boundary and reporting nothing.
+                match self.rename_map.get(&path) {
+                    Some(mangled) => {
+                        let key = FnKey::free_fn(mangled.clone());
+                        if self.known.contains(&key) {
+                            Callee::Resolved(key)
+                        } else {
+                            Callee::Unresolved(path)
+                        }
+                    }
+                    None => Callee::Unresolved(path),
+                }
             }
             Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } => {
                 // `self.m()` — the enclosing locus is the receiver type.

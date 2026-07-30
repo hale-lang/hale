@@ -20,6 +20,28 @@ use crate::ty::Ty;
 /// decls; per-program scopes layer on top.
 pub struct Bundle<'a> {
     pub programs: BTreeMap<String, &'a hale_syntax::ast::Program>,
+    /// Cross-seed import renames: `["alias", "name"] -> mangled`.
+    ///
+    /// `hale build` merges an imported seed's items under mangled
+    /// symbols and hands this table to codegen, which resolves
+    /// `alias::name` at lowering time. The ANALYSIS phases had no
+    /// equivalent, so a cross-seed call was an unresolved edge —
+    /// effect assertions, budgets and taint all stopped at the seed
+    /// boundary while reading as if they had not. Carrying the table
+    /// on the bundle lets the callgraph resolve the same names
+    /// codegen does.
+    ///
+    /// Empty for a single-seed bundle, which is every in-repo test.
+    pub import_renames: Vec<(Vec<String>, String)>,
+}
+
+impl<'a> Bundle<'a> {
+    /// A bundle with no cross-seed imports.
+    pub fn new(
+        programs: BTreeMap<String, &'a hale_syntax::ast::Program>,
+    ) -> Self {
+        Self { programs, import_renames: Vec::new() }
+    }
 }
 
 /// Top-level symbol — a binding visible at module / bundle scope.

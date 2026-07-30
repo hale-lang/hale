@@ -16,7 +16,7 @@ fn diags(src: &str) -> Vec<String> {
         &hale_syntax::ast::Program,
     > = std::collections::BTreeMap::new();
     programs.insert("test.hl".to_string(), &program);
-    let bundle = Bundle { programs };
+    let bundle = Bundle::new(programs);
     let (scope, mut ds) = hale_types::resolve::build_top_scope(&bundle);
     ds.extend(hale_types::check::check_bundle(&bundle, &scope, true));
     ds.iter().map(|d| d.message.clone()).collect()

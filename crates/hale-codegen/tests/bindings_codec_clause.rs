@@ -12,7 +12,7 @@ fn typecheck_diags(source: &str) -> Vec<String> {
     let program = hale_syntax::parse_source(source).expect("parse");
     let mut programs = std::collections::BTreeMap::new();
     programs.insert("main".to_string(), &program);
-    let bundle = hale_types::Bundle { programs };
+    let bundle = hale_types::Bundle::new(programs);
     let (scope, _) = hale_types::resolve::build_top_scope(&bundle);
     let diags = hale_types::check::check_bundle(&bundle, &scope, true);
     diags.into_iter().map(|d| d.message).collect()

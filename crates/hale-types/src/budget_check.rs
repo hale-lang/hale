@@ -256,7 +256,26 @@ impl FactVisitor for BudgetVisitor {
 /// hard-error diagnostics (opt-in: you asked for the contract, so a
 /// violation fails the build) — empty when every contract holds.
 pub fn budget_diags(programs: &[&Program]) -> Vec<Diag> {
-    let summary = alloc_summary::summarize_programs(programs);
+    budget_diags_with_renames(programs, &[])
+}
+
+/// Same, resolving cross-seed `alias::name` calls so an allocation
+/// one seed away still counts against the ceiling.
+pub fn budget_diags_with_renames(
+    programs: &[&Program],
+    import_renames: &[(Vec<String>, String)],
+) -> Vec<Diag> {
+    let mut out = budget_diags_inner(programs, import_renames);
+    crate::stdlib_bodies::demangle_imports(&mut out, import_renames);
+    out
+}
+
+fn budget_diags_inner(
+    programs: &[&Program],
+    import_renames: &[(Vec<String>, String)],
+) -> Vec<Diag> {
+    let summary =
+        alloc_summary::summarize_programs_with_renames(programs, import_renames);
     let mut diags = Vec::new();
 
     for program in programs {

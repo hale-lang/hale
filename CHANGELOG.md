@@ -8,6 +8,24 @@ behavior.
 
 ## Unreleased
 
+- **Effect assertions were silently vacuous across a seed boundary
+  (fathom FRICTION P0), and `hale check` rejected cross-seed types it
+  could not see (P2). Same root cause.** `hale check` collected only
+  the target directory's own `.hl` files and never followed
+  `import` — so an imported seed's bodies were absent from the
+  program the analysis walked, and a cross-seed payload type rendered
+  as `?`. Separately, a call written `alias::name` reaches the
+  callgraph as a qualified path while the imported decl was merged
+  under a mangled symbol, so even with bodies present the two never
+  met. Codegen had the rename table all along; the analysis phases
+  did not. `check` now resolves imports the way `build` and `run` do,
+  and `Bundle` carries the table so the callgraph links across the
+  boundary. Diagnostics render the alias spelling (`p::far_syscall`),
+  never the merged symbol.
+- Worth stating plainly why this survived: **every in-tree effect
+  test declares its types, topics and loci inline in one seed.** The
+  one shape the corpus never exercised is the only shape a real
+  multi-seed codebase has. A cross-seed fixture now lives in-tree.
 - **A repeated `@budget` dimension silently kept the last value.**
   `@budget(alloc_per_call = 0, alloc_per_call = 5)` enforced **5** —
   you wrote a zero-alloc certificate and got a ceiling of five, with
