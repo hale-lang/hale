@@ -234,7 +234,7 @@ fn book_snapshot_subscriber_src() -> &'static str {
     // BookSignalSnapshot-shaped: two Strings (variable-length
     // length-prefixed on the wire) ahead of a long tail of
     // fixed-size Decimals and Decimal arrays. The a downstream app
-    // priceview crash report (2026-05-27) said inbound udp
+    // a downstream crash report (2026-05-27) said inbound udp
     // datagrams trigger `g_bus_payload_arena` cap-hit on the
     // first message, with the diagnostic numbers matching a
     // single ~64 MB alloc from inside the deserializer.
@@ -329,7 +329,7 @@ fn book_snapshot_publisher_src() -> &'static str {
 
 #[test]
 fn udp_unicast_delivers_multi_string_payload() {
-    // Reproduces the a downstream app priceview crash shape: a payload
+    // Reproduces the downstream crash shape: a payload
     // with two variable-length Strings followed by a tail of
     // fixed-size fields. Without the deserializer length
     // bound-check, the first udp datagram would trigger the
@@ -387,7 +387,7 @@ fn udp_unicast_delivers_payload_over_inline_threshold() {
 }
 
 fn multi_listener_subscriber_src() -> &'static str {
-    // 2026-05-27 — mirrors the a downstream app priceview shape: a
+    // 2026-05-27 — mirrors the downstream shape: a
     // single subscriber binary with FOUR multicast listeners
     // on the same port, different groups, different payload
     // types. The reader threads each call into a different
@@ -464,7 +464,7 @@ fn multi_listener_publisher_src() -> &'static str {
 #[test]
 fn udp_multi_listener_same_port_different_groups() {
     // Stress the SO_REUSEPORT + multicast-group-membership
-    // case that priceview uses in production. Four reader
+    // case a downstream app uses in production. Four reader
     // threads, each bound to the same port and joined to a
     // distinct multicast group. A single publisher fires one
     // payload at the venue_a-book group; the subscriber should
@@ -534,7 +534,7 @@ fn udp_multi_listener_same_port_different_groups() {
 
 #[test]
 fn udp_mixed_listen_connect_survives_realloc() {
-    // 2026-05-27 — a downstream app priceview hit a silent SIGSEGV when
+    // 2026-05-27 — a downstream app hit a silent SIGSEGV when
     // LOTUS_BUS_CONFIG mixed udp:// listen and udp:// connect
     // roles. Root cause: `g_bus_remote_entries` was an
     // array-of-structs with initial cap = 4. The udp listen
@@ -551,7 +551,7 @@ fn udp_mixed_listen_connect_survives_realloc() {
     // The array can realloc freely; per-entry addresses stay
     // stable.
     //
-    // This test reproduces the priceview shape: more than 4
+    // This test reproduces the downstream shape: more than 4
     // total entries with at least one listen and at least one
     // connect. Without the fix, the subscriber binary
     // segfaults on the first inbound datagram. With the fix,
@@ -637,11 +637,11 @@ fn udp_mixed_listen_connect_survives_realloc() {
 #[test]
 fn udp_corrupt_length_prefix_rejected_cleanly() {
     // 2026-05-27 — proves the deserialize bound-check (added
-    // alongside the a downstream app priceview crash report) actually
+    // alongside the downstream crash report) actually
     // engages. We bypass the publisher binary entirely and
     // send a malformed datagram straight from the test
     // harness: 8 bytes encoding length-prefix = 0x04000000
-    // (= 64 MB, exactly the value that triggered priceview's
+    // (= 64 MB, exactly the value that triggered the downstream
     // `g_bus_payload_arena` cap-hit symptom).
     //
     // Without the bound-check, the subscriber's deserialize
@@ -695,7 +695,7 @@ fn udp_corrupt_length_prefix_rejected_cleanly() {
     std::thread::sleep(Duration::from_millis(200));
 
     // Send the malformed datagram. The 8 bytes are the LE
-    // encoding of i64=67108864 — what priceview observed in
+    // encoding of i64=67108864 — what the downstream app observed in
     // the wild.
     let sock = UdpSocket::bind("127.0.0.1:0").expect("test sock");
     let bad = [0x00u8, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00];

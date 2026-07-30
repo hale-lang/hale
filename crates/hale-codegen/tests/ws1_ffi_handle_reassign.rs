@@ -1,7 +1,7 @@
 //! WS1#4 — whole-value reassignment of a nested locus param that
 //! holds an `@ffi`-acquired resource handle.
 //!
-//! a downstream app (refgw-evm `set_rpc_ws`) reported that `self.conn =
+//! a downstream app reported that `self.conn =
 //! ws::WsClient { url: …, … }` to swap an endpoint left the new
 //! client half-initialized — `conn.url` logged `(null)` and the
 //! first `read_msg()` cored — while in-place mutation
