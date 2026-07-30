@@ -14,8 +14,8 @@ topic XPayload { payload: pay::XStr; subject: "xseed.xpayload"; }
 locus Sink {
     params { seen: Int = 0; }
     bus { subscribe t::Shared as on_s; subscribe Inline as on_i;
-          subscribe InlineStr as on_is; subscribe XScalar as on_xs;
-          subscribe XPayload as on_xp; }
+        subscribe InlineStr as on_is; subscribe XScalar as on_xs;
+        subscribe XPayload as on_xp; }
     fn on_s(v: t::Tick) { self.seen = self.seen + 1; }
     fn on_i(v: Local) { self.seen = self.seen + 1; }
     fn on_is(v: LocalStr) { self.seen = self.seen + 1; }
@@ -25,7 +25,7 @@ locus Sink {
 
 locus Pub {
     bus { publish t::Shared; publish Inline; publish InlineStr;
-          publish XScalar; publish XPayload; }
+        publish XScalar; publish XPayload; }
     run() {
         std::time::sleep(300ms);
         let mut i = 0;
