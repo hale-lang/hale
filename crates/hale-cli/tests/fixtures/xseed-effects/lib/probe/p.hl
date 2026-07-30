@@ -15,3 +15,20 @@ fn far_syscall() -> Int {
 fn far_time() -> Int {
     return std::time::monotonic_ns();
 }
+
+// Warn-worthy on purpose: an unbounded accumulation the app cannot
+// fix from its side. Checking the APP must not report it; checking
+// this seed must.
+type Slot { key: String; n: Int; }
+@form(hashmap)
+locus Acc { capacity { pool slots of Slot indexed_by key; } }
+locus Grow {
+    params { acc: Acc = Acc { }; }
+    run() {
+        let mut i = 0;
+        while true {
+            self.acc.set(Slot { key: "k" + to_string(i), n: i });
+            i = i + 1;
+        }
+    }
+}

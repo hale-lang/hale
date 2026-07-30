@@ -8,6 +8,17 @@ behavior.
 
 ## Unreleased
 
+- **Advisories from an imported seed are not reported on the
+  importer.** Making `check` resolve imports is what exposes
+  cross-seed errors — and it also drags every advisory lint in every
+  imported seed into the target's output. Checking one downstream app
+  began reporting 47 hot-path warnings from library code, and since
+  `hale verify` gates on ANY finding, 10 of 12 apps that passed it
+  started failing. A gate that goes red for library internals you
+  cannot edit from there is a gate people switch off. Advisories are
+  now reported where they are actionable — when that seed is the
+  check target — and **errors are never filtered**, wherever they
+  originate.
 - **Observation shm segments no longer leak on SIGKILL (fathom
   FRICTION P3).** A clean exit unlinks the segment and its
   registration via `atexit`; a SIGKILLed process by definition runs no

@@ -112,3 +112,56 @@ fn a_clean_in_seed_fn_is_not_flagged() {
         out
     );
 }
+
+/// Resolving imports is what makes cross-seed ERRORS visible — and it
+/// also drags every advisory lint in every imported seed into the
+/// target's output. Checking one fathom app began reporting 47
+/// hot-path warnings from `lib/` and `pond/`, and because
+/// `hale verify` gates on ANY finding, 10 of 12 apps that passed it
+/// started failing.
+///
+/// A gate that goes red for library internals you cannot edit from
+/// here is a gate people switch off. Advisories are therefore
+/// reported where they are actionable — when that seed is checked —
+/// while errors are never filtered, wherever they originate.
+#[test]
+fn advisories_from_an_imported_seed_are_not_reported_on_the_app() {
+    let out = check();
+    assert!(
+        !out.contains("warning:"),
+        "checking the app must not report advisories about the seed it \
+         imports:\n{}",
+        out
+    );
+    // …and the errors that motivated resolving imports still fire.
+    assert!(
+        out.contains("must not reach `syscall`"),
+        "cross-seed errors must survive the advisory filter:\n{}",
+        out
+    );
+}
+
+/// The other half, and what makes the filter honest rather than a
+/// blanket suppression: checking the SEED reports its own advisories.
+/// Nothing is lost, it just lands where someone can act on it.
+#[test]
+fn the_seed_still_reports_its_own_advisories_when_checked_directly() {
+    let seed = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/xseed-effects/lib/probe");
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .arg("check")
+        .arg(&seed)
+        .output()
+        .expect("invoke hale check on the seed");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.contains("warning:"),
+        "the seed's own advisories must appear when IT is the target — \
+         otherwise the filter is hiding them, not relocating them:\n{}",
+        text
+    );
+}
