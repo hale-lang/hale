@@ -1,26 +1,40 @@
 import "lib/topics" as t;
+import "lib/payload" as pay;
 
 // An inline topic published the same number of times, as the
 // in-file control: if the cross-seed counter is broken, this one
 // still counts and the asymmetry is the finding.
 type Local { n: Int = 0; }
+type LocalStr { n: Int = 0; s: String = ""; }
 topic Inline { payload: Local; subject: "xseed.inline"; }
+topic InlineStr { payload: LocalStr; subject: "xseed.inline.str"; }
+topic XScalar { payload: pay::XFlat; subject: "xseed.xscalar"; }
+topic XPayload { payload: pay::XStr; subject: "xseed.xpayload"; }
 
 locus Sink {
     params { seen: Int = 0; }
-    bus { subscribe t::Shared as on_s; subscribe Inline as on_i; }
+    bus { subscribe t::Shared as on_s; subscribe Inline as on_i;
+        subscribe InlineStr as on_is; subscribe XScalar as on_xs;
+        subscribe XPayload as on_xp; }
     fn on_s(v: t::Tick) { self.seen = self.seen + 1; }
     fn on_i(v: Local) { self.seen = self.seen + 1; }
+    fn on_is(v: LocalStr) { self.seen = self.seen + 1; }
+    fn on_xs(v: pay::XFlat) { self.seen = self.seen + 1; }
+    fn on_xp(v: pay::XStr) { self.seen = self.seen + 1; }
 }
 
 locus Pub {
-    bus { publish t::Shared; publish Inline; }
+    bus { publish t::Shared; publish Inline; publish InlineStr;
+        publish XScalar; publish XPayload; }
     run() {
         std::time::sleep(300ms);
         let mut i = 0;
         while i < 10 {
             t::Shared <- t::Tick { n: i };
             Inline <- Local { n: i };
+            InlineStr <- LocalStr { n: i, s: "v" };
+            XScalar <- pay::XFlat { n: i };
+            XPayload <- pay::XStr { n: i, s: "v" };
             i = i + 1;
         }
         std::time::sleep(300ms);

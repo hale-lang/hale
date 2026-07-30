@@ -1,0 +1,5 @@
+// A cross-seed payload with a variable-size field — the shape that
+// correlates with cross-seed decls in real codebases and so hid the
+// real cause for a full round of investigation.
+type XStr { n: Int = 0; s: String = ""; }
+type XFlat { n: Int = 0; }

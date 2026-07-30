@@ -8,6 +8,29 @@ behavior.
 
 ## Unreleased
 
+- **Observation counters were missing for any payload containing a
+  variable-size field.** `lotus_bus_dispatch_static` probed
+  `BUS_PUBLISH` and `BUS_DELIVER` inside its `if (flat)` branch, which
+  returns — so a payload carrying a `String` or `Bytes` counted
+  nothing and its topic never entered the observation manifest at all.
+  Deliveries were correct and cross-process NET edges paired with real
+  latencies; only the probes were absent, which is what made it look
+  like a counter bug rather than a missing call.
+  The class is variable-size storage, not one type (reproduces for
+  `String` and `Bytes` alike). Worth recording how it was found: it was
+  first reported — and first investigated here — as a *cross-seed*
+  bug, because in the reporting codebase every shared topic also
+  carried a String, so the two properties were perfectly correlated.
+  A cross-seed topic with a scalars-only payload counts correctly and
+  is what exonerated the seed boundary. The in-tree fixture now runs
+  that six-way differential.
+- **`hale build` enforces cross-seed effect assertions, like `hale
+  check` already did.** Only the check path carried the import rename
+  table, so a contract violated one seed away compiled, linked and
+  shipped. A downstream fleet gates on `build` across 109 binaries —
+  "it built" must not be weaker than "it checked" on a contract the
+  compiler already knows how to evaluate. All four analysis paths
+  (`build`, `run` file, `run` dir, test-compile) now pass the table.
 - **An app's effects manifest describes the app, not its imports.**
   Once `check` resolved imports, every imported fn emitted a row under
   its merged symbol — one downstream fleet's committed baseline went

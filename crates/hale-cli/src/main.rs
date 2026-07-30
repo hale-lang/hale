@@ -2762,7 +2762,14 @@ fn compile_test_binary(entry: &Path) -> Result<PathBuf, String> {
     };
     let mut bundle_programs: BTreeMap<String, &Program> = BTreeMap::new();
     bundle_programs.insert(entry.display().to_string(), &program);
-    let bundle = hale_types::Bundle::new(bundle_programs);
+    // The rename table must reach the analysis here too, not only in
+    // `check`. Without it a cross-seed call is an unresolved edge, so
+    // an effect assertion violated one seed away compiles, links and
+    // ships — a downstream fleet gates on `build` across 109 binaries,
+    // and "it built" must not be weaker than "it checked" on a
+    // contract the compiler already knows how to evaluate.
+    let mut bundle = hale_types::Bundle::new(bundle_programs);
+    bundle.import_renames = renames.clone();
     let diags = hale_types::check_bundle_opts(&bundle, false);
     if diags.iter().any(|d| d.is_error()) {
         let mut msg = String::new();
@@ -2999,7 +3006,14 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
         };
         let mut bundle_programs: BTreeMap<String, &Program> = BTreeMap::new();
         bundle_programs.insert(target.display().to_string(), &program);
-        let bundle = hale_types::Bundle::new(bundle_programs);
+        // The rename table must reach the analysis here too, not only in
+        // `check`. Without it a cross-seed call is an unresolved edge, so
+        // an effect assertion violated one seed away compiles, links and
+        // ships — a downstream fleet gates on `build` across 109 binaries,
+        // and "it built" must not be weaker than "it checked" on a
+        // contract the compiler already knows how to evaluate.
+        let mut bundle = hale_types::Bundle::new(bundle_programs);
+        bundle.import_renames = renames.clone();
         let allow_unowned =
             std::env::args().any(|a| a == "--allow-unowned-subscriber");
         let diags = hale_types::check_bundle_opts(&bundle, allow_unowned);
@@ -3106,7 +3120,14 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
 
     let bundle_programs: BTreeMap<String, &Program> =
         std::iter::once((target.display().to_string(), &program)).collect();
-    let bundle = hale_types::Bundle::new(bundle_programs);
+    // The rename table must reach the analysis here too, not only in
+    // `check`. Without it a cross-seed call is an unresolved edge, so
+    // an effect assertion violated one seed away compiles, links and
+    // ships — a downstream fleet gates on `build` across 109 binaries,
+    // and "it built" must not be weaker than "it checked" on a
+    // contract the compiler already knows how to evaluate.
+    let mut bundle = hale_types::Bundle::new(bundle_programs);
+    bundle.import_renames = renames.clone();
     let allow_unowned =
         std::env::args().any(|a| a == "--allow-unowned-subscriber");
     let diags = hale_types::check_bundle_opts(&bundle, allow_unowned);
@@ -3315,7 +3336,14 @@ fn run_build(target: &Path) -> ExitCode {
     // string; this is good enough for v0.
     let mut bundle_programs: BTreeMap<String, &Program> = BTreeMap::new();
     bundle_programs.insert(target.display().to_string(), &program);
-    let bundle = hale_types::Bundle::new(bundle_programs);
+    // The rename table must reach the analysis here too, not only in
+    // `check`. Without it a cross-seed call is an unresolved edge, so
+    // an effect assertion violated one seed away compiles, links and
+    // ships — a downstream fleet gates on `build` across 109 binaries,
+    // and "it built" must not be weaker than "it checked" on a
+    // contract the compiler already knows how to evaluate.
+    let mut bundle = hale_types::Bundle::new(bundle_programs);
+    bundle.import_renames = renames.clone();
     let allow_unowned =
         std::env::args().any(|a| a == "--allow-unowned-subscriber");
     let diags = hale_types::check_bundle_opts(&bundle, allow_unowned);

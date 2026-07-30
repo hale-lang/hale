@@ -14736,6 +14736,28 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
         return;
     }
 
+    /* BUS_PUBLISH for the non-flat payload. The probe above sits
+     * inside the `if (flat)` branch, which returns — so a payload
+     * carrying a String or Bytes reached this point having counted
+     * NOTHING, and its topic never even entered the observation
+     * manifest. Downstream saw `pub=0` on every real plane while
+     * deliveries and cross-process NET edges were perfect, because
+     * only the publish-side probe was missing.
+     *
+     * The class is variable-size storage, not one type: it reproduces
+     * for String and Bytes alike, and a scalars-only payload declared
+     * in the same imported seed counts correctly. (That is also why
+     * it was first reported, and first investigated, as a cross-seed
+     * bug — every shared topic in that codebase happened to carry a
+     * String, so the two properties were perfectly correlated.)
+     *
+     * Counted before the serialize so a serialize FAILURE still
+     * records the publish that was attempted; the drop is visible
+     * separately via LOTUS_BUS_LOG_DROP. */
+    if (lotus_obs_bus_publish) {
+        lotus_obs_bus_publish(subject, NULL, (uint64_t)struct_size);
+    }
+
     /* Non-flat: serialize once, then deserialize into each subscriber's
      * own arena before enqueue (mirror lotus_bus_dispatch ->
      * lotus_bus_dispatch_wire). serialize_fn is required here; when
@@ -14796,6 +14818,15 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
             if (!e->subject) continue;             /* quarantined */
             if (e->key_filter_kind != 0) continue;
             if (!e->deserialize) continue;
+            /* BUS_DELIVER for the non-flat path. The flat branch
+             * above probes per matched subscriber; this one did not,
+             * so a String/Bytes payload delivered correctly — the
+             * handler ran — while `dlv` stayed 0 alongside the `pub`
+             * gap. Both halves of the same omission. */
+            if (lotus_obs_bus_deliver) {
+                lotus_obs_bus_deliver(subject, e->self_ptr,
+                                      (uint64_t)struct_size);
+            }
             /* Bug 3: cross-thread target — post WIRE bytes +
              * deserialize fn; the owner materializes at drain. */
             if (!lotus_bus_target_owner_is_current(e,
