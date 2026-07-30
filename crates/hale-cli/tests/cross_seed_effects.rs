@@ -165,3 +165,74 @@ fn the_seed_still_reports_its_own_advisories_when_checked_directly() {
         text
     );
 }
+
+/// The filter must not swallow the TARGET's own advisories.
+///
+/// Its first cut did exactly that: `file_bases` carries paths as they
+/// were passed in (usually relative) while the owned-file set is
+/// canonicalized, so a plain set lookup reported every file as
+/// foreign and the app's own warnings vanished along with the
+/// imported ones. Suppressing findings the author can act on is a
+/// worse failure than the noise the filter exists to remove, and it
+/// is silent — the output just looks clean.
+#[test]
+fn the_targets_own_advisories_survive_the_filter() {
+    // The app fixture's own file carries an unbounded accumulation.
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/xseed-own-warning");
+    std::fs::create_dir_all(&dir).ok();
+    std::fs::write(
+        dir.join("hale.toml"),
+        "name = \"xseed-own-warning\"\n",
+    )
+    .ok();
+    std::fs::create_dir_all(dir.join("lib/quiet")).ok();
+    std::fs::write(
+        dir.join("lib/quiet/q.hl"),
+        "fn helper(n: Int) -> Int { return n + 1; }\n",
+    )
+    .ok();
+    std::fs::create_dir_all(dir.join("app")).ok();
+    std::fs::write(
+        dir.join("app/main.hl"),
+        "import \"lib/quiet\" as q;\n\
+         type Slot { key: String; n: Int; }\n\
+         @form(hashmap)\n\
+         locus Acc { capacity { pool slots of Slot indexed_by key; } }\n\
+         locus Grow {\n\
+         \x20   params { acc: Acc = Acc { }; }\n\
+         \x20   run() {\n\
+         \x20       let mut i = 0;\n\
+         \x20       while true {\n\
+         \x20           self.acc.set(Slot { key: \"k\" + to_string(i), n: q::helper(i) });\n\
+         \x20           i = i + 1;\n\
+         \x20       }\n\
+         \x20   }\n\
+         }\n\
+         main locus App { params { g: Grow = Grow { }; } }\n\
+         fn main() { App { }; }\n",
+    )
+    .ok();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .arg("check")
+        .arg(dir.join("app"))
+        .output()
+        .expect("invoke hale check");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.contains("warning:"),
+        "the target's OWN advisory must survive — the filter drops \
+         foreign findings, not local ones:\n{}",
+        text
+    );
+    assert!(
+        text.contains("app/main.hl"),
+        "and it must be attributed to the app's own file:\n{}",
+        text
+    );
+}
