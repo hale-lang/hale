@@ -542,7 +542,7 @@ fn no_panic_accepts_handled_dispositions() {
     );
 }
 
-/// A publish set must be able to name a QUALIFIED topic (fathom
+/// A publish set must be able to name a QUALIFIED topic (downstream
 /// FRICTION). Topics shared between binaries live in a central
 /// catalog and are imported under an alias, so accepting only bare
 /// idents meant the contract worth having most — "this binary is the
@@ -554,13 +554,13 @@ fn no_panic_accepts_handled_dispositions() {
 fn publish_set_accepts_and_enforces_a_qualified_topic() {
     let src = r#"
         type Order { n: Int; }
-        topic ExecOrderRequest { payload: Order; subject: "exec.order.request"; }
+        topic SharedTopic { payload: Order; subject: "shared.topic"; }
         locus Api {
-            bus { publish ExecOrderRequest; }
+            bus { publish SharedTopic; }
             @effects(publish: {})
-            fn go() { ExecOrderRequest <- Order { n: 1 }; }
+            fn go() { SharedTopic <- Order { n: 1 }; }
         }
-        locus S { bus { subscribe ExecOrderRequest as on_o; } fn on_o(o: Order) { } }
+        locus S { bus { subscribe SharedTopic as on_o; } fn on_o(o: Order) { } }
         main locus App { params { a: Api = Api { }; s: S = S { }; } }
         fn main() { App { }; }
     "#;
@@ -576,7 +576,7 @@ fn publish_set_accepts_and_enforces_a_qualified_topic() {
 /// set must parse. It used to die on the `::`.
 #[test]
 fn qualified_names_parse_inside_an_effects_set() {
-    let src = "@effects(publish: {t::ExecOrderRequest, LocalTopic})\n\
+    let src = "@effects(publish: {t::SharedTopic, LocalTopic})\n\
                fn go() -> Int { return 1; }\nfn main() { println(go()); }";
     assert!(
         hale_syntax::parse_source(src).is_ok(),

@@ -2117,7 +2117,7 @@ fn check_cooperative_pool_blocking(
                     // blocking call monopolizes it, so these handlers
                     // never fire. (Corrected 2026-06-03 from the
                     // placement-only rule, which over-fired on
-                    // event-driven subscribers — `PriceView`/`WsDispatcher`
+                    // event-driven subscribers — `Reader`/`Dispatcher`
                     // received fine for 16h+ in production.)
                     diags.push(Diag::ty(
                         span,

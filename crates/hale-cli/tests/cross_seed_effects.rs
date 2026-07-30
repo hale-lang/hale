@@ -1,17 +1,17 @@
 //! Effect assertions must survive a seed boundary.
 //!
-//! Reported by fathom (FRICTION.md P0), and the highest-cost item on
+//! Reported in a downstream handoff, and the highest-cost item on
 //! their list: `@no_syscall` / `@budget` / `@deterministic` enforced
 //! only within the asserting fn's own seed, and were **silently
 //! vacuous** through a cross-seed call. Their probe showed all three
 //! contracts violated one seed away with `hale check` reporting
 //! nothing, then the binary printing proof every effect had run.
 //!
-//! That is worse than no annotation: it reads as verified. Fathom's
+//! That is worse than no annotation: it reads as verified. The
 //! hot paths are almost entirely cross-seed — every venue parse, every
 //! domain helper, every topic lives in `lib/` and is imported under an
 //! alias — so their certificates certified only the thin app-seed
-//! portion, and their venue-tier rollout was blocked on it.
+//! portion, and the rollout of real certificates was blocked on it.
 //!
 //! ## Why the compiler's own corpus could not see this
 //!
@@ -115,7 +115,7 @@ fn a_clean_in_seed_fn_is_not_flagged() {
 
 /// Resolving imports is what makes cross-seed ERRORS visible — and it
 /// also drags every advisory lint in every imported seed into the
-/// target's output. Checking one fathom app began reporting 47
+/// target's output. Checking one downstream app began reporting 47
 /// hot-path warnings from `lib/` and `pond/`, and because
 /// `hale verify` gates on ANY finding, 10 of 12 apps that passed it
 /// started failing.

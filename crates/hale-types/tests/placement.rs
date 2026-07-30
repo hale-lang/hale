@@ -533,7 +533,7 @@ fn main() { App { }; }
 // Corrected 2026-06-03 (a downstream app over-fire handoff): a non-main
 // cooperative subscriber is a dead receiver only when its run() ALSO
 // makes a blocking call that starves the pool thread. Placement alone
-// over-fired on event-driven subscribers (PriceView/WsDispatcher),
+// over-fired on event-driven subscribers (reader/dispatcher shapes),
 // which receive fine. The error message no longer claims "will never
 // fire" flatly.
 const DEAD_RX: &str = "monopolizes the pool's thread";
@@ -586,7 +586,7 @@ fn cooperative_nonmain_subscriber_blocking_rejected() {
 
 #[test]
 fn cooperative_nonmain_subscriber_event_driven_compiles() {
-    // The PriceView shape: non-main cooperative subscriber that does
+    // The downstream reader shape: non-main cooperative subscriber that does
     // NOT block (handlers + a sleep loop) — receives fine, must NOT be
     // rejected. This is the over-fire the correction fixes.
     let msgs = check(&dead_receiver_src(

@@ -1,7 +1,7 @@
 //! When does a cooperative CHILD's bus handler run relative to its
 //! own `run()` loop?
 //!
-//! fathom (FRICTION) reported this as "a bus handler's write to a
+//! A downstream handoff reported this as "a bus handler's write to a
 //! `self` param isn't observed by `run()`" and read it as a memory
 //! visibility problem between the handler context and the loop.
 //!

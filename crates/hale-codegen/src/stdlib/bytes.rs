@@ -487,7 +487,7 @@ impl<'ctx, 'p> BytesStdlib<'ctx> for Cx<'ctx, 'p> {
         // Per-repr len (2026-07-03): a BytesView is a { ptr, i64 }
         // aggregate and a BytesMut has its own base/len shape —
         // passing either raw to ptr-typed lotus_bytes_len was the
-        // magus-md DI-verifier failure.
+        // downstream DI-verifier failure.
         let len_ssa = match &b_ty {
             CodegenTy::BytesMut => self
                 .bytesmut_base_len(b_val)?

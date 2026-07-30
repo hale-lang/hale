@@ -69,6 +69,22 @@ The in-tree `.hl` corpus lives at
 acceptance surface — `crates/hale-syntax/tests/examples.rs`
 parses all of them).
 
+## Downstream projects are never named
+
+`hale` is public. Downstream users' project names, app names, venue
+or counterparty names, and internal architecture are **not**.
+
+Attribute findings as **"downstream handoff"** (the established
+convention) in CHANGELOG entries, commit messages, code comments,
+test doc-comments, PR titles and PR bodies. Keep everything
+technical — the measurements, the shapes, the reproducers, the
+reasoning. Only the identity goes.
+
+This matters most exactly when a friction report is good: a detailed
+one carries the reporter's architecture, and a verbatim quote leaks
+it. Rename domain-specific identifiers too (a topic named after a
+real message type becomes `SharedTopic`).
+
 ## Repo conventions
 
 - **Hale** is the language. **lotus** is the runtime substrate.

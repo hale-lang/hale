@@ -195,13 +195,14 @@ fn eprintln_is_a_syscall_too() {
     assert!(violation(src, "syscall").contains("eprintln"));
 }
 
-/// F.20 interface-typed slot (fathom FRICTION P1). The declared type
+/// F.20 interface-typed slot (downstream handoff). The declared type
 /// of `self.sink` is an INTERFACE, which has no body — so
 /// `self.sink.emit()` resolved to nothing and every effect behind the
 /// slot was invisible. The concrete locus in the slot's default is
 /// what actually runs.
 ///
-/// This is the venue tier's entire design: consumers see only the
+/// This is the whole point of a plug-in-implementation tier:
+/// consumers see only the
 /// abstract type, so a contract on a consumer that reaches a venue
 /// surface through a slot was vacuous.
 #[test]

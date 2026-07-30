@@ -13015,7 +13015,7 @@ typedef struct lotus_bus_remote_entry {
  * shape, a subsequent register_remote call that grew the array
  * could realloc-move the storage and dangle every previously-
  * spawned reader thread's `entry` pointer. A downstream app hit this when
- * priceview's LOTUS_BUS_CONFIG mixed 4 listens + 2 connects:
+ * a downstream app's LOTUS_BUS_CONFIG mixed 4 listens + 2 connects:
  * the 5th entry's realloc invalidated the first 4 reader
  * threads' entry pointers, segfaulting silently on the first
  * inbound datagram. Single-role configs (listen-only or

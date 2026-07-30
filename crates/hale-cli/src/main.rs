@@ -2512,7 +2512,7 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
     // visible, and that is the point — a soundness violation reached
     // through an import is still your violation. But the same change
     // drags every advisory lint in every imported seed into the
-    // target's output: checking one fathom app began reporting 47
+    // target's output: checking one downstream app began reporting 47
     // hot-path warnings from `lib/` and `pond/`, and since `hale
     // verify` gates on ANY finding, 10 of 12 apps that passed it
     // started failing. A gate that goes red for library internals
@@ -2520,7 +2520,7 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
     //
     // Nothing is lost: an advisory about a seed is reported when that
     // seed is checked, which is how a multi-seed project is checked
-    // anyway (fathom walks all 58 `lib/` seeds plus 107 apps).
+    // anyway — a real multi-seed project checks every seed directly).
     // Errors are NEVER filtered, wherever they originate.
 
     // GH #18 item 1 → M3 stage 5 (2026-07-02): unbounded-allocation
