@@ -122,7 +122,68 @@ fn phase_effects_diags(
                         }
                         _ => None,
                     });
-                let Some(span) = span else { continue };
+                let Some(span) = span else {
+                    // A phase naming nothing on this locus used to be
+                    // skipped in silence — so `@phase_effects(disolve:
+                    // {})` declared a contract that was never checked,
+                    // and the author had no way to tell. Every other
+                    // form of incompleteness in this system fails
+                    // closed; a typo'd phase must too.
+                    //
+                    // But the six LIFECYCLE names are always
+                    // meaningful, declared or not: a locus with only
+                    // `params` still has a birth, and
+                    // `@phase_effects(birth: {alloc}, run: {})` — the
+                    // canonical no-alloc-after-init line — must not
+                    // error just because the hook is implicit.
+                    const LIFECYCLE: &[&str] = &[
+                        "birth", "accept", "release", "run", "drain",
+                        "dissolve",
+                    ];
+                    if LIFECYCLE.contains(&phase.as_str()) {
+                        continue;
+                    }
+                    let mut candidates: Vec<String> = Vec::new();
+                    for m in &l.members {
+                        match m {
+                            LocusMember::Fn(fd) => {
+                                candidates.push(fd.name.name.clone())
+                            }
+                            LocusMember::Lifecycle(lc) => candidates
+                                .push(lifecycle_name(lc.kind).to_string()),
+                            _ => {}
+                        }
+                    }
+                    let hint = crate::stdlib_surface::nearest_name(
+                        phase,
+                        candidates.iter().map(|s| s.as_str()),
+                    )
+                    .map(|s| format!(" — did you mean `{}`?", s))
+                    .unwrap_or_else(|| {
+                        if candidates.is_empty() {
+                            String::new()
+                        } else {
+                            format!(
+                                " — this locus has {}",
+                                candidates
+                                    .iter()
+                                    .map(|c| format!("`{}`", c))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        }
+                    });
+                    out.push(Diag::ty(
+                        l.name.span,
+                        format!(
+                            "`@phase_effects` names phase `{}`, which \
+                             locus `{}` does not declare{}. The contract \
+                             would never be checked.",
+                            phase, l.name.name, hint
+                        ),
+                    ));
+                    continue;
+                };
                 let key = FnKey::method(l.name.name.clone(), phase.clone());
                 // The frontier/graph classes: anything NOT allowed.
                 for class in [
