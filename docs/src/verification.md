@@ -137,12 +137,60 @@ never do, and the compiler proves it over the call graph.
 fn price(book: OrderBook, qty: Int) -> Decimal { ... }
 ```
 
-The classes are `syscall`, `block`, `time`, `entropy`, `env`, `ffi`,
-`publish`, `spawn`, `recursion` and `alloc`. The full surface — the
-general `@effects(none: {…})` form, the `@no_*` shorthands, quantitative
-`@budget(...)`, and per-lifecycle-phase contracts — is taught in
+The full surface — the general `@effects(none: {…})` form, the `@no_*`
+shorthands, quantitative `@budget(...)`, and per-lifecycle-phase
+contracts — is taught in
 [Performance](./systems/performance.md#saying-what-a-function-may-do),
 where the hot-path certificate is the motivating use.
+
+### The classes
+
+| class | covers | example |
+|---|---|---|
+| `syscall` | the kernel: filesystem, sockets, processes, terminal, stdio — including `println` | `std::io::fs::read_file` |
+| `block` | waits, holding its thread (or, on an `async_io` pool, its worker's turn) | `std::http::get` |
+| `time` | *reading* a clock | `std::time::monotonic_ns` |
+| `entropy` | *reading* randomness | `std::rand::next_int` |
+| `env` | *reading* the environment or argv | `std::env::var` |
+| `ffi` | reaching an `@ffi` declaration — leaving managed Hale | any `@ffi` fn |
+| `publish` | sending on the bus | `Orders <- o` |
+| `spawn` | instantiating a locus | `Worker { }` |
+| `recursion` | a cycle in the call graph | a fn that reaches itself |
+| `alloc` | arena allocation — a phase-only class, see `@phase_effects` | `Buf { n: 1 }` |
+
+Two of those are worth dwelling on, because they are the ones people
+guess wrong.
+
+**`println` is a `syscall`.** Writing to a stream is a `write(2)`; it
+can block, and a certificate that permitted it would not be certifying
+what it claims. Debug printing inside a `@no_syscall` function is a
+contract violation — which is the point of having asked.
+
+**Reading an effect source differs from operating on a supplied
+value.** This is the distinction that makes `@deterministic` useful
+rather than merely restrictive:
+
+| pure | effectful |
+|---|---|
+| `std::time::time_from_unix(n)` | `std::time::monotonic_ns()` — `time` |
+| `std::str::parse_int(s)` | `std::env::var(k)` — `env` |
+| `std::http::parse_request(b)` | `std::http::get(u)` — `syscall`, `block` |
+
+A function handed a timestamp is a function of its inputs. A function
+that *fetches* one is not, and cannot be replayed.
+
+You never have to work this out from memory. `hale doc --stdlib`
+publishes every function's classes alongside its signature, generated
+from the same registry the checker queries — so the catalogue and the
+enforcement cannot disagree:
+
+```
+### std::io::fs::read_file
+
+    fn read_file(String) -> String fallible(IoError)
+
+**Effects:** `syscall`
+```
 
 Two properties matter for *verification* specifically, and neither is a
 performance concern.

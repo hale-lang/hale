@@ -8,6 +8,21 @@ behavior.
 
 ## Unreleased
 
+- **The effect catalogue is published, and generated.**
+  `hale doc --stdlib` now prints each function's effect classes beside
+  its signature (283 of them; the 57 without are locus/type paths that
+  legitimately have no row), and `--json` carries an `effects` field.
+  The registry has held an `EffectSet` per fn since #265 and the doc
+  generator was already walking those entries to print signatures
+  while ignoring the column next to them — so the classification the
+  checker enforces was invisible to anyone reading the docs. Derived,
+  not transcribed: a hand-written table of 300+ rows would drift, and
+  this repo has been bitten by exactly that three times now.
+- The book gains a **per-class reference** — what each of the ten
+  classes covers, why `println` is a `syscall`, and the distinction
+  that makes `@deterministic` useful rather than merely restrictive
+  (`time_from_unix(n)` is pure, `monotonic_ns()` is not). Every
+  example in it was verified against the compiler.
 - **The book documents the effect system.**
   `docs/src/verification.md` — the chapter named Verification — had
   zero mentions of effects; the whole surface lived in
