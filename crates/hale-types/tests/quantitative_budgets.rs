@@ -198,3 +198,42 @@ fn dimensions_compose_in_one_budget_clause() {
         ds
     );
 }
+
+/// A repeated dimension used to overwrite silently: writing
+/// `@budget(alloc_per_call = 0, alloc_per_call = 5)` enforced **5**.
+/// The author asked for a zero-alloc certificate and got a ceiling
+/// of five, with nothing said. Whichever way precedence fell would
+/// be a guess — the annotation is ambiguous, so it is rejected.
+#[test]
+fn a_repeated_budget_dimension_is_rejected() {
+    for src in [
+        "@budget(alloc_per_call = 0, alloc_per_call = 5)\nfn f() -> Int { return 1; }\nfn main() { println(f()); }",
+        "@budget(stack_bytes = 16, stack_bytes = 32)\nfn f() -> Int { return 1; }\nfn main() { println(f()); }",
+    ] {
+        let err = hale_syntax::parse_source(src)
+            .err()
+            .unwrap_or_else(|| panic!("expected a parse error for:\n{}", src));
+        let msg = err
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            msg.contains("given twice"),
+            "expected a duplicate-dimension diagnostic, got: {}",
+            msg
+        );
+    }
+}
+
+/// …but distinct dimensions in one clause are the documented shape
+/// and must keep working.
+#[test]
+fn distinct_budget_dimensions_still_compose() {
+    let src = "@budget(alloc_per_call = 0, stack_bytes = 4096, block_points = 0)\n\
+               fn f() -> Int { return 1; }\nfn main() { println(f()); }";
+    assert!(
+        hale_syntax::parse_source(src).is_ok(),
+        "a multi-dimension budget is the canonical hot-path certificate"
+    );
+}

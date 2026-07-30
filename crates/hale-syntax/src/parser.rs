@@ -1554,6 +1554,26 @@ impl Parser {
                 }
             };
             self.bump();
+            // A repeated dimension used to overwrite silently, so
+            // `@budget(alloc_per_call = 0, alloc_per_call = 5)`
+            // enforced 5 — the author wrote a zero-alloc certificate
+            // and got a ceiling of five with no diagnostic. Whichever
+            // way precedence fell it would be a guess; the honest
+            // answer is that the annotation is ambiguous.
+            if key == "alloc_per_call" && alloc.is_some()
+                || QuantDim::from_ident(&key)
+                    .is_some_and(|d| dims.iter().any(|(e, _)| *e == d))
+            {
+                return Err(Diag::parse(
+                    key_tok.span,
+                    format!(
+                        "budget dimension `{}` is given twice — the \
+                         later value would silently replace the \
+                         earlier one. State it once.",
+                        key
+                    ),
+                ));
+            }
             if key == "alloc_per_call" {
                 alloc = Some(n as u32);
             } else if let Some(d) = QuantDim::from_ident(&key) {

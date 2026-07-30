@@ -8,6 +8,12 @@ behavior.
 
 ## Unreleased
 
+- **A repeated `@budget` dimension silently kept the last value.**
+  `@budget(alloc_per_call = 0, alloc_per_call = 5)` enforced **5** —
+  you wrote a zero-alloc certificate and got a ceiling of five, with
+  nothing said. Rejected now: whichever way precedence fell would be
+  a guess, and the annotation is simply ambiguous. Distinct
+  dimensions in one clause are untouched.
 - **A typo'd `@phase_effects` phase was silently ignored.**
   `@phase_effects(disolve: {})` typechecked clean and checked
   nothing — you declared a contract and got no contract and no
