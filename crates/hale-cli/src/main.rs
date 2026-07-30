@@ -2313,7 +2313,17 @@ fn retain_owned_advisories(
             return true;
         }
         match file_of_span(d.span.start.0, file_bases) {
-            Some(p) => own_files.contains(&p),
+            Some(p) => {
+                // Compare canonically. `file_bases` carries paths as
+                // they were passed in (often relative) while
+                // `own_files` is canonicalized, so a plain set lookup
+                // silently reported EVERY file as foreign — including
+                // the target's own, whose advisories then vanished.
+                // Suppressing the user's own findings is far worse
+                // than the noise this filter exists to remove.
+                let canon = p.canonicalize().unwrap_or(p);
+                own_files.contains(&canon)
+            }
             // Unattributable span: keep it rather than silently drop.
             None => true,
         }

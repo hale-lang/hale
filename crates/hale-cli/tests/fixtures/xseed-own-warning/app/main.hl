@@ -1,0 +1,16 @@
+import "lib/quiet" as q;
+type Slot { key: String; n: Int; }
+@form(hashmap)
+locus Acc { capacity { pool slots of Slot indexed_by key; } }
+locus Grow {
+    params { acc: Acc = Acc { }; }
+    run() {
+        let mut i = 0;
+        while true {
+            self.acc.set(Slot { key: "k" + to_string(i), n: q::helper(i) });
+            i = i + 1;
+        }
+    }
+}
+main locus App { params { g: Grow = Grow { }; } }
+fn main() { App { }; }
