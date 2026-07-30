@@ -8,6 +8,21 @@ behavior.
 
 ## Unreleased
 
+- **A typo'd `@phase_effects` phase was silently ignored.**
+  `@phase_effects(disolve: {})` typechecked clean and checked
+  nothing — you declared a contract and got no contract and no
+  diagnostic. It is now an error naming the bad phase and listing
+  what the locus actually has. The six lifecycle names stay legal
+  whether the hook is written out or not, so the canonical
+  `@phase_effects(birth: {alloc}, run: {})` line still works on a
+  locus with only `params`.
+- **Documented the annotation parameters that were only implied.**
+  The book stated that an omitted phase is unconstrained but left
+  `run: {}` — the opposite meaning, and the load-bearing one — to be
+  inferred from an example. Both are now spelled out in a table,
+  along with what a phase name may be, and the gotcha that a
+  publishing handler needs `{publish, alloc}` because building the
+  payload allocates.
 - **The effect catalogue is published, and generated.**
   `hale doc --stdlib` now prints each function's effect classes beside
   its signature (283 of them; the 57 without are locus/type paths that

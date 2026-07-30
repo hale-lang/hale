@@ -267,9 +267,39 @@ locus Engine { ... }
 
 That single line is the "no dynamic memory after initialization"
 discipline: allocate while starting up, never in the steady state.
-Phases are the lifecycle hooks (`birth`, `run`, `drain`,
-`dissolve`, `accept`, `release`) or any handler by name; a phase you
-don't mention is unconstrained.
+
+**A phase name** is one of the six lifecycle hooks — `birth`,
+`accept`, `release`, `run`, `drain`, `dissolve` — or **any handler or
+method by name**, which is how you write a per-message contract:
+
+```hale,fragment
+@phase_effects(on_order: {publish, alloc})
+locus Router { ... }
+```
+
+Note the `alloc` there. The set is **exact**, and building the payload
+you publish is an allocation — so a handler that constructs `Ack { … }`
+and sends it needs both classes. `{publish}` alone is a stricter claim
+than most publishing handlers can honour, and the compiler will say so.
+
+The lifecycle names are always legal, written out or not: a locus with
+only `params` still has a birth. A phase that names *nothing* on the
+locus — a typo, or a handler you renamed — is an error, because a
+contract nobody checks is worse than no contract.
+
+**Empty braces and omission are opposites**, and this is the part to
+get right:
+
+| form | means |
+|---|---|
+| `run: {}` | `run` may perform **no** effect at all |
+| `run: {alloc}` | `run` may allocate, and do nothing else |
+| *(`run` not mentioned)* | `run` is **unconstrained** |
+
+So `@phase_effects(birth: {alloc})` alone constrains only birth —
+`run` stays free. It takes the explicit `run: {}` to say "and nothing
+in the steady state." Violations are errors, and the diagnostic is
+prefixed with the phase: ``phase `run`: effect assertion violated…``
 
 ### Never trapping
 

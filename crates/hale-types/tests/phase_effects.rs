@@ -112,3 +112,98 @@ fn phase_allows_named_classes_only() {
         ds
     );
 }
+
+/// An empty set FORBIDS everything; an omitted phase is
+/// unconstrained. These are opposite meanings and the difference is
+/// the whole feature — `run: {}` is what "no dynamic memory after
+/// initialization" actually says.
+#[test]
+fn empty_set_forbids_where_omission_permits() {
+    let body = r#"
+        type Buf { n: Int; }
+        @phase_effects(PHASES)
+        locus A {
+            params { seen: Int = 0; }
+            run() { let b = Buf { n: 1 }; self.seen = b.n; }
+        }
+        fn main() { A { }; }
+    "#;
+    let empty = diags_for(&body.replace("PHASES", "run: {}"));
+    assert!(
+        empty.iter().any(|m| m.contains("phase `run`") && m.contains("alloc")),
+        "`run: {{}}` must forbid every class: {:?}",
+        empty
+    );
+    let omitted = diags_for(&body.replace("PHASES", "birth: {alloc}"));
+    assert!(
+        !omitted.iter().any(|m| m.contains("phase `run`")),
+        "a phase not mentioned is unconstrained: {:?}",
+        omitted
+    );
+}
+
+/// A phase naming nothing on the locus was silently skipped, so a
+/// typo produced a contract that was never checked and never
+/// reported. Fails closed now, like every other incompleteness in
+/// this system.
+#[test]
+fn unknown_phase_name_is_rejected() {
+    let src = r#"
+        @phase_effects(not_a_phase: {})
+        locus A { params { n: Int = 0; } run() { self.n = 1; } }
+        fn main() { A { }; }
+    "#;
+    let ds = diags_for(src);
+    let hit = ds
+        .iter()
+        .find(|m| m.contains("does not declare"))
+        .unwrap_or_else(|| panic!("expected an unknown-phase error: {:?}", ds));
+    assert!(
+        hit.contains("not_a_phase") && hit.contains("`run`"),
+        "the diagnostic must name the bad phase and what IS available: {}",
+        hit
+    );
+}
+
+/// The six lifecycle names stay legal even when the hook is
+/// implicit: a locus with only `params` still has a birth, and the
+/// canonical `@phase_effects(birth: {alloc}, run: {})` line must not
+/// error just because no `birth()` block is written out.
+#[test]
+fn implicit_lifecycle_phases_are_not_flagged_as_unknown() {
+    let src = r#"
+        @phase_effects(birth: {alloc}, dissolve: {})
+        locus A { params { n: Int = 0; } run() { self.n = 1; } }
+        fn main() { A { }; }
+    "#;
+    let ds = diags_for(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("does not declare")),
+        "implicit lifecycle hooks are real phases: {:?}",
+        ds
+    );
+}
+
+/// A handler is addressable by name — that is how a per-message
+/// contract is written.
+#[test]
+fn handler_name_works_as_a_phase() {
+    let src = r#"
+        type Ev { n: Int; }
+        topic T { payload: Ev; subject: "t"; }
+        @phase_effects(on_ev: {})
+        locus A {
+            bus { subscribe T as on_ev; }
+            fn on_ev(e: Ev) { let n = std::io::fs::file_size("/x") or 0; }
+        }
+        locus P { bus { publish T; } fn go() { T <- Ev { n: 1 }; } }
+        main locus App { params { a: A = A { }; p: P = P { }; } }
+        fn main() { App { }; }
+    "#;
+    let ds = diags_for(src);
+    assert!(
+        ds.iter().any(|m| m.contains("phase `on_ev`") && m.contains("syscall")),
+        "a handler named as a phase must be checked: {:?}",
+        ds
+    );
+}
