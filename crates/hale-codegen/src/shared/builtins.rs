@@ -684,7 +684,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let i32_t_local = self.context.i32_type();
         let str_eq_ty =
             i32_t_local.fn_type(&[ptr_t.into(), ptr_t.into()], false);
-        self.module.add_function("lotus_str_eq", str_eq_ty, None);
+        let str_eq_fn =
+            self.module.add_function("lotus_str_eq", str_eq_ty, None);
+        self.mark_pure_read(str_eq_fn);
         let str_len_ty = i64_t.fn_type(&[ptr_t.into()], false);
         let str_len_fn = self
             .module
@@ -721,20 +723,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // declare i32 @lotus_str_contains(ptr s, ptr sub)
         let str_predicate_ty =
             i32_t_local.fn_type(&[ptr_t.into(), ptr_t.into()], false);
-        self.module.add_function(
+        let str_starts_with_fn = self.module.add_function(
             "lotus_str_starts_with",
             str_predicate_ty,
             None,
         );
-        self.module
+        self.mark_pure_read(str_starts_with_fn);
+        let str_contains_fn = self
+            .module
             .add_function("lotus_str_contains", str_predicate_ty, None);
+        self.mark_pure_read(str_contains_fn);
 
         // m84: byte index of substring (or -1 if not found).
         // declare i64 @lotus_str_index_of(ptr s, ptr sub)
         let str_index_of_ty =
             i64_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
-        self.module
+        let str_index_of_fn = self
+            .module
             .add_function("lotus_str_index_of", str_index_of_ty, None);
+        self.mark_pure_read(str_index_of_fn);
 
         // m89: Bytes value primitives.
         // declare ptr @lotus_bytes_create(ptr arena, i64 len)
@@ -2842,11 +2849,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.mark_pure_read(bytes_at_fn);
         // 2026-06-13 — std::bytes word-scan + masked-XOR primitives (#4).
         // declare i64 @lotus_bytes_find_byte(ptr b, i64 off, i64 needle)
-        self.module.add_function(
+        let bytes_find_byte_fn = self.module.add_function(
             "lotus_bytes_find_byte",
             i64_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false),
             None,
         );
+        self.mark_pure_read(bytes_find_byte_fn);
         // declare i32 @lotus_bytes_builder_xor_mask_into(ptr handle, ptr src, i64 key)
         self.module.add_function(
             "lotus_bytes_builder_xor_mask_into",
@@ -2888,13 +2896,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
         // declare i64 @lotus_bytes_at_raw(ptr base, i64 len, i64 i)
-        self.module.add_function(
+        let bytes_at_raw_fn = self.module.add_function(
             "lotus_bytes_at_raw",
             i64_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false),
             None,
         );
+        self.mark_pure_read(bytes_at_raw_fn);
         // declare i64 @lotus_bytes_find_byte_raw(ptr base, i64 len, i64 off, i64 needle)
-        self.module.add_function(
+        let bytes_find_byte_raw_fn = self.module.add_function(
             "lotus_bytes_find_byte_raw",
             i64_t.fn_type(
                 &[ptr_t.into(), i64_t.into(), i64_t.into(), i64_t.into()],
@@ -2902,6 +2911,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ),
             None,
         );
+        self.mark_pure_read(bytes_find_byte_raw_fn);
         // MirrorRing runtime: new/free/readable/writable/commit/consume/
         // len/capacity + recv-into-mirror. readable/writable return the
         // {ptr,len} view struct (a BytesMut).
