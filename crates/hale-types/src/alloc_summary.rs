@@ -75,6 +75,9 @@ pub enum AllocKind {
     /// grows with population and frees only at dissolve — so an insert in
     /// an unbounded context accumulates. The string is the form name.
     CollectionInsert(String),
+    /// String concatenation (`a + b` where an operand is provably a
+    /// String). Each `+` builds a fresh String in the arena.
+    StringConcat,
 }
 
 impl AllocKind {
@@ -85,6 +88,7 @@ impl AllocKind {
             AllocKind::ArrayRepeat => "array-repeat".to_string(),
             AllocKind::BytesLit => "bytes-literal".to_string(),
             AllocKind::CollectionInsert(form) => format!("{}-insert", form),
+            AllocKind::StringConcat => "string-concat".to_string(),
         }
     }
 }
@@ -1651,6 +1655,30 @@ impl<'a> Walker<'a> {
         self.infinite_stack = saved_infinite;
     }
 
+    /// Is this expression provably a String?
+    ///
+    /// Deliberately narrow: a string literal, an f-string, or a name
+    /// whose declared type is `String`. Anything it cannot prove it
+    /// leaves alone, so `i + 1` is never mistaken for concatenation.
+    fn is_string_expr(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Literal(Literal::String(_), _) => true,
+            Expr::Ident(v) => {
+                self.var_types.get(&v.name).map(|t| t == "String").unwrap_or(false)
+            }
+            Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. }
+                if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
+            {
+                self.field_types.get(&name.name).map(|t| t == "String").unwrap_or(false)
+            }
+            // `(a + b) + c` — a concat is itself a String.
+            Expr::Binary { left, right, op: BinOp::Add, .. } => {
+                self.is_string_expr(left) || self.is_string_expr(right)
+            }
+            _ => false,
+        }
+    }
+
     /// The *declared* type name of a receiver expression: a bare var
     /// via `var_types`, a `self.<field>` via `field_types`. Used both
     /// to spot growing-`@form` receivers (D2) and to resolve
@@ -1951,11 +1979,39 @@ impl<'a> Walker<'a> {
             Expr::Literal(_, _) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
             // NOTE: a String `+` is an arena concat and a real allocation
             // site, but telling it from arithmetic `+` needs type info this
-            // (type-free) pass doesn't have. Flagging every `i + 1` as a
-            // leak precursor is the exact cry-wolf failure the scope warns
-            // against, so String-concat detection is deferred to a
-            // type-aware stage. Here `+` is just recursed, not a site.
-            Expr::Binary { left, right, .. } => {
+            // Flagging every `i + 1` would be the cry-wolf failure this
+            // pass must avoid, so concatenation is recorded ONLY where an
+            // operand is provably a String — a string literal, or a name
+            // whose DECLARED type is String. Int arithmetic is untouched.
+            //
+            // It has to be recorded somewhere: `"x" + a + "y"` performs 34
+            // heap allocations, and before this a fn doing exactly that
+            // passed `@budget(alloc_per_call = 0)`. A zero-allocation
+            // certificate that ignores the most common way Hale code
+            // allocates is worse than no certificate — it reads as proof.
+            Expr::Binary { left, right, op, .. } => {
+                if matches!(op, BinOp::Add)
+                    && (self.is_string_expr(left) || self.is_string_expr(right))
+                {
+                    let span = left.span().merge(right.span());
+                    self.sites.push(AllocSite {
+                        kind: AllocKind::StringConcat,
+                        escape,
+                        loop_depth: depth,
+                        in_unbounded_loop: self
+                            .loop_stack
+                            .iter()
+                            .any(|bounded| !bounded),
+                        in_infinite_loop: self
+                            .infinite_stack
+                            .iter()
+                            .any(|i| *i),
+                        reclaim: ReclaimScope::EnclosingLocus,
+                        target_field: None,
+                        retired_store: false,
+                        span,
+                    });
+                }
                 self.walk_expr(left, depth, Escape::Local);
                 self.walk_expr(right, depth, Escape::Local);
             }
