@@ -23,6 +23,17 @@ behavior.
 
 ## Unreleased
 
+- **String/byte scanners and predicates are now pure reads for LLVM**
+  (#322, follow-on). Seven more runtime symbols join the audited
+  `memory(read) nounwind willreturn` list: `lotus_str_eq`,
+  `lotus_str_starts_with`, `lotus_str_contains`, `lotus_str_index_of`,
+  `lotus_bytes_find_byte`, `lotus_bytes_find_byte_raw`,
+  `lotus_bytes_at_raw` — all `strcmp` / `strncmp` / `strstr` / `memchr`
+  / const-index over `const` pointers, which is the shape the HTTP and
+  JSON byte scanners are built from. Two that look identical by name
+  are excluded: `lotus_bytes_read_uint` and `_raw` take an
+  `int64_t *oob` and write `*oob = 1` on an out-of-bounds read.
+
 - **Indexed byte accessors are now pure reads for LLVM** (#322).
   `lotus_str_len` / `lotus_bytes_len` / `lotus_bytes_data` have carried
   `memory(read) nounwind willreturn` since 2026-07-01 so LICM can hoist

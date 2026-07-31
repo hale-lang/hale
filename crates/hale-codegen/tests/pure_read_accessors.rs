@@ -56,7 +56,19 @@ fn attrs_of(ir: &str, sym: &str) -> Option<String> {
 #[test]
 fn indexed_immutable_accessors_are_pure_reads() {
     let ir = builtin_ir("pure_read_idx");
-    for sym in ["lotus_bytes_at", "lotus_str_byte_at"] {
+    for sym in [
+        "lotus_bytes_at",
+        "lotus_str_byte_at",
+        // scanners + predicates over immutable data (strcmp / strncmp /
+        // strstr / memchr / const index) — the HTTP and JSON hot paths
+        "lotus_str_eq",
+        "lotus_str_starts_with",
+        "lotus_str_contains",
+        "lotus_str_index_of",
+        "lotus_bytes_find_byte",
+        "lotus_bytes_find_byte_raw",
+        "lotus_bytes_at_raw",
+    ] {
         let body = attrs_of(&ir, sym)
             .unwrap_or_else(|| panic!("{} should carry an attribute group", sym));
         assert!(
@@ -120,7 +132,17 @@ fn mutable_container_lengths_are_not_pure_reads() {
 #[test]
 fn out_param_and_recency_writing_accessors_are_not_pure_reads() {
     let ir = builtin_ir("pure_read_excl_out");
-    for sym in ["lotus_vec_get", "lotus_hashmap_get", "lotus_lru_get"] {
+    for sym in [
+        "lotus_vec_get",
+        "lotus_hashmap_get",
+        "lotus_lru_get",
+        // `lotus_bytes_read_uint{,_raw}` take an `int64_t *oob` and
+        // write `*oob = 1` on an out-of-bounds read — same rule as
+        // vec_get, and easy to miss because the rest of the body is a
+        // pure load.
+        "lotus_bytes_read_uint",
+        "lotus_bytes_read_uint_raw",
+    ] {
         if let Some(body) = attrs_of(&ir, sym) {
             assert!(
                 !body.contains("memory(read)") && !body.contains("memory(none)"),
