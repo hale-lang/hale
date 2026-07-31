@@ -172,6 +172,44 @@ coding model hallucinate:
   its type, and you address it right at the call site. Nothing propagates
   invisibly.
 
+## Say what a function may *do*
+
+A signature tells you the types and nothing else — not whether a function
+touches the filesystem, blocks on a socket, reads the clock, or allocates.
+Hale lets you say so, and holds you to it:
+
+```hale
+@no_syscall @deterministic
+fn price(book: OrderBook, qty: Int) -> Decimal { ... }
+```
+
+That's a contract, not a hint. The compiler proves it across everything
+reachable — through helpers, through methods called on a handle, into
+imported libraries, into the standard library — and a violation names the
+path that gets there, not just the function:
+
+```
+effect assertion violated: `price` must not reach `syscall`, but reaches
+  price -> Book::reload [std::io::fs::read_file — a syscall-class operation].
+```
+
+The classes are `syscall`, `block`, `time`, `entropy`, `env`, `ffi`,
+`publish`, `spawn`, `recursion` and `alloc`. They compose into a one-line
+hot-path certificate — nothing that waits, nothing that reaches the kernel,
+nothing non-deterministic, no allocation:
+
+```hale
+@no_block @no_syscall @deterministic @no_recursion @hot
+@budget(alloc_per_call = 0)
+fn on_tick(a: Int, b: Int) -> Int { ... }
+```
+
+It's entirely opt-in: a program with no annotations behaves exactly as
+before. And because the compiler already infers what every function does, it
+will also *report* that — so a handler that quietly starts doing filesystem
+I/O is a one-line diff in review, even though nothing annotated changed.
+[Effects & contracts →](https://hale-lang.org/docs/effects)
+
 ## Verified where it counts
 
 The substrate you stand on is checked, not hoped. Every concurrent primitive

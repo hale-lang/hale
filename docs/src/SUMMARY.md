@@ -50,6 +50,7 @@
 # Systems control
 
 - [Memory & lifetime](./systems/memory.md)
+- [Effects & contracts](./effects.md)
 - [Performance](./systems/performance.md)
 - [Forms under the hood](./systems/forms.md)
 - [Zero-copy & the high-frequency bus](./systems/zero-copy-bus.md)
