@@ -21,6 +21,30 @@ behavior.
 
 ---
 
+## Unreleased
+
+- **Indexed byte accessors are now pure reads for LLVM** (#322).
+  `lotus_str_len` / `lotus_bytes_len` / `lotus_bytes_data` have carried
+  `memory(read) nounwind willreturn` since 2026-07-01 so LICM can hoist
+  a length read out of a loop; their indexed siblings
+  `lotus_bytes_at` / `lotus_str_byte_at` were missed. A loop-invariant
+  `std::bytes::at(b, i)` therefore stayed *inside* the loop body while
+  the identically-shaped `len` call in the same program was hoisted to
+  `entry:` and its loop folded away — the only difference was the
+  attribute. Synthetic upper bound: 1e9 loop-invariant reads, 0.78s →
+  0.00s, identical output.
+
+  The exclusions are the substance of the change and are pinned by
+  tests. Container accessors do **not** qualify: `lotus_vec_len` /
+  `lotus_hashmap_len` / `lotus_ring_buffer_len` read
+  concurrently-mutable state, and hoisting a poll loop's length read
+  out of the loop is a hang rather than a slowdown;
+  `lotus_vec_get` / `lotus_hashmap_get` write through an
+  out-parameter; `lotus_lru_get` writes a recency tick on read. Only
+  accessors over immutable values (Bytes, String) are eligible.
+
+---
+
 ## v0.12.0 — the effect system becomes trustworthy (2026-07-30)
 
 Minor bump. `@effects` shipped in v0.11.23, but it could be walked
