@@ -8,7 +8,7 @@
 type Act { mag: Float; pos: Int; }
 
 topic SumLookup { payload: Act; }
-topic Recalled  { payload: Act; }
+topic Recalled { payload: Act; }
 
 locus Launderer {
     bus {
@@ -16,7 +16,7 @@ locus Launderer {
         publish Recalled;
     }
 
-    @effects(publish: {Recalled})
+    @effects(publish: { Recalled })
     fn on_sum(a: Act) {
         Recalled <- Act { mag: a.mag, pos: a.pos };
     }

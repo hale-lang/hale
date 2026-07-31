@@ -27,10 +27,10 @@ locus StatedCarry {
     params { recalled: Float = 0.0; }
 
     // Reads the laundered value. Names no compute topic.
-    @effects(none: {publish})
+    @effects(none: { publish })
     fn on_recalled(a: relay::Act) { self.recalled = a.mag; }
 
-    @effects(publish: {VerbalCarry})
+    @effects(publish: { VerbalCarry })
     fn on_ask(p: Int) {
         VerbalCarry <- relay::Act { mag: self.recalled, pos: p };
     }
