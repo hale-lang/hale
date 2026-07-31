@@ -648,6 +648,31 @@ fn env_flag(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Which LTO flavor `LOTUS_LTO` selects.
+///
+/// `1` / `true` / `full` -> full (monolithic) LTO: every module is
+/// merged into one and optimized together. Best cross-module
+/// information, worst link time and memory, and it serializes — the
+/// whole link is one thread.
+///
+/// `thin` -> ThinLTO: per-module summaries drive cross-module import,
+/// then each module is optimized in PARALLEL. Most of full LTO's
+/// inlining wins at a fraction of the link cost.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LtoMode {
+    Off,
+    Thin,
+    Full,
+}
+
+fn lto_mode() -> LtoMode {
+    match std::env::var("LOTUS_LTO").unwrap_or_default().as_str() {
+        "thin" | "THIN" | "Thin" => LtoMode::Thin,
+        "1" | "true" | "TRUE" | "full" | "FULL" => LtoMode::Full,
+        _ => LtoMode::Off,
+    }
+}
+
 /// One-shot probe: is `ld.lld` on PATH? The non-LTO link uses it
 /// when present — the default bfd link spends ~120 ms scanning the
 /// ~27 MB tree-sitter shim staticlib on every build (measured
@@ -1440,7 +1465,8 @@ pub fn build_executable_with_options(
     let lotus_tsan = env_flag("LOTUS_TSAN");
     let lotus_asan = env_flag("LOTUS_ASAN");
     let lotus_ubsan = env_flag("LOTUS_UBSAN");
-    // LOTUS_LTO: opt-in full-LTO build. The Hale module is emitted as
+    // LOTUS_LTO: opt-in LTO build. `thin` selects ThinLTO, `1`/`full`
+    // selects monolithic LTO. The Hale module is emitted as
     // plain LLVM bitcode and the lotus C runtime TUs are compiled with
     // -flto, so the final `clang -flto` link does cross-TU inlining of
     // the arena bump-allocator / tls / shm_ring fast paths into the
@@ -1449,9 +1475,37 @@ pub fn build_executable_with_options(
     // LOTUS_ARENA_LOG_BIG_CHUNKS diagnostic + the
     // `std::diag::syscall_count` gate), so the default build + the whole
     // test suite stay on the exact non-LTO behavior.
-    let lotus_lto = env_flag("LOTUS_LTO");
-    let lto_active =
-        lotus_lto && !is_wasm && !lotus_tsan && !lotus_ubsan && !lotus_asan;
+    //
+    // 2026-07-31 measurements (median of 15, after establishing each
+    // bench's noise floor on an unchanged binary — two of the four
+    // benches first tried had 56% and 79% run-to-run spread and cannot
+    // resolve an effect this size at all):
+    //
+    //   json_parse          (noise 7.3%)   thin -10.9%   full -6.0%
+    //   locus_instantiation (noise 10.8%)  thin  -8.2%   full -8.6%
+    //
+    // So `thin` is at least as good as `full` on runtime and clearly
+    // better on json_parse. Both cost ~1.35-1.43s to link a bench that
+    // links in 80ms without LTO — a ~17x dev-loop tax, which is why
+    // neither is default-on. ThinLTO's usual link-time advantage barely
+    // shows here (1337ms vs 1427ms) because a Hale program is ONE
+    // module plus ~5 runtime TUs; there is almost nothing to
+    // parallelize. Its win is cross-module import quality, not build
+    // time.
+    //
+    // The `--wrap` concern above was checked and does not reproduce in
+    // either mode: `std::diag::heap_alloc_count` reports an identical
+    // non-zero count (32) under off/thin/full. The whole example corpus
+    // also runs byte-identical under thin (85/86; the one diff,
+    // 20-pinned-core, is nondeterministic against itself).
+    let requested_lto = lto_mode();
+    let sanitized = lotus_tsan || lotus_ubsan || lotus_asan;
+    let lto_kind = if is_wasm || sanitized {
+        LtoMode::Off
+    } else {
+        requested_lto
+    };
+    let lto_active = lto_kind != LtoMode::Off;
 
     let obj_path: PathBuf = output_path.with_extension("o");
     if std::env::var("LOTUS_DUMP_IR").is_ok() {
@@ -1707,7 +1761,10 @@ pub fn build_executable_with_options(
         // mismatch at the cost of vectorization; stamping the Hale side
         // removed the need for that workaround.)
         if lto_active {
-            rt_cflags.push("-flto".into());
+            rt_cflags.push(
+                if lto_kind == LtoMode::Thin { "-flto=thin" } else { "-flto" }
+                    .into(),
+            );
         }
         // Host-tune the arena/tls/shm_ring hot paths too. Only on the
         // native target (a host -march is invalid for wasm). The runtime
@@ -1803,7 +1860,14 @@ pub fn build_executable_with_options(
         // the LTO-capable linker (the default bfd/gold here is not built
         // with the LLVM LTO plugin). Non-LTO inputs (the ts-shim Rust
         // .a, OpenSSL .so) are linked normally — lld mixes them fine.
-        clang.arg("-flto").arg("-O3").arg("-fuse-ld=lld");
+        clang
+            .arg(if lto_kind == LtoMode::Thin {
+                "-flto=thin"
+            } else {
+                "-flto"
+            })
+            .arg("-O3")
+            .arg("-fuse-ld=lld");
     } else {
         clang.arg("-O2");
         // Non-LTO: prefer lld when installed (see lld_available).
