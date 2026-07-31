@@ -75,6 +75,29 @@ behavior.
 
 ---
 
+## Unreleased
+
+- **Locus birth/dissolve observation probes are branch-gated (#328).**
+  They were unconditional opaque calls, so every locus birth and every
+  dissolve in every program paid for observation nobody had turned on
+  — not because the call is slow, but because LLVM cannot see through
+  it and must assume it clobbers memory, which stops optimization
+  across the whole instantiation path. They now sit behind the same
+  `lotus_obs_live` check the bus publish/deliver probes already used.
+
+  Measured on `locus_instantiation` (100k births, bench precision
+  ±1.2%): **20.74 → 17.78 ns per locus**, recovering 76% of a
+  regression bisected to v0.11.10 (+7.2%) and v0.11.12 (+15.0%), both
+  observation releases. The gated build matches a build with the
+  probes deleted outright (17.85 ns), so the dormant cost is now
+  essentially zero with observation fully intact — all 18 obs tests,
+  including birth/dissolve attribution and late-attach, still pass.
+
+  A residual +5.6% vs v0.11.9 is NOT the probes and is not explained
+  yet; #328 stays open for it.
+
+---
+
 ## v0.12.0 — the effect system becomes trustworthy (2026-07-30)
 
 Minor bump. `@effects` shipped in v0.11.23, but it could be walked

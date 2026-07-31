@@ -869,6 +869,29 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
         // chokepoint (every dissolve path funnels here). No-op
         // unless LOTUS_OBS=1.
         {
+            // #328: branch-gate on `lotus_obs_live`, matching the birth
+            // probe and the bus publish/deliver probes. This one was
+            // the more expensive of the pair — ~2.04ns per dissolve
+            // against the birth probe's ~0.85 — because the teardown
+            // chokepoint sits in the middle of code LLVM would
+            // otherwise optimize freely.
+            let obs_live = self.obs_live_check()?;
+            let current_fn = self
+                .builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_parent())
+                .expect("inside a function");
+            let obs_bb = self
+                .context
+                .append_basic_block(current_fn, "locus.obs.dissolve");
+            let obs_cont_bb = self
+                .context
+                .append_basic_block(current_fn, "locus.obs.dissolve.cont");
+            self.builder
+                .build_conditional_branch(obs_live, obs_bb, obs_cont_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(obs_bb);
+
             let obs_fn = self
                 .module
                 .get_function("lotus_obs_locus_dissolve")
@@ -881,6 +904,10 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                     &format!("{}.obs.dissolve", locus_name),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_unconditional_branch(obs_cont_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(obs_cont_bb);
         }
         // Arena-elision counterpart: when `__arena` was pointed
         // at the caller's arena at instantiation (see
