@@ -10495,6 +10495,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .collect();
         Ok(LocusDecl {
             phase_effects: None,
+            depends: None,
             supervised: false,
             name: Ident {
                 name: mangled_name.to_string(),

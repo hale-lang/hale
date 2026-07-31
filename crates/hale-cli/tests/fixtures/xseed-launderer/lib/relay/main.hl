@@ -1,0 +1,23 @@
+// The LAUNDERER, one seed away.
+//
+// It subscribes to the compute topic and republishes the same
+// magnitude under an innocuous name. Nothing in the app seed names
+// `SumLookup`, so the dependence is invisible there — which is the
+// point of the fixture.
+
+type Act { mag: Float; pos: Int; }
+
+topic SumLookup { payload: Act; }
+topic Recalled { payload: Act; }
+
+locus Launderer {
+    bus {
+        subscribe SumLookup as on_sum;
+        publish Recalled;
+    }
+
+    @effects(publish: { Recalled })
+    fn on_sum(a: Act) {
+        Recalled <- Act { mag: a.mag, pos: a.pos };
+    }
+}

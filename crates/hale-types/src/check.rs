@@ -439,6 +439,8 @@ pub fn check_bundle(
             // GH #265 frontier: cross-actor causality (needs the
             // bus graph), supervision coverage, and secret taint.
             diags.extend(crate::frontier::causes_diags(&programs_vec, &graph));
+            // RFC #330: the backward dual.
+            diags.extend(crate::frontier::depends_diags(&programs_vec, &graph));
             diags.extend(crate::frontier::supervised_diags(&programs_vec));
             diags.extend(crate::frontier::secret_taint_diags(&programs_vec));
             diags.extend(crate::quantitative::quantitative_diags(

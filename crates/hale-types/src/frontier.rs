@@ -498,3 +498,118 @@ pub fn cost_expression(summary: &AllocSummary, key: &FnKey) -> String {
         )
     }
 }
+
+/// RFC #330 — `@effects(depends: {A, B})` on a locus.
+///
+/// The backward dual of `causes:`. `causes:` walks the bus graph
+/// FORWARD because a call graph stops at a publish; nothing walked it
+/// the other way, so an independence claim between two parts of a bus
+/// graph was unenforceable. A dependence routed through one
+/// republishing intermediary is invisible in every declaration on the
+/// depending locus — its `bus {}` block names only the innocent
+/// subject it directly subscribes to.
+///
+/// `depends:` is a COMPLETE declaration, like `publish:` and
+/// `causes:`: every subject that can transitively reach any of the
+/// locus's handlers must be named. Omitting one is the error.
+///
+/// Reachability, not dataflow. The claim is "no value from subject S
+/// can reach this locus at all", which is the conservative form — a
+/// locus that subscribes to a laundered republish of S depends on S
+/// whether or not it reads the field.
+pub fn depends_diags(programs: &[&Program], graph: &BusGraph) -> Vec<Diag> {
+    // locus -> subjects it directly subscribes to
+    let mut subs_of: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    // subject -> loci that publish it
+    let mut pubs_of: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (subj, info) in &graph.subjects {
+        for s in &info.subscribers {
+            subs_of.entry(s.locus.as_str()).or_default().push(subj.as_str());
+        }
+        for p in &info.publishers {
+            pubs_of.entry(subj.as_str()).or_default().push(p.locus.as_str());
+        }
+    }
+
+    let mut diags = Vec::new();
+    for p in programs {
+        for item in &p.items {
+            let TopDecl::Locus(ld) = item else { continue };
+            let Some(dep) = &ld.depends else { continue };
+
+            // Backward BFS from this locus, remembering how each
+            // subject was reached so the diagnostic can name the path
+            // rather than only the verdict.
+            let mut seen_subj: BTreeMap<&str, Option<(&str, &str)>> =
+                BTreeMap::new(); // subject -> (via locus, from subject)
+            let mut seen_locus: BTreeSet<&str> = BTreeSet::new();
+            seen_locus.insert(ld.name.name.as_str());
+            let mut queue: Vec<(&str, Option<(&str, &str)>)> = subs_of
+                .get(ld.name.name.as_str())
+                .map(|v| v.iter().map(|s| (*s, None)).collect())
+                .unwrap_or_default();
+
+            while let Some((subj, via)) = queue.pop() {
+                if seen_subj.contains_key(subj) {
+                    continue;
+                }
+                seen_subj.insert(subj, via);
+                for pl in pubs_of.get(subj).into_iter().flatten() {
+                    if !seen_locus.insert(*pl) {
+                        continue;
+                    }
+                    for up in subs_of.get(*pl).into_iter().flatten() {
+                        queue.push((*up, Some((*pl, subj))));
+                    }
+                }
+            }
+
+            for (subj, via) in &seen_subj {
+                if dep
+                    .subjects
+                    .iter()
+                    .any(|d| crate::effects::topic_ref_matches(d, subj))
+                {
+                    continue;
+                }
+                let path = match via {
+                    Some((locus, into)) => format!(
+                        " Path: subject `{}` -> `{}` -> subject `{}` -> `{}`.",
+                        pretty(subj),
+                        pretty(locus),
+                        pretty(into),
+                        ld.name.name
+                    ),
+                    None => format!(
+                        " It is subscribed directly by `{}`.",
+                        ld.name.name
+                    ),
+                };
+                diags.push(Diag::ty(
+                    dep.span,
+                    format!(
+                        "declared dependency set violated: `{}` can \
+                         transitively depend on `{}` through the bus, which \
+                         its `@effects(depends: …)` does not declare.{} Add \
+                         the subject to the set, or route the input through \
+                         a subject this locus doesn't reach.",
+                        ld.name.name,
+                        pretty(subj),
+                        path
+                    ),
+                ));
+            }
+        }
+    }
+    diags
+}
+
+/// Merged cross-seed symbols reach here mangled
+/// (`__lib_lib_relay_main_Recalled`). Show the author the name they
+/// wrote, not the resolver's.
+fn pretty(sym: &str) -> String {
+    match sym.strip_prefix("__lib_") {
+        Some(rest) => rest.rsplit('_').next().unwrap_or(rest).to_string(),
+        None => sym.to_string(),
+    }
+}

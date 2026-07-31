@@ -8,6 +8,32 @@ behavior.
 
 ## Unreleased
 
+- **`@effects(depends: {…})` — the backward dual of `causes:`** (#330).
+  `causes:` exists because a call graph stops at a publish and the bus
+  graph continues. Nothing walked it the other way, so an independence
+  claim between two parts of a bus graph was unenforceable: a
+  dependence routed through one republishing intermediary is invisible
+  in every declaration on the depending locus, whose `bus {}` block
+  names only the innocent subject it directly subscribes to.
+
+  A complete declaration, like `publish:` and `causes:` — every subject
+  that can transitively reach any of the locus's handlers must be
+  named, and the violation names the path:
+
+  ```
+  declared dependency set violated: `StatedCarry` can transitively
+  depend on `SumLookup` through the bus, which its
+  `@effects(depends: …)` does not declare. Path: subject `SumLookup` ->
+  `Launderer` -> subject `Recalled` -> `StatedCarry`.
+  ```
+
+  **Locus-level**, because dependence enters through subscriptions and
+  those are declared per-locus; a fn-level `depends:` is a parse error
+  rather than a silent no-op. **Opt-in**, on measured grounds: across a
+  real application (428 topics, 114 loci), transitivity adds nothing
+  beyond the `bus {}` block for 87% of loci, so a mandatory form would
+  be redundant far more often than informative.
+
 - **`@budget(alloc_per_call = 0)` now counts string concatenation.** It
   didn't, so a function doing `"x" + a + "y"` — **34 heap allocations**,
   measured — passed a zero-allocation certificate clean. That is a
@@ -95,6 +121,23 @@ behavior.
 
   A residual +5.6% vs v0.11.9 is NOT the probes and is not explained
   yet; #328 stays open for it.
+
+---
+
+## Unreleased
+
+- **A library's `@effects(publish: {…})` contract now survives being
+  imported.** Subjects reach the analysis as the import resolver's
+  mangled symbol (`__lib_lib_relay_main_Recalled`) while the annotation
+  holds the source text (`Recalled`), and the comparison was exact
+  string equality — so a publish contract written in a library became
+  unsatisfiable the moment anyone imported it. The failure pointed the
+  worst way: the library passed `hale check` standalone and failed only
+  in the consumer's build, naming a symbol the library author never
+  wrote and could not predict, because the mangled name embeds the
+  **importer's chosen alias**. An unqualified topic in an effect set now
+  matches the trailing segment of a merged symbol; a qualified one still
+  matches exactly.
 
 ---
 
