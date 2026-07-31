@@ -98,6 +98,23 @@ behavior.
 
 ---
 
+## Unreleased
+
+- **A library's `@effects(publish: {…})` contract now survives being
+  imported.** Subjects reach the analysis as the import resolver's
+  mangled symbol (`__lib_lib_relay_main_Recalled`) while the annotation
+  holds the source text (`Recalled`), and the comparison was exact
+  string equality — so a publish contract written in a library became
+  unsatisfiable the moment anyone imported it. The failure pointed the
+  worst way: the library passed `hale check` standalone and failed only
+  in the consumer's build, naming a symbol the library author never
+  wrote and could not predict, because the mangled name embeds the
+  **importer's chosen alias**. An unqualified topic in an effect set now
+  matches the trailing segment of a merged symbol; a qualified one still
+  matches exactly.
+
+---
+
 ## v0.12.0 — the effect system becomes trustworthy (2026-07-30)
 
 Minor bump. `@effects` shipped in v0.11.23, but it could be walked

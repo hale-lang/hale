@@ -661,6 +661,50 @@ fn check_class(
     );
 }
 
+/// Does a topic named in an effect set match a RESOLVED subject?
+///
+/// Subjects reach the analysis post-merge, so a topic declared in an
+/// imported seed arrives carrying the IMPORTER's alias:
+/// `import "lib/relay" as relay` yields `relay::Recalled`, and the
+/// same library imported `as zzz` yields `zzz::Recalled`.
+///
+/// A library author cannot know that alias — it is chosen by the
+/// consumer — so before this, a `publish:` contract written in a
+/// library was unsatisfiable the moment anyone imported it. The
+/// library passed `hale check` standalone and failed when used, which
+/// is the worst direction for that failure to point.
+///
+/// Note the resolved form is the MANGLED symbol the import resolver
+/// produces — `__lib_lib_relay_main_Recalled` — not the `relay::Recalled`
+/// the diagnostic pretty-prints. Matching the displayed form is the
+/// trap here; the string the analysis actually holds is the mangled
+/// one.
+///
+/// So an UNQUALIFIED name matches the trailing segment of a merged
+/// symbol, and a qualified one still matches exactly.
+///
+/// Known limitation: two topics with the same trailing name from
+/// different seeds both match an unqualified declaration. That is
+/// more permissive than intended, but it is the permissiveness the
+/// author asked for by writing an unqualified name.
+pub(crate) fn topic_ref_matches(declared: &str, resolved: &str) -> bool {
+    if declared == resolved {
+        return true;
+    }
+    if declared.contains("::") {
+        return false;
+    }
+    // `::`-qualified form, if any path ever produces it.
+    if resolved.rsplit("::").next() == Some(declared) {
+        return true;
+    }
+    // Merged cross-seed symbol: `__lib_<path>_<Topic>`.
+    resolved.starts_with("__lib_")
+        && resolved.len() > declared.len() + 1
+        && resolved.ends_with(declared)
+        && resolved.as_bytes()[resolved.len() - declared.len() - 1] == b'_'
+}
+
 /// `@effects(publish: {A, B})` — the allowed publish set. A publish
 /// to a subject outside the set is a violation; the closed topic set
 /// makes this exact. A computed (non-literal) subject can't be
@@ -674,7 +718,7 @@ fn check_publish_set(
 ) {
     let found = find_effect_site(summary, key, |k| match k {
         alloc_summary::EffectSiteKind::Publish(Some(subj)) => {
-            if allowed.iter().any(|a| a == subj) {
+            if allowed.iter().any(|a| topic_ref_matches(a, subj)) {
                 None
             } else {
                 Some(format!("publishes to `{}`", subj))
@@ -1180,5 +1224,39 @@ fn check_no_panic(
             ));
             diags.push(Diag::ty(sp, "the trap is here".to_string()));
         }
+    }
+}
+
+#[cfg(test)]
+mod topic_ref_tests {
+    use super::topic_ref_matches;
+
+    #[test]
+    fn unqualified_declaration_matches_any_importer_alias() {
+        // the form the analysis actually holds
+        assert!(topic_ref_matches("Recalled", "__lib_lib_relay_main_Recalled"));
+        assert!(topic_ref_matches("Recalled", "__lib_vendor_x_Recalled"));
+        // and the pretty/qualified forms, defensively
+        assert!(topic_ref_matches("Recalled", "relay::Recalled"));
+        assert!(topic_ref_matches("Recalled", "Recalled"));
+    }
+
+    #[test]
+    fn merged_symbol_must_end_on_a_segment_boundary() {
+        // `...FooRecalled` is a different topic, not a match
+        assert!(!topic_ref_matches("Recalled", "__lib_a_FooRecalled"));
+        assert!(!topic_ref_matches("Recalled", "__lib_a_Recalledx"));
+    }
+
+    #[test]
+    fn qualified_declaration_still_matches_exactly() {
+        assert!(topic_ref_matches("relay::Recalled", "relay::Recalled"));
+        assert!(!topic_ref_matches("relay::Recalled", "zzz::Recalled"));
+    }
+
+    #[test]
+    fn different_topics_never_match() {
+        assert!(!topic_ref_matches("Recalled", "relay::SumLookup"));
+        assert!(!topic_ref_matches("Recalled", "Recalledx"));
     }
 }

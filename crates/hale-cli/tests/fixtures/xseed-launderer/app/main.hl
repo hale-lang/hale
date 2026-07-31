@@ -1,0 +1,56 @@
+// Cross-seed launderer (RFC #330).
+//
+// `StatedCarry` is required to be independent of the computation. Its
+// `bus {}` block names only `ExplainAsk` and `Recalled` — neither is a
+// compute topic — yet the magnitude it publishes IS the lookup path's
+// value, routed through a republisher in ANOTHER SEED.
+//
+// Single-seed inspection of this file cannot see it. That is the
+// property under test.
+
+import "lib/relay" as relay;
+
+locus Compute {
+    bus { publish relay::SumLookup; }
+    params { fired: Int = 0; }
+    fn emit(m: Float) {
+        self.fired = self.fired + 1;
+        relay::SumLookup <- relay::Act { mag: m, pos: self.fired };
+    }
+}
+
+locus StatedCarry {
+    bus {
+        subscribe relay::Recalled as on_recalled;
+        publish VerbalCarry;
+    }
+    params { recalled: Float = 0.0; }
+
+    // Reads the laundered value. Names no compute topic.
+    @effects(none: {publish})
+    fn on_recalled(a: relay::Act) { self.recalled = a.mag; }
+
+    @effects(publish: {VerbalCarry})
+    fn on_ask(p: Int) {
+        VerbalCarry <- relay::Act { mag: self.recalled, pos: p };
+    }
+}
+
+topic VerbalCarry { payload: relay::Act; }
+
+locus Sink {
+    bus { subscribe VerbalCarry as on_carry; }
+    params { seen: Float = 0.0; }
+    fn on_carry(a: relay::Act) { self.seen = a.mag; }
+}
+
+main locus App {
+    params {
+        c: Compute = Compute { };
+        s: StatedCarry = StatedCarry { };
+        k: Sink = Sink { };
+    }
+    birth() { self.c.emit(42.0); }
+}
+
+fn main() { App { }; }
