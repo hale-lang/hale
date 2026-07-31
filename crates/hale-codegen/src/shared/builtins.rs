@@ -11,6 +11,40 @@ use inkwell::AddressSpace;
 use crate::codegen::{Cx, SOCKOPT_NAMES};
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// Mark a runtime declaration as a **pure read**: `memory(read)`
+    /// (mask 21 = ArgMem|InaccessibleMem|Other = Ref, per
+    /// `llvm/Support/ModRef.h`) + `nounwind` + `willreturn`. Lets LICM
+    /// hoist the call out of a loop when its arguments are
+    /// loop-invariant, and lets CSE collapse repeated calls.
+    ///
+    /// **Only for accessors over IMMUTABLE data, audited against the
+    /// runtime C.** The bar is: no stores, no out-parameter, no lock,
+    /// and no concurrently-mutable source. A function that reads
+    /// `__atomic_load_n` on a live container fails the last clause —
+    /// hoisting a poll loop's read out of the loop turns a spin into a
+    /// hang. See the stage-1 block in `declare_builtins` for the full
+    /// exclusion list and why each one is excluded.
+    fn mark_pure_read(&self, f: inkwell::values::FunctionValue<'ctx>) {
+        use inkwell::attributes::{Attribute, AttributeLoc};
+        let mem_kind = Attribute::get_named_enum_kind_id("memory");
+        let nounwind_kind = Attribute::get_named_enum_kind_id("nounwind");
+        let willreturn_kind = Attribute::get_named_enum_kind_id("willreturn");
+        f.add_attribute(
+            AttributeLoc::Function,
+            self.context.create_enum_attribute(mem_kind, 21),
+        );
+        f.add_attribute(
+            AttributeLoc::Function,
+            self.context.create_enum_attribute(nounwind_kind, 0),
+        );
+        f.add_attribute(
+            AttributeLoc::Function,
+            self.context.create_enum_attribute(willreturn_kind, 0),
+        );
+    }
+}
+
+impl<'ctx, 'p> Cx<'ctx, 'p> {
     pub(crate) fn declare_builtins(&self) {
         // declare i32 @printf(ptr, ...)
         let i32_t = self.context.i32_type();
@@ -2151,6 +2185,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // encoding as the v0.9.0 static-dispatch block) + nounwind +
         // willreturn lets LICM hoist length reads out of loops and
         // CSE repeated calls.
+        //
+        // 2026-07-31 (#322): the INDEXED siblings join the list.
+        // `lotus_bytes_at` = one bounds check + one byte load,
+        // `lotus_str_byte_at` = strlen + one byte load. Both audited
+        // against the runtime C: no stores, no out-parameters, no
+        // locks. Measured: before this, a loop-invariant
+        // `std::bytes::at(b, 0)` stayed INSIDE the loop body across
+        // 1000 iterations while the annotated `lotus_str_len` in the
+        // same shape was hoisted to `entry:` and the loop folded away
+        // — the only difference was the attribute.
+        //
+        // The immutability argument is what limits the list, and it
+        // is why the container accessors are NOT here. `lotus_vec_len`
+        // / `lotus_hashmap_len` / `lotus_ring_buffer_len` read
+        // concurrently-mutable state (`__atomic_load_n` under
+        // striped/lockfree modes); memory(read) would let LICM hoist a
+        // poll loop's read out and never observe another worker's
+        // update — a hang, not a slowdown. `lotus_vec_get` /
+        // `lotus_hashmap_get` write through an out-parameter, and
+        // `lotus_lru_get` writes a recency tick ON READ. Bytes and
+        // String are immutable values in Hale (BytesBuilder is the
+        // mutable one), so only their accessors qualify.
         {
             use inkwell::attributes::{Attribute, AttributeLoc};
             let noalias_kind = Attribute::get_named_enum_kind_id("noalias");
@@ -2780,8 +2836,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // declare i64 @lotus_bytes_at(ptr bytes, i64 i)
         let bytes_at_ty =
             i64_t.fn_type(&[ptr_t.into(), i64_t.into()], false);
-        self.module
+        let bytes_at_fn = self
+            .module
             .add_function("lotus_bytes_at", bytes_at_ty, None);
+        self.mark_pure_read(bytes_at_fn);
         // 2026-06-13 — std::bytes word-scan + masked-XOR primitives (#4).
         // declare i64 @lotus_bytes_find_byte(ptr b, i64 off, i64 needle)
         self.module.add_function(
@@ -3295,11 +3353,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             &[ptr_t.into(), i64_t.into()],
             false,
         );
-        self.module.add_function(
+        let str_byte_at_fn = self.module.add_function(
             "lotus_str_byte_at",
             str_byte_at_ty,
             None,
         );
+        self.mark_pure_read(str_byte_at_fn);
         self.module.add_function(
             "lotus_str_byte_at_unchecked",
             str_byte_at_ty,
