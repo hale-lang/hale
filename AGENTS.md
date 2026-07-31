@@ -260,6 +260,36 @@ surprises:
 - "Error not addressed" on a `fallible` call → add `or raise` /
   `or default` / `or handler(err)`.
 
+## The loop: the compiler is the oracle
+
+Write, then ask the compiler. Don't reason your way to certainty about
+a rule — `hale check` will tell you in under a second, and its
+diagnostics name the rule and usually the fix.
+
+```sh
+hale check <file-or-dir>     # the oracle: accepts, or says exactly why
+hale build <dir>             # compile to a binary
+hale run <file-or-dir>       # compile + exec
+hale test <dir>              # run *_test.hl files
+hale fmt <path>              # canonical form; zero config
+hale verify <dir>            # like check, but ANY finding fails (CI gate)
+hale doc --stdlib            # every stdlib fn, signature + effect classes
+```
+
+Iterate against `hale check` until it prints `ok: N file(s)
+typechecked`. A rejected program is not a setback; it is the fastest
+feedback in the toolchain.
+
+**Keep a `FRICTION.md`** in the project. When you hit a wall, append
+what you learned — the cause and the working shape — and read it
+before the next task. Large Hale systems stay buildable by agents
+because that file exists, not because anyone remembers.
+
+When something genuinely doesn't fit the patterns above, log it as
+friction rather than coding around it. Foreign shapes (TOML-in-a-locus,
+fluent builders, singletons, decorators) are the usual sign you're
+fighting the language instead of using it.
+
 ## First step
 
 1. Skim `spec/styleguide.md` if you haven't (the seven patterns
@@ -346,6 +376,41 @@ down" is a closure declaration + a member fn + one `violate`
 statement. Don't reach for a `should_exit: Bool` flag plus a
 `while !should_exit { yield; }` loop — the primitives above
 are the supported form.
+
+## Other contracts worth knowing
+
+Beyond the effect assertions above, all opt-in:
+
+- `@phase_effects(birth: {alloc}, run: {})` on a **locus** — what each
+  lifecycle phase may do. `{}` forbids everything; a phase you don't
+  mention is unconstrained. That one line is "no dynamic memory after
+  initialization".
+- `@secret name: T` on a **parameter** — the value must not reach a
+  publish or a log/file sink.
+- `@supervised` on a **locus** — every locus in its subtree must have a
+  failure policy in scope.
+- `@unbounded` on a fn or hook — acknowledges an intentional
+  accumulation and silences the unbounded-allocation advisory.
+- `@form(lru_cache)` joins `vec` / `hashmap` / `ring_buffer` as a
+  cap-bounded collection shape.
+
+## Matching
+
+`match` is an expression as well as a statement, so it can produce a
+value directly rather than through a mutable temporary:
+
+```hale
+let label = match code {
+    200 -> "ok",
+    404 -> "missing",
+    _   -> "other",
+};
+```
+
+Arms use `->`, not `=>`.
+
+Arms may be blocks. `_` is the catch-all and is required when the
+arms don't cover the domain.
 
 ## Hard gotchas (codegen-v0 limits — don't fight these)
 
