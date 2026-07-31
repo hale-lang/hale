@@ -56,6 +56,25 @@ behavior.
 
 ---
 
+## Unreleased
+
+- **`LOTUS_LTO=thin` selects ThinLTO.** `LOTUS_LTO` previously accepted
+  only `1`/`true` and always meant monolithic LTO; it now takes `thin`
+  as well, and an unrecognized value is off rather than an error.
+  Measured median-of-15, after establishing each bench's noise floor on
+  an unchanged binary: `json_parse` (noise 7.3%) **thin -10.9%** vs full
+  -6.0%; `locus_instantiation` (noise 10.8%) thin -8.2% vs full -8.6%.
+  So thin is the flavor to reach for when you want LTO.
+
+  Still **off by default**, and that isn't changing: either mode takes
+  ~1.35-1.43s to link a bench that links in 80ms without LTO, a ~17x
+  dev-loop tax. ThinLTO's usual link-time advantage barely shows here
+  (1337ms vs 1427ms) because a Hale program is one module plus ~5
+  runtime TUs — there is almost nothing to parallelize. Its win is
+  cross-module import quality, not build time.
+
+---
+
 ## v0.12.0 — the effect system becomes trustworthy (2026-07-30)
 
 Minor bump. `@effects` shipped in v0.11.23, but it could be walked
