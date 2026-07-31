@@ -347,6 +347,29 @@ statement. Don't reach for a `should_exit: Bool` flag plus a
 `while !should_exit { yield; }` loop — the primitives above
 are the supported form.
 
+## Hard gotchas (codegen-v0 limits — don't fight these)
+
+These are the ones that bite on a first attempt. Each is a real
+restriction, not a style preference.
+
+- **CQRS / no-locus-return.** A `fn` member of a locus may NOT return
+  a user-declared locus type — `fn get() -> SomeLocus` is rejected.
+  Use parent-child + contract, a bus topic, or delegation. **Free fns
+  CAN return loci** (constructors like `std::io::file::open`), which
+  is why factories are free fns rather than methods.
+- **Strict field access.** A typo'd field (`self.greting`) is a hard
+  error, not a silent unknown. Fix the name.
+- **Empty `if` bodies parse-fail.** Put a `// note` inside, or invert
+  the condition.
+- **Fn-pointer callbacks can't capture** surrounding state. Route
+  state through the bus, reconstruct it inside, or use a locus method
+  with its own `self`.
+- **`hale run` rejects qualified-name struct/locus literals**
+  (`std::http::Request { }`). Use `hale build` and run the binary for
+  programs using path-qualified stdlib types.
+- **No `panic` / `assert`.** Failure is structural (`violate`) or
+  value-level (`fallible`); see above.
+
 ## Pointers
 
 - Spec (canonical contract): `spec/`. Start with
