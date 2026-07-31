@@ -1791,6 +1791,31 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         // OUTER context (the locus/instantiation that created us),
         // null/root from `fn main`.
         {
+            // #328: branch-gate on `lotus_obs_live`, the same
+            // dormant-cost discipline the bus publish/deliver probes
+            // already use. Unconditional, this opaque call cost ~0.85ns
+            // on EVERY locus birth in EVERY program whether or not
+            // anyone ever observes — not because the call is slow, but
+            // because LLVM cannot see through it, so it must assume the
+            // call clobbers memory and stops optimizing across the
+            // whole instantiation path.
+            let obs_live = self.obs_live_check()?;
+            let current_fn = self
+                .builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_parent())
+                .expect("inside a function");
+            let obs_bb = self
+                .context
+                .append_basic_block(current_fn, "locus.obs.birth");
+            let obs_cont_bb = self
+                .context
+                .append_basic_block(current_fn, "locus.obs.birth.cont");
+            self.builder
+                .build_conditional_branch(obs_live, obs_bb, obs_cont_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(obs_bb);
+
             let ptr_t = self.context.ptr_type(AddressSpace::default());
             let obs_fn = self
                 .module
@@ -1811,6 +1836,10 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                     &format!("{}.obs.birth", locus_name),
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_unconditional_branch(obs_cont_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(obs_cont_bb);
         }
         // iris handoff-2 P9: every child instantiated during THIS
         // locus's field-default init records this locus as its
