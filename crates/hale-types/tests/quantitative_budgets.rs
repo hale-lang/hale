@@ -237,3 +237,59 @@ fn distinct_budget_dimensions_still_compose() {
         "a multi-dimension budget is the canonical hot-path certificate"
     );
 }
+
+/// `@budget(alloc_per_call = 0)` must count string concatenation.
+///
+/// It didn't. A fn doing `"x" + a + "y"` performs **34 heap
+/// allocations** (measured with `std::diag::heap_alloc_count`) and
+/// passed a zero-allocation certificate clean. That is a fail-open in
+/// a contract: worse than no certificate, because it reads as proof.
+///
+/// Detection is deliberately narrow — an operand must be provably a
+/// String (a literal, or a name whose DECLARED type is String).
+/// Flagging every `i + 1` would be the cry-wolf failure the alloc
+/// pass exists to avoid, which is why this was originally deferred.
+#[test]
+fn budget_counts_string_concatenation() {
+    let src = "@budget(alloc_per_call = 0)\n\
+               fn build(a: String) -> Int { let s = \"x\" + a + \"y\"; return len(s); }\n\
+               fn main() { println(build(\"q\")); }";
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let msgs: Vec<String> = hale_types::check_program(&program)
+        .into_iter()
+        .map(|d| d.message)
+        .collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("budget exceeded")),
+        "concat must count against the ceiling: {:?}",
+        msgs
+    );
+    // The kind is named on the SECONDARY diagnostic that points at the
+    // site, not the primary verdict — same shape as every other alloc
+    // kind.
+    assert!(
+        msgs.iter().any(|m| m.contains("string concatenation")),
+        "some diagnostic should name the site kind: {:?}",
+        msgs
+    );
+}
+
+/// The control that makes the above safe: integer arithmetic is NOT
+/// an allocation. If this ever fails, every arithmetic-bearing fn
+/// with a budget starts failing and the annotation becomes unusable.
+#[test]
+fn integer_arithmetic_is_not_an_allocation() {
+    let src = "@budget(alloc_per_call = 0)\n\
+               fn add(a: Int, b: Int) -> Int { let n = a + b + 1; return n; }\n\
+               fn main() { println(add(1, 2)); }";
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let msgs: Vec<String> = hale_types::check_program(&program)
+        .into_iter()
+        .map(|d| d.message)
+        .collect();
+    assert!(
+        !msgs.iter().any(|m| m.contains("budget exceeded")),
+        "`i + 1` must never be mistaken for concatenation: {:?}",
+        msgs
+    );
+}

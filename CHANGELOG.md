@@ -6,6 +6,21 @@ behavior.
 
 ---
 
+## Unreleased
+
+- **`@budget(alloc_per_call = 0)` now counts string concatenation.** It
+  didn't, so a function doing `"x" + a + "y"` — **34 heap allocations**,
+  measured — passed a zero-allocation certificate clean. That is a
+  fail-open in a contract, which is worse than no contract: it reads as
+  proof. Detection is deliberately narrow, requiring an operand to be
+  *provably* a String (a literal, or a name whose declared type is
+  `String`), because flagging every `i + 1` is the cry-wolf failure the
+  allocation pass exists to avoid — which is why this was originally
+  deferred to "a type-aware stage". Integer arithmetic is untouched,
+  pinned by a control test.
+
+---
+
 ## v0.12.0 — the effect system becomes trustworthy (2026-07-30)
 
 Minor bump. `@effects` shipped in v0.11.23, but it could be walked

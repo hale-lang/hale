@@ -114,6 +114,10 @@ fn describe_kind(kind: &AllocKind) -> String {
         AllocKind::CollectionInsert(form) => {
             format!("an insert into a growing `@form({})` slot", form)
         }
+        AllocKind::StringConcat => {
+            "a string concatenation (each `+` builds a fresh String)"
+                .to_string()
+        }
     }
 }
 

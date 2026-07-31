@@ -244,6 +244,9 @@ fn describe_alloc(kind: &alloc_summary::AllocKind) -> String {
         alloc_summary::AllocKind::CollectionInsert(f) => {
             format!("a {} insert", f)
         }
+        alloc_summary::AllocKind::StringConcat => {
+            "a string concatenation".to_string()
+        }
     }
 }
 
