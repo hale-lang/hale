@@ -316,6 +316,28 @@ pub struct LocusDecl {
     pub bounded: bool,
     /// GH #265 step 6: `@phase_effects(...)` on this locus.
     pub phase_effects: Option<PhaseEffects>,
+    /// RFC #330: `@effects(depends: {A, B})` on this locus — the
+    /// COMPLETE set of subjects that may transitively reach any of
+    /// its handlers, walking the bus graph BACKWARD.
+    ///
+    /// The dual of `causes:`. `causes:` exists because a call graph
+    /// stops at a publish and the bus graph continues; nothing walked
+    /// it the other way, so an independence claim between two parts
+    /// of a bus graph was unenforceable — a dependence routed through
+    /// one republishing intermediary is invisible in every
+    /// declaration on the depending locus.
+    ///
+    /// Locus-level, not fn-level: dependence enters through
+    /// subscriptions, which are declared per-locus, so the check is
+    /// bus-graph reachability INTO the locus. A per-fn form ("the
+    /// values reaching this handler originate only in these
+    /// subjects") needs field-level dataflow and is out of scope.
+    ///
+    /// `None` = unconstrained. Opt-in: measured over a real
+    /// application, transitivity adds nothing beyond the `bus {}`
+    /// block for 87% of loci, so a mandatory form would be redundant
+    /// far more often than informative.
+    pub depends: Option<DependsSet>,
     /// GH #265: `@supervised` — every locus in this subtree must
     /// have a failure policy in scope. Supervision coverage as a
     /// checked property.
@@ -1576,6 +1598,16 @@ impl EffectClass {
 /// in `hale-types::effects` over the callgraph witness engine; a
 /// violation is a hard error carrying the offending call chain.
 /// Extensible — the set grows with the frontier classification.
+/// RFC #330: `@effects(depends: {A, B})` on a locus.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DependsSet {
+    /// Declared subjects. A subject reaching the locus that is not
+    /// named here is the violation — this is a COMPLETE declaration,
+    /// like `publish:` and `causes:`, not a list of things to forbid.
+    pub subjects: Vec<String>,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EffectAssert {
     /// GH #265: the GENERAL form — `@effects(none: {syscall, block})`

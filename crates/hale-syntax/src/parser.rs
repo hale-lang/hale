@@ -353,6 +353,8 @@ impl Parser {
         let mut export_locus = false;
         let mut bounded_locus = false;
         let mut phase_effects: Option<PhaseEffects> = None;
+        // RFC #330
+        let mut depends: Option<DependsSet> = None;
         let mut supervised_locus = false;
         let mut leading_span: Option<Span> = None;
         loop {
@@ -549,8 +551,18 @@ impl Parser {
                 return Ok(TopDecl::Fn(fn_decl));
             }
             if is_effect {
-                let (effects, espan) = self.parse_effect_asserts()?;
+                let (effects, espan, dep) =
+                    self.parse_effect_asserts_inner()?;
                 let espan = espan.expect("at least one assertion parsed");
+                if let Some(d) = dep {
+                    if depends.is_some() {
+                        return Err(Diag::parse(
+                            d.span,
+                            "duplicate `depends:` clause",
+                        ));
+                    }
+                    depends = Some(d);
+                }
                 // Optional `@hot` and/or `@budget(...)` may follow.
                 let mut hot = false;
                 if matches!(self.peek(), TokenKind::At)
@@ -567,6 +579,33 @@ impl Parser {
                 } else {
                     None
                 };
+                // RFC #330: a `depends:`-only `@effects(...)` precedes
+                // a LOCUS, not a fn — dependence enters through
+                // subscriptions. Fall through to the locus path,
+                // carrying the clause.
+                if depends.is_some()
+                    && effects.is_empty()
+                    && !matches!(self.peek(), TokenKind::Fn)
+                {
+                    continue;
+                }
+                if let Some(d) = &depends {
+                    // Reaching here means a `fn` follows. A fn-level
+                    // `depends:` has nothing to mean — dependence
+                    // enters through subscriptions, declared per-locus
+                    // — so reject it rather than parse it into
+                    // silence. An annotation that parses and does
+                    // nothing is the exact failure this surface
+                    // exists to prevent.
+                    return Err(Diag::parse(
+                        d.span,
+                        "`depends:` is a locus-level contract — put \
+                         `@effects(depends: {…})` on the `locus`, not on \
+                         a fn. Dependence enters through the \
+                         subscriptions declared in the locus's `bus {}` \
+                         block.",
+                    ));
+                }
                 if !matches!(self.peek(), TokenKind::Fn) {
                     return Err(Diag::parse(
                         self.peek_token().span,
@@ -664,7 +703,7 @@ impl Parser {
             ));
         }
         if form.is_some() || locality.is_some() || export_locus || bounded_locus
-            || phase_effects.is_some() || supervised_locus
+            || phase_effects.is_some() || supervised_locus || depends.is_some()
         {
             // Verify a `locus` (or contextual `main locus`)
             // follows.
@@ -689,6 +728,7 @@ impl Parser {
             locus.export = export_locus;
             locus.bounded = bounded_locus;
             locus.phase_effects = phase_effects;
+            locus.depends = depends;
             locus.supervised = supervised_locus;
             return Ok(TopDecl::Locus(locus));
         }
@@ -1276,7 +1316,12 @@ impl Parser {
 
     /// GH #265: `@effects(none: {a, b})` / `@effects(publish: {A, B})`.
     /// The general surface the `@no_*` flags are sugar for.
-    fn parse_effects_annotation(&mut self) -> Result<(Vec<EffectAssert>, Span), Diag> {
+    /// As `parse_effects_annotation`, but also returns a
+    /// `depends:` clause (RFC #330) when present. Locus-level only.
+    fn parse_effects_annotation_inner(
+        &mut self,
+    ) -> Result<(Vec<EffectAssert>, Span, Option<DependsSet>), Diag> {
+        let mut depends: Option<DependsSet> = None;
         let at = self.expect(TokenKind::At, "@")?;
         self.bump(); // `effects`
         self.expect(TokenKind::LParen, "(")?;
@@ -1291,7 +1336,8 @@ impl Parser {
                 _ => {
                     return Err(Diag::parse(
                         key_tok.span,
-                        "expected `none:` or `publish:` inside `@effects(...)`",
+                        "expected `none:`, `publish:`, `causes:` or \
+                         `depends:` inside `@effects(...)`",
                     ))
                 }
             };
@@ -1385,6 +1431,16 @@ impl Parser {
                 "publish" => {
                     out.push(EffectAssert::PublishSet(items));
                 }
+                // RFC #330. Collected here so the locus-annotation
+                // path can lift it; on a fn it is rejected below,
+                // because dependence enters through subscriptions and
+                // those are declared per-locus.
+                "depends" => {
+                    depends = Some(DependsSet {
+                        subjects: items,
+                        span: key_tok.span,
+                    });
+                }
                 "causes" => {
                     let mut classes = Vec::new();
                     for it in &items {
@@ -1418,7 +1474,7 @@ impl Parser {
             break;
         }
         let close = self.expect(TokenKind::RParen, ")")?;
-        Ok((out, at.span.merge(close.span)))
+        Ok((out, at.span.merge(close.span), depends))
     }
 
     /// Consume a run of stacked `@no_*` effect assertions, returning
@@ -1426,8 +1482,28 @@ impl Parser {
     /// an effect assertion (so `@no_block @hot fn` and
     /// `@no_block @budget(...) fn` both parse).
     fn parse_effect_asserts(&mut self) -> Result<(Vec<EffectAssert>, Option<Span>), Diag> {
+        let (a, s, dep) = self.parse_effect_asserts_inner()?;
+        if let Some(d) = dep {
+            // RFC #330: dependence enters through subscriptions, which
+            // are a locus-level declaration, so there is nothing for a
+            // fn-level `depends:` to mean. Rejected explicitly rather
+            // than silently ignored — a contract that parses and does
+            // nothing is the failure mode this whole surface exists to
+            // avoid.
+            return Err(Diag::parse(
+                d.span,
+                "`depends:` is a locus-level contract — put                  `@effects(depends: {…})` on the `locus`, not on a fn.                  Dependence enters through the subscriptions declared                  in the locus's `bus {}` block.",
+            ));
+        }
+        Ok((a, s))
+    }
+
+    fn parse_effect_asserts_inner(
+        &mut self,
+    ) -> Result<(Vec<EffectAssert>, Option<Span>, Option<DependsSet>), Diag> {
         let mut out = Vec::new();
         let mut span: Option<Span> = None;
+        let mut depends: Option<DependsSet> = None;
         loop {
             if !matches!(self.peek(), TokenKind::At) {
                 break;
@@ -1437,7 +1513,11 @@ impl Parser {
                 _ => break,
             };
             if Self::is_effects_form(&name) {
-                let (mut asserts, aspan) = self.parse_effects_annotation()?;
+                let (mut asserts, aspan, dep) =
+                    self.parse_effects_annotation_inner()?;
+                if dep.is_some() {
+                    depends = dep;
+                }
                 out.append(&mut asserts);
                 span = Some(match span {
                     Some(prev) => prev.merge(aspan),
@@ -1462,7 +1542,7 @@ impl Parser {
                 None => at.span,
             });
         }
-        Ok((out, span))
+        Ok((out, span, depends))
     }
 
     /// Lever 2 (2026-07-16): `@budget(alloc_per_call = N)` — an opt-in
@@ -1810,6 +1890,7 @@ impl Parser {
         }
         Ok(LocusDecl {
             phase_effects: None,
+            depends: None,
             supervised: false,
             name,
             is_main,
