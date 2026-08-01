@@ -485,6 +485,12 @@ pub struct AllocSummary {
     /// reported even without the `--warn-unbounded-alloc` survey flag
     /// (the in-source opt-in).
     pub bounded_loci: BTreeSet<String>,
+    /// #333: loci declared `@shared`. A call into one may WAIT on the
+    /// synchronization its fields carry, so it contributes `block` —
+    /// otherwise `@no_block` certifies a mutex acquisition as
+    /// non-blocking, which is precisely what `sync = serialized`
+    /// makes false.
+    pub shared_loci: BTreeSet<String>,
     /// Fns carrying `@unbounded` — an acknowledged-intentional
     /// accumulation. Their leak sites are dropped entirely (the
     /// greppable carve-out), even under the survey flag.
@@ -970,6 +976,7 @@ pub fn summarize_programs_with_renames(
         }
     }
     let mut bounded_loci: BTreeSet<String> = BTreeSet::new();
+    let mut shared_loci: BTreeSet<String> = BTreeSet::new();
     let mut unbounded_fns: BTreeSet<FnKey> = BTreeSet::new();
     // Phase D / D1 — the per-locus storage shape.
     let mut locus_shapes: BTreeMap<String, LocusShape> = BTreeMap::new();
@@ -1185,6 +1192,9 @@ pub fn summarize_programs_with_renames(
                     let locus = l.name.name.clone();
                     if l.bounded {
                         bounded_loci.insert(locus.clone());
+                    }
+                    if l.shared {
+                        shared_loci.insert(locus.clone());
                     }
                     locus_shapes.insert(locus.clone(), locus_shape_of(l));
                     locus_field_types.insert(
