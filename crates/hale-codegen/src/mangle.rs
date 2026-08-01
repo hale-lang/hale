@@ -173,6 +173,101 @@ struct QualifiedRenameApplier<'a> {
 }
 
 impl<'a> QualifiedRenameApplier<'a> {
+    /// #334 / #332: canonicalize a QUALIFIED topic reference the same
+    /// way a qualified type path is canonicalized.
+    ///
+    /// Without this, `subscribe relay::Recalled` kept its qualified
+    /// form while the declaring seed's own `topic Recalled` was
+    /// mangled to `__lib_lib_relay_main_Recalled`. Desugaring then
+    /// resolved the two through different paths — the qualified one
+    /// via `BusSubject::canonical()`, which is syntactic and returns
+    /// the last segment — so ONE topic became TWO subjects in the bus
+    /// graph, and a publisher on one side never reached a subscriber
+    /// on the other.
+    ///
+    /// The bus arm here already rewrote the payload TYPE and
+    /// destructured `{ ty, .. }`, so the subject was simply never
+    /// visited.
+    fn rewrite_bus_subject(&self, subject: &mut BusSubject) {
+        let BusSubject::QualifiedTopic(qn) = subject else { return };
+        if qn.segments.len() < 2 {
+            return;
+        }
+        let segs: Vec<String> =
+            qn.segments.iter().map(|s| s.name.clone()).collect();
+        for (key, mangled) in self.renames {
+            if key.len() == segs.len()
+                && key.iter().zip(segs.iter()).all(|(k, p)| k == p)
+            {
+                let span = qn.segments[0].span;
+                *subject = BusSubject::Topic(Ident {
+                    name: mangled.clone(),
+                    span,
+                });
+                return;
+            }
+        }
+    }
+
+    /// #334: canonicalize a qualified SEND subject.
+    ///
+    /// `relay::SumLookup <- v` parses as
+    /// `Path2 { receiver: Ident("relay"), name: Ident("SumLookup") }`,
+    /// and desugar only rewrites the `Expr::Ident` form, so a
+    /// qualified send never became the topic's wire subject while the
+    /// declaring seed's own reference did. Rewriting it here — the
+    /// same pass and table that canonicalizes the `bus {}` block —
+    /// keeps the two ends of one topic on one identity.
+    fn rewrite_sends_in_block(&self, b: &mut Block) {
+        for s in &mut b.stmts {
+            self.rewrite_sends_in_stmt(s);
+        }
+    }
+
+    fn rewrite_sends_in_if(&self, i: &mut IfStmt) {
+        self.rewrite_sends_in_block(&mut i.then_block);
+        if let Some(e) = &mut i.else_block {
+            match e.as_mut() {
+                ElseBranch::Else(b) => self.rewrite_sends_in_block(b),
+                // Recurse on the branch IN PLACE. Cloning into a
+                // temporary `Stmt::If` compiles and silently discards
+                // every rewrite in the else-if chain.
+                ElseBranch::ElseIf(inner) => self.rewrite_sends_in_if(inner),
+            }
+        }
+    }
+
+    fn rewrite_sends_in_stmt(&self, s: &mut Stmt) {
+        match s {
+            Stmt::Send { subject, .. } => {
+                let Expr::Path(qn) = subject else { return };
+                if qn.segments.len() < 2 {
+                    return;
+                }
+                let segs: Vec<String> =
+                    qn.segments.iter().map(|s| s.name.clone()).collect();
+                for (key, mangled) in self.renames {
+                    if key.len() == segs.len()
+                        && key.iter().zip(segs.iter()).all(|(k, p)| k == p)
+                    {
+                        let span = qn.segments[0].span;
+                        *subject = Expr::Ident(Ident {
+                            name: mangled.clone(),
+                            span,
+                        });
+                        return;
+                    }
+                }
+            }
+            Stmt::If(i) => self.rewrite_sends_in_if(i),
+            Stmt::While { body, .. } | Stmt::For { body, .. } => {
+                self.rewrite_sends_in_block(body)
+            }
+            Stmt::Block(b) => self.rewrite_sends_in_block(b),
+            _ => {}
+        }
+    }
+
     fn rewrite_type_expr(&self, t: &mut TypeExpr) {
         match t {
             TypeExpr::Primitive(_, _) => {}
@@ -345,15 +440,17 @@ impl<'a> QualifiedRenameApplier<'a> {
             LocusMember::Bus(bb) => {
                 for m in &mut bb.members {
                     match m {
-                        BusMember::Subscribe { ty, .. } => {
+                        BusMember::Subscribe { ty, subject, .. } => {
                             if let Some(t) = ty {
                                 self.rewrite_type_expr(t);
                             }
+                            self.rewrite_bus_subject(subject);
                         }
-                        BusMember::Publish { ty, .. } => {
+                        BusMember::Publish { ty, subject, .. } => {
                             if let Some(t) = ty {
                                 self.rewrite_type_expr(t);
                             }
+                            self.rewrite_bus_subject(subject);
                         }
                     }
                 }
@@ -362,6 +459,7 @@ impl<'a> QualifiedRenameApplier<'a> {
                 for p in &mut lc.params {
                     self.rewrite_type_expr(&mut p.ty);
                 }
+                self.rewrite_sends_in_block(&mut lc.body);
             }
             LocusMember::Mode(md) => {
                 if let Some(r) = &mut md.ret {
@@ -374,6 +472,7 @@ impl<'a> QualifiedRenameApplier<'a> {
                 }
             }
             LocusMember::Fn(fd) => {
+                self.rewrite_sends_in_block(&mut fd.body);
                 for p in &mut fd.params {
                     self.rewrite_type_expr(&mut p.ty);
                 }
