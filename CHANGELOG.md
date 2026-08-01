@@ -8,6 +8,23 @@ behavior.
 
 ## Unreleased
 
+- **A direct call into a `sync`-bearing form is attributed too**
+  (#341). The attribution fired at a locus *holding* such a form but
+  not at a call straight into it — backwards, since the direct call is
+  the one plainly taking the lock. Synthesized form methods have no
+  summary entry, so they arrive unresolved with only a bare name; the
+  receiver's type now rides on the call edge, where it was already
+  computed and then discarded.
+
+  The reason `block` is attributed at all is worth stating, because
+  it is a semantic commitment: **placement is not static.** Once
+  placement can be swapped at runtime, whether a mutex ever contends
+  is undecidable at compile time, so a certificate reading "never
+  blocks, we are single-pool today" would be invalidated by a later
+  swap. Conservative is the only sound reading. A form with **no**
+  `sync` discipline takes no lock and stays certifiable — pinned by a
+  control test.
+
 - **`@shared` is now an effect surface** (#340). Shipping `@shared`
   (#333) sanctioned cross-pool sharing, which made three contracts
   false inside code the compiler had blessed — worse than before, when
