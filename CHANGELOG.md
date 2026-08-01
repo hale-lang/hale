@@ -33,26 +33,28 @@ behavior.
   beats a silent false certificate. The witness text says what it
   actually is.
 
-- **`@shared locus` — a declared coordination primitive** (#333).
-  F.31 reasons per field declaration, so it cannot tell a deliberate
-  cross-pool registry from an accidental alias; both look like one
-  instance reachable from two towers. `@shared` is how the author says
-  which one it is, and two checked restraints make that a claim rather
-  than a label: no `bus {}` block (pub/sub names what a system
-  *means*, this role is mechanical), and no direct assignment to its
-  own fields (mutable state belongs to a field whose own form carries
-  a sync discipline).
+- **Cross-pool aliasing is checked precisely, and `@shared` is gone.**
+  The hazard was never "is this shared" — a locus whose mutable state
+  lives entirely behind `sync`-bearing forms is safe to reach from
+  several pools, because the form orders the accesses. The hazard is
+  **unsynchronized** mutable state reachable from two threads, and
+  that is directly checkable: a method assigning `self.<field>`, or a
+  field whose form carries no `sync` discipline.
 
-  A locus so declared may be reached from several pools without the
-  aliasing report; an undeclared one in the identical shape is still
-  reported, or the annotation would be decoration.
+  So the report now names the actual problem — *"holds unsynchronized
+  mutable state: field `histograms` is a `@form(...)` with no `sync`
+  discipline"* — instead of flagging the sharing, and it is silent on
+  a properly synchronized registry with no annotation needed. The
+  `@shared` annotation added earlier in this cycle is removed: it
+  existed to suppress a diagnostic that was too blunt, which was the
+  wrong fix.
 
-  **What it does not do** is prove every field is synchronized.
-  `@form(vec)` has no sync discipline in v1 — a real registry in a
-  downstream fleet holds one `sync = serialized` map beside an
-  unsynchronized vec — so that proof is not yet expressible. The
-  annotation pins the shape and keeps the gap reviewable; the stricter
-  form becomes available once vec has a discipline to name.
+  The effect attribution that hung off it is inferred from structure
+  instead. A locus holding a `sync`-bearing form can take that lock,
+  so `@no_block`, `@deterministic` and `depends:` account for it —
+  without an annotation, because whether the lock exists is a property
+  of the form's own declaration rather than of anyone's intent or of
+  how a consumer wires up placement.
 
 - **Aliasing one locus into two differently-placed towers is now
   reported** (#334, #333). F.31 keeps a locus's methods on one pool's

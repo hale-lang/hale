@@ -485,12 +485,14 @@ pub struct AllocSummary {
     /// reported even without the `--warn-unbounded-alloc` survey flag
     /// (the in-source opt-in).
     pub bounded_loci: BTreeSet<String>,
-    /// #333: loci declared `@shared`. A call into one may WAIT on the
-    /// synchronization its fields carry, so it contributes `block` —
-    /// otherwise `@no_block` certifies a mutex acquisition as
-    /// non-blocking, which is precisely what `sync = serialized`
-    /// makes false.
-    pub shared_loci: BTreeSet<String>,
+    /// #340/#341: loci that hold a form carrying a `sync` discipline.
+    ///
+    /// The LOCK LIVES ON THE FORM, so a call into a locus that holds
+    /// one can take that lock. This is INFERRED from structure — no
+    /// annotation — because whether the lock exists is a property of
+    /// the form's own declaration, not of anyone's intent or of how a
+    /// consumer wires up placement.
+    pub sync_holding_loci: BTreeSet<String>,
     /// Fns carrying `@unbounded` — an acknowledged-intentional
     /// accumulation. Their leak sites are dropped entirely (the
     /// greppable carve-out), even under the survey flag.
@@ -976,7 +978,8 @@ pub fn summarize_programs_with_renames(
         }
     }
     let mut bounded_loci: BTreeSet<String> = BTreeSet::new();
-    let mut shared_loci: BTreeSet<String> = BTreeSet::new();
+    let mut sync_holding_loci: BTreeSet<String> = BTreeSet::new();
+    let mut sync_forms: BTreeSet<String> = BTreeSet::new();
     let mut unbounded_fns: BTreeSet<FnKey> = BTreeSet::new();
     // Phase D / D1 — the per-locus storage shape.
     let mut locus_shapes: BTreeMap<String, LocusShape> = BTreeMap::new();
@@ -1193,8 +1196,10 @@ pub fn summarize_programs_with_renames(
                     if l.bounded {
                         bounded_loci.insert(locus.clone());
                     }
-                    if l.shared {
-                        shared_loci.insert(locus.clone());
+                    if l.form.as_ref().is_some_and(|f| {
+                        f.args.iter().any(|a| a.name.name == "sync")
+                    }) {
+                        sync_forms.insert(locus.clone());
                     }
                     locus_shapes.insert(locus.clone(), locus_shape_of(l));
                     locus_field_types.insert(
@@ -1311,7 +1316,29 @@ pub fn summarize_programs_with_renames(
         );
     }
     summary.bounded_loci = bounded_loci;
-    summary.shared_loci = shared_loci;
+    // Second pass: a locus holding a sync-bearing form can take that
+    // form's lock, so calls into it are potentially blocking.
+    for program in programs {
+        for item in &program.items {
+            let TopDecl::Locus(l) = item else { continue };
+            for m in &l.members {
+                let LocusMember::Params(pb) = m else { continue };
+                for prm in &pb.params {
+                    let Some(TypeExpr::Named { path, .. }) = &prm.ty else {
+                        continue;
+                    };
+                    if path
+                        .segments
+                        .last()
+                        .is_some_and(|s| sync_forms.contains(&s.name))
+                    {
+                        sync_holding_loci.insert(l.name.name.clone());
+                    }
+                }
+            }
+        }
+    }
+    summary.sync_holding_loci = sync_holding_loci;
     summary.unbounded_fns = unbounded_fns;
     summary.locus_shapes = locus_shapes;
     summary
