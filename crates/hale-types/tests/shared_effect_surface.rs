@@ -1,10 +1,11 @@
-//! `@shared` is an effect surface, and three contracts were false
-//! inside it (#340).
+//! A locus holding a `sync`-bearing form is an effect surface
+//! (#340). No annotation: the lock is a property of the form's own
+//! declaration, so holding one is inferred from structure.
 //!
-//! `@shared` (#333) sanctions cross-pool sharing. That made three
-//! contracts reachable inside code the compiler had blessed — worse
-//! than before the annotation existed, when the sharing was
-//! accidental and merely warned about.
+//! `sync = serialized` is a per-map mutex. Any call reaching it can
+//! take that lock — regardless of placement, and regardless of
+//! whether anyone ever shares the containing locus. Three contracts
+//! were false across that boundary.
 
 use hale_syntax::parse_source;
 
@@ -20,7 +21,6 @@ const REG: &str = "\
 type E { k: Int; v: Int; }
 @form(hashmap, sync = serialized)
 locus Counts { capacity { pool entries of E indexed_by k; } }
-@shared
 locus Registry {
     params { store: Counts = Counts { }; }
     fn record(e: E) { self.store.set(e); }
@@ -48,7 +48,7 @@ fn main() {{ App {{ }}; }}"
         ds
     );
     assert!(
-        ds.iter().any(|m| m.contains("@shared locus Registry")),
+        ds.iter().any(|m| m.contains("sync")),
         "and the witness should name why: {:?}",
         ds
     );
@@ -85,12 +85,12 @@ fn depends_reports_the_shared_channel_it_cannot_close_over() {
         "{REG}
 topic Ask {{ payload: E; }}
 @effects(depends: {{Ask}})
-locus Reader {{ params {{ reg: Registry = Registry {{ }}; seen: Int = 0; }}
+locus Reader {{ params {{ reg: Counts = Counts {{ }}; seen: Int = 0; }}
     bus {{ subscribe Ask as on_ask; }}
-    fn on_ask(e: E) {{ self.seen = self.reg.read(e.k); }} }}
+    fn on_ask(e: E) {{ self.reg.set(e); self.seen = e.v; }} }}
 locus P {{ bus {{ publish Ask; }} fn go() {{ Ask <- E {{ k: 1, v: 1 }}; }} }}
-main locus App {{ params {{ r: Registry = Registry {{ }};
-    d: Reader = Reader {{ reg: self.r }}; p: P = P {{ }}; }} }}
+main locus App {{ params {{
+    d: Reader = Reader {{ }}; p: P = P {{ }}; }} }}
 fn main() {{ App {{ }}; }}"
     );
     let ds = diags(&src);

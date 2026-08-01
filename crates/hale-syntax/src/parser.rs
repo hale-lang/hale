@@ -356,8 +356,6 @@ impl Parser {
         // RFC #330
         let mut depends: Option<DependsSet> = None;
         let mut supervised_locus = false;
-        // #333
-        let mut shared_locus = false;
         let mut leading_span: Option<Span> = None;
         loop {
             if !matches!(self.peek(), TokenKind::At) {
@@ -381,10 +379,6 @@ impl Parser {
             // GH #265: `@supervised locus` — supervision coverage.
             let is_supervised = matches!(&kind_tok,
                 TokenKind::Ident(s) if s == "supervised");
-            // #333: `@shared locus` — a coordination primitive,
-            // reachable from more than one pool by design.
-            let is_shared = matches!(&kind_tok,
-                TokenKind::Ident(s) if s == "shared");
             let is_unbounded =
                 matches!(&kind_tok, TokenKind::Ident(s) if s == "unbounded");
             let is_budget =
@@ -458,16 +452,6 @@ impl Parser {
                 let mut fn_decl = self.parse_fn_decl_with_ffi(Some(ffi.clone()), false)?;
                 fn_decl.span = ffi.span.merge(fn_decl.span);
                 return Ok(TopDecl::Fn(fn_decl));
-            }
-            if is_shared {
-                let at = self.expect(TokenKind::At, "@")?;
-                self.bump();
-                shared_locus = true;
-                leading_span = Some(match leading_span {
-                    Some(s) => s.merge(at.span),
-                    None => at.span,
-                });
-                continue;
             }
             if is_supervised {
                 let at = self.expect(TokenKind::At, "@")?;
@@ -720,7 +704,6 @@ impl Parser {
         }
         if form.is_some() || locality.is_some() || export_locus || bounded_locus
             || phase_effects.is_some() || supervised_locus || depends.is_some()
-            || shared_locus
         {
             // Verify a `locus` (or contextual `main locus`)
             // follows.
@@ -747,7 +730,6 @@ impl Parser {
             locus.phase_effects = phase_effects;
             locus.depends = depends;
             locus.supervised = supervised_locus;
-            locus.shared = shared_locus;
             return Ok(TopDecl::Locus(locus));
         }
         match self.peek() {
@@ -1910,7 +1892,6 @@ impl Parser {
             phase_effects: None,
             depends: None,
             supervised: false,
-            shared: false,
             name,
             is_main,
             export: false,

@@ -638,7 +638,7 @@ fn check_class(
                 != 0
                 && k.locus
                     .as_deref()
-                    .is_some_and(|l| summary.shared_loci.contains(l)) =>
+                    .is_some_and(|l| summary.sync_holding_loci.contains(l)) =>
         {
             // Two claims fail on a shared locus, for one reason: its
             // state is reachable from another pool.
@@ -662,13 +662,15 @@ fn check_class(
             // exists to prevent. The witness text below says what it
             // actually is.
             let why = if mask.0 == EffectSet::BLOCK.0 {
-                "reaching it may wait on that locus's synchronization"
+                "reaching it can acquire that lock, which waits on another \
+                 thread"
             } else {
                 "reaching it reads state another pool can change, so the \
                  result is not a function of this call's inputs"
             };
             Some(format!(
-                "`{}` is a method on `@shared locus {}` — {}",
+                "`{}` is a method on `{}`, which holds a form carrying a \
+                 `sync` discipline — {}",
                 k.fn_name,
                 k.locus.as_deref().unwrap_or(""),
                 why

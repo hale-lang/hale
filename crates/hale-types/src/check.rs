@@ -394,8 +394,6 @@ pub fn check_bundle(
     // #334 / #333: F.31 above reasons per field DECLARATION, so it
     // cannot see one instance aliased into two towers.
     check_instance_aliasing(bundle, &mut diags);
-    // #333: the restraints that make `@shared` a claim.
-    check_shared_locus(bundle, &mut diags);
     // F.31-followup (2026-05-28): the nested-long-running-child
     // antipattern. A non-main locus whose `run()` body has work
     // to do, holding a params field of a locus type whose own
@@ -11779,32 +11777,6 @@ fn check_instance_aliasing(
         return;
     };
 
-    // #333: a locus DECLARED `@shared` is a coordination primitive —
-    // being reached from several pools is its purpose, and the
-    // restraints checked in `check_shared_locus` are what make that
-    // claim mean something. Only accidental aliasing is reported.
-    let shared_types: BTreeSet<String> = bundle
-        .programs
-        .values()
-        .flat_map(|p| p.items.iter())
-        .filter_map(|i| match i {
-            TopDecl::Locus(l) if l.shared => Some(l.name.name.clone()),
-            _ => None,
-        })
-        .collect();
-    let declared_shared: BTreeSet<String> = params
-        .params
-        .iter()
-        .filter(|p| {
-            p.ty.as_ref().is_some_and(|te| {
-                matches!(te, TypeExpr::Named { path, .. }
-                    if path.segments.last().is_some_and(|s|
-                        shared_types.contains(&s.name)))
-            })
-        })
-        .map(|p| p.name.name.clone())
-        .collect();
-
     // shared field -> [(holder field, pool, span)]
     let mut holders: BTreeMap<String, Vec<(String, PoolId, Span)>> =
         BTreeMap::new();
@@ -11826,10 +11798,34 @@ fn check_instance_aliasing(
     }
 
     for (shared, hs) in &holders {
-        if hs.len() < 2 || declared_shared.contains(shared) {
+        if hs.len() < 2 {
             continue;
         }
         let first_pool = &hs[0].1;
+        // The type of the aliased field, so we can ask whether it
+        // actually holds unsynchronized state.
+        let aliased_ty = params
+            .params
+            .iter()
+            .find(|p| &p.name.name == shared)
+            .and_then(|p| p.ty.as_ref())
+            .and_then(|te| match te {
+                TypeExpr::Named { path, .. } => {
+                    path.segments.last().map(|s| s.name.clone())
+                }
+                _ => None,
+            });
+        let Some(why) = aliased_ty
+            .as_deref()
+            .and_then(|ty| locus_has_unsynchronized_state(bundle, ty))
+        else {
+            // Every mutable field is behind a `sync` discipline, so
+            // the form orders the accesses and the alias is safe.
+            // This is the case that used to need `@shared` to
+            // silence — the check was too blunt, not the program
+            // wrong.
+            continue;
+        };
         if let Some(other) =
             hs.iter().find(|(_, pool, _)| pool != first_pool)
         {
@@ -11852,15 +11848,13 @@ fn check_instance_aliasing(
                 other.2,
                 format!(
                     "locus `self.{}` is shared by `{}` and `{}`, which are \
-                     placed on different pools, so its methods can run on \
-                     both threads. F.31 keeps a locus's methods on ONE \
-                     pool, and that guarantee reasons per field \
-                     declaration — it does not survive aliasing one \
-                     instance into two towers. This is safe only if every \
-                     mutable field is behind a `sync = ...` form; \
-                     otherwise give each holder its own instance or \
-                     coordinate through the bus.",
-                    shared, hs[0].0, other.0
+                     placed on different pools, and it holds \
+                     unsynchronized mutable state: {}. Two threads can \
+                     reach that state with nothing ordering them. Put the \
+                     state behind a form carrying a `sync` discipline, \
+                     give each holder its own instance, or coordinate \
+                     through the bus.",
+                    shared, hs[0].0, other.0, why
                 ),
             ));
         }
@@ -11890,80 +11884,6 @@ fn collect_self_field_refs(e: &Expr, out: &mut Vec<String>) {
             }
         }
         _ => {}
-    }
-}
-
-/// #333: the restraints that make `@shared` a claim rather than a
-/// label.
-///
-/// A shared locus is a COORDINATION PRIMITIVE — its whole role is
-/// mediated access to state reachable from more than one pool. Two
-/// rules follow from that role and both are checked:
-///
-///   1. No `bus {}` block. Pub/sub is domain-oriented and names what
-///      a system MEANS; this role is mechanical and names what it
-///      DOES. A locus is one or the other, never both. Enforcing the
-///      split also keeps the bus graph free of nodes that exist for
-///      plumbing reasons.
-///   2. No direct assignment to its own fields. Mutable state belongs
-///      to the fields' own disciplines — `@form(hashmap, sync =
-///      serialized)` and friends — not to a bare `self.n = ...` that
-///      two threads can execute at once.
-///
-/// What this does NOT do is prove every field is individually
-/// synchronized. `@form(vec)` has no sync discipline in v1, so that
-/// proof is not yet expressible; a real registry in a downstream
-/// fleet holds one synchronized map and one unsynchronized vec. The
-/// annotation declares the intent and pins the shape so the gap is
-/// reviewable, and the stricter form becomes available once vec has a
-/// discipline to name.
-fn check_shared_locus(bundle: &Bundle, diags: &mut Vec<Diag>) {
-    for program in bundle.programs.values() {
-        for item in &program.items {
-            let TopDecl::Locus(l) = item else { continue };
-            if !l.shared {
-                continue;
-            }
-            for m in &l.members {
-                match m {
-                    LocusMember::Bus(bb) => {
-                        diags.push(Diag::ty(
-                            bb.span,
-                            format!(
-                                "`@shared locus {}` may not declare a `bus \
-                                 {{}}` block. A shared locus is a \
-                                 coordination primitive — its role is \
-                                 mechanical, and pub/sub is where a system \
-                                 says what it MEANS. Split the two: keep \
-                                 the shared state here and put the \
-                                 subscriptions on a domain locus that \
-                                 holds it.",
-                                l.name.name
-                            ),
-                        ));
-                    }
-                    LocusMember::Fn(fd) => {
-                        collect_self_assign_spans(&fd.body, &mut |span| {
-                            diags.push(Diag::ty(
-                                span,
-                                format!(
-                                    "`@shared locus {}` may not assign to \
-                                     its own fields. It is reachable from \
-                                     more than one pool, so a bare \
-                                     assignment is a race; hold mutable \
-                                     state in a field whose own form \
-                                     carries a sync discipline (e.g. \
-                                     `@form(hashmap, sync = serialized)`) \
-                                     and mutate it through that.",
-                                    l.name.name
-                                ),
-                            ));
-                        });
-                    }
-                    _ => {}
-                }
-            }
-        }
     }
 }
 
@@ -12002,4 +11922,75 @@ fn collect_self_assign_in_stmt(s: &Stmt, f: &mut impl FnMut(Span)) {
         Stmt::Block(b) => collect_self_assign_spans(b, f),
         _ => {}
     }
+}
+
+/// #341 follow-up: does aliasing this locus across pools actually
+/// race?
+///
+/// The hazard was never "is it shared" — a locus whose mutable state
+/// lives entirely behind `sync`-bearing forms is safe to reach from
+/// several pools, because the form's discipline orders the accesses.
+/// The hazard is **unsynchronized** mutable state reachable from two
+/// threads, and that is directly checkable:
+///
+///   - a method assigning `self.<field> = ...` mutates a plain field
+///     with nothing ordering it
+///   - a field whose type is a form WITHOUT a `sync` kwarg is mutable
+///     through its synthesized methods with nothing ordering it
+///
+/// Either makes the alias a race. Neither makes it safe by
+/// declaration, which is why this needs no annotation.
+fn locus_has_unsynchronized_state(
+    bundle: &Bundle,
+    locus_ty: &str,
+) -> Option<String> {
+    let mut decl: Option<&LocusDecl> = None;
+    let mut forms: BTreeMap<String, bool> = BTreeMap::new();
+    for program in bundle.programs.values() {
+        for item in &program.items {
+            let TopDecl::Locus(l) = item else { continue };
+            if l.name.name == locus_ty {
+                decl = Some(l);
+            }
+            if let Some(f) = &l.form {
+                let synced =
+                    f.args.iter().any(|a| a.name.name == "sync");
+                forms.insert(l.name.name.clone(), synced);
+            }
+        }
+    }
+    let l = decl?;
+
+    for m in &l.members {
+        match m {
+            LocusMember::Fn(fd) => {
+                let mut hit: Option<String> = None;
+                collect_self_assign_spans(&fd.body, &mut |_| {
+                    hit.get_or_insert_with(|| {
+                        format!("`{}` assigns its own fields", fd.name.name)
+                    });
+                });
+                if let Some(h) = hit {
+                    return Some(h);
+                }
+            }
+            LocusMember::Params(pb) => {
+                for prm in &pb.params {
+                    let Some(TypeExpr::Named { path, .. }) = &prm.ty else {
+                        continue;
+                    };
+                    let Some(seg) = path.segments.last() else { continue };
+                    if forms.get(&seg.name) == Some(&false) {
+                        return Some(format!(
+                            "field `{}` is a `@form({})` with no `sync` \
+                             discipline",
+                            prm.name.name, seg.name
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }

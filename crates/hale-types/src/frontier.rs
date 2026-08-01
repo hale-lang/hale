@@ -531,11 +531,21 @@ pub fn depends_diags(programs: &[&Program], graph: &BusGraph) -> Vec<Diag> {
         }
     }
 
-    let shared_loci: BTreeSet<String> = programs
+    // #340: forms carrying a `sync` discipline. A locus holding one
+    // is an input channel with no bus edge — another pool writes it,
+    // this locus reads it, and nothing in the message graph records
+    // that. Inferred from the form's own declaration; no annotation.
+    let sync_forms: BTreeSet<String> = programs
         .iter()
         .flat_map(|p| p.items.iter())
         .filter_map(|i| match i {
-            TopDecl::Locus(l) if l.shared => Some(l.name.name.clone()),
+            TopDecl::Locus(l)
+                if l.form.as_ref().is_some_and(|f| {
+                    f.args.iter().any(|a| a.name.name == "sync")
+                }) =>
+            {
+                Some(l.name.name.clone())
+            }
             _ => None,
         })
         .collect();
@@ -545,6 +555,30 @@ pub fn depends_diags(programs: &[&Program], graph: &BusGraph) -> Vec<Diag> {
         for item in &p.items {
             let TopDecl::Locus(ld) = item else { continue };
             let Some(dep) = &ld.depends else { continue };
+            for m in &ld.members {
+                let LocusMember::Params(pb) = m else { continue };
+                for prm in &pb.params {
+                    let Some(TypeExpr::Named { path, .. }) = &prm.ty else {
+                        continue;
+                    };
+                    let Some(seg) = path.segments.last() else { continue };
+                    if !sync_forms.contains(&seg.name) {
+                        continue;
+                    }
+                    diags.push(Diag::ty(
+                        dep.span,
+                        format!(
+                            "declared dependency set is incomplete: \
+                             `{}` holds `{}` as `{}`, a form carrying a \
+                             `sync` discipline — shared state another \
+                             pool can write. That is an input channel \
+                             outside the bus graph, and `depends:` closes \
+                             over the message graph only.",
+                            ld.name.name, seg.name, prm.name.name
+                        ),
+                    ));
+                }
+            }
 
             // Backward BFS from this locus, remembering how each
             // subject was reached so the diagnostic can name the path
@@ -573,36 +607,6 @@ pub fn depends_diags(programs: &[&Program], graph: &BusGraph) -> Vec<Diag> {
                 }
             }
 
-            // #333: a `@shared` locus is an input channel with no bus
-            // edge — another pool writes it, this locus reads it, and
-            // nothing in the message graph records that. Report it
-            // rather than letting the closure claim completeness it
-            // does not have.
-            for m in &ld.members {
-                let LocusMember::Params(pb) = m else { continue };
-                for prm in &pb.params {
-                    let Some(TypeExpr::Named { path, .. }) = &prm.ty else {
-                        continue;
-                    };
-                    let Some(seg) = path.segments.last() else { continue };
-                    if !shared_loci.contains(&seg.name) {
-                        continue;
-                    }
-                    diags.push(Diag::ty(
-                        dep.span,
-                        format!(
-                            "declared dependency set is incomplete: \
-                             `{}` holds `@shared locus {}` as `{}`, which \
-                             is an input channel outside the bus graph — \
-                             another pool can write state this locus \
-                             reads. `depends:` closes over the message \
-                             graph only, so it cannot account for that \
-                             route.",
-                            ld.name.name, seg.name, prm.name.name
-                        ),
-                    ));
-                }
-            }
             for (subj, via) in &seen_subj {
                 if dep
                     .subjects
