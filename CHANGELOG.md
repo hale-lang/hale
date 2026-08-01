@@ -8,6 +8,33 @@ behavior.
 
 ## Unreleased
 
+- **One topic now has one identity across a seed boundary** (#334,
+  closes #332). A qualified topic reference (`relay::Recalled`) kept
+  its qualified form while the declaring seed's own `topic Recalled`
+  was mangled to `__lib_lib_relay_main_Recalled`, and desugaring
+  resolved the two through different paths — the qualified one via
+  `BusSubject::canonical()`, which is *syntactic* and returns the last
+  path segment. One topic became two subjects in the bus graph.
+
+  Everything downstream of that split is fixed together: a library
+  locus subscribing to its own topic now receives an importing
+  application's publish (its handler previously never fired); the
+  library's subscription is no longer reported dead; and `depends:`
+  follows a republisher across a seed, which was explicitly a lower
+  bound when that feature shipped.
+
+  The fix canonicalizes qualified topic references in the same pass
+  and against the same rename table that already canonicalized
+  qualified *type* paths — the bus arm there destructured `{ ty, .. }`
+  and never visited the subject.
+
+  **Behaviour change worth noting:** qualified topics now participate
+  in orphan detection, which they never did. An unqualified topic in
+  the same shape has always warned; five smoke-test binaries in a
+  downstream fleet gain "published but has no subscriber" warnings
+  that are true of those programs. Warnings only — exit codes are
+  unchanged.
+
 - **`hale check` now compares types at call boundaries** (#335). It
   compared types at assignment sites and never at calls, so a
   wrong-typed argument or return reached codegen and surfaced as

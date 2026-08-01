@@ -49,8 +49,14 @@ main locus App {
         c: Compute = Compute { };
         s: StatedCarry = StatedCarry { };
         k: Sink = Sink { };
+        // the launderer itself, one seed away
+        r: relay::Launderer = relay::Launderer { };
     }
     birth() { self.c.emit(42.0); }
+    // Observable end-to-end: the magnitude only reaches `recalled` by
+    // travelling app -> lib (SumLookup) -> lib republish (Recalled)
+    // -> app. Read at dissolve so the bus has dispatched.
+    dissolve() { println("final carry = ", self.s.recalled); }
 }
 
 fn main() { App { }; }
