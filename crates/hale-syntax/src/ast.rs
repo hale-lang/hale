@@ -342,6 +342,22 @@ pub struct LocusDecl {
     /// have a failure policy in scope. Supervision coverage as a
     /// checked property.
     pub supervised: bool,
+    /// #333: `@shared` — a COORDINATION PRIMITIVE, not a domain
+    /// participant. Declares that this locus is reachable from more
+    /// than one pool BY DESIGN, which F.31's per-field-declaration
+    /// reasoning cannot otherwise distinguish from an accidental
+    /// alias.
+    ///
+    /// The restraints are what make it meaningful, and both are
+    /// checked: no `bus {}` block (pub/sub is domain-oriented, this
+    /// role is mechanical), and no direct assignment to its own
+    /// fields (mutable state belongs to the fields' own
+    /// disciplines, e.g. `@form(hashmap, sync = serialized)`).
+    ///
+    /// It declares intent and pins the shape. It does NOT prove the
+    /// fields are individually synchronized — `@form(vec)` has no
+    /// sync discipline in v1, so that proof is not yet expressible.
+    pub shared: bool,
     pub members: Vec<LocusMember>,
     pub span: Span,
 }
