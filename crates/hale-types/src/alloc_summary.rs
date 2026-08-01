@@ -1311,6 +1311,7 @@ pub fn summarize_programs_with_renames(
         );
     }
     summary.bounded_loci = bounded_loci;
+    summary.shared_loci = shared_loci;
     summary.unbounded_fns = unbounded_fns;
     summary.locus_shapes = locus_shapes;
     summary

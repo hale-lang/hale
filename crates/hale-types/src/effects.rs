@@ -619,6 +619,61 @@ fn check_class(
         _ => unreachable!("handled above"),
     };
     let mut pred = |probe: &Probe<'_>| match probe {
+        // #333: a call into a `@shared` locus may WAIT on the
+        // synchronization its fields carry. A `sync = serialized`
+        // form is a per-map mutex, and acquiring one is a thread
+        // wait — exactly what `block` means.
+        //
+        // Reported HERE rather than by descending, because the wait
+        // happens inside the C runtime and there is no leaf site in
+        // any Hale body to find. Without it, `@no_block` certified a
+        // mutex acquisition as non-blocking, and `@shared` made that
+        // reachable inside code the compiler had blessed.
+        Probe::Resolved(k, _)
+            if (mask.0
+                & (EffectSet::BLOCK.0
+                    | EffectSet::TIME.0
+                    | EffectSet::ENTROPY.0
+                    | EffectSet::ENV.0))
+                != 0
+                && k.locus
+                    .as_deref()
+                    .is_some_and(|l| summary.shared_loci.contains(l)) =>
+        {
+            // Two claims fail on a shared locus, for one reason: its
+            // state is reachable from another pool.
+            //
+            //   `block`  — a `sync = ...` form is a lock, and
+            //              acquiring it waits on another thread.
+            //   `time` / `entropy` / `env` — the classes
+            //              `@deterministic` forbids. A shared read is
+            //              not a function of the call's inputs,
+            //              because another pool can change the value
+            //              between two identical calls. Same
+            //              distinction the docs draw between
+            //              `monotonic_ns()` and `time_from_unix(n)`.
+            //
+            // The class LABEL is approximate for the second group —
+            // a shared read is not literally a clock read, and it
+            // wants its own effect class. Reporting it under the
+            // determinism classes is deliberate in the meantime: an
+            // imprecise label on a true finding beats a silent false
+            // certificate, which is the failure this whole surface
+            // exists to prevent. The witness text below says what it
+            // actually is.
+            let why = if mask.0 == EffectSet::BLOCK.0 {
+                "reaching it may wait on that locus's synchronization"
+            } else {
+                "reaching it reads state another pool can change, so the \
+                 result is not a function of this call's inputs"
+            };
+            Some(format!(
+                "`{}` is a method on `@shared locus {}` — {}",
+                k.fn_name,
+                k.locus.as_deref().unwrap_or(""),
+                why
+            ))
+        }
         Probe::Unresolved(name, _) => {
             let segs: Vec<&str> = name.split("::").collect();
             let Some(eff) = crate::stdlib_surface::effects_for(&segs) else {

@@ -8,6 +8,31 @@ behavior.
 
 ## Unreleased
 
+- **`@shared` is now an effect surface** (#340). Shipping `@shared`
+  (#333) sanctioned cross-pool sharing, which made three contracts
+  false inside code the compiler had blessed — worse than before, when
+  the sharing was accidental and merely warned about. All three now
+  hold:
+
+  - **`@no_block`** catches reaching a shared locus. A `sync = …` form
+    is a lock and acquiring it waits on another thread, which is what
+    `block` means; certifying it as non-blocking was a false hot-path
+    certificate.
+  - **`@deterministic`** catches a shared read. Another pool can change
+    the value between two calls with identical arguments, so the result
+    is not a function of the inputs — the same distinction the docs
+    draw between `monotonic_ns()` and `time_from_unix(n)`.
+  - **`depends:`** reports a `@shared` field as an input channel it
+    cannot close over, rather than claiming a completeness the message
+    graph cannot give it.
+
+  The class label is approximate for the determinism group — a shared
+  read is not literally a clock read, and it wants its own effect
+  class. Reporting it under the classes `@deterministic` forbids is
+  deliberate in the meantime: an imprecise label on a true finding
+  beats a silent false certificate. The witness text says what it
+  actually is.
+
 - **`@shared locus` — a declared coordination primitive** (#333).
   F.31 reasons per field declaration, so it cannot tell a deliberate
   cross-pool registry from an accidental alias; both look like one
