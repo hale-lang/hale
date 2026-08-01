@@ -391,6 +391,9 @@ pub fn check_bundle(
     // not a direct method call. See spec/types.md
     // § "Single-threaded-method invariant (F.31)".
     check_placement_single_thread(bundle, top, &mut diags);
+    // #334 / #333: F.31 above reasons per field DECLARATION, so it
+    // cannot see one instance aliased into two towers.
+    check_instance_aliasing(bundle, &mut diags);
     // F.31-followup (2026-05-28): the nested-long-running-child
     // antipattern. A non-main locus whose `run()` body has work
     // to do, holding a params field of a locus type whose own
@@ -11710,5 +11713,154 @@ fn lit_ty(lit: &Literal) -> Ty {
         Literal::Duration(_) => Ty::Prim(PrimType::Duration),
         Literal::Time(_) => Ty::Prim(PrimType::Time),
         Literal::Bytes(_) => Ty::Prim(PrimType::Bytes),
+    }
+}
+
+/// #334 / #333: one locus instance may not be shared by two
+/// main-locus fields placed on different pools.
+///
+/// F.31 keeps a locus's methods on its own pool's thread, but it
+/// reasons per FIELD DECLARATION: for `self.s.bump()` inside
+/// `WorkerA`, `s` has no placement entry of its own so it inherits
+/// WorkerA's pool, and WorkerB reasons identically about its own `s`.
+/// Neither is wrong about its own field — they are wrong about each
+/// other, and nothing related the two declarations back to the single
+/// object they both name.
+///
+/// The result was a silent data race: two pinned workers mutating one
+/// locus lost ~30% of their writes with `hale check` reporting `ok`.
+///
+/// Scope, deliberately: the STATIC params-init tower of the main
+/// locus. Instances created dynamically (in a loop, via `accept()`)
+/// have no static identity to reason about, and they inherit their
+/// creator's pool, so they are not the shape this protects.
+fn check_instance_aliasing(
+    bundle: &Bundle,
+    diags: &mut Vec<Diag>,
+) {
+    let mut main: Option<&LocusDecl> = None;
+    for program in bundle.programs.values() {
+        for item in &program.items {
+            if let TopDecl::Locus(l) = item {
+                if l.is_main {
+                    main = Some(l);
+                }
+            }
+        }
+    }
+    let Some(main) = main else { return };
+
+    let placement: BTreeMap<String, PoolId> = main
+        .members
+        .iter()
+        .find_map(|m| match m {
+            LocusMember::Placement(pb) => Some(pb),
+            _ => None,
+        })
+        .map(|pb| {
+            pb.entries
+                .iter()
+                .map(|e| {
+                    (
+                        e.field.name.clone(),
+                        placement_spec_to_pool(&e.spec, &e.field.name),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let Some(params) = main.members.iter().find_map(|m| match m {
+        LocusMember::Params(pb) => Some(pb),
+        _ => None,
+    }) else {
+        return;
+    };
+
+    // shared field -> [(holder field, pool, span)]
+    let mut holders: BTreeMap<String, Vec<(String, PoolId, Span)>> =
+        BTreeMap::new();
+    for p in &params.params {
+        let ParamInit::Value(init) = &p.init else { continue };
+        let pool = placement
+            .get(&p.name.name)
+            .cloned()
+            .unwrap_or(PoolId::Cooperative("main".to_string()));
+        let mut refs = Vec::new();
+        collect_self_field_refs(init, &mut refs);
+        for r in refs {
+            holders.entry(r).or_default().push((
+                p.name.name.clone(),
+                pool.clone(),
+                p.span,
+            ));
+        }
+    }
+
+    for (shared, hs) in &holders {
+        if hs.len() < 2 {
+            continue;
+        }
+        let first_pool = &hs[0].1;
+        if let Some(other) =
+            hs.iter().find(|(_, pool, _)| pool != first_pool)
+        {
+            // A WARNING, not an error, and deliberately so. The
+            // sanctioned way to share state across pools is a
+            // `@form(..., sync = ...)` locus, and a plain locus whose
+            // mutable state sits entirely behind such fields is a
+            // legitimate design — two applications in a downstream
+            // fleet do exactly that, with the reasoning written in a
+            // comment above their placement block.
+            //
+            // Distinguishing "all mutable state is synchronized" from
+            // "this races" needs the declared shared-locus surface
+            // discussed on #333; until that exists, reporting the
+            // aliasing without failing the build is the honest
+            // position. The race it points at is real: two pinned
+            // workers mutating one plain locus lose ~30% of their
+            // writes.
+            diags.push(Diag::warn(
+                other.2,
+                format!(
+                    "locus `self.{}` is shared by `{}` and `{}`, which are \
+                     placed on different pools, so its methods can run on \
+                     both threads. F.31 keeps a locus's methods on ONE \
+                     pool, and that guarantee reasons per field \
+                     declaration — it does not survive aliasing one \
+                     instance into two towers. This is safe only if every \
+                     mutable field is behind a `sync = ...` form; \
+                     otherwise give each holder its own instance or \
+                     coordinate through the bus.",
+                    shared, hs[0].0, other.0
+                ),
+            ));
+        }
+    }
+}
+
+/// `self.<field>` references appearing as values inside a locus
+/// initializer, which is how one instance reaches two towers.
+fn collect_self_field_refs(e: &Expr, out: &mut Vec<String>) {
+    match e {
+        Expr::Field { receiver, name, .. }
+        | Expr::Path2 { receiver, name, .. } => {
+            if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
+                out.push(name.name.clone());
+            } else {
+                collect_self_field_refs(receiver, out);
+            }
+        }
+        Expr::Struct { inits, .. } => {
+            for f in inits {
+                collect_self_field_refs(&f.value, out);
+            }
+        }
+        Expr::Call { args, .. } => {
+            for a in args {
+                collect_self_field_refs(a, out);
+            }
+        }
+        _ => {}
     }
 }

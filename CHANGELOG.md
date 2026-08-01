@@ -8,6 +8,27 @@ behavior.
 
 ## Unreleased
 
+- **Aliasing one locus into two differently-placed towers is now
+  reported** (#334, #333). F.31 keeps a locus's methods on one pool's
+  thread, but reasons per *field declaration*: each holder correctly
+  concludes it owns its own field, and nothing related the two
+  declarations back to the single object they both name. Two pinned
+  workers each doing 100k increments on one shared locus produced
+  ~140k of 200k with `hale check` reporting `ok`.
+
+  A **warning, not an error**, deliberately. The sanctioned way to
+  share across pools is a `@form(..., sync = ...)` locus, and a plain
+  locus whose mutable state sits entirely behind such fields is a
+  legitimate design — two applications in a downstream fleet do
+  exactly that, with the reasoning written above their placement
+  block. Distinguishing those from a real race needs a declared
+  shared-locus surface; until that exists, reporting without failing
+  the build is the honest position.
+
+  Scoped to the static params-init tower of the main locus, which is
+  the domain placement already operates on. Instances created
+  dynamically inherit their creator's pool and are not this shape.
+
 - **One topic now has one identity across a seed boundary** (#334,
   closes #332). A qualified topic reference (`relay::Recalled`) kept
   its qualified form while the declaring seed's own `topic Recalled`
