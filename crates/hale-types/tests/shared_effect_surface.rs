@@ -119,3 +119,48 @@ fn an_ordinary_locus_call_is_still_non_blocking() {
         ds
     );
 }
+
+/// #341: a DIRECT call into a synthesized form method. These have no
+/// summary entry, so they arrive `Unresolved` with only a bare name —
+/// the receiver type rides on the edge instead. Before this, a call
+/// THROUGH a holder was caught while the direct call was not, which is
+/// backwards: the direct call is the one plainly taking the lock.
+#[test]
+fn a_direct_call_into_a_sync_form_is_caught() {
+    let ds = diags(
+        "type E { k: Int; v: Int; }\n\
+         @form(hashmap, sync = serialized)\n\
+         locus Counts { capacity { pool entries of E indexed_by k; } }\n\
+         locus Direct { params { c: Counts = Counts { }; }\n\
+           @no_block fn hot(e: E) { self.c.set(e); } }\n\
+         main locus App { params { d: Direct = Direct { }; } }\n\
+         fn main() { App { }; }",
+    );
+    assert!(
+        ds.iter().any(|m| m.contains("must not reach `block`")),
+        "a direct call into a sync form must be caught: {:?}",
+        ds
+    );
+}
+
+/// The control that keeps the attribution honest: a form with NO sync
+/// discipline takes no lock, so it must stay certifiable. Without
+/// this, keying on "is a form" rather than "carries a discipline"
+/// would pass its own tests while making every collection blocking.
+#[test]
+fn a_form_without_a_sync_discipline_stays_certifiable() {
+    let ds = diags(
+        "type E { k: Int; v: Int; }\n\
+         @form(hashmap)\n\
+         locus Plain { capacity { pool entries of E indexed_by k; } }\n\
+         locus W { params { c: Plain = Plain { }; }\n\
+           @no_block @deterministic fn hot(e: E) { self.c.set(e); } }\n\
+         main locus App { params { w: W = W { }; } }\n\
+         fn main() { App { }; }",
+    );
+    assert!(
+        !ds.iter().any(|m| m.contains("must not reach")),
+        "an unsynchronized form takes no lock: {:?}",
+        ds
+    );
+}

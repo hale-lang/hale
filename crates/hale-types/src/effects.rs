@@ -676,6 +676,41 @@ fn check_class(
                 why
             ))
         }
+        // #341: a DIRECT call into a synthesized form method
+        // (`counts.set(x)`). These have no summary entry, so they
+        // arrive Unresolved with only a bare name — the receiver type
+        // rides on the edge instead.
+        //
+        // `block` is attributed because placement is not static:
+        // whether the lock ever contends is undecidable at compile
+        // time once placement can be swapped at runtime, so a
+        // certificate reading "never blocks, we are single-pool
+        // today" would be invalidated by a later swap. Conservative is
+        // the only sound reading.
+        Probe::Unresolved(_, edge)
+            if (mask.0
+                & (EffectSet::BLOCK.0
+                    | EffectSet::TIME.0
+                    | EffectSet::ENTROPY.0
+                    | EffectSet::ENV.0))
+                != 0
+                && edge
+                    .recv_ty
+                    .as_deref()
+                    .is_some_and(|t| summary.sync_forms.contains(t)) =>
+        {
+            let why = if mask.0 == EffectSet::BLOCK.0 {
+                "acquiring its lock can wait on another thread"
+            } else {
+                "reading it sees state another pool can change, so the \
+                 result is not a function of this call's inputs"
+            };
+            Some(format!(
+                "`{}` carries a `sync` discipline — {}",
+                edge.recv_ty.as_deref().unwrap_or(""),
+                why
+            ))
+        }
         Probe::Unresolved(name, _) => {
             let segs: Vec<&str> = name.split("::").collect();
             let Some(eff) = crate::stdlib_surface::effects_for(&segs) else {

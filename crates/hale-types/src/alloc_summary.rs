@@ -310,6 +310,17 @@ pub enum Callee {
 #[derive(Debug, Clone)]
 pub struct CallEdge {
     pub callee: Callee,
+    /// #341: the receiver's declared type name for a method call.
+    ///
+    /// A SYNTHESIZED form method (`counts.set(x)`) has no summary
+    /// entry, so it resolves to `Unresolved("set")` — a bare name with
+    /// the receiver discarded. That lost the one fact an effect
+    /// predicate needs about it: whether the receiver's form carries a
+    /// `sync` discipline, and therefore a lock.
+    ///
+    /// The name was already computed one line earlier to attempt
+    /// resolution; this keeps it instead of throwing it away.
+    pub recv_ty: Option<String>,
     pub loop_depth: u32,
     /// True if the call is inside an unbounded loop — then the callee is
     /// invoked unboundedly many times regardless of its own multiplicity.
@@ -493,6 +504,10 @@ pub struct AllocSummary {
     /// the form's own declaration, not of anyone's intent or of how a
     /// consumer wires up placement.
     pub sync_holding_loci: BTreeSet<String>,
+    /// #341: form loci carrying a `sync` discipline — the forms
+    /// themselves, not the loci that hold them. A direct call into one
+    /// takes its lock.
+    pub sync_forms: BTreeSet<String>,
     /// Fns carrying `@unbounded` — an acknowledged-intentional
     /// accumulation. Their leak sites are dropped entirely (the
     /// greppable carve-out), even under the survey flag.
@@ -1339,6 +1354,7 @@ pub fn summarize_programs_with_renames(
         }
     }
     summary.sync_holding_loci = sync_holding_loci;
+    summary.sync_forms = sync_forms;
     summary.unbounded_fns = unbounded_fns;
     summary.locus_shapes = locus_shapes;
     summary
@@ -2118,6 +2134,7 @@ impl<'a> Walker<'a> {
     }
 
     fn record_call(&mut self, callee: &Expr, span: Span, depth: u32, escape: Escape) {
+        let mut recv_ty: Option<String> = None;
         let resolved = match callee {
             Expr::Ident(id) => {
                 let key = FnKey::free_fn(id.name.clone());
@@ -2165,6 +2182,7 @@ impl<'a> Walker<'a> {
                     // decorative outside free-fn code.
                     self.receiver_type_name(receiver).cloned()
                 };
+                recv_ty = owner.clone();
                 match owner {
                     Some(ty) => {
                         let key = FnKey::method(ty, name.name.clone());
@@ -2180,6 +2198,7 @@ impl<'a> Walker<'a> {
             _ => Callee::Unresolved("<expr>".to_string()),
         };
         self.calls.push(CallEdge {
+            recv_ty,
             callee: resolved,
             loop_depth: depth,
             in_unbounded_loop: self.loop_stack.iter().any(|bounded| !bounded),
