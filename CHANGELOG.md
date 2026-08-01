@@ -8,6 +8,27 @@ behavior.
 
 ## Unreleased
 
+- **`@shared locus` — a declared coordination primitive** (#333).
+  F.31 reasons per field declaration, so it cannot tell a deliberate
+  cross-pool registry from an accidental alias; both look like one
+  instance reachable from two towers. `@shared` is how the author says
+  which one it is, and two checked restraints make that a claim rather
+  than a label: no `bus {}` block (pub/sub names what a system
+  *means*, this role is mechanical), and no direct assignment to its
+  own fields (mutable state belongs to a field whose own form carries
+  a sync discipline).
+
+  A locus so declared may be reached from several pools without the
+  aliasing report; an undeclared one in the identical shape is still
+  reported, or the annotation would be decoration.
+
+  **What it does not do** is prove every field is synchronized.
+  `@form(vec)` has no sync discipline in v1 — a real registry in a
+  downstream fleet holds one `sync = serialized` map beside an
+  unsynchronized vec — so that proof is not yet expressible. The
+  annotation pins the shape and keeps the gap reviewable; the stricter
+  form becomes available once vec has a discipline to name.
+
 - **Aliasing one locus into two differently-placed towers is now
   reported** (#334, #333). F.31 keeps a locus's methods on one pool's
   thread, but reasons per *field declaration*: each holder correctly

@@ -394,6 +394,8 @@ pub fn check_bundle(
     // #334 / #333: F.31 above reasons per field DECLARATION, so it
     // cannot see one instance aliased into two towers.
     check_instance_aliasing(bundle, &mut diags);
+    // #333: the restraints that make `@shared` a claim.
+    check_shared_locus(bundle, &mut diags);
     // F.31-followup (2026-05-28): the nested-long-running-child
     // antipattern. A non-main locus whose `run()` body has work
     // to do, holding a params field of a locus type whose own
@@ -11777,6 +11779,32 @@ fn check_instance_aliasing(
         return;
     };
 
+    // #333: a locus DECLARED `@shared` is a coordination primitive —
+    // being reached from several pools is its purpose, and the
+    // restraints checked in `check_shared_locus` are what make that
+    // claim mean something. Only accidental aliasing is reported.
+    let shared_types: BTreeSet<String> = bundle
+        .programs
+        .values()
+        .flat_map(|p| p.items.iter())
+        .filter_map(|i| match i {
+            TopDecl::Locus(l) if l.shared => Some(l.name.name.clone()),
+            _ => None,
+        })
+        .collect();
+    let declared_shared: BTreeSet<String> = params
+        .params
+        .iter()
+        .filter(|p| {
+            p.ty.as_ref().is_some_and(|te| {
+                matches!(te, TypeExpr::Named { path, .. }
+                    if path.segments.last().is_some_and(|s|
+                        shared_types.contains(&s.name)))
+            })
+        })
+        .map(|p| p.name.name.clone())
+        .collect();
+
     // shared field -> [(holder field, pool, span)]
     let mut holders: BTreeMap<String, Vec<(String, PoolId, Span)>> =
         BTreeMap::new();
@@ -11798,7 +11826,7 @@ fn check_instance_aliasing(
     }
 
     for (shared, hs) in &holders {
-        if hs.len() < 2 {
+        if hs.len() < 2 || declared_shared.contains(shared) {
             continue;
         }
         let first_pool = &hs[0].1;
@@ -11861,6 +11889,117 @@ fn collect_self_field_refs(e: &Expr, out: &mut Vec<String>) {
                 collect_self_field_refs(a, out);
             }
         }
+        _ => {}
+    }
+}
+
+/// #333: the restraints that make `@shared` a claim rather than a
+/// label.
+///
+/// A shared locus is a COORDINATION PRIMITIVE — its whole role is
+/// mediated access to state reachable from more than one pool. Two
+/// rules follow from that role and both are checked:
+///
+///   1. No `bus {}` block. Pub/sub is domain-oriented and names what
+///      a system MEANS; this role is mechanical and names what it
+///      DOES. A locus is one or the other, never both. Enforcing the
+///      split also keeps the bus graph free of nodes that exist for
+///      plumbing reasons.
+///   2. No direct assignment to its own fields. Mutable state belongs
+///      to the fields' own disciplines — `@form(hashmap, sync =
+///      serialized)` and friends — not to a bare `self.n = ...` that
+///      two threads can execute at once.
+///
+/// What this does NOT do is prove every field is individually
+/// synchronized. `@form(vec)` has no sync discipline in v1, so that
+/// proof is not yet expressible; a real registry in a downstream
+/// fleet holds one synchronized map and one unsynchronized vec. The
+/// annotation declares the intent and pins the shape so the gap is
+/// reviewable, and the stricter form becomes available once vec has a
+/// discipline to name.
+fn check_shared_locus(bundle: &Bundle, diags: &mut Vec<Diag>) {
+    for program in bundle.programs.values() {
+        for item in &program.items {
+            let TopDecl::Locus(l) = item else { continue };
+            if !l.shared {
+                continue;
+            }
+            for m in &l.members {
+                match m {
+                    LocusMember::Bus(bb) => {
+                        diags.push(Diag::ty(
+                            bb.span,
+                            format!(
+                                "`@shared locus {}` may not declare a `bus \
+                                 {{}}` block. A shared locus is a \
+                                 coordination primitive — its role is \
+                                 mechanical, and pub/sub is where a system \
+                                 says what it MEANS. Split the two: keep \
+                                 the shared state here and put the \
+                                 subscriptions on a domain locus that \
+                                 holds it.",
+                                l.name.name
+                            ),
+                        ));
+                    }
+                    LocusMember::Fn(fd) => {
+                        collect_self_assign_spans(&fd.body, &mut |span| {
+                            diags.push(Diag::ty(
+                                span,
+                                format!(
+                                    "`@shared locus {}` may not assign to \
+                                     its own fields. It is reachable from \
+                                     more than one pool, so a bare \
+                                     assignment is a race; hold mutable \
+                                     state in a field whose own form \
+                                     carries a sync discipline (e.g. \
+                                     `@form(hashmap, sync = serialized)`) \
+                                     and mutate it through that.",
+                                    l.name.name
+                                ),
+                            ));
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+fn collect_self_assign_spans(b: &Block, f: &mut impl FnMut(Span)) {
+    for s in &b.stmts {
+        collect_self_assign_in_stmt(s, f);
+    }
+}
+
+fn collect_self_assign_in_stmt(s: &Stmt, f: &mut impl FnMut(Span)) {
+    match s {
+        Stmt::Assign { target, span, .. } => {
+            // `self.n = ...` is head `self` with a field tail. A bare
+            // `n = ...` (head only) is a local, not shared state.
+            if target.head.name == "self" && !target.tail.is_empty() {
+                f(*span);
+            }
+        }
+        Stmt::If(i) => {
+            collect_self_assign_spans(&i.then_block, f);
+            if let Some(e) = &i.else_block {
+                match e.as_ref() {
+                    ElseBranch::Else(b) => collect_self_assign_spans(b, f),
+                    ElseBranch::ElseIf(inner) => {
+                        collect_self_assign_in_stmt(
+                            &Stmt::If(inner.clone()),
+                            f,
+                        );
+                    }
+                }
+            }
+        }
+        Stmt::While { body, .. } | Stmt::For { body, .. } => {
+            collect_self_assign_spans(body, f)
+        }
+        Stmt::Block(b) => collect_self_assign_spans(b, f),
         _ => {}
     }
 }
