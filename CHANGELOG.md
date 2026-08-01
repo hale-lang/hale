@@ -8,6 +8,27 @@ behavior.
 
 ## Unreleased
 
+- **`hale check` now compares types at call boundaries** (#335). It
+  compared types at assignment sites and never at calls, so a
+  wrong-typed argument or return reached codegen and surfaced as
+  `unsupported in codegen v0: fn \`take\` arg 0 type mismatch` — a
+  plain type error wearing a backend limitation's clothes. Arguments
+  are now checked for free fns, locus methods, `self.` calls,
+  interface-slot calls and builtins, and return types are checked in
+  non-fallible fns (only fallible bodies had a check).
+
+  This matters because `hale check` is the documented oracle: AGENTS.md
+  tells coding models to iterate against it until it prints `ok`, so
+  `ok` has to mean the program compiles.
+
+  Three legal coercions are preserved and pinned by tests, because a
+  first cut broke two of them: `Int` → `Float` widening at a call
+  (legal at a call, still rejected at an assignment); a satisfying
+  locus passed to an interface-typed parameter (nominal comparison
+  would reject it, so the structural check owns that case); and
+  `StringView` → `String` / `BytesView` → `Bytes` at read-position
+  arg sites (F.30b, epoch-checked unpack).
+
 - **`@effects(depends: {…})` — the backward dual of `causes:`** (#330).
   `causes:` exists because a call graph stops at a publish and the bus
   graph continues. Nothing walked it the other way, so an independence

@@ -360,6 +360,7 @@ pub fn check_bundle(
             in_closure: false,
             in_on_failure: false,
             fallible_ctx: None,
+            return_ctx: None,
             wasm_target,
             or_value_discarded: false,
             generic_fns,
@@ -5222,6 +5223,11 @@ struct Checker<'a> {
     /// payload type, and to gate the `err` implicit binding on
     /// `or`-substitute RHS scopes.
     fallible_ctx: Option<(Ty, Ty)>,
+    /// #335: the enclosing fn's declared return type, for ANY fn.
+    /// `fallible_ctx` only covered fallible bodies, so a plain
+    /// `fn f() -> Int { return "s"; }` had no return check at all and
+    /// surfaced at codegen as "unsupported in codegen v0".
+    return_ctx: Option<Ty>,
     /// WASM plan: true when the bundle declares `target wasm` /
     /// `target browser_js`. Gates the POSIX-only stdlib (no syscalls in
     /// the browser sandbox) at typecheck — see `wasm_unavailable_stdlib`.
@@ -8433,6 +8439,12 @@ impl<'a> Checker<'a> {
         }
         // v1.x-FORM-1: push fallible_ctx if this fn is fallible.
         let prev_fallible = self.fallible_ctx.take();
+        // #335: and the declared return type for every fn.
+        let prev_return = self.return_ctx.take();
+        self.return_ctx = decl
+            .ret
+            .as_ref()
+            .map(|te| resolve_type_expr(te, self.known));
         if let Some(payload_te) = &decl.fallible {
             let success_ret = match &decl.ret {
                 Some(te) => resolve_type_expr(te, self.known),
@@ -8449,6 +8461,7 @@ impl<'a> Checker<'a> {
         self.check_block(&decl.body);
         self.locals.pop();
         self.fallible_ctx = prev_fallible;
+        self.return_ctx = prev_return;
         self.current_locus = prev_locus;
     }
 
@@ -8654,6 +8667,28 @@ impl<'a> Checker<'a> {
                     // fallible body.
                     if let Some((expected_ret, _)) = &self.fallible_ctx {
                         if !expected_ret.assignable_from(&got) {
+                            self.diags.push(Diag::ty(
+                                e.span(),
+                                format!(
+                                    "return: expected `{}`, got `{}`",
+                                    expected_ret.display(),
+                                    got.display()
+                                ),
+                            ));
+                        }
+                    } else if let Some(expected_ret) = &self.return_ctx {
+                        // #335: the non-fallible case, which had no
+                        // check. Same Unknown-permissive rule, and the
+                        // same Int -> Float widening a call site
+                        // allows.
+                        let widening = matches!(
+                            (expected_ret, &got),
+                            (
+                                Ty::Prim(PrimType::Float),
+                                Ty::Prim(PrimType::Int)
+                            )
+                        );
+                        if !widening && !expected_ret.assignable_from(&got) {
                             self.diags.push(Diag::ty(
                                 e.span(),
                                 format!(
@@ -10578,6 +10613,79 @@ impl<'a> Checker<'a> {
                     for (i, (param_ty, arg_ty)) in
                         params.iter().zip(arg_tys.iter()).enumerate()
                     {
+                        // #335: compare the declared parameter type
+                        // against the argument. This loop already had
+                        // the callee's params and the arg types in
+                        // hand — it checked interface conformance
+                        // below and arity above, but never the types
+                        // themselves, so `take("s")` on
+                        // `fn take(n: Int)` reached codegen and
+                        // surfaced as "unsupported in codegen v0".
+                        //
+                        // `assignable_from` is Unknown-permissive on
+                        // both sides, so anything the checker could
+                        // not resolve stays silent rather than
+                        // becoming a false positive.
+                        //
+                        // Int -> Float widening is legal at a CALL
+                        // (codegen emits the conversion) though not at
+                        // an assignment, so it is allowed explicitly
+                        // here rather than by relaxing
+                        // `assignable_from`.
+                        let widening = matches!(
+                            (param_ty, arg_ty),
+                            (
+                                Ty::Prim(PrimType::Float),
+                                Ty::Prim(PrimType::Int)
+                            )
+                        );
+                        // F.30 / F.30b: a view coerces to its owned
+                        // form at a read-position fn-arg site, and
+                        // codegen emits the epoch-checked unpack. This
+                        // is legal and common in real code — the
+                        // in-tree corpus simply has no call site that
+                        // does it, so a first cut of this check
+                        // flagged seven files in a downstream
+                        // application that build fine.
+                        let view_coerces = matches!(
+                            (param_ty, arg_ty),
+                            (
+                                Ty::Prim(PrimType::String),
+                                Ty::Prim(PrimType::StringView)
+                            ) | (
+                                Ty::Prim(PrimType::Bytes),
+                                Ty::Prim(PrimType::BytesView)
+                            )
+                        );
+                        // An interface-typed parameter legitimately
+                        // accepts any locus that satisfies it, and
+                        // `assignable_from` is nominal so it would
+                        // reject that. The structural check below owns
+                        // this case; skip it here rather than
+                        // duplicating (or contradicting) it.
+                        let param_is_iface = matches!(
+                            param_ty,
+                            Ty::Named(n) if matches!(
+                                self.top.lookup(n),
+                                Some(TopSymbol::Interface(_))
+                            )
+                        );
+                        if !widening
+                            && !view_coerces
+                            && !param_is_iface
+                            && !param_ty.assignable_from(arg_ty)
+                        {
+                            self.diags.push(Diag::ty(
+                                callee.span(),
+                                format!(
+                                    "argument {} type mismatch: expected \
+                                     `{}`, got `{}`",
+                                    i,
+                                    param_ty.display(),
+                                    arg_ty.display()
+                                ),
+                            ));
+                        }
                         if let (Ty::Named(iface_name), Ty::Named(arg_name)) =
                             (param_ty, arg_ty)
                         {
