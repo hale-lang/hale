@@ -1517,15 +1517,18 @@ impl Parser {
                 "causes" => {
                     let mut classes = Vec::new();
                     for it in &items {
-                        match EffectClass::from_ident(it) {
-                            Some(c) => classes.push(c),
-                            None => {
-                                return Err(Diag::parse(
-                                    key_tok.span,
-                                    format!("unknown effect class `{}`", it),
-                                ))
-                            }
-                        }
+                        // #345: user classes travel over the bus like
+                        // built-ins, so `causes:` must accept them.
+                        // Interning here was missed when user classes
+                        // landed, which made the causal diagnostic
+                        // unfollowable: it said "add the class to the
+                        // declaration" and the declaration then failed
+                        // to parse.
+                        classes.push(
+                            EffectClass::from_ident(it).unwrap_or_else(
+                                || EffectClass::User(self.intern_effect(it)),
+                            ),
+                        );
                     }
                     out.push(EffectAssert::Causes(classes));
                 }

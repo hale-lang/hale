@@ -8,6 +8,28 @@ behavior.
 
 ## Unreleased
 
+- **An undeclared effect class is now an error** (#345). Interning
+  happened on an `effect NAME;` declaration and on a bare reference in
+  `@effects(...)` alike, so a misspelling minted a brand-new class that
+  nothing carries — `@effects(none: { monye })` typechecked clean on a
+  fn that called a declared `money` source. Same failure as the mask
+  overflow from the other side: there the class had no bit, here it has
+  no carriers, and both yield a certificate quietly true of nothing.
+  The diagnostic offers the nearest declared name.
+- **User effect classes travel over the bus** (#345). `causes:` infers
+  each subscriber's effects from `frontier::infer_effects`, which
+  unioned a leaf's `carries` only when something CALLED it — a fn's own
+  `is: {…}` was invisible to its own set, so a subscriber declaring
+  `is: {money}` contributed nothing to the publisher's causal set. The
+  identical shape with a built-in class reported the violation
+  correctly, which is why spot-checks missed it. `@effects(causes: {…})`
+  also never learned to intern user classes, so the diagnostic's own
+  advice led to a parse error — the feature was unreachable from both
+  ends. The docs, spec and published article all claimed this worked.
+- **The causal diagnostic and the manifest name user classes** (#345).
+  `render_effects` knows only built-ins, so a user class rendered as
+  nothing: `can transitively cause  through the bus`.
+
 - **User effect classes resolve across a seed boundary** (#345). Was
   single-seed at v1: `EffectClass::User(i)` indexes the *declaring*
   seed's intern table, and every seed interns from zero, so two seeds

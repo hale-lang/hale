@@ -61,6 +61,16 @@ pub fn infer_effects(
             return EffectSet::PURE;
         };
         let mut acc = EffectSet::PURE;
+        // #345: what THIS fn declares it carries. The callee arm below
+        // unions a leaf's `carries` when something calls it, but a fn's
+        // own classification was invisible to its own inferred set — so
+        // a bus subscriber declaring `is: {money}` contributed nothing
+        // to `causes_diags`, which infers each subscriber's effects
+        // from here. A user class silently did not travel over the bus,
+        // while every built-in did.
+        if let Some(c) = summary.carries.get(key) {
+            acc = acc.union(*c);
+        }
         if !fs.sites.is_empty() {
             acc = acc.union(EffectSet::ALLOC);
         }
@@ -103,7 +113,18 @@ pub fn infer_effects(
 
 /// Render an effect set as sorted class names — the manifest's
 /// stable form.
+///
+/// Built-ins only; a user class has no static name. Prefer
+/// [`render_effects_named`] anywhere the seed's intern table is in
+/// reach, or a set containing a user class renders as if it were
+/// empty — which reads as "causes nothing".
 pub fn render_effects(e: EffectSet) -> Vec<String> {
+    render_effects_named(e, &[])
+}
+
+/// [`render_effects`] with the seed's user effect-class table, so
+/// `User(i)` bits render as the name the author declared.
+pub fn render_effects_named(e: EffectSet, names: &[String]) -> Vec<String> {
     if e.is_unclassified() {
         return vec!["unclassified".to_string()];
     }
@@ -119,6 +140,16 @@ pub fn render_effects(e: EffectSet) -> Vec<String> {
     ] {
         if e.contains(mask) {
             out.push(name.to_string());
+        }
+    }
+    for (i, n) in names.iter().enumerate() {
+        if (i as u32) < EffectClass::USER_CAPACITY {
+            let bit = EffectSet(
+                1 << (EffectClass::BUILTIN_BITS as u64 + i as u64),
+            );
+            if e.contains(bit) {
+                out.push(n.clone());
+            }
         }
     }
     out
@@ -190,6 +221,14 @@ pub fn causes_diags(
     programs: &[&Program],
     graph: &BusGraph,
 ) -> Vec<Diag> {
+    // The seed's user effect-class table, so an excess class renders
+    // as `money` rather than as nothing at all.
+    let names: Vec<String> = programs
+        .iter()
+        .map(|p| &p.effect_names)
+        .find(|n| !n.is_empty())
+        .cloned()
+        .unwrap_or_default();
     let mut roots: Vec<(FnKey, Vec<EffectClass>, Span)> = Vec::new();
     for p in programs {
         for item in &p.items {
@@ -255,7 +294,7 @@ pub fn causes_diags(
                      class to the declaration, or route the publish to a \
                      subject whose subscribers don't perform it.",
                     key.display(),
-                    render_effects(excess).join(", "),
+                    render_effects_named(excess, &names).join(", "),
                     if via.is_empty() {
                         String::new()
                     } else {

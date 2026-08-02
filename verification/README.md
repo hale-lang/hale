@@ -37,6 +37,41 @@ GenMC v0.17.0 builds against the project's LLVM 18. See
 | `bus_queue_model.c` | `lotus_bus_queue_*` in `lotus_arena.c` — the cooperative-pool queue's `g_bus_has_pinned`-gated **conditional lock** on enqueue/drain (concurrent enqueues under the lock; drain snapshots under the lock) | ✅ verified: **2 executions, no errors** |
 | `arena_subregion_model.c` | `lotus_arena_create_subregion` / `lotus_arena_destroy` in `lotus_arena.c` — the per-parent `subregion_lock` guarding the child-slot freelist (`free_list` / `free_count` / `next_slot`): concurrent create (pop-or-bump) + destroy (push) on the same parent must never hand the same slot to two live children. The per-thread chunk pool itself is `__thread` (no cross-thread surface); this is the real "arena locks" surface. | ✅ verified: **6 executions, no errors** |
 
+## Coverage gaps and drift (audited 2026-08-02)
+
+The models are **transcriptions**, not the shipping code, and nothing
+detects when the two diverge. A model that still passes proves a
+property of whatever `lotus_arena.c` looked like when the model was
+written. Audited by extracting each mirrored function's
+synchronization skeleton (atomics, fences, mutexes) at the model's
+commit and at HEAD:
+
+| Model | Skeleton drift |
+|---|---|
+| `arena_subregion_model.c` | none — the transcribed protocol is unchanged |
+| `lockfree_hashmap_model.c` | new untranscribed atomics in `lotus_hashmap_iter_next` / `iter_batch` (iteration under concurrent writers) |
+| `mailbox_model.c` | new untranscribed atomics in `lotus_mpsc_ring_peek_nonempty` / `size_approx` |
+| `coop_pool_model.c` | `lotus_coop_pool_enable_async_io` lost its atomic |
+| `bus_queue_model.c` | enqueue body moved into `bus_queue_enqueue_inner`; protocol shape preserved, but it gained a **third** conditional-unlock path for the bounded-capacity branch (#255) that the model predates |
+
+Also untranscribed: `lotus_bus_queue_enqueue_st`, the **zero-
+synchronization** enqueue used when codegen proves no thread crosses
+the bus. Its safety is a *compiler* property (`no_pinned ==
+!program_has_offthread`), not a runtime protocol, so GenMC cannot
+speak to it. `crates/hale-codegen/tests/bus_devirt_no_pinned.rs` pins
+it by example — two specific programs — rather than structurally. The
+residual risk is `program_has_offthread` becoming incomplete: the
+runtime has a **second** writer of `g_bus_has_pinned`
+(`lotus_coop_pool_start_all`, gated on `g_coop_pool_count > 0`) whose
+correspondence to the compile-time predicate nothing asserts.
+
+`spsc_ring_model.c` runs (the runner globs `*_model.c`) but has no row
+in the table above.
+
+None of this means a model is wrong. It means "verified" in the table
+below is a claim about a past revision, and re-transcription is owed
+before it can be read as a claim about HEAD.
+
 ## How to run
 
 ```sh
