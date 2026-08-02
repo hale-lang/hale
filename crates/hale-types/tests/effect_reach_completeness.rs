@@ -57,8 +57,8 @@ reaches!(through_an_interface_slot, "interface E { fn emit() -> Int; }\n\
     fn f(u: U) -> Int { return u.go(); }\n\
     fn main() { let u = U { }; println(f(u)); }");
 
-/// An UNREGISTERED `std::` path must fail closed. Absent and
-/// unclassified are the same claim: the compiler cannot vouch for it.
+// An UNREGISTERED `std::` path must fail closed. Absent and
+// unclassified are the same claim: the compiler cannot vouch for it.
 reaches!(absent_frontier_row, "@no_syscall\n\
     fn f() -> Int { return std::nowhere::mystery(1); }\n\
     fn main() { println(f()); }");
@@ -81,17 +81,17 @@ reaches!(a_recursive_cycle, "@no_syscall\n\
       return f(n - 1); }\n\
     fn main() { println(f(3)); }");
 
-/// A `mode` body was never collected into the callgraph, so its
-/// callees were invisible and an assertion passed straight through
-/// one. Modes are called like methods, so they key the same way.
+// A `mode` body was never collected into the callgraph, so its
+// callees were invisible and an assertion passed straight through
+// one. Modes are called like methods, so they key the same way.
 reaches!(through_a_mode, "locus L { params { s: Float = 1.0; }\n\
       mode bulk() -> Float { println(\"io\"); return self.s; }\n\
       @no_syscall fn c() -> Float { return self.bulk(); } }\n\
     main locus App { params { l: L = L { }; } birth() { println(self.l.c()); } }\n\
     fn main() { App { }; }");
 
-/// Through the BUS, which a call graph alone cannot follow — the
-/// reason `causes:` exists.
+// Through the BUS, which a call graph alone cannot follow — the
+// reason `causes:` exists.
 reaches!(through_a_bus_subscriber, "type P { n: Int; }\n\
     topic T { payload: P; }\n\
     locus Sub { bus { subscribe T as on_t; } params { n: Int = 0; }\n\
@@ -101,8 +101,8 @@ reaches!(through_a_bus_subscriber, "type P { n: Int; }\n\
     main locus App { params { s: Sub = Sub { }; p: Pub = Pub { }; } }\n\
     fn main() { App { }; }");
 
-/// A `sync`-bearing form takes a lock, and placement is not static —
-/// so contention cannot be ruled out at compile time.
+// A `sync`-bearing form takes a lock, and placement is not static —
+// so contention cannot be ruled out at compile time.
 reaches!(a_sync_bearing_form, "type E { k: Int; v: Int; }\n\
     @form(hashmap, sync = serialized)\n\
     locus C { capacity { pool entries of E indexed_by k; } }\n\
