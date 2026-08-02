@@ -8,6 +8,19 @@ behavior.
 
 ## Unreleased
 
+- **A user effect-class violation names the class you declared**
+  (#345). `EffectClass::as_str` returns a `&'static str`, so a
+  `User(i)` — an index into the seed's intern table — had no static
+  name to answer with and returned `<user effect>`. Every diagnostic
+  that reached for it printed that placeholder, discarding the one
+  thing the feature exists to carry: the report now says ``must not
+  reach `money` `` where it said ``must not reach `<user effect>` ``.
+- **Spec and docs catch up with the effect surface**. `depends:`
+  (#330) and user-declared classes (#345) shipped without reaching
+  `spec/verification.md`, `spec/tokens.md`, or the `docs/src/effects.md`
+  chapter, contrary to the same-commit rule in `CLAUDE.md`. Both are
+  now specified, including the boundaries: `depends:` closes over the
+  bus graph only, and user classes are single-seed with 22 available.
 - **User-declared effect classes** (#345). A program can name its own
   effect classes and have the compiler propagate them:
 

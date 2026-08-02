@@ -346,6 +346,63 @@ assume the others in a build:
   effects reached THROUGH the bus are reported; direct effects are
   the `none:` form's job. Actor systems without a declared message
   graph structurally cannot offer this.
+- **Backward causality — `@effects(depends: {…})`** (#330,
+  2026-07-31). The dual of `causes:`. `causes:` walks the bus graph
+  forward; nothing walked it backward, so an independence claim
+  between two parts of a bus graph was unenforceable — a dependence
+  routed through one republishing intermediary is invisible in every
+  declaration on the depending locus, whose `bus {}` block names only
+  the innocent subject it directly subscribes to. `depends:` is a
+  COMPLETE declaration of the subjects that may transitively reach any
+  of the locus's handlers, and the diagnostic names the path
+  (`subject SumLookup -> Launderer -> subject Recalled ->
+  StatedCarry`). **Locus-level**: dependence enters through
+  subscriptions, which are declared per-locus, so a fn-level
+  `depends:` is a parse error rather than a silent no-op. Opt-in on
+  measured grounds — over a real application (428 topics, 114 loci)
+  transitivity adds nothing beyond the `bus {}` block for 87% of loci,
+  so a mandatory form would be redundant far more often than
+  informative. The closure is over the **bus graph**: influence
+  travelling outside it (see shared state below) is not part of it.
+- **User-declared effect classes — `effect NAME;` and
+  `@effects(is: {…})`** (#345, 2026-08-01). A program may name its own
+  effect classes and have them propagated by the same engine, with the
+  same witness paths:
+
+  ```
+  effect money;
+
+  @effects(is: {money})
+  fn charge(cents: Int) -> Int { … }
+
+  @effects(none: {money})
+  fn price(n: Int) -> Decimal { … }   // violates if it reaches charge
+  ```
+
+  Grounded exactly like a built-in. The objection to user effects is
+  that they have no frontier — that `@no_money` could only mean "no fn
+  somebody remembered to annotate". But effects worth checking are
+  about interaction with the outside, and that IS the frontier: money
+  moves when the processor is called, the ledger row is written, the
+  settlement is published. So `is:` adds rows to the classification
+  that already exists rather than introducing a second kind. **The
+  compiler owns propagation; the program owns classification** — the
+  same split the stdlib registry has, with a different owner.
+
+  Classes are interned as indices and occupy the free bits above the
+  ten built-ins (22 available). **Single-seed at v1**: merging
+  per-seed intern tables needs index remapping across the merged AST,
+  so a cross-seed class name does not resolve.
+- **Synchronized access is blocking and non-deterministic** (#340/#341,
+  2026-08-01). A `sync`-bearing form takes a lock, so a call reaching
+  one contributes `block`, and a read through one defeats
+  `@deterministic` — another pool can change the value between two
+  calls with identical arguments. Attributed because **placement is
+  not static**: once placement can be swapped at runtime, whether a
+  mutex ever contends is undecidable at compile time, so a certificate
+  reading "never blocks, we are single-pool today" would be
+  invalidated by a later swap. A form with no `sync` discipline takes
+  no lock and stays certifiable.
 - **Supervision coverage — `@supervised`** (GH #265, 2026-07-29). A
   locus marked `@supervised` asserts that every locus in its subtree
   has a failure policy in scope — an `on_failure` on itself or an
