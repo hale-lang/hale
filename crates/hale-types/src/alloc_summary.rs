@@ -508,6 +508,11 @@ pub struct AllocSummary {
     /// themselves, not the loci that hold them. A direct call into one
     /// takes its lock.
     pub sync_forms: BTreeSet<String>,
+    /// #345: classes a fn/locus DECLARES it carries, via
+    /// `@effects(is: {…})`. The classification half of a user effect:
+    /// propagation is the same engine, this is how a leaf says what it
+    /// is.
+    pub carries: BTreeMap<FnKey, crate::stdlib_surface::EffectSet>,
     /// Fns carrying `@unbounded` — an acknowledged-intentional
     /// accumulation. Their leak sites are dropped entirely (the
     /// greppable carve-out), even under the survey flag.
@@ -957,6 +962,21 @@ impl AllocSummary {
 
 /// Entry point. Walks every free fn, locus method, and lifecycle hook in
 /// the bundle and returns the per-fn allocation summary + call graph.
+/// #345: the classes an `@effects(is: {…})` clause declares.
+fn carried_by(
+    effects: &[hale_syntax::ast::EffectAssert],
+) -> crate::stdlib_surface::EffectSet {
+    let mut acc = crate::stdlib_surface::EffectSet::PURE;
+    for a in effects {
+        if let hale_syntax::ast::EffectAssert::Carries(cs) = a {
+            for c in cs {
+                acc = acc.union(crate::frontier::class_mask_pub(*c));
+            }
+        }
+    }
+    acc
+}
+
 pub fn summarize_programs(programs: &[&Program]) -> AllocSummary {
     summarize_programs_with_renames(programs, &[])
 }
@@ -995,6 +1015,7 @@ pub fn summarize_programs_with_renames(
     let mut bounded_loci: BTreeSet<String> = BTreeSet::new();
     let mut sync_holding_loci: BTreeSet<String> = BTreeSet::new();
     let mut sync_forms: BTreeSet<String> = BTreeSet::new();
+    let mut carries: BTreeMap<FnKey, crate::stdlib_surface::EffectSet> = BTreeMap::new();
     let mut unbounded_fns: BTreeSet<FnKey> = BTreeSet::new();
     // Phase D / D1 — the per-locus storage shape.
     let mut locus_shapes: BTreeMap<String, LocusShape> = BTreeMap::new();
@@ -1175,6 +1196,15 @@ pub fn summarize_programs_with_renames(
         for item in &program.items {
             match item {
                 TopDecl::Fn(decl) => {
+                    {
+                        let c = carried_by(&decl.effects);
+                        if c.0 != 0 {
+                            carries.insert(
+                                FnKey::free_fn(decl.name.name.clone()),
+                                c,
+                            );
+                        }
+                    }
                     let key = FnKey::free_fn(decl.name.name.clone());
                     let entry = if decl.name.name == "main" { Some(EntryKind::Main) } else { None };
                     if decl.unbounded {
@@ -1253,6 +1283,10 @@ pub fn summarize_programs_with_renames(
                             }
                             LocusMember::Fn(decl) => {
                                 let key = FnKey::method(locus.clone(), decl.name.name.clone());
+                                let c = carried_by(&decl.effects);
+                                if c.0 != 0 {
+                                    carries.insert(key.clone(), c);
+                                }
                                 let entry = if handlers.contains(&decl.name.name) {
                                     Some(EntryKind::BusHandler)
                                 } else {
@@ -1380,6 +1414,7 @@ pub fn summarize_programs_with_renames(
     }
     summary.sync_holding_loci = sync_holding_loci;
     summary.sync_forms = sync_forms;
+    summary.carries = carries;
     summary.unbounded_fns = unbounded_fns;
     summary.locus_shapes = locus_shapes;
     summary
