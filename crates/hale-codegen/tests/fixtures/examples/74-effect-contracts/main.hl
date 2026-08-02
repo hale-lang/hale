@@ -1,0 +1,93 @@
+// The effect-annotation surface, as a corpus fixture.
+//
+// This exists because the surface was UNENFORCED everywhere except the
+// compiler's own tests. The tree-sitter grammar could not parse a
+// single `@no_syscall` / `@effects(...)` / `@deterministic` for weeks
+// after they shipped, and nothing caught it: the corpus gate scans
+// this directory, and not one fixture here used an effect annotation.
+// A grammar blind spot is only invisible while no corpus file steps
+// into it.
+//
+// So the value of this file is coverage, not cleverness. It should
+// name every annotation shape the language accepts, and keep doing so
+// as the surface grows.
+
+effect money;
+
+type Payment {
+    cents: Int;
+}
+
+topic Settled {
+    payload: Payment;
+    subject: "settled";
+}
+
+// A declared source of a user effect class (#345).
+@effects(is: {money})
+fn charge(cents: Int) -> Bool {
+    return cents > 0;
+}
+
+// Sugar for the `@effects(none: ...)` forms.
+@no_syscall @no_block
+fn double(n: Int) -> Int {
+    return n * 2;
+}
+
+// The explicit form, plus a class the program declared itself.
+@effects(none: {syscall, money})
+fn quote(cents: Int) -> Int {
+    return double(cents);
+}
+
+// Quantitative + certification decorators stack with the categoric
+// ones; the compiler owns which combinations are legal.
+@deterministic @hot
+@budget(alloc_per_call = 0)
+fn scale(n: Int) -> Int {
+    return n + 1;
+}
+
+@no_panic
+fn safe(n: Int) -> Int {
+    return n;
+}
+
+@phase_effects(birth: {alloc})
+locus Ledger {
+    params {
+        total: Int = 0;
+    }
+
+    bus {
+        subscribe Settled as on_settled;
+    }
+
+    fn on_settled(p: Payment) {
+        self.total = self.total + p.cents;
+    }
+}
+
+main locus App {
+    params {
+        ledger: Ledger = Ledger { };
+    }
+
+    bus {
+        publish Settled;
+    }
+
+    birth() {
+        println(quote(21));
+        println(scale(1));
+        println(safe(2));
+        if charge(100) {
+            Settled <- Payment { cents: 100 };
+        }
+    }
+}
+
+fn main() {
+    App { };
+}

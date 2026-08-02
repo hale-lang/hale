@@ -8,6 +8,41 @@ behavior.
 
 ## Unreleased
 
+- **User effect classes resolve across a seed boundary** (#345). Was
+  single-seed at v1: `EffectClass::User(i)` indexes the *declaring*
+  seed's intern table, and every seed interns from zero, so two seeds
+  each declaring one class both used `User(0)` for different names —
+  concatenating their items aliased them onto one bit. Rejecting
+  cross-seed names avoided that but made a class unusable across the
+  boundary it most wants to cross: `money` holds everywhere the money
+  goes, and the money goes through `lib/`. The merge now unions the
+  name tables and remaps each seed's indices before merging its items.
+- **`hale check` on a directory no longer aliases effect classes**
+  (#345). `merge_programs` concatenated items while discarding every
+  input's `effect_names`, so a `@effects(none: {money})` in one file
+  was checked against another file's class 0. It reported `quote`
+  reaching `pii` for an assertion that named `money`.
+
+- **An effect-class overflow no longer fails open** (#345). `class_mask`
+  saturated to `PURE` past the mask ceiling, and `PURE` means "reaches
+  nothing" — so `@effects(none: {overflowed})` silently CERTIFIED a fn
+  that called a declared source of that class. The analysis failed open
+  in the one direction it must not; every other incompleteness here
+  fails closed. `EffectSet` widens u32 → u64 (54 user classes, was 22)
+  and declaring past the ceiling is now an error at the `effect NAME;`
+  line, where there is a span to point at.
+- **The effects manifest names user classes** (#345). The committed
+  baseline rendered every user class as `<user effect>`, so two
+  distinct classes produced the same line and a real change could diff
+  to nothing — in the artifact whose diff *is* the review.
+- **A corpus fixture covers the effect-annotation surface** (#345).
+  `74-effect-contracts` exercises `@effects`, the `@no_*` sugar,
+  `@deterministic`, `@budget`, `@no_panic`, `@phase_effects` and
+  `effect NAME;`. The tree-sitter grammar could not parse any of them
+  for weeks after they shipped and nothing caught it: the corpus gate
+  scans the fixture directory, and no fixture used an effect
+  annotation.
+
 - **A user effect-class violation names the class you declared**
   (#345). `EffectClass::as_str` returns a `&'static str`, so a
   `User(i)` — an index into the seed's intern table — had no static

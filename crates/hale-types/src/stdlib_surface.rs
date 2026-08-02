@@ -170,7 +170,7 @@ impl FnSig {
 /// lattice of the effect-assertion engine (`crate::callgraph`).
 /// Const-constructible so the registry stays a static table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EffectSet(pub u32);
+pub struct EffectSet(pub u64);
 
 impl EffectSet {
     pub const PURE: EffectSet = EffectSet(0);
@@ -183,7 +183,7 @@ impl EffectSet {
     pub const ALLOC: EffectSet = EffectSet(1 << 6);
     /// Not yet classified (#265 step 4 turns the surface; until
     /// then queries must treat this as "may do anything").
-    pub const UNCLASSIFIED: EffectSet = EffectSet(u32::MAX);
+    pub const UNCLASSIFIED: EffectSet = EffectSet(u64::MAX);
 
     pub const fn union(self, o: EffectSet) -> EffectSet {
         EffectSet(self.0 | o.0)
@@ -192,7 +192,7 @@ impl EffectSet {
         (self.0 & o.0) == o.0
     }
     pub fn is_unclassified(self) -> bool {
-        self.0 == u32::MAX
+        self.0 == u64::MAX
     }
 }
 
