@@ -89,3 +89,52 @@ fn builtin_classes_still_work_alongside() {
         ds
     );
 }
+
+/// The diagnostic must name the class the AUTHOR declared.
+///
+/// `EffectClass::as_str` returns `&'static str`, so a `User(i)` — an
+/// index into the seed's intern table — has no static name to give and
+/// answered `<user effect>`. Every diagnostic that reached for it
+/// printed that placeholder, which discards the single thing a user
+/// effect exists to carry: `money` is the reason anyone declared it,
+/// and a violation report that won't say `money` is barely a report.
+#[test]
+fn a_violation_names_the_declared_class() {
+    let ds = errs(&format!(
+        "{MONEY}@effects(none: {{money}})\n\
+         fn price(n: Int) -> Int {{ return charge(n); }}\n\
+         fn main() {{ println(price(5)); }}"
+    ));
+    let violation = ds
+        .iter()
+        .find(|m| m.contains("effect assertion violated"))
+        .expect("the assertion is violated");
+    assert!(
+        violation.contains("money"),
+        "the diagnostic must name the declared class, not a placeholder: {}",
+        violation
+    );
+    assert!(
+        !ds.iter().any(|m| m.contains("<user effect>")),
+        "no diagnostic may leak the placeholder name: {:?}",
+        ds
+    );
+}
+
+/// Declaring a user class must not rename the built-ins — `User(i)`
+/// resolves through a table the built-ins never index into.
+#[test]
+fn declaring_a_user_class_leaves_builtin_names_intact() {
+    let ds = errs(
+        "effect money;\n\
+         fn leaf(n: Int) -> Int { println(\"x\"); return n; }\n\
+         @no_syscall\n\
+         fn price(n: Int) -> Int { return leaf(n); }\n\
+         fn main() { println(price(5)); }",
+    );
+    assert!(
+        ds.iter().any(|m| m.contains("`syscall`")),
+        "a built-in class must still print its own name: {:?}",
+        ds
+    );
+}

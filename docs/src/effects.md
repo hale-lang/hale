@@ -348,3 +348,104 @@ Only effects reached *through* the bus count here; direct ones are
 `none:`'s job. "Publishing is cheap" is often false because of what
 runs downstream, and this is the only place the compiler can see it —
 a system built on opaque message sends cannot ask the question.
+
+## …and effects that travel *toward* you
+
+`causes:` walks the bus graph forward. `depends:` walks it backward —
+the complete set of subjects that can transitively reach any of a
+locus's handlers:
+
+```hale,fragment
+@effects(depends: {Recalled})
+locus StatedCarry {
+  bus { subscribe SumLookup as on_sum; }
+}
+```
+
+Without it, an independence claim is unenforceable. A locus that
+subscribes only to `SumLookup` looks isolated from `Recalled` in
+every declaration it carries — but if some third locus subscribes to
+`Recalled` and republishes onto `SumLookup`, the influence arrives
+anyway, and nothing in the depending locus's source mentions it. The
+diagnostic names the laundering path:
+
+```
+type error: declared dependence set violated: `StatedCarry` can be
+transitively influenced by subject `Recalled`, which its
+`@effects(depends: …)` does not declare. Path: subject `Recalled` ->
+`Launderer` -> subject `SumLookup` -> `StatedCarry`.
+```
+
+It sits on the **locus**, not a fn: dependence enters through
+subscriptions, and those are declared per-locus. A fn-level
+`depends:` is a parse error rather than a silent no-op.
+
+It is opt-in, on measured grounds. Over a real application — 428
+topics, 114 loci — transitivity added nothing beyond what `bus {}`
+already said for 87% of loci. A mandatory form would be redundant far
+more often than it was informative. Reach for it where independence
+is load-bearing: a locus that must not see PII, a control plane that
+must not be influenced by user traffic.
+
+One boundary worth stating plainly: the closure is over the **bus
+graph**. Influence that travels outside it — through a shared form,
+through a file — is not part of it.
+
+## Effects you declare yourself
+
+The ten classes above are the compiler's. A program can name its own:
+
+```hale
+effect money;
+
+@effects(is: {money})
+fn charge(cents: Int) -> Bool { return cents > 0; }
+
+@effects(none: {money})
+fn quote(cents: Int) -> Int { return cents * 2; }
+
+fn main() { println(quote(100)); }
+```
+
+`effect money;` declares the class. `is:` classifies a function as a
+source of it. From there it is an ordinary effect: it propagates
+through the call graph, it travels over the bus under `causes:`, it
+can be forbidden with `none:`, and a violation reports the same
+witness path a built-in would.
+
+```
+type error: effect assertion violated: `quote` must not reach `money`,
+but reaches quote [`charge` declares it carries this effect class].
+Move the effect behind a locus this fn doesn't reach (the
+reader/writer-locus shape), or pass the value in as a parameter.
+```
+
+The usual objection is that a user effect has no frontier — that
+`none: {money}` can only ever mean "no function anybody remembered to
+annotate", which is a linting convention wearing a type system's
+clothes. It's a fair objection to answer rather than wave at.
+
+The answer is that the effects worth checking are about interaction
+with the outside, and that *is* the frontier. Money moves when the
+payment processor is called, when the ledger row is written, when the
+settlement is published — all of which are already frontier calls the
+compiler classifies. `is:` doesn't introduce a second kind of
+grounding; it adds rows to the classification that already exists.
+The compiler owns propagation; the program owns classification — the
+same split the stdlib registry has, with a different owner.
+
+That split is also the honest statement of what you get. If you
+annotate `charge` and forget its sibling, `none: {money}` will not
+catch the sibling. What it does guarantee is that *given* your
+classification, no path escapes — which is exactly the property that
+is tedious and error-prone to maintain by review, and exactly the one
+that stops holding the moment a call graph is more than a few edges
+deep.
+
+Two limits at v1:
+
+- **Single seed.** A class declared in one compilation seed does not
+  resolve from another; merging per-seed intern tables needs index
+  remapping across the merged AST.
+- **22 classes.** They occupy the free bits above the built-ins in
+  the effect bitmask.

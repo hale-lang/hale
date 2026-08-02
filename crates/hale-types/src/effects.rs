@@ -90,12 +90,24 @@ fn demangle_stdlib(rendered: &str) -> String {
 /// frontier call); the rest reuse the same leaf lattice as
 /// `@effects(...)`. A phase omitted from the annotation is
 /// unconstrained; a phase present with `{}` forbids everything.
+/// The seed's user effect-class intern table. Single-seed at v1, so the
+/// first non-empty table is the one every `User(i)` indexes into.
+fn effect_names_of(programs: &[&Program]) -> Vec<String> {
+    programs
+        .iter()
+        .map(|p| &p.effect_names)
+        .find(|n| !n.is_empty())
+        .cloned()
+        .unwrap_or_default()
+}
+
 fn phase_effects_diags(
     programs: &[&Program],
     summary: &AllocSummary,
     ffi: &BTreeSet<String>,
 ) -> Vec<Diag> {
     let mut out = Vec::new();
+    let names = &effect_names_of(programs);
     for p in programs {
         for item in &p.items {
             let TopDecl::Locus(l) = item else { continue };
@@ -201,7 +213,7 @@ fn phase_effects_diags(
                         continue;
                     }
                     let before = out.len();
-                    check_class(summary, &key, span, class, ffi, &mut out);
+                    check_class(summary, &key, span, class, ffi, names, &mut out);
                     // Re-label the generic message with the phase.
                     for d in out.iter_mut().skip(before) {
                         d.message = format!(
@@ -445,6 +457,7 @@ fn effect_diags_inner(
         return placement;
     }
     let ffi = ffi_names(programs);
+    let names = effect_names_of(programs);
     let mut diags = std::mem::take(&mut placement);
     for (key, asserts, span) in &roots {
         for a in asserts {
@@ -455,7 +468,7 @@ fn effect_diags_inner(
                 EffectAssert::Forbid(classes) => {
                     for c in classes {
                         check_class(
-                            &summary, key, *span, *c, &ffi, &mut diags,
+                            &summary, key, *span, *c, &ffi, &names, &mut diags,
                         );
                     }
                 }
@@ -482,12 +495,27 @@ fn effect_diags_inner(
 /// `@no_*` flag desugars to `Forbid([class])` at parse time, so this
 /// is the single place a class's meaning is defined — no flag can
 /// drift from the general form.
+/// #345: resolve an effect class to the name the USER wrote. Built-ins
+/// are static; a `User(i)` is an index into the seed's intern table, so
+/// a diagnostic that reaches for `as_str()` prints `<user effect>` and
+/// loses the one thing the author named it for.
+fn cls_name(class: EffectClass, names: &[String]) -> String {
+    match class {
+        EffectClass::User(i) => names
+            .get(i as usize)
+            .cloned()
+            .unwrap_or_else(|| "<user effect>".to_string()),
+        _ => class.as_str().to_string(),
+    }
+}
+
 fn check_class(
     summary: &AllocSummary,
     key: &FnKey,
     span: Span,
     class: EffectClass,
     ffi: &BTreeSet<String>,
+    names: &[String],
     diags: &mut Vec<Diag>,
 ) {
     use crate::stdlib_surface::EffectSet;
@@ -592,12 +620,12 @@ fn check_class(
                          drop the `{}` assertion.",
                         key.display(),
                         chain_s,
-                        class.as_str()
+                        cls_name(class, names)
                     ),
                 ));
                 diags.push(Diag::ty(
                     site_span,
-                    format!("the `{}` effect happens here", class.as_str()),
+                    format!("the `{}` effect happens here", cls_name(class, names)),
                 ));
             }
             return;
@@ -768,7 +796,7 @@ fn check_class(
         Probe::Site(_) | Probe::Resolved(..) => None,
     };
     report(
-        summary, key, span, class.as_str(), &mut pred, diags,
+        summary, key, span, &cls_name(class, names), &mut pred, diags,
         "Move the effect behind a locus this fn doesn't reach (the \
          reader/writer-locus shape), or pass the value in as a parameter.",
     );

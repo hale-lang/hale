@@ -610,8 +610,17 @@ They attach to the declaration that follows.
 | `@supervised` | locus | every locus in the subtree has a failure policy |
 | `@secret` | fn param | the value must not reach a publish or log/file sink |
 | `@effects(publish: {…})` | fn | the allowed publish set |
+| `@effects(depends: {…})` | locus | complete set of subjects that may transitively reach any handler |
+| `@effects(is: {…})` | fn | classify this fn as a source of the named effect classes |
 | `@no_syscall` `@no_block` `@no_ffi` `@no_publish` `@no_spawn` `@no_recursion` `@deterministic` | fn | sugar for the `@effects(none: …)` forms |
 | `@no_panic` | fn | no reachable trap (disposition coverage — a different analysis) |
+
+`effect NAME;` is a top-level **declaration**, not an annotation:
+it introduces a user effect class that `is:` / `none:` / `causes:`
+then name like a built-in. `effect` is a **contextual keyword** —
+recognized only at the start of a top-level item followed by an
+identifier and `;`, so an existing `effect` binding is unaffected.
+Declared classes are single-seed (see `spec/verification.md`).
 
 Effect annotations stack with each other and with `@hot` /
 `@budget(...)`; see `spec/verification.md` for what each class
