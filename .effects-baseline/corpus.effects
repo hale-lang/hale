@@ -323,7 +323,8 @@ Pusher::run  does={syscall,block,publish,time,alloc}
 Sampler::dissolve  does={syscall}
 main  does={alloc}
 ### 74-effect-contracts
-App::birth  does={syscall,publish,alloc}
+App::birth  does={syscall,publish,alloc,money}
+charge  does={money}
 double  none={block,syscall}
 main  does={alloc}
 quote  none={money,syscall}

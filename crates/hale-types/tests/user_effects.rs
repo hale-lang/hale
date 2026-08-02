@@ -220,3 +220,79 @@ fn the_manifest_names_user_classes() {
         rendered
     );
 }
+
+/// An undeclared class must be an ERROR, not a fresh class.
+///
+/// Interning happens on DECLARATION (`effect money;`) and on bare
+/// REFERENCE (`@effects(none: { money })`) alike, so a misspelling
+/// minted a brand-new class that nothing carries — and the assertion
+/// then held vacuously and reported success. `@effects(none: { monye })`
+/// typechecked clean on a fn that called a declared `money` source.
+///
+/// This is the same failure as the mask overflow, arrived at from the
+/// other side: there the class had no bit, here it has no carriers.
+/// Both produce a certificate that is quietly true of nothing, which
+/// is indistinguishable to the reader from one that is true of
+/// something — and a typo is a far likelier way to reach it than
+/// declaring 55 classes.
+#[test]
+fn an_undeclared_class_is_rejected() {
+    let ds = errs(&format!(
+        "{MONEY}@effects(none: {{monye}})\n\
+         fn price(n: Int) -> Int {{ return charge(n); }}\n\
+         fn main() {{ println(price(5)); }}"
+    ));
+    let d = ds
+        .iter()
+        .find(|m| m.contains("never declared"))
+        .unwrap_or_else(|| panic!("undeclared class must be rejected: {:?}", ds));
+    assert!(
+        d.contains("monye"),
+        "the diagnostic must name the undeclared class: {}",
+        d
+    );
+    assert!(
+        d.contains("Did you mean `money`?"),
+        "a one-transposition miss should offer the declared neighbour: {}",
+        d
+    );
+}
+
+/// The guard must not fire on a legitimately declared class, or every
+/// real user of the feature eats a false error.
+#[test]
+fn a_declared_class_is_not_flagged_undeclared() {
+    let ds = errs(&format!(
+        "{MONEY}@effects(none: {{money}})\n\
+         fn price(n: Int) -> Int {{ return n; }}\n\
+         fn main() {{ println(price(5)); }}"
+    ));
+    assert!(
+        !ds.iter().any(|m| m.contains("never declared")),
+        "a declared class must not be reported undeclared: {:?}",
+        ds
+    );
+}
+
+/// A fn's OWN `is: {…}` must be part of its inferred effect set.
+///
+/// `infer_effects` unioned `carries` for a CALLEE but never for the
+/// function itself, so a fn's classification was invisible to its own
+/// set. That is what made a user class silently not travel over the
+/// bus: `causes_diags` infers each subscriber's effects from here, and
+/// a subscriber declaring `is: {money}` contributed nothing.
+#[test]
+fn a_fns_own_carries_is_in_its_inferred_set() {
+    let program = hale_syntax::parse_source(MONEY).expect("parse");
+    let rows = hale_types::effects::effect_manifest_with_inference(&[&program]);
+    let charge = rows
+        .iter()
+        .find(|r| r.func == "charge")
+        .expect("charge is in the manifest");
+    let rendered = format!("{:?}", charge);
+    assert!(
+        rendered.contains("money"),
+        "a fn declaring `is: {{money}}` must infer `money` for itself: {}",
+        rendered
+    );
+}

@@ -101,6 +101,41 @@ fn effect_names_of(programs: &[&Program]) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Indices in the seed's table that came from an `effect NAME;`
+/// DECLARATION, as opposed to a bare reference in an `@effects(...)`
+/// clause. Interning happens for both, so without this a misspelt
+/// class is indistinguishable from a real one.
+/// Cheap near-miss test for the did-you-mean hint: one edit apart, or
+/// a shared prefix long enough that a transposition is the likely
+/// cause. Not a general spell-checker — it only has to catch typing.
+fn close(a: &str, b: &str) -> bool {
+    if a == b {
+        return false;
+    }
+    let (x, y): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    if x.len().abs_diff(y.len()) > 1 {
+        return false;
+    }
+    let mut sorted_x = x.clone();
+    let mut sorted_y = y.clone();
+    sorted_x.sort_unstable();
+    sorted_y.sort_unstable();
+    // an anagram of the same letters is almost always a transposition
+    if sorted_x == sorted_y {
+        return true;
+    }
+    let common = x.iter().zip(y.iter()).take_while(|(p, q)| p == q).count();
+    common * 2 >= x.len().min(y.len())
+}
+
+fn declared_of(programs: &[&Program]) -> std::collections::BTreeSet<u16> {
+    programs
+        .iter()
+        .find(|p| !p.effect_names.is_empty())
+        .map(|p| p.declared_effects.iter().copied().collect())
+        .unwrap_or_default()
+}
+
 fn phase_effects_diags(
     programs: &[&Program],
     summary: &AllocSummary,
@@ -458,7 +493,60 @@ fn effect_diags_inner(
     }
     let ffi = ffi_names(programs);
     let names = effect_names_of(programs);
+    // #345: a user class must be DECLARED before it can be asserted
+    // about. Both a declaration and a bare reference intern a name, so
+    // a typo silently became a brand-new class that nothing carries —
+    // and `@effects(none: { monye })` then held vacuously and reported
+    // success. A certificate that is quietly true of nothing is the
+    // same failure as one that is quietly false.
+    let declared = declared_of(programs);
     let mut diags = std::mem::take(&mut placement);
+    for (key, asserts, span) in &roots {
+        let mut seen: Vec<u16> = Vec::new();
+        for a in *&asserts {
+            let cs: &[EffectClass] = match a {
+                EffectAssert::Forbid(cs)
+                | EffectAssert::Causes(cs)
+                | EffectAssert::Carries(cs) => cs,
+                _ => &[],
+            };
+            for c in cs {
+                if let EffectClass::User(i) = c {
+                    if !declared.contains(i) && !seen.contains(i) {
+                        seen.push(*i);
+                        let bad = names
+                            .get(*i as usize)
+                            .cloned()
+                            .unwrap_or_default();
+                        let mut near: Vec<&String> = names
+                            .iter()
+                            .enumerate()
+                            .filter(|(j, _)| declared.contains(&(*j as u16)))
+                            .map(|(_, n)| n)
+                            .filter(|n| close(n, &bad))
+                            .collect();
+                        near.sort();
+                        let hint = match near.first() {
+                            Some(n) => format!(" Did you mean `{}`?", n),
+                            None => String::new(),
+                        };
+                        diags.push(Diag::ty(
+                            *span,
+                            format!(
+                                "`{}` asserts about effect class `{}`, \
+                                 which is never declared. Add `effect {};` \
+                                 at the top level.{}",
+                                key.display(),
+                                bad,
+                                bad,
+                                hint
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+    }
     for (key, asserts, span) in &roots {
         for a in asserts {
             match a {
@@ -1162,14 +1250,16 @@ pub fn effect_manifest_with_inference(
 ) -> Vec<EffectManifestRow> {
     let summary = crate::stdlib_bodies::summarize_with_stdlib(programs);
     let ffi = ffi_names(programs);
+    let names = effect_names_of(programs);
     let declared: BTreeMap<String, EffectManifestRow> = effect_manifest(programs)
         .into_iter()
         .map(|r| (r.func.clone(), r))
         .collect();
     let mut rows: Vec<EffectManifestRow> = Vec::new();
     let mut add = |name: String, key: FnKey| {
-        let inferred = crate::frontier::render_effects(
+        let inferred = crate::frontier::render_effects_named(
             crate::frontier::infer_effects(&summary, &key, &ffi),
+            &names,
         );
         let mut row = declared.get(&name).cloned().unwrap_or(
             EffectManifestRow {
