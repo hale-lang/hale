@@ -1,7 +1,7 @@
 // A library that classifies its own money-moving leaf.
 effect money;
 
-@effects(is: {money})
+@effects(is: { money })
 fn charge(cents: Int) -> Int {
     return cents;
 }
