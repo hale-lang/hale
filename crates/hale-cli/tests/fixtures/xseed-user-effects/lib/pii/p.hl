@@ -3,7 +3,7 @@
 // them apart.
 effect pii;
 
-@effects(is: {pii})
+@effects(is: { pii })
 fn read_name(n: Int) -> Int {
     return n;
 }

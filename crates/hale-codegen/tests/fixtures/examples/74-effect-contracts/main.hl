@@ -24,7 +24,7 @@ topic Settled {
 }
 
 // A declared source of a user effect class (#345).
-@effects(is: {money})
+@effects(is: { money })
 fn charge(cents: Int) -> Bool {
     return cents > 0;
 }
@@ -36,7 +36,7 @@ fn double(n: Int) -> Int {
 }
 
 // The explicit form, plus a class the program declared itself.
-@effects(none: {syscall, money})
+@effects(none: { syscall, money })
 fn quote(cents: Int) -> Int {
     return double(cents);
 }
@@ -54,7 +54,7 @@ fn safe(n: Int) -> Int {
     return n;
 }
 
-@phase_effects(birth: {alloc})
+@phase_effects(birth: { alloc })
 locus Ledger {
     params {
         total: Int = 0;

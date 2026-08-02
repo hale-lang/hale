@@ -4,14 +4,14 @@ import "lib/pii" as pii;
 effect money;
 
 // MUST fire: `pay::charge` carries `money`, one seed away.
-@effects(none: {money})
+@effects(none: { money })
 fn quote(n: Int) -> Int {
     return pay::charge(n);
 }
 
 // MUST NOT fire: `pii::read_name` carries `pii`, not `money` — even
 // though both are class 0 in their declaring seed.
-@effects(none: {money})
+@effects(none: { money })
 fn label(n: Int) -> Int {
     return pii::read_name(n);
 }
