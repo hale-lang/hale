@@ -8,6 +8,19 @@ behavior.
 
 ## Unreleased
 
+- **`mode` bodies are walked by the effect analysis** (completeness
+  sweep). A `mode` member was never collected into the callgraph, so
+  its callees were invisible and `@no_syscall` certified a path
+  straight through one. Modes are invoked like methods, so they key
+  the same way.
+
+  Found by sweeping every shape a certified fn can reach an effect
+  through, now pinned as a standing test: direct stdlib call, free fn,
+  handle, `self.` method, interface slot, absent frontier row, `@ffi`
+  leaf, two-locus chain, recursive cycle, mode, bus subscriber, and a
+  `sync`-bearing form — plus a control that a genuinely pure path
+  still certifies.
+
 - **A direct call into a `sync`-bearing form is attributed too**
   (#341). The attribution fired at a locus *holding* such a form but
   not at a call straight into it — backwards, since the direct call is

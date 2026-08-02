@@ -1226,6 +1226,31 @@ pub fn summarize_programs_with_renames(
                     let handlers = bus_handler_names(l);
                     for member in &l.members {
                         match member {
+                            // A `mode` body was never collected, so
+                            // its callees were invisible to the
+                            // callgraph and `@no_syscall` certified a
+                            // path straight through one. Modes are
+                            // called like methods (`self.bulk()`), so
+                            // they key the same way.
+                            LocusMember::Mode(md) => {
+                                let name = match md.kind {
+                                    ModeKind::Bulk => "bulk",
+                                    ModeKind::Harmonic => "harmonic",
+                                    ModeKind::Resolution => "resolution",
+                                };
+                                let key = FnKey::method(
+                                    locus.clone(),
+                                    name.to_string(),
+                                );
+                                known.insert(key.clone());
+                                bodies.push((
+                                    key,
+                                    md.body.clone(),
+                                    None,
+                                    Some(locus.clone()),
+                                    param_var_types(&md.params),
+                                ));
+                            }
                             LocusMember::Fn(decl) => {
                                 let key = FnKey::method(locus.clone(), decl.name.name.clone());
                                 let entry = if handlers.contains(&decl.name.name) {
