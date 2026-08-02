@@ -75,6 +75,10 @@ pub fn infer_effects(
         for edge in &fs.calls {
             match &edge.callee {
                 Callee::Resolved(k) => {
+                    // #345: what this leaf DECLARES it carries.
+                    if let Some(c) = summary.carries.get(k) {
+                        acc = acc.union(*c);
+                    }
                     if k.locus.is_none() && ffi.contains(&k.fn_name) {
                         acc = acc.union(EffectSet::SYSCALL);
                     }
@@ -264,6 +268,10 @@ pub fn causes_diags(
     diags
 }
 
+pub(crate) fn class_mask_pub(c: EffectClass) -> EffectSet {
+    class_mask(c)
+}
+
 fn class_mask(c: EffectClass) -> EffectSet {
     match c {
         EffectClass::Syscall => EffectSet::SYSCALL,
@@ -275,6 +283,18 @@ fn class_mask(c: EffectClass) -> EffectSet {
         EffectClass::Alloc => EffectSet::ALLOC,
         EffectClass::Ffi => EffectSet::SYSCALL,
         EffectClass::Spawn | EffectClass::Recursion => EffectSet::PURE,
+        // #345: user classes occupy the bits above the built-ins.
+        // `EffectSet` is a u32 with 10 built-in bits used, so 22 are
+        // available; beyond that the set silently could not represent
+        // the class, so it saturates to PURE rather than aliasing an
+        // existing bit — and the checker rejects the overflow up front.
+        EffectClass::User(i) => {
+            if (i as u32) < 22 {
+                EffectSet(1 << (10 + i as u32))
+            } else {
+                EffectSet::PURE
+            }
+        }
     }
 }
 

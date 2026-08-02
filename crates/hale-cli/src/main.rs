@@ -2100,7 +2100,13 @@ fn parse_with_imports(
     if !errors.is_empty() {
         return Err(errors);
     }
+    // #345: user effect-class tables are per-seed. Merging them needs
+    // index remapping across the merged AST, so user effects are
+    // single-seed at v1 — a cross-seed name resolves to nothing and is
+    // rejected as undeclared rather than silently aliasing.
     let mut merged = Program {
+        effect_names: Vec::new(),
+        declared_effects: Vec::new(),
         imports: Vec::new(),
         items: merged_items,
         span: entry_program.span,
@@ -2284,6 +2290,10 @@ fn collect_checkable(
     }
 
     let mut program = Program {
+        // Carried through from the merge above; see the note there on
+        // user effect classes being single-seed at v1.
+        effect_names: merged.effect_names.clone(),
+        declared_effects: merged.declared_effects.clone(),
         imports: Vec::new(),
         items: merged_items,
         span: merged.span,
@@ -3100,6 +3110,8 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
         return ExitCode::from(1);
     }
     let mut program = Program {
+        effect_names: Vec::new(),
+        declared_effects: Vec::new(),
         imports: Vec::new(),
         items: merged_items,
         span: merged.span,
@@ -3251,6 +3263,8 @@ fn run_build(target: &Path) -> ExitCode {
             return ExitCode::from(1);
         }
         let mut with_imports = Program {
+            effect_names: Vec::new(),
+            declared_effects: Vec::new(),
             imports: Vec::new(),
             items: merged_items,
             span: merged.span,
@@ -3736,6 +3750,8 @@ where
     let mut iter = programs.into_iter();
     let first = iter.next()?;
     let mut merged = Program {
+        effect_names: Vec::new(),
+        declared_effects: Vec::new(),
         items: first.items.clone(),
         imports: Vec::new(),
         span: first.span,

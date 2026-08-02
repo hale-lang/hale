@@ -8,6 +8,30 @@ behavior.
 
 ## Unreleased
 
+- **User-declared effect classes** (#345). A program can name its own
+  effect classes and have the compiler propagate them:
+
+  ```hale
+  effect money;
+
+  @effects(is: {money})
+  fn charge(cents: Int) -> Int { ... }
+
+  @effects(none: {money})
+  fn price(n: Int) -> Decimal { ... }   // violates if it reaches charge
+  ```
+
+  Grounded exactly like a built-in: attached to a leaf and propagated
+  by the same engine, with the same witness paths. The compiler owns
+  propagation; the program owns classification — the split the stdlib
+  registry already has, with a different owner.
+
+  Classes are interned as indices so `EffectClass` stays `Copy`, and
+  occupy the free bits above the ten built-ins (22 available in the
+  `u32`). **Single-seed at v1**: merging the per-seed tables needs
+  index remapping across the merged AST, so a cross-seed class name
+  does not resolve.
+
 - **`mode` bodies are walked by the effect analysis** (completeness
   sweep). A `mode` member was never collected into the callgraph, so
   its callees were invisible and `@no_syscall` certified a path

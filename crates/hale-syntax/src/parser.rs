@@ -32,6 +32,14 @@ struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     diags: Vec<Diag>,
+    /// #345: intern table for user effect-class names, and the subset
+    /// that an `effect NAME;` declaration actually introduced. An
+    /// unrecognised name in `@effects(...)` is interned here and
+    /// rejected later if it was never declared — erroring at parse
+    /// would make `effect money;` unusable, and accepting silently
+    /// would turn a typo into a contract that passes.
+    effect_names: Vec<String>,
+    declared_effects: Vec<u16>,
     /// v1.x-FORM-1: tracks whether we're inside the body of a
     /// fallible fn. When true, leading-statement `fail` Ident is
     /// recognized as the fail-keyword. Outside that context,
@@ -46,6 +54,8 @@ impl Parser {
             tokens,
             pos: 0,
             diags: Vec::new(),
+            effect_names: Vec::new(),
+            declared_effects: Vec::new(),
             in_fallible_body: false,
         }
     }
@@ -267,6 +277,8 @@ impl Parser {
 
         let end = self.peek_token().span.end;
         Ok(Program {
+            effect_names: std::mem::take(&mut self.effect_names),
+            declared_effects: std::mem::take(&mut self.declared_effects),
             imports,
             items,
             span: Span {
@@ -731,6 +743,26 @@ impl Parser {
             locus.depends = depends;
             locus.supervised = supervised_locus;
             return Ok(TopDecl::Locus(locus));
+        }
+        // #345: `effect NAME;` declares a user effect class.
+        // Contextual ident so `effect` stays usable as an identifier.
+        if matches!(self.peek(), TokenKind::Ident(s) if s == "effect")
+            && matches!(self.peek_at(1), TokenKind::Ident(_))
+        {
+            self.bump();
+            let name_tok = self.peek_token().clone();
+            let TokenKind::Ident(name) = &name_tok.kind else {
+                unreachable!("peeked an ident")
+            };
+            let name = name.clone();
+            self.bump();
+            self.expect(TokenKind::Semi, ";")?;
+            let idx = self.intern_effect(&name);
+            if !self.declared_effects.contains(&idx) {
+                self.declared_effects.push(idx);
+            }
+            // No AST item: the declaration IS the registry entry.
+            return self.parse_top_decl();
         }
         match self.peek() {
             TokenKind::Locus => self.parse_locus_decl().map(TopDecl::Locus),
@@ -1408,10 +1440,31 @@ impl Parser {
             }
             self.expect(TokenKind::RBrace, "}")?;
             match key.as_str() {
+                // #345: `is: {…}` attaches user classes to a
+                // FRONTIER entry — an `@ffi` fn or a locus wrapping
+                // one. This is the classification half; propagation
+                // and assertion are the same engine as the built-ins.
+                "is" => {
+                    let mut classes = Vec::new();
+                    for it in &items {
+                        let c = match EffectClass::from_ident(it) {
+                            Some(c) => c,
+                            None => EffectClass::User(self.intern_effect(it)),
+                        };
+                        classes.push(c);
+                    }
+                    out.push(EffectAssert::Carries(classes));
+                }
                 "none" => {
                     let mut classes = Vec::new();
                     for it in &items {
-                        match EffectClass::from_ident(it) {
+                        match EffectClass::from_ident(it)
+                            .or_else(|| {
+                                Some(EffectClass::User(
+                                    self.intern_effect(it),
+                                ))
+                            })
+                        {
                             Some(c) => classes.push(c),
                             None => {
                                 return Err(Diag::parse(
@@ -1481,6 +1534,15 @@ impl Parser {
     /// them plus their merged span. Stops at the first `@` that isn't
     /// an effect assertion (so `@no_block @hot fn` and
     /// `@no_block @budget(...) fn` both parse).
+    /// Intern a user effect-class name, returning its index.
+    fn intern_effect(&mut self, name: &str) -> u16 {
+        if let Some(i) = self.effect_names.iter().position(|n| n == name) {
+            return i as u16;
+        }
+        self.effect_names.push(name.to_string());
+        (self.effect_names.len() - 1) as u16
+    }
+
     fn parse_effect_asserts(&mut self) -> Result<(Vec<EffectAssert>, Option<Span>), Diag> {
         let (a, s, dep) = self.parse_effect_asserts_inner()?;
         if let Some(d) = dep {

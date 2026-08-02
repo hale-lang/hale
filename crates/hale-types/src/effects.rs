@@ -449,6 +449,9 @@ fn effect_diags_inner(
     for (key, asserts, span) in &roots {
         for a in asserts {
             match a {
+                // #345: a classification, not an assertion —
+                // nothing to verify here; it feeds attribution.
+                EffectAssert::Carries(_) => {}
                 EffectAssert::Forbid(classes) => {
                     for c in classes {
                         check_class(
@@ -616,9 +619,27 @@ fn check_class(
         EffectClass::Time => (EffectSet::TIME, "a clock read"),
         EffectClass::Entropy => (EffectSet::ENTROPY, "an entropy read"),
         EffectClass::Env => (EffectSet::ENV, "an environment read"),
+        // #345: a user class queries the frontier exactly like a
+        // built-in — the bit differs, the machinery does not.
+        EffectClass::User(_) => (
+            crate::frontier::class_mask_pub(class),
+            "an operation declared to carry this effect class",
+        ),
         _ => unreachable!("handled above"),
     };
     let mut pred = |probe: &Probe<'_>| match probe {
+        // #345: a leaf that DECLARES it carries this class.
+        Probe::Resolved(k, _)
+            if summary
+                .carries
+                .get(*k)
+                .is_some_and(|c| (c.0 & mask.0) != 0) =>
+        {
+            Some(format!(
+                "`{}` declares it carries this effect class",
+                k.fn_name
+            ))
+        }
         // #333: a call into a `@shared` locus may WAIT on the
         // synchronization its fields carry. A `sync = serialized`
         // form is a per-map mutex, and acquiring one is a thread
@@ -1031,6 +1052,7 @@ pub fn effect_manifest(programs: &[&Program]) -> Vec<EffectManifestRow> {
         let mut publish_set = None;
         for a in &fd.effects {
             match a {
+                EffectAssert::Carries(_) => {}
                 EffectAssert::Forbid(cs) => {
                     for c in cs {
                         forbids.push(c.as_str().to_string());

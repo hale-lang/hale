@@ -9,6 +9,13 @@ use crate::span::Span;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
+    /// #345: names of user-declared effect classes, indexed by
+    /// `EffectClass::User`. Interned by the parser as names are
+    /// encountered; `declared_effects` records which were actually
+    /// declared, so an undeclared name is an error rather than a
+    /// silently-inert class.
+    pub effect_names: Vec<String>,
+    pub declared_effects: Vec<u16>,
     pub imports: Vec<Import>,
     pub items: Vec<TopDecl>,
     pub span: Span,
@@ -1545,6 +1552,19 @@ impl QuantDim {
 /// graph property (recursion).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EffectClass {
+    /// A class the program declared with `effect NAME;`, held as an
+    /// index into `Program::effect_names`.
+    ///
+    /// Interned rather than carried as a `String` so `EffectClass`
+    /// stays `Copy` — a String payload forces `Copy` off the enum and
+    /// ripples through every predicate that matches on it.
+    ///
+    /// Grounded exactly like a built-in: attached to a FRONTIER entry
+    /// (`@effects(is: {money})` on an `@ffi` fn or a locus wrapping
+    /// one) and propagated by the same engine. The compiler owns
+    /// propagation; the program owns classification — the same split
+    /// the stdlib registry already has, with a different owner.
+    User(u16),
     Syscall,
     Block,
     Time,
@@ -1589,6 +1609,8 @@ impl EffectClass {
             EffectClass::Spawn => "spawn",
             EffectClass::Recursion => "recursion",
             EffectClass::Alloc => "alloc",
+            // resolved against `Program::effect_names` by the checker
+            EffectClass::User(_) => "<user effect>",
         }
     }
 }
@@ -1624,6 +1646,11 @@ pub enum EffectAssert {
     /// cause ANYWHERE, following bus edges into subscribers. Reaches
     /// past the call graph because the message graph is declared.
     Causes(Vec<EffectClass>),
+    /// #345: `@effects(is: {money})` — this fn/locus CARRIES the
+    /// listed classes. The classification half of a user effect: the
+    /// engine propagates what leaves carry, and this is how a leaf
+    /// says what it carries.
+    Carries(Vec<EffectClass>),
     /// `@no_panic` — no reachable path can trap. Deliberately NOT an
     /// `EffectClass`: this is a different analysis (disposition
     /// coverage + trap-op selection over the fn's own body and its
