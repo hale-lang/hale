@@ -758,6 +758,26 @@ impl Parser {
             self.bump();
             self.expect(TokenKind::Semi, ";")?;
             let idx = self.intern_effect(&name);
+            // Fail CLOSED on overflow. A class past the mask's
+            // capacity has no bit, so it unions as PURE — and
+            // `@effects(none: {it})` would then certify a fn that
+            // reaches a declared source of it. A silently false
+            // certificate is the one outcome this system must never
+            // produce, so the declaration is an error instead.
+            if u32::from(idx) >= EffectClass::USER_CAPACITY {
+                return Err(Diag::parse(
+                    name_tok.span,
+                    format!(
+                        "too many declared effect classes: `{}` is #{}, \
+                         but the effect mask holds {}. Effect classes are \
+                         a domain vocabulary, not a per-module taxonomy — \
+                         merge the ones that travel together.",
+                        name,
+                        u32::from(idx) + 1,
+                        EffectClass::USER_CAPACITY
+                    ),
+                ));
+            }
             if !self.declared_effects.contains(&idx) {
                 self.declared_effects.push(idx);
             }

@@ -442,10 +442,14 @@ is tedious and error-prone to maintain by review, and exactly the one
 that stops holding the moment a call graph is more than a few edges
 deep.
 
-Two limits at v1:
+One limit at v1: **classes are single-seed**. A class declared in one
+compilation seed does not resolve from another, because merging
+per-seed intern tables needs index remapping across the merged AST.
 
-- **Single seed.** A class declared in one compilation seed does not
-  resolve from another; merging per-seed intern tables needs index
-  remapping across the merged AST.
-- **22 classes.** They occupy the free bits above the built-ins in
-  the effect bitmask.
+There are 54 classes available — the bits above the built-ins in the
+effect mask. Declaring past that is an error at the `effect NAME;`
+line, not a saturating no-op: a class with no bit unions as "reaches
+nothing", so `@effects(none: {it})` would silently certify a function
+that calls a declared source. Everything else here fails closed, and
+a certificate that is quietly false is worse than none, because it is
+believed.

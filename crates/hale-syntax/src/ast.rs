@@ -1582,6 +1582,17 @@ pub enum EffectClass {
 }
 
 impl EffectClass {
+    /// Bits `EffectSet` reserves for the built-in classes; user
+    /// classes start above them.
+    pub const BUILTIN_BITS: u32 = 10;
+
+    /// How many user-declared classes fit in the mask. `EffectSet` is
+    /// a u64, so 54. Enforced at the `effect NAME;` declaration —
+    /// a class with no bit unions as PURE, which would certify
+    /// `@effects(none: {it})` on a fn that reaches a declared source.
+    /// The overflow must fail closed, so it is rejected up front.
+    pub const USER_CAPACITY: u32 = 64 - Self::BUILTIN_BITS;
+
     pub fn from_ident(s: &str) -> Option<EffectClass> {
         Some(match s {
             "syscall" => EffectClass::Syscall,

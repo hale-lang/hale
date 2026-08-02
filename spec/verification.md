@@ -390,9 +390,14 @@ assume the others in a build:
   same split the stdlib registry has, with a different owner.
 
   Classes are interned as indices and occupy the free bits above the
-  ten built-ins (22 available). **Single-seed at v1**: merging
-  per-seed intern tables needs index remapping across the merged AST,
-  so a cross-seed class name does not resolve.
+  ten built-ins — `EffectSet` is a u64, so 54 are available.
+  Overflow is an **error at the declaration**, not a saturating
+  no-op: a class with no bit unions as PURE, so `none: {…}` on it
+  would certify a fn that reaches a declared source. The analysis
+  fails closed everywhere else and must here too.
+  **Single-seed at v1**: merging per-seed intern tables needs index
+  remapping across the merged AST, so a cross-seed class name does
+  not resolve.
 - **Synchronized access is blocking and non-deterministic** (#340/#341,
   2026-08-01). A `sync`-bearing form takes a lock, so a call reaching
   one contributes `block`, and a read through one defeats

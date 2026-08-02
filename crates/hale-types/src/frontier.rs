@@ -284,13 +284,16 @@ fn class_mask(c: EffectClass) -> EffectSet {
         EffectClass::Ffi => EffectSet::SYSCALL,
         EffectClass::Spawn | EffectClass::Recursion => EffectSet::PURE,
         // #345: user classes occupy the bits above the built-ins.
-        // `EffectSet` is a u32 with 10 built-in bits used, so 22 are
-        // available; beyond that the set silently could not represent
-        // the class, so it saturates to PURE rather than aliasing an
-        // existing bit — and the checker rejects the overflow up front.
+        // Saturating past the ceiling would be UNSOUND in the open
+        // direction: a class with no bit unions as PURE, so
+        // `@effects(none: {overflowed})` certifies a fn that calls a
+        // declared source of it. The declaration is rejected up front
+        // (`check_effect_capacity`) so this arm is unreachable for a
+        // program that typechecks; it stays saturating rather than
+        // panicking for callers that analyse un-checked ASTs.
         EffectClass::User(i) => {
-            if (i as u32) < 22 {
-                EffectSet(1 << (10 + i as u32))
+            if (i as u32) < EffectClass::USER_CAPACITY {
+                EffectSet(1 << (EffectClass::BUILTIN_BITS as u64 + i as u64))
             } else {
                 EffectSet::PURE
             }

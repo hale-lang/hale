@@ -138,3 +138,85 @@ fn declaring_a_user_class_leaves_builtin_names_intact() {
         ds
     );
 }
+
+/// Declaring more classes than the mask holds must be an ERROR, not a
+/// saturating no-op.
+///
+/// `class_mask` used to answer `PURE` for any class past the ceiling.
+/// PURE means "reaches nothing", so `@effects(none: {overflowed})`
+/// SILENTLY CERTIFIED a fn that called a declared source of it — the
+/// analysis failed open. Everything else in this system fails closed
+/// (an unclassified stdlib leaf is treated as doing anything), and an
+/// effect certificate that is quietly false is worse than no
+/// certificate: it is believed. The ceiling is now rejected at the
+/// declaration, where there is a span to point at.
+#[test]
+fn overflowing_the_class_ceiling_is_rejected() {
+    let cap = hale_syntax::ast::EffectClass::USER_CAPACITY;
+    let decls: String =
+        (0..=cap).map(|i| format!("effect e{};\n", i)).collect();
+    let src = format!("{decls}fn main() {{ println(1); }}");
+    let err = hale_syntax::parse_source(&src)
+        .err()
+        .expect("declaring past the ceiling must not parse");
+    let rendered = format!("{:?}", err);
+    assert!(
+        rendered.contains("too many declared effect classes"),
+        "the overflow must be diagnosed at the declaration: {}",
+        rendered
+    );
+}
+
+/// The last class that FITS must still work — an off-by-one here would
+/// silently cost a usable class, or worse, hand out a bit that aliases.
+#[test]
+fn the_last_class_within_the_ceiling_still_propagates() {
+    let cap = hale_syntax::ast::EffectClass::USER_CAPACITY;
+    let last = cap - 1;
+    let decls: String =
+        (0..cap).map(|i| format!("effect e{};\n", i)).collect();
+    let src = format!(
+        "{decls}@effects(is: {{e{last}}})\n\
+         fn leaf(n: Int) -> Int {{ return n; }}\n\
+         @effects(none: {{e{last}}})\n\
+         fn caller(n: Int) -> Int {{ return leaf(n); }}\n\
+         fn main() {{ println(caller(1)); }}"
+    );
+    let program = hale_syntax::parse_source(&src).expect("parse");
+    let ds: Vec<String> = hale_types::check_program(&program)
+        .into_iter()
+        .map(|d| d.message)
+        .collect();
+    assert!(
+        ds.iter().any(|m| m.contains("effect assertion violated")
+            && m.contains(&format!("e{last}"))),
+        "the highest in-range class must still propagate and be named: {:?}",
+        ds
+    );
+}
+
+/// The manifest is a committed baseline whose DIFF is the review
+/// artifact. A placeholder name there is worse than in a diagnostic:
+/// every user class renders identically, so two distinct classes
+/// produce the same line and a real change can diff to nothing.
+#[test]
+fn the_manifest_names_user_classes() {
+    let src = format!(
+        "{MONEY}@effects(none: {{money}})\n\
+         fn price(n: Int) -> Int {{ return n; }}\n\
+         fn main() {{ println(price(5)); }}"
+    );
+    let program = hale_syntax::parse_source(&src).expect("parse");
+    let rows = hale_types::effects::effect_manifest(&[&program]);
+    let rendered = format!("{:?}", rows);
+    assert!(
+        rendered.contains("money"),
+        "the manifest must name the declared class: {}",
+        rendered
+    );
+    assert!(
+        !rendered.contains("<user effect>"),
+        "the manifest must not leak the placeholder: {}",
+        rendered
+    );
+}

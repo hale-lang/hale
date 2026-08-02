@@ -1075,6 +1075,12 @@ pub struct EffectManifestRow {
 /// Build the whole-program effect manifest, sorted for stable diffs.
 pub fn effect_manifest(programs: &[&Program]) -> Vec<EffectManifestRow> {
     let mut rows: Vec<EffectManifestRow> = Vec::new();
+    // #345: the manifest is a REVIEW artifact — a committed baseline
+    // whose diff is the thing a human reads. `<user effect>` there is
+    // worse than in a diagnostic: every user class renders identically,
+    // so two different classes produce the same line and a real change
+    // can diff to nothing.
+    let names = effect_names_of(programs);
     let mut push = |name: String, fd: &FnDecl| {
         let mut forbids = Vec::new();
         let mut publish_set = None;
@@ -1083,7 +1089,7 @@ pub fn effect_manifest(programs: &[&Program]) -> Vec<EffectManifestRow> {
                 EffectAssert::Carries(_) => {}
                 EffectAssert::Forbid(cs) => {
                     for c in cs {
-                        forbids.push(c.as_str().to_string());
+                        forbids.push(cls_name(*c, &names));
                     }
                 }
                 EffectAssert::PublishSet(items) => {
@@ -1094,7 +1100,7 @@ pub fn effect_manifest(programs: &[&Program]) -> Vec<EffectManifestRow> {
                 }
                 EffectAssert::Causes(cs) => {
                     for c in cs {
-                        forbids.push(format!("causes:{}", c.as_str()));
+                        forbids.push(format!("causes:{}", cls_name(*c, &names)));
                     }
                 }
             }
