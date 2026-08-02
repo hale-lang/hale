@@ -442,9 +442,11 @@ is tedious and error-prone to maintain by review, and exactly the one
 that stops holding the moment a call graph is more than a few edges
 deep.
 
-One limit at v1: **classes are single-seed**. A class declared in one
-compilation seed does not resolve from another, because merging
-per-seed intern tables needs index remapping across the merged AST.
+Classes cross seed boundaries — a class declared in a library resolves
+from the app that imports it, which is the whole point: `money` should
+hold everywhere the money goes, and in a real codebase the money goes
+through `lib/`. Each seed interns its own names from zero, so the merge
+unions the tables and remaps each seed's indices before combining them.
 
 There are 54 classes available — the bits above the built-ins in the
 effect mask. Declaring past that is an error at the `effect NAME;`

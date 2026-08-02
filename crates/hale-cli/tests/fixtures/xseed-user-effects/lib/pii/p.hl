@@ -1,0 +1,9 @@
+// A DIFFERENT class, and — critically — it is index 0 in this seed
+// just as `money` is index 0 in its own. Nothing but the remap keeps
+// them apart.
+effect pii;
+
+@effects(is: {pii})
+fn read_name(n: Int) -> Int {
+    return n;
+}

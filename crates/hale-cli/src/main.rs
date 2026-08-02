@@ -1731,6 +1731,12 @@ fn resolve_imports(
     // ("qualified type `g::Rect` not in stdlib path-renames
     // table" / "unknown type name in signature").
     seed_cache: &mut BTreeMap<PathBuf, std::collections::HashMap<String, String>>,
+    // #345: the MERGED user effect-class table. Each seed interns its
+    // own `effect NAME;` declarations from zero, so the same index
+    // means different classes in different seeds. Names are unioned
+    // here and each seed's items are remapped into this table before
+    // they are merged.
+    effect_names: &mut Vec<String>,
 ) -> Result<(), ()> {
     // Defensive guards + env-gated tracing. The guards bound the
     // resolver's accumulators so a future bug (or pathological
@@ -1996,10 +2002,35 @@ fn resolve_imports(
                 merged_items,
                 renames,
                 seed_cache,
+                effect_names,
             )?;
         }
         // Move mangled items into the merged program; stash sources.
-        for pf in parsed_files {
+        for mut pf in parsed_files {
+            // Remap BEFORE merging: `User(i)` indices are seed-local,
+            // so concatenating two seeds' items without this aliases
+            // seed A's class 0 onto seed B's class 0.
+            if !pf.program.effect_names.is_empty() {
+                let map: Vec<u16> = pf
+                    .program
+                    .effect_names
+                    .iter()
+                    .map(|n| {
+                        let at = effect_names
+                            .iter()
+                            .position(|e| e == n)
+                            .unwrap_or_else(|| {
+                                effect_names.push(n.clone());
+                                effect_names.len() - 1
+                            });
+                        at as u16
+                    })
+                    .collect();
+                hale_syntax::ast::remap_user_effects(
+                    &mut pf.program.items,
+                    &map,
+                );
+            }
             merged_items.extend(pf.program.items);
             sources.insert(pf.canon, pf.source);
             let _ = pf.path; // path was only needed for diagnostics above
@@ -2077,6 +2108,10 @@ fn parse_with_imports(
 
     let entry_imports = entry_program.imports.clone();
     let mut merged_items = entry_program.items;
+    // Seed the merged table with the ENTRY's classes so the entry's
+    // own `User(i)` indices stay identity — its items are already in
+    // `merged_items` and are never walked.
+    let mut effect_names: Vec<String> = entry_program.effect_names.clone();
     let mut renames: ImportRenames = Vec::new();
     let mut seed_cache: BTreeMap<PathBuf, std::collections::HashMap<String, String>> = BTreeMap::new();
 
@@ -2091,6 +2126,7 @@ fn parse_with_imports(
         &mut merged_items,
         &mut renames,
         &mut seed_cache,
+        &mut effect_names,
     )
     .is_err()
     {
@@ -2100,13 +2136,16 @@ fn parse_with_imports(
     if !errors.is_empty() {
         return Err(errors);
     }
-    // #345: user effect-class tables are per-seed. Merging them needs
-    // index remapping across the merged AST, so user effects are
-    // single-seed at v1 — a cross-seed name resolves to nothing and is
-    // rejected as undeclared rather than silently aliasing.
+    // #345: user effect-class tables are per-seed — each seed interns
+    // its own `effect NAME;` from zero, so the same index means a
+    // DIFFERENT class in a different seed. `resolve_imports` unions the
+    // names and rewrites each seed's indices into this table before
+    // merging its items, so the merged program carries one table that
+    // every `User(i)` in `merged_items` agrees on.
+    let declared: Vec<u16> = (0..effect_names.len() as u16).collect();
     let mut merged = Program {
-        effect_names: Vec::new(),
-        declared_effects: Vec::new(),
+        effect_names,
+        declared_effects: declared,
         imports: Vec::new(),
         items: merged_items,
         span: entry_program.span,
@@ -2252,6 +2291,10 @@ fn collect_checkable(
     };
     let workspace_root = find_workspace_root(target);
     let mut merged_items = merged.items;
+    // Same identity-seeding rule as the entry path: `merged`'s own
+    // items are already in `merged_items` and are never walked, so its
+    // table must come first.
+    let mut effect_names: Vec<String> = merged.effect_names.clone();
     let mut renames: ImportRenames = Vec::new();
     let mut seed_cache: BTreeMap<
         PathBuf,
@@ -2279,6 +2322,7 @@ fn collect_checkable(
         &mut merged_items,
         &mut renames,
         &mut seed_cache,
+        &mut effect_names,
     )
     .is_err()
     {
@@ -2290,10 +2334,11 @@ fn collect_checkable(
     }
 
     let mut program = Program {
-        // Carried through from the merge above; see the note there on
-        // user effect classes being single-seed at v1.
-        effect_names: merged.effect_names.clone(),
-        declared_effects: merged.declared_effects.clone(),
+        // The UNIONED table from the merge above, not `merged`'s own —
+        // `merged.effect_names` is the pre-import table and every
+        // imported seed's `User(i)` was remapped into this one.
+        declared_effects: (0..effect_names.len() as u16).collect(),
+        effect_names,
         imports: Vec::new(),
         items: merged_items,
         span: merged.span,
@@ -3076,6 +3121,10 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
     };
     let workspace_root = find_workspace_root(target);
     let mut merged_items = merged.items;
+    // Same identity-seeding rule as the entry path: `merged`'s own
+    // items are already in `merged_items` and are never walked, so its
+    // table must come first.
+    let mut effect_names: Vec<String> = merged.effect_names.clone();
     let mut renames: ImportRenames = Vec::new();
     let mut seed_cache: BTreeMap<PathBuf, std::collections::HashMap<String, String>> = BTreeMap::new();
     let mut path_sources: BTreeMap<PathBuf, String> = sources.into_iter().collect();
@@ -3099,6 +3148,7 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
         &mut merged_items,
         &mut renames,
         &mut seed_cache,
+        &mut effect_names,
     )
     .is_err()
         || !import_errors.is_empty()
@@ -3110,8 +3160,8 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
         return ExitCode::from(1);
     }
     let mut program = Program {
-        effect_names: Vec::new(),
-        declared_effects: Vec::new(),
+        declared_effects: (0..effect_names.len() as u16).collect(),
+        effect_names,
         imports: Vec::new(),
         items: merged_items,
         span: merged.span,
@@ -3221,6 +3271,8 @@ fn run_build(target: &Path) -> ExitCode {
         // own dir as the importer dir + the workspace fallback.
         let workspace_root = find_workspace_root(target);
         let mut merged_items = merged.items;
+        // Identity-seeded: `merged`'s items are already merged.
+        let mut effect_names: Vec<String> = merged.effect_names.clone();
         let mut renames: ImportRenames = Vec::new();
     let mut seed_cache: BTreeMap<PathBuf, std::collections::HashMap<String, String>> = BTreeMap::new();
         let mut path_sources: BTreeMap<PathBuf, String> =
@@ -3246,6 +3298,7 @@ fn run_build(target: &Path) -> ExitCode {
             &mut merged_items,
             &mut renames,
             &mut seed_cache,
+            &mut effect_names,
         )
         .is_err()
         {
@@ -3263,8 +3316,8 @@ fn run_build(target: &Path) -> ExitCode {
             return ExitCode::from(1);
         }
         let mut with_imports = Program {
-            effect_names: Vec::new(),
-            declared_effects: Vec::new(),
+            declared_effects: (0..effect_names.len() as u16).collect(),
+            effect_names,
             imports: Vec::new(),
             items: merged_items,
             span: merged.span,
@@ -3749,16 +3802,45 @@ where
 {
     let mut iter = programs.into_iter();
     let first = iter.next()?;
-    let mut merged = Program {
-        effect_names: Vec::new(),
-        declared_effects: Vec::new(),
-        items: first.items.clone(),
+    // #345: same per-seed index hazard as the import path. Each file
+    // interns its own `effect NAME;` from zero, so concatenating items
+    // without remapping makes file A's class 0 and file B's class 0
+    // the same bit — `@effects(none: {money})` in one file would then
+    // be checked against `pii` in another. (Observed: the diagnostic
+    // reported reaching `pii` for a `none: {money}` assertion.)
+    let mut effect_names: Vec<String> = Vec::new();
+    let mut take = |p: &Program| -> Vec<hale_syntax::ast::TopDecl> {
+        let mut items = p.items.clone();
+        if !p.effect_names.is_empty() {
+            let map: Vec<u16> = p
+                .effect_names
+                .iter()
+                .map(|n| {
+                    let at = effect_names
+                        .iter()
+                        .position(|e| e == n)
+                        .unwrap_or_else(|| {
+                            effect_names.push(n.clone());
+                            effect_names.len() - 1
+                        });
+                    at as u16
+                })
+                .collect();
+            hale_syntax::ast::remap_user_effects(&mut items, &map);
+        }
+        items
+    };
+    let mut items = take(first);
+    for p in iter {
+        items.extend(take(p));
+    }
+    let merged = Program {
+        declared_effects: (0..effect_names.len() as u16).collect(),
+        effect_names,
+        items,
         imports: Vec::new(),
         span: first.span,
     };
-    for p in iter {
-        merged.items.extend(p.items.clone());
-    }
     Some(merged)
 }
 

@@ -395,9 +395,10 @@ assume the others in a build:
   no-op: a class with no bit unions as PURE, so `none: {…}` on it
   would certify a fn that reaches a declared source. The analysis
   fails closed everywhere else and must here too.
-  **Single-seed at v1**: merging per-seed intern tables needs index
-  remapping across the merged AST, so a cross-seed class name does
-  not resolve.
+  Classes cross seed boundaries. Each seed interns its own names from
+  zero, so the merge unions the tables and rewrites each seed's
+  indices before concatenating items — without that, two seeds' class
+  0 share a bit and a `none:` on one is checked against the other.
 - **Synchronized access is blocking and non-deterministic** (#340/#341,
   2026-08-01). A `sync`-bearing form takes a lock, so a call reaching
   one contributes `block`, and a read through one defeats

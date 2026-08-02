@@ -2374,3 +2374,83 @@ pub struct Ident {
     pub name: String,
     pub span: Span,
 }
+
+/// #345: rewrite this seed's user effect-class indices into a merged
+/// program's table.
+///
+/// `EffectClass::User(i)` is an index into the *declaring seed's*
+/// intern table, so two seeds that each declare one class both use
+/// `User(0)` for different names. Concatenating their items — which is
+/// what import merging does — silently aliases those classes: seed A's
+/// `money` and seed B's `pii` become the same bit, and a `none:` on
+/// one is checked against the other.
+///
+/// Rejecting cross-seed names avoided the aliasing but made a class
+/// unusable across the import boundary it most wants to cross: the
+/// point of `money` is that it holds everywhere the money goes,
+/// including through a library. So instead, remap: `map[i]` is the
+/// merged index for this seed's class `i`, and every carrier of an
+/// `EffectClass` in the seed's items is rewritten before the items
+/// are merged.
+///
+/// Deliberately exhaustive over the AST rather than a visitor over
+/// "the interesting nodes" — a missed carrier here does not fail
+/// loudly, it silently keeps a stale index that now means a DIFFERENT
+/// class in the merged table. That is the aliasing bug this exists to
+/// prevent, reintroduced quietly.
+pub fn remap_user_effects(items: &mut [TopDecl], map: &[u16]) {
+    fn class(c: &mut EffectClass, map: &[u16]) {
+        if let EffectClass::User(i) = c {
+            // Out of range means the seed declared fewer classes than
+            // it referenced, which the parser already rejected; leave
+            // it alone rather than inventing an index.
+            if let Some(&to) = map.get(*i as usize) {
+                *i = to;
+            }
+        }
+    }
+    fn classes(cs: &mut [EffectClass], map: &[u16]) {
+        for c in cs {
+            class(c, map);
+        }
+    }
+    fn fn_decl(fd: &mut FnDecl, map: &[u16]) {
+        for a in &mut fd.effects {
+            match a {
+                EffectAssert::Forbid(cs)
+                | EffectAssert::Causes(cs)
+                | EffectAssert::Carries(cs) => classes(cs, map),
+                // Subjects, not classes.
+                EffectAssert::PublishSet(_) => {}
+                EffectAssert::NoPanic => {}
+            }
+        }
+    }
+    for item in items {
+        match item {
+            TopDecl::Fn(fd) => fn_decl(fd, map),
+            TopDecl::Locus(l) => {
+                if let Some(pe) = &mut l.phase_effects {
+                    for (_, cs) in &mut pe.phases {
+                        classes(cs, map);
+                    }
+                }
+                for m in &mut l.members {
+                    if let LocusMember::Fn(fd) = m {
+                        fn_decl(fd, map);
+                    }
+                }
+            }
+            TopDecl::Perspective(p) => {
+                for m in &mut p.members {
+                    if let PerspectiveMember::Fn(fd) = m {
+                        fn_decl(fd, map);
+                    }
+                }
+            }
+            // Modules nest arbitrarily deep.
+            TopDecl::Module(m) => remap_user_effects(&mut m.items, map),
+            _ => {}
+        }
+    }
+}
