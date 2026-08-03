@@ -14,6 +14,43 @@ use inkwell::types::BasicType;
 use inkwell::values::{BasicValueEnum, IntValue, PointerValue};
 use inkwell::AddressSpace;
 
+/// Does this cell type tree contain any heap-pointer leaf (String /
+/// Bytes, directly or through a nested struct)? The cell single-owner
+/// machinery — the stack snapshot before the anchor walk and the
+/// owned-clone variants during it — exists solely to keep heap
+/// pointers un-aliased; a cell of pure scalars has nothing to
+/// protect, and emitting the snapshot anyway serializes the hot set
+/// loop through a store-to-load round trip (measured +30% on the
+/// Int-keyed 1M-insert microbench — the v0.11.12/13 regression the
+/// stale v0.11.3 baselines were hiding). Conservative: any type this
+/// doesn't positively recognize as scalar counts as heap-bearing, so
+/// new variants fail SAFE (keep the snapshot).
+pub(crate) fn cell_tree_has_heap_leaves(
+    ty: &CodegenTy,
+    user_types: &std::collections::BTreeMap<String, crate::codegen::TypeInfo<'_>>,
+    depth: u32,
+) -> bool {
+    if depth > 8 {
+        return true; // recursion guard: assume the worst
+    }
+    match ty {
+        CodegenTy::Int
+        | CodegenTy::Float
+        | CodegenTy::Bool
+        | CodegenTy::Duration
+        | CodegenTy::Decimal => false,
+        CodegenTy::TypeRef(name) => match user_types.get(name) {
+            Some(info) => info.fields.values().any(|(_, fty)| {
+                cell_tree_has_heap_leaves(fty, user_types, depth + 1)
+            }),
+            None => true,
+        },
+        // String, Bytes, Time (pointer-repr'd), views, loci,
+        // everything else: heap-bearing or unknown.
+        _ => true,
+    }
+}
+
 use crate::codegen::{
     BceVecKey, CapacitySlotLayout, CodegenError, CodegenTy, Cx,
     FallibleCallResult, LocusInfo, Scope, SlotForm, TypeInfo,
@@ -2190,34 +2227,52 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // dangles the other). Snapshotting first leaves the
                 // source untouched; entry-block alloca so a hot
                 // loop reuses one slot.
-                let snap = self.alloca_in_entry(
-                    cell_info.struct_ty.into(),
-                    &format!("{}.set.snap", locus_name),
-                )?;
-                let snap_size = cell_info
-                    .struct_ty
-                    .size_of()
-                    .expect("cell struct has known size");
-                self.builder
-                    .build_memcpy(
-                        snap,
-                        8,
-                        arg_val.into_pointer_value(),
-                        8,
-                        snap_size,
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let arg_val: BasicValueEnum = snap.into();
-                let prev_owned = self.cell_owned_clone;
-                self.cell_owned_clone = true;
-                let walk_res = self.emit_cross_arena_store_deep_copy(
-                    arg_val,
+                // Scalar-cell fast path (2026-08-03): both the
+                // snapshot and the walk protect HEAP-POINTER
+                // leaves. A cell of pure scalars has none — the
+                // set below memcpys the bytes and the aliasing
+                // hazard cannot arise — so skip both. (This
+                // restores the pre-single-owner codegen for the
+                // Int-keyed/Int-valued shape: the snapshot's
+                // store-to-load round trip measured +30% on the
+                // 1M-insert microbench.)
+                let arg_val = if cell_tree_has_heap_leaves(
                     &expected_value_ty,
-                    dest_arena,
-                    &format!("{}.hashmap_set", locus_name),
-                );
-                self.cell_owned_clone = prev_owned;
-                let arg_val = walk_res?;
+                    &self.user_types,
+                    0,
+                ) {
+                    let snap = self.alloca_in_entry(
+                        cell_info.struct_ty.into(),
+                        &format!("{}.set.snap", locus_name),
+                    )?;
+                    let snap_size = cell_info
+                        .struct_ty
+                        .size_of()
+                        .expect("cell struct has known size");
+                    self.builder
+                        .build_memcpy(
+                            snap,
+                            8,
+                            arg_val.into_pointer_value(),
+                            8,
+                            snap_size,
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let arg_val: BasicValueEnum = snap.into();
+                    let prev_owned = self.cell_owned_clone;
+                    self.cell_owned_clone = true;
+                    let walk_res = self.emit_cross_arena_store_deep_copy(
+                        arg_val,
+                        &expected_value_ty,
+                        dest_arena,
+                        &format!("{}.hashmap_set", locus_name),
+                    );
+                    self.cell_owned_clone = prev_owned;
+                    walk_res?
+                } else {
+                    let _ = dest_arena; // unused on the scalar path
+                    arg_val
+                };
                 // The value lowered to a TypeRef arrives as a
                 // pointer to the struct (user_type instantiations
                 // return `*StructTy`). Pass it directly as
@@ -2990,34 +3045,44 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // dangles the other). Snapshotting first leaves the
                 // source untouched; entry-block alloca so a hot
                 // loop reuses one slot.
-                let snap = self.alloca_in_entry(
-                    cell_info.struct_ty.into(),
-                    &format!("{}.put.snap", locus_name),
-                )?;
-                let snap_size = cell_info
-                    .struct_ty
-                    .size_of()
-                    .expect("cell struct has known size");
-                self.builder
-                    .build_memcpy(
-                        snap,
-                        8,
-                        arg_val.into_pointer_value(),
-                        8,
-                        snap_size,
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let arg_val: BasicValueEnum = snap.into();
-                let prev_owned = self.cell_owned_clone;
-                self.cell_owned_clone = true;
-                let walk_res = self.emit_cross_arena_store_deep_copy(
-                    arg_val,
+                // Scalar-cell fast path: see the hashmap-set twin.
+                let arg_val = if cell_tree_has_heap_leaves(
                     &expected_value_ty,
-                    dest_arena,
-                    &format!("{}.lru_put", locus_name),
-                );
-                self.cell_owned_clone = prev_owned;
-                let arg_val = walk_res?;
+                    &self.user_types,
+                    0,
+                ) {
+                    let snap = self.alloca_in_entry(
+                        cell_info.struct_ty.into(),
+                        &format!("{}.put.snap", locus_name),
+                    )?;
+                    let snap_size = cell_info
+                        .struct_ty
+                        .size_of()
+                        .expect("cell struct has known size");
+                    self.builder
+                        .build_memcpy(
+                            snap,
+                            8,
+                            arg_val.into_pointer_value(),
+                            8,
+                            snap_size,
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let arg_val: BasicValueEnum = snap.into();
+                    let prev_owned = self.cell_owned_clone;
+                    self.cell_owned_clone = true;
+                    let walk_res = self.emit_cross_arena_store_deep_copy(
+                        arg_val,
+                        &expected_value_ty,
+                        dest_arena,
+                        &format!("{}.lru_put", locus_name),
+                    );
+                    self.cell_owned_clone = prev_owned;
+                    walk_res?
+                } else {
+                    let _ = dest_arena; // unused on the scalar path
+                    arg_val
+                };
                 let value_ptr = arg_val.into_pointer_value();
                 let key_field_ptr = self
                     .builder

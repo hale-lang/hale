@@ -6257,9 +6257,30 @@ static __thread int g_bus_drain_active = 0;
 
 /* GH #233: defined with the remote-transport machinery below. */
 void lotus_bus_drain_lost_transports(void);
+extern volatile int g_transport_lost_pending;
 
 void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
     if (!q) return;
+    /* Fast path (2026-08-03, bench attribution): single-threaded
+     * mode + empty queue + no pending transport loss — this call
+     * can have no effect. It matters because codegen emits drains
+     * at every statement boundary, scope exit and sleep slice, so
+     * in a bus-less or idle program EVERY drain lands here; the
+     * full body below costs a 6-register prologue, a pthread_self
+     * call and a lost-transports call before it looks at the
+     * queue (measured: two such no-op drains were ~30% of a
+     * per-instantiation microbench iteration). Keeping this
+     * branch call-free lets shrink-wrapping skip the prologue.
+     *
+     * Soundness of the plain head/tail reads: g_bus_has_pinned is
+     * set (release, pre-spawn) by BOTH pinned-locus registration
+     * and cooperative-pool startup, so 0 here means no second
+     * thread exists at all — the same invariant the unlocked
+     * drain body below already relies on. With one thread there
+     * is no concurrent producer and no foreign drainer. */
+    if (!__atomic_load_n(&g_bus_has_pinned, __ATOMIC_ACQUIRE)
+        && q->head >= q->tail && !g_transport_lost_pending)
+        return;
     /* Owner-only handler execution (see the `owner` field comment).
      * A foreign thread reaching this via its scope-exit flush /
      * sleep-slice must NOT run main-pool subscribers' handlers —
