@@ -399,6 +399,22 @@ assume the others in a build:
   zero, so the merge unions the tables and rewrites each seed's
   indices before concatenating items — without that, two seeds' class
   0 share a bit and a `none:` on one is checked against the other.
+- **An indirect call fails closed** (#353, 2026-08-03). A call
+  through a function-typed parameter reaches the call graph as an
+  unresolved callee, indistinguishable from a call to an unknown free
+  fn — which contributed nothing. So `@no_syscall` on a fn whose body
+  is `return f(v);` typechecked while the program performed the
+  syscall, and `@budget(alloc_per_call = 0)` leaked identically. Every
+  certificate the language offers ran through one hole, function
+  pointers being the first genuinely open-world construct in the
+  language. An indirect call is now treated as **may do anything**:
+  unclassified for the effect classes, unbounded for the quantitative
+  dimensions. Deliberately conservative rather than exact — Hale is
+  whole-program and closed-world, so the target set IS enumerable and
+  exact resolution is possible, but a certificate wrong in the safe
+  direction beats one wrong in the other, so the conservative form
+  lands first and precision becomes an improvement rather than a
+  correctness fix.
 - **Closed effect contracts — `@effects(only: {…})`** (#354,
   2026-08-03). The dual of `none:`. `none:` forbids a listed set and
   permits everything else, which makes it **rot**: expressing "this

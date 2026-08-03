@@ -2107,6 +2107,55 @@ spawns one OS worker thread per inferred pool name beyond
 named purely by use site, and the runtime materializes them
 on demand at startup.
 
+## Element chains
+
+`xs.filter(<expr>).count()` and `xs.filter(<expr>).into(target)` are
+recognized **forms**, not values. A chain is rewritten to a single
+loop by a post-parse pass, so typecheck and codegen both see an
+ordinary `while` and neither knows chains exist.
+
+```hale
+self.users.filter(it.active).into(self.actives)
+```
+
+`it` is bound to the current element by the rewrite. Stages fuse: two
+`filter`s are one pass, because nothing is produced between them.
+
+**Why a form and not a value.** A chain that produced something at
+each step would need either a lazy object or an intermediate
+collection. Both are sequence values, which need an owner, which
+reopens arenas and placement — the knot that made composition look
+like a language-sized change. A recognized form produces nothing at
+any step, so the question does not arise.
+
+Three properties follow, and they are the contract:
+
+1. **A chain allocates nothing.** It is therefore legal inside
+   `@budget(alloc_per_call = 0)` and `@hot`. A design that returned a
+   new collection would have been illegal in exactly the code Hale
+   exists for.
+2. **A chain is eager.** A predicate's effects are attributed to the
+   predicate's own source position. A lazy chain would execute it at
+   the terminal and the witness path would name the wrong line.
+3. **A chain needs no lambdas.** The predicate is an argument position
+   the compiler knows about, not a value, so there is no closure to
+   represent — no capture modes, no escape analysis, no cross-thread
+   question.
+
+**Boundary.** Elementwise operations fuse. Whole-set operations
+(`sort`, `reverse`, `group`) cannot — they need every element before
+producing any — so they are terminals that materialize into caller
+storage. Over a stream source (a bus subscription, where the driver is
+delivery rather than a loop) they are rejected outright: "needs an
+end" is a property the compiler can decide.
+
+A bare method call with no stage (`v.count()`) is an ordinary form
+method, not a chain, and is left alone. A chain over a non-form
+receiver fails with the ordinary "no method `len`" diagnostic.
+
+v1 surface: `filter` as the elementwise operation; `count` and `into`
+as terminals.
+
 ## Bus subscription dispatch
 
 A `bus { subscribe SUBJECT as HANDLER of type T; }` declaration
@@ -2751,6 +2800,18 @@ non-error value, that value is the expression's value
   value. Type must match the success type. `<fallback>` may
   itself be a call (`or handler(err)`); the identifier `err`
   in the fallback expression resolves to the typed payload.
+
+  A **diverging** fallback is exempt from the type match
+  (2026-08-03, #353): a block whose last statement is
+  unconditionally `break` / `continue` / `return` / `fail` /
+  `terminate` never yields, so there is no value whose type
+  could match, and requiring one forced callers to invent a
+  substitute that is provably never used. Deliberately
+  conservative — only an UNCONDITIONAL divergence qualifies,
+  because a block that can fall through genuinely does need a
+  value, which is what the rule protects. `v.get(i) or
+  { break; }` is the shape a generic desugar needs, since it
+  cannot invent a typed default for an arbitrary element type.
 - **`or discard`** (added 2026-05-16) — swallows the error
   and produces Unit. The underlying call's success type MUST
   be Unit; the typechecker rejects `or discard` on

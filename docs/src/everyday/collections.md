@@ -180,3 +180,70 @@ you need both, that's two loci — which is usually what the data
 wanted anyway.
 
 Next: [Records & data](./records.md).
+
+## Asking questions about a collection
+
+Once you have a collection, the common thing you want is not to *build
+a new one* — it's to answer a question about the one you have. How
+many are active? Put the active ones over there.
+
+```hale,fragment
+let n = users.filter(it.active).count();
+users.filter(it.active).into(actives);
+```
+
+`it` is the current element. Chain as many `filter`s as you like; they
+run in a single pass:
+
+```hale,fragment
+let n = readings.filter(it > 10).filter(it < 100).count();
+```
+
+This looks like an iterator chain from another language, and it is
+deliberately not one. There is no intermediate collection between the
+stages, and no lazy object holding state — the whole chain is rewritten
+to one loop before your program is typechecked. What you write is
+exactly what runs.
+
+That has a practical consequence worth knowing: **a chain allocates
+nothing**, so it is legal in a handler with a strict budget.
+
+```hale,fragment
+@budget(alloc_per_call = 0)
+fn urgent(rs: Readings) -> Int {
+    return rs.filter(it > 90).count();
+}
+```
+
+In most languages the composable style is the one you give up on the
+hot path. Here it is the one that survives, because nothing is being
+built.
+
+Two things follow from the same fact. Because the chain is not a
+value, you can't store one in a variable or return it — it's a
+question you ask, not a thing you hold. And because there's no
+closure, `it` can't capture anything or outlive the call, so none of
+the usual questions about what a lambda captures arise.
+
+Operations that need to see every element before producing any — sorting,
+grouping — can't be part of a fused pass. Those write into storage you
+supply, and the allocation shows up where you can see it.
+
+## Membership
+
+If the question is only *is this here*, reach for a set rather than a
+map with a value you don't use:
+
+```hale,fragment
+type Item { key: String; }
+
+@form(set)
+locus Seen { capacity { pool items of Item indexed_by key; } }
+
+seen.insert(Item { key: "a" });
+if seen.contains("a") { ... }
+```
+
+`contains` answers `Bool` directly. Through a map you would be writing
+`get(k) or false` at every call site, which is the value you didn't
+want leaking back into your code.
