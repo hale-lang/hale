@@ -2045,6 +2045,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         else {
             return Ok(None);
         };
+        // #353: `@form(set)` shares this slot and this runtime — only
+        // its surface differs. `insert(k)` is `set(k, true)` with the
+        // value never surfaced, and `contains` is `has`. Which of the
+        // two surfaces a locus actually exposes is settled in
+        // `resolve.rs`, which synthesizes only one of them, so a
+        // hashmap cannot reach the set names or vice versa.
+        let method_name = match method_name {
+            "insert" => "set",
+            "contains" => "has",
+            other => other,
+        };
         let is_synth = matches!(
             method_name,
             "set" | "has" | "len" | "is_empty" | "get" | "remove"

@@ -8,6 +8,16 @@ behavior.
 
 ## Unreleased
 
+- **`@form(set)`** (#353). Specified and deferred in
+  `decisions.md` with the trigger "revisit if a workload needs it";
+  the trigger fired. Reuses the hashmap slot and the whole
+  `lotus_hashmap_*` runtime, sync disciplines included, so
+  `@form(set, sync = striped)` works for free. Differs only in the
+  synthesized surface — `insert` / `contains` / `remove` / `len` /
+  `is_empty` — which exists to keep the value off the call site:
+  membership through a hashmap means writing `get(k) or false`
+  everywhere.
+
 - **Recognized element chains** (#353, cluster B).
   `xs.filter(it > 2).count()` and `xs.filter(...).into(target)` are
   rewritten to ONE loop by a post-parse pass, so typecheck and codegen

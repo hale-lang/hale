@@ -6977,6 +6977,10 @@ impl<'a> Checker<'a> {
         match form.name.name.as_str() {
             "vec" => self.check_form_vec_shape(decl, form),
             "hashmap" => self.check_form_hashmap_shape(decl, form),
+            // #353: identical capacity shape to hashmap — the value
+            // slot is what makes membership storable. Only the method
+            // surface differs.
+            "set" => self.check_form_hashmap_shape(decl, form),
             "ring_buffer" => self.check_form_ring_buffer_shape(decl, form),
             "lru_cache" => self.check_form_lru_cache_shape(decl, form),
             other => {

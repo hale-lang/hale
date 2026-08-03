@@ -3304,9 +3304,16 @@ the core surface above is independent of them.
    in v1; no tuning knobs. Add when a workload demonstrates
    the 0 → 8 → 16 → ... grow cascade is costing measurable
    time.
-5. **Set type.** A `@form(set)` would be a hashmap-without-
+5. **Set type.** ~~A `@form(set)` would be a hashmap-without-
    value variant (the cell IS the key). Not part of FORM-4;
-   revisit if a workload needs it.
+   revisit if a workload needs it.~~ **SHIPPED 2026-08-03**
+   (#353). The trigger fired. It reuses the hashmap slot and
+   the whole `lotus_hashmap_*` runtime — sync disciplines
+   included — and differs only in the synthesized surface:
+   `insert` / `contains` / `remove` / `len` / `is_empty`. The
+   separate surface exists to keep the VALUE off the call
+   site; membership through a hashmap means writing
+   `get(k) or false` everywhere.
 
 ---
 

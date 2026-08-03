@@ -758,10 +758,15 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
             .as_ref()
             .map(|f| f.name.name.as_str() == "vec")
             .unwrap_or(false);
+        // #353: `@form(set)` is a hashmap whose value is carried but
+        // never surfaced — `decisions.md` specifies it as "a
+        // hashmap-without-value variant (the cell IS the key)". It
+        // reuses the whole `lotus_hashmap_*` runtime, including the
+        // sync disciplines; only the synthesized method set differs.
         let is_form_hashmap = l
             .form
             .as_ref()
-            .map(|f| f.name.name.as_str() == "hashmap")
+            .map(|f| matches!(f.name.name.as_str(), "hashmap" | "set"))
             .unwrap_or(false);
         let is_form_ring_buffer = l
             .form
