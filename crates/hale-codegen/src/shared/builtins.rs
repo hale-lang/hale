@@ -756,6 +756,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .module
             .add_function("lotus_str_ends_with", str_predicate_ty, None);
         self.mark_pure_read(str_ends_with_fn);
+        // #353: split into a caller-supplied @form(vec).
+        // declare void @lotus_str_split_into(ptr vec, ptr s, ptr sep, ptr arena)
+        let split_into_ty = self.context.void_type().fn_type(
+            &[ptr_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into()],
+            false,
+        );
+        self.module
+            .add_function("lotus_str_split_into", split_into_ty, None);
 
         // m84: byte index of substring (or -1 if not found).
         // declare i64 @lotus_str_index_of(ptr s, ptr sub)

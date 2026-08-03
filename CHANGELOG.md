@@ -8,6 +8,17 @@ behavior.
 
 ## Unreleased
 
+- **`std::str::split_into`** (#353). Splitting a string is the most
+  common operation in service code and Hale had no way to do it. It
+  writes into a caller-supplied `@form(vec)` rather than returning a
+  sequence, following `text::tokenize_words_into` — because Hale
+  cannot return one: arrays are fixed-size types and growable
+  collections exist only as locus-owned forms. That shape is also the
+  allocation-visible one: the caller owns the storage, so the cost
+  lands in the caller's budget instead of hiding behind a return
+  value, and a `@hot` handler can reuse one vec across calls. Empty
+  fields are preserved — `"a,,b,"` is four fields.
+
 - **`std::time::parse_iso8601`** (#353). `std::time` was
   monotonic/now/sleep/time_from_unix and nothing else, so a service
   could emit a timestamp and had no way to read one back. Formatting

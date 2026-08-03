@@ -22483,6 +22483,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "text", "tokenize_words_into"] => {
                 self.lower_std_text_tokenize_words_into(args, scope)
             }
+            ["std", "str", "split_into"] => {
+                self.lower_std_str_split_into(args, scope)
+            }
             // C9: new fallible-only fs surfaces + C4: getrandom +
             // C2: subprocess primitives. Same "use `or`" diagnostic
             // shape as the parse_int family.
@@ -22630,6 +22633,112 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     one.into(),
                 ],
                 "text.tokenize_words.call",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
+    /// #353: `std::str::split_into(s, sep, target: @form(vec))`.
+    ///
+    /// Splitting is the most common operation in service code and
+    /// Hale had no way to do it. What it cannot do is RETURN a
+    /// sequence — arrays are fixed-size and growable collections
+    /// exist only as locus-owned forms — so this uses the shape the
+    /// stdlib already adopted for that reason
+    /// (`text::tokenize_words_into`): write into caller-supplied
+    /// storage. The caller owns the allocation, so the cost lands in
+    /// the caller's budget instead of hiding behind a return value,
+    /// and a `@hot` handler can reuse one vec across calls.
+    fn lower_std_str_split_into(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(), CodegenError> {
+        if args.len() != 3 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::split_into expects 2 args (source \
+                 String, target @form(vec) of String); got {}",
+                args.len()
+            )));
+        }
+        let (src_val, src_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(src_ty, CodegenTy::String) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::split_into: source arg must be \
+                 String, got {:?}",
+                src_ty
+            )));
+        }
+        let (sep_val, sep_ty) = self.lower_expr(&args[1], scope)?;
+        let sep_val = self.unpack_view_if_needed(sep_val, &sep_ty)?;
+        let (target_val, target_ty) = self.lower_expr(&args[2], scope)?;
+        let target_locus_name = match &target_ty {
+            CodegenTy::LocusRef(n) => n.clone(),
+            other => {
+                return Err(CodegenError::Unsupported(format!(
+                    "std::str::split_into: target arg must be a \
+                     @form(vec) of String locus, got {:?}",
+                    other
+                )));
+            }
+        };
+        let locus_info = self
+            .user_loci
+            .get(&target_locus_name)
+            .cloned()
+            .ok_or_else(|| CodegenError::Unsupported(format!(
+                "std::str::split_into: target locus `{}` not \
+                 registered",
+                target_locus_name
+            )))?;
+        // Verify it's a @form(vec) with String cells.
+        let vec_slot = locus_info
+            .capacity_slots
+            .iter()
+            .find(|s| s.form == Some(SlotForm::Vec))
+            .cloned()
+            .ok_or_else(|| CodegenError::Unsupported(format!(
+                "std::str::split_into: target locus `{}` is not \
+                 a @form(vec) — must be `@form(vec) locus X {{ capacity \
+                 {{ heap items of String; }} }}`",
+                target_locus_name
+            )))?;
+        if !matches!(vec_slot.elem_ty, CodegenTy::String) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::split_into: target vec `{}` cell type \
+                 must be String, got {:?}",
+                target_locus_name, vec_slot.elem_ty
+            )));
+        }
+        let target_self_ptr = target_val.into_pointer_value();
+        let vec_field_ptr = self
+            .builder
+            .build_struct_gep(
+                locus_info.struct_ty,
+                target_self_ptr,
+                vec_slot.struct_field_idx,
+                &format!("{}.__vec_{}.tokenize.ptr", target_locus_name, vec_slot.name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let arena_ptr = self.current_arena_ptr()?;
+        // lowercase = 1 by default (matches the wordfreq idiom
+        // every agent reaches for). A future overload could take
+        // an Int / Bool flag if case-preserving tokenization
+        // turns out to be a common need.
+        let fn_ = self
+            .module
+            .get_function("lotus_str_split_into")
+            .expect("lotus_str_split_into declared");
+        self.builder
+            .build_call(
+                fn_,
+                &[
+                    vec_field_ptr.into(),
+                    src_val.into(),
+                    sep_val.into(),
+                    arena_ptr.into(),
+                ],
+                "str.split_into.call",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
