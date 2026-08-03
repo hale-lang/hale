@@ -8,6 +8,12 @@ behavior.
 
 ## Unreleased
 
+- **`std::str::join`** (#353). The pair to `split_into`, and note it
+  RETURNS where split writes: a String is already a value in Hale, so
+  joining never meets the sequence-value question that forces split's
+  shape. One arena allocation sized in a first pass, rather than
+  repeated concatenation, so the cost is a single countable
+  allocation.
 - **`std::str::split_into`** (#353). Splitting a string is the most
   common operation in service code and Hale had no way to do it. It
   writes into a caller-supplied `@form(vec)` rather than returning a

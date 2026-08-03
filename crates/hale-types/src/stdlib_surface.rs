@@ -607,7 +607,7 @@ pub const SURFACES: &[NsSurface] = &[
         fns: &[
             e("builder_append", EffectSet::PURE), e("builder_finish", EffectSet::PURE), e("builder_len", EffectSet::PURE),
             e("builder_new", EffectSet::PURE), e("byte_at_unchecked", EffectSet::PURE),             e("can_parse_float", EffectSet::PURE), e("can_parse_int", EffectSet::PURE), e("clone", EffectSet::PURE), e("from_bytes", EffectSet::PURE),
-            e("index_of", EffectSet::PURE), e("contains", EffectSet::PURE), e("split_into", EffectSet::PURE), e("starts_with", EffectSet::PURE), e("ends_with", EffectSet::PURE), e("lower", EffectSet::PURE), e("pad_left", EffectSet::PURE), e("pad_right", EffectSet::PURE), e("parse_decimal", EffectSet::PURE),
+            e("index_of", EffectSet::PURE), e("contains", EffectSet::PURE), e("split_into", EffectSet::PURE), e("join", EffectSet::PURE), e("starts_with", EffectSet::PURE), e("ends_with", EffectSet::PURE), e("lower", EffectSet::PURE), e("pad_left", EffectSet::PURE), e("pad_right", EffectSet::PURE), e("parse_decimal", EffectSet::PURE),
             e("parse_float", EffectSet::PURE), e("parse_int", EffectSet::PURE), e("range_eq", EffectSet::PURE), e("range_parse_decimal", EffectSet::PURE),
             e("range_parse_int", EffectSet::PURE), e("repeat", EffectSet::PURE), e("replace", EffectSet::PURE), e("substring", EffectSet::PURE), e("trim", EffectSet::PURE),
             e("upper", EffectSet::PURE),
@@ -921,6 +921,7 @@ pub const SIGS: &[FnSig] = &[
     // `lotus_str_contains` / `_starts_with` all along; `ends_with` is
     // new. Pure reads over immutable data — no effects.
     sig!(NS_STR, "split_into", [Str, Str, Any], Unit),
+    sig!(NS_STR, "join", [Any, Str], Str),
     sig!(NS_STR, "contains", [Str, Str], Bool),
     sig!(NS_STR, "starts_with", [Str, Str], Bool),
     sig!(NS_STR, "ends_with", [Str, Str], Bool),

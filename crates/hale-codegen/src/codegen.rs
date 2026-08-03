@@ -22744,6 +22744,102 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
+    /// #353: `std::str::join(v: @form(vec) of String, sep) -> String`.
+    ///
+    /// Note this RETURNS where `split_into` writes. A String is
+    /// already a value in Hale, so joining does not meet the
+    /// sequence-value question at all. The asymmetry reflects the
+    /// language rather than an inconsistency in the API.
+    fn lower_std_str_join(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::join expects 2 args (source \
+                 String, target @form(vec) of String); got {}",
+                args.len()
+            )));
+        }
+        let (target_val, target_ty) = self.lower_expr(&args[0], scope)?;
+        let (sep_val, sep_ty) = self.lower_expr(&args[1], scope)?;
+        let sep_val = self.unpack_view_if_needed(sep_val, &sep_ty)?;
+        let target_locus_name = match &target_ty {
+            CodegenTy::LocusRef(n) => n.clone(),
+            other => {
+                return Err(CodegenError::Unsupported(format!(
+                    "std::str::join: target arg must be a \
+                     @form(vec) of String locus, got {:?}",
+                    other
+                )));
+            }
+        };
+        let locus_info = self
+            .user_loci
+            .get(&target_locus_name)
+            .cloned()
+            .ok_or_else(|| CodegenError::Unsupported(format!(
+                "std::str::join: target locus `{}` not \
+                 registered",
+                target_locus_name
+            )))?;
+        // Verify it's a @form(vec) with String cells.
+        let vec_slot = locus_info
+            .capacity_slots
+            .iter()
+            .find(|s| s.form == Some(SlotForm::Vec))
+            .cloned()
+            .ok_or_else(|| CodegenError::Unsupported(format!(
+                "std::str::join: target locus `{}` is not \
+                 a @form(vec) — must be `@form(vec) locus X {{ capacity \
+                 {{ heap items of String; }} }}`",
+                target_locus_name
+            )))?;
+        if !matches!(vec_slot.elem_ty, CodegenTy::String) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::join: target vec `{}` cell type \
+                 must be String, got {:?}",
+                target_locus_name, vec_slot.elem_ty
+            )));
+        }
+        let target_self_ptr = target_val.into_pointer_value();
+        let vec_field_ptr = self
+            .builder
+            .build_struct_gep(
+                locus_info.struct_ty,
+                target_self_ptr,
+                vec_slot.struct_field_idx,
+                &format!("{}.__vec_{}.tokenize.ptr", target_locus_name, vec_slot.name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let arena_ptr = self.current_arena_ptr()?;
+        // lowercase = 1 by default (matches the wordfreq idiom
+        // every agent reaches for). A future overload could take
+        // an Int / Bool flag if case-preserving tokenization
+        // turns out to be a common need.
+        let fn_ = self
+            .module
+            .get_function("lotus_str_join")
+            .expect("lotus_str_join declared");
+        let res = self
+            .builder
+            .build_call(
+                fn_,
+                &[
+                    vec_field_ptr.into(),
+                    sep_val.into(),
+                    arena_ptr.into(),
+                ],
+                "str.join.call",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_str_join returns ptr");
+        Ok((res, CodegenTy::String))
+    }
+
     /// Expression-position dispatcher for `std::*` paths.
     fn lower_stdlib_path_call_expr(
         &mut self,
@@ -23024,6 +23120,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "str", "index_of"] => {
                 self.lower_std_str_index_of(args, scope)
             }
+            ["std", "str", "join"] => self.lower_std_str_join(args, scope),
             ["std", "str", "contains"] => self.lower_std_str_predicate(
                 "lotus_str_contains",
                 "contains",

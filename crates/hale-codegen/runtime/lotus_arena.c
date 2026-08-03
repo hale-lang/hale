@@ -4214,6 +4214,55 @@ static int lotus_text_is_word_byte(unsigned char c) {
  * a trailing empty field — the same convention as every split worth
  * having, so `"a,,b,".split(",")` is 4 fields.
  */
+/*
+ * #353: `std::str::join(v, sep) -> String`, the pair to split_into.
+ *
+ * Note this one RETURNS. A String is already a value in Hale, so
+ * joining does not run into the sequence-value question that forces
+ * `split_into` to write into caller storage — the asymmetry is real
+ * and reflects the language, not an inconsistency in the API.
+ *
+ * Two passes: size, then fill. One arena allocation for the result
+ * rather than repeated concatenation, so the cost is a single
+ * countable allocation in the caller's budget.
+ */
+char *lotus_str_join(void *vec_ptr, const char *sep, void *arena_ptr) {
+    lotus_arena_t *arena = (lotus_arena_t *)arena_ptr;
+    if (!vec_ptr) {
+        char *e = (char *)lotus_arena_alloc(arena, 1, 1);
+        if (e) e[0] = '\0';
+        return e;
+    }
+    if (!sep) sep = "";
+    size_t seplen = strlen(sep);
+    int64_t n = lotus_vec_len(vec_ptr);
+    size_t total = 1;
+    for (int64_t i = 0; i < n; i++) {
+        char *s = NULL;
+        lotus_vec_get(vec_ptr, sizeof(char *), i, &s);
+        if (s) total += strlen(s);
+        if (i + 1 < n) total += seplen;
+    }
+    char *out = (char *)lotus_arena_alloc(arena, total, 1);
+    if (!out) return NULL;
+    size_t off = 0;
+    for (int64_t i = 0; i < n; i++) {
+        char *s = NULL;
+        lotus_vec_get(vec_ptr, sizeof(char *), i, &s);
+        if (s) {
+            size_t l = strlen(s);
+            memcpy(out + off, s, l);
+            off += l;
+        }
+        if (i + 1 < n && seplen) {
+            memcpy(out + off, sep, seplen);
+            off += seplen;
+        }
+    }
+    out[off] = '\0';
+    return out;
+}
+
 void lotus_str_split_into(
     void *target_vec,
     const char *src,
