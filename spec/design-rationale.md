@@ -57,6 +57,71 @@ Full design note: `notes/hale-types-vs-loci.md`.
 
 ---
 
+## Design discipline: substrate invariance
+
+Hale is written largely by agents and read largely by humans,
+which makes "who is at the keyboard?" an available argument in
+every design discussion. It is not a valid one, and this
+section exists so that it has a standing answer rather than
+being relitigated each time.
+
+**The rule.** A language decision is justified by what it does
+for *reasoning*, never by who is expected to do the reasoning.
+"An agent will not mind the ceremony" and "a human needs
+something more familiar" are both out of order.
+
+**Why it holds.** The founding claim — that systems outgrow
+working memory, so the language should hold the architecture —
+names no substrate. Locality, one-construct-one-meaning, and a
+diagnostic that reports the actual witness path all reduce what
+must be held in mind to be correct. Working memory is bounded
+for every reasoner; the bound differs, the shape of the
+constraint does not.
+
+Where a real difference between agents and humans does exist,
+it is in **acquisition cost** — typing volume, memorising
+unfamiliar syntax, discovering an API without completion.
+Those are tooling concerns (`hale fmt`, the LSP, `hale doc`),
+and no language-level question turns on them. Capture
+semantics, sequence ownership and effect propagation are not
+decided by keystroke count. So the differential lives outside
+the region where design decisions are made, and ignoring it
+costs nothing.
+
+**Why the rule is load-bearing rather than merely tidy.**
+Designing toward either substrate fails in a specific way.
+Assume agents absorb friction and the result is a language
+nobody can audit — which forfeits the entire point of making
+architecture checkable. Assume humans need familiarity and the
+surface converges on whatever is already popular, losing the
+model. Refusing to reason about the substrate forces every
+feature to justify itself on reasoning grounds, which is the
+only justification that survives contact with the next
+maintainer anyway.
+
+**The evidence is in the defect record.** Every substantive
+correctness bug found in the effect system has been a
+reasoning-support failure that misleads any reader equally:
+
+- a manifest rendering every user effect class as
+  `<user effect>`, so two distinct classes produced identical
+  baseline lines and a real change could diff to nothing;
+- `@no_syscall` and `@budget` passing through an indirect call,
+  so a certificate read as true while the effect occurred;
+- a corpus gate scanning a directory that had moved, so a
+  guarantee misled by continuing to exist.
+
+None of those are worse for one kind of reader. A false
+certificate is false to whoever relies on it.
+
+**Corollary.** The same rule disposes of the inverse argument.
+Ergonomic work — better diagnostics, completion, fewer
+gratuitous surfaces — is not a concession to human users to be
+weighed against rigour. It is reasoning support, and it earns
+its place on the same grounds as everything else here.
+
+---
+
 ## 0. Surface language: Go-shaped
 
 **Commits to.** Familiar syntax for engineers; braces for blocks;
