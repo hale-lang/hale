@@ -9,6 +9,7 @@
 //! - [`Diag`] — diagnostic type for errors.
 
 pub mod ast;
+pub mod chains;
 pub mod desugar;
 pub mod error;
 pub mod fmt;
