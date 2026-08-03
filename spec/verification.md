@@ -261,9 +261,43 @@ assume the others in a build:
   - `stack_bytes` — worst-case stack depth as a **DAG longest path**
     over estimated frame sizes. Acyclicity is the precondition, which
     is why this pairs with `@no_recursion`: a cycle reports
-    *unbounded*. Frames are estimated from declared shapes and
-    over-approximate, so the bound is safe to assert on but is not
-    WCET.
+    *unbounded*.
+
+    **What the estimate rests on** (#326, examined 2026-08-03). Frames
+    are estimated from declared shapes: 32 bytes of call overhead, 8
+    per parameter, 8 per local. That unit is close to right *because
+    of Hale's memory model, not by luck* — fixed arrays, structs and
+    string/bytes buffers are arena-allocated, so a local is a pointer
+    and almost nothing but scalars is ever on the stack. The same
+    estimator in C would be wrong by orders of magnitude. The premise
+    is pinned by tests (`hale-codegen/tests/stack_budget_premises.rs`)
+    precisely because it is load-bearing: if a shape ever became
+    stack-allocated, the estimate would silently under-count by the
+    size of that shape.
+
+    Inlining, the other obvious worry, cuts the safe way: the model
+    charges `CALL_OVERHEAD` per level of call depth and inlining
+    removes levels, so it strictly reduces the term the model spends
+    most of its budget on.
+
+    **What the estimate does NOT cover.** Storage the optimizer
+    introduces is invisible to any source-level model — register
+    spills above all. We build `-O3` with `target-cpu=native`, so on
+    an AVX-512 host a spilled vector register is **64 bytes** against
+    a model whose unit is 8, and a vectorized loop can consume
+    hundreds of bytes with no source local to explain it. Inlining
+    amplifies this by merging live ranges, which is what produces
+    spills — the risk is merged *pressure*, not merged locals.
+
+    So: the bound is a **structural** estimate over declared shapes,
+    not a machine-level guarantee and not WCET. It is sound against
+    everything the frontend can see and silent about everything the
+    backend adds. Treat it as a bound on *program shape* — call depth
+    and declared locals — and not as a promise about bytes of hardware
+    stack. Settling the latter needs post-codegen measurement
+    (LLVM's `.stack_sizes` section), which is not wired up; `hale
+    check`'s diagnostic already says "estimated from declared shapes",
+    and this entry now matches that honesty rather than exceeding it.
   - `block_points` — how many blocking operations one call may reach
     (`0` is `@no_block`; `1` is "may wait once, on its own socket").
   - `publish` — publishes per call. `@budget(publish = 1)` **is** the
