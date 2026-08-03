@@ -8,6 +8,57 @@ behavior.
 
 ## Unreleased
 
+## v0.13.0 — the certificates fail closed; the ordinary layer arrives (2026-08-03)
+
+Minor bump, and two unrelated stories.
+
+**The effect system stopped failing open.** v0.12.0 closed four ways
+around `@effects`; this release closes the ones underneath them, and
+the pattern is uncomfortably consistent — every hole was a contract
+that read as verified and quietly wasn't:
+
+1. **An indirect call voided every certificate.** `@no_syscall` on a fn
+   whose body is `return f(v);` typechecked while the program
+   performed the syscall, and `@budget` leaked identically. Function
+   pointers were the first genuinely open-world construct in the
+   language and nothing had noticed.
+2. **A class past the effect mask's ceiling saturated to PURE** —
+   "reaches nothing" — so `@effects(none: {…})` certified a fn calling
+   a declared source of it.
+3. **A misspelt class was a new class.** `@effects(none: { monye })`
+   typechecked clean against a `money` source, holding vacuously.
+4. **User classes did not travel over the bus**, so a `causes:`
+   contract was satisfied while publishing into a money-moving
+   handler. The identical shape with a built-in class reported
+   correctly, which is why spot-checks missed it.
+5. **Two seeds' classes aliased onto one bit**, so a `none: {money}`
+   was checked against another seed's `pii`.
+6. **`hale check` accepted an unknown `std::` namespace** —
+   `std::totally::fake()` passed the checker and only codegen caught
+   it, so a typo was invisible to the editor and to CI.
+7. **wasm silently stubbed package C.** `[ffi] csrc` was never
+   compiled for wasm32, so every `@ffi("c")` symbol became an
+   undefined import the loader filled with `() => 0`. The build
+   reported success and every call returned 0 forever.
+
+`@effects(only: {…})` is the new contract that stops the first class of
+these recurring: it states what a fn MAY do and is checked against the
+complement computed from the classes that actually exist, so a class
+declared later is outside it automatically. A hand-enumerated `none:`
+list cannot have that property.
+
+**And Hale grew an ordinary programming layer.** The architecture
+surface has been deep for a while and the everyday one was thin enough
+that you met it in the first hour: no way to split a string, no regex,
+no sets, no way to read back a timestamp you had written. That is
+mostly fixed. The interesting one is **element chains** —
+`xs.filter(it > 2).count()` — which is not an iterator and not a
+lambda: it is a form the compiler rewrites to one loop, so it
+allocates nothing, is legal under `@budget(alloc_per_call = 0)`, and
+needs no closure concept at all. The sequence-value question that made
+"add closures, then add iterators" look like a language-sized change
+turned out to be self-inflicted.
+
 - **wasm32: a package's `[ffi] csrc` is compiled and linked** (#213).
   `link_wasm` was called without the build options, so `csrc_files`
   never reached the wasm path: every `@ffi("c")` symbol a package
@@ -425,10 +476,6 @@ behavior.
   deferred to "a type-aware stage". Integer arithmetic is untouched,
   pinned by a control test.
 
----
-
-## Unreleased
-
 - **String/byte scanners and predicates are now pure reads for LLVM**
   (#322, follow-on). Seven more runtime symbols join the audited
   `memory(read) nounwind willreturn` list: `lotus_str_eq`,
@@ -460,10 +507,6 @@ behavior.
   out-parameter; `lotus_lru_get` writes a recency tick on read. Only
   accessors over immutable values (Bytes, String) are eligible.
 
----
-
-## Unreleased
-
 - **`LOTUS_LTO=thin` selects ThinLTO.** `LOTUS_LTO` previously accepted
   only `1`/`true` and always meant monolithic LTO; it now takes `thin`
   as well, and an unrecognized value is off rather than an error.
@@ -478,10 +521,6 @@ behavior.
   (1337ms vs 1427ms) because a Hale program is one module plus ~5
   runtime TUs — there is almost nothing to parallelize. Its win is
   cross-module import quality, not build time.
-
----
-
-## Unreleased
 
 - **Locus birth/dissolve observation probes are branch-gated (#328).**
   They were unconditional opaque calls, so every locus birth and every
@@ -501,10 +540,6 @@ behavior.
 
   A residual +5.6% vs v0.11.9 is NOT the probes and is not explained
   yet; #328 stays open for it.
-
----
-
-## Unreleased
 
 - **A library's `@effects(publish: {…})` contract now survives being
   imported.** Subjects reach the analysis as the import resolver's
