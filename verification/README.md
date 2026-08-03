@@ -35,6 +35,8 @@ GenMC v0.17.0 builds against the project's LLVM 18. See
 | `mailbox_model.c` | `lotus_mailbox_*` / `lotus_mpsc_ring_*` in `lotus_arena.c` — the pinned-locus mailbox: a **lock-free Vyukov MPSC ring + signal-when-parked wake** (the `_Atomic int parked` flag + the seq_cst fences in post/drain_one, plus the missed-wakeup handshake) | ✅ verified: **10 executions, no errors** |
 | `coop_pool_model.c` | `lotus_coop_pool_*` / `lotus_mpsc_ring_*` in `lotus_arena.c` — the cooperative pool's classic consumer path after Phase-1b swapped the cell-buffer-under-mutex queue for the same lock-free Vyukov MPSC ring + signal-when-parked wake; the coop-pool twin of `mailbox_model.c` (byte-identical ring + wake handshake) | ✅ verified (mailbox-twin ring + wake) |
 | `bus_queue_model.c` | `lotus_bus_queue_*` in `lotus_arena.c` — the cooperative-pool queue's `g_bus_has_pinned`-gated **conditional lock** on enqueue/drain (concurrent enqueues under the lock; drain snapshots under the lock) | ✅ verified: **2 executions, no errors** |
+| `bus_grow_model.c` | the GROW branch of `bus_queue_enqueue_inner` vs. `lotus_bus_queue_drain` in `lotus_arena.c` — a producer reallocs and frees the `cells` array while a consumer is between its unlock and its use of the popped cell. The pop-snapshot-under-lock is what makes that safe. | ✅ verified: **6 executions, no errors** |
+| `hashmap_iter_model.c` | `lotus_hashmap_iter_next` (LOCKFREE arm) in `lotus_arena.c` — iteration is a SEQUENCE of enter/exit steps, so a grow can land between them. Pinned to `--sc`; see "the RA question" below. | ⚠️ verified under `--sc` only: **13 executions**; fails under the default RA model |
 | `arena_subregion_model.c` | `lotus_arena_create_subregion` / `lotus_arena_destroy` in `lotus_arena.c` — the per-parent `subregion_lock` guarding the child-slot freelist (`free_list` / `free_count` / `next_slot`): concurrent create (pop-or-bump) + destroy (push) on the same parent must never hand the same slot to two live children. The per-thread chunk pool itself is `__thread` (no cross-thread surface); this is the real "arena locks" surface. | ✅ verified: **6 executions, no errors** |
 
 ## Coverage gaps and drift (audited 2026-08-02)
@@ -49,10 +51,10 @@ commit and at HEAD:
 | Model | Skeleton drift |
 |---|---|
 | `arena_subregion_model.c` | none — the transcribed protocol is unchanged |
-| `lockfree_hashmap_model.c` | new untranscribed atomics in `lotus_hashmap_iter_next` / `iter_batch` (iteration under concurrent writers) |
+| `lockfree_hashmap_model.c` | new untranscribed atomics in `lotus_hashmap_iter_next` / `iter_batch` — now covered by `hashmap_iter_model.c` (`iter_batch` / `iter_batch_ptrs` still untranscribed) |
 | `mailbox_model.c` | new untranscribed atomics in `lotus_mpsc_ring_peek_nonempty` / `size_approx` |
 | `coop_pool_model.c` | `lotus_coop_pool_enable_async_io` lost its atomic |
-| `bus_queue_model.c` | enqueue body moved into `bus_queue_enqueue_inner`; protocol shape preserved, but it gained a **third** conditional-unlock path for the bounded-capacity branch (#255) that the model predates |
+| `bus_queue_model.c` | enqueue body moved into `bus_queue_enqueue_inner`; protocol shape preserved, but it gained a **third** conditional-unlock path for the bounded-capacity branch (#255) that the model predates. The grow-vs-drain half is now covered by `bus_grow_model.c`; the shed/inline-drain half is still untranscribed |
 
 Also untranscribed: `lotus_bus_queue_enqueue_st`, the **zero-
 synchronization** enqueue used when codegen proves no thread crosses
@@ -71,6 +73,61 @@ in the table above.
 None of this means a model is wrong. It means "verified" in the table
 below is a claim about a past revision, and re-transcription is owed
 before it can be read as a claim about HEAD.
+
+## The RA question (open, raised 2026-08-02)
+
+`hashmap_iter_model.c` verifies clean under `--sc` and reports
+`Attempt to access freed memory!` under GenMC's **default
+release-acquire model** — which is the faithful one for the runtime's
+`__ATOMIC_ACQUIRE` / `__ATOMIC_RELEASE`. The counter-example:
+
+1. the iterator's second `lf_enter` acquire-loads `grow_phase` and
+   reads-from the *initial* store rather than the grower's release
+   reset, so it never observes the grow;
+2. it proceeds and acquire-loads `m->slots`, again reading-from the
+   initial store;
+3. it indexes the old array, which the grower has already freed.
+
+RA permits a load to read a coherence-older write when nothing orders
+a newer one before it. So the enter/exit protocol's safety rests on
+more than release-acquire provides *in the formal model*. Real
+hardware will not hand back an indefinitely stale line, which is why
+this has never been observed in practice — but "the hardware is
+stronger than the model we wrote against" is a reason to look, not a
+reason to close.
+
+**This is not a claim that the runtime has a live use-after-free.** It
+is a claim that the model-level justification is incomplete, and the
+gap is specific and reproducible:
+
+```sh
+genmc      -- verification/hashmap_iter_model.c   # RA: fails
+genmc --sc -- verification/hashmap_iter_model.c   # SC: clean
+```
+
+Worth noting that `bus_queue_model.c` already records this tension —
+it models `g_bus_has_pinned` as a plain int because "the atomic forces
+the weaker RA model". There that was a modelling convenience. Here it
+is load-bearing, so the model pins `--sc` explicitly and says so,
+rather than quietly arranging to pass.
+
+Resolving it means deciding whether the phase re-check needs a
+seq_cst fence, or whether the RA counter-example depends on an
+interleaving the single-grower discipline actually excludes. That
+wants runtime review.
+
+## Pinning a model's memory model
+
+`run_genmc.sh` honours a `GENMC-FLAGS:` line in a model's header
+comment:
+
+```c
+/* GENMC-FLAGS: --sc */
+```
+
+A model that pins `--sc` **must** state in its header why, and what
+the RA result was. Silently weakening the checker is how a model stops
+meaning anything.
 
 ## How to run
 
