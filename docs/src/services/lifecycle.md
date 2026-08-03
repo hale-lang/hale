@@ -95,7 +95,7 @@ than at the params block.
 
 Two fixes. Declare the never-returning child **last**:
 
-```hale
+```hale,fragment
 params {
     metrics: Metrics = Metrics { };
     server:  Server  = Server { };       // last
@@ -105,7 +105,7 @@ params {
 Or give it a thread of its own, which frees the main thread to
 finish births:
 
-```hale
+```hale,fragment
 params {
     server:  Server  = Server { };
     metrics: Metrics = Metrics { };
