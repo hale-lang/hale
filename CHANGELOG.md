@@ -8,6 +8,18 @@ behavior.
 
 ## Unreleased
 
+- **`std::regex`** (#353). A linear-time Thompson NFA:
+  `matches` (full match), `find` (leftmost byte offset, -1 if absent)
+  and `valid`. The engine class was forced rather than chosen —
+  backtracking buys backreferences and lookaround at the cost of an
+  exponential worst case, and you cannot bound a handler that runs
+  one, so it is incompatible with `@budget` and `@hot`. Supported:
+  literals, `.`, `*`, `+`, `?`, `|`, grouping, character classes with
+  ranges and negation, `\` escapes. No backreferences, no lookaround.
+  Classified PURE — the match path allocates nothing beyond fixed
+  state lists sized from the pattern, so it is usable from a
+  `@deterministic @no_syscall` fn.
+
 - **`@form(set)`** (#353). Specified and deferred in
   `decisions.md` with the trigger "revisit if a workload needs it";
   the trigger fired. Reuses the hashmap slot and the whole

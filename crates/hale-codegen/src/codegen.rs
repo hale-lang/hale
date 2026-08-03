@@ -22880,6 +22880,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok((res, CodegenTy::Int))
     }
 
+    /// #353: two String args, Int result (`regex::find`).
+    fn lower_str_cp_call2(
+        &mut self,
+        sym: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "{} takes 2 args, got {}",
+                sym,
+                args.len()
+            )));
+        }
+        let mut vals = Vec::new();
+        for a in args {
+            let (v, ty) = self.lower_expr(a, scope)?;
+            vals.push(self.unpack_view_if_needed(v, &ty)?);
+        }
+        let f = self
+            .module
+            .get_function(sym)
+            .unwrap_or_else(|| panic!("{} declared", sym));
+        let res = self
+            .builder
+            .build_call(f, &[vals[0].into(), vals[1].into()], "re.find.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .unwrap_or_else(|| panic!("{} returns i64", sym));
+        Ok((res, CodegenTy::Int))
+    }
+
     /// Expression-position dispatcher for `std::*` paths.
     fn lower_stdlib_path_call_expr(
         &mut self,
@@ -23161,6 +23194,42 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.lower_std_str_index_of(args, scope)
             }
             ["std", "str", "join"] => self.lower_std_str_join(args, scope),
+            // #353: regex. Linear-time NFA, so a match is bounded by
+            // construction and usable under `@budget` / `@hot`.
+            ["std", "regex", "matches"] => self.lower_std_str_predicate(
+                "lotus_regex_matches",
+                "matches",
+                args,
+                scope,
+            ),
+            ["std", "regex", "valid"] => {
+                let (v, ty) = self.lower_expr(&args[0], scope)?;
+                let v = self.unpack_view_if_needed(v, &ty)?;
+                let f = self
+                    .module
+                    .get_function("lotus_regex_valid")
+                    .expect("lotus_regex_valid declared");
+                let r = self
+                    .builder
+                    .build_call(f, &[v.into()], "re.valid.ret")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("returns i32");
+                let b = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        r.into_int_value(),
+                        self.context.i32_type().const_zero(),
+                        "re.valid.bool",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok((b.into(), CodegenTy::Bool))
+            }
+            ["std", "regex", "find"] => {
+                self.lower_str_cp_call2("lotus_regex_find", args, scope)
+            }
             // #353: UTF-8 code-point decoding. Byte-oriented String
             // stays byte-oriented; these let a caller walk code points
             // deliberately rather than pretending bytes are characters.

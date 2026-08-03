@@ -4294,6 +4294,268 @@ int64_t lotus_str_cp_count(const char *s) {
     return n;
 }
 
+/*
+ * #353: a linear-time regex.
+ *
+ * ENGINE CLASS IS FORCED, not chosen. Backtracking buys
+ * backreferences and lookaround at the cost of exponential worst
+ * case, and you cannot bound a handler that runs one — which makes it
+ * flatly incompatible with `@budget` and `@hot`, the two things Hale
+ * sells. A Thompson NFA simulated over a state set is O(pattern x
+ * text) with no backtracking, so a match is bounded by construction.
+ * The price is no backrefs and no lookaround. For this language that
+ * is the right side of the trade.
+ *
+ * Supported: literals, `.`, `*`, `+`, `?`, `|`, grouping, character
+ * classes `[a-z]` / `[^a-z]`, and `\` escapes. Anchors are implicit:
+ * `matches` is a full match, `find` scans for the leftmost match.
+ *
+ * No allocation on the match path beyond two fixed state lists sized
+ * from the pattern, so a match is countable against a budget.
+ */
+
+#define LOTUS_RE_MAX 256
+
+enum { RE_CHAR, RE_ANY, RE_CLASS, RE_SPLIT, RE_MATCH };
+
+typedef struct {
+    int op;
+    unsigned char c;
+    /* class bitmap, only for RE_CLASS */
+    unsigned char set[32];
+    int negate;
+    int x, y;              /* next state indices; -1 = none */
+} re_state;
+
+typedef struct {
+    re_state st[LOTUS_RE_MAX];
+    int n;
+    int start;
+    int ok;
+} re_prog;
+
+/* --- parser: recursive descent over the pattern, emitting states --- */
+
+typedef struct {
+    const char *p;
+    re_prog *g;
+    int failed;
+} re_parser;
+
+static int re_emit(re_parser *ps, int op) {
+    if (ps->g->n >= LOTUS_RE_MAX) { ps->failed = 1; return 0; }
+    int i = ps->g->n++;
+    re_state *s = &ps->g->st[i];
+    s->op = op; s->c = 0; s->negate = 0; s->x = -1; s->y = -1;
+    for (int k = 0; k < 32; k++) s->set[k] = 0;
+    return i;
+}
+
+/* Patch every dangling -1 exit reachable from `frag` to `to`.
+ * Bounded walk: each state is visited once via a seen array. */
+static void re_patch(re_prog *g, int frag, int to, unsigned char *seen) {
+    if (frag < 0 || seen[frag]) return;
+    seen[frag] = 1;
+    re_state *s = &g->st[frag];
+    if (s->op == RE_MATCH) return;
+    if (s->x == -1) s->x = to; else re_patch(g, s->x, to, seen);
+    if (s->op == RE_SPLIT) {
+        if (s->y == -1) s->y = to; else re_patch(g, s->y, to, seen);
+    }
+}
+
+static void re_patch_all(re_prog *g, int frag, int to) {
+    unsigned char seen[LOTUS_RE_MAX];
+    for (int i = 0; i < LOTUS_RE_MAX; i++) seen[i] = 0;
+    re_patch(g, frag, to, seen);
+}
+
+static int re_alt(re_parser *ps);
+
+static int re_single(re_parser *ps) {
+    char c = *ps->p;
+    if (c == '(') {
+        ps->p++;
+        int f = re_alt(ps);
+        if (*ps->p == ')') ps->p++; else ps->failed = 1;
+        return f;
+    }
+    if (c == '[') {
+        ps->p++;
+        int i = re_emit(ps, RE_CLASS);
+        if (ps->failed) return i;
+        re_state *s = &ps->g->st[i];
+        if (*ps->p == '^') { s->negate = 1; ps->p++; }
+        while (*ps->p && *ps->p != ']') {
+            unsigned char lo = (unsigned char)*ps->p++;
+            if (lo == '\\' && *ps->p) lo = (unsigned char)*ps->p++;
+            unsigned char hi = lo;
+            if (*ps->p == '-' && ps->p[1] && ps->p[1] != ']') {
+                ps->p++;
+                hi = (unsigned char)*ps->p++;
+            }
+            for (int k = lo; k <= (int)hi; k++) s->set[k >> 3] |= (1u << (k & 7));
+        }
+        if (*ps->p == ']') ps->p++; else ps->failed = 1;
+        return i;
+    }
+    if (c == '.') { ps->p++; return re_emit(ps, RE_ANY); }
+    if (c == '\\' && ps->p[1]) ps->p++;
+    ps->p++;
+    int i = re_emit(ps, RE_CHAR);
+    if (!ps->failed) ps->g->st[i].c = (unsigned char)c;
+    return i;
+}
+
+static int re_repeat(re_parser *ps) {
+    int f = re_single(ps);
+    for (;;) {
+        char c = *ps->p;
+        if (c == '*') {
+            ps->p++;
+            int sp = re_emit(ps, RE_SPLIT);
+            if (ps->failed) return f;
+            ps->g->st[sp].x = f;
+            re_patch_all(ps->g, f, sp);
+            f = sp;
+        } else if (c == '+') {
+            ps->p++;
+            int sp = re_emit(ps, RE_SPLIT);
+            if (ps->failed) return f;
+            ps->g->st[sp].x = f;
+            re_patch_all(ps->g, f, sp);
+            /* one-or-more: entry is the fragment, loop is the split */
+        } else if (c == '?') {
+            ps->p++;
+            int sp = re_emit(ps, RE_SPLIT);
+            if (ps->failed) return f;
+            ps->g->st[sp].x = f;
+            f = sp;
+        } else {
+            return f;
+        }
+    }
+}
+
+static int re_concat(re_parser *ps) {
+    int f = -1;
+    while (*ps->p && *ps->p != '|' && *ps->p != ')') {
+        int g2 = re_repeat(ps);
+        if (ps->failed) return f;
+        if (f < 0) f = g2; else re_patch_all(ps->g, f, g2);
+    }
+    return f;
+}
+
+static int re_alt(re_parser *ps) {
+    int f = re_concat(ps);
+    while (*ps->p == '|') {
+        ps->p++;
+        int r = re_concat(ps);
+        if (ps->failed) return f;
+        int sp = re_emit(ps, RE_SPLIT);
+        if (ps->failed) return f;
+        ps->g->st[sp].x = f;
+        ps->g->st[sp].y = r;
+        f = sp;
+    }
+    return f;
+}
+
+static void re_compile(re_prog *g, const char *pat) {
+    g->n = 0; g->ok = 0; g->start = -1;
+    re_parser ps; ps.p = pat; ps.g = g; ps.failed = 0;
+    int f = re_alt(&ps);
+    if (ps.failed || *ps.p) return;
+    int m = re_emit(&ps, RE_MATCH);
+    if (ps.failed) return;
+    if (f < 0) f = m; else re_patch_all(g, f, m);
+    g->start = f;
+    g->ok = 1;
+}
+
+/* --- simulation: one state set, advanced per input byte ---------- */
+
+static void re_addstate(re_prog *g, int s, unsigned char *list, int *n,
+                        unsigned char *on) {
+    if (s < 0 || on[s]) return;
+    on[s] = 1;
+    if (g->st[s].op == RE_SPLIT) {
+        re_addstate(g, g->st[s].x, list, n, on);
+        re_addstate(g, g->st[s].y, list, n, on);
+        return;
+    }
+    list[(*n)++] = (unsigned char)s;
+}
+
+static int re_class_hit(const re_state *s, unsigned char c) {
+    int in = (s->set[c >> 3] >> (c & 7)) & 1;
+    return s->negate ? !in : in;
+}
+
+/* Run from `text`; returns the end offset of a match starting here,
+ * or -1. Longest match wins (the state set is advanced to exhaustion
+ * rather than stopping at the first accept). */
+static long re_run_at(re_prog *g, const char *text, int anchored_end) {
+    unsigned char cl[LOTUS_RE_MAX], nl[LOTUS_RE_MAX];
+    unsigned char on[LOTUS_RE_MAX];
+    int cn = 0, nn = 0;
+    for (int i = 0; i < LOTUS_RE_MAX; i++) on[i] = 0;
+    re_addstate(g, g->start, cl, &cn, on);
+    long best = -1;
+    for (long i = 0; ; i++) {
+        for (int k = 0; k < cn; k++) {
+            if (g->st[cl[k]].op == RE_MATCH) {
+                if (!anchored_end || text[i] == '\0') { best = i; }
+                break;
+            }
+        }
+        unsigned char c = (unsigned char)text[i];
+        if (c == '\0' || cn == 0) break;
+        nn = 0;
+        for (int j = 0; j < LOTUS_RE_MAX; j++) on[j] = 0;
+        for (int k = 0; k < cn; k++) {
+            re_state *s = &g->st[cl[k]];
+            int hit = 0;
+            if (s->op == RE_CHAR) hit = (s->c == c);
+            else if (s->op == RE_ANY) hit = 1;
+            else if (s->op == RE_CLASS) hit = re_class_hit(s, c);
+            if (hit) re_addstate(g, s->x, nl, &nn, on);
+        }
+        for (int k = 0; k < nn; k++) cl[k] = nl[k];
+        cn = nn;
+    }
+    return best;
+}
+
+int lotus_regex_matches(const char *pat, const char *text) {
+    if (!pat || !text) return 0;
+    re_prog g;
+    re_compile(&g, pat);
+    if (!g.ok) return 0;
+    long e = re_run_at(&g, text, 1);
+    return e >= 0 ? 1 : 0;
+}
+
+int64_t lotus_regex_find(const char *pat, const char *text) {
+    if (!pat || !text) return -1;
+    re_prog g;
+    re_compile(&g, pat);
+    if (!g.ok) return -1;
+    for (long i = 0; ; i++) {
+        if (re_run_at(&g, text + i, 0) >= 0) return i;
+        if (text[i] == '\0') break;
+    }
+    return -1;
+}
+
+int lotus_regex_valid(const char *pat) {
+    if (!pat) return 0;
+    re_prog g;
+    re_compile(&g, pat);
+    return g.ok ? 1 : 0;
+}
+
 char *lotus_str_join(void *vec_ptr, const char *sep, void *arena_ptr) {
     lotus_arena_t *arena = (lotus_arena_t *)arena_ptr;
     if (!vec_ptr) {

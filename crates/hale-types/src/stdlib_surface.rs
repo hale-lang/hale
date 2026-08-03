@@ -315,6 +315,18 @@ pub const LOCUS_PATHS: &[&[&str]] = &[
 // — they keep the permissive Unknown behavior. Regenerate with
 // the extraction described in notes/typecheck-m3.md stage 1.
 pub const SURFACES: &[NsSurface] = &[
+    // #353: linear-time regex. Pure — the engine allocates nothing on
+    // the match path beyond fixed state lists sized from the pattern,
+    // so a match is countable against a budget.
+    NsSurface {
+        ns: &["regex"],
+        fns: &[
+            e("matches", EffectSet::PURE),
+            e("find", EffectSet::PURE),
+            e("valid", EffectSet::PURE),
+        ],
+        open_prefixes: &[],
+    },
     NsSurface {
         ns: &["bus"],
         fns: &[
@@ -828,6 +840,7 @@ macro_rules! sig {
 }
 
 const NS_MATH: &[&str] = &["math"];
+const NS_REGEX: &[&str] = &["regex"];
 const NS_TIME: &[&str] = &["time"];
 const NS_ENV: &[&str] = &["env"];
 const NS_DEC: &[&str] = &["decimal"];
@@ -876,6 +889,10 @@ pub const SIGS: &[FnSig] = &[
     sig!(NS_MATH, "trunc", [Float], Int),
     // std::time — sleep takes Duration (Int rejected in lowering);
     // now() is epoch SECONDS as Int; time_from_unix returns Time.
+    // #353: linear-time regex — pure over immutable inputs.
+    sig!(NS_REGEX, "matches", [Str, Str], Bool),
+    sig!(NS_REGEX, "find", [Str, Str], Int),
+    sig!(NS_REGEX, "valid", [Str], Bool),
     sig!(NS_TIME, "monotonic", [], Duration),
     sig!(NS_TIME, "monotonic_ns", [], Int),
     sig!(NS_TIME, "sleep", [Duration], Unit),
