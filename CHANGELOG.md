@@ -8,6 +8,48 @@ behavior.
 
 ## Unreleased
 
+### Two hot-path regressions fixed (bench attribution vs released compilers)
+
+- **`@form` set/put on scalar-only cells no longer pays the cell
+  single-owner tax.** The v0.11.12 single-owner fix emitted a stack
+  snapshot + owned-clone walk on every set/put, but both exist solely
+  to keep heap-pointer (String/Bytes) leaves un-aliased — a cell of
+  pure scalars has nothing to protect, and the snapshot's
+  store-to-load round trip serialized hot insert loops. Now gated on
+  the cell type tree; unrecognized types conservatively keep the
+  snapshot. 1M Int-keyed inserts: 62.7 → 49.7ms.
+- **`@form` set/put no longer arena-allocates the argument struct
+  literal.** `m.set(Entry { ... })` bump-allocated the literal's
+  shell into the enclosing scope's lifetime arena and then memcpy'd
+  it out — 16 MB of dead shells per million sets. A literal of the
+  exact cell type in set/put argument position now builds in a stack
+  slot (the pattern `lower_send` has used for publish payloads since
+  m67). 1M-insert bench maxrss 92.5 → 81.4 MB.
+- **A bundle that can never enqueue a bus cell emits no drains at
+  all.** Cells come only from subscriber dispatch, wire ingest,
+  cross-pool accept handoff and transport-loss dispatch; a program
+  with no topics, bus blocks, bindings, accepts or perspectives
+  provably has an empty queue at every statement boundary / scope
+  exit / sleep slice, so the drains are elided at emission.
+- **Runtime observation probes are now gated at the call site.** The
+  bus publish/deliver/net probes were called unconditionally from
+  the C dispatch path, paying the probe's prologue before its own
+  `obs_on()` check — +3ns/event on the 3-stage pipeline bench, the
+  v0.11.12 native-obs-emission regression. The C call sites now
+  branch on `lotus_obs_live`, the same dormant-cost gate generated
+  code has used since #328 (set in a pre-main constructor whenever
+  `LOTUS_OBS=1`, so 0 proves the probes are permanently dormant).
+  Pipeline bench restored to byte-parity with v0.11.11; obs
+  emission/fleet-contract suites unchanged.
+- **A no-op bus drain no longer builds its frame.** Codegen emits
+  `lotus_bus_queue_drain` at every statement boundary, scope exit and
+  sleep slice; the drain called `pthread_self` and the transport-loss
+  dispatcher before looking at the queue. In single-threaded mode
+  (`g_bus_has_pinned` unset — set pre-spawn by both pinned
+  registration and pool startup) an empty queue with nothing lost now
+  returns via a call-free fast path. Locus birth+dissolve cycle:
+  2.01 → 1.61ms, 6% faster than the v0.11.3 baseline.
+
 ### The birth-order trap is now diagnosed (downstream handoff)
 
 A params field whose `run()` runs inline on the main thread and never

@@ -5979,6 +5979,16 @@ static void bus_inline_drain_one(lotus_bus_queue_t *q);
  * WEAK: helper binaries that compile this TU alone (transport
  * drivers, model checkers) link without the obs TU; every call
  * site guards on the symbol's presence. */
+/* The #328 dormant-cost gate, exported by lotus_obs.c and set (in a
+ * constructor, before main) whenever LOTUS_OBS=1 — so 0 here proves
+ * obs_on() is 0 forever and the probe call can be skipped at the
+ * CALL SITE. Generated code already branches on this flag; the
+ * unconditional calls below were the same tax paid from C
+ * (measured +3ns/event on the 3-stage pipeline microbench: the
+ * probe's own prologue runs before its internal obs_on() check).
+ * WEAK like the probes; every guard tests a probe SYMBOL first, so
+ * a TU-alone build short-circuits before touching this. */
+extern int lotus_obs_live __attribute__((weak));
 void lotus_obs_bus_publish(const char *subject, void *publisher_self,
                            uint64_t payload_bytes)
     __attribute__((weak));
@@ -6257,9 +6267,30 @@ static __thread int g_bus_drain_active = 0;
 
 /* GH #233: defined with the remote-transport machinery below. */
 void lotus_bus_drain_lost_transports(void);
+extern volatile int g_transport_lost_pending;
 
 void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
     if (!q) return;
+    /* Fast path (2026-08-03, bench attribution): single-threaded
+     * mode + empty queue + no pending transport loss — this call
+     * can have no effect. It matters because codegen emits drains
+     * at every statement boundary, scope exit and sleep slice, so
+     * in a bus-less or idle program EVERY drain lands here; the
+     * full body below costs a 6-register prologue, a pthread_self
+     * call and a lost-transports call before it looks at the
+     * queue (measured: two such no-op drains were ~30% of a
+     * per-instantiation microbench iteration). Keeping this
+     * branch call-free lets shrink-wrapping skip the prologue.
+     *
+     * Soundness of the plain head/tail reads: g_bus_has_pinned is
+     * set (release, pre-spawn) by BOTH pinned-locus registration
+     * and cooperative-pool startup, so 0 here means no second
+     * thread exists at all — the same invariant the unlocked
+     * drain body below already relies on. With one thread there
+     * is no concurrent producer and no foreign drainer. */
+    if (!__atomic_load_n(&g_bus_has_pinned, __ATOMIC_ACQUIRE)
+        && q->head >= q->tail && !g_transport_lost_pending)
+        return;
     /* Owner-only handler execution (see the `owner` field comment).
      * A foreign thread reaching this via its scope-exit flush /
      * sleep-slice must NOT run main-pool subscribers' handlers —
@@ -8772,7 +8803,7 @@ void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
      * matched target below (enqueue-time — see lotus_obs.c v0
      * scope notes). Publisher attribution rides the caller-arena
      * TLS owner when available; v0 passes NULL (unattributed). */
-    if (lotus_obs_bus_publish) {
+    if (lotus_obs_bus_publish && lotus_obs_live) {
         lotus_obs_bus_publish(subject, NULL, (uint64_t)payload_size);
     }
     size_t delivered = 0;
@@ -8792,7 +8823,7 @@ void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
         if (e->key_filter_kind != 0) continue;
         delivered += (size_t)lotus_bus_post_entry(
             e, queue, payload, payload_size);
-        if (lotus_obs_bus_deliver) {
+        if (lotus_obs_bus_deliver && lotus_obs_live) {
             lotus_obs_bus_deliver(subject, e->self_ptr,
                                   (uint64_t)payload_size);
         }
@@ -8889,7 +8920,7 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
      * feeds — recorded zero BUS_PUBLISH and a zero published counter.
      * Emit here (publisher-only path; never a reader re-dispatch
      * target) exactly as the non-keyed local fanout does. */
-    if (lotus_obs_bus_publish) {
+    if (lotus_obs_bus_publish && lotus_obs_live) {
         lotus_obs_bus_publish(subject, NULL, (uint64_t)payload_size);
     }
     int matched_specific = 0;
@@ -8918,7 +8949,7 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
         /* iris handoff-4 P15: BUS_DELIVER per matched keyed target
          * (sibling of the non-keyed local_dispatch probe — the keyed
          * flavor had none, so keyed deliveries never counted). */
-        if (lotus_obs_bus_deliver) {
+        if (lotus_obs_bus_deliver && lotus_obs_live) {
             lotus_obs_bus_deliver(subject, e->self_ptr,
                                   (uint64_t)payload_size);
         }
@@ -8935,7 +8966,7 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
             if (!lotus_subject_match(e->subject, subject)) continue;
             if (e->key_filter_kind != 2) continue;
             (void)lotus_bus_post_entry(e, queue, payload, payload_size);
-            if (lotus_obs_bus_deliver) {
+            if (lotus_obs_bus_deliver && lotus_obs_live) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
                                       (uint64_t)payload_size);
             }
@@ -13665,7 +13696,7 @@ static void lotus_bus_unix_serve(lotus_bus_remote_entry_t *entry) {
             /* iris P4: NET_DELIVER — framed mode carries the wire
              * seq (t->last_seq); datagram/legacy falls back to the
              * local deliver count. */
-            if (lotus_obs_net_deliver && lotus_obs_binding_register) {
+            if (lotus_obs_net_deliver && lotus_obs_live && lotus_obs_binding_register) {
                 if (entry->obs_binding_id == 0) {
                     int64_t id = lotus_obs_binding_register(
                         entry->subject ? entry->subject : "?", 0);
@@ -14025,7 +14056,7 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
         if (lotus_obs_end_redispatch) lotus_obs_end_redispatch();
         uint64_t dseq2 = LOTUS_CTR_BUMP(args->entry->ctr_msgs_delivered);
         LOTUS_CTR_ADD(args->entry->ctr_bytes_delivered, n);
-        if (lotus_obs_net_deliver && lotus_obs_binding_register) {
+        if (lotus_obs_net_deliver && lotus_obs_live && lotus_obs_binding_register) {
             if (args->entry->obs_binding_id == 0) {
                 int64_t id = lotus_obs_binding_register(
                     args->entry->subject ? args->entry->subject : "?",
@@ -14722,7 +14753,7 @@ void lotus_bus_remote_fanout(const char *subject,
                  * carries (origin, seq) — the wire identity the
                  * reader echoes. Manifest binding id kept for the
                  * per-binding counter line only. */
-                if (lotus_obs_net_send && lotus_obs_binding_register) {
+                if (lotus_obs_net_send && lotus_obs_live && lotus_obs_binding_register) {
                     if (e->obs_binding_id == 0) {
                         int64_t id = lotus_obs_binding_register(
                             e->subject ? e->subject : "?", 1);
@@ -14758,7 +14789,7 @@ void lotus_bus_remote_fanout(const char *subject,
             LOTUS_CTR_ADD(e->ctr_bytes_sent, payload_size);
             /* iris P4: NET_SEND with the per-binding monotonic seq.
              * Lazy binding registration on first observed send. */
-            if (lotus_obs_net_send && lotus_obs_binding_register) {
+            if (lotus_obs_net_send && lotus_obs_live && lotus_obs_binding_register) {
                 if (e->obs_binding_id == 0) {
                     int64_t id = lotus_obs_binding_register(
                         e->subject ? e->subject : "?", 0);
@@ -14916,7 +14947,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
     /* iris handoff-4 P15: keyed publish probe (sibling of the
      * non-keyed dispatch_wire path). This is the serialize-present
      * keyed local fanout — publisher-only, so no redispatch guard. */
-    if (lotus_obs_bus_publish) {
+    if (lotus_obs_bus_publish && lotus_obs_live) {
         lotus_obs_bus_publish(subject, NULL, (uint64_t)wire_size);
     }
     char *struct_buf = g_tls_bus_struct_buf;   /* off the coro stack */
@@ -14946,7 +14977,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
             (void)lotus_bus_post_entry(e, g_bus_queue_for_remote,
                 wire_bytes, wire_size);
             g_bus_pending_wire_deser = NULL;
-            if (lotus_obs_bus_deliver) {
+            if (lotus_obs_bus_deliver && lotus_obs_live) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
                                       (uint64_t)wire_size);
             }
@@ -14977,7 +15008,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
                 struct_buf, (size_t)struct_size);
         }
         /* iris handoff-4 P15: BUS_DELIVER per matched keyed target. */
-        if (lotus_obs_bus_deliver) {
+        if (lotus_obs_bus_deliver && lotus_obs_live) {
             lotus_obs_bus_deliver(subject, e->self_ptr,
                                   (uint64_t)wire_size);
         }
@@ -14996,7 +15027,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
                 (void)lotus_bus_post_entry(e, g_bus_queue_for_remote,
                     wire_bytes, wire_size);
                 g_bus_pending_wire_deser = NULL;
-                if (lotus_obs_bus_deliver) {
+                if (lotus_obs_bus_deliver && lotus_obs_live) {
                     lotus_obs_bus_deliver(subject, e->self_ptr,
                                           (uint64_t)wire_size);
                 }
@@ -15021,7 +15052,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
                     g_bus_queue_for_remote, e->handler, e->self_ptr,
                     struct_buf, (size_t)struct_size);
             }
-            if (lotus_obs_bus_deliver) {
+            if (lotus_obs_bus_deliver && lotus_obs_live) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
                                       (uint64_t)wire_size);
             }
@@ -15046,7 +15077,7 @@ void lotus_bus_dispatch_wire(const char *subject,
     if (!subject || !wire_bytes || wire_size == 0) return;
     /* iris P4: BUS_PUBLISH for the cross-thread wire path (the
      * deliver probe rides the per-subscriber fanout below). */
-    if (lotus_obs_bus_publish) {
+    if (lotus_obs_bus_publish && lotus_obs_live) {
         lotus_obs_bus_publish(subject, NULL, (uint64_t)wire_size);
     }
     /* Phase-3 Task 9 (2026-05-20): per-subscriber arena routing.
@@ -15107,7 +15138,7 @@ void lotus_bus_dispatch_wire(const char *subject,
             /* handoff-8 P21: BUS_DELIVER per matched target — the
              * plain wire flavor was the one fanout without it (its
              * keyed sibling gained the probe in handoff-4). */
-            if (lotus_obs_bus_deliver) {
+            if (lotus_obs_bus_deliver && lotus_obs_live) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
                                       (uint64_t)wire_size);
             }
@@ -15136,7 +15167,7 @@ void lotus_bus_dispatch_wire(const char *subject,
                                  struct_buf, (size_t)struct_size)) {
             /* handoff-8 P21: BUS_DELIVER per matched target (see the
              * cross-thread branch above). */
-            if (lotus_obs_bus_deliver) {
+            if (lotus_obs_bus_deliver && lotus_obs_live) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
                                       (uint64_t)wire_size);
             }
@@ -15202,7 +15233,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
         /* Verbatim local fanout (mirror lotus_bus_local_dispatch). */
         size_t delivered = 0;
         /* iris P4 (mirrors the dynamic path). */
-        if (lotus_obs_bus_publish) {
+        if (lotus_obs_bus_publish && lotus_obs_live) {
             lotus_obs_bus_publish(subject, NULL, (uint64_t)struct_size);
         }
         if (b) {
@@ -15210,7 +15241,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                 lotus_bus_entry_t *e = &g_bus_entries[b->idx[k]];
                 if (!e->subject) continue;           /* quarantined */
                 if (e->key_filter_kind != 0) continue;
-                if (lotus_obs_bus_deliver) {
+                if (lotus_obs_bus_deliver && lotus_obs_live) {
                     lotus_obs_bus_deliver(subject, e->self_ptr,
                                           (uint64_t)struct_size);
                 }
@@ -15266,7 +15297,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
      * Counted before the serialize so a serialize FAILURE still
      * records the publish that was attempted; the drop is visible
      * separately via LOTUS_BUS_LOG_DROP. */
-    if (lotus_obs_bus_publish) {
+    if (lotus_obs_bus_publish && lotus_obs_live) {
         lotus_obs_bus_publish(subject, NULL, (uint64_t)struct_size);
     }
 
@@ -15335,7 +15366,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
              * so a String/Bytes payload delivered correctly — the
              * handler ran — while `dlv` stayed 0 alongside the `pub`
              * gap. Both halves of the same omission. */
-            if (lotus_obs_bus_deliver) {
+            if (lotus_obs_bus_deliver && lotus_obs_live) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
                                       (uint64_t)struct_size);
             }
@@ -15425,7 +15456,7 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
      * subject on this path was invisible to observation (no topic
      * registration, no counters, no BUS records). Publish once,
      * deliver per matched target, exactly as the other flavors. */
-    if (lotus_obs_bus_publish) {
+    if (lotus_obs_bus_publish && lotus_obs_live) {
         lotus_obs_bus_publish(subject, NULL, size);
     }
     if (b) {
@@ -15448,7 +15479,7 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
                 /* same-thread: the whole point — run it now. */
                 ((lotus_handler_fn)e->handler)(e->self_ptr, (void *)payload);
             }
-            if (lotus_obs_bus_deliver) {
+            if (lotus_obs_bus_deliver && lotus_obs_live) {
                 lotus_obs_bus_deliver(subject, e->self_ptr, size);
             }
             delivered++;
