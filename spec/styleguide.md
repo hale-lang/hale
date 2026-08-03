@@ -267,6 +267,28 @@ pervasively). Conventions learned there:
   when the population is fixed: `causality` runs its whole game
   state on SoA fixed arrays and uses **zero** `@form` loci.
 
+### 2.5b Membership set — `@form(set)`
+
+When the question is *is this present* rather than *what is stored
+here*, use `@form(set)`. It is the hashmap slot and runtime with a
+different surface:
+
+```hale
+type Item { key: String; }
+
+@form(set)
+locus Seen { capacity { pool items of Item indexed_by key; } }
+```
+
+`insert(v)` / `contains(k) -> Bool` / `remove(k)` /
+`len()` / `is_empty()`.
+
+The reason not to reach for `@form(hashmap)` with a throwaway value:
+membership then reads `get(k) or false` at every call site — the
+value plumbing leaking back out of a container whose value nobody
+wants. Sync disciplines work identically (`@form(set, sync =
+striped)`).
+
 ### 2.6 Shape type — pure data, no flow
 
 ```hale
@@ -521,6 +543,27 @@ rewrite on touch. F.18 exhaustiveness is checked in both
 positions; expression-position arms must agree on one type.
 **[error for non-exhaustive / mismatched arms]**
 
+### C6b. Prefer `only:` to an enumerated `none:`
+
+```hale
+@effects(only: { alloc })          // closed — future-proof
+@effects(none: { syscall, block, publish, time, entropy, env,
+                 ffi, spawn, recursion })   // open — rots
+```
+
+`none:` lists what is forbidden and permits everything else, so a
+contract meaning "this handler only allocates" has to enumerate every
+other class — and the list is a snapshot. Add a class to the language,
+or declare one of your own with `effect NAME;`, and every such
+contract silently permits it. The annotation still reads "only alloc"
+and no longer means it. Nothing fails; the certificate quietly
+weakens.
+
+`only:` states the permitted set and is checked against the complement
+computed at check time from the classes that actually exist. Nothing
+is written down that can go stale. **[convention — reach for `none:`
+only when you genuinely care about one or two classes]**
+
 ### C7. `@form` constraints (the sharp edges of 2.5)
 
 - Cell types: unqualified in-seed structs only. **[error]**
@@ -712,6 +755,47 @@ is regression-tested. **[convention]**
 
 ---
 
+### S13. Compose with chains, not hand-rolled loops
+
+```hale
+// idiomatic
+let n = self.users.filter(it.active).count();
+self.users.filter(it.active).into(self.actives);
+
+// not this
+let mut i = 0;
+let mut n = 0;
+while i < self.users.len() {
+    let u = self.users.get(i) or { break; };
+    if u.active { n = n + 1; }
+    i = i + 1;
+}
+```
+
+A chain is not a value being built — it is rewritten to exactly the
+loop on the right, so the two have identical cost. Prefer the chain
+because it is shorter to read, and because stages fuse: two `filter`s
+are one pass, where the hand-rolled version invites an intermediate.
+
+Three properties make chains safe on a hot path, and they are worth
+knowing rather than assuming:
+
+- **Zero allocation.** A chain is legal under
+  `@budget(alloc_per_call = 0)` and `@hot`. Nothing is materialized
+  until a terminal that says so (`into`).
+- **Eager.** A predicate's effects are attributed to the predicate's
+  own line, not the terminal's. There is no deferred execution to
+  mislead a witness path.
+- **No lambdas.** `it` is bound by the rewrite; the predicate is
+  syntax, not a value. Nothing captures, so nothing escapes.
+
+Whole-set operations (`sort`, and later `reverse` / `group`) cannot
+fuse — they need every element before producing any — so they
+materialize into caller storage. That cost is visible in the budget,
+which is the point.
+
+---
+
 ## 5. The enforcement ladder
 
 The compiler backs this guide in tiers. Everything default is
@@ -787,15 +871,24 @@ absent thing means fighting the design, not waiting on it.
   `bounded[T; N]` with the facade shape (2.5). A builtin generic
   container would be a second primitive; the locus axiom says
   there is one.
-- **No stdlib `Option<T>`.** The mechanism isn't missing —
-  generic enums work, and `type Option<T> = enum { Some(T),
-  None };` compiles, constructs, and matches today. What's
-  deliberate is the *idiom*: the blessed "couldn't compute"
-  shapes are a sentinel + sibling predicate, or `fallible(E)`
-  when diagnostic context matters (free fns, stdlib wrappers,
-  and user-declared `fn` members all support it). An
-  Option-threading style imports another language's error
-  culture; the two-channel design is the native one.
+- **No stdlib `Option<T>`.** Two separate reasons, previously
+  conflated here. The *idiom* is deliberate: the blessed
+  "couldn't compute" shapes are a sentinel + sibling predicate,
+  or `fallible(E)` when diagnostic context matters (free fns,
+  stdlib wrappers, and user-declared `fn` members all support
+  it). An Option-threading style imports another language's
+  error culture; the two-channel design is the native one.
+
+  The *mechanism*, however, IS missing, and this section
+  previously claimed otherwise. A generic payload enum
+  declares and compiles, but does not construct:
+  `type Opt<T> = enum { Some(T), None };` builds, and then
+  `Opt::Some(1)` fails with "path call `Opt::Some` in
+  expression position". Non-generic payload enums construct
+  and match normally — genericity is the whole difference, and
+  it is the same generic-instantiation gap behind
+  `Vec<User>`. So `Option<T>` is not merely unblessed; it is
+  not currently expressible.
 - **Fn-pointer callbacks don't capture state.** Loci are the
   language's closures — state lives in a locus with its own
   `self`, or routes through bus subjects. A capturing lambda
@@ -845,8 +938,11 @@ One is soundness-adjacent and worth knowing cold.
   non-fallible method fails codegen (omit the return type);
   empty `if` bodies parse-fail (add a comment or invert the
   condition).
-- **No char-level `s[i]`** — use `s[i..i+1]` slices or
-  `std::str::index_of`.
+- **No char-level `s[i]`** — use `s[i..i+1]` slices,
+  `std::str::index_of`, or the UTF-8 accessors
+  `std::str::cp_at` / `cp_size` / `cp_count` when you need code
+  points rather than bytes. There is still no `Char` type;
+  `cp_at` yields the code point as an `Int`.
 
 If the catalog seems to be missing a pattern, log a friction
 entry with the smallest reproducible example — the catalog grows

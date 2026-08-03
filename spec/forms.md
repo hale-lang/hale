@@ -100,6 +100,35 @@ synthesized standard set. Naming a user method that collides
 with a synthesized method (e.g. user writes their own `push`)
 is rejected at v1 — override is deferred to v2.
 
+## `@form(set)` — membership without a value
+
+A set is a hashmap whose value is carried but never surfaced: the
+cell IS the key. It reuses the hashmap slot and the whole
+`lotus_hashmap_*` runtime, sync disciplines included, so
+`@form(set, sync = striped)` works exactly as the hashmap does.
+
+```hale
+type Item { key: String; }
+
+@form(set)
+locus Seen { capacity { pool items of Item indexed_by key; } }
+```
+
+The capacity shape is identical to `@form(hashmap)`. Only the
+synthesized surface differs:
+
+| method | signature |
+|---|---|
+| `insert(v)` | value struct in; the key comes from `indexed_by` |
+| `contains(k)` | `Bool`, not a fallible — "absent" is the ordinary answer to a membership question |
+| `remove(k)` | `fallible(KeyError)`, mirroring the hashmap's |
+| `len()` / `is_empty()` | as elsewhere |
+
+That surface is the reason the form exists. Membership through
+`@form(hashmap)` means writing `get(k) or false` at every call site —
+the value plumbing leaking back out of a container whose value nobody
+wants.
+
 ## `indexed_by` and slot clauses
 
 Form configuration splits between *slot clauses* and

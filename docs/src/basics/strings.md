@@ -87,3 +87,76 @@ this level, just know the two types are distinct and you convert
 explicitly between them.
 
 Next: the failure model — [When a call can fail](./fallible.md).
+
+## Splitting, joining, searching
+
+```hale,fragment
+std::str::contains(line, "=")       // Bool
+std::str::starts_with(line, "#")
+std::str::ends_with(path, ".hl")
+```
+
+Splitting writes into a collection you supply rather than returning a
+new one:
+
+```hale,fragment
+@form(vec)
+locus Fields { capacity { heap items of String; } }
+
+let f = Fields { };
+std::str::split_into("a,b,c", ",", f);
+println(std::str::join(f, " | "));      // a | b | c
+```
+
+The asymmetry is deliberate, and it's worth understanding rather than
+memorising. `join` returns a `String` because a String is already a
+value. `split` cannot return a list, because Hale has no list *value*
+to return — collections are loci you own. So you hand it the storage.
+
+That turns out to be the better shape anyway: you own the allocation,
+so it's counted against your budget instead of hidden inside a return
+value, and a handler that splits a line per message can reuse one
+collection instead of allocating a fresh one every time.
+
+Empty fields survive: `"a,,b,"` splits into four, not two. Losing them
+silently would drop a column from a CSV row and you would never see it
+happen.
+
+## Text that isn't ASCII
+
+`String` is bytes. When you need characters, ask for code points
+explicitly:
+
+```hale,fragment
+std::str::cp_count("héllo")     // 5, though the string is 6 bytes
+std::str::cp_at("日本語", 0)     // 26085
+std::str::cp_size("héllo", 1)   // 2 — 'é' is two bytes
+```
+
+Invalid UTF-8 gives you `-1`, as does a byte offset that lands in the
+middle of a character. It does not quietly hand back a replacement
+character, because then you could not tell a corrupted string from one
+that genuinely contains that character.
+
+Normalization, case folding beyond ASCII, and grapheme clusters are
+not provided. Each is a large commitment with its own tables, and a
+`to_upper` that works for English and mangles Turkish is worse than
+one that isn't there.
+
+## Patterns
+
+```hale,fragment
+std::regex::matches("h.llo", "hello")   // true — a full match
+std::regex::find("l+", "hello")         // 2 — leftmost byte offset
+std::regex::valid("a(")                 // false
+```
+
+Literals, `.`, `*`, `+`, `?`, `|`, grouping, and character classes
+(`[a-z]`, `[^a-z]`). No backreferences and no lookahead — those need a
+backtracking engine, and a backtracking match has no upper bound on
+how long it can take. In a language where you can write
+`@budget(alloc_per_call = 0)` on a handler, a pattern that might take
+exponential time is not something you can be allowed to put there.
+
+Check `valid` on any pattern you didn't write yourself. Without it, a
+typo looks exactly like "no matches".
