@@ -4712,6 +4712,28 @@ fn check_bus_cycles(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
 
 /// Flow-control / exit primitives whose presence anywhere in an
 /// unbounded loop body rules out the flood: the loop either paces
+/// #353: does this block ALWAYS leave without producing a value?
+///
+/// A fallback that diverges has no type, so `or { break; }` must not
+/// be asked to match the success type. Conservative: only a block
+/// whose LAST statement unconditionally transfers control counts, so
+/// a conditional `break` still requires a substitute.
+fn block_always_diverges(b: &Block) -> bool {
+    if b.tail.is_some() {
+        return false;
+    }
+    matches!(
+        b.stmts.last(),
+        Some(
+            Stmt::Break(_)
+                | Stmt::Continue(_)
+                | Stmt::Return(..)
+                | Stmt::Fail { .. }
+                | Stmt::Terminate(_)
+        )
+    )
+}
+
 /// itself or can leave.
 fn block_has_flow_control(b: &Block) -> bool {
     b.stmts.iter().any(stmt_has_flow_control)
@@ -11203,8 +11225,20 @@ impl<'a> Checker<'a> {
                         // don't false-positive when the
                         // typechecker can't see through a
                         // stdlib path.
+                        // #353: a DIVERGING fallback yields no value,
+                        // so there is no type to match. `or { break; }`
+                        // / `continue` / `return` / `fail` never reach
+                        // the binding, and demanding a typed substitute
+                        // from them forces callers to invent a default
+                        // that is never used — and for a generic
+                        // element type there is no default to invent.
+                        let rhs_diverges = matches!(
+                            rhs.as_ref(),
+                            Expr::Block(b) if block_always_diverges(b)
+                        );
                         if !interface_satisfied
                             && !value_discarded
+                            && !rhs_diverges
                             && !success.assignable_from(&rhs_ty)
                         {
                             self.diags.push(Diag::ty(
