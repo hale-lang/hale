@@ -23429,6 +23429,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "time", "time_from_unix"] => {
                 self.lower_std_time_from_unix(args, scope)
             }
+            // #353: the `can_` probe beside the fallible parse, the
+            // same pairing `str::parse_int` / `can_parse_int` has.
+            ["std", "time", "can_parse_iso8601"] => {
+                if args.len() != 1 {
+                    return Err(CodegenError::Unsupported(format!(
+                        "std::time::can_parse_iso8601 takes 1 arg, got {}",
+                        args.len()
+                    )));
+                }
+                let (v, ty) = self.lower_expr(&args[0], scope)?;
+                let s_val = self.unpack_view_if_needed(v, &ty)?;
+                let f = self
+                    .module
+                    .get_function("lotus_time_can_parse_iso8601")
+                    .expect("lotus_time_can_parse_iso8601 declared");
+                let r = self
+                    .builder
+                    .build_call(f, &[s_val.into()], "iso.can.ret")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("returns i32");
+                let b = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::NE,
+                        r.into_int_value(),
+                        self.context.i32_type().const_zero(),
+                        "iso.can.bool",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok((b.into(), CodegenTy::Bool))
+            }
             // std::math::* libm Float primitives. Resolves
             // notes/hale-friction.md 2026-05-10 float-surface-gaps
             // (the `std::math` sub-bullet). v0 cut: unary

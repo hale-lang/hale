@@ -5,7 +5,9 @@ use hale_syntax::ast::Expr;
 use inkwell::values::BasicValueEnum;
 
 use crate::bus::runtime::BusRuntime;
-use crate::codegen::{CodegenError, CodegenTy, Cx, Scope};
+use crate::codegen::{
+    CodegenError, CodegenTy, Cx, FallibleCallResult, Scope,
+};
 
 pub(crate) trait TimeStdlib<'ctx> {
     fn lower_time_monotonic_ns(
@@ -22,6 +24,14 @@ pub(crate) trait TimeStdlib<'ctx> {
         &mut self,
         args: &[Expr],
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+
+    /// #353: `std::time::parse_iso8601(s) -> Int fallible(ParseError)`
+    /// — the inverse of `time_from_unix`. UTC only.
+    fn lower_std_time_parse_iso8601_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
 
     fn lower_std_time_from_unix(
         &mut self,
@@ -153,6 +163,62 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
     /// `lotus_time_from_unix`, which gmtime_r + strftime's the
     /// epoch into a 24-byte ISO 8601 UTC buffer in the caller arena.
     /// Mirrors the runtime shape of compile-time Time literals.
+    fn lower_std_time_parse_iso8601_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::time::parse_iso8601 takes 1 arg (s), got {}",
+                args.len()
+            )));
+        }
+        let (v, ty) = self.lower_expr(&args[0], scope)?;
+        let s_val = self.unpack_view_if_needed(v, &ty)?;
+        // Same shape as `str::parse_int`: a `can_` probe decides the
+        // error branch, so a malformed timestamp is a fallible rather
+        // than a sentinel the caller has to know to test for.
+        let can_fn = self
+            .module
+            .get_function("lotus_time_can_parse_iso8601")
+            .expect("lotus_time_can_parse_iso8601 declared");
+        let can = self
+            .builder
+            .build_call(can_fn, &[s_val.into()], "iso.can")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32");
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                can.into_int_value(),
+                self.context.i32_type().const_zero(),
+                "iso.is_err",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let parse_fn = self
+            .module
+            .get_function("lotus_time_parse_iso8601")
+            .expect("lotus_time_parse_iso8601 declared");
+        let secs = self
+            .builder
+            .build_call(parse_fn, &[s_val.into()], "iso.value")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        self.complete_parse_fallible_call(
+            is_err,
+            s_val,
+            "parse_iso8601",
+            Some((secs, CodegenTy::Int)),
+            "time.parse_iso8601",
+        )
+    }
+
     fn lower_std_time_from_unix(
         &mut self,
         args: &[Expr],

@@ -21,6 +21,7 @@ use crate::codegen::{
     Cx, FallibleCallResult, FallibleCtx, FnSig, LocusInfo, Scope, SelfCx,
 };
 use crate::stdlib::bytes::BytesStdlib;
+use crate::stdlib::time::TimeStdlib;
 use crate::stdlib::compress::CompressStdlib;
 use crate::stdlib::compress::{TarArg, TarRet, TarStdlib};
 use crate::stdlib::crypto::CryptoStdlib;
@@ -1201,6 +1202,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // fallible(IndexError)`.
             ["std", "bytes", n] if n.starts_with("write_") => Ok(Some(
                 self.lower_std_bytes_write(n, args, scope)?,
+            )),
+            // #353: the INVERSE of `time_from_unix`.
+            //
+            // Formatting was never missing — `lotus_time_from_unix`
+            // already returns ISO-8601 text, which is why `println(t)`
+            // on a Time renders a date. Parsing had no counterpart, so
+            // a timestamp could be produced and never read back.
+            //
+            // UTC only. A timezone database is megabytes and the wasm
+            // target carries whatever ships; local time additionally
+            // reads TZ, an `env` effect rather than a pure
+            // computation. Local parsing can arrive later as a
+            // distinct, effectful call rather than be smuggled in.
+            ["std", "time", "parse_iso8601"] => Ok(Some(
+                self.lower_std_time_parse_iso8601_fallible(args, scope)?,
             )),
             ["std", "str", "parse_int"] => Ok(Some(
                 self.lower_std_str_parse_int_fallible(args, scope)?,
