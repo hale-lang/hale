@@ -647,6 +647,7 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["time"],
         fns: &[
+            e("parse_iso8601", EffectSet::PURE), e("can_parse_iso8601", EffectSet::PURE),
             e("monotonic", EffectSet::TIME), e("monotonic_ns", EffectSet::TIME), e("now", EffectSet::TIME), e("sleep", EffectSet::SYSCALL.union(EffectSet::BLOCK).union(EffectSet::TIME)), e("time_from_unix", EffectSet::PURE),
         ],
         open_prefixes: &[],
@@ -880,6 +881,11 @@ pub const SIGS: &[FnSig] = &[
     sig!(NS_TIME, "sleep", [Duration], Unit),
     sig!(NS_TIME, "now", [], Int),
     sig!(NS_TIME, "time_from_unix", [Int], Time),
+    // #353: the inverse of `time_from_unix`, which already yields
+    // ISO-8601 text. Returns unix seconds. UTC only, and PURE — it
+    // reads no clock and no TZ.
+    sig!(NS_TIME, "parse_iso8601", [Str], Int, "ParseError"),
+    sig!(NS_TIME, "can_parse_iso8601", [Str], Bool),
     // std::env
     sig!(NS_ENV, "args_count", [], Int),
     sig!(NS_ENV, "arg", [Int], Str),

@@ -9453,6 +9453,83 @@ char *lotus_str_from_float(lotus_arena_t *a, double f) {
     return out;
 }
 
+/*
+ * #353: ISO-8601 formatting and parsing, UTC only.
+ *
+ * A long-running service needs to emit a log timestamp, an HTTP date,
+ * or a config value, and had no way to do it — std::time was
+ * monotonic/now/sleep/time_from_unix and nothing else, so every
+ * application invented its own and they disagreed.
+ *
+ * UTC ONLY, deliberately. A timezone database is megabytes and the
+ * wasm target has to carry whatever ships; local time also needs to
+ * read TZ, which makes it an `env` effect rather than a pure
+ * computation. Formatting an instant you already hold is pure, and
+ * that is the operation worth having first. Local time can be added
+ * later as a distinct, effectful call rather than smuggled in here.
+ *
+ * `timegm` is avoided (not portable); the inverse is computed with
+ * the standard civil-from-days algorithm so parse is exact and
+ * dependency-free.
+ */
+static int64_t lotus_time_parse_iso8601_raw(const char *s);
+
+/* Days from civil date (Howard Hinnant's algorithm) — the exact
+ * inverse of the calendar split gmtime_r performs. */
+static int64_t lotus_days_from_civil(int64_t y, unsigned m, unsigned d) {
+    y -= m <= 2;
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = (unsigned)(y - era * 400);
+    const unsigned doy = (153u * (m + (m > 2 ? -3 : 9)) + 2u) / 5u + d - 1u;
+    const unsigned doe = yoe * 365u + yoe / 4u - yoe / 100u + doy;
+    return era * 146097 + (int64_t)doe - 719468;
+}
+
+/* Returns unix seconds, or INT64_MIN when the input is not a
+ * well-formed `YYYY-MM-DDTHH:MM:SSZ`. The sentinel is out of any
+ * plausible range, and the Hale wrapper turns it into a fallible. */
+int lotus_time_can_parse_iso8601(const char *s) {
+    return lotus_time_parse_iso8601_raw(s) == INT64_MIN ? 0 : 1;
+}
+
+int64_t lotus_time_parse_iso8601(const char *s) {
+    int64_t v = lotus_time_parse_iso8601_raw(s);
+    return v == INT64_MIN ? 0 : v;
+}
+
+static int64_t lotus_time_parse_iso8601_raw(const char *s) {
+    /* Fixed shape: YYYY-MM-DDTHH:MM:SS with an optional trailing 'Z'.
+     * Parsed by hand rather than with sscanf — the wasm target does
+     * not declare it, and a fixed-width format needs no scanner. A
+     * trailing offset like `+01:00` is REJECTED rather than ignored,
+     * so a local-time string is never silently read as UTC. */
+    if (!s) return INT64_MIN;
+    for (int i = 0; i < 19; i++) {
+        if (s[i] == '\0') return INT64_MIN;
+    }
+    static const char shape[] = "____-__-__T__:__:__";
+    for (int i = 0; i < 19; i++) {
+        if (shape[i] == '_') {
+            if (s[i] < '0' || s[i] > '9') return INT64_MIN;
+        } else if (s[i] != shape[i]) {
+            return INT64_MIN;
+        }
+    }
+    if (s[19] != '\0' && !(s[19] == 'Z' && s[20] == '\0')) {
+        return INT64_MIN;
+    }
+    int y  = (s[0]-'0')*1000 + (s[1]-'0')*100 + (s[2]-'0')*10 + (s[3]-'0');
+    int mo = (s[5]-'0')*10 + (s[6]-'0');
+    int d  = (s[8]-'0')*10 + (s[9]-'0');
+    int h  = (s[11]-'0')*10 + (s[12]-'0');
+    int mi = (s[14]-'0')*10 + (s[15]-'0');
+    int se = (s[17]-'0')*10 + (s[18]-'0');
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return INT64_MIN;
+    if (h > 23 || mi > 59 || se > 60) return INT64_MIN;
+    int64_t days = lotus_days_from_civil(y, (unsigned)mo, (unsigned)d);
+    return days * 86400 + (int64_t)h * 3600 + (int64_t)mi * 60 + se;
+}
+
 char *lotus_str_from_duration(lotus_arena_t *a, int64_t ns) {
     char *out = (char *)lotus_arena_alloc(a, 32, 1);
     if (!out) return NULL;

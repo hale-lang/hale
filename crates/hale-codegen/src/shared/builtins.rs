@@ -718,6 +718,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module
             .add_function("lotus_str_from_duration", str_from_dur_ty, None);
 
+        // #353: ISO-8601, UTC only.
+        // declare ptr @lotus_time_format_iso8601(ptr arena, i64 secs)
+        // declare i64 @lotus_time_parse_iso8601(ptr s)
+        let can_parse_iso_ty = i32_t_local.fn_type(&[ptr_t.into()], false);
+        let can_parse_iso_fn = self.module.add_function(
+            "lotus_time_can_parse_iso8601",
+            can_parse_iso_ty,
+            None,
+        );
+        self.mark_pure_read(can_parse_iso_fn);
+        let parse_iso_ty = i64_t.fn_type(&[ptr_t.into()], false);
+        let parse_iso_fn = self
+            .module
+            .add_function("lotus_time_parse_iso8601", parse_iso_ty, None);
+        // Pure over immutable input — no clock read, no TZ read.
+        self.mark_pure_read(parse_iso_fn);
+
         // m38: starts_with / contains string predicates.
         // declare i32 @lotus_str_starts_with(ptr s, ptr prefix)
         // declare i32 @lotus_str_contains(ptr s, ptr sub)

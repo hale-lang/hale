@@ -8,6 +8,18 @@ behavior.
 
 ## Unreleased
 
+- **`std::time::parse_iso8601`** (#353). `std::time` was
+  monotonic/now/sleep/time_from_unix and nothing else, so a service
+  could emit a timestamp and had no way to read one back. Formatting
+  turned out not to be missing — `time_from_unix` already returns
+  ISO-8601 text, which is why `println` on a `Time` renders a date —
+  so only the inverse was added, as `fallible(ParseError)` with a
+  `can_parse_iso8601` probe, matching `str::parse_int`. UTC only: a
+  timezone database is megabytes against the wasm target, and local
+  time reads `TZ` and would therefore be `env`-effectful rather than
+  pure. A trailing offset is rejected rather than ignored, so a
+  local-time string is never silently read as UTC.
+
 - **An indirect call no longer voids every certificate** (#353).
   A call through a function-typed parameter reached the graph as
   `Callee::Unresolved(param_name)` — indistinguishable from an unknown
