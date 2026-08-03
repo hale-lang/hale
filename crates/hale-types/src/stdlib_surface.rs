@@ -203,11 +203,12 @@ pub struct FnEntry {
     pub effects: EffectSet,
 }
 
-/// Row constructor for the (current) unclassified default — keeps
-/// the table visually close to the old bare-name lists.
-const fn f(name: &'static str) -> FnEntry {
-    FnEntry { name, effects: EffectSet::UNCLASSIFIED }
-}
+// The unclassified-default row constructor `f(name)` used to live
+// here. It is gone because nothing calls it: every registry row below
+// is classified (#265 phase 2 finished the sweep). Its absence is a
+// small enforcement — adding an unclassified row now means
+// deliberately reintroducing a constructor for one, rather than
+// reaching for the one already sitting in the file.
 
 /// #265 phase 2: a CLASSIFIED registry row. Every effectful and
 /// pure stdlib fn carries its leaf effect set; `f(..)` remains for

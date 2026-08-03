@@ -117,11 +117,11 @@ jobs:
         # whole-repo and takes <1s; running it 4× adds nothing.
         if: matrix.partition == 1
         run: |
-          ./target/release/hale fmt --check \
-            crates/hale-codegen/tests/fixtures/examples \
-            crates/hale-stdlib/hl \
-            crates/hale-cli/tests/fixtures \
-            assets/readme play
+          # Whole repo, not an enumerated list. The list form silently
+          # excluded tests/hale (the in-language suite), which drifted
+          # out of canonical form unnoticed — an enumerated scope is a
+          # scope that goes stale every time a directory is added.
+          ./target/release/hale fmt --check .
 
       - name: cargo nextest run (partition ${{ matrix.partition }}/4)
         # Build-and-run in one job (no separate archive job + upload/

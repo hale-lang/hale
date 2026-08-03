@@ -31,7 +31,7 @@ fn main() {
     let n = std::str::parse_int("totally bogus") or {
         std::test::assert_eq_str(err.kind, "parse_int", "err.kind");
         std::test::assert_eq_str(err.input, "totally bogus", "err.input");
-        -1
+            -1
     };
     std::test::assert_eq_int(n, -1, "substitute value");
 

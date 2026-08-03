@@ -1792,12 +1792,9 @@ fn placement_spec_str(e: &hale_syntax::ast::PlacementEntry) -> String {
             None => "cooperative(pool = main)".to_string(),
         },
         PlacementSpec::Pinned { affinity, replicas } => {
-            let mut s = format!("pinned{:?}", affinity)
-                .replace("Any", "")
-                .replace("pinned", "pinned");
             // Debug-format affinity compactly; `PinAffinity::Any`
             // renders as bare `pinned`.
-            s = if format!("{:?}", affinity).contains("Any") {
+            let mut s = if format!("{:?}", affinity).contains("Any") {
                 "pinned".to_string()
             } else {
                 format!("pinned({:?})", affinity)
