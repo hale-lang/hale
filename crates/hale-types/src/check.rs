@@ -2322,6 +2322,152 @@ fn check_cooperative_pool_blocking(
                     ),
                 ));
             }
+
+            // === birth-order trap (2026-08-03, downstream handoff) ===
+            //
+            // Strictly worse than the pool-starvation warning above,
+            // and not implied by it. That one needs TWO non-returning
+            // `run()` bodies and claims only that the later `run()`
+            // never starts. This one needs ONE: a locus field whose
+            // `run()` runs INLINE on the main thread (default
+            // placement, or an explicit `cooperative(pool = main)`)
+            // and never returns means every param declared after it
+            // is never even BORN — its `birth()` never runs, so the
+            // subscriptions it registers, the sockets it binds and
+            // the children it accepts silently never exist.
+            //
+            // Measured 2026-08-03 (all four placements):
+            //   default                    -> blocks later births
+            //   cooperative(pool = main)    -> blocks later births
+            //   cooperative(pool = io)      -> posted to a worker, no
+            //   pinned                      -> own thread, no
+            // The LATER field's own placement is irrelevant — the
+            // instantiation itself runs inline on main, so even a
+            // `pinned` sibling declared after the blocker is stuck.
+            // Only the blocker's placement matters.
+            //
+            // This is what a downstream handoff reported as "a bus
+            // handler's write to a `self` param isn't observed by
+            // `run()`", which we in turn mis-filed as a cooperative-
+            // child handler-cadence question. It is neither: the
+            // drain is fine and the cadence is fine; the publisher
+            // simply had not been born yet.
+            {
+                // Params in declaration order, tagged with whether
+                // each one blocks the births that follow it.
+                let mut ordered: Vec<(&str, Span, bool, String)> = Vec::new();
+                for m in &main.members {
+                    let LocusMember::Params(params) = m else { continue };
+                    for pd in &params.params {
+                        let field = pd.name.name.as_str();
+                        let entry = pb.and_then(|pb| {
+                            pb.entries.iter().find(|e| e.field.name == field)
+                        });
+                        // Only an inline-on-main run() blocks. A
+                        // pinned or off-main-pool field runs
+                        // elsewhere; `where async_io` parks.
+                        let inline_on_main = match entry.map(|e| (&e.spec, e)) {
+                            Some((PlacementSpec::Pinned { .. }, _)) => false,
+                            Some((PlacementSpec::Cooperative { pool }, e)) => {
+                                !e.constraints.iter().any(|c| {
+                                    matches!(c.kind, PlacementConstraint::AsyncIo)
+                                }) && pool
+                                    .as_ref()
+                                    .map(|i| i.name == "main")
+                                    .unwrap_or(true)
+                            }
+                            None => true,
+                        };
+                        let segs: Vec<&str> = match &pd.ty {
+                            Some(TypeExpr::Named { path, .. }) => path
+                                .segments
+                                .iter()
+                                .map(|s| s.name.as_str())
+                                .collect(),
+                            _ => Vec::new(),
+                        };
+                        let display = if segs.is_empty() {
+                            field.to_string()
+                        } else {
+                            format!("{}: {}", field, segs.join("::"))
+                        };
+                        // Non-returning: a proven-terminal loop in a
+                        // local locus, or a stdlib locus on the
+                        // known-long-running allowlist (whose body
+                        // typecheck cannot see).
+                        let nonreturning = if is_known_long_running_stdlib(&segs) {
+                            true
+                        } else {
+                            field_locus
+                                .get(field)
+                                .and_then(|n| local_loci.get(n))
+                                .and_then(|decl| {
+                                    decl.members
+                                        .iter()
+                                        .find_map(|m| match m {
+                                            LocusMember::Lifecycle(
+                                                LifecycleDecl {
+                                                    kind: LifecycleKind::Run,
+                                                    body,
+                                                    ..
+                                                },
+                                            ) => Some((body, *decl)),
+                                            _ => None,
+                                        })
+                                        .and_then(|(body, decl)| {
+                                            run_statically_nonreturning(
+                                                body, decl,
+                                            )
+                                        })
+                                })
+                                .is_some()
+                        };
+                        ordered.push((
+                            field,
+                            pd.span,
+                            inline_on_main && nonreturning,
+                            display,
+                        ));
+                    }
+                }
+                // Report the FIRST blocker only: every later one is a
+                // consequence of it, not an independent defect.
+                if let Some(i) = ordered.iter().position(|(_, _, b, _)| *b) {
+                    let starved: Vec<&str> = ordered[i + 1..]
+                        .iter()
+                        .map(|(_, _, _, d)| d.as_str())
+                        .collect();
+                    if !starved.is_empty() {
+                        let (field, span, _, _) = &ordered[i];
+                        diags.push(Diag::warn(
+                            *span,
+                            format!(
+                                "params field `{}` runs inline on the main \
+                                 thread and its `run()` statically never \
+                                 returns (terminal `while` loop with no \
+                                 `break`/`return`/`terminate`), so the \
+                                 params declared after it are never BORN: \
+                                 {}. Their `birth()` bodies never run, so \
+                                 any subscription they register, socket \
+                                 they bind or child they accept silently \
+                                 never exists — the process looks like it \
+                                 booted and then idles. Either declare \
+                                 them BEFORE `{}`, or move `{}` off the \
+                                 main thread with `placement {{ {}: \
+                                 pinned; }}` (own thread) or \
+                                 `cooperative(pool = io)` (posted to a \
+                                 worker); both let the remaining params \
+                                 finish being born.",
+                                field,
+                                starved.join(", "),
+                                field,
+                                field,
+                                field,
+                            ),
+                        ));
+                    }
+                }
+            }
         }
     }
 }
