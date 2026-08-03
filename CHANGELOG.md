@@ -8,6 +8,25 @@ behavior.
 
 ## Unreleased
 
+- **An indirect call no longer voids every certificate** (#353).
+  A call through a function-typed parameter reached the graph as
+  `Callee::Unresolved(param_name)` — indistinguishable from an unknown
+  free fn, which contributed nothing. So `@no_syscall` on a fn whose
+  body is `return f(v);` typechecked while the program performed the
+  syscall, and `@budget(alloc_per_call = 0)` leaked identically. Every
+  certificate the language offers ran through that hole. The edge is
+  now marked `indirect` at construction (the enclosing fn's parameter
+  list is in hand there, exactly as it is for `recv_ty`), and an
+  indirect call is treated as "may do anything" rather than "does
+  nothing". Deliberately conservative: exact resolution is possible
+  given the closed world, but a certificate that is wrong in the safe
+  direction beats one that is wrong in the other.
+- **`hale check` rejects an unknown `std::` namespace** (#353).
+  `std::totally::fake()` passed the checker and was caught only by
+  codegen, so a typo'd or imagined stdlib call was invisible to
+  `check`, to the CI gate and to the LSP — the editor would confirm
+  made-up code as valid. Offers the nearest real namespace.
+
 - **An undeclared effect class is now an error** (#345). Interning
   happened on an `effect NAME;` declaration and on a bare reference in
   `@effects(...)` alike, so a misspelling minted a brand-new class that

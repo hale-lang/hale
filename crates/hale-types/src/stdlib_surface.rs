@@ -680,6 +680,23 @@ pub fn is_locus_path(segs: &[&str]) -> bool {
     LOCUS_PATHS.iter().any(|p| *p == segs)
 }
 
+/// Nearest tabled namespace, for the did-you-mean on an unknown one.
+fn nearest_namespace(segs: &[&str]) -> Option<String> {
+    let want = segs.join("::");
+    let mut best: Option<(String, usize)> = None;
+    for s in SURFACES {
+        let cand = s.ns.join("::");
+        let d = edit_distance(&want, &cand);
+        if d * 2 <= cand.len().max(want.len()) {
+            match &best {
+                Some((_, bd)) if *bd <= d => {}
+                _ => best = Some((cand, d)),
+            }
+        }
+    }
+    best.map(|(n, _)| n)
+}
+
 /// Nearest known name within the namespace, for the did-you-mean
 /// hint. Only offered when the edit distance is small relative to
 /// the name length (a distance-2 match on a 3-char name is noise).
@@ -749,6 +766,22 @@ fn edit_distance(a: &str, b: &str) -> usize {
 pub fn unknown_fn_error(segs: &[&str]) -> Option<String> {
     if is_locus_path(segs) {
         return None;
+    }
+    // #353 item 9: an UNTABLED namespace used to short-circuit here —
+    // `lookup` returned None and the call was waved through as "not our
+    // business". So `std::totally::fake()` passed `hale check` and only
+    // codegen rejected it, which meant a typo'd or imagined stdlib call
+    // was invisible to the checker, to the CI check gate and to the
+    // LSP. `std::` is a closed namespace; an unknown one is an error.
+    if lookup(segs).is_none() && segs.first() == Some(&"std") && segs.len() >= 2
+    {
+        let ns = segs[..segs.len() - 1].join("::");
+        let known = nearest_namespace(&segs[1..segs.len() - 1]);
+        let hint = match known {
+            Some(k) => format!(" — did you mean `std::{}`?", k),
+            None => String::new(),
+        };
+        return Some(format!("unknown stdlib namespace `{}`{}", ns, hint));
     }
     let (surface, fn_idx) = lookup(segs)?;
     let name = segs[fn_idx];

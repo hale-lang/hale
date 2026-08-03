@@ -975,7 +975,26 @@ fn check_class(
                 why
             ))
         }
-        Probe::Unresolved(name, _) => {
+        Probe::Unresolved(name, edge) => {
+            // #353: an INDIRECT call — through a function-typed
+            // parameter. Checked FIRST, because a bare name like `f` is
+            // not a `std::` path and would otherwise return None a few
+            // lines down, which is exactly how this stayed invisible.
+            //
+            // The target is not knowable from this fn, so it may do
+            // anything and no certificate over it can hold. Before
+            // this, such a call looked like an unknown free fn and
+            // contributed nothing: `@no_syscall` on a fn whose body is
+            // `return f(v);` passed while the program performed the
+            // syscall, and `@budget(alloc_per_call = 0)` leaked the
+            // same way.
+            if edge.indirect {
+                return Some(format!(
+                    "`{}` — an indirect call through a function-typed \
+                     parameter, whose target this fn cannot determine",
+                    name
+                ));
+            }
             let segs: Vec<&str> = name.split("::").collect();
             let Some(eff) = crate::stdlib_surface::effects_for(&segs) else {
                 // ABSENT must fail closed, exactly like UNCLASSIFIED.

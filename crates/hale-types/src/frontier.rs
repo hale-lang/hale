@@ -95,6 +95,25 @@ pub fn infer_effects(
                     acc = acc.union(walk(summary, k, ffi, seen, steps));
                 }
                 Callee::Unresolved(name) => {
+                    // #353: a call through a FUNCTION-TYPED PARAMETER.
+                    // It lands here looking like an unknown free fn, so
+                    // it contributed nothing — and that is how an
+                    // indirect call voided every certificate:
+                    // `@no_syscall` on a fn whose body is `return f(v);`
+                    // passed while the program performed the syscall,
+                    // and `@budget(alloc_per_call = 0)` leaked the same
+                    // way.
+                    //
+                    // The target is not knowable from this fn alone, so
+                    // it is UNCLASSIFIED — "may do anything" — which is
+                    // the same fail-closed treatment an unclassified
+                    // stdlib leaf gets. Resolving it exactly needs the
+                    // binding from the call site (see the tier-1 note in
+                    // the issue); until then, closed beats open.
+                    if fs.fn_params.iter().any(|p| p == name) {
+                        acc = acc.union(EffectSet::UNCLASSIFIED);
+                        continue;
+                    }
                     let segs: Vec<&str> = name.split("::").collect();
                     if let Some(e) = stdlib_surface::effects_for(&segs) {
                         if !e.is_unclassified() {
