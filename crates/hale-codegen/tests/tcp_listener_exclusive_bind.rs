@@ -30,7 +30,43 @@ fn free_tcp_port() -> u16 {
 
 #[test]
 fn second_bind_of_same_port_fails() {
-    let port = free_tcp_port();
+    // Acquiring a port and binding it in a CHILD are two steps, and
+    // nothing holds the port between them: `free_tcp_port` binds
+    // 127.0.0.1:0, reads the assigned port, and drops the listener so
+    // the child can bind it. In a parallel run another test can take
+    // that port in the gap, and the child's FIRST bind fails — which
+    // looks like this test's subject failing when it is really port
+    // allocation losing a race. Observed in CI 2026-08-03.
+    //
+    // The gap cannot be closed: holding the port is exactly what
+    // stops the child binding it. So the acquire-and-bind pair is
+    // retried as a unit. The property under test — a SECOND bind of
+    // the same live port is refused — is unaffected by which port we
+    // end up on.
+    let mut last = String::new();
+    for _ in 0..8 {
+        let stdout = run_double_bind(free_tcp_port());
+        if stdout.contains("fd1_ok=true") {
+            assert!(
+                stdout.contains("fd2_ok=false"),
+                "a second bind of a live port must be refused \
+                 (SO_REUSEPORT is deliberately not set); got:\n{}",
+                stdout
+            );
+            return;
+        }
+        last = stdout;
+    }
+    panic!(
+        "could not acquire a bindable port in 8 attempts — this is \
+         port-allocation contention, not the property under test. \
+         Last output:\n{}",
+        last
+    );
+}
+
+/// Build and run a program that binds `port` twice; return stdout.
+fn run_double_bind(port: u16) -> String {
     let src = format!(
         r#"
         fn main() {{
@@ -49,17 +85,5 @@ fn second_bind_of_same_port_fails() {
     build_executable(&program, &bin).expect("build");
     let out = Command::new(&bin).output().expect("run");
     let _ = std::fs::remove_file(&bin);
-    let stdout = String::from_utf8_lossy(&out.stdout);
-
-    assert!(
-        stdout.contains("fd1_ok=true"),
-        "first bind should succeed; got:\n{}",
-        stdout
-    );
-    assert!(
-        stdout.contains("fd2_ok=false"),
-        "second live bind of the same port must be refused (exclusive bind — \
-         SO_REUSEPORT must not be set); got:\n{}",
-        stdout
-    );
+    String::from_utf8_lossy(&out.stdout).to_string()
 }

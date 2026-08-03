@@ -8,6 +8,21 @@ behavior.
 
 ## Unreleased
 
+- **`@budget(stack_bytes)`: the spec now states what the estimate
+  rests on and what it does not cover** (#326). The entry previously
+  asserted that frames "over-approximate, so the bound is safe to
+  assert on" — the claim under question, stated without evidence. It
+  now gives the actual argument (Hale arena-allocates arrays, structs
+  and string buffers, so almost nothing but scalars is on the stack,
+  which is why an 8-bytes-per-local unit is close to right here and
+  would be wrong by orders of magnitude in C; and inlining removes
+  call levels, the term the model spends most of its budget on), and
+  states the limitation (register spills are invisible to any
+  source-level model — at `-O3 -march=native` a spilled AVX-512
+  register is 64 bytes against a model whose unit is 8). The bound is
+  structural, over program shape, not a machine-level guarantee.
+  The load-bearing premise is now pinned by tests.
+
 - **`std::regex`** (#353). A linear-time Thompson NFA:
   `matches` (full match), `find` (leftmost byte offset, -1 if absent)
   and `valid`. The engine class was forced rather than chosen —
