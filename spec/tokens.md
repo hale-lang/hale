@@ -612,8 +612,15 @@ They attach to the declaration that follows.
 | `@effects(publish: {…})` | fn | the allowed publish set |
 | `@effects(depends: {…})` | locus | complete set of subjects that may transitively reach any handler |
 | `@effects(is: {…})` | fn | classify this fn as a source of the named effect classes |
+| `@effects(only: {…})` | fn | CLOSED contract — the inferred set must be a subset of these |
 | `@no_syscall` `@no_block` `@no_ffi` `@no_publish` `@no_spawn` `@no_recursion` `@deterministic` | fn | sugar for the `@effects(none: …)` forms |
 | `@no_panic` | fn | no reachable trap (disposition coverage — a different analysis) |
+
+`effect NAME = { A, B };` optionally DEFINES a class as the union of
+others. A composed class owns no bit of its own, so forbidding it
+forbids every member, and a fn reaching a member carries it. Members
+may be built-ins or other declared classes; a definition cycle is
+rejected.
 
 `effect NAME;` is a top-level **declaration**, not an annotation:
 it introduces a user effect class that `is:` / `none:` / `causes:`

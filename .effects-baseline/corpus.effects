@@ -326,7 +326,9 @@ main  does={alloc}
 App::birth  does={syscall,publish,alloc,money}
 charge  does={money}
 double  none={block,syscall}
+label  only={alloc}  does={alloc}
 main  does={alloc}
+no_io  none={io}
 quote  none={money,syscall}
 safe  none={panic}
 scale  none={entropy,env,time}  alloc_per_call=0

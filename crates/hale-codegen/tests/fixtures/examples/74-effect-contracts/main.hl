@@ -14,6 +14,11 @@
 
 effect money;
 
+// #354: a class DEFINED as a union of others. `io` has no bit of its
+// own — its mask is its members', so forbidding `io` forbids both, and
+// anything reaching a syscall carries `io`.
+effect io = { syscall, block };
+
 type Payment {
     cents: Int;
 }
@@ -39,6 +44,20 @@ fn double(n: Int) -> Int {
 @effects(none: { syscall, money })
 fn quote(cents: Int) -> Int {
     return double(cents);
+}
+
+// #354: the CLOSED form. Anything outside the listed set is a
+// violation, including classes declared after this was written — the
+// complement is computed, not enumerated here.
+@effects(only: { alloc })
+fn label(n: Int) -> String {
+    return "a" + "b";
+}
+
+// Forbidding a composed class.
+@effects(none: { io })
+fn no_io(n: Int) -> Int {
+    return n * 3;
 }
 
 // Quantitative + certification decorators stack with the categoric
@@ -82,6 +101,8 @@ main locus App {
         println(quote(21));
         println(scale(1));
         println(safe(2));
+        println(label(3));
+        println(no_io(4));
         if charge(100) {
             Settled <- Payment { cents: 100 };
         }

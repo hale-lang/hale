@@ -272,12 +272,18 @@ pub fn causes_diags(
             _ => None,
         })
         .collect();
+    let defs: Vec<Option<Vec<EffectClass>>> = programs
+        .iter()
+        .map(|p| &p.effect_defs)
+        .find(|d| !d.is_empty())
+        .cloned()
+        .unwrap_or_default();
     let mut diags = Vec::new();
     for (key, declared, span) in &roots {
         let (actual, via) = causal_effects(&summary, graph, key, &ffi);
         let mut allowed = EffectSet::PURE;
         for c in declared {
-            allowed = allowed.union(class_mask(*c));
+            allowed = allowed.union(class_mask_with(*c, &defs));
         }
         // Only report classes reached THROUGH the bus (the causal
         // surface); direct effects are the `none:` form's job.
@@ -307,9 +313,6 @@ pub fn causes_diags(
     diags
 }
 
-pub(crate) fn class_mask_pub(c: EffectClass) -> EffectSet {
-    class_mask(c)
-}
 
 fn class_mask(c: EffectClass) -> EffectSet {
     match c {
@@ -338,6 +341,46 @@ fn class_mask(c: EffectClass) -> EffectSet {
             }
         }
     }
+}
+
+/// #354: a class's mask, following `effect io = { a, b };` definitions.
+///
+/// A COMPOSED class has no bit of its own — its mask is the union of
+/// its members'. That single fact gives both useful directions with no
+/// new analysis: forbidding `io` tests against `syscall|block` and so
+/// catches either, and a fn that reaches a syscall has that bit set and
+/// therefore satisfies "carries `io`".
+///
+/// `defs` is index-parallel to the program's `effect_names`. Recursion
+/// is depth-bounded by `seen`, which also rejects a definition cycle by
+/// resolving it to PURE rather than looping — the cycle itself is
+/// diagnosed separately, at declaration.
+pub fn class_mask_with(
+    c: EffectClass,
+    defs: &[Option<Vec<EffectClass>>],
+) -> EffectSet {
+    fn go(
+        c: EffectClass,
+        defs: &[Option<Vec<EffectClass>>],
+        seen: &mut Vec<u16>,
+    ) -> EffectSet {
+        if let EffectClass::User(i) = c {
+            if let Some(Some(members)) = defs.get(i as usize) {
+                if seen.contains(&i) {
+                    return EffectSet::PURE; // cycle; diagnosed at decl
+                }
+                seen.push(i);
+                let mut acc = EffectSet::PURE;
+                for m in members {
+                    acc = acc.union(go(*m, defs, seen));
+                }
+                seen.pop();
+                return acc;
+            }
+        }
+        class_mask(c)
+    }
+    go(c, defs, &mut Vec::new())
 }
 
 // ===================== @supervised ==============================
