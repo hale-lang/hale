@@ -321,6 +321,16 @@ pub struct CallEdge {
     /// The name was already computed one line earlier to attempt
     /// resolution; this keeps it instead of throwing it away.
     pub recv_ty: Option<String>,
+    /// #353: this call goes through a FUNCTION-TYPED PARAMETER of the
+    /// enclosing fn — an indirect call whose target is not knowable
+    /// from this fn alone.
+    ///
+    /// Recorded here for the same reason `recv_ty` is: the enclosing
+    /// fn's parameter list is in hand at construction and nowhere
+    /// else, and without it the edge is indistinguishable from a call
+    /// to an unknown free fn. That indistinguishability is what let an
+    /// indirect call void every certificate.
+    pub indirect: bool,
     pub loop_depth: u32,
     /// True if the call is inside an unbounded loop — then the callee is
     /// invoked unboundedly many times regardless of its own multiplicity.
@@ -423,6 +433,16 @@ pub struct FnSummary {
     /// predicate over call edges alone can never see them. Today:
     /// `Topic <- value` publishes and locus instantiations.
     pub effect_sites: Vec<EffectSite>,
+    /// #353: names of this fn's FUNCTION-TYPED parameters.
+    ///
+    /// A call through one of these lands in the graph as
+    /// `Callee::Unresolved(param_name)` — indistinguishable from an
+    /// unknown free fn, which contributed nothing. That is how an
+    /// indirect call voided every certificate: `@no_syscall` on a fn
+    /// whose body is `return f(v);` passed while the program performed
+    /// the syscall. Knowing which unresolved names are parameters is
+    /// what lets the walk treat them as indirect rather than absent.
+    pub fn_params: Vec<String>,
 }
 
 /// GH #265: an effect a fn performs directly in its own body,
@@ -999,7 +1019,7 @@ pub fn summarize_programs_with_renames(
     // method referenced by `subscribe ... -> handler` is tagged BusHandler.
     // The trailing `Vec<(String, String)>` seeds each body's var→type map
     // from its params (D2).
-    type BodyEntry = (FnKey, Block, Option<EntryKind>, Option<String>, Vec<(String, String)>);
+    type BodyEntry = (FnKey, Block, Option<EntryKind>, Option<String>, Vec<(String, String)>, Vec<String>);
     let mut bodies: Vec<BodyEntry> = Vec::new();
     let mut known: BTreeSet<FnKey> = BTreeSet::new();
     // GH #18 item 1 — the `@bounded` / `@unbounded` opt-in/carve-out sets.
@@ -1211,7 +1231,7 @@ pub fn summarize_programs_with_renames(
                         unbounded_fns.insert(key.clone());
                     }
                     known.insert(key.clone());
-                    bodies.push((key, decl.body.clone(), entry, None, param_var_types(&decl.params)));
+                    bodies.push((key, decl.body.clone(), entry, None, param_var_types(&decl.params), fn_typed_params(&decl.params)));
                 }
                 TopDecl::Type(td) => {
                     if let TypeDeclBody::Struct(fields) = &td.body {
@@ -1279,6 +1299,7 @@ pub fn summarize_programs_with_renames(
                                     None,
                                     Some(locus.clone()),
                                     param_var_types(&md.params),
+                                    fn_typed_params(&md.params),
                                 ));
                             }
                             LocusMember::Fn(decl) => {
@@ -1302,6 +1323,7 @@ pub fn summarize_programs_with_renames(
                                     entry,
                                     Some(locus.clone()),
                                     param_var_types(&decl.params),
+                                    fn_typed_params(&decl.params),
                                 ));
                             }
                             LocusMember::Lifecycle(lc) => {
@@ -1317,6 +1339,7 @@ pub fn summarize_programs_with_renames(
                                     Some(entry),
                                     Some(locus.clone()),
                                     param_var_types(&lc.params),
+                                    fn_typed_params(&lc.params),
                                 ));
                             }
                             _ => {}
@@ -1345,7 +1368,7 @@ pub fn summarize_programs_with_renames(
     // Phase 2 — walk each body.
     let mut summary = AllocSummary::default();
     summary.eager_only_loci = eager_only_loci;
-    for (key, body, entry, enclosing_locus, param_types) in &bodies {
+    for (key, body, entry, enclosing_locus, param_types, fn_params) in &bodies {
         let escaping = collect_escaping_names(body);
         let field_types = enclosing_locus
             .as_ref()
@@ -1356,6 +1379,7 @@ pub fn summarize_programs_with_renames(
             .and_then(|l| locus_inline_arrays.get(l))
             .unwrap_or(&empty_inline_arrays);
         let mut w = Walker {
+            fn_params: fn_params.clone(),
             sites: Vec::new(),
             effect_sites: Vec::new(),
             locus_types: &locus_type_names,
@@ -1386,6 +1410,7 @@ pub fn summarize_programs_with_renames(
                 calls: w.calls,
                 loops: w.loops,
                 effect_sites: w.effect_sites,
+                fn_params: fn_params.clone(),
             },
         );
     }
@@ -1422,6 +1447,18 @@ pub fn summarize_programs_with_renames(
 
 /// D2: a fn's params as (name, declared-type-name) pairs — the seed for
 /// the var→type map (only `Named` types; primitives/arrays are skipped).
+/// #353: names of the FUNCTION-TYPED parameters. `param_var_types`
+/// drops these — `type_expr_name` has no name for a function type — so
+/// a call through one is indistinguishable from a call to an unknown
+/// free fn, and contributed nothing to any effect set.
+fn fn_typed_params(params: &[Param]) -> Vec<String> {
+    params
+        .iter()
+        .filter(|p| matches!(p.ty, TypeExpr::Function { .. }))
+        .map(|p| p.name.name.clone())
+        .collect()
+}
+
 fn param_var_types(params: &[Param]) -> Vec<(String, String)> {
     params
         .iter()
@@ -1664,6 +1701,9 @@ struct Walker<'a> {
     /// of these is a locus INSTANTIATION (arena create + possibly a
     /// thread spawn / pool post), not a plain data allocation.
     locus_types: &'a BTreeSet<String>,
+    /// #353: function-typed parameter names of the fn being walked, so
+    /// a call through one can be marked indirect on its edge.
+    fn_params: Vec<String>,
     calls: Vec<CallEdge>,
     loops: Vec<LoopInfo>,
     escaping: &'a BTreeMap<String, Escape>,
@@ -2257,9 +2297,14 @@ impl<'a> Walker<'a> {
             }
             _ => Callee::Unresolved("<expr>".to_string()),
         };
+        let indirect = match &resolved {
+            Callee::Unresolved(n) => self.fn_params.iter().any(|p| p == n),
+            _ => false,
+        };
         self.calls.push(CallEdge {
             recv_ty,
             callee: resolved,
+            indirect,
             loop_depth: depth,
             in_unbounded_loop: self.loop_stack.iter().any(|bounded| !bounded),
             escape,

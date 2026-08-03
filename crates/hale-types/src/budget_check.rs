@@ -179,6 +179,27 @@ impl FactVisitor for BudgetVisitor {
         in_loop: bool,
         emit: bool,
     ) -> Count {
+        // #353: an INDIRECT call through a function-typed parameter is
+        // NOT merely opaque — its target is chosen by the caller, so
+        // treating it as zero lets `@budget(alloc_per_call = 0)` certify
+        // a fn that allocates through it. The budget's documented
+        // "opaque calls are invisible" boundary covers calls whose
+        // callee is fixed and simply unmodelled; this one has no fixed
+        // callee at all, so it counts as unbounded.
+        if edge.indirect {
+            if emit {
+                self.offenders.push(Offender {
+                    span: edge.span,
+                    note: format!(
+                        "`{}` is an indirect call through a \
+                         function-typed parameter — its target, and so \
+                         its allocation count, is chosen by the caller",
+                        name
+                    ),
+                });
+            }
+            return Count::Unbounded;
+        }
         if !opaque_recv_allocates(name) {
             // Any other opaque call is outside what the budget can
             // see (documented boundary).

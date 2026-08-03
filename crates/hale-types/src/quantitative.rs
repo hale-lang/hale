@@ -239,6 +239,17 @@ fn count_dim(
             }
         }
     }
+    // #353: an INDIRECT call through a function-typed parameter. Its
+    // target is not knowable from this fn, so it may allocate, block
+    // or publish any number of times — the quantity is Unbounded, not
+    // zero. `@budget(alloc_per_call = 0)` on a fn whose body is
+    // `return f(v);` passed while the callee allocated, which is the
+    // budget half of the same certificate hole as the effect classes.
+    for edge in &fs.calls {
+        if edge.indirect {
+            total = total.add(Qty::Unbounded);
+        }
+    }
     // Frontier leaves (block points).
     if dim == QuantDim::BlockPoints {
         for edge in &fs.calls {
