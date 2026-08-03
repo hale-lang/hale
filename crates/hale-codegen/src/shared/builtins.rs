@@ -764,6 +764,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module
             .add_function("lotus_str_split_into", split_into_ty, None);
+        // #353: join returns — a String is already a value.
+        // declare ptr @lotus_str_join(ptr vec, ptr sep, ptr arena)
+        let join_ty = ptr_t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), ptr_t.into()],
+            false,
+        );
+        self.module.add_function("lotus_str_join", join_ty, None);
 
         // m84: byte index of substring (or -1 if not found).
         // declare i64 @lotus_str_index_of(ptr s, ptr sub)
