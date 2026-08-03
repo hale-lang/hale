@@ -51,6 +51,47 @@ pub(crate) fn cell_tree_has_heap_leaves(
     }
 }
 
+/// Lower a form-method value argument, building a struct LITERAL of
+/// the cell type on the STACK instead of the arena (2026-08-03 —
+/// same pattern `lower_send` has used for publish payloads since
+/// m67). Sound because every consumer of the value copies out of it
+/// before the statement ends: hashmap set / lru put / ring push /
+/// vec push memcpy the bytes (and the heap-leaf walk clones what it
+/// keeps), so the shell never escapes. Before this, EVERY
+/// `m.set(Entry { ... })` in a hot loop bump-allocated the shell
+/// into the enclosing scope's lifetime arena — 16 MB of dead shells
+/// per million sets on the insert microbench, and the allocation
+/// call itself on the hot path. Anything that is not a
+/// single-segment literal of the exact cell type falls through to
+/// the ordinary lowering.
+fn lower_form_value_arg<'ctx>(
+    cx: &mut Cx<'ctx, '_>,
+    arg: &Expr,
+    cell_name: &str,
+    scope: &Scope<'ctx>,
+) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+    if let Expr::Struct { path, inits, .. } = arg {
+        if path.segments.len() == 1
+            && path.segments[0].name == cell_name
+        {
+            if let Some(info) = cx.user_types.get(cell_name).cloned() {
+                let slot = cx.alloca_in_entry(
+                    info.struct_ty.into(),
+                    &format!("{}.cellarg", cell_name),
+                )?;
+                cx.populate_user_type_fields(
+                    cell_name, &info, inits, slot, scope,
+                )?;
+                return Ok((
+                    slot.into(),
+                    CodegenTy::TypeRef(cell_name.to_string()),
+                ));
+            }
+        }
+    }
+    cx.lower_expr(arg, scope)
+}
+
 use crate::codegen::{
     BceVecKey, CapacitySlotLayout, CodegenError, CodegenTy, Cx,
     FallibleCallResult, LocusInfo, Scope, SlotForm, TypeInfo,
@@ -2162,7 +2203,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )))?;
 
                 let (arg_val, arg_ty) =
-                    self.lower_expr(&args[0], scope)?;
+                    lower_form_value_arg(self, &args[0], &cell_name, scope)?;
                 let expected_value_ty = CodegenTy::TypeRef(cell_name.clone());
                 if arg_ty != expected_value_ty {
                     return Err(CodegenError::Unsupported(format!(
@@ -2996,7 +3037,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         locus_name, field_name, cell_name
                     )))?;
 
-                let (arg_val, arg_ty) = self.lower_expr(&args[0], scope)?;
+                let (arg_val, arg_ty) =
+                    lower_form_value_arg(self, &args[0], &cell_name, scope)?;
                 let expected_value_ty = CodegenTy::TypeRef(cell_name.clone());
                 if arg_ty != expected_value_ty {
                     return Err(CodegenError::Unsupported(format!(

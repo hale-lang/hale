@@ -1206,6 +1206,35 @@ pub fn build_executable_with_options(
     module.set_data_layout(&target_data.get_data_layout());
     module.set_triple(&triple);
 
+    // Static drain elision (2026-08-03, bench attribution): a bundle
+    // that can never enqueue a bus cell makes every emitted
+    // `lotus_bus_queue_drain` a provable no-op — and codegen emits one
+    // at every statement boundary, scope exit, `yield` and sleep
+    // slice, so a compute-only program pays the call thousands of
+    // times for nothing (two per locus instantiation on the
+    // birth+dissolve microbench). Cells are produced only by
+    // subscriber dispatch, wire ingest into a registered subscriber,
+    // the cross-pool accept handoff, and transport-loss dispatch —
+    // so a merged program with NO topic declarations, NO bus blocks,
+    // NO bindings blocks, NO accept lifecycles and NO perspectives
+    // (their serve contract implies a bus surface) provably has an
+    // empty queue at every drain point, and the drains are elided at
+    // emission. Runtime bus config (LOTUS_BUS_CONFIG) cannot defeat
+    // this: with no declared topics there is nothing to bind, and
+    // with no subscribers an ingested message registers no cell.
+    // Any construct not positively recognized keeps the drains.
+    let bus_inert = program.items.iter().all(|it| match it {
+        TopDecl::Topic(_) | TopDecl::Perspective(_) => false,
+        TopDecl::Locus(l) => l.members.iter().all(|m| match m {
+            LocusMember::Bus(_) | LocusMember::Bindings(_) => false,
+            LocusMember::Lifecycle(ld) => {
+                ld.kind != LifecycleKind::Accept
+            }
+            _ => true,
+        }),
+        _ => true,
+    });
+
     let mut cx = Cx {
         context: &context,
         module,
@@ -1286,6 +1315,7 @@ pub fn build_executable_with_options(
         handler_reclaim_wrappers: BTreeMap::new(),
         vtables: BTreeMap::new(),
         current_fn_skip_exit_drain: false,
+        bus_inert,
         di: None,
         di_loc_stack: Vec::new(),
         di_current_loc: None,
@@ -3204,6 +3234,14 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// push/pop + global load + lotus_bus_queue_drain call per
     /// invocation of a two-instruction function.
     pub(crate) current_fn_skip_exit_drain: bool,
+    /// Static drain elision (2026-08-03): true when the merged
+    /// program can never enqueue a bus cell (no topics, no bus
+    /// blocks, no bindings, no accepts, no perspectives) — every
+    /// emitted drain would be a no-op, so `emit_bus_drain` /
+    /// `emit_pinned_mailbox_drain_pending` emit nothing. Computed
+    /// once in `build_executable_with_options`; see the comment
+    /// there for the producer enumeration.
+    pub(crate) bus_inert: bool,
     pub(crate) di: Option<DiState<'ctx>>,
     /// Per-statement debug-location stack: (function the location
     /// was set in, the location live before this statement). The
@@ -21755,6 +21793,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// at every cooperative yield point so a pinned locus's
     /// long-running run() body sees mid-program bus deliveries.
     pub(crate) fn emit_pinned_mailbox_drain_pending(&mut self) -> Result<(), CodegenError> {
+        // Static drain elision: a pinned mailbox only ever holds
+        // subscriber-dispatch or accept-handoff cells; an inert
+        // bundle has neither. See `Cx::bus_inert`.
+        if self.bus_inert {
+            return Ok(());
+        }
         let get_current_fn = self
             .module
             .get_function("lotus_mailbox_get_current")

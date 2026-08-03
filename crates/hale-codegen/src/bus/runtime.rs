@@ -109,6 +109,12 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
     }
 
     fn emit_bus_drain(&mut self) -> Result<(), CodegenError> {
+        // Static drain elision: nothing in this bundle can ever
+        // enqueue a cell, so the drain is a provable no-op — emit
+        // nothing. See `Cx::bus_inert`.
+        if self.bus_inert {
+            return Ok(());
+        }
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let queue_global = self
             .module
