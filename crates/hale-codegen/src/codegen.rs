@@ -1678,7 +1678,13 @@ pub fn build_executable_with_options(
         // Compile the self-contained wasm runtime (arena core + bundled
         // libc) and link it into the user object with wasm-ld, producing
         // a runnable `.wasm`. No native libs / no clang link line.
-        link_wasm(&obj_path, output_path, &cx.wasm_exports)?;
+        link_wasm(
+            &obj_path,
+            output_path,
+            &cx.wasm_exports,
+            &options.csrc_files,
+            &options.link_libs,
+        )?;
         let _ = std::fs::remove_file(&obj_path);
         return Ok(());
     }
@@ -2099,6 +2105,16 @@ fn link_wasm(
     user_obj: &Path,
     output: &Path,
     extra_exports: &[String],
+    // #213: a package's `[ffi] csrc` translation units. These never
+    // reached the wasm path — `options` was simply not passed — so
+    // every `@ffi("c")` symbol they define surfaced as an undefined
+    // `env` import, which `--allow-undefined` swallowed and the JS
+    // loader stubbed with `() => 0`. The build reported success and
+    // every call returned 0 forever.
+    csrc_files: &[std::path::PathBuf],
+    // `[ffi] link` names system dynamic libraries. There is no such
+    // thing on wasm, so this is rejected rather than ignored.
+    link_libs: &[String],
 ) -> Result<(), CodegenError> {
     let mkerr = |m: String| CodegenError::Link(m);
     // Unique temp dir for the staged runtime sources.
@@ -2158,10 +2174,49 @@ fn link_wasm(
     // (println -> printf/puts) as host imports the JS loader provides.
     // (A richer export policy — @export, plus the _hale_start/_hale_tick
     // entry inversion for run()-driven programs — is the next slice.)
+    // #213: `link = [...]` is a system-dylib reference. wasm has no
+    // dynamic linker and no system libraries, so silently dropping it
+    // would reproduce exactly the failure this fixes one level up:
+    // a build that looks fine and is missing its symbols.
+    if !link_libs.is_empty() {
+        return Err(mkerr(format!(
+            "`[ffi] link = {:?}` cannot be satisfied on wasm32 — there \
+             are no system dynamic libraries to link against. Provide \
+             the code as `[ffi] csrc` so it can be compiled into the \
+             module, or gate the dependency out of the wasm build.",
+            link_libs
+        )));
+    }
+
+    // Compile each package csrc translation unit with the same
+    // freestanding wasm toolchain used for the runtime. No sysroot and
+    // no libc headers exist here (see the shim's forward declarations),
+    // so a source that `#include`s libc will fail to compile — LOUDLY,
+    // which is the point. The previous behaviour was to not compile it
+    // at all and let the symbol vanish.
+    let mut csrc_objs: Vec<std::path::PathBuf> = Vec::new();
+    for (i, src) in csrc_files.iter().enumerate() {
+        let o = dir.join(format!("csrc{}.o", i));
+        cc(src, &o, &[]).map_err(|e| {
+            mkerr(format!(
+                "compiling `[ffi] csrc` {:?} for wasm32 failed: {}. The \
+                 wasm build is freestanding — there is no libc sysroot, \
+                 so a translation unit that includes system headers \
+                 cannot be built for this target.",
+                src, e
+            ))
+        })?;
+        csrc_objs.push(o);
+    }
+
     let mut cmd = Command::new(&wasm_ld);
     cmd.arg(user_obj)
         .arg(&arena_o)
-        .arg(&libc_o)
+        .arg(&libc_o);
+    for o in &csrc_objs {
+        cmd.arg(o);
+    }
+    cmd
         .arg("--no-entry")
         .arg("--export-if-defined=main")
         .arg("--export=__heap_base")

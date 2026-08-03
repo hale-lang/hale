@@ -213,3 +213,38 @@ state cell exists for the free-fn path and for hand-rolled layouts.
 
 See [`spec/ffi.md` § WASM host interface](https://github.com/hale-lang/hale/blob/main/spec/ffi.md) for the
 exact marshalling and diagnostic rules.
+
+## C from a package
+
+If a package ships C alongside its Hale — a `[ffi] csrc` list in its
+`hale.toml` — those sources are compiled for wasm32 and linked into
+your module, the same as the runtime's own C.
+
+Two things are different here from a native build, and both will stop
+you rather than surprise you later.
+
+**The wasm build is freestanding.** There is no libc sysroot: the
+runtime compiles against a small forward-declared shim, not wasi-sdk.
+A C file that `#include`s `<string.h>` builds natively and does not
+build for wasm. You get a build error naming the file.
+
+**`link = [...]` doesn't exist here.** It names a system dynamic
+library, and the browser has no dynamic linker. That's an error, not a
+silent omission — if you need the code, it has to come in as `csrc`.
+
+One footgun worth knowing before you write the C. Hale's `Int` is
+**64-bit**, so the declaration must be `long long`:
+
+```c
+long long tsa_answer(long long n) { return n * 6; }   /* right */
+int       tsa_answer(int n)       { return n * 6; }   /* links, then traps */
+```
+
+The second one links and then fails at the call with a wasm
+`signature_mismatch`. That's abrupt, but it is the good outcome: on a
+native target the same mismatch quietly truncates instead.
+
+*(Before Hale 0.12, package `csrc` was skipped for wasm entirely and
+those symbols became stubs returning 0 — a build that looked fine and
+a program that silently did nothing. If you have a workaround
+supplying them from JS, it can go.)*

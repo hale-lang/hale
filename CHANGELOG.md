@@ -8,6 +8,21 @@ behavior.
 
 ## Unreleased
 
+- **wasm32: a package's `[ffi] csrc` is compiled and linked** (#213).
+  `link_wasm` was called without the build options, so `csrc_files`
+  never reached the wasm path: every `@ffi("c")` symbol a package
+  defined in C became an undefined `env` import, `--allow-undefined`
+  swallowed it, and the JS loader stubbed unknown imports with
+  `() => 0`. The build reported success and every call returned 0
+  forever. Two constraints follow from the wasm build being
+  freestanding: a translation unit that includes system headers will
+  not compile (a build error naming the file, rather than a missing
+  symbol), and `[ffi] link = [...]` is rejected outright because wasm
+  has no dynamic linker. Note Hale's `Int` is 64-bit, so the C must
+  declare `long long` — a mismatch links and then traps with a wasm
+  `signature_mismatch`, which is louder than the native ABI's silent
+  truncation and far louder than the stub it replaces.
+
 - **`@budget(stack_bytes)`: the spec now states what the estimate
   rests on and what it does not cover** (#326). The entry previously
   asserted that frames "over-approximate, so the bound is safe to
