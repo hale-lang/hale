@@ -187,7 +187,14 @@ plumbing.
 5. Bus subscriptions wire up.
 6. Modes are reachable for invocation.
 7. If `run` declared, scheduled to run on the locus's
-   scheduler.
+   scheduler. For a locus placed `pinned` or on a
+   cooperative pool other than `main`, "scheduled" means
+   handed to that thread or worker and the instantiation
+   returns immediately. For a locus that runs inline on
+   the main thread — the default placement, and an
+   explicit `cooperative(pool = main)` — `run()` executes
+   **synchronously here**, and step 8 does not happen
+   until it returns. See § Birth order is load-bearing.
 8. Expression returns the locus handle.
 
 **Accept bubbling.** The owner in step 2 need not be the direct
@@ -201,6 +208,58 @@ cross-pool `I{}` is **fire-and-forget** — it may only appear as a
 bare statement, and using the instance as a value is rejected at
 compile time. See `runtime.md` "Interest-based ownership (accept
 bubbling)."
+
+### Birth order is load-bearing
+
+A parent births its `params` fields **in declaration order**, one
+at a time, and step 7 above runs an inline locus's `run()`
+*synchronously*. Composing those two rules: **a params field whose
+`run()` does not return prevents every field declared after it
+from being born at all.**
+
+Not merely from running — from being *born*. The later locus's
+`birth()` never executes, so the subscriptions it registers, the
+sockets it binds, and the children it accepts never come into
+existence. Nothing fails and nothing is logged; the process
+completes what looks like a normal boot and then sits idle. This
+is the single most expensive way to misread a Hale program, and
+the symptom points nowhere near the cause — it typically presents
+as "my handler never fires", which sends you looking at the bus.
+
+```hale
+main locus App {
+    params {
+        server: Server = Server { };   // run() { while true { ... } }
+        metrics: Metrics = Metrics { };  // NEVER BORN
+    }
+}
+```
+
+Only the **blocker's** placement matters. Moving the *later* field
+off the main thread does not rescue it — the instantiation itself
+runs inline on main, so even a `pinned` sibling declared after a
+blocking field waits. The four placements behave as:
+
+| Placement of the blocking field | Blocks later births? |
+|---|---|
+| default (no placement entry) | **yes** |
+| `cooperative(pool = main)` | **yes** |
+| `cooperative(pool = io)` (any non-`main` pool) | no — `run()` is posted to a worker |
+| `pinned` | no — `run()` gets its own thread |
+
+Two remedies, both sound: declare the non-returning field **last**,
+or place it off the main thread. The compiler warns whenever it can
+*prove* the shape — a terminal `while` loop with no
+`break`/`return`/`terminate`, in a field that runs inline on main,
+with at least one field declared after it. The proof is
+deliberately conservative, so a loop the compiler cannot prove
+non-terminating is not reported: absence of the warning is not a
+guarantee of correct ordering.
+
+This rule is why a child's `run()` is the wrong place to put work
+that must happen after its siblings exist. The **main locus's**
+`run()` is the right place — it begins only after params-init
+completes, so by then every child has been born.
 
 ### Dissolve timing rules
 
@@ -1114,11 +1173,16 @@ Transport surface:
   the parent's `params` block — otherwise the Producer's
   first overflow blocks on a `consumer_seqno` that no live
   reader will ever advance, and the process hangs. Order
-  the consumer first or move the publishing into a `run()`
-  body that runs after all child births. (Cross-binary
-  deployments aren't affected — the subscriber lives in a
-  different process and exists before the publisher
-  process starts.)
+  the consumer first, or move the publishing into the
+  **main locus's** `run()`, which does begin after all
+  child births. Moving it into a *child's* `run()` does
+  NOT help: a cooperative child's `run()` runs inline
+  during its own birth, before its later siblings are
+  born — see [§ Birth order is
+  load-bearing](#birth-order-is-load-bearing).
+  (Cross-binary deployments aren't affected — the
+  subscriber lives in a different process and exists
+  before the publisher process starts.)
 
 **Foreign rings via `ring_layout` (Proposal B).**
 The shm_ring transport above reads/writes the *native* Lotus

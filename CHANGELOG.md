@@ -8,6 +8,49 @@ behavior.
 
 ## Unreleased
 
+### The birth-order trap is now diagnosed (downstream handoff)
+
+A params field whose `run()` runs inline on the main thread and never
+returns prevents every field declared after it from being **born** —
+not merely from running. The later locus's `birth()` never executes, so
+the subscriptions it registers and the sockets it binds silently never
+exist. The process completes what looks like a normal boot and then
+idles, and the symptom ("my handler never fires") points at the bus
+rather than at the params block.
+
+`hale check` now warns wherever it can prove the shape: a terminal
+`while` loop with no `break`/`return`/`terminate`, in a field placed on
+the main thread (default placement or an explicit
+`cooperative(pool = main)`), with at least one field declared after it.
+The proof is conservative and reports only the first blocker, so there
+are no false positives on the 198 `.hl` programs in tree — but absence
+of the warning is not a guarantee of correct ordering.
+
+Only the *blocking* field's placement matters: `pinned` and any
+non-`main` cooperative pool lift the block, while the later field's own
+placement is irrelevant (instantiation itself runs inline on main).
+Both remedies — reorder, or place the blocker off-thread — are named in
+the diagnostic.
+
+This also **corrects a misdiagnosis of our own.** A downstream handoff
+reported "a bus handler's write to a `self` param isn't observed by
+`run()`"; we re-diagnosed it as ordering rather than coherence
+(correctly) and then filed it a second time as an open *handler
+cadence* question — "only the main locus is serviced from inside its
+own `run()`" — with an `#[ignore]`d reproducer pending a model
+decision. There was no model decision to make. A cooperative child's
+sleep-slice drain services its handlers correctly; the reproducer had
+simply declared the subscriber before the publisher, so the publisher
+did not yet exist. Swapping the two declarations makes the handler fire
+mid-loop exactly like the main locus's, and that reproducer now runs
+live instead of ignored.
+
+`spec/semantics.md` gains § "Birth order is load-bearing" with the
+measured placement matrix, and its shm_ring birth-order note is
+corrected: the advice to "move the publishing into a `run()` body that
+runs after all child births" is sound only for the **main locus's**
+`run()`, never a child's.
+
 ## v0.13.0 — the certificates fail closed; the ordinary layer arrives (2026-08-03)
 
 Minor bump, and two unrelated stories.

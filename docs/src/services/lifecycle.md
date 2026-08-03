@@ -71,6 +71,61 @@ fn main() {
 }
 ```
 
+## Order matters: a blocking `run()` stops later siblings
+
+Children are born **in declaration order**, one at a time, and a
+child's `run()` runs *right there* — on the same thread, before the
+next sibling is touched. So a child whose `run()` never returns
+means the params after it are never born.
+
+```hale
+main locus App {
+    params {
+        server:  Server  = Server { };    // run() { while true { ... } }
+        metrics: Metrics = Metrics { };   // never born
+    }
+}
+```
+
+`Metrics` doesn't just fail to *run* — its `birth()` never happens,
+so whatever it would have subscribed to or opened simply doesn't
+exist. Nothing errors. The program boots and goes quiet, and the
+symptom ("my metrics handler never fires") points at the bus rather
+than at the params block.
+
+Two fixes. Declare the never-returning child **last**:
+
+```hale
+params {
+    metrics: Metrics = Metrics { };
+    server:  Server  = Server { };       // last
+}
+```
+
+Or give it a thread of its own, which frees the main thread to
+finish births:
+
+```hale
+params {
+    server:  Server  = Server { };
+    metrics: Metrics = Metrics { };
+}
+placement { server: pinned; }            // or cooperative(pool = io)
+```
+
+Only the *blocking* child's placement matters. Pinning the later
+one doesn't help — the construction itself happens on the main
+thread regardless.
+
+The compiler warns when it can prove the shape (a `while` loop with
+no `break`, on a child that runs on the main thread, with something
+declared after it). It can't prove every loop, so treat the absence
+of a warning as "not detected", not "correct".
+
+And this is why work that needs its siblings to exist belongs in
+the **main locus's** `run()`, not a child's — main's `run()` starts
+only once every child has been born.
+
 ## When does a locus dissolve?
 
 This is the one piece of bookkeeping worth internalizing,
