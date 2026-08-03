@@ -160,7 +160,7 @@ A coherent vocabulary of pure helpers wrapped in a locus with
 empty (or config-only) `params { }`. The language's substitute
 for "module of functions" / "static class".
 
-```hale
+```hale,fragment
 locus Morpheme {
     params { flavor: String = "go"; }
     fn lookup_morpheme(m: String) -> String { ... }
@@ -180,7 +180,7 @@ vocabulary becomes visible; leave unrelated helpers as free fns
 
 The full lifecycle for a thing that genuinely runs over time.
 
-```hale
+```hale,fragment
 locus Listener {
     params {
         host: String = "127.0.0.1";
@@ -306,7 +306,7 @@ between recovery (substitute a value) and escalation (drain and
 notify the parent) pairs an `or self.method(err)` clause with an
 `epoch inline` closure:
 
-```hale
+```hale,fragment
 locus DbConnection {
     params { conn_fd: Int = -1; last_error: String = ""; }
     bus { subscribe ExecuteQuery as on_query; publish QueryResult; }
@@ -355,6 +355,31 @@ locus DbConnection {
 Library exports: pick short lowercase import aliases; name decls
 to read naturally under the alias (`fin::Quote`, not
 `fin::FinQuote`). See `spec/projects.md` for the seed model.
+
+### This document is tested
+
+`spec/styleguide.md` is the most prescriptive file in the repo, and
+until 2026-08-03 nothing checked a line of it. That is how §7 came to
+assert that a generic payload enum "compiles, constructs, and matches
+today" when it does not construct — the claim was written once and
+never executed again.
+
+Two gates now run in the normal suite:
+
+- **Snippets.** Every ```hale block must parse *and typecheck*.
+  Partial sketches opt out with ```hale,fragment; deliberately-wrong
+  anti-patterns use ```hale,counter, so a reader of the source can
+  tell "incomplete" from "wrong on purpose".
+  (`hale-types/tests/styleguide_snippets.rs`)
+- **Claims.** §7's assertions about what the language does *not* do
+  are pinned as tests. Absence is the thing nobody re-tests, so when a
+  gap closes the prose keeps saying it is open. If one of these
+  changes, the test fails and names the entry to update.
+  (same file, plus `hale-cli/tests/styleguide_claims.rs` for the
+  claims that are codegen limits rather than typecheck limits — a
+  split worth knowing, because those are invisible to `hale check`.)
+
+If you add a claim about the language here, add the test with it.
 
 ### Canonical form — `hale fmt` is the arbiter
 
@@ -462,7 +487,7 @@ until OOM — the canonical accept-loop leak. Declare
 `release(c: Child)` to make children **flows**, reclaimed when
 their `run()` completes; or `terminate` them from a handler.
 
-```hale
+```hale,fragment
 locus Conn {
     params { fd: Int = -1; }
     run() { while true { let f = recv(...); if f.closed { return; } ... } }
@@ -497,7 +522,7 @@ bounded batch stay silent. **[warn]**
   instances each want their own slice of a topic's traffic, key
   the topic and filter at the subscription:
 
-  ```hale
+```hale,fragment
   topic Posted { payload: Msg; keyed_by room; }
   locus Room {
       params { name: String = "lobby"; }
@@ -526,7 +551,7 @@ bounded batch stay silent. **[warn]**
 String / enum-payload / guard arms) are all first-class. A
 command router over a String field is a `match`:
 
-```hale
+```hale,fragment
 fn on_command(f: Frame) {
     match std::json::find_string_field(f.json, "type") {
         "hello" -> self.on_hello(f),
@@ -545,7 +570,7 @@ positions; expression-position arms must agree on one type.
 
 ### C6b. Prefer `only:` to an enumerated `none:`
 
-```hale
+```hale,fragment
 @effects(only: { alloc })          // closed — future-proof
 @effects(none: { syscall, block, publish, time, entropy, env,
                  ffi, spawn, recursion })   // open — rots
@@ -594,7 +619,7 @@ Each is production-derived. Certify the path when done — S10.
 The single highest-value idiom. A locus that processes frames
 holds its buffers as fields and reuses them every frame:
 
-```hale
+```hale,fragment
 locus WsConn {
     params {
         rx_buf: std::bytes::BytesBuilder = ...;   // frame reassembly
@@ -691,7 +716,7 @@ a `Drain<T>` handler runs once per queue drain with a zero-copy
 
 When a hot path is clean, pin it:
 
-```hale
+```hale,fragment
 @hot @budget(alloc_per_call = 0) fn on_frame(m: Frame) { ... }
 ```
 
@@ -718,7 +743,7 @@ A hot path that looks something up by string key in another locus
 (a metrics counter, a symbol table) resolves the handle **once at
 boot** and stores it as a field:
 
-```hale
+```hale,fragment
 params { c_ticks: metrics::Counter; }      // resolved in main(), threaded in
 fn dispatch(m: Msg) { self.c_ticks.inc(); }
 ```
@@ -757,7 +782,7 @@ is regression-tested. **[convention]**
 
 ### S13. Compose with chains, not hand-rolled loops
 
-```hale
+```hale,fragment
 // idiomatic
 let n = self.users.filter(it.active).count();
 self.users.filter(it.active).into(self.actives);
