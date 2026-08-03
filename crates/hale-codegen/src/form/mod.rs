@@ -9,6 +9,7 @@
 
 pub(crate) mod bounded;
 
+use crate::codegen::SyncMode;
 use hale_syntax::ast::Expr;
 use inkwell::types::BasicType;
 use inkwell::values::{BasicValueEnum, IntValue, PointerValue};
@@ -1221,6 +1222,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map(Some);
         }
 
+        // Downstream handoff P1 (2026-08-03): a `sync = serialized`
+        // map's cell Strings are cloned into the reader's arena at
+        // every read, which is what lets the writer retire the
+        // blobs it replaces. Only cells that actually carry Strings
+        // pay for it; everything else keeps the plain read.
+        let synced_clone_reads = slot.sync_mode == SyncMode::Serialized
+            && cell_info
+                .fields
+                .values()
+                .any(|(_, t)| matches!(t, CodegenTy::String));
+
         let payload_ty = CodegenTy::TypeRef("KeyError".to_string());
 
         if args.len() != 1 {
@@ -1276,26 +1288,53 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.builder
                     .build_store(out_val_slot, value_buf_ptr)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let get_fn = self
-                    .module
-                    .get_function("lotus_hashmap_get")
-                    .expect("lotus_hashmap_get declared");
-                let c_ret = self
-                    .builder
-                    .build_call(
-                        get_fn,
-                        &[
-                            hashmap_field_ptr.into(),
-                            key_alloca.into(),
-                            value_buf_ptr.into(),
-                        ],
-                        &format!("{}.get.call", locus_name),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                    .try_as_basic_value()
-                    .left()
-                    .expect("lotus_hashmap_get returns i32")
-                    .into_int_value();
+                // Synced map: clone the cell's Strings out into the
+                // arena that already owns `value_buf_ptr`, inside
+                // the lock that read the cell, so the writer may
+                // retire its own blobs (downstream handoff P1).
+                let c_ret = if synced_clone_reads {
+                    let dest = self.current_arena_ptr()?;
+                    let get_fn = self
+                        .module
+                        .get_function("lotus_hashmap_get_cloned")
+                        .expect("lotus_hashmap_get_cloned declared");
+                    self.builder
+                        .build_call(
+                            get_fn,
+                            &[
+                                hashmap_field_ptr.into(),
+                                key_alloca.into(),
+                                value_buf_ptr.into(),
+                                dest.into(),
+                            ],
+                            &format!("{}.get.cloned.call", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .try_as_basic_value()
+                        .left()
+                        .expect("lotus_hashmap_get_cloned returns i32")
+                        .into_int_value()
+                } else {
+                    let get_fn = self
+                        .module
+                        .get_function("lotus_hashmap_get")
+                        .expect("lotus_hashmap_get declared");
+                    self.builder
+                        .build_call(
+                            get_fn,
+                            &[
+                                hashmap_field_ptr.into(),
+                                key_alloca.into(),
+                                value_buf_ptr.into(),
+                            ],
+                            &format!("{}.get.call", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .try_as_basic_value()
+                        .left()
+                        .expect("lotus_hashmap_get returns i32")
+                        .into_int_value()
+                };
                 (c_ret, Some(out_val_slot), Some(value_codegen_ty.clone()))
             }
             "remove" => {
@@ -1381,7 +1420,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     pub(crate) fn lower_form_hashmap_index_method(
         &mut self,
         _info: &LocusInfo<'ctx>,
-        _slot: &CapacitySlotLayout,
+        slot_decl: &CapacitySlotLayout,
         cell_info: &TypeInfo<'ctx>,
         _cell_name: String,
         key_codegen_ty: CodegenTy,
@@ -1447,26 +1486,61 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             _ => unreachable!("matched by caller"),
         };
 
-        let c_fn = self
-            .module
-            .get_function(c_fn_name)
-            .expect("hashmap index primitive declared");
-        let c_ret = self
-            .builder
-            .build_call(
-                c_fn,
-                &[
-                    hashmap_field_ptr.into(),
-                    idx_int.into(),
-                    out_buf_ptr.into(),
-                ],
-                &format!("{}.{}.call", locus_name, method_name),
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .try_as_basic_value()
-            .left()
-            .expect("hashmap index primitive returns i32")
-            .into_int_value();
+        // Downstream handoff P1 (2026-08-03): `entry_at` on a
+        // synced String-bearing map takes the cloning variant, for
+        // the same reason `get` does — a raw cell pointer handed
+        // off-thread would be freed under the reader once the
+        // writer's retirement is enabled. `key_at` copies a key,
+        // not a cell, so it is unaffected.
+        let synced_clone_reads = c_fn_name == "lotus_hashmap_value_at"
+            && slot_decl.sync_mode == SyncMode::Serialized
+            && cell_info
+                .fields
+                .values()
+                .any(|(_, t)| matches!(t, CodegenTy::String));
+        let c_ret = if synced_clone_reads {
+            let dest = self.current_arena_ptr()?;
+            let c_fn = self
+                .module
+                .get_function("lotus_hashmap_value_at_cloned")
+                .expect("lotus_hashmap_value_at_cloned declared");
+            self.builder
+                .build_call(
+                    c_fn,
+                    &[
+                        hashmap_field_ptr.into(),
+                        idx_int.into(),
+                        out_buf_ptr.into(),
+                        dest.into(),
+                    ],
+                    &format!("{}.{}.cloned.call", locus_name, method_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("hashmap index primitive returns i32")
+                .into_int_value()
+        } else {
+            let c_fn = self
+                .module
+                .get_function(c_fn_name)
+                .expect("hashmap index primitive declared");
+            self.builder
+                .build_call(
+                    c_fn,
+                    &[
+                        hashmap_field_ptr.into(),
+                        idx_int.into(),
+                        out_buf_ptr.into(),
+                    ],
+                    &format!("{}.{}.call", locus_name, method_name),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("hashmap index primitive returns i32")
+                .into_int_value()
+        };
 
         // For key_at, we need to materialize the surface value
         // from the buffer (the C primitive memcpyd into it but

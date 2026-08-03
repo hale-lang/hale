@@ -476,6 +476,55 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i32_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into()], false);
         self.module
             .add_function("lotus_hashmap_get", hashmap_get_ty, None);
+        // Synced-map read variants (2026-08-03, downstream handoff
+        // P1): same shape plus a destination arena. They clone the
+        // cell's String fields into the CALLER's arena, inside the
+        // critical section that read the cell, so the map's writer
+        // is free to retire its own blobs. Emitted only for a slot
+        // with `sync != none` and a String-bearing cell — the plain
+        // entry points are unchanged.
+        let hashmap_get_cloned_ty = i32_t.fn_type(
+            &[ptr_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into()],
+            false,
+        );
+        self.module.add_function(
+            "lotus_hashmap_get_cloned",
+            hashmap_get_cloned_ty,
+            None,
+        );
+        let hashmap_value_at_cloned_ty = i32_t.fn_type(
+            &[ptr_t.into(), i64_t.into(), ptr_t.into(), ptr_t.into()],
+            false,
+        );
+        self.module.add_function(
+            "lotus_hashmap_value_at_cloned",
+            hashmap_value_at_cloned_ty,
+            None,
+        );
+        let hashmap_iter_batch_cloned_ty = i64_t.fn_type(
+            &[
+                ptr_t.into(),
+                i64_t.into(),
+                ptr_t.into(),
+                i64_t.into(),
+                ptr_t.into(),
+                ptr_t.into(),
+            ],
+            false,
+        );
+        self.module.add_function(
+            "lotus_hashmap_iter_batch_cloned",
+            hashmap_iter_batch_cloned_ty,
+            None,
+        );
+        // Marks a @form locus's arena as concurrently reachable
+        // (bump allocator + retire lists both serialize).
+        let arena_mark_shared_ty = void_t.fn_type(&[ptr_t.into()], false);
+        self.module.add_function(
+            "lotus_arena_mark_shared",
+            arena_mark_shared_ty,
+            None,
+        );
         let hashmap_has_ty =
             i32_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
         self.module

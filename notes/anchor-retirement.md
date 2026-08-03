@@ -87,8 +87,7 @@ struct-field in-place shrink collapses the recorded capacity
 (strlen / len-prefix at retire under-reports after a fit-path
 shrink → reuse degrades on oscillating lengths, still sound — now
 applies to Bytes too); user methods on a @form locus never flush
-(the form-locus early-return); synced maps (needs an epoch scheme
-— cross-thread readers), vec cells (no retire; String elements
+(the form-locus early-return); vec cells (no retire; String elements
 pushed from self-storage still skip-share — benign until vec
 retire exists), run-loop direct sets (no activation boundary —
 pending list just holds; no worse than before). The TP-3 class
@@ -154,3 +153,55 @@ fields recurse to their own String leaves via the anchor walk).
 - The unbounded-alloc analysis keeps flagging these sites until the
   verdict model learns "anchor sites retire" — flip that only after
   the RSS bench proves the runtime behavior (no false bounded).
+
+SYNCED MAPS via CLONE-ON-READ (2026-08-03, downstream handoff P1).
+Previously listed here as "needs an epoch scheme — cross-thread
+readers". It does not. The reason a `sync = serialized` map never
+installed a retire descriptor is that `get` memcpy's the cell, so
+its String fields come out as raw pointers into the MAP's arena and
+an off-pool reader can hold one across the writer's activation
+boundaries — i.e. THE LEAK WAS THE SAFETY MECHANISM. Making the
+reader own its copy removes the off-thread reader entirely, and the
+ordinary flush becomes sound with no epoch machinery:
+
+ 1. Every read path on a synced String-bearing map clones the
+    cell's Strings into the CALLER's arena, INSIDE the critical
+    section that read the cell (between an unlock and the clone a
+    writer could overwrite, retire and flush the blob):
+    `lotus_hashmap_{get,value_at,iter_batch}_cloned`. Covering all
+    three is load-bearing — enabling retirement while leaving any
+    read path handing out raw cell pointers converts the leak into
+    a use-after-free, which is strictly worse.
+ 2. The descriptor is installed for `SyncMode::Serialized`, and the
+    activation-boundary flush gate widened to match. `striped` and
+    `lockfree` stay excluded: their reads bracket on lf_enter /
+    rwlock rather than the map mutex and their grow path rebuilds
+    slots concurrently — a separate audit.
+ 3. A serialized map's arena is marked `shared_concurrent`, which
+    serializes the bump allocator (existing) and the retire lists
+    (new `retire_lock`). Needed because pushes come from the set
+    path under the MAP mutex while flushes come from each writer's
+    own activation boundary with no map lock held. `retire_lock` is
+    DISTINCT from `subregion_lock` because the push path allocates
+    a shell through `lotus_arena_alloc`, which takes subregion_lock
+    — one lock would self-deadlock. Order: retire_lock, then
+    subregion_lock, never the reverse.
+
+MEASUREMENT CAVEAT — READ BEFORE CLAIMING P1 CLOSED. The safety
+properties are covered (tests/form_hashmap_synced_retire.rs, three
+read paths, cross-pool churn, plus the ASan corpus oracle). The
+SPACE win is NOT demonstrated: two reproducers built to the reported
+shape (bounded key domain, fresh key+value Strings per set, 64-byte
+values, 50k vs 400k sets, sets from a per-call method so the
+activation boundary actually flushes) show byte-identical RSS before
+and after — and, more to the point, show no growth with set count on
+the SHIPPED v0.13.0 either, so they do not reproduce the reported
+leak at all. Either the leak needs a shape neither reproducer
+captures, or something since the report already addressed it. Get
+the downstream team's own reproducer before recording P1 as fixed.
+Note the leak DOES reproduce for sets issued directly from a long
+`run()` body (66 MB -> 120 MB over 50k -> 400k), but that is the
+separate known residual above — a `run()` loop is one activation, so
+no flush boundary is ever crossed, and the growth there is method
+scratch rather than the map.
+
