@@ -771,6 +771,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             false,
         );
         self.module.add_function("lotus_str_join", join_ty, None);
+        // #353: regex. Linear-time NFA — pure over immutable inputs.
+        let re_pred_ty =
+            i32_t_local.fn_type(&[ptr_t.into(), ptr_t.into()], false);
+        let re_matches =
+            self.module.add_function("lotus_regex_matches", re_pred_ty, None);
+        self.mark_pure_read(re_matches);
+        let re_valid_ty = i32_t_local.fn_type(&[ptr_t.into()], false);
+        let re_valid =
+            self.module.add_function("lotus_regex_valid", re_valid_ty, None);
+        self.mark_pure_read(re_valid);
+        let re_find_ty = i64_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
+        let re_find =
+            self.module.add_function("lotus_regex_find", re_find_ty, None);
+        self.mark_pure_read(re_find);
         // #353: UTF-8 code-point decoding. Pure reads over immutable
         // input.
         let cp_at_ty = i64_t.fn_type(&[ptr_t.into(), i64_t.into()], false);
