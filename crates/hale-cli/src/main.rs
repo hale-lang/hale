@@ -2446,10 +2446,6 @@ fn file_of_span(
 }
 
 
-fn run_check(target: &Path) -> ExitCode {
-    run_check_impl(target, false)
-}
-
 /// Shared core of `hale check` (advisories print, only errors
 /// fail) and `hale verify` (every finding fails — the CI
 /// discipline gate; same ~10 ms analysis, no execution).

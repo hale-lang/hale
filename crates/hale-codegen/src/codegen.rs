@@ -877,7 +877,7 @@ pub fn build_executable_with_options(
     let time_phases = std::env::var("HALE_TIME").is_ok();
     let t_start = std::time::Instant::now();
     let mut t_last = t_start;
-    let mut phase = |name: &str, t_last: &mut std::time::Instant| {
+    let phase = |name: &str, t_last: &mut std::time::Instant| {
         if time_phases {
             let now = std::time::Instant::now();
             eprintln!(

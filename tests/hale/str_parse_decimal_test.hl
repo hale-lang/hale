@@ -37,7 +37,7 @@ fn main() {
     let v = std::str::parse_decimal("not a number") or {
         std::test::assert_eq_str(err.kind, "parse_decimal", "err.kind");
         std::test::assert_eq_str(err.input, "not a number", "err.input");
-        -1.0d
+            -1.0d
     };
     std::test::assert_eq_str("" + v, "-1", "substitute value");
 }

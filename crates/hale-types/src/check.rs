@@ -2637,7 +2637,6 @@ fn check_placement_single_thread(
                         let mut cx = PoolCheckCx {
                             enclosing_locus: l,
                             caller_pool,
-                            pool_of_locus_type: &pool_of_locus_type,
                             cross_pool_safe_loci: &cross_pool_safe_loci,
                             form_bearing_loci: &form_bearing_loci,
                             inferred_sync: &inferred_sync,
@@ -2773,7 +2772,6 @@ fn form_has_explicit_sync_discipline(form: &FormAnnotation) -> bool {
 struct PoolCheckCx<'a> {
     enclosing_locus: &'a LocusDecl,
     caller_pool: Option<&'a PoolId>,
-    pool_of_locus_type: &'a BTreeMap<String, PoolId>,
     /// F.32-0 (2026-05-24): locus type names that opt in to
     /// cross-pool access by declaring `@form(<name>, sync = X)`
     /// where X is a recognized discipline (`serialized` /
