@@ -947,6 +947,11 @@ pub fn build_executable_with_options(
                 .join("; ");
             CodegenError::Unsupported(format!("stdlib parse: {}", summary))
         })?;
+    // Tier-3 drain-elision taint is computed from the parsed stdlib
+    // (below) before its items are moved into `merged`; the result
+    // is process-cached, so this is a one-time cost.
+    let stdlib_taint: &'static [String] =
+        stdlib_bus_tainted_namespaces(&stdlib_program);
     let mut merged = program.clone();
     merged.items.extend(stdlib_program.items);
 
@@ -1214,26 +1219,63 @@ pub fn build_executable_with_options(
     // times for nothing (two per locus instantiation on the
     // birth+dissolve microbench). Cells are produced only by
     // subscriber dispatch, wire ingest into a registered subscriber,
-    // the cross-pool accept handoff, and transport-loss dispatch —
-    // so a merged program with NO topic declarations, NO bus blocks,
-    // NO bindings blocks, NO accept lifecycles and NO perspectives
-    // (their serve contract implies a bus surface) provably has an
-    // empty queue at every drain point, and the drains are elided at
-    // emission. Runtime bus config (LOTUS_BUS_CONFIG) cannot defeat
-    // this: with no declared topics there is nothing to bind, and
-    // with no subscribers an ingested message registers no cell.
-    // Any construct not positively recognized keeps the drains.
-    let bus_inert = program.items.iter().all(|it| match it {
-        TopDecl::Topic(_) | TopDecl::Perspective(_) => false,
-        TopDecl::Locus(l) => l.members.iter().all(|m| match m {
-            LocusMember::Bus(_) | LocusMember::Bindings(_) => false,
-            LocusMember::Lifecycle(ld) => {
-                ld.kind != LifecycleKind::Accept
-            }
+    // the cross-pool accept handoff, and transport-loss dispatch.
+    //
+    // Three tiers, each conservative:
+    //  1. The USER program (all user seeds — imports are merged
+    //     before codegen) must declare no topics, no bus blocks, no
+    //     bindings, no accepts and no perspectives. Runtime bus
+    //     config (LOTUS_BUS_CONFIG) cannot defeat this: with no
+    //     declared topics there is nothing to bind, and with no
+    //     subscribers an ingested message registers no cell.
+    //  2. The STDLIB also carries bus surface (`std::log` sinks,
+    //     `std::http`, `std::io::tcp`, `std::bus`) — merged below,
+    //     so tier 1 alone was unsound (the log_routing CI failure:
+    //     a bus-free user program whose `std::log` sink never got
+    //     its events drained). A user program that references no
+    //     stdlib path at all (`name: "std"` absent from its AST,
+    //     and no direct `__Std` mention) cannot instantiate a
+    //     stdlib subscriber, so it stays inert.
+    //  3. A program that DOES reference `std::` paths is inert only
+    //     if none of the referenced namespaces can transitively
+    //     reach a bus-surfaced stdlib decl
+    //     (`stdlib_bus_tainted_namespaces`, a decl-level taint
+    //     fixpoint over the parsed stdlib).
+    //
+    // The reference checks run on the Debug rendering of the user
+    // AST. Deliberate: a hand-rolled expression walker would
+    // silently MISS newly-added Expr variants — an unsound elision —
+    // while substring containment can only over-match, which merely
+    // keeps the drains. A user identifier that happens to be named
+    // like a tainted namespace ("log", "http") costs the
+    // optimization, never correctness.
+    let bus_inert = {
+        let user_clean = program.items.iter().all(|it| match it {
+            TopDecl::Topic(_) | TopDecl::Perspective(_) => false,
+            TopDecl::Locus(l) => l.members.iter().all(|m| match m {
+                LocusMember::Bus(_) | LocusMember::Bindings(_) => false,
+                LocusMember::Lifecycle(ld) => {
+                    ld.kind != LifecycleKind::Accept
+                }
+                _ => true,
+            }),
             _ => true,
-        }),
-        _ => true,
-    });
+        });
+        if !user_clean {
+            false
+        } else {
+            let dbg = format!("{:?}", program.items);
+            if dbg.contains("__Std") {
+                false
+            } else if !dbg.contains("name: \"std\"") {
+                true
+            } else {
+                !stdlib_taint.iter().any(|ns| {
+                    dbg.contains(&format!("name: \"{}\"", ns))
+                })
+            }
+        }
+    };
 
     let mut cx = Cx {
         context: &context,
@@ -2456,6 +2498,84 @@ fn locate_ts_shim_staticlib() -> Option<PathBuf> {
 /// Look up the mangled name for a bundled-stdlib path (`std::*`).
 /// Returns `None` when the path isn't recognized; callers then
 /// surface the path-as-typed in their error message.
+/// Which `std::` namespaces (second path segment) can transitively
+/// reach a bus-surfaced stdlib decl? Drives tier 3 of the static
+/// drain elision above. Decl-level taint fixpoint over the parsed
+/// stdlib: seeds are loci with a bus / bindings block or an accept
+/// lifecycle (and perspectives); taint propagates to any decl whose
+/// AST mentions a tainted decl's name (checked as the exact
+/// `name: "<ident>"` Debug rendering, so short names can't
+/// over-cascade), covering stdlib free fns that instantiate a
+/// subscriber internally (`std::http::serve` → `Server`). Tainted
+/// decls map to user-reachable namespaces through PATH_RENAMES —
+/// the complete user-visible stdlib surface (stdlib_mangled_for_path
+/// is table-driven from it); tainted decls with no table entry are
+/// reachable only via a literal `__Std` mention, which tier 2
+/// rejects wholesale. Computed once per process: AP_SOURCE is a
+/// compile-time constant.
+fn stdlib_bus_tainted_namespaces(
+    stdlib: &hale_syntax::ast::Program,
+) -> &'static [String] {
+    use std::sync::OnceLock;
+    static TAINT: OnceLock<Vec<String>> = OnceLock::new();
+    TAINT.get_or_init(|| {
+        let mut decls: Vec<(String, bool, String)> = Vec::new();
+        for it in &stdlib.items {
+            let (name, surface) = match it {
+                TopDecl::Locus(l) => (
+                    l.name.name.clone(),
+                    l.members.iter().any(|m| match m {
+                        LocusMember::Bus(_)
+                        | LocusMember::Bindings(_) => true,
+                        LocusMember::Lifecycle(ld) => {
+                            ld.kind == LifecycleKind::Accept
+                        }
+                        _ => false,
+                    }),
+                ),
+                TopDecl::Perspective(p) => (p.name.name.clone(), true),
+                TopDecl::Fn(f) => (f.name.name.clone(), false),
+                TopDecl::Type(t) => (t.name.name.clone(), false),
+                TopDecl::Topic(t) => (t.name.name.clone(), false),
+                TopDecl::Const(c) => (c.name.name.clone(), false),
+                _ => continue,
+            };
+            decls.push((name, surface, format!("{:?}", it)));
+        }
+        let mut tainted: std::collections::BTreeSet<String> = decls
+            .iter()
+            .filter(|(_, s, _)| *s)
+            .map(|(n, _, _)| n.clone())
+            .collect();
+        loop {
+            let mut changed = false;
+            for (n, _, dbg) in &decls {
+                if tainted.contains(n) {
+                    continue;
+                }
+                if tainted
+                    .iter()
+                    .any(|t| dbg.contains(&format!("name: \"{}\"", t)))
+                {
+                    tainted.insert(n.clone());
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let mut ns: Vec<String> = hale_stdlib::PATH_RENAMES
+            .iter()
+            .filter(|(_, m)| tainted.contains(*m))
+            .filter_map(|(p, _)| p.get(1).map(|s| s.to_string()))
+            .collect();
+        ns.sort();
+        ns.dedup();
+        ns
+    })
+}
+
 fn stdlib_mangled_for_path(segs: &[&str]) -> Option<&'static str> {
     if !matches!(segs.first(), Some(&"std")) {
         return None;
