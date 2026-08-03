@@ -344,6 +344,37 @@ host rather than a C library. The same `@ffi` machinery serves the
 inbound direction, and a dual annotation `@export` serves the
 outbound direction.
 
+### Package `[ffi]` under wasm32
+
+A package's `[ffi] csrc` translation units **are compiled for wasm32**
+and linked into the module (#213, 2026-08-03). Before that they were
+silently skipped: `link_wasm` was invoked without the build options,
+so every `@ffi("c")` symbol a package defined in C surfaced as an
+undefined `env` import, `--allow-undefined` swallowed it, and the
+generated JS loader stubbed unknown imports with `() => 0`. The build
+reported success and every such call returned 0 forever.
+
+Two constraints follow from the wasm build being **freestanding**:
+
+- **No libc sysroot.** The runtime is compiled with bare
+  `--target=wasm32` against a forward-declared shim, not wasi-sdk.
+  There are no system headers, so a translation unit that
+  `#include`s `<string.h>` will not compile for this target. That is
+  now a build error naming the file, rather than a silently missing
+  symbol.
+- **`[ffi] link = [...]` is rejected.** It names a system dynamic
+  library, and wasm has neither a dynamic linker nor system
+  libraries. Dropping it silently would reproduce the same failure one
+  level up, so it is an error that points at `csrc` as the
+  alternative.
+
+One sharp edge worth stating, because linking the C is what exposes
+it: **Hale's `Int` is 64-bit, so a C declaration must use `long long`,
+not `int`.** A mismatch links, and then traps at call time with a wasm
+`signature_mismatch`. That is louder than the native ABI, which would
+quietly truncate — and far louder than the previous behaviour, where
+the symbol was a stub and the mismatch could not be observed at all.
+
 ### The `target` declaration + stdlib gating
 
 The program opts into the wasm backend with a top-level `target`
