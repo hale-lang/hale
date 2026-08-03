@@ -8,6 +8,21 @@ behavior.
 
 ## Unreleased
 
+- **Recognized element chains** (#353, cluster B).
+  `xs.filter(it > 2).count()` and `xs.filter(...).into(target)` are
+  rewritten to ONE loop by a post-parse pass, so typecheck and codegen
+  both see an ordinary `while` and neither learns about chains. A
+  chain is not a value being built — nothing is produced at any stage,
+  so there is no sequence value, no owner for it, and no arena
+  question. Three consequences fall out: it allocates NOTHING (so a
+  chain is legal under `@budget(alloc_per_call = 0)`, unlike a design
+  that returns a new collection); it is eager, so a predicate's
+  effects are attributed to the predicate's own source position rather
+  than to the terminal; and it needs no lambdas at all, because the
+  predicate is an argument position rather than a value — `it` is
+  bound per element by the desugar. Stages fuse: two filters are one
+  pass.
+
 - **A diverging `or` fallback no longer needs a substitute** (#353).
   `v.get(i) or { break; }` was rejected with "fallback type `()` does
   not match success type `Int`" — but `break` never yields, so there

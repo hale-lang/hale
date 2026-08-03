@@ -19,7 +19,13 @@ pub fn parse(tokens: Vec<Token>, _source: &str) -> Result<Program, Vec<Diag>> {
     let mut p = Parser::new(tokens);
     let prog = p.parse_program();
     match prog {
-        Ok(prog) if p.diags.is_empty() => Ok(prog),
+        Ok(mut prog) if p.diags.is_empty() => {
+            // #353 cluster B: rewrite recognized element chains into
+            // ordinary loops here, so typecheck and codegen both see a
+            // `while` and neither needs to learn about chains.
+            crate::chains::desugar_chains(&mut prog);
+            Ok(prog)
+        }
         Ok(_) => Err(std::mem::take(&mut p.diags)),
         Err(d) => {
             p.diags.push(d);
