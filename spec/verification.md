@@ -399,6 +399,34 @@ assume the others in a build:
   zero, so the merge unions the tables and rewrites each seed's
   indices before concatenating items — without that, two seeds' class
   0 share a bit and a `none:` on one is checked against the other.
+- **Closed effect contracts — `@effects(only: {…})`** (#354,
+  2026-08-03). The dual of `none:`. `none:` forbids a listed set and
+  permits everything else, which makes it **rot**: expressing "this
+  handler only allocates" requires enumerating every other class, and
+  adding a class to the language silently widens every such contract —
+  the annotation still reads "only alloc" and no longer means it.
+  Nothing fails; the certificate quietly weakens. `only:` states the
+  permitted set and is checked against the **complement computed at
+  check time** from the live class universe (the ten built-ins plus
+  every declared user class). Nothing is written down that can go
+  stale, so a class declared after the contract was written is outside
+  it automatically. Rendered separately from `none=` in the manifest —
+  a reader must be able to tell a closed contract from an open one,
+  because they age differently.
+- **Composed effect classes — `effect NAME = { A, B };`** (#354,
+  2026-08-03). A class may be DEFINED as the union of others. A
+  composed class owns **no bit**; its mask is its members', which
+  yields both useful directions with no additional analysis:
+  forbidding `io` tests against `syscall|block` and catches either,
+  and a fn that reaches a syscall carries `io`. This also repairs a
+  fail-open in `@deterministic`, which desugars to a hardcoded
+  `none: {time, entropy, env}` and therefore could not see a
+  user-declared class: `effect wallclock = { time };` puts the time
+  bit in the class's mask, so the existing contract catches it with no
+  new mechanism — and it stays opt-in, since an atomic class like
+  `money` is correctly *not* swept into determinism. A definition
+  cycle resolves to no effect at all, so every contract naming it
+  would hold vacuously; cycles are rejected.
 - **Synchronized access is blocking and non-deterministic** (#340/#341,
   2026-08-01). A `sync`-bearing form takes a lock, so a call reaching
   one contributes `block`, and a read through one defeats

@@ -965,12 +965,13 @@ impl AllocSummary {
 /// #345: the classes an `@effects(is: {…})` clause declares.
 fn carried_by(
     effects: &[hale_syntax::ast::EffectAssert],
+    defs: &[Option<Vec<hale_syntax::ast::EffectClass>>],
 ) -> crate::stdlib_surface::EffectSet {
     let mut acc = crate::stdlib_surface::EffectSet::PURE;
     for a in effects {
         if let hale_syntax::ast::EffectAssert::Carries(cs) = a {
             for c in cs {
-                acc = acc.union(crate::frontier::class_mask_pub(*c));
+                acc = acc.union(crate::frontier::class_mask_with(*c, defs));
             }
         }
     }
@@ -1197,7 +1198,7 @@ pub fn summarize_programs_with_renames(
             match item {
                 TopDecl::Fn(decl) => {
                     {
-                        let c = carried_by(&decl.effects);
+                        let c = carried_by(&decl.effects, &program.effect_defs);
                         if c.0 != 0 {
                             carries.insert(
                                 FnKey::free_fn(decl.name.name.clone()),
@@ -1283,7 +1284,7 @@ pub fn summarize_programs_with_renames(
                             }
                             LocusMember::Fn(decl) => {
                                 let key = FnKey::method(locus.clone(), decl.name.name.clone());
-                                let c = carried_by(&decl.effects);
+                                let c = carried_by(&decl.effects, &program.effect_defs);
                                 if c.0 != 0 {
                                     carries.insert(key.clone(), c);
                                 }

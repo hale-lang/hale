@@ -35,6 +35,7 @@ fn merge(programs: Vec<Program>) -> Program {
     let mut iter = programs.into_iter();
     let first = iter.next().expect("at least one program");
     let mut merged = Program {
+        effect_defs: Vec::new(),
         effect_names: Vec::new(),
         declared_effects: Vec::new(),
         items: first.items,

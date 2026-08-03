@@ -40,6 +40,9 @@ struct Parser {
     /// would turn a typo into a contract that passes.
     effect_names: Vec<String>,
     declared_effects: Vec<u16>,
+    /// #354: parallel to `effect_names`; `Some` for a class declared
+    /// as a union of others.
+    effect_defs: Vec<Option<Vec<EffectClass>>>,
     /// v1.x-FORM-1: tracks whether we're inside the body of a
     /// fallible fn. When true, leading-statement `fail` Ident is
     /// recognized as the fail-keyword. Outside that context,
@@ -56,6 +59,7 @@ impl Parser {
             diags: Vec::new(),
             effect_names: Vec::new(),
             declared_effects: Vec::new(),
+            effect_defs: Vec::new(),
             in_fallible_body: false,
         }
     }
@@ -279,6 +283,7 @@ impl Parser {
         Ok(Program {
             effect_names: std::mem::take(&mut self.effect_names),
             declared_effects: std::mem::take(&mut self.declared_effects),
+            effect_defs: std::mem::take(&mut self.effect_defs),
             imports,
             items,
             span: Span {
@@ -756,8 +761,39 @@ impl Parser {
             };
             let name = name.clone();
             self.bump();
+            // #354: optional definition — `effect io = { a, b };`.
+            let mut members: Option<Vec<EffectClass>> = None;
+            if matches!(self.peek(), TokenKind::Eq) {
+                self.bump();
+                self.expect(TokenKind::LBrace, "{")?;
+                let mut ms = Vec::new();
+                while !matches!(self.peek(), TokenKind::RBrace) {
+                    let t = self.peek_token().clone();
+                    let TokenKind::Ident(m) = &t.kind else {
+                        return Err(Diag::parse(
+                            t.span,
+                            "expected an effect class name".to_string(),
+                        ));
+                    };
+                    let m = m.clone();
+                    self.bump();
+                    ms.push(
+                        EffectClass::from_ident(&m).unwrap_or_else(|| {
+                            EffectClass::User(self.intern_effect(&m))
+                        }),
+                    );
+                    if matches!(self.peek(), TokenKind::Comma) {
+                        self.bump();
+                    }
+                }
+                self.expect(TokenKind::RBrace, "}")?;
+                members = Some(ms);
+            }
             self.expect(TokenKind::Semi, ";")?;
             let idx = self.intern_effect(&name);
+            if let Some(ms) = members {
+                self.effect_defs[idx as usize] = Some(ms);
+            }
             // Fail CLOSED on overflow. A class past the mask's
             // capacity has no bit, so it unions as PURE — and
             // `@effects(none: {it})` would then certify a fn that
@@ -1475,6 +1511,21 @@ impl Parser {
                     }
                     out.push(EffectAssert::Carries(classes));
                 }
+                // #354: the CLOSED dual of `none:`. Same class
+                // resolution — including the user-class interning
+                // fallback, which the `causes` arm originally omitted
+                // and which made user classes unusable there.
+                "only" => {
+                    let mut classes = Vec::new();
+                    for it in &items {
+                        classes.push(
+                            EffectClass::from_ident(it).unwrap_or_else(|| {
+                                EffectClass::User(self.intern_effect(it))
+                            }),
+                        );
+                    }
+                    out.push(EffectAssert::Only(classes));
+                }
                 "none" => {
                     let mut classes = Vec::new();
                     for it in &items {
@@ -1563,6 +1614,9 @@ impl Parser {
             return i as u16;
         }
         self.effect_names.push(name.to_string());
+        // Stays index-parallel with `effect_names`; a definition is
+        // filled in later if the class is declared with one.
+        self.effect_defs.push(None);
         (self.effect_names.len() - 1) as u16
     }
 

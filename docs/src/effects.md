@@ -455,3 +455,89 @@ nothing", so `@effects(none: {it})` would silently certify a function
 that calls a declared source. Everything else here fails closed, and
 a certificate that is quietly false is worse than none, because it is
 believed.
+
+## Saying what a function may do, not what it may not
+
+Everything so far forbids. `@effects(none: { syscall })` names what is
+out of bounds and permits the rest — which is the right shape when you
+care about one or two things.
+
+It is the wrong shape when you care about *everything else*. To say
+"this handler allocates and does nothing more" you would have to write
+out every other class:
+
+```hale,fragment
+@effects(none: { syscall, block, publish, time, entropy, env, ffi, spawn, recursion })
+```
+
+And that list is a snapshot. Add a class to the language — or declare
+one of your own — and every contract like it silently permits the new
+class. The annotation still reads "only alloc"; it no longer means it.
+Nothing fails. The certificate just quietly weakens, which is the one
+failure mode this system exists to rule out.
+
+So there is a closed form:
+
+```hale
+@effects(only: { alloc })
+fn label(n: Int) -> String {
+    return "a" + "b";
+}
+```
+
+The inferred effect set must be a **subset** of what you listed. The
+complement is computed when the program is checked, from the classes
+that actually exist — the ten built-ins plus every class the program
+declares. Nothing is written down, so nothing can go stale:
+
+```hale
+effect money;
+
+@effects(is: { money })
+fn charge(cents: Int) -> Int { return cents; }
+
+@effects(only: { alloc })
+fn quote(n: Int) -> Int { return charge(n); }   // violation
+
+fn main() { println(quote(1)); }
+```
+
+`quote` never mentions `money`. It is caught anyway, because `money`
+is not in the permitted set — and it would still be caught if `money`
+were declared a year after `quote` was written. That is the whole
+difference between the two forms.
+
+## Classes built from other classes
+
+A class can be defined as the union of others:
+
+```hale,fragment
+effect io = { syscall, block };
+```
+
+`io` has no bit of its own — its mask *is* `syscall | block`. One fact,
+two useful consequences, no extra machinery: forbidding `io` catches
+either member, and a function that reaches a syscall carries `io`.
+
+This is also how a user class joins a built-in contract. `@deterministic`
+means "must not read anything that varies", and it is defined over
+`time`, `entropy` and `env` — so a class of your own is invisible to it:
+
+```hale,fragment
+effect wallclock;              // atomic: @deterministic cannot see it
+effect wallclock = { time };   // composed: it can
+```
+
+The second form says *your class is a kind of clock read*, which puts
+the `time` bit in its mask, which is exactly what `@deterministic`
+already tests. Nothing about the contract changes.
+
+It stays opt-in, and that is deliberate. An atomic class like `money`
+is **not** swept into `@deterministic` — moving money is not a source
+of nondeterminism, and the compiler has no business guessing that it
+is. You say so by defining the class in terms of what it actually is.
+
+A definition may name other declared classes as well as built-ins. A
+cycle — `effect a = { b }; effect b = { a };` — resolves to no effect
+at all, so every contract naming either would hold vacuously. Cycles
+are rejected rather than left inert.

@@ -128,6 +128,39 @@ fn close(a: &str, b: &str) -> bool {
     common * 2 >= x.len().min(y.len())
 }
 
+/// Every effect class that EXISTS for this program: the built-ins
+/// plus each declared user class. `only:` is checked against this
+/// rather than against a written-down list, so a class added later is
+/// automatically outside any existing `only:` set instead of silently
+/// slipping inside it.
+fn class_universe(declared: &std::collections::BTreeSet<u16>) -> Vec<EffectClass> {
+    let mut out = vec![
+        EffectClass::Syscall,
+        EffectClass::Block,
+        EffectClass::Time,
+        EffectClass::Entropy,
+        EffectClass::Env,
+        EffectClass::Ffi,
+        EffectClass::Publish,
+        EffectClass::Spawn,
+        EffectClass::Recursion,
+        EffectClass::Alloc,
+    ];
+    out.extend(declared.iter().map(|i| EffectClass::User(*i)));
+    out
+}
+
+/// #354: the seed's composed-class definitions, index-parallel to
+/// `effect_names`.
+fn defs_of(programs: &[&Program]) -> Vec<Option<Vec<EffectClass>>> {
+    programs
+        .iter()
+        .map(|p| &p.effect_defs)
+        .find(|d| !d.is_empty())
+        .cloned()
+        .unwrap_or_default()
+}
+
 fn declared_of(programs: &[&Program]) -> std::collections::BTreeSet<u16> {
     programs
         .iter()
@@ -143,6 +176,7 @@ fn phase_effects_diags(
 ) -> Vec<Diag> {
     let mut out = Vec::new();
     let names = &effect_names_of(programs);
+    let defs = &defs_of(programs);
     for p in programs {
         for item in &p.items {
             let TopDecl::Locus(l) = item else { continue };
@@ -248,7 +282,7 @@ fn phase_effects_diags(
                         continue;
                     }
                     let before = out.len();
-                    check_class(summary, &key, span, class, ffi, names, &mut out);
+                    check_class(summary, &key, span, class, ffi, names, defs, &mut out);
                     // Re-label the generic message with the phase.
                     for d in out.iter_mut().skip(before) {
                         d.message = format!(
@@ -500,6 +534,55 @@ fn effect_diags_inner(
     // success. A certificate that is quietly true of nothing is the
     // same failure as one that is quietly false.
     let declared = declared_of(programs);
+    let defs_v = defs_of(programs);
+    // No per-declaration span survives to here (`effect NAME;` produces
+    // no AST item), so a cycle is reported against the program.
+    let program_span = programs
+        .first()
+        .map(|p| p.span)
+        .expect("at least one program");
+    // #354: `effect a = { b }; effect b = { a };` resolves to PURE in
+    // the mask walk, which would make both classes silently inert —
+    // a contract naming either would hold vacuously. Reject it.
+    for (i, def) in defs_v.iter().enumerate() {
+        if def.is_none() {
+            continue;
+        }
+        let mut seen = vec![i as u16];
+        let mut frontier_q: Vec<u16> = Vec::new();
+        if let Some(Some(ms)) = defs_v.get(i) {
+            for m in ms {
+                if let EffectClass::User(j) = m {
+                    frontier_q.push(*j);
+                }
+            }
+        }
+        while let Some(j) = frontier_q.pop() {
+            if j == i as u16 {
+                placement.push(Diag::ty(
+                    program_span,
+                    format!(
+                        "effect class `{}` is defined in terms of itself. \
+                         A cyclic definition resolves to no effect at all, \
+                         so every contract naming it would hold vacuously.",
+                        names.get(i).cloned().unwrap_or_default()
+                    ),
+                ));
+                break;
+            }
+            if seen.contains(&j) {
+                continue;
+            }
+            seen.push(j);
+            if let Some(Some(ms)) = defs_v.get(j as usize) {
+                for m in ms {
+                    if let EffectClass::User(k) = m {
+                        frontier_q.push(*k);
+                    }
+                }
+            }
+        }
+    }
     let mut diags = std::mem::take(&mut placement);
     for (key, asserts, span) in &roots {
         let mut seen: Vec<u16> = Vec::new();
@@ -556,8 +639,51 @@ fn effect_diags_inner(
                 EffectAssert::Forbid(classes) => {
                     for c in classes {
                         check_class(
-                            &summary, key, *span, *c, &ffi, &names, &mut diags,
+                            &summary, key, *span, *c, &ffi, &names, &defs_v,
+                            &mut diags,
                         );
+                    }
+                }
+                // #354: the closed dual. Checked as `none:` over the
+                // COMPLEMENT, and the complement is computed from the
+                // live class universe rather than written down — which
+                // is the whole point. A hand-enumerated `none:` list
+                // silently widens the moment a class is added; this
+                // cannot, because nothing is recorded that could go
+                // stale.
+                EffectAssert::Only(allowed) => {
+                    let set: Vec<String> =
+                        allowed.iter().map(|c| cls_name(*c, &names)).collect();
+                    for c in class_universe(&declared) {
+                        if allowed.contains(&c) {
+                            continue;
+                        }
+                        let before = diags.len();
+                        check_class(
+                            &summary, key, *span, c, &ffi, &names, &defs_v,
+                            &mut diags,
+                        );
+                        // Re-label with the contract that was actually
+                        // violated. `check_class` phrases everything as
+                        // `none:`, so without this a reader goes looking
+                        // for a `none: {money}` that was never written —
+                        // the class is forbidden by omission, and the
+                        // message has to say so. Same re-labelling the
+                        // `@phase_effects` path does.
+                        for d in diags.iter_mut().skip(before) {
+                            let body = d
+                                .message
+                                .strip_prefix("effect assertion violated: ")
+                                .unwrap_or(&d.message)
+                                .to_string();
+                            d.message = format!(
+                                "closed effect contract violated: \
+                                 `{}` declares `only: {{ {} }}`, so {}",
+                                key.display(),
+                                set.join(", "),
+                                body
+                            );
+                        }
                     }
                 }
                 EffectAssert::PublishSet(allowed) => {
@@ -604,6 +730,7 @@ fn check_class(
     class: EffectClass,
     ffi: &BTreeSet<String>,
     names: &[String],
+    defs: &[Option<Vec<EffectClass>>],
     diags: &mut Vec<Diag>,
 ) {
     use crate::stdlib_surface::EffectSet;
@@ -738,8 +865,8 @@ fn check_class(
         // #345: a user class queries the frontier exactly like a
         // built-in — the bit differs, the machinery does not.
         EffectClass::User(_) => (
-            crate::frontier::class_mask_pub(class),
-            "an operation declared to carry this effect class",
+            crate::frontier::class_mask_with(class, defs),
+            "an operation in this effect class",
         ),
         _ => unreachable!("handled above"),
     };
@@ -1149,6 +1276,10 @@ fn find_recursion(summary: &AllocSummary, root: &FnKey) -> Option<String> {
 pub struct EffectManifestRow {
     pub func: String,
     pub forbids: Vec<String>,
+    /// #354: the CLOSED contract, rendered distinctly from `forbids`.
+    /// A reader of the baseline must be able to tell an open contract
+    /// from a closed one — they weaken differently over time.
+    pub only: Option<Vec<String>>,
     pub publish_set: Option<Vec<String>>,
     pub quantities: Vec<(String, u64)>,
     /// GH #265: the INFERRED effect set — what the fn actually does,
@@ -1171,10 +1302,19 @@ pub fn effect_manifest(programs: &[&Program]) -> Vec<EffectManifestRow> {
     let names = effect_names_of(programs);
     let mut push = |name: String, fd: &FnDecl| {
         let mut forbids = Vec::new();
+        let mut onlys: Option<Vec<String>> = None;
         let mut publish_set = None;
         for a in &fd.effects {
             match a {
                 EffectAssert::Carries(_) => {}
+                EffectAssert::Only(cs) => {
+                    // Rendered distinctly from `none:` — a reader of the
+                    // baseline must be able to tell a closed contract
+                    // from an open one.
+                    onlys = Some(
+                        cs.iter().map(|c| cls_name(*c, &names)).collect(),
+                    );
+                }
                 EffectAssert::Forbid(cs) => {
                     for c in cs {
                         forbids.push(cls_name(*c, &names));
@@ -1205,7 +1345,10 @@ pub fn effect_manifest(programs: &[&Program]) -> Vec<EffectManifestRow> {
         // caller fills in an inferred set (see
         // `effect_manifest_with_inference`); the declaration-only
         // builder skips them.
-        if forbids.is_empty() && publish_set.is_none() && quantities.is_empty()
+        if forbids.is_empty()
+            && onlys.is_none()
+            && publish_set.is_none()
+            && quantities.is_empty()
         {
             return;
         }
@@ -1214,6 +1357,7 @@ pub fn effect_manifest(programs: &[&Program]) -> Vec<EffectManifestRow> {
         rows.push(EffectManifestRow {
             func: name,
             forbids,
+            only: onlys,
             publish_set,
             quantities,
             inferred: Vec::new(),
@@ -1265,6 +1409,7 @@ pub fn effect_manifest_with_inference(
             EffectManifestRow {
                 func: name.clone(),
                 forbids: Vec::new(),
+                only: None,
                 publish_set: None,
                 quantities: Vec::new(),
                 inferred: Vec::new(),
@@ -1340,6 +1485,12 @@ pub fn render_effect_manifest(rows: &[EffectManifestRow]) -> String {
         out.push_str(&r.func);
         if !r.forbids.is_empty() {
             out.push_str(&format!("  none={{{}}}", r.forbids.join(",")));
+        }
+        // #354: rendered separately from `none=` — a reader of the
+        // baseline must be able to tell a CLOSED contract from an open
+        // one, because they weaken differently as classes are added.
+        if let Some(o) = &r.only {
+            out.push_str(&format!("  only={{{}}}", o.join(",")));
         }
         if let Some(ps) = &r.publish_set {
             out.push_str(&format!("  publish={{{}}}", ps.join(",")));

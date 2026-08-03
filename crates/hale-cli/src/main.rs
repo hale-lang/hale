@@ -1722,6 +1722,12 @@ fn collect_target_files(t: &ImportTarget) -> Result<Vec<PathBuf>, String> {
 struct EffectTable {
     names: Vec<String>,
     declared: std::collections::BTreeSet<String>,
+    /// #354: composed definitions, index-parallel to `names`. Members
+    /// are remapped into THIS table on absorb — a definition holds
+    /// `EffectClass::User` indices, so carrying it across a seed
+    /// boundary without remapping aliases it exactly like any other
+    /// class reference.
+    defs: Vec<Option<Vec<hale_syntax::ast::EffectClass>>>,
 }
 
 impl EffectTable {
@@ -1739,7 +1745,8 @@ impl EffectTable {
                 self.declared.insert(n.clone());
             }
         }
-        p.effect_names
+        let map: Vec<u16> = p
+            .effect_names
             .iter()
             .map(|n| {
                 let at = self
@@ -1748,11 +1755,34 @@ impl EffectTable {
                     .position(|e| e == n)
                     .unwrap_or_else(|| {
                         self.names.push(n.clone());
+                        self.defs.push(None);
                         self.names.len() - 1
                     });
                 at as u16
             })
-            .collect()
+            .collect();
+        // Carry definitions across, remapping their MEMBERS. A member
+        // is a `User(i)` in the source seed's numbering; storing it
+        // unremapped would silently point the definition at whatever
+        // class holds that index in the merged table.
+        for (i, def) in p.effect_defs.iter().enumerate() {
+            let Some(members) = def else { continue };
+            let Some(&to) = map.get(i) else { continue };
+            let remapped: Vec<hale_syntax::ast::EffectClass> = members
+                .iter()
+                .map(|m| match m {
+                    hale_syntax::ast::EffectClass::User(j) => map
+                        .get(*j as usize)
+                        .map(|&k| hale_syntax::ast::EffectClass::User(k))
+                        .unwrap_or(*m),
+                    other => *other,
+                })
+                .collect();
+            if let Some(slot) = self.defs.get_mut(to as usize) {
+                *slot = Some(remapped);
+            }
+        }
+        map
     }
 
     fn declared_indices(&self) -> Vec<u16> {
@@ -2185,10 +2215,12 @@ fn parse_with_imports(
     // merging its items, so the merged program carries one table that
     // every `User(i)` in `merged_items` agrees on.
     let declared: Vec<u16> = effects.declared_indices();
+    let effect_defs = effects.defs;
     let effect_names = effects.names;
     let mut merged = Program {
         effect_names,
         declared_effects: declared,
+        effect_defs,
         imports: Vec::new(),
         items: merged_items,
         span: entry_program.span,
@@ -2381,6 +2413,7 @@ fn collect_checkable(
         // `merged.effect_names` is the pre-import table and every
         // imported seed's `User(i)` was remapped into this one.
         declared_effects: effects.declared_indices(),
+        effect_defs: effects.defs,
         effect_names: effects.names,
         imports: Vec::new(),
         items: merged_items,
@@ -3200,6 +3233,7 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
     }
     let mut program = Program {
         declared_effects: effects.declared_indices(),
+        effect_defs: effects.defs,
         effect_names: effects.names,
         imports: Vec::new(),
         items: merged_items,
@@ -3356,6 +3390,7 @@ fn run_build(target: &Path) -> ExitCode {
         }
         let mut with_imports = Program {
             declared_effects: effects.declared_indices(),
+            effect_defs: effects.defs,
             effect_names: effects.names,
             imports: Vec::new(),
             items: merged_items,
@@ -3862,6 +3897,7 @@ where
     }
     let merged = Program {
         declared_effects: effects.declared_indices(),
+        effect_defs: effects.defs,
         effect_names: effects.names,
         items,
         imports: Vec::new(),

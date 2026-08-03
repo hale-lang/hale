@@ -16,6 +16,16 @@ pub struct Program {
     /// silently-inert class.
     pub effect_names: Vec<String>,
     pub declared_effects: Vec<u16>,
+    /// #354: `effect io = { syscall, block };` — a class DEFINED as a
+    /// union of others. Indexed like `effect_names`; `None` = atomic
+    /// (owns a bit in the mask), `Some(members)` = composed (owns no
+    /// bit; its mask is the union of its members').
+    ///
+    /// Because a composed class has no bit of its own, both useful
+    /// directions fall out of the existing subset test with no new
+    /// analysis: forbidding `io` forbids every member, and a fn that
+    /// reaches a member satisfies "carries `io`".
+    pub effect_defs: Vec<Option<Vec<EffectClass>>>,
     pub imports: Vec<Import>,
     pub items: Vec<TopDecl>,
     pub span: Span,
@@ -1662,6 +1672,17 @@ pub enum EffectAssert {
     /// engine propagates what leaves carry, and this is how a leaf
     /// says what it carries.
     Carries(Vec<EffectClass>),
+    /// #354: `@effects(only: {alloc})` — the CLOSED form of `none:`.
+    /// The fn's inferred effect set must be a SUBSET of the listed
+    /// classes.
+    ///
+    /// `none:` is open-ended, so it rots: a contract meaning "only
+    /// allocates" has to enumerate every other class, and adding a
+    /// class to the language silently widens every such contract. The
+    /// complement is computed at check time from the live class
+    /// universe (built-ins + declared user classes) rather than
+    /// written down, so it cannot go stale.
+    Only(Vec<EffectClass>),
     /// `@no_panic` — no reachable path can trap. Deliberately NOT an
     /// `EffectClass`: this is a different analysis (disposition
     /// coverage + trap-op selection over the fn's own body and its
@@ -2419,7 +2440,8 @@ pub fn remap_user_effects(items: &mut [TopDecl], map: &[u16]) {
             match a {
                 EffectAssert::Forbid(cs)
                 | EffectAssert::Causes(cs)
-                | EffectAssert::Carries(cs) => classes(cs, map),
+                | EffectAssert::Carries(cs)
+                | EffectAssert::Only(cs) => classes(cs, map),
                 // Subjects, not classes.
                 EffectAssert::PublishSet(_) => {}
                 EffectAssert::NoPanic => {}
