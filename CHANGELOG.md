@@ -8,6 +8,25 @@ behavior.
 
 ## Unreleased
 
+### Two hot-path regressions fixed (bench attribution vs released compilers)
+
+- **`@form` set/put on scalar-only cells no longer pays the cell
+  single-owner tax.** The v0.11.12 single-owner fix emitted a stack
+  snapshot + owned-clone walk on every set/put, but both exist solely
+  to keep heap-pointer (String/Bytes) leaves un-aliased — a cell of
+  pure scalars has nothing to protect, and the snapshot's
+  store-to-load round trip serialized hot insert loops. Now gated on
+  the cell type tree; unrecognized types conservatively keep the
+  snapshot. 1M Int-keyed inserts: 62.7 → 49.7ms.
+- **A no-op bus drain no longer builds its frame.** Codegen emits
+  `lotus_bus_queue_drain` at every statement boundary, scope exit and
+  sleep slice; the drain called `pthread_self` and the transport-loss
+  dispatcher before looking at the queue. In single-threaded mode
+  (`g_bus_has_pinned` unset — set pre-spawn by both pinned
+  registration and pool startup) an empty queue with nothing lost now
+  returns via a call-free fast path. Locus birth+dissolve cycle:
+  2.01 → 1.61ms, 6% faster than the v0.11.3 baseline.
+
 ### The birth-order trap is now diagnosed (downstream handoff)
 
 A params field whose `run()` runs inline on the main thread and never
