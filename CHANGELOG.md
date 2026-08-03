@@ -8,6 +8,15 @@ behavior.
 
 ## Unreleased
 
+- **UTF-8 code-point decoding** (#353). `std::str::cp_count`,
+  `cp_at` (by byte offset) and `cp_size`. Hale's `String` stays
+  byte-oriented; these let a caller walk code points deliberately
+  rather than pretending bytes are characters. Normalization, case
+  folding beyond ASCII, grapheme segmentation and locale collation are
+  each a separate commitment with megabytes of tables against a wasm
+  target, and are deliberately NOT provided — half-shipping them is
+  worse than not shipping them. Invalid UTF-8 yields -1 rather than
+  U+FFFD, so corruption cannot be mistaken for content.
 - **`std::str::join`** (#353). The pair to `split_into`, and note it
   RETURNS where split writes: a String is already a value in Hale, so
   joining never meets the sequence-value question that forces split's
