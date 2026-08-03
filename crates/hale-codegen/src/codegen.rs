@@ -22840,6 +22840,46 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok((res, CodegenTy::String))
     }
 
+    /// #353: the UTF-8 code-point accessors. All take a String and
+    /// optionally a byte offset, and all return Int, so one lowering
+    /// covers the family.
+    fn lower_str_cp_call(
+        &mut self,
+        sym: &str,
+        arity: usize,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != arity {
+            return Err(CodegenError::Unsupported(format!(
+                "{} takes {} arg(s), got {}",
+                sym,
+                arity,
+                args.len()
+            )));
+        }
+        let (s, s_ty) = self.lower_expr(&args[0], scope)?;
+        let s = self.unpack_view_if_needed(s, &s_ty)?;
+        let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum> =
+            vec![s.into()];
+        if arity == 2 {
+            let (off, _) = self.lower_expr(&args[1], scope)?;
+            call_args.push(off.into());
+        }
+        let f = self
+            .module
+            .get_function(sym)
+            .unwrap_or_else(|| panic!("{} declared", sym));
+        let res = self
+            .builder
+            .build_call(f, &call_args, "str.cp.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .unwrap_or_else(|| panic!("{} returns i64", sym));
+        Ok((res, CodegenTy::Int))
+    }
+
     /// Expression-position dispatcher for `std::*` paths.
     fn lower_stdlib_path_call_expr(
         &mut self,
@@ -23121,6 +23161,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.lower_std_str_index_of(args, scope)
             }
             ["std", "str", "join"] => self.lower_std_str_join(args, scope),
+            // #353: UTF-8 code-point decoding. Byte-oriented String
+            // stays byte-oriented; these let a caller walk code points
+            // deliberately rather than pretending bytes are characters.
+            ["std", "str", "cp_count"] => {
+                self.lower_str_cp_call("lotus_str_cp_count", 1, args, scope)
+            }
+            ["std", "str", "cp_at"] => {
+                self.lower_str_cp_call("lotus_str_cp_at", 2, args, scope)
+            }
+            ["std", "str", "cp_size"] => {
+                self.lower_str_cp_call("lotus_str_cp_size", 2, args, scope)
+            }
             ["std", "str", "contains"] => self.lower_std_str_predicate(
                 "lotus_str_contains",
                 "contains",

@@ -771,6 +771,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             false,
         );
         self.module.add_function("lotus_str_join", join_ty, None);
+        // #353: UTF-8 code-point decoding. Pure reads over immutable
+        // input.
+        let cp_at_ty = i64_t.fn_type(&[ptr_t.into(), i64_t.into()], false);
+        for name in ["lotus_str_cp_at", "lotus_str_cp_size"] {
+            let f = self.module.add_function(name, cp_at_ty, None);
+            self.mark_pure_read(f);
+        }
+        let cp_count_ty = i64_t.fn_type(&[ptr_t.into()], false);
+        let cp_count_fn =
+            self.module.add_function("lotus_str_cp_count", cp_count_ty, None);
+        self.mark_pure_read(cp_count_fn);
 
         // m84: byte index of substring (or -1 if not found).
         // declare i64 @lotus_str_index_of(ptr s, ptr sub)

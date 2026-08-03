@@ -4226,6 +4226,74 @@ static int lotus_text_is_word_byte(unsigned char c) {
  * rather than repeated concatenation, so the cost is a single
  * countable allocation in the caller's budget.
  */
+/*
+ * #353: UTF-8 decoding.
+ *
+ * SCOPE, stated because unicode is where "add a feature" quietly
+ * becomes five commitments. This provides code-point decoding and
+ * nothing else:
+ *
+ *   - `lotus_str_cp_count`  — number of code points
+ *   - `lotus_str_cp_at`     — the code point starting at a BYTE offset
+ *   - `lotus_str_cp_size`   — that code point's width in bytes
+ *
+ * Normalization (NFC/NFD), case folding beyond ASCII, grapheme
+ * cluster segmentation and locale-aware collation are each a separate
+ * commitment with its own tables, and the tables are megabytes against
+ * a wasm target that carries whatever ships. Half-shipping them is
+ * worse than not shipping them: a `to_upper` that works for ASCII and
+ * silently mangles Turkish dotted I is a correctness bug that reads
+ * like a feature.
+ *
+ * Hale's String stays BYTE-oriented. These let a caller walk code
+ * points deliberately rather than pretending bytes are characters.
+ * Invalid UTF-8 yields -1 rather than a replacement character, so a
+ * caller cannot mistake corruption for content.
+ */
+int64_t lotus_str_cp_size(const char *s, int64_t byte_off) {
+    if (!s || byte_off < 0) return -1;
+    unsigned char c = (unsigned char)s[byte_off];
+    if (c == 0) return -1;
+    if (c < 0x80) return 1;
+    if ((c & 0xE0) == 0xC0) return 2;
+    if ((c & 0xF0) == 0xE0) return 3;
+    if ((c & 0xF8) == 0xF0) return 4;
+    return -1;                       /* continuation byte or invalid */
+}
+
+int64_t lotus_str_cp_at(const char *s, int64_t byte_off) {
+    int64_t n = lotus_str_cp_size(s, byte_off);
+    if (n < 0) return -1;
+    const unsigned char *p = (const unsigned char *)s + byte_off;
+    /* Every continuation byte must be 10xxxxxx, or the sequence is
+     * truncated / malformed and must not decode to something
+     * plausible. */
+    for (int64_t i = 1; i < n; i++) {
+        if ((p[i] & 0xC0) != 0x80) return -1;
+    }
+    switch (n) {
+        case 1: return p[0];
+        case 2: return ((int64_t)(p[0] & 0x1F) << 6) | (p[1] & 0x3F);
+        case 3: return ((int64_t)(p[0] & 0x0F) << 12)
+                     | ((int64_t)(p[1] & 0x3F) << 6) | (p[2] & 0x3F);
+        default: return ((int64_t)(p[0] & 0x07) << 18)
+                      | ((int64_t)(p[1] & 0x3F) << 12)
+                      | ((int64_t)(p[2] & 0x3F) << 6) | (p[3] & 0x3F);
+    }
+}
+
+int64_t lotus_str_cp_count(const char *s) {
+    if (!s) return 0;
+    int64_t n = 0;
+    for (int64_t i = 0; s[i]; ) {
+        int64_t w = lotus_str_cp_size(s, i);
+        if (w < 0) return -1;        /* invalid UTF-8 anywhere = -1 */
+        i += w;
+        n++;
+    }
+    return n;
+}
+
 char *lotus_str_join(void *vec_ptr, const char *sep, void *arena_ptr) {
     lotus_arena_t *arena = (lotus_arena_t *)arena_ptr;
     if (!vec_ptr) {
