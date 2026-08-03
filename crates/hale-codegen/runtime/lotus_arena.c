@@ -4193,6 +4193,50 @@ static int lotus_text_is_word_byte(unsigned char c) {
         || c == '\'';
 }
 
+/*
+ * #353: `std::str::split_into(s, sep, target)`.
+ *
+ * Splitting a string is the most common single operation in service
+ * code and Hale had no way to do it. What it could not do is RETURN a
+ * sequence — arrays are fixed-size types and growable collections
+ * exist only as locus-owned forms — so this follows the shape the
+ * stdlib already uses for exactly that reason
+ * (`lotus_text_tokenize_words_into`): write into a caller-supplied
+ * `@form(vec)`.
+ *
+ * That is not a workaround. It is the allocation-visible form: the
+ * caller owns the storage, so the cost shows up in the caller's
+ * budget rather than hiding behind a return value, and a `@hot`
+ * handler can reuse one vec across calls.
+ *
+ * Empty separator is rejected (it would loop forever). Adjacent
+ * separators produce empty fields, and a trailing separator produces
+ * a trailing empty field — the same convention as every split worth
+ * having, so `"a,,b,".split(",")` is 4 fields.
+ */
+void lotus_str_split_into(
+    void *target_vec,
+    const char *src,
+    const char *sep,
+    void *arena_ptr
+) {
+    if (!target_vec || !src || !sep || !*sep) return;
+    lotus_arena_t *arena = (lotus_arena_t *)arena_ptr;
+    size_t seplen = strlen(sep);
+    const char *cur = src;
+    for (;;) {
+        const char *hit = strstr(cur, sep);
+        size_t n = hit ? (size_t)(hit - cur) : strlen(cur);
+        char *field = (char *)lotus_arena_alloc(arena, n + 1, 1);
+        if (!field) return;
+        if (n) memcpy(field, cur, n);
+        field[n] = '\0';
+        lotus_vec_push(target_vec, sizeof(char *), &field);
+        if (!hit) break;
+        cur = hit + seplen;
+    }
+}
+
 void lotus_text_tokenize_words_into(
     void *target_vec,
     const char *src,
