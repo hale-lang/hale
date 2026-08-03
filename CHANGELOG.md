@@ -26,6 +26,12 @@ behavior.
   codegen, so a typo'd or imagined stdlib call was invisible to
   `check`, to the CI gate and to the LSP — the editor would confirm
   made-up code as valid. Offers the nearest real namespace.
+- **`std::str::contains` / `starts_with` / `ends_with`** (#353).
+  `lotus_str_contains` and `lotus_str_starts_with` had been in the
+  runtime for a long time — carrying `memory(read)` so LICM can hoist
+  them — but neither was reachable from Hale. `ends_with` is new. The
+  trio was previously unusable as a set: two of the three questions
+  were askable and the third had to be hand-rolled.
 
 - **An undeclared effect class is now an error** (#345). Interning
   happened on an `effect NAME;` declaration and on a bare reference in

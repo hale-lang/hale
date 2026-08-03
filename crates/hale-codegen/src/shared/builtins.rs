@@ -733,6 +733,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .module
             .add_function("lotus_str_contains", str_predicate_ty, None);
         self.mark_pure_read(str_contains_fn);
+        // #353: `ends_with` completes the trio. Pure read over
+        // immutable data, like its siblings.
+        let str_ends_with_fn = self
+            .module
+            .add_function("lotus_str_ends_with", str_predicate_ty, None);
+        self.mark_pure_read(str_ends_with_fn);
 
         // m84: byte index of substring (or -1 if not found).
         // declare i64 @lotus_str_index_of(ptr s, ptr sub)
