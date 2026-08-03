@@ -8,6 +8,15 @@ behavior.
 
 ## Unreleased
 
+- **A diverging `or` fallback no longer needs a substitute** (#353).
+  `v.get(i) or { break; }` was rejected with "fallback type `()` does
+  not match success type `Int`" — but `break` never yields, so there
+  is no value whose type could match, and the rule asked callers to
+  invent a substitute provably never used. `break` / `continue` /
+  `return` / `fail` / `terminate` in tail position are now accepted.
+  Conservative: only an UNCONDITIONAL divergence counts, since a block
+  that can fall through genuinely does need a value.
+
 - **UTF-8 code-point decoding** (#353). `std::str::cp_count`,
   `cp_at` (by byte offset) and `cp_size`. Hale's `String` stays
   byte-oriented; these let a caller walk code points deliberately
