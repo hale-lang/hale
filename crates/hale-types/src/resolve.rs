@@ -932,6 +932,11 @@ fn register_locus(
                 let (value_ty, key_ty) = form_hashmap_value_and_key_ty(decl, known, scope);
                 synthesize_form_hashmap_methods(&mut methods, &value_ty, &key_ty);
             }
+            "set" => {
+                let (value_ty, key_ty) =
+                    form_hashmap_value_and_key_ty(decl, known, scope);
+                synthesize_form_set_methods(&mut methods, &value_ty, &key_ty);
+            }
             "ring_buffer" => {
                 let cell_ty = form_ring_buffer_cell_ty(decl, known);
                 synthesize_form_ring_buffer_methods(&mut methods, &cell_ty);
@@ -1496,6 +1501,60 @@ fn synthesize_form_vec_methods(methods: &mut Vec<MethodInfo>, cell_ty: &Ty) {
 /// key as one of its fields) means `set(value: S)` takes the
 /// whole struct rather than a `(K, V)` pair — the substrate
 /// extracts the key from the value at insertion time.
+/// #353: `@form(set)` — membership, not lookup.
+///
+/// The storage is a hashmap (see `decisions.md`: "the cell IS the
+/// key"), so this exists to keep the VALUE off the call site.
+/// `contains` returns Bool rather than a fallible, because "not
+/// present" is the ordinary answer to a membership question, not a
+/// failure — surfacing it as `get(k) or false` at every call site
+/// would be the value plumbing leaking back out.
+fn synthesize_form_set_methods(
+    methods: &mut Vec<MethodInfo>,
+    value_ty: &Ty,
+    key_ty: &Ty,
+) {
+    methods.push(MethodInfo {
+        name: "insert".to_string(),
+        params: vec![value_ty.clone()],
+        min_params: None,
+        ret: Ty::Unit,
+        fallible: None,
+    });
+    methods.push(MethodInfo {
+        name: "contains".to_string(),
+        params: vec![key_ty.clone()],
+        min_params: None,
+        ret: Ty::Prim(PrimType::Bool),
+        fallible: None,
+    });
+    // Mirrors the hashmap's `remove`: removing something that is not
+    // there is a KeyError rather than a silent no-op, and the set
+    // surface must not quietly diverge from the runtime it delegates
+    // to.
+    methods.push(MethodInfo {
+        name: "remove".to_string(),
+        params: vec![key_ty.clone()],
+        min_params: None,
+        ret: Ty::Unit,
+        fallible: Some(Ty::Named("KeyError".to_string())),
+    });
+    methods.push(MethodInfo {
+        name: "len".to_string(),
+        params: Vec::new(),
+        min_params: None,
+        ret: Ty::Prim(PrimType::Int),
+        fallible: None,
+    });
+    methods.push(MethodInfo {
+        name: "is_empty".to_string(),
+        params: Vec::new(),
+        min_params: None,
+        ret: Ty::Prim(PrimType::Bool),
+        fallible: None,
+    });
+}
+
 fn synthesize_form_hashmap_methods(
     methods: &mut Vec<MethodInfo>,
     value_ty: &Ty,
