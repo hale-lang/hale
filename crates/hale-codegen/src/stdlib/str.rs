@@ -49,6 +49,18 @@ pub(crate) trait StrStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    /// #353: `contains` / `starts_with` / `ends_with`. The runtime
+    /// carried `lotus_str_contains` and `lotus_str_starts_with` for a
+    /// long time — with `memory(read)` attributes — but neither was
+    /// reachable from Hale. Exposing them is plumbing.
+    fn lower_std_str_predicate(
+        &mut self,
+        sym: &str,
+        hale_name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+
     fn lower_std_str_index_of(
         &mut self,
         args: &[Expr],
@@ -827,6 +839,68 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
     /// the substring-search primitive HTTP request parsing leans
     /// on (find ` ` between method and path, `\r\n` to bound the
     /// request line).
+    /// #353: `contains` / `starts_with` / `ends_with`.
+    ///
+    /// The runtime carried `lotus_str_contains` and
+    /// `lotus_str_starts_with` for a long time — with `memory(read)`
+    /// attributes from the pure-read work — but neither was reachable
+    /// from Hale. Exposing them is plumbing, not implementation.
+    fn lower_std_str_predicate(
+        &mut self,
+        sym: &str,
+        hale_name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::{} takes 2 args (s, sub), got {}",
+                hale_name,
+                args.len()
+            )));
+        }
+        let mut vals = Vec::new();
+        for (i, a) in args.iter().enumerate() {
+            let (v, ty) = self.lower_expr(a, scope)?;
+            if !matches!(ty, CodegenTy::String | CodegenTy::StringView) {
+                return Err(CodegenError::Unsupported(format!(
+                    "std::str::{}: arg {} must be String, got {:?}",
+                    hale_name, i, ty
+                )));
+            }
+            vals.push(self.unpack_view_if_needed(v, &ty)?);
+        }
+        let f = self
+            .module
+            .get_function(sym)
+            .unwrap_or_else(|| panic!("{} declared", sym));
+        let call = self
+            .builder
+            .build_call(
+                f,
+                &[vals[0].into(), vals[1].into()],
+                &format!("str.{}.ret", hale_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let v = call
+            .try_as_basic_value()
+            .left()
+            .ok_or_else(|| {
+                CodegenError::LlvmEmit(format!("{} returned void", sym))
+            })?;
+        // The runtime returns i32 0/1; Hale's Bool is i1.
+        let b = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                v.into_int_value(),
+                self.context.i32_type().const_zero(),
+                &format!("str.{}.bool", hale_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((b.into(), CodegenTy::Bool))
+    }
+
     fn lower_std_str_index_of(
         &mut self,
         args: &[Expr],

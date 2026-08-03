@@ -22915,6 +22915,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ["std", "str", "index_of"] => {
                 self.lower_std_str_index_of(args, scope)
             }
+            ["std", "str", "contains"] => self.lower_std_str_predicate(
+                "lotus_str_contains",
+                "contains",
+                args,
+                scope,
+            ),
+            ["std", "str", "starts_with"] => self.lower_std_str_predicate(
+                "lotus_str_starts_with",
+                "starts_with",
+                args,
+                scope,
+            ),
+            ["std", "str", "ends_with"] => self.lower_std_str_predicate(
+                "lotus_str_ends_with",
+                "ends_with",
+                args,
+                scope,
+            ),
             ["std", "str", "range_eq"] => {
                 self.lower_std_str_range_eq(args, scope)
             }

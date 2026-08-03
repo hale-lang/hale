@@ -9475,6 +9475,18 @@ int lotus_str_starts_with(const char *s, const char *prefix) {
     return strncmp(s, prefix, lp) == 0 ? 1 : 0;
 }
 
+/* #353: the third predicate. `starts_with` and `contains` shipped;
+ * `ends_with` did not, so the everyday trio was two-thirds present and
+ * unusable as a set. Same pure-read shape as its siblings. */
+int lotus_str_ends_with(const char *s, const char *suffix) {
+    if (!s || !suffix) return 0;
+    size_t ls = strlen(s);
+    size_t lx = strlen(suffix);
+    if (lx == 0) return 1;
+    if (lx > ls) return 0;
+    return memcmp(s + (ls - lx), suffix, lx) == 0 ? 1 : 0;
+}
+
 int lotus_str_contains(const char *s, const char *sub) {
     if (!s || !sub) return 0;
     if (*sub == '\0') return 1;
