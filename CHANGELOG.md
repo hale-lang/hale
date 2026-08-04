@@ -8,6 +8,36 @@ behavior.
 
 ## Unreleased
 
+### A locus-typed field may only be assigned a locus literal
+
+`self.conn = Connection { url: next };` stays what it always was — a
+lifecycle transition, break-before-make, the new instance built into
+this locus's arena and owned by the field. But assigning a locus
+value produced **elsewhere** — `self.held = make_row(…);`, or
+`let c = Conn { … }; self.conn = c;` — is now a typecheck error.
+
+The reason is ownership: the field claims the instance (its teardown
+reclaims it when self dissolves) and so does the frame that produced
+the value (its scope exit reclaims what it built), and nothing in the
+language decides between them. That ambiguity was previously hidden
+rather than resolved — a locus returned from a free fn is routed to a
+program-lifetime arena and never reclaimed, so such a store *appeared*
+to work only because nothing ever freed it. **The leak was the safety
+mechanism**, the same shape as the synced-map clone-on-read and the
+form-vec zero-reads earlier in this cycle.
+
+Two remedies, both existing shapes: assign a literal (construction in
+place), or route membership through `accept(c: L)`. This is the same
+principle as the no-locus-return rule on methods — a locus is
+structure, not a value to hand around. Ordinary `let`-bound loci,
+including factory results, are unaffected.
+
+Surveyed before adopting: **zero occurrences across 60 bundles in five
+downstream repositories**, so the restriction forbids a pattern nobody
+writes. It is the ownership decision GH #383 was blocked on; the
+codegen half of that issue (reclaiming factory-returned loci) remains
+open, but the semantics it needs are now settled.
+
 ### A locus `let`-bound in a method now dissolves when the method `return`s
 
 `lower_return`'s method arms destroyed the per-call scratch and

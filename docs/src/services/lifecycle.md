@@ -172,6 +172,26 @@ To *reconfigure the same instance* instead of replacing it, mutate
 in place — `self.conn.url = next;` — which keeps the connection
 and triggers no teardown.
 
+One rule comes with this: the right-hand side has to be a **literal**.
+
+```hale,fragment
+self.conn = Connection { url: next };   // fine — built in place
+self.conn = make_connection(next);      // error
+```
+
+The second line looks reasonable and is rejected on purpose. Two
+things would claim that connection — the field, which tears it down
+when this locus dissolves, and the function that built it, which
+tears down what it made. The language has no way to pick, so it asks
+you to. Build it here with a literal, or if the thing genuinely
+belongs to you as a child rather than a field, take it through
+[`accept`](./parents-children.md).
+
+This is the same idea as a method not being allowed to *return* a
+locus: a locus is structure, not a value you pass around. Plain
+`let`-bound loci are unaffected — a factory result you bind and use
+locally is owned by that binding, and that's fine.
+
 ## Shutdown cascades
 
 `drain()` is always **depth-first cascading**. Calling it on a
