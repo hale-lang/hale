@@ -225,9 +225,38 @@ reach anything classified as moving money.
 
 Claims are **errors**, not warnings, and deleting or weakening one
 is a visible source diff — which is exactly the review event the
-feature exists to create. The full design (grant enumeration,
-coverage claims, path budgets) is GitHub issue #382; phase 1 ships
-`forbid reaches`.
+feature exists to create.
+
+Beyond `forbid reaches`, the claim family covers the properties
+real topologies ask for:
+
+```hale,fragment
+claims {
+    // The boundary itself: every direct edge must match a grant.
+    grant: only edges gamma_wing -> delta_wing {
+        publish t::ResearchDigest;
+    };
+    // Cost law: at most one model call per task, on any path.
+    one_call: bound llm <= 1 on paths from planners;
+    // Wiring the org must actually have.
+    wired: require subscribes(some delta_wing, topic t::Tasks);
+    no_orphans: cover topic in seed(t): subscribed_by(some staff);
+    single: count publishers(topic t::Tasks) == 1;
+    // The quiet-boot and interposition forms.
+    quiet: forbid reaches(delta_wing, gamma_wing) during birth;
+    gated: forbid reaches(intake, execute) avoiding permission_gate;
+}
+```
+
+Effect classes can also be **indexed families** — `domain wing = {
+delta, gamma }; effect knowledge(wing);` — so per-tenant capability
+contracts (`@effects(only: {knowledge(delta), llm})`) don't need
+N² boilerplate, and `knowledge(*)` covers every index. And the
+whole checked model exports as the **topology artifact**: `hale
+check <t> --dump-topology` emits the sorts, relations, and every
+claim's result under a `shape_hash`, and `--check-topology
+<baseline>` fails CI when the topology or the law changes without
+review.
 
 ## Invariants you declare, checked as it runs
 

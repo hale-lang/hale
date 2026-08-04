@@ -43,6 +43,20 @@ fn dim_unit(d: QuantDim) -> &'static str {
         QuantDim::BlockPoints => "blocking operation(s)",
         QuantDim::Publish => "publish(es)",
         QuantDim::Fanout => "subscriber delivery/deliveries",
+        // #382 phase 3: calls to declared carriers of the class.
+        QuantDim::UserClass(_) => "call(s) to a declared carrier",
+    }
+}
+
+/// Dimension name for diagnostics — user classes render through the
+/// seed's intern table.
+fn dim_display(d: QuantDim, names: &[String]) -> String {
+    match d {
+        QuantDim::UserClass(i) => names
+            .get(i as usize)
+            .cloned()
+            .unwrap_or_else(|| "<user effect class>".to_string()),
+        other => other.as_str().to_string(),
     }
 }
 
@@ -208,6 +222,7 @@ fn count_dim(
     key: &FnKey,
     dim: QuantDim,
     fanout_of: &dyn Fn(&str) -> u64,
+    carrier_mask: crate::stdlib_surface::EffectSet,
     path: &mut Vec<FnKey>,
     steps: &mut u32,
 ) -> Qty {
@@ -246,7 +261,11 @@ fn count_dim(
     // `return f(v);` passed while the callee allocated, which is the
     // budget half of the same certificate hole as the effect classes.
     for edge in &fs.calls {
-        if edge.indirect {
+        // #382: an untypeable-receiver method call gets the same
+        // unbounded treatment as an indirect call.
+        if edge.indirect
+            || (edge.receiver_present && edge.recv_ty.is_none())
+        {
             total = total.add(Qty::Unbounded);
         }
     }
@@ -280,8 +299,26 @@ fn count_dim(
                 total = total.add(Qty::Unbounded);
                 continue;
             }
-            let sub =
-                count_dim(summary, callee, dim, fanout_of, path, steps);
+            // #382 phase 3: a call to a declared CARRIER of the
+            // budgeted user class counts one site (loop-nested is
+            // unbounded, like every per-call contributor).
+            if matches!(dim, QuantDim::UserClass(_)) {
+                let is_carrier = summary
+                    .carries
+                    .get(callee)
+                    .map_or(false, |c| c.0 & carrier_mask.0 != 0);
+                if is_carrier {
+                    total = total.add(if edge.loop_depth > 0 {
+                        Qty::Unbounded
+                    } else {
+                        Qty::Finite(1)
+                    });
+                }
+            }
+            let sub = count_dim(
+                summary, callee, dim, fanout_of, carrier_mask, path,
+                steps,
+            );
             total = total.add(if edge.loop_depth > 0 {
                 match sub {
                     Qty::Finite(0) => Qty::Finite(0),
@@ -337,9 +374,48 @@ pub fn quantitative_diags(
     }
     let summary = alloc_summary::summarize_programs(programs);
     let frames = frame_map(programs);
+    let names = crate::effects::effect_names_of(programs);
+    let declared = crate::effects::declared_of(programs);
+    let defs = crate::effects::defs_of(programs);
     let mut diags = Vec::new();
     for (key, dims, span) in &roots {
         for (dim, cap) in dims {
+            // #382 phase 3: a user-class dimension must name a
+            // DECLARED class — the misspelt-class rule, applied to
+            // budget keys.
+            if let QuantDim::UserClass(i) = dim {
+                if !declared.contains(i) {
+                    let bad = names
+                        .get(*i as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    let mut near: Vec<&String> = names
+                        .iter()
+                        .enumerate()
+                        .filter(|(j, _)| declared.contains(&(*j as u16)))
+                        .map(|(_, n)| n)
+                        .filter(|n| crate::effects::close(n, &bad))
+                        .collect();
+                    near.sort();
+                    let hint = match near.first() {
+                        Some(n) => format!(" Did you mean `{}`?", n),
+                        None => String::new(),
+                    };
+                    diags.push(Diag::ty(
+                        *span,
+                        format!(
+                            "`{}` budgets effect class `{}`, which is \
+                             never declared. Add `effect {};` at the \
+                             top level.{}",
+                            key.display(),
+                            bad,
+                            bad,
+                            hint
+                        ),
+                    ));
+                    continue;
+                }
+            }
             let measured = match dim {
                 QuantDim::StackBytes => {
                     let mut path = Vec::new();
@@ -351,10 +427,19 @@ pub fn quantitative_diags(
                     )
                 }
                 _ => {
+                    let mask = match dim {
+                        QuantDim::UserClass(i) => {
+                            crate::frontier::class_mask_with(
+                                EffectClass::User(*i),
+                                &defs,
+                            )
+                        }
+                        _ => crate::stdlib_surface::EffectSet::PURE,
+                    };
                     let mut path = Vec::new();
                     let mut steps = 0u32;
                     count_dim(
-                        &summary, key, *dim, fanout_of, &mut path,
+                        &summary, key, *dim, fanout_of, mask, &mut path,
                         &mut steps,
                     )
                 }
@@ -372,6 +457,11 @@ pub fn quantitative_diags(
                     " Fan-out counts transitive subscriber deliveries — a \
                      publish to a many-subscriber subject amplifies."
                 }
+                QuantDim::UserClass(_) => {
+                    " Counts calls to declared carriers of the class \
+                     along any path; a carrier inside a loop is \
+                     unbounded per call."
+                }
                 _ => {
                     " A contributor inside a loop is unbounded per call."
                 }
@@ -382,7 +472,7 @@ pub fn quantitative_diags(
                     "budget exceeded: `{}` declares `@budget({} = {})` but \
                      the compiler measures {} {}.{}",
                     key.display(),
-                    dim.as_str(),
+                    dim_display(*dim, &names),
                     cap,
                     measured.render(),
                     dim_unit(*dim),

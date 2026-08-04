@@ -163,16 +163,19 @@ pub struct ClaimDecl {
     pub span: Span,
 }
 
-/// The claim verbs. Phase 1 ships `forbid reaches` only; `only
-/// edges`, `require`, `cover`, `bound`, and the `during` /
-/// `avoiding` modifiers land in later phases (#382 build order).
+/// The claim verbs (#382 build order, phases 1–5).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClaimForm {
-    /// `forbid reaches(SRC, DST) [via { calls, bus }]` — absence
-    /// under closure. No path from any element of SRC to any
-    /// element of DST through the permitted edge relations. The
-    /// default (`via` absent) is the FULL composition — more
-    /// edges, the conservative direction.
+    /// `forbid reaches(SRC, DST) [via { calls, bus }] [during P]
+    /// [avoiding G]` — absence under closure. No path from any
+    /// element of SRC to any element of DST through the permitted
+    /// edge relations. The default (`via` absent) is the FULL
+    /// composition — more edges, the conservative direction.
+    /// `during P` restricts sources to the named lifecycle phase /
+    /// method of each source locus; `avoiding G` masks the named
+    /// group's vertices out of the walk, which makes it the
+    /// interposition form ("every path passes through the gate" =
+    /// no path exists that avoids it).
     ForbidReaches {
         src: ClaimSet,
         dst: ClaimSet,
@@ -180,7 +183,118 @@ pub enum ClaimForm {
         via_calls: bool,
         /// Follow bus edges (publish ∘ subscribe). Default true.
         via_bus: bool,
+        /// `during <phase>` — restrict source roots to this phase.
+        during: Option<Ident>,
+        /// `avoiding <group>` — vertex mask for the walk.
+        avoiding: Option<Ident>,
     },
+    /// `only edges SRC -> DST { publish T; subscribe T; ... }` —
+    /// isolation with an exhaustive grant enumeration: every DIRECT
+    /// edge from SRC to DST must match a granted line. A grant is a
+    /// bus edge named by its topic; `publish T` and `subscribe T`
+    /// admit the same edge (the verb names which end's declaration
+    /// is the granted, reviewable line). Call edges are not
+    /// grantable — a direct call across the boundary is always an
+    /// un-granted edge. Transitive paths through third parties are
+    /// `forbid reaches` territory; this form constrains the
+    /// boundary itself.
+    OnlyEdges {
+        src: Ident,
+        dst: Ident,
+        grants: Vec<EdgeGrant>,
+    },
+    /// `bound C <= N on paths from G;` — the `@budget` semiring
+    /// behind a claims surface: sum of C-carrying sites along a
+    /// path, max at joins, must not exceed N on any path from any
+    /// fn in G. A cycle, loop-nested carrier, or indirect call on
+    /// a path is Unbounded and violates. v1: C is a user-declared
+    /// class (built-ins keep their `@budget` spellings).
+    Bound {
+        class: EffectClass,
+        /// The class name as written, for diagnostics.
+        class_name: String,
+        class_span: Span,
+        limit: u64,
+        from: Ident,
+    },
+    /// `require subscribes(some G, topic T);` /
+    /// `require publishes(some G, topic T);` — existence: at least
+    /// one member of G subscribes (publishes) T.
+    Require {
+        publishers: bool,
+        group: Ident,
+        topic: TopicRef,
+    },
+    /// `cover topic in seed(a): subscribed_by(some G);` — bounded
+    /// universal: every topic declared in the seed imported as `a`
+    /// has a subscriber in G. A seed with no topics is a vacuity
+    /// error.
+    Cover { alias: Ident, group: Ident },
+    /// `count publishers(topic T) == N;` (`<=`, `>=`) — the
+    /// cardinality family: exactly-one-publisher is the invariant
+    /// behind every single-writer pattern. Counts distinct loci.
+    Count {
+        publishers: bool,
+        topic: TopicRef,
+        cmp: CountCmp,
+        n: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CountCmp {
+    Eq,
+    Le,
+    Ge,
+}
+
+impl CountCmp {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CountCmp::Eq => "==",
+            CountCmp::Le => "<=",
+            CountCmp::Ge => ">=",
+        }
+    }
+    pub fn holds(self, actual: u64, n: u64) -> bool {
+        match self {
+            CountCmp::Eq => actual == n,
+            CountCmp::Le => actual <= n,
+            CountCmp::Ge => actual >= n,
+        }
+    }
+}
+
+/// A topic reference in claim position: `T` or `alias::T`.
+/// Qualified refs canonicalize to the mangled single segment at the
+/// mangle stage (the #334 path) — claims never match topics by
+/// name suffix.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TopicRef {
+    pub segments: Vec<Ident>,
+    pub span: Span,
+}
+
+impl TopicRef {
+    /// The ref as written, for diagnostics.
+    pub fn display(&self) -> String {
+        self.segments
+            .iter()
+            .map(|i| i.name.as_str())
+            .collect::<Vec<_>>()
+            .join("::")
+    }
+}
+
+/// One granted edge inside `only edges { ... }`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EdgeGrant {
+    /// `publish T` when true, `subscribe T` when false. Both admit
+    /// the same src→dst bus edge on T's subject; the verb names
+    /// which end's declaration is the reviewable line.
+    pub publish: bool,
+    pub topic: TopicRef,
+    pub span: Span,
 }
 
 /// A set expression in claim-argument position: a declared group
@@ -1677,6 +1791,11 @@ pub enum QuantDim {
     BlockPoints,
     Publish,
     Fanout,
+    /// #382 phase 3 companion: `@budget(<user class> = N)` — bounds
+    /// the number of calls to declared carriers of the class along
+    /// any path. Holds the interned class index; the name renders
+    /// through the seed's `effect_names` table.
+    UserClass(u16),
 }
 
 impl QuantDim {
@@ -1695,6 +1814,9 @@ impl QuantDim {
             QuantDim::BlockPoints => "block_points",
             QuantDim::Publish => "publish",
             QuantDim::Fanout => "fanout",
+            // Resolved against `Program::effect_names` by the
+            // checker (`quantitative::dim_display`).
+            QuantDim::UserClass(_) => "<user effect class>",
         }
     }
 }
@@ -2590,6 +2712,15 @@ pub fn remap_user_effects(items: &mut [TopDecl], map: &[u16]) {
                 EffectAssert::NoPanic => {}
             }
         }
+        // #382 phase 3: `@budget(<user class> = N)` carries an
+        // interned index too.
+        for (d, _) in &mut fd.quantities {
+            if let QuantDim::UserClass(i) = d {
+                if let Some(&to) = map.get(*i as usize) {
+                    *i = to;
+                }
+            }
+        }
     }
     fn claim_set(s: &mut ClaimSet, map: &[u16]) {
         if let ClaimSet::Effects { class: c, .. } = s {
@@ -2624,6 +2755,13 @@ pub fn remap_user_effects(items: &mut [TopDecl], map: &[u16]) {
                                         claim_set(src, map);
                                         claim_set(dst, map);
                                     }
+                                    ClaimForm::Bound {
+                                        class: c, ..
+                                    } => class(c, map),
+                                    ClaimForm::OnlyEdges { .. }
+                                    | ClaimForm::Require { .. }
+                                    | ClaimForm::Cover { .. }
+                                    | ClaimForm::Count { .. } => {}
                                 }
                             }
                         }

@@ -1,0 +1,26 @@
+import "lib/topics" as t;
+
+locus Staff {
+    params { seen: Int = 0; }
+    bus { subscribe t::Tasks as on_task; }
+    fn on_task(task: t::Task) { self.seen = self.seen + 1; }
+}
+
+locus Archive {
+    params { kept: Int = 0; }
+    bus { subscribe t::Digest_t as on_digest; }
+    fn on_digest(d: t::Digest) { self.kept = self.kept + d.week; }
+}
+
+group positions = { Staff, Archive };
+
+main locus Org {
+    params {
+        s: Staff = Staff { };
+        a: Archive = Archive { };
+    }
+    claims {
+        no_orphans: cover topic in seed(t): subscribed_by(some positions);
+    }
+}
+fn main() { Org { }; }

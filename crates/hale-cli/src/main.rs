@@ -2579,6 +2579,49 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
         print!("{}", hale_types::dump_resource_budget(&bundle));
         return ExitCode::SUCCESS;
     }
+    // GH #382 phase 2: the topology artifact — the serialized model
+    // (sorts, relations) + every named claim's result, with a
+    // `shape_hash` identity over the model half. Emit for review /
+    // third-party re-evaluation, or DIFF against a committed copy so
+    // an unreviewed topology or law change fails CI.
+    if std::env::args().any(|a| a == "--dump-topology") {
+        print!("{}", hale_types::topology::dump_topology(&bundle));
+        return ExitCode::SUCCESS;
+    }
+    if let Some(path) = std::env::args()
+        .position(|a| a == "--check-topology")
+        .and_then(|i| std::env::args().nth(i + 1))
+    {
+        let current = hale_types::topology::dump_topology(&bundle);
+        match std::fs::read_to_string(&path) {
+            Ok(expected) => {
+                if expected != current {
+                    eprintln!(
+                        "topology changed — {} no longer matches the \
+                         program's model.",
+                        path
+                    );
+                    for line in diff_lines(&expected, &current) {
+                        eprintln!("{}", line);
+                    }
+                    eprintln!(
+                        "\nIf the change is intended, regenerate:\n  \
+                         hale check <target> --dump-topology > {}",
+                        path
+                    );
+                    return ExitCode::from(1);
+                }
+            }
+            Err(_) => {
+                eprintln!(
+                    "topology baseline not found: {}\nCreate it:\n  \
+                     hale check <target> --dump-topology > {}",
+                    path, path
+                );
+                return ExitCode::from(1);
+            }
+        }
+    }
     // GH #18 item 5: the CI gate. `--check-resource-budget <path>` reads a
     // TOML ceiling file and fails the build if any count exceeds it.
     {

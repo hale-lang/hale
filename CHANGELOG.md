@@ -8,6 +8,95 @@ behavior.
 
 ## Unreleased
 
+### Receiver typing: the summarizer root fix (GH #382 soundness audit)
+
+The four receiver shapes behind the audit's false-certificate class
+are now TYPED at the source: a struct-literal receiver
+(`B { }.work(n)`), a chained field (`self.mid.inner.work(n)`, via
+the per-locus field maps applied transitively, plain-struct fields
+included), a call-result receiver (`let b = make_b(); b.work(n)`,
+via a free-fn return-type map — methods never return loci, per the
+no-locus-return rule), and a uniform if/else value. Typing also
+covers the iteration shapes real programs walk: `for` binders over
+array-typed fields, capacity slots, array-typed params, array
+literals, and the implicit accepted-children collection (`for
+child in self.children` types from the `accept` param); `or`
+dispositions unwrap to the inner value's type; and a single-slot
+collection's `.get(i)` returns its element type (the stdlib
+chain-runner shape). Net effect on the committed corpus baseline:
+ZERO rows changed — identical certificates, with the
+false-certificate shapes closed and no over-fire. Each resolves to a real call-graph edge,
+so `@effects(none:)`, every `@no_*` certificate, `@budget`, the
+quantitative dimensions, AND the claims evaluators now see the
+path and report real witnesses instead of refusing to certify —
+the audit's repro programs ship as standing negative controls for
+both systems (`receiver_shapes.rs`).
+
+The residue — a receiver that still cannot be typed (an index
+result, a match value, a foreign expression) — now fails closed
+consistently in every judgment that traverses calls: the claims
+backstop, `@effects` classes, `@budget`, and the quantitative
+dimensions all treat the edge as may-do-anything. This closes the
+temporarily inconsistent state where a bundle-level claim refused a
+path that a fn-level certificate quietly passed. The topology
+artifact keeps recording residual edges
+(`untyped_receiver_call:<callee>`) inside the hashed model half.
+
+### Claims: the unresolved-callee backstop (GH #382 soundness audit)
+
+An adversarial audit of the claims evaluators found a
+false-certificate class: four receiver shapes — a struct-literal
+receiver (`B { }.work(n)`), a chained field (`self.mid.inner.work`),
+a call result, a branch value — land in the call graph as
+unresolved edges with no receiver type, and a walk that ignored
+them certified `forbid reaches(A, B)` while the forbidden path
+executed at runtime. Claims now fail closed on EVERY such
+untyped-receiver call in any judgment that traverses calls (forbid,
+only-edges, bound) — a follow-up review showed a name-keyed
+backstop was still blind to wrappers reaching the target
+transitively, so no name comparison is sound; the edge itself is
+the uncertainty. The topology artifact records each one
+(`untyped_receiver_call:<callee>`) inside the hashed model half,
+so introducing one changes `shape_hash`. Synthesized form/builtin
+methods carry a known receiver type and are exempt, so existing
+certificates over `counts.set(x)` and friends are unaffected. The underlying
+summarizer gap is shared with the effect system (`@effects(none:)`
+misses the same shapes — pre-existing, not new to claims); the
+root fix (typing those four receiver shapes in the summarizer,
+which repairs both systems) is tracked on #382.
+
+### Claims phases 2–5: grants, families, budgets, coverage, the artifact (GH #382)
+
+The claim surface is now the full verb set from the issue's build
+order. `only edges A -> B { publish T; }` makes a boundary's grant
+list exhaustive and reviewable — every un-granted direct edge is
+reported, and call edges are never grantable. `bound llm <= 1 on
+paths from planners` puts `@budget`'s per-call semiring behind a
+claims surface (a loop-nested or recursion-reachable carrier is
+unbounded and violates). `require subscribes/publishes(some G,
+topic T)`, `cover topic in seed(a): subscribed_by(some G)`, and
+`count publishers(topic T) == 1` cover existence, seed-wide
+coverage, and the single-writer cardinality. `forbid` gains
+`during <phase>` (quiet-boot claims) and `avoiding <group>` — the
+interposition form: "every path passes the gate" is `forbid
+reaches(A, B) avoiding gate`.
+
+Effect classes gain **indexed families**: `domain wing = { delta,
+gamma }; effect knowledge(wing);` interns every instantiation as an
+ordinary class and `knowledge(*)` as an auto-populated composed
+class — a reduction onto shipped machinery, so a misspelt index is
+an undeclared-class error and a domain member added later lands
+outside every existing `only:` contract. Companion:
+`@budget(<user class> = N)` bounds calls to declared carriers.
+
+And the checked model now leaves the compiler: `hale check <t>
+--dump-topology` emits the **topology artifact** — sorts,
+relations, and every named claim's result in author spelling,
+under a schema version and a `shape_hash` over the model half —
+and `--check-topology <baseline>` fails CI when topology or law
+changes without review (the `.hale.effects` precedent). Spec:
+`spec/verification.md § Claims`, `spec/grammar.ebnf`.
+
 ### Claims: domain requirements as checked sentences (GH #382, phase 1)
 
 The judgment layer every structural check already used — derive a
