@@ -503,6 +503,46 @@ fn validate_claim(c: &ClaimDecl, cx: &Cx, diags: &mut Vec<Diag>) -> bool {
             }
             if let Some(a) = avoiding {
                 ok &= check_group(a, diags);
+                // A mask overlapping an endpoint is a fail-open in
+                // disguise: masking the target makes the claim hold
+                // vacuously (no path can end at a masked vertex),
+                // and masking a source silently drops roots. Both
+                // read as law and prove less than they say.
+                if cx.groups.contains_key(&a.name) {
+                    let av = &cx.groups[&a.name];
+                    for set in [src, dst] {
+                        let ClaimSet::Group(n) = set else { continue };
+                        let Some(gr) = cx.groups.get(&n.name) else {
+                            continue;
+                        };
+                        let overlap = av
+                            .loci
+                            .intersection(&gr.loci)
+                            .next()
+                            .is_some()
+                            || av
+                                .free_fns
+                                .intersection(&gr.free_fns)
+                                .next()
+                                .is_some();
+                        if overlap {
+                            diags.push(Diag::ty(
+                                a.span,
+                                format!(
+                                    "claim `{}`: `avoiding {}` overlaps \
+                                     `{}` — masking an endpoint makes \
+                                     the claim weaker than it reads (a \
+                                     masked target holds vacuously; a \
+                                     masked source drops roots). Make \
+                                     the gate disjoint from the \
+                                     endpoints",
+                                    c.name.name, a.name, n.name
+                                ),
+                            ));
+                            ok = false;
+                        }
+                    }
+                }
             }
         }
         ClaimForm::OnlyEdges { src, dst, grants } => {

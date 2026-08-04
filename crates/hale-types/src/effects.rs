@@ -658,6 +658,27 @@ fn effect_diags_inner(
                         if allowed.contains(&c) {
                             continue;
                         }
+                        // The complement quantifies over ATOMIC
+                        // classes only. A composed class owns no bit
+                        // — its mask is its members' — so it adds
+                        // nothing the atomic complement misses, and
+                        // including it is a fail-CLOSED-too-far: an
+                        // `only:` listing a member (e.g.
+                        // `knowledge(delta)`) would be rejected
+                        // because the unlisted composition
+                        // (`knowledge(*)`, or a hand-written union)
+                        // overlaps the allowed bit. Found by the
+                        // #382 phase-3 star classes; the same shape
+                        // existed for any hand-written composed
+                        // class.
+                        if let EffectClass::User(i) = c {
+                            if defs_v
+                                .get(i as usize)
+                                .map_or(false, |d| d.is_some())
+                            {
+                                continue;
+                            }
+                        }
                         let before = diags.len();
                         check_class(
                             &summary, key, *span, c, &ffi, &names, &defs_v,

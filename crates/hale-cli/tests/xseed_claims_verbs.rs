@@ -133,3 +133,42 @@ fn shape_hash_is_stable_across_dumps() {
     let (b, _) = check(&["--dump-topology"]);
     assert_eq!(a, b, "two dumps of one bundle must be identical");
 }
+
+/// An indexed family declared in the vocabulary seed travels: the
+/// app's `effects(knowledge(delta))` sink names the SAME class the
+/// lib's `is:` tag declared (the cross-seed remap), and the witness
+/// crosses the boundary in author spelling.
+#[test]
+fn a_family_instantiation_travels_across_the_seed_boundary() {
+    let (out, _ok) = check(&[]);
+    assert!(
+        out.contains("claim `data_iso` violated")
+            && out.contains("t::read_delta"),
+        "the cross-seed carrier must violate the family sink, with \
+         the witness in author spelling:\n{}",
+        out
+    );
+}
+
+/// The `cover` CONTROL: with every topic subscribed, the claim
+/// holds and the build passes.
+#[test]
+fn cover_holds_when_every_topic_is_covered() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/xseed-claims-cover-ok/app");
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .arg("check")
+        .arg(&fixture)
+        .output()
+        .expect("run hale check");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success() && !text.contains("violated"),
+        "a fully-covered seed must pass:\n{}",
+        text
+    );
+}

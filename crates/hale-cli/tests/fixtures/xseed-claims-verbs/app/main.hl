@@ -8,7 +8,9 @@ locus Gateway {
 locus Staff {
     params { seen: Int = 0; }
     bus { subscribe t::Tasks as on_task; }
-    fn on_task(task: t::Task) { self.seen = self.seen + 1; }
+    fn on_task(task: t::Task) {
+        self.seen = self.seen + t::read_delta(task.id);
+    }
 }
 
 group staff = { Staff };
@@ -22,6 +24,7 @@ main locus Org {
         wired: require subscribes(some staff, topic t::Tasks);
         single: count publishers(topic t::Tasks) == 1;
         no_orphans: cover topic in seed(t): subscribed_by(some staff);
+        data_iso: forbid reaches(staff, effects(knowledge(delta)));
     }
 }
 fn main() { Org { }; }
