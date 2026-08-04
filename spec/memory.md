@@ -1146,7 +1146,18 @@ reclaim on a real-world long-running workload:
      nested `TypeRef`, …) keeps its identity-skip — compounds
      don't retire, so sharing there is a mutation-visibility
      caveat, not a use-after-free (tracked in
-     notes/anchor-retirement.md). Note the RMW zero-allocation
+     notes/anchor-retirement.md).
+
+     Scalar-cell fast path (2026-08-03): the snapshot and the
+     owned-clone walk exist solely to keep heap-pointer leaves
+     un-aliased, so a cell whose type tree carries no String /
+     Bytes leaf (directly or through nested structs) skips both
+     at compile time and takes the pre-single-owner codegen —
+     the aliasing hazard cannot arise where there is no pointer
+     to alias. Unrecognized field types conservatively keep the
+     snapshot. (The snapshot's store-to-load round trip had
+     serialized scalar-cell insert loops: +30% on the Int-keyed
+     1M-insert bench.) Note the RMW zero-allocation
      claim above narrows accordingly: same-pointer String/Bytes
      fields carried through a get-then-set now cost one owned
      copy per set, served by the retire freelist (the replaced
