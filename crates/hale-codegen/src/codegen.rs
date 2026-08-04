@@ -12678,6 +12678,49 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         self.current_user_fn_caller_arena = Some(caller_arena_alloca);
         self.current_user_fn_arena = Some(fn_arena_alloca);
+        // GH #375: publish the caller's arena to the caller-arena
+        // TLS at fn entry. The TLS is set-and-forget, and a callee
+        // chain that exited (especially via a failure edge) can
+        // leave it pointing at a destroyed method scratch; any
+        // TLS-reading allocation site in this body without its own
+        // preceding publish — a locus instantiation's C-primitive
+        // work was the reproducer — would then allocate out of
+        // freed memory. Publishing the __caller_arena param here
+        // re-heals the TLS on every free-fn entry AND gives those
+        // readers the arena the caller would have used had the
+        // body been inlined (the same m49 lifetime argument as
+        // `current_user_fn_caller_arena` itself).
+        //
+        // Gated on the body actually containing a construct that
+        // can read the TLS — a locus/struct instantiation or any
+        // call (method entry snapshots, `or` handler invocations).
+        // Every direct TLS-reading lowering lives under one of
+        // those; scalar-only leaf fns (the 2ns fn_call shape) skip
+        // the publish, which otherwise measured +86% on that
+        // bench. Same fail-safe direction as the drain-elision
+        // gate: over-matching only costs one call.
+        let body_can_read_tls = {
+            let dbg = format!("{:?}", f.body);
+            dbg.contains("Call {") || dbg.contains("Struct {")
+        };
+        if body_can_read_tls {
+            let ptr_t2 = self.context.ptr_type(AddressSpace::default());
+            let ca = self
+                .builder
+                .build_load(
+                    ptr_t2,
+                    caller_arena_alloca,
+                    "fn.caller_arena.publish",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let set_fn = self
+                .module
+                .get_function("lotus_set_caller_arena")
+                .expect("lotus_set_caller_arena declared");
+            self.builder
+                .build_call(set_fn, &[ca.into()], "fn.tls.publish")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
         self.current_user_fn_exit_bb = Some(exit_bb);
         self.current_user_fn_ret_alloca = ret_alloca;
         self.current_user_fn_fallible = fallible_ctx;
@@ -28853,6 +28896,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 "method.scratch.destroy",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // GH #375: restore the caller-arena TLS to the value
+        // snapshotted at method entry. Body code published its own
+        // scratch (and callees published theirs); with the scratch
+        // now destroyed, a stale TLS would dangle until the next
+        // publish — the destroy above clears an exact match as a
+        // backstop, but restoring the snapshot re-establishes the
+        // CALLER's published context on both the ok and the error
+        // exit (both run this epilogue), making method calls
+        // TLS-neutral.
+        if let Some(ca_slot) = self.current_method_caller_arena {
+            let ca = self
+                .builder
+                .build_load(ptr_t, ca_slot, "method.caller_arena.restore")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let set_fn = self
+                .module
+                .get_function("lotus_set_caller_arena")
+                .expect("lotus_set_caller_arena declared");
+            self.builder
+                .build_call(set_fn, &[ca.into()], "method.tls.restore")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
         // Anchor retirement (2026-07-03): the method activation is
         // over — clones retired by this activation's hashmap sets/
         // removes become reusable. Sound here by the same argument

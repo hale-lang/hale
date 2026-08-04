@@ -2017,8 +2017,28 @@ void lotus_arena_mark_shared(void *arena_ptr) {
     if (a) a->shared_concurrent = 1;
 }
 
+extern __thread lotus_arena_t *lotus_current_caller_arena;
+
 void lotus_arena_destroy(lotus_arena_t *a) {
     if (!a) return;
+    /* GH #375: the caller-arena TLS is a set-and-forget channel —
+     * stdlib call sites publish before each call, but nothing ever
+     * UN-publishes. A method whose body published its own scratch
+     * and then exited (the ERROR path of a fallible method was the
+     * reported shape) left the TLS pointing at this dying arena;
+     * the next TLS reader without a preceding publish — a free-fn
+     * locus factory was the reproducer — allocated out of freed
+     * (or, worse, RECYCLED: the subregion path below returns the
+     * slot for reuse) memory. Deterministic 5/5 SIGSEGV downstream.
+     * Invariant restored here, at the single point every arena
+     * death passes through: a destroyed arena is never reachable
+     * via the TLS. Readers then fall back to the capped global
+     * payload arena (`lotus_caller_arena_or_global`'s documented
+     * fallback) — a valid arena with a coarser lifetime, never a
+     * dangling one. */
+    if (lotus_current_caller_arena == a) {
+        lotus_current_caller_arena = NULL;
+    }
 
     /* m22: if this is a sub-region, return its slot to the
      * parent's free-list so a future create_subregion can reuse
