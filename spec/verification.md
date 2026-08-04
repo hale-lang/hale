@@ -212,11 +212,15 @@ are excluded, so one topology under different law keeps one
 shape). `--check-topology <path>` diffs against a committed
 baseline and fails with a regenerate hint — the `.hale.effects`
 precedent: an unreviewed topology or law change fails CI the way
-an API break does. v1 scope, stated honestly: this is enough to
-independently re-evaluate the reachability-class claims and audit
-where certification stopped; it is not yet the complete normalized
-verification model (no per-edge spans, weights, phase relation, or
-seed sort — that export is the architectural milestone tracked on
+an API break does. v1 scope, stated honestly: the artifact
+supports independent replay of the serialized user call/bus graph,
+group boundaries, declared bus-end existence/cardinality, and
+declared user-effect carrier labels; every other claim result —
+anything needing the phase relation (`during`), seed membership
+(`cover`), compiler-derived built-in effects, or the
+stdlib-expanded summary the evaluator itself walks — remains a
+compiler-certified report row until the normalized verification
+model lands (that export is the architectural milestone tracked on
 #382). The derivation (source → model) remains the trust root.
 
 Still later (#382): library-tier claims that travel with imports,

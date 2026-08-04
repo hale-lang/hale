@@ -33,15 +33,17 @@
 //! indirect calls, untyped-receiver method calls — recorded with
 //! the callee name so an outside evaluator can apply the same
 //! fail-closed rule — or computed publish subjects: every place
-//! the evaluator failed closed). That is enough to independently
-//! re-evaluate the reachability-class claims (`forbid reaches`,
-//! `only edges`, `require`/`cover`/`count`) and to audit where
-//! certification stopped. It is NOT yet the complete normalized
-//! verification model (no per-edge spans, weights, phase relation,
-//! or seed-membership sort); exporting that model is the
-//! architectural milestone tracked on #382, and until then this is
-//! a topology + claims REPORT whose passing rows are certified by
-//! the derivation, not re-derivable from the file alone.
+//! the evaluator failed closed). What that supports independently
+//! replaying: the serialized USER call/bus graph, group
+//! boundaries, declared bus-end existence/cardinality
+//! (`require`/`count`), and declared user-effect carrier labels.
+//! Every other claim result — anything needing the phase relation
+//! (`during`), seed membership (`cover`), compiler-derived
+//! built-in effects, or the stdlib-expanded call summary the
+//! evaluator itself walks — remains a COMPILER-CERTIFIED report
+//! row until the normalized verification model lands (per-edge
+//! spans, weights, phase relation, seed sort — the architectural
+//! milestone tracked on #382).
 
 use std::collections::{BTreeMap, BTreeSet};
 
