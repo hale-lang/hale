@@ -8,6 +8,35 @@ behavior.
 
 ## Unreleased
 
+### A locus `let`-bound in a method now dissolves when the method `return`s
+
+`lower_return`'s method arms destroyed the per-call scratch and
+returned **without flushing the deferred-dissolve frame**; the
+terminated-body arm then popped that frame unflushed. Only a
+fall-through exit ever ran the dissolves. So a locus bound in any
+method that returns was never torn down — its `dissolve()` never ran,
+its subscriptions stayed registered, its arena and `@form` buffers
+leaked — silently, with no diagnostic:
+
+```hale
+fn step(i: Int) -> Int {
+    let w = Watcher { id: i };   // subscribes, opens an fd, …
+    return i * 2;                // ← w never dissolved
+}
+```
+
+Nothing about factories or cross-seed calls is involved; a plain
+locus literal leaked the same way, on every value and void return
+path. Found while investigating GH #383, which remains open for its
+own (harder) case: a locus returned *by* a free-fn factory still has
+no owner the compiler can name, so it stays program-lifetime.
+
+Ordering is load-bearing and is now pinned by a test: the flush runs
+**before** the scratch destroy, because a dissolve is a method call
+whose call site publishes the caller-arena TLS — flushing afterwards
+publishes a pointer into freed scratch, reproducing the #375/#381
+use-after-free exactly.
+
 ### Element chains: the full vocabulary
 
 The v0.13.0 chain mechanism (`filter` / `count` / `into`) gains the
