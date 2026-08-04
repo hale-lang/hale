@@ -149,6 +149,16 @@ fn iterating_a_synced_map_copies_its_strings() {
 /// retire push (under the map mutex) against the flush (at each
 /// writer's own activation boundary, no map lock held) — the race
 /// the arena's `retire_lock` exists to serialize.
+///
+/// The probe loop asserts EVENTUAL visibility, not instantaneous:
+/// main's `run()` starts as soon as the writer's run() is posted to
+/// the io worker, so a single up-front probe sweep races the
+/// worker's spawn — on a slow CI runner all 4000 probes completed
+/// before the writer had inserted anything (0 hits, red). The
+/// first fix for that race was accidental: the per-statement bus
+/// drains used to slow the probe loop enough for the writer to win,
+/// and #374's drain elision (this program is bus-inert) removed
+/// them. Probe in bounded sleep-separated rounds instead.
 #[test]
 fn cross_pool_churn_with_reads_stays_consistent() {
     const SRC: &str = r#"
@@ -180,9 +190,18 @@ fn cross_pool_churn_with_reads_stays_consistent() {
                 let r = self.w.t.get("k" + to_string(i % 32)) or { return; };
                 if r.amt != "" { self.hits = self.hits + 1; }
             }
-            run() {
+            fn sweep() {
                 let mut i = 0;
                 while i < 4000 { self.probe(i); i = i + 1; }
+            }
+            run() {
+                let mut round = 0;
+                while round < 200 {
+                    self.sweep();
+                    if self.hits > 0 { break; }
+                    std::time::sleep(10ms);
+                    round = round + 1;
+                }
                 std::time::sleep(200ms);
                 print("hits_positive="); println(self.hits > 0);
             }
