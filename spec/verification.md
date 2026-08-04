@@ -130,10 +130,79 @@ main locus Org {
   one-main-per-bundle makes the claims root unique. Claim names are
   the contract-of-record and must be unique.
 
-Later phases (#382): `only edges` grant enumeration, `require` /
-`cover` / `bound`, the `during` / `avoiding` modifiers, indexed
-effect families, library-tier claims that travel with imports, and
-the topology-artifact export of named results.
+The remaining verbs (#382 phases 2–5):
+
+- **`only edges A -> B { publish T; subscribe T; }`** — isolation
+  with an exhaustive grant enumeration: every DIRECT edge from A to
+  B must match a granted line, and every un-granted edge is
+  reported (the grant list is the review surface, so the full diff
+  matters). `publish T` and `subscribe T` admit the same bus edge —
+  the verb names which end's declaration is the reviewable line.
+  Call edges are never grantable: a direct call across the boundary
+  is always an un-granted edge. Transitive paths through third
+  parties are `forbid reaches` territory; a subscriber outside B
+  (the `log.**` sink shape) is not an A→B edge and needs no grant.
+- **`bound C <= N on paths from G`** — `@budget`'s per-call
+  semiring behind a claims surface: total sites of user class C
+  reachable per invocation (a call-tree SUM, exactly
+  `@budget(C = N)`'s semantics — two calls to a carrier are two
+  sites). A recursion cycle, loop-nested carrier, indirect call, or
+  computed publish subject is unbounded and violates. The witness
+  carries the count and a representative chain. Built-ins keep
+  their `@budget` spellings.
+- **`require subscribes|publishes(some G, topic T)`** — existence
+  over the DECLARED bus ends (the `bus { }` blocks — "wired" is a
+  declaration property).
+- **`cover topic in seed(a): subscribed_by(some G)`** — bounded
+  universal: every topic the seed imported as `a` declares has a
+  subscriber in G. Every uncovered topic is named. A seed with no
+  topics is an error at the claim (an empty coverage domain holds
+  vacuously).
+- **`count publishers|subscribers(topic T) ==|<=|>= N`** — the
+  cardinality family over distinct loci; `== 1` is the invariant
+  behind every single-writer pattern, and a violation names the
+  competing writers.
+- **`during P`** on `forbid` — restricts sources to the named
+  lifecycle phase / method of each source locus (`during birth` is
+  the quiet-boot claim). A phase naming nothing in the group is an
+  error, not a vacuously-holding claim.
+- **`avoiding G`** on `forbid` — masks G's vertices out of the
+  walk, which makes it the interposition form: "every path from A
+  to B passes through the gate" is `forbid reaches(A, B) avoiding
+  gate`.
+
+**Indexed effect families** (#382 phase 3): `domain wing = { delta,
+gamma };` declares a closed index domain; `effect knowledge(wing);`
+declares a family. Every instantiation `knowledge(delta)` interns
+as an ordinary declared class and `knowledge(*)` as an
+auto-populated composed class over all of them — the whole feature
+is a reduction onto shipped machinery (masks, `only:` complements,
+cross-seed remap, did-you-mean), so a misspelt index is an
+undeclared-class error and a domain member added later lands
+OUTSIDE every existing `only:` contract (#354's fail-closed,
+inherited rather than re-derived). The domain must be declared
+earlier in the same file as the family. Companion:
+`@budget(<user class> = N)` bounds calls to declared carriers of a
+class along any path, with the same loop/indirect unboundedness
+rules as every per-call dimension.
+
+**The topology artifact** (#382 phase 2): `hale check <t>
+--dump-topology` emits the serialized model — sorts (loci, fns,
+topics), relations (calls, publishes, subscribes) in author
+spelling — plus every named claim's normalized form and result,
+under a schema version and a `shape_hash` (FNV-1a/64 over the
+canonical model half; claims excluded, so one topology under
+different law keeps one shape). `--check-topology <path>` diffs
+against a committed baseline and fails with a regenerate hint —
+the `.hale.effects` precedent: an unreviewed topology or law
+change fails CI the way an API break does. A third party can
+re-evaluate every claim against the artifact without trusting the
+compiler's evaluator; the derivation (source → model) remains the
+trust root.
+
+Still later (#382): library-tier claims that travel with imports,
+and the annotations-lower-to-claim-IR unification (§8 of the
+issue) once the claim IR has survived real use.
 
 ## Structural & design rules
 

@@ -8,6 +8,38 @@ behavior.
 
 ## Unreleased
 
+### Claims phases 2–5: grants, families, budgets, coverage, the artifact (GH #382)
+
+The claim surface is now the full verb set from the issue's build
+order. `only edges A -> B { publish T; }` makes a boundary's grant
+list exhaustive and reviewable — every un-granted direct edge is
+reported, and call edges are never grantable. `bound llm <= 1 on
+paths from planners` puts `@budget`'s per-call semiring behind a
+claims surface (a loop-nested or recursion-reachable carrier is
+unbounded and violates). `require subscribes/publishes(some G,
+topic T)`, `cover topic in seed(a): subscribed_by(some G)`, and
+`count publishers(topic T) == 1` cover existence, seed-wide
+coverage, and the single-writer cardinality. `forbid` gains
+`during <phase>` (quiet-boot claims) and `avoiding <group>` — the
+interposition form: "every path passes the gate" is `forbid
+reaches(A, B) avoiding gate`.
+
+Effect classes gain **indexed families**: `domain wing = { delta,
+gamma }; effect knowledge(wing);` interns every instantiation as an
+ordinary class and `knowledge(*)` as an auto-populated composed
+class — a reduction onto shipped machinery, so a misspelt index is
+an undeclared-class error and a domain member added later lands
+outside every existing `only:` contract. Companion:
+`@budget(<user class> = N)` bounds calls to declared carriers.
+
+And the checked model now leaves the compiler: `hale check <t>
+--dump-topology` emits the **topology artifact** — sorts,
+relations, and every named claim's result in author spelling,
+under a schema version and a `shape_hash` over the model half —
+and `--check-topology <baseline>` fails CI when topology or law
+changes without review (the `.hale.effects` precedent). Spec:
+`spec/verification.md § Claims`, `spec/grammar.ebnf`.
+
 ### Claims: domain requirements as checked sentences (GH #382, phase 1)
 
 The judgment layer every structural check already used — derive a

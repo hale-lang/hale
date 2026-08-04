@@ -1,0 +1,5 @@
+// The shared vocabulary seed: one wired topic, one orphan.
+type Task { id: Int; }
+type Digest { week: Int; }
+topic Tasks { payload: Task; }
+topic Digest_t { payload: Digest; }

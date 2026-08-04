@@ -535,11 +535,58 @@ impl<'a> QualifiedRenameApplier<'a> {
             | LocusMember::Bindings(_)
             | LocusMember::Placement(_)
             | LocusMember::Topology(_)
-            // GH #382: claim entries reference group names (same-
-            // seed decls) and effect classes — nothing qualified
-            // for the import-rename pass to rewrite.
-            | LocusMember::Claims(_)
             | LocusMember::BirthCheck(_) => {}
+            // GH #382 phases 2/5: qualified TOPIC references in
+            // claim entries (`publish t::Digest;` grants, `require
+            // …, topic t::Tasks`, `count …(topic t::X)`)
+            // canonicalize exactly as qualified topic refs in bus
+            // blocks do (#334) — collapse to the mangled single
+            // segment. Group names and effect classes are same-seed
+            // / interned and need no rewriting.
+            LocusMember::Claims(cb) => {
+                let rewrite = |t: &mut TopicRef,
+                               renames: &[(Vec<String>, String)]| {
+                    if t.segments.len() < 2 {
+                        return;
+                    }
+                    let segs: Vec<String> = t
+                        .segments
+                        .iter()
+                        .map(|s| s.name.clone())
+                        .collect();
+                    for (key, mangled) in renames {
+                        if key.len() == segs.len()
+                            && key
+                                .iter()
+                                .zip(segs.iter())
+                                .all(|(k, p)| k == p)
+                        {
+                            let span = t.segments[0].span;
+                            t.segments = vec![Ident {
+                                name: mangled.clone(),
+                                span,
+                            }];
+                            return;
+                        }
+                    }
+                };
+                for e in &mut cb.entries {
+                    match &mut e.form {
+                        ClaimForm::OnlyEdges { grants, .. } => {
+                            for g in grants {
+                                rewrite(&mut g.topic, self.renames);
+                            }
+                        }
+                        ClaimForm::Require { topic, .. }
+                        | ClaimForm::Count { topic, .. } => {
+                            rewrite(topic, self.renames);
+                        }
+                        ClaimForm::ForbidReaches { .. }
+                        | ClaimForm::Bound { .. }
+                        | ClaimForm::Cover { .. } => {}
+                    }
+                }
+            }
         }
     }
 }

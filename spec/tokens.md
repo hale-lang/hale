@@ -634,9 +634,17 @@ Effect annotations stack with each other and with `@hot` /
 means and where its truth comes from.
 
 `group NAME = { … } [may_be_empty];` is a top-level **declaration**
-of claim vocabulary, and `claims { … }` is a main-locus member
-holding named bundle-level claims (GH #382 phase 1). `group`,
-`claims`, `forbid`, `reaches`, `via`, and `may_be_empty` are all
-**contextual keywords** — recognized in their positions only, so
-existing identifiers with those names are unaffected. See
-`spec/verification.md § Claims` and `spec/grammar.ebnf`.
+of claim vocabulary, `domain NAME = { … };` declares a closed index
+domain for effect families (`effect knowledge(wing);`), and
+`claims { … }` is a main-locus member holding named bundle-level
+claims (GH #382). The claim verbs are `forbid reaches` (with `via`
+/ `during` / `avoiding` modifiers), `only edges` (grant
+enumeration), `bound` (path budgets over user classes), `require`,
+`cover`, and `count`. All introducers — `group`, `claims`,
+`domain`, `forbid`, `reaches`, `via`, `may_be_empty`, `edges`,
+`bound`, `require`, `cover`, `count`, `during`, `avoiding`, `seed`
+— are **contextual keywords**, recognized in their positions only,
+so existing identifiers with those names are unaffected.
+`@budget(<user class> = N)` bounds calls to declared carriers of
+the class. See `spec/verification.md § Claims` and
+`spec/grammar.ebnf`.

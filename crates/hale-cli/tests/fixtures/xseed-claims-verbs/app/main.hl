@@ -1,0 +1,27 @@
+import "lib/topics" as t;
+
+locus Gateway {
+    bus { publish t::Tasks; }
+    fn intake(n: Int) { t::Tasks <- t::Task { id: n }; }
+}
+
+locus Staff {
+    params { seen: Int = 0; }
+    bus { subscribe t::Tasks as on_task; }
+    fn on_task(task: t::Task) { self.seen = self.seen + 1; }
+}
+
+group staff = { Staff };
+
+main locus Org {
+    params {
+        gw: Gateway = Gateway { };
+        s: Staff = Staff { };
+    }
+    claims {
+        wired: require subscribes(some staff, topic t::Tasks);
+        single: count publishers(topic t::Tasks) == 1;
+        no_orphans: cover topic in seed(t): subscribed_by(some staff);
+    }
+}
+fn main() { Org { }; }
