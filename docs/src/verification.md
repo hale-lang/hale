@@ -157,6 +157,78 @@ with:
 They are taught in full in **[Effects & contracts](./effects.md)**.
 
 
+## Claims: the law of the assembled system
+
+Effect assertions attach to one function. A **claim** quantifies over
+the whole assembled program: a named sentence, declared on the main
+locus, checked at every `hale check`. The canonical use is isolation
+— "nothing in wing A reaches wing B" — stated once, with a name a
+code review or a compliance document can cite:
+
+```hale
+type Task { id: Int; }
+type Metric { n: Int; }
+topic Tasks   { payload: Task; }
+topic Metrics { payload: Metric; }
+
+locus DeltaTriage {
+    params { seen: Int = 0; }
+    bus { subscribe Tasks as on_task; publish Metrics; }
+    fn on_task(t: Task) {
+        self.seen = self.seen + 1;
+        Metrics <- Metric { n: t.id };
+    }
+}
+
+locus GammaResearch {
+    params { total: Int = 0; }
+    bus { subscribe Metrics as on_metric; }
+    fn on_metric(m: Metric) { self.total = self.total + m.n; }
+}
+
+group delta_wing = { DeltaTriage };
+group gamma_wing = { GammaResearch };
+
+main locus Org {
+    params {
+        triage: DeltaTriage = DeltaTriage { };
+        research: GammaResearch = GammaResearch { };
+    }
+    claims {
+        iso_dg: forbid reaches(delta_wing, gamma_wing);
+    }
+}
+
+fn main() { Org { }; }
+```
+
+This program **fails to check**: the metrics publish crosses the
+boundary, and the violation names the claim and the full path —
+
+```text
+claim `iso_dg` violated: `delta_wing` reaches `gamma_wing` —
+witness: `DeltaTriage::on_task` -(publishes "Metrics")-> `GammaResearch::on_metric`
+```
+
+A `group` is declared vocabulary: it names loci and functions
+(including imported ones — `delta::*` enumerates a whole imported
+seed). An unknown name in a group is an error, never a silently
+empty set, and an empty group is an error unless it says
+`may_be_empty` — a rule that exists because a `forbid` over an empty
+set holds vacuously, which is a fail-open wearing formal clothing.
+
+`forbid reaches(A, B)` follows both call edges and bus edges by
+default; `via { calls }` or `via { bus }` restricts the relation.
+The target may also be an effect class — `forbid
+reaches(quote_api, effects(money))` says the quote path can never
+reach anything classified as moving money.
+
+Claims are **errors**, not warnings, and deleting or weakening one
+is a visible source diff — which is exactly the review event the
+feature exists to create. The full design (grant enumeration,
+coverage claims, path budgets) is GitHub issue #382; phase 1 ships
+`forbid reaches`.
+
 ## Invariants you declare, checked as it runs
 
 The checks above are the compiler's. You can add your own with a

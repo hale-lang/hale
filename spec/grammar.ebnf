@@ -39,7 +39,24 @@ top_decl          = locus_decl
                   | topic_decl
                   | ring_layout_decl
                   | target_decl
+                  | group_decl
                   ;
+
+(* GH #382 phase 1 — `group NAME = { member, ... };` declares claim
+   vocabulary: a named set of declared program elements (loci, free
+   fns, imported decls). Membership is spelled out, never
+   pattern-matched: an unknown member name is a typecheck ERROR
+   (never an empty set), and a group that resolves to no decls is a
+   vacuity error unless it opts out with `may_be_empty`. The glob is
+   trailing-only and single-`*` — enumeration over the imported
+   seed's closed decl set (via the same rename table codegen
+   resolves `alias::Name` through), deliberately mirroring the
+   trailing-`**` rule for bus subjects. `group` and `may_be_empty`
+   are contextual keywords. *)
+group_decl        = "group" , IDENTIFIER , "=" , "{" ,
+                    [ group_member , { "," , group_member } , [ "," ] ] ,
+                    "}" , [ "may_be_empty" ] , ";" ;
+group_member      = IDENTIFIER , { "::" , IDENTIFIER } , [ "::" , "*" ] ;
 
 module_decl       = "module" , IDENTIFIER , "{" , { top_decl } , "}" ;
 
@@ -239,8 +256,37 @@ locus_member      = params_block
                   | bindings_block
                   | placement_block
                   | topology_block
+                  | claims_block
                   | birth_check_decl
                   ;
+
+(* GH #382 phase 1 — the `claims { }` main-locus member: named,
+   bundle-level sentences over the program graph. Only legal inside
+   a `main` locus: main is the closed-world gate, so bundle-wide
+   claims cannot be evaluated anywhere earlier, and one-main-per-
+   bundle makes the claims root unique. Static — lowers to zero
+   code (like `placement`); evaluated in `hale check` as ERRORS.
+
+   Phase 1 ships one verb: `forbid reaches(SRC, DST)` — absence
+   under closure. No path from any element of SRC to any element of
+   DST through the permitted edge relations. `via { calls, bus }`
+   restricts which relations compose; ABSENT means the full
+   composition (more edges — the conservative direction). A claim
+   set is a declared group name, or `effects(<class>)` (target
+   position only in phase 1): the declared carriers of an effect
+   class. A violation renders a minimal countermodel path. All
+   introducers (`claims`, `forbid`, `reaches`, `via`, `effects`)
+   are contextual keywords except `bus`, which is the existing
+   hard keyword. *)
+claims_block      = "claims" , "{" , { claim_entry } , "}" ;
+claim_entry       = IDENTIFIER , ":" , claim_form , ";" ;
+claim_form        = "forbid" , "reaches" , "(" , claim_set , "," ,
+                    claim_set , ")" , [ via_clause ] ;
+claim_set         = IDENTIFIER
+                  | "effects" , "(" , IDENTIFIER , ")" ;
+via_clause        = "via" , "{" , via_relation ,
+                    { "," , via_relation } , [ "," ] , "}" ;
+via_relation      = "calls" | "bus" ;
 
 (* F.27 v2 (2026-05-20): declarative birth-time invariant check.
    Runs AFTER birth() body completes (and after birth-epoch

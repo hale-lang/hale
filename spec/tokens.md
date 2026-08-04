@@ -632,3 +632,11 @@ Declared classes are single-seed (see `spec/verification.md`).
 Effect annotations stack with each other and with `@hot` /
 `@budget(...)`; see `spec/verification.md` for what each class
 means and where its truth comes from.
+
+`group NAME = { … } [may_be_empty];` is a top-level **declaration**
+of claim vocabulary, and `claims { … }` is a main-locus member
+holding named bundle-level claims (GH #382 phase 1). `group`,
+`claims`, `forbid`, `reaches`, `via`, and `may_be_empty` are all
+**contextual keywords** — recognized in their positions only, so
+existing identifiers with those names are unaffected. See
+`spec/verification.md § Claims` and `spec/grammar.ebnf`.

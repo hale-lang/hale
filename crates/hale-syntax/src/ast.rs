@@ -61,6 +61,13 @@ pub enum TopDecl {
     /// CAP-MISSING. v0.2 surface lands here as a parser /
     /// AST commit; the capability-enforcement pass is v0.3.
     Target(TargetDecl),
+    /// GH #382 phase 1: `group NAME = { member, ... };` — declared
+    /// vocabulary for bundle-level claims. A group names a set of
+    /// declared program elements (loci, free fns, imported decls);
+    /// membership is spelled out, never pattern-matched. Unknown
+    /// names are errors, not empty sets — the misspelt-effect-class
+    /// lesson applied at the group layer. Lowers to zero code.
+    Group(GroupDecl),
 }
 
 impl TopDecl {
@@ -76,6 +83,135 @@ impl TopDecl {
             TopDecl::Topic(t) => t.span,
             TopDecl::RingLayout(r) => r.span,
             TopDecl::Target(t) => t.span,
+            TopDecl::Group(g) => g.span,
+        }
+    }
+}
+
+/// GH #382 phase 1: `group NAME = { member, ... } [may_be_empty];`
+///
+/// Declared vocabulary for claims. Two hard rules, both bought with
+/// existing scar tissue: an unknown member name is an ERROR (never an
+/// empty set), and a group that resolves to nothing is a vacuity
+/// error unless it opts out with `may_be_empty` — a `forbid`
+/// trivially satisfied by an empty quantification domain is a
+/// fail-open wearing formal clothing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupDecl {
+    pub name: Ident,
+    pub members: Vec<GroupMember>,
+    /// `may_be_empty` suffix — the explicit opt-out from the
+    /// vacuity guard, for groups that are legitimately empty in
+    /// some configurations.
+    pub may_be_empty: bool,
+    pub span: Span,
+}
+
+/// One group member: a qualified name (`Triage`, `delta::Triage`)
+/// or a trailing glob over a closed declared set (`delta::*`).
+///
+/// The glob is enumeration, not a pattern language: it expands to
+/// the declared decls of the named import alias, trailing-only and
+/// single-segment — deliberately mirroring the trailing-`**` rule
+/// for bus subjects. No infix globs, no partial-name matching.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupMember {
+    /// Path segments before any glob; at least one.
+    pub segments: Vec<Ident>,
+    /// True when the member ends in `::*`.
+    pub glob: bool,
+    pub span: Span,
+}
+
+impl GroupMember {
+    /// The member as written, for diagnostics.
+    pub fn display(&self) -> String {
+        let mut s = self
+            .segments
+            .iter()
+            .map(|i| i.name.as_str())
+            .collect::<Vec<_>>()
+            .join("::");
+        if self.glob {
+            s.push_str("::*");
+        }
+        s
+    }
+}
+
+/// GH #382 phase 1: the `claims { }` main-locus member — named,
+/// bundle-level sentences over the program graph. Completes the
+/// main block family: `params` (who exists), `placement` (where),
+/// `bindings` (the boundary), `bus` (its edges), `claims` (what
+/// must be true of the assembled whole). The distinction from the
+/// existing members is constructive vs restrictive — the others
+/// make the system be some way; claims refuse systems that are
+/// not. Static; lowers to zero code (like `placement`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClaimsBlock {
+    pub entries: Vec<ClaimDecl>,
+    pub span: Span,
+}
+
+/// One named claim: `iso_dg: forbid reaches(a, b) via { calls };`.
+/// The name is the contract-of-record — what a violation, a CI
+/// check, and (later) the topology artifact display.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClaimDecl {
+    pub name: Ident,
+    pub form: ClaimForm,
+    pub span: Span,
+}
+
+/// The claim verbs. Phase 1 ships `forbid reaches` only; `only
+/// edges`, `require`, `cover`, `bound`, and the `during` /
+/// `avoiding` modifiers land in later phases (#382 build order).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClaimForm {
+    /// `forbid reaches(SRC, DST) [via { calls, bus }]` — absence
+    /// under closure. No path from any element of SRC to any
+    /// element of DST through the permitted edge relations. The
+    /// default (`via` absent) is the FULL composition — more
+    /// edges, the conservative direction.
+    ForbidReaches {
+        src: ClaimSet,
+        dst: ClaimSet,
+        /// Follow call edges. Default true.
+        via_calls: bool,
+        /// Follow bus edges (publish ∘ subscribe). Default true.
+        via_bus: bool,
+    },
+}
+
+/// A set expression in claim-argument position: a declared group
+/// name, or `effects(<class>)` — every element carrying the class.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClaimSet {
+    Group(Ident),
+    /// `effects(money)` — the set of declared carriers of an
+    /// effect class (an `@effects(is: {...})` frontier entry or a
+    /// classified leaf). Sink form only in phase 1.
+    Effects {
+        class: EffectClass,
+        /// The class name as written, for diagnostics.
+        name: String,
+        span: Span,
+    },
+}
+
+impl ClaimSet {
+    pub fn display(&self) -> String {
+        match self {
+            ClaimSet::Group(i) => i.name.clone(),
+            ClaimSet::Effects { name, .. } => {
+                format!("effects({})", name)
+            }
+        }
+    }
+    pub fn span(&self) -> Span {
+        match self {
+            ClaimSet::Group(i) => i.span,
+            ClaimSet::Effects { span, .. } => *span,
         }
     }
 }
@@ -716,6 +852,13 @@ pub enum LocusMember {
     /// `placement { }` / `bindings { }`. `pinned(node =)` /
     /// `pinned(l3 =)` placement entries resolve against it.
     Topology(TopologyBlock),
+    /// GH #382 phase 1: `claims { }` block — named bundle-level
+    /// claims over the program graph. Valid only inside `main
+    /// locus`: main is the closed-world gate, so bundle-wide
+    /// sentences cannot be evaluated anywhere earlier, and
+    /// one-main-per-bundle makes the claims root unique. Static;
+    /// lowers to zero code.
+    Claims(ClaimsBlock),
     /// F.27 v2 (2026-05-20): `birth_check { EXPR } -> violate
     /// NAME;` synthesis hook. After birth() completes (and birth-
     /// epoch closures fire), each declared birth_check expression
@@ -2448,6 +2591,11 @@ pub fn remap_user_effects(items: &mut [TopDecl], map: &[u16]) {
             }
         }
     }
+    fn claim_set(s: &mut ClaimSet, map: &[u16]) {
+        if let ClaimSet::Effects { class: c, .. } = s {
+            class(c, map);
+        }
+    }
     for item in items {
         match item {
             TopDecl::Fn(fd) => fn_decl(fd, map),
@@ -2458,8 +2606,28 @@ pub fn remap_user_effects(items: &mut [TopDecl], map: &[u16]) {
                     }
                 }
                 for m in &mut l.members {
-                    if let LocusMember::Fn(fd) = m {
-                        fn_decl(fd, map);
+                    match m {
+                        LocusMember::Fn(fd) => fn_decl(fd, map),
+                        // GH #382: `effects(<class>)` in claim
+                        // position carries a User index too — a
+                        // stale one silently means a DIFFERENT
+                        // class in the merged table, the exact
+                        // aliasing bug this pass exists to prevent.
+                        LocusMember::Claims(cb) => {
+                            for e in &mut cb.entries {
+                                match &mut e.form {
+                                    ClaimForm::ForbidReaches {
+                                        src,
+                                        dst,
+                                        ..
+                                    } => {
+                                        claim_set(src, map);
+                                        claim_set(dst, map);
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }

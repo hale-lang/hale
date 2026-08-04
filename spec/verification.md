@@ -62,6 +62,79 @@ self-republish guarded by `if`/`match`/loop is a terminating state
 machine, not unbounded recursion, and is left alone. See
 `spec/semantics.md` type-check rules 9–10.
 
+## Claims — domain requirements as checked sentences (GH #382, phase 1)
+
+Bundle-level, **named** sentences over the program graph, declared in
+the main locus and evaluated in `hale check` as **errors** — never
+advisories (an advisory claim reads as law and doesn't bind, the #354
+fail-open shape). The motivating property is multi-tenant isolation:
+"no path from domain A to domain B" as one declaration with a name a
+contract can cite, instead of per-fn `@effects` contracts scattered
+across every position with completeness by hope.
+
+```
+group delta_wing = { delta::*, DeltaStore };
+group gamma_wing = { gamma::Research };
+
+main locus Org {
+    params { ... }
+    claims {
+        iso_dg: forbid reaches(delta_wing, gamma_wing);
+        iso_calls: forbid reaches(delta_wing, gamma_wing) via { calls };
+        no_spend: forbid reaches(gamma_wing, effects(money));
+    }
+}
+```
+
+- **Groups are declared vocabulary, never patterns.** A `group` names
+  a set of declared program elements (loci, free fns, imported
+  decls). An unknown member is an **error, not an empty set** — the
+  misspelt-effect-class lesson applied at the group layer — with a
+  did-you-mean. An empty group is a **vacuity error** unless it opts
+  out with `may_be_empty`: a `forbid` trivially satisfied by an empty
+  quantification domain is a fail-open wearing formal clothing. The
+  only glob is `alias::*` — trailing-only enumeration of an imported
+  seed's decl set via the same rename table codegen resolves
+  `alias::Name` through, deliberately mirroring the trailing-`**`
+  rule for bus subjects. Qualified members (`alias::Name`)
+  canonicalize at the mangle stage (#334's path), never by
+  name-suffix matching.
+- **`forbid reaches(SRC, DST)`** — absence under closure: no path
+  from any element of SRC to any element of DST. Evaluation is
+  fn-grained: a locus member projects to all of its methods,
+  lifecycle hooks, and modes, which only ever *adds* sources and
+  sinks (the conservative direction). Edges are the resolved call
+  graph (stdlib bodies merged, handle-method calls resolved) and the
+  declared bus graph (a publish site composes with every subscriber
+  of its subject, wildcard subscribers included). `via { calls }` /
+  `via { bus }` restricts which relations compose; the default is
+  the **full composition** — more edges, conservative. `bus`
+  composes publish sites in the visited fn's own body; the default
+  (with `calls`) is the sound transitive closure.
+- **`effects(<class>)`** in target position: the declared carriers
+  of an effect class (an `@effects(is: {…})` frontier entry or a
+  classified leaf), composed-class masks included. An undeclared
+  class in claim position is an error with a did-you-mean.
+- **Witnesses.** A violation renders a minimal countermodel path in
+  author spelling — `` `delta::Triage::on_task` -(publishes
+  "org.metrics")-> `gamma::Research::on_metric` `` — cross-seed
+  symbols demangled. One witness per claim (the minimal
+  countermodel, not an enumeration).
+- **Unknown ⇒ violation.** An indirect call (function-typed
+  parameter, #353) or a computed publish subject on a path from a
+  `forbid` source cannot be certified and is reported as a
+  violation, exactly as `@no_syscall` treats the same shapes.
+- **Placement.** `claims { }` is only legal inside `main locus`
+  (parse error elsewhere): main is the closed-world gate, so
+  bundle-wide claims cannot be evaluated anywhere earlier, and
+  one-main-per-bundle makes the claims root unique. Claim names are
+  the contract-of-record and must be unique.
+
+Later phases (#382): `only edges` grant enumeration, `require` /
+`cover` / `bound`, the `during` / `avoiding` modifiers, indexed
+effect families, library-tier claims that travel with imports, and
+the topology-artifact export of named results.
+
 ## Structural & design rules
 
 | Check | Catches | Severity | Enforced by |

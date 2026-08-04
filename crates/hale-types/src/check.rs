@@ -445,6 +445,16 @@ pub fn check_bundle(
             diags.extend(crate::frontier::causes_diags(&programs_vec, &graph));
             // RFC #330: the backward dual.
             diags.extend(crate::frontier::depends_diags(&programs_vec, &graph));
+            // GH #382 phase 1: bundle-level claims — group
+            // resolution (unknown name = error, vacuity) and
+            // `forbid reaches` evaluation with countermodel
+            // witnesses. Errors, gating check from day one: an
+            // advisory claim reads as law and doesn't bind.
+            diags.extend(crate::claims::claims_diags(
+                &programs_vec,
+                &graph,
+                &bundle.import_renames,
+            ));
             diags.extend(crate::frontier::supervised_diags(&programs_vec));
             diags.extend(crate::frontier::secret_taint_diags(&programs_vec));
             diags.extend(crate::quantitative::quantitative_diags(
@@ -5515,6 +5525,13 @@ impl<'a> Checker<'a> {
                 // at the use site (call expression where the
                 // expected type is an interface).
             }
+            TopDecl::Group(_) => {
+                // GH #382: claim vocabulary. Membership resolution
+                // (unknown name = error, vacuity) is a bundle-level
+                // pass — `claims::claims_diags` — because members
+                // may name imported decls only the merged bundle
+                // can see. Nothing per-decl to check here.
+            }
             TopDecl::Topic(t) => {
                 // Topic declarations carry `payload: T; subject:
                 // "...";` and now (Phase 3, 2026-05-25) optional
@@ -8043,6 +8060,12 @@ impl<'a> Checker<'a> {
                 // (check_placement_block), alongside the
                 // `pinned(node =)` / `pinned(l3 =)` references
                 // that resolve against it. Nothing member-local.
+            }
+            LocusMember::Claims(_) => {
+                // GH #382: claims are evaluated by the dedicated
+                // bundle-level pass (`claims::claims_diags`) — they
+                // quantify over the merged bundle, not this locus.
+                // The parser already enforces "main-only".
             }
             LocusMember::Lifecycle(lc) => {
                 self.in_lifecycle = true;

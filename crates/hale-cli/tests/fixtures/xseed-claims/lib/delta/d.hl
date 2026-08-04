@@ -1,0 +1,10 @@
+// The delta wing: handles tasks, publishes shared metrics — the
+// boundary-crossing temptation.
+locus Triage {
+    params { seen: Int = 0; }
+    bus { publish "org.metrics" of type Int; }
+    fn on_task(n: Int) {
+        self.seen = self.seen + 1;
+        "org.metrics" <- n;
+    }
+}

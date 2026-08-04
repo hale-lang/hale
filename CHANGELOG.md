@@ -8,6 +8,45 @@ behavior.
 
 ## Unreleased
 
+### Claims: domain requirements as checked sentences (GH #382, phase 1)
+
+The judgment layer every structural check already used — derive a
+graph from source, evaluate a property, witness the failure — is now
+a user-facing surface. `group NAME = { … };` declares vocabulary (a
+named set of loci / fns, including imported decls via `alias::Name`
+and `alias::*`), and the new `claims { }` member on `main locus`
+holds named, bundle-level sentences over the program graph:
+
+```hale,fragment
+group delta_wing = { delta::*, DeltaStore };
+group gamma_wing = { gamma::Research };
+
+main locus Org {
+    claims {
+        iso_dg: forbid reaches(delta_wing, gamma_wing);
+        no_spend: forbid reaches(gamma_wing, effects(money));
+    }
+}
+```
+
+Phase 1 ships one verb — `forbid reaches(SRC, DST) [via { calls,
+bus }]`, absence under the composed call ∘ bus closure — with the
+soundness posture the effect system established: unknown group
+member = error (never an empty set), empty group = vacuity error
+unless `may_be_empty`, indirect calls and computed publish subjects
+fail closed, and a violation renders a minimal countermodel path in
+author spelling (`` `delta::Triage::on_task` -(publishes
+"org.metrics")-> `gamma::Research::on_metric` ``). Claims are
+errors gating `hale check` — weakening the law is a source diff,
+which is the review event the surface exists to create. Groups
+cross seed boundaries through the same mangle-stage canonicalization
+as topics (#334); witnesses demangle. `claims { }` is main-only:
+main is the closed-world gate, so bundle-wide claims cannot be
+evaluated anywhere earlier. Spec: `spec/verification.md § Claims`,
+`spec/grammar.ebnf`; the remaining #382 phases (`only edges` grants,
+`require`/`cover`/`bound`, indexed families, the topology artifact)
+are tracked on the issue.
+
 ### A locus-typed field may only be assigned a locus literal
 
 `self.conn = Connection { url: next };` stays what it always was — a

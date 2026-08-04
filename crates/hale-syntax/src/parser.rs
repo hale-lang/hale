@@ -852,6 +852,12 @@ impl Parser {
             TokenKind::Ident(s) if s == "target" => {
                 self.parse_target_decl().map(TopDecl::Target)
             }
+            // GH #382 phase 1: `group NAME = { member, ... };` —
+            // declared claim vocabulary. Contextual keyword, same
+            // pattern as `topic` / `target`.
+            TokenKind::Ident(s) if s == "group" => {
+                self.parse_group_decl().map(TopDecl::Group)
+            }
             // `main locus Foo { ... }` — Phase 2 entry-point
             // marker. Same contextual-keyword pattern. The
             // following token must be `locus`.
@@ -906,6 +912,257 @@ impl Parser {
             capabilities,
             span: kw.span.merge(close.span),
         })
+    }
+
+    /// GH #382 phase 1: `group NAME = { member, ... } [may_be_empty];`
+    ///
+    /// Grammar:
+    ///   group_decl   = 'group' , IDENT , '=' , '{' ,
+    ///                  [ group_member { ',' group_member } [ ',' ] ] ,
+    ///                  '}' , [ 'may_be_empty' ] , ';'
+    ///   group_member = IDENT { '::' IDENT } [ '::' '*' ]
+    ///
+    /// `group` and `may_be_empty` are contextual keywords. The glob
+    /// is trailing-only and single-`*` — enumeration over a closed
+    /// declared set, not a pattern language (mirrors the trailing
+    /// `**` rule for bus subjects). Membership resolution (unknown
+    /// name = error, vacuity) lives in `hale-types::claims`.
+    fn parse_group_decl(&mut self) -> Result<GroupDecl, Diag> {
+        let kw_tok = self.peek_token().clone();
+        match &kw_tok.kind {
+            TokenKind::Ident(s) if s == "group" => {
+                self.bump();
+            }
+            _ => {
+                return Err(Diag::parse(
+                    kw_tok.span,
+                    "expected `group` keyword",
+                ));
+            }
+        }
+        let name = self.expect_ident("group name")?;
+        self.expect(TokenKind::Eq, "=")?;
+        self.expect(TokenKind::LBrace, "{")?;
+        let mut members = Vec::new();
+        while !matches!(self.peek(), TokenKind::RBrace) {
+            members.push(self.parse_group_member()?);
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::RBrace, "}")?;
+        let may_be_empty = match self.peek() {
+            TokenKind::Ident(s) if s == "may_be_empty" => {
+                self.bump();
+                true
+            }
+            _ => false,
+        };
+        let semi = self.expect(TokenKind::Semi, ";")?;
+        Ok(GroupDecl {
+            name,
+            members,
+            may_be_empty,
+            span: kw_tok.span.merge(semi.span),
+        })
+    }
+
+    /// One group member: `Name`, `alias::Name`, or `alias::*`.
+    fn parse_group_member(&mut self) -> Result<GroupMember, Diag> {
+        let head = self.expect_ident("group member name")?;
+        let mut segments = vec![head.clone()];
+        let mut glob = false;
+        let mut end_span = head.span;
+        while self.eat(&TokenKind::ColonColon) {
+            match self.peek() {
+                TokenKind::Star => {
+                    let t = self.peek_token().clone();
+                    self.bump();
+                    end_span = t.span;
+                    glob = true;
+                    // Trailing-only: `a::*::b` is a parse error.
+                    if matches!(self.peek(), TokenKind::ColonColon) {
+                        return Err(Diag::parse(
+                            self.peek_token().span,
+                            "`*` must be the last segment of a group \
+                             member — the glob is trailing-only, like \
+                             `**` in bus subjects",
+                        ));
+                    }
+                    break;
+                }
+                _ => {
+                    let seg =
+                        self.expect_ident("group member segment after `::`")?;
+                    end_span = seg.span;
+                    segments.push(seg);
+                }
+            }
+        }
+        Ok(GroupMember {
+            segments,
+            glob,
+            span: head.span.merge(end_span),
+        })
+    }
+
+    /// GH #382 phase 1: `claims { NAME: forbid reaches(A, B)
+    /// [via { calls, bus }]; ... }` — the main-locus claims block.
+    ///
+    /// Grammar:
+    ///   claims_block = 'claims' , '{' , { claim_entry } , '}'
+    ///   claim_entry  = IDENT , ':' , claim_form , ';'
+    ///   claim_form   = 'forbid' , 'reaches' , '(' , claim_set ,
+    ///                  ',' , claim_set , ')' , [ via_clause ]
+    ///   claim_set    = IDENT | 'effects' , '(' , IDENT , ')'
+    ///   via_clause   = 'via' , '{' , IDENT { ',' IDENT } , '}'
+    ///
+    /// All introducers are contextual keywords, discriminated by
+    /// position exactly as `unix` is in a bindings entry. The
+    /// "must be inside `main locus`" check fires in
+    /// `parse_locus_decl` (parallel to bindings/placement).
+    fn parse_claims_block(&mut self) -> Result<ClaimsBlock, Diag> {
+        let kw_tok = self.peek_token().clone();
+        self.bump(); // consume `claims` ident
+        self.expect(TokenKind::LBrace, "{")?;
+        let mut entries = Vec::new();
+        while !matches!(self.peek(), TokenKind::RBrace) {
+            let name = self.expect_ident("claim name")?;
+            self.expect(TokenKind::Colon, ":")?;
+            let form = self.parse_claim_form()?;
+            let semi = self.expect(TokenKind::Semi, ";")?;
+            entries.push(ClaimDecl {
+                name: name.clone(),
+                form,
+                span: name.span.merge(semi.span),
+            });
+        }
+        let close = self.expect(TokenKind::RBrace, "}")?;
+        Ok(ClaimsBlock {
+            entries,
+            span: kw_tok.span.merge(close.span),
+        })
+    }
+
+    fn parse_claim_form(&mut self) -> Result<ClaimForm, Diag> {
+        let verb_tok = self.peek_token().clone();
+        match &verb_tok.kind {
+            TokenKind::Ident(s) if s == "forbid" => {
+                self.bump();
+            }
+            other => {
+                return Err(Diag::parse(
+                    verb_tok.span,
+                    format!(
+                        "expected claim verb `forbid`, got {:?}. Phase 1 \
+                         ships `forbid reaches(...)`; `only edges`, \
+                         `require`, `cover`, and `bound` land in later \
+                         phases (GH #382)",
+                        other
+                    ),
+                ));
+            }
+        }
+        let rel_tok = self.peek_token().clone();
+        match &rel_tok.kind {
+            TokenKind::Ident(s) if s == "reaches" => {
+                self.bump();
+            }
+            other => {
+                return Err(Diag::parse(
+                    rel_tok.span,
+                    format!(
+                        "expected `reaches` after `forbid`, got {:?}",
+                        other
+                    ),
+                ));
+            }
+        }
+        self.expect(TokenKind::LParen, "(")?;
+        let src = self.parse_claim_set()?;
+        self.expect(TokenKind::Comma, ",")?;
+        let dst = self.parse_claim_set()?;
+        self.expect(TokenKind::RParen, ")")?;
+        // Optional `via { calls, bus }`. Absent = the full
+        // composition (more edges — the conservative direction).
+        let mut via_calls = true;
+        let mut via_bus = true;
+        if matches!(self.peek(), TokenKind::Ident(s) if s == "via") {
+            let via_tok = self.peek_token().clone();
+            self.bump();
+            self.expect(TokenKind::LBrace, "{")?;
+            via_calls = false;
+            via_bus = false;
+            while !matches!(self.peek(), TokenKind::RBrace) {
+                let tok = self.peek_token().clone();
+                match &tok.kind {
+                    // `bus` is a hard keyword (the bus block), so
+                    // it arrives as its own token here.
+                    TokenKind::Bus => {
+                        self.bump();
+                        via_bus = true;
+                    }
+                    TokenKind::Ident(s) if s == "calls" => {
+                        self.bump();
+                        via_calls = true;
+                    }
+                    other => {
+                        return Err(Diag::parse(
+                            tok.span,
+                            format!(
+                                "unknown relation {:?} in `via` — the \
+                                 composable relations are `calls` and \
+                                 `bus`",
+                                other
+                            ),
+                        ));
+                    }
+                }
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(TokenKind::RBrace, "}")?;
+            if !via_calls && !via_bus {
+                return Err(Diag::parse(
+                    via_tok.span,
+                    "`via` must name at least one relation (`calls`, \
+                     `bus`)",
+                ));
+            }
+        }
+        Ok(ClaimForm::ForbidReaches {
+            src,
+            dst,
+            via_calls,
+            via_bus,
+        })
+    }
+
+    /// `IDENT` (a declared group name) or `effects(<class>)`.
+    fn parse_claim_set(&mut self) -> Result<ClaimSet, Diag> {
+        if matches!(self.peek(), TokenKind::Ident(s) if s == "effects")
+            && matches!(self.peek_at(1), TokenKind::LParen)
+        {
+            let kw_tok = self.peek_token().clone();
+            self.bump(); // `effects`
+            self.bump(); // `(`
+            let cls = self.expect_ident("effect class name")?;
+            let close = self.expect(TokenKind::RParen, ")")?;
+            let class = EffectClass::from_ident(&cls.name)
+                .unwrap_or_else(|| {
+                    EffectClass::User(self.intern_effect(&cls.name))
+                });
+            return Ok(ClaimSet::Effects {
+                class,
+                name: cls.name.clone(),
+                span: kw_tok.span.merge(close.span),
+            });
+        }
+        let name = self.expect_ident(
+            "group name or `effects(<class>)` in claim position",
+        )?;
+        Ok(ClaimSet::Group(name))
     }
 
     fn parse_capability(&mut self) -> Result<Capability, Diag> {
@@ -2031,6 +2288,19 @@ impl Parser {
                         ),
                     ));
                 }
+                if let LocusMember::Claims(cb) = m {
+                    return Err(Diag::parse(
+                        cb.span,
+                        format!(
+                            "`claims` block is only valid inside `main \
+                             locus`; locus `{}` is not declared with the \
+                             `main` modifier. Main is the closed-world \
+                             gate — bundle-wide claims cannot be \
+                             evaluated anywhere earlier",
+                            name.name
+                        ),
+                    ));
+                }
             }
         }
         Ok(LocusDecl {
@@ -2440,6 +2710,13 @@ impl Parser {
             // `parse_locus_decl` (parallel to placement/bindings).
             TokenKind::Ident(s) if s == "topology" => {
                 self.parse_topology_block().map(LocusMember::Topology)
+            }
+            // GH #382 phase 1 contextual keyword — `claims { ... }`.
+            // Lexes as Ident; recognized here. The "must be inside
+            // `main locus`" check fires in `parse_locus_decl`
+            // (parallel to placement/bindings).
+            TokenKind::Ident(s) if s == "claims" => {
+                self.parse_claims_block().map(LocusMember::Claims)
             }
             // F.27 v2 contextual keyword — `birth_check { EXPR }
             // -> violate NAME;`. Lexes as Ident; recognized here.

@@ -40,7 +40,7 @@ use crate::callgraph::{self, Probe};
 
 
 /// Is this an `@ffi`-declared fn in the bundle?
-fn ffi_names(programs: &[&Program]) -> BTreeSet<String> {
+pub(crate) fn ffi_names(programs: &[&Program]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for p in programs {
         for item in &p.items {
@@ -92,7 +92,7 @@ fn demangle_stdlib(rendered: &str) -> String {
 /// unconstrained; a phase present with `{}` forbids everything.
 /// The seed's user effect-class intern table. Single-seed at v1, so the
 /// first non-empty table is the one every `User(i)` indexes into.
-fn effect_names_of(programs: &[&Program]) -> Vec<String> {
+pub(crate) fn effect_names_of(programs: &[&Program]) -> Vec<String> {
     programs
         .iter()
         .map(|p| &p.effect_names)
@@ -108,7 +108,7 @@ fn effect_names_of(programs: &[&Program]) -> Vec<String> {
 /// Cheap near-miss test for the did-you-mean hint: one edit apart, or
 /// a shared prefix long enough that a transposition is the likely
 /// cause. Not a general spell-checker — it only has to catch typing.
-fn close(a: &str, b: &str) -> bool {
+pub(crate) fn close(a: &str, b: &str) -> bool {
     if a == b {
         return false;
     }
@@ -152,7 +152,7 @@ fn class_universe(declared: &std::collections::BTreeSet<u16>) -> Vec<EffectClass
 
 /// #354: the seed's composed-class definitions, index-parallel to
 /// `effect_names`.
-fn defs_of(programs: &[&Program]) -> Vec<Option<Vec<EffectClass>>> {
+pub(crate) fn defs_of(programs: &[&Program]) -> Vec<Option<Vec<EffectClass>>> {
     programs
         .iter()
         .map(|p| &p.effect_defs)
@@ -161,7 +161,7 @@ fn defs_of(programs: &[&Program]) -> Vec<Option<Vec<EffectClass>>> {
         .unwrap_or_default()
 }
 
-fn declared_of(programs: &[&Program]) -> std::collections::BTreeSet<u16> {
+pub(crate) fn declared_of(programs: &[&Program]) -> std::collections::BTreeSet<u16> {
     programs
         .iter()
         .find(|p| !p.effect_names.is_empty())

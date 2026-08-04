@@ -57,6 +57,8 @@ pub const CONTEXTUAL_KEYWORDS: &[&str] = &[
     "on_overflow", "block", "drop",
     "intra_process", "intra_machine", "cross_machine", "zero_copy",
     "serves", "reperspective",
+    // GH #382 phase 1: claims surface.
+    "group", "claims", "forbid", "reaches", "via", "may_be_empty",
 ];
 
 /// The union of [`HARD_KEYWORDS`] and [`CONTEXTUAL_KEYWORDS`], sorted and

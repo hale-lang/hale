@@ -50,6 +50,7 @@ fn top_name(d: &TopDecl) -> Option<&str> {
         TopDecl::RingLayout(r) => Some(&r.name.name),
         TopDecl::Module(_) => None,
         TopDecl::Target(t) => Some(&t.name.name),
+        TopDecl::Group(g) => Some(&g.name.name),
     }
 }
 

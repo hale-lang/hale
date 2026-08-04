@@ -1253,6 +1253,10 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 LocusMember::Bindings(_)
                 | LocusMember::Placement(_)
                 | LocusMember::Topology(_)
+                // GH #382: claims are static law — checked in
+                // `hale-types::claims`, zero code emitted (the
+                // same lowering story as `placement`).
+                | LocusMember::Claims(_)
                 | LocusMember::BirthCheck(_) => {
                     // Bindings + placement + topology emitted by
                     // main-locus prelude pass; birth_check clauses
