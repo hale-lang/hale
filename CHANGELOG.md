@@ -6,7 +6,7 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.14.0 — claims: the program owns the law, the compiler owns the proof (2026-08-04)
 
 ### Receiver typing: the summarizer root fix (GH #382 soundness audit)
 
