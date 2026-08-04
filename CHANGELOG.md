@@ -8,6 +8,28 @@ behavior.
 
 ## Unreleased
 
+### Synced `@form(hashmap)` maps now retire replaced String clones (downstream handoff P1)
+
+A `sync = serialized` map never installed a retire descriptor, so
+replaced String clones accumulated in its arena for the life of the
+process — the long-standing residual behind churned recorded-state
+maps growing linearly in set count. That was not an oversight: `get`
+memcpy'd the cell, so its String fields came out as raw pointers into
+the map's arena, and a reader on another pool could hold one across
+the writer's activation boundaries. The leak *was* the safety
+mechanism.
+
+Every read path on a synced String-bearing map (`get`, `entry_at`,
+`for` iteration) now clones the cell's Strings into the caller's
+arena, inside the same critical section that read the cell — so the
+reader owns its copy, the writer's blobs have no off-thread readers,
+and the ordinary activation-boundary flush becomes sound with no
+epoch scheme. The map's arena serializes its allocator and retire
+lists (`retire_lock`, distinct from the allocation lock; documented
+lock order). `striped` and `lockfree` maps are unchanged pending
+their own audit. Values read out of a synced map remain plain owned
+values — no user-visible lifetime rule changes.
+
 ### Two hot-path regressions fixed (bench attribution vs released compilers)
 
 - **`@form` set/put on scalar-only cells no longer pays the cell
