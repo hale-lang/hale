@@ -191,10 +191,16 @@ impl FactVisitor for BudgetVisitor {
                 self.offenders.push(Offender {
                     span: edge.span,
                     note: format!(
-                        "`{}` is an indirect call through a \
-                         function-typed parameter — its target, and so \
-                         its allocation count, is chosen by the caller",
-                        name
+                        "`{}` is {} — its target, and so its \
+                         allocation count, is not knowable here",
+                        name,
+                        if edge.indirect {
+                            "an indirect call through a \
+                             function-typed parameter"
+                        } else {
+                            "a method call on a receiver the \
+                             compiler cannot type"
+                        }
                     ),
                 });
             }

@@ -1031,7 +1031,7 @@ pub fn summarize_programs_with_renames(
     // method referenced by `subscribe ... -> handler` is tagged BusHandler.
     // The trailing `Vec<(String, String)>` seeds each body's var→type map
     // from its params (D2).
-    type BodyEntry = (FnKey, Block, Option<EntryKind>, Option<String>, Vec<(String, String)>, Vec<String>);
+    type BodyEntry = (FnKey, Block, Option<EntryKind>, Option<String>, Vec<(String, String)>, Vec<String>, Vec<(String, String)>);
     let mut bodies: Vec<BodyEntry> = Vec::new();
     let mut known: BTreeSet<FnKey> = BTreeSet::new();
     // GH #18 item 1 — the `@bounded` / `@unbounded` opt-in/carve-out sets.
@@ -1243,7 +1243,7 @@ pub fn summarize_programs_with_renames(
                         unbounded_fns.insert(key.clone());
                     }
                     known.insert(key.clone());
-                    bodies.push((key, decl.body.clone(), entry, None, param_var_types(&decl.params), fn_typed_params(&decl.params)));
+                    bodies.push((key, decl.body.clone(), entry, None, param_var_types(&decl.params), fn_typed_params(&decl.params), param_var_elem_types(&decl.params)));
                 }
                 TopDecl::Type(td) => {
                     if let TypeDeclBody::Struct(fields) = &td.body {
@@ -1312,6 +1312,7 @@ pub fn summarize_programs_with_renames(
                                     Some(locus.clone()),
                                     param_var_types(&md.params),
                                     fn_typed_params(&md.params),
+                                    param_var_elem_types(&md.params),
                                 ));
                             }
                             LocusMember::Fn(decl) => {
@@ -1336,6 +1337,7 @@ pub fn summarize_programs_with_renames(
                                     Some(locus.clone()),
                                     param_var_types(&decl.params),
                                     fn_typed_params(&decl.params),
+                                    param_var_elem_types(&decl.params),
                                 ));
                             }
                             LocusMember::Lifecycle(lc) => {
@@ -1352,6 +1354,7 @@ pub fn summarize_programs_with_renames(
                                     Some(locus.clone()),
                                     param_var_types(&lc.params),
                                     fn_typed_params(&lc.params),
+                                    param_var_elem_types(&lc.params),
                                 ));
                             }
                             _ => {}
@@ -1377,10 +1380,170 @@ pub fn summarize_programs_with_renames(
         .map(|(segs, mangled)| (segs.join("::"), mangled.clone()))
         .collect();
 
+    // #382 receiver-typing: struct TYPE field -> type-name map (a
+    // chained receiver may pass through a plain struct: `route.
+    // handler` where `route` is a struct value), and per-locus
+    // ELEMENT types for iterables (array-typed params fields +
+    // capacity slots), so a `for child in self.children` binder
+    // gets a type instead of landing as an untypeable receiver.
+    let mut struct_field_types: BTreeMap<String, BTreeMap<String, String>> =
+        BTreeMap::new();
+    let mut locus_elem_types: BTreeMap<String, BTreeMap<String, String>> =
+        BTreeMap::new();
+    {
+        fn elem_type_name(te: &TypeExpr) -> Option<String> {
+            match te {
+                TypeExpr::Array { elem, .. } => type_expr_name(elem),
+                _ => None,
+            }
+        }
+        fn collect_maps(
+            items: &[TopDecl],
+            structs: &mut BTreeMap<String, BTreeMap<String, String>>,
+            elems: &mut BTreeMap<String, BTreeMap<String, String>>,
+        ) {
+            for item in items {
+                match item {
+                    TopDecl::Type(td) => {
+                        if let TypeDeclBody::Struct(fields) = &td.body {
+                            let mut m = BTreeMap::new();
+                            for f in fields {
+                                if let Some(tn) = type_expr_name(&f.ty)
+                                {
+                                    m.insert(f.name.name.clone(), tn);
+                                }
+                            }
+                            structs.insert(td.name.name.clone(), m);
+                        }
+                    }
+                    TopDecl::Locus(l) => {
+                        let mut m = BTreeMap::new();
+                        for member in &l.members {
+                            match member {
+                                LocusMember::Params(pb) => {
+                                    for pd in &pb.params {
+                                        if let Some(tn) = pd
+                                            .ty
+                                            .as_ref()
+                                            .and_then(elem_type_name)
+                                        {
+                                            m.insert(
+                                                pd.name.name.clone(),
+                                                tn,
+                                            );
+                                        }
+                                    }
+                                }
+                                LocusMember::Capacity(cb) => {
+                                    for slot in &cb.slots {
+                                        if let Some(tn) =
+                                            type_expr_name(
+                                                &slot.elem_ty,
+                                            )
+                                        {
+                                            m.insert(
+                                                slot.name.name.clone(),
+                                                tn,
+                                            );
+                                        }
+                                    }
+                                }
+                                // The implicit accepted-children
+                                // collection: `for child in
+                                // self.children` iterates what
+                                // `accept(le: T)` registered, so
+                                // the element type is the accept
+                                // param's. A declared field named
+                                // `children` wins (entry API is
+                                // first-insert via or_insert).
+                                LocusMember::Lifecycle(lc)
+                                    if matches!(
+                                        lc.kind,
+                                        LifecycleKind::Accept
+                                    ) =>
+                                {
+                                    if let Some(tn) = lc
+                                        .params
+                                        .first()
+                                        .and_then(|p| {
+                                            type_expr_name(&p.ty)
+                                        })
+                                    {
+                                        m.entry(
+                                            "children".to_string(),
+                                        )
+                                        .or_insert(tn);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        if !m.is_empty() {
+                            elems.insert(l.name.name.clone(), m);
+                        }
+                    }
+                    TopDecl::Module(md) => {
+                        collect_maps(&md.items, structs, elems)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for program in programs {
+            collect_maps(
+                &program.items,
+                &mut struct_field_types,
+                &mut locus_elem_types,
+            );
+        }
+    }
+
+    // #382 receiver-typing: free-fn name -> declared LOCUS return
+    // type. `let b = make_b(); b.work(n)` was an unresolved edge —
+    // the call-result receiver had no type — which made every
+    // effect certificate and claim blind to the call (the audit's
+    // false-certificate shape 6). Methods never appear here: the
+    // no-locus-return rule forbids locus returns from methods.
+    let mut fn_ret_types: BTreeMap<String, String> = BTreeMap::new();
+    {
+        fn collect_ret(
+            items: &[TopDecl],
+            locus_type_names: &BTreeSet<String>,
+            out: &mut BTreeMap<String, String>,
+        ) {
+            for item in items {
+                match item {
+                    TopDecl::Fn(f) => {
+                        if let Some(tn) =
+                            f.ret.as_ref().and_then(type_expr_name)
+                        {
+                            if locus_type_names.contains(&tn) {
+                                out.insert(f.name.name.clone(), tn);
+                            }
+                        }
+                    }
+                    TopDecl::Module(m) => collect_ret(
+                        &m.items,
+                        locus_type_names,
+                        out,
+                    ),
+                    _ => {}
+                }
+            }
+        }
+        for program in programs {
+            collect_ret(
+                &program.items,
+                &locus_type_names,
+                &mut fn_ret_types,
+            );
+        }
+    }
+
     // Phase 2 — walk each body.
     let mut summary = AllocSummary::default();
     summary.eager_only_loci = eager_only_loci;
-    for (key, body, entry, enclosing_locus, param_types, fn_params) in &bodies {
+    for (key, body, entry, enclosing_locus, param_types, fn_params, param_elems) in &bodies {
         let escaping = collect_escaping_names(body);
         let field_types = enclosing_locus
             .as_ref()
@@ -1407,7 +1570,12 @@ pub fn summarize_programs_with_renames(
             const_ints: &const_ints,
             store_target: None,
             var_types: param_types.iter().cloned().collect(),
+            var_elem_types: param_elems.iter().cloned().collect(),
             field_types,
+            all_field_types: &locus_field_types,
+            all_struct_fields: &struct_field_types,
+            all_elem_types: &locus_elem_types,
+            fn_ret_types: &fn_ret_types,
             inline_array_fields,
             form_of: &form_of,
             retirable_structs: &retirable_structs,
@@ -1468,6 +1636,20 @@ fn fn_typed_params(params: &[Param]) -> Vec<String> {
         .iter()
         .filter(|p| matches!(p.ty, TypeExpr::Function { .. }))
         .map(|p| p.name.name.clone())
+        .collect()
+}
+
+/// #382 receiver-typing: array-typed params' ELEMENT types, so a
+/// free fn iterating an array parameter (`__http_run_chain(entries,
+/// …) { for e in entries { … } }`) types the binder.
+fn param_var_elem_types(params: &[Param]) -> Vec<(String, String)> {
+    params
+        .iter()
+        .filter_map(|p| match &p.ty {
+            TypeExpr::Array { elem, .. } => type_expr_name(elem)
+                .map(|t| (p.name.name.clone(), t)),
+            _ => None,
+        })
         .collect()
 }
 
@@ -1745,6 +1927,24 @@ struct Walker<'a> {
     /// seeded from this fn's params and grown by typed `let`s. Lets a
     /// `v.push(x)` resolve `v`'s type to ask whether it is a growing form.
     var_types: BTreeMap<String, String>,
+    /// #382 receiver-typing: local/param name -> ELEMENT type for
+    /// array-typed bindings, so `for e in entries` types the binder
+    /// when `entries` is an array param or an array-literal let.
+    var_elem_types: BTreeMap<String, String>,
+    /// #382 receiver-typing: EVERY locus's field->type map, for
+    /// chained receivers (`self.mid.inner.work()` types `mid` via
+    /// the enclosing locus, then `inner` via Mid's map).
+    all_field_types: &'a BTreeMap<String, BTreeMap<String, String>>,
+    /// #382 receiver-typing: struct TYPE field->type maps, the
+    /// fallback for chained receivers passing through plain
+    /// structs (`route.handler.handle()`).
+    all_struct_fields: &'a BTreeMap<String, BTreeMap<String, String>>,
+    /// #382 receiver-typing: per-locus ELEMENT types (array params
+    /// fields + capacity slots), for `for`-binder typing.
+    all_elem_types: &'a BTreeMap<String, BTreeMap<String, String>>,
+    /// #382 receiver-typing: free-fn -> declared locus return type,
+    /// for call-result receivers (`make_b().work()`).
+    fn_ret_types: &'a BTreeMap<String, String>,
     /// The enclosing locus's param fields → declared type name, so a
     /// `self.<field>.push(x)` resolves `<field>`'s type the same way.
     field_types: &'a BTreeMap<String, String>,
@@ -1845,19 +2045,150 @@ impl<'a> Walker<'a> {
         }
     }
 
-    /// The *declared* type name of a receiver expression: a bare var
-    /// via `var_types`, a `self.<field>` via `field_types`. Used both
-    /// to spot growing-`@form` receivers (D2) and to resolve
+    /// The declared/inferable LOCUS type of a receiver expression
+    /// (#382 receiver-typing root fix). Beyond the original two
+    /// shapes (bare var via `var_types`, `self.<field>` via
+    /// `field_types`), this types the four audit shapes that were
+    /// silently-dropped unresolved edges: a struct-literal receiver
+    /// (`B { }.work()`), a chained field (`self.mid.inner.work()`),
+    /// a call result (`make_b().work()`), and a uniform if/else
+    /// value. Anything genuinely untypeable at this layer (an index
+    /// result, a match value, a foreign expression) returns `None`
+    /// and downstream soundness judgments fail closed on the edge.
+    /// Used to spot growing-`@form` receivers (D2) and to resolve
     /// handle-method call edges (`record_call`).
-    fn receiver_type_name(&self, recv: &Expr) -> Option<&String> {
+    fn receiver_type_name(&self, recv: &Expr) -> Option<String> {
         match recv {
-            Expr::Ident(v) => self.var_types.get(&v.name),
-            Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. }
-                if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
-            {
-                self.field_types.get(&name.name)
+            Expr::Ident(v) => self.var_types.get(&v.name).cloned(),
+            Expr::KwSelf(_) => self.enclosing_locus.clone(),
+            Expr::Field { receiver, name, .. }
+            | Expr::Path2 { receiver, name, .. } => {
+                if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
+                    self.field_types.get(&name.name).cloned()
+                } else {
+                    // Chained: type the receiver, then look the
+                    // field up on THAT type's map — locus params
+                    // first, plain-struct fields as the fallback.
+                    let rt = self.receiver_type_name(receiver)?;
+                    self.all_field_types
+                        .get(&rt)
+                        .and_then(|m| m.get(&name.name))
+                        .or_else(|| {
+                            self.all_struct_fields
+                                .get(&rt)
+                                .and_then(|m| m.get(&name.name))
+                        })
+                        .cloned()
+                }
+            }
+            Expr::Struct { path, .. } => {
+                // Same std-vs-user resolution as the `let`-literal
+                // inference below.
+                let segs: Vec<&str> = path
+                    .segments
+                    .iter()
+                    .map(|s| s.name.as_str())
+                    .collect();
+                crate::stdlib_bodies::mangled_locus_name(&segs)
+                    .map(|m| m.to_string())
+                    .or_else(|| {
+                        path.segments.last().map(|s| s.name.clone())
+                    })
+            }
+            Expr::Call { callee, .. } => match callee.as_ref() {
+                Expr::Ident(f) => {
+                    self.fn_ret_types.get(&f.name).cloned()
+                }
+                // `entries.get(j)` on a collection locus with ONE
+                // element slot returns that element type — the
+                // form-getter shape stdlib chains iterate with.
+                Expr::Field { receiver, name, .. }
+                | Expr::Path2 { receiver, name, .. }
+                    if name.name == "get" =>
+                {
+                    let owner = self.receiver_type_name(receiver)?;
+                    let elems = self.all_elem_types.get(&owner)?;
+                    if elems.len() == 1 {
+                        elems.values().next().cloned()
+                    } else {
+                        None
+                    }
+                }
+                Expr::Path(qp) => {
+                    let path = qp
+                        .segments
+                        .iter()
+                        .map(|s| s.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join("::");
+                    let name = self
+                        .rename_map
+                        .get(&path)
+                        .cloned()
+                        .unwrap_or(path);
+                    self.fn_ret_types.get(&name).cloned()
+                }
+                _ => None,
+            },
+            Expr::If(ifs) => self.if_locus_type(ifs),
+            // `mws.get(i) or raise` — the disposition unwraps the
+            // fallible; the VALUE'S type is the inner call's.
+            Expr::Or { inner, .. } => self.receiver_type_name(inner),
+            _ => None,
+        }
+    }
+
+    /// The ELEMENT type of an iterable expression: `self.field` /
+    /// chained fields via the per-locus element maps (array params
+    /// fields + capacity slots), or a uniform array literal.
+    fn iter_elem_type(&self, iter: &Expr) -> Option<String> {
+        match iter {
+            Expr::Field { receiver, name, .. }
+            | Expr::Path2 { receiver, name, .. } => {
+                let owner = self.receiver_type_name(receiver)?;
+                self.all_elem_types
+                    .get(&owner)?
+                    .get(&name.name)
+                    .cloned()
+            }
+            Expr::Ident(v) => {
+                self.var_elem_types.get(&v.name).cloned()
+            }
+            Expr::Array(elems, _) => {
+                let mut ty: Option<String> = None;
+                for e in elems {
+                    let t = self.receiver_type_name(e)?;
+                    match &ty {
+                        None => ty = Some(t),
+                        Some(prev) if *prev == t => {}
+                        Some(_) => return None,
+                    }
+                }
+                ty
             }
             _ => None,
+        }
+    }
+
+    /// A uniform if/else VALUE's locus type: every branch's tail
+    /// must type to the same locus, else `None`.
+    fn if_locus_type(&self, ifs: &IfStmt) -> Option<String> {
+        let then_ty = ifs
+            .then_block
+            .tail
+            .as_ref()
+            .and_then(|t| self.receiver_type_name(t))?;
+        let else_ty = match ifs.else_block.as_deref()? {
+            ElseBranch::Else(b) => b
+                .tail
+                .as_ref()
+                .and_then(|t| self.receiver_type_name(t))?,
+            ElseBranch::ElseIf(inner) => self.if_locus_type(inner)?,
+        };
+        if then_ty == else_ty {
+            Some(then_ty)
+        } else {
+            None
         }
     }
 
@@ -1865,7 +2196,7 @@ impl<'a> Walker<'a> {
     /// `@form(vec | hashmap)` locus, the form name.
     fn growing_form_of_receiver(&self, recv: &Expr) -> Option<String> {
         let ty_name = self.receiver_type_name(recv)?;
-        let form = self.form_of.get(ty_name)?;
+        let form = self.form_of.get(&ty_name)?;
         if form_grows(form) {
             Some(form.clone())
         } else {
@@ -1907,29 +2238,42 @@ impl<'a> Walker<'a> {
             Stmt::Let { name, ty, value, .. } => {
                 // D2: a typed `let v: T = …` extends the var→type map so a
                 // later `v.push(x)` can resolve `v`'s form.
+                if let Some(et) = ty.as_ref().and_then(|t| match t {
+                    TypeExpr::Array { elem, .. } => type_expr_name(elem),
+                    _ => None,
+                }) {
+                    self.var_elem_types.insert(name.name.clone(), et);
+                } else if let Expr::Array(elems, _) = value {
+                    // `let xs = [B { }, make_b()];` — a uniform
+                    // locus array literal types the elements.
+                    let mut et: Option<String> = None;
+                    let mut uniform = true;
+                    for e in elems {
+                        match (self.receiver_type_name(e), &et) {
+                            (Some(t), None) => et = Some(t),
+                            (Some(t), Some(prev)) if t == *prev => {}
+                            _ => {
+                                uniform = false;
+                                break;
+                            }
+                        }
+                    }
+                    if uniform {
+                        if let Some(t) = et {
+                            self.var_elem_types
+                                .insert(name.name.clone(), t);
+                        }
+                    }
+                }
                 if let Some(tn) = ty.as_ref().and_then(type_expr_name) {
                     self.var_types.insert(name.name.clone(), tn);
-                } else if let Expr::Struct { path, .. } = value {
-                    // GH #265: `let r = Reader { … }` is the common
-                    // shape — an annotated `let` is the exception, not
-                    // the rule. Without inferring the type from the
-                    // struct literal, `r.method()` stays an unresolved
-                    // edge and every effect assertion is blind to it.
-                    // A std path (`std::io::file::File`) names a locus
-                    // the Hale-source stdlib declares under a MANGLED
-                    // name (`__StdIoFileFile`), so go through the
-                    // rename table; a user type is just its last
-                    // segment.
-                    let segs: Vec<&str> =
-                        path.segments.iter().map(|s| s.name.as_str()).collect();
-                    let ty = crate::stdlib_bodies::mangled_locus_name(&segs)
-                        .map(|m| m.to_string())
-                        .or_else(|| {
-                            path.segments.last().map(|s| s.name.clone())
-                        });
-                    if let Some(ty) = ty {
-                        self.var_types.insert(name.name.clone(), ty);
-                    }
+                } else if let Some(ty) = self.receiver_type_name(value) {
+                    // GH #265 / #382: `let r = Reader { … }`, `let b =
+                    // make_b();`, and the uniform if/else value all
+                    // bind a locus the walker can type. Without this,
+                    // `b.method()` stays an unresolved edge and every
+                    // effect assertion and claim is blind to it.
+                    self.var_types.insert(name.name.clone(), ty);
                 }
                 let esc = self.escaping.get(&name.name).copied().unwrap_or(Escape::Local);
                 self.walk_expr(value, depth, esc);
@@ -2011,8 +2355,19 @@ impl<'a> Walker<'a> {
                 self.walk_expr(subject, depth, Escape::Local);
                 self.walk_expr(value, depth, Escape::Sent);
             }
-            Stmt::For { iter, body, span, .. } => {
+            Stmt::For { name, iter, body, span } => {
                 self.walk_expr(iter, depth, Escape::Local);
+                // #382 receiver-typing: type the loop BINDER from the
+                // iterable's element type, so `for child in
+                // self.children { child.m() }` is a resolved edge
+                // rather than an untypeable receiver.
+                let elem = self.iter_elem_type(iter);
+                let shadowed = match &elem {
+                    Some(t) => self
+                        .var_types
+                        .insert(name.name.clone(), t.clone()),
+                    None => self.var_types.remove(&name.name),
+                };
                 let kind = for_loop_kind(iter);
                 let bounded = matches!(kind, LoopKind::ForRange { bounded: Some(_) });
                 self.loops.push(LoopInfo { kind, depth, span: *span });
@@ -2021,6 +2376,14 @@ impl<'a> Walker<'a> {
                 self.walk_block(body, depth + 1, Escape::Local);
                 self.loop_stack.pop();
                 self.infinite_stack.pop();
+                match shadowed {
+                    Some(prev) => {
+                        self.var_types.insert(name.name.clone(), prev);
+                    }
+                    None => {
+                        self.var_types.remove(&name.name);
+                    }
+                }
             }
             Stmt::While { cond, body, span } => {
                 self.walk_expr(cond, depth, Escape::Local);
@@ -2310,7 +2673,7 @@ impl<'a> Walker<'a> {
                     // to method calls on loci — which is the idiomatic
                     // way to do I/O in Hale, making `@no_syscall`
                     // decorative outside free-fn code.
-                    self.receiver_type_name(receiver).cloned()
+                    self.receiver_type_name(receiver)
                 };
                 recv_ty = owner.clone();
                 match owner {

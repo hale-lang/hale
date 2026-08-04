@@ -44,11 +44,13 @@ fn main() { App { }; }
 "#;
 
 fn untyped() -> String {
-    // Same program, but A reaches Bridge through a receiver the
-    // summarizer cannot type.
+    // Same program, but A reaches Bridge through an INDEX-result
+    // receiver — the shape that stays untypeable at this layer
+    // after the receiver-typing root fix (literals, chained
+    // fields, call results, and branch values all resolve now).
     TYPED.replace(
         "params { br: Bridge = Bridge { }; }\n    fn go(n: Int) -> Int { return self.br.hop(n); }",
-        "fn go(n: Int) -> Int { return Bridge { }.hop(n); }",
+        "fn go(n: Int) -> Int { let xs = [Bridge { }]; return xs[0].hop(n); }",
     )
 }
 
