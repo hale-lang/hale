@@ -796,6 +796,9 @@ is regression-tested. **[convention]**
 // idiomatic
 let n = self.users.filter(it.active).count();
 self.users.filter(it.active).into(self.actives);
+let total = self.users.map(it.age).sum();
+let oldest = self.users.max(it.age) or raise;
+self.users.filter(it.active).each { self.greet(it); }
 
 // not this
 let mut i = 0;

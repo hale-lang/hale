@@ -192,12 +192,50 @@ let n = users.filter(it.active).count();
 users.filter(it.active).into(actives);
 ```
 
-`it` is the current element. Chain as many `filter`s as you like; they
+`it` is the current element. Chain as many stages as you like; they
 run in a single pass:
 
 ```hale,fragment
 let n = readings.filter(it > 10).filter(it < 100).count();
+let total = users.filter(it.active).map(it.age).sum();
 ```
+
+`map` rebinds the element; `sum` adds it up (Int elements — project
+with `map` first). Yes-or-no questions have their own terminals:
+
+```hale,fragment
+if users.any(it.age < 18) { restrict(); }
+if users.all(len(it.name) > 0) { proceed(); }
+```
+
+On an empty selection `any` is `false` and `all` is `true` — the
+usual vacuous-truth convention.
+
+Looking *for* an element is fallible — an empty result is handled
+with the same `or` you already use everywhere:
+
+```hale,fragment
+let bob = users.find(it.id == want) or User { id: 0, age: 0, name: "?" };
+let oldest = users.max(it.age) or raise;
+let youngest = users.min(it.age) or raise;
+```
+
+`find` returns the element itself (project after, not before —
+`map` doesn't compose with `find`), and `min`/`max` take a key and
+return the *element* that had it, not the key.
+
+And when the point is the side effect, `each` takes a block:
+
+```hale,fragment
+users.filter(it.age >= 18).each {
+    total = total + it.age;
+    "user.greet" <- Greeting { id: it.id };
+}
+```
+
+The block *is* the loop body — `it` is in scope, `break` and
+`continue` do what they do in any loop, and nothing is captured
+because there is no closure.
 
 This looks like an iterator chain from another language, and it is
 deliberately not one. There is no intermediate collection between the

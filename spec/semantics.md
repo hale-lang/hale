@@ -2215,10 +2215,67 @@ end" is a property the compiler can decide.
 
 A bare method call with no stage (`v.count()`) is an ordinary form
 method, not a chain, and is left alone. A chain over a non-form
-receiver fails with the ordinary "no method `len`" diagnostic.
+receiver fails with the ordinary "no method `get`" diagnostic.
 
-v1 surface: `filter` as the elementwise operation; `count` and `into`
-as terminals.
+### Vocabulary
+
+Elementwise **stages** (fuse into the one loop):
+
+| stage | meaning |
+|---|---|
+| `filter(pred)` | drop elements where the `it`-predicate is false |
+| `map(expr)` | rebind the element to the `it`-expression's value |
+
+**Terminals**:
+
+| terminal | result |
+|---|---|
+| `count()` | Int |
+| `sum()` | Int — v1 requires Int elements (`map` first); the accumulator's typed zero for Float/Decimal/Duration needs literal suffixes that do not exist yet |
+| `into(target)` | pushes each surviving (mapped) element |
+| `any(pred?)` | Bool; **empty selection ⇒ `false`** (vacuous) |
+| `all(pred)` | Bool; **empty selection ⇒ `true`** (vacuous) |
+| `first()` | the first surviving element — **fallible** on empty |
+| `find(pred?)` | `find(p)` ≡ `filter(p).first()` |
+| `min(key?)` / `max(key?)` | the **element** with the least/greatest key (`min_by_key` shape; bare form compares elements) — fallible on empty |
+| `each { … }` | run the block per surviving element |
+
+**Fallible terminals ride the source's own `get`.** `first` / `find`
+/ `min` / `max` lower to an index search whose value is
+`src.get(idx)` — an empty result is the ordinary `IndexError`, so
+`or raise` / `or fallback` / `or handler(err)` all apply with no new
+error machinery:
+
+```hale,fragment
+let bob = users.find(it.id == want) or User { id: 0, age: 0, name: "?" };
+let oldest = users.max(it.age) or raise;
+```
+
+For the same reason they do **not** compose with `map` (the `or`
+fallback would need the mapped type while `get` yields the source
+element): project *after* the find, on the returned element.
+
+**`each` takes a block, not a lambda.** The block is spliced as the
+fused loop's body with `it` bound — it executes in the enclosing
+scope, so there are no capture semantics to define, and `break` /
+`continue` act on the fused loop (`continue` advances to the next
+element):
+
+```hale,fragment
+users.filter(it.age >= 18).each {
+    total = total + it.age;
+}
+```
+
+**Recognition is conservative** so user facade methods sharing these
+names never get hijacked: with at least one stage, every terminal is
+recognized (no ordinary method chain looks like that); stage-less, a
+terminal is recognized only when its argument mentions `it` — which
+is unbound outside a chain, so no valid ordinary call can look like
+that — or when it is `each` with a block. Bare `xs.sum()` /
+`xs.first()` therefore stay ordinary method calls (stage-less first
+is just `xs.get(0) or …`; a stage-less sum can be written
+`xs.map(it).sum()`).
 
 ## Bus subscription dispatch
 
