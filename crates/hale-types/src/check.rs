@@ -8666,6 +8666,86 @@ impl<'a> Checker<'a> {
         ty
     }
 
+    /// GH #383: a locus-typed field may only be assigned a locus
+    /// LITERAL, never a locus value produced elsewhere.
+    ///
+    /// `self.conn = Connection { url: next };` is a documented
+    /// lifecycle event: break-before-make, the new instance built
+    /// directly into this locus's arena, owned by the field. But
+    /// `self.held = make_row(...)` stores a locus somebody else
+    /// constructed, and the language has no way to say who owns it
+    /// afterwards — the field, or the frame that produced it.
+    ///
+    /// Today that question is dodged by never freeing: a locus
+    /// returned from a free fn is routed to a program-lifetime arena
+    /// (m90), so the field's pointer stays valid because nothing
+    /// reclaims it. **The leak is the safety mechanism** — the same
+    /// shape as the synced-map clone-on-read (#373) and the
+    /// zero-reads (#381), and the reason every attempt to give those
+    /// loci a real lifetime produced either a use-after-free or
+    /// silently wrong values (see #383 for the four measured
+    /// attempts).
+    ///
+    /// Forbidding the store is what closes the question: with no way
+    /// for a factory result to escape into a field, its owner is the
+    /// binding that named it, and ordinary scope-exit teardown is
+    /// correct. This is the same principle the language already
+    /// applies to locus RETURNS from methods (CQRS / no-locus-return
+    /// — `fn get() -> SomeLocus` is rejected); a locus is structure,
+    /// not a value to be handed around.
+    ///
+    /// Scope: only a whole-field store of a locus-typed field.
+    /// Non-locus fields, index/tail stores, and locus literals are
+    /// untouched.
+    fn check_locus_field_store(
+        &mut self,
+        target: &LValue,
+        value: &Expr,
+        span: Span,
+    ) {
+        // whole-field store only (`self.x = …` / `x.y = …`, one
+        // segment), and the field must be locus-typed
+        if target.tail.len() != 1 {
+            return;
+        }
+        let want = self.lvalue_ty(target);
+        let Ty::Named(tname) = &want else { return };
+        if !matches!(self.top.lookup(tname), Some(TopSymbol::Locus(_))) {
+            return;
+        }
+        // A literal is construction-in-place: allowed, and the
+        // documented reassignment lifecycle event.
+        if matches!(value, Expr::Struct { .. }) {
+            return;
+        }
+        // Anything else naming a locus value is the ambiguous case.
+        // index stores (`x[i] = …`) are not whole-field stores
+        let Some(LValueSeg::Field(fid)) = target.tail.first() else {
+            return;
+        };
+        let field = fid.name.clone();
+        self.diags.push(Diag::ty(
+            span,
+            format!(
+                "cannot assign an existing locus value into locus-typed \
+                 field `{}`: ownership would be ambiguous — the field \
+                 and the frame that produced the value would both \
+                 claim it.\n\n\
+                 Assign a locus LITERAL instead, which builds the new \
+                 instance directly into this locus's arena and is the \
+                 documented reassignment lifecycle event:\n\
+                 \n    self.{} = {} {{ ... }};\n\n\
+                 If the value must come from a factory, route the \
+                 membership through `accept(c: {})` instead of a \
+                 field, or have the factory hand back the data and \
+                 build the locus here. Same principle as the \
+                 no-locus-return rule on methods: a locus is \
+                 structure, not a value to hand around.",
+                field, field, tname, tname
+            ),
+        ));
+    }
+
     fn check_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Let { is_mut, name, ty, value, .. } => {
@@ -8757,6 +8837,7 @@ impl<'a> Checker<'a> {
                         ),
                     ));
                 }
+                self.check_locus_field_store(target, value, *span);
                 // m50: bare-head reassignment to a non-mut local is
                 // a compile-time error per spec/types.md "Mutability"
                 // + design-rationale §E. Field/index segments

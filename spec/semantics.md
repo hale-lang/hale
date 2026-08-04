@@ -828,6 +828,36 @@ no teardown. v1 scope: the new instance inherits the parent's pool;
 reassigning a *pinned*-placed field does not re-apply the pinned
 placement.
 
+**The right-hand side must be a locus LITERAL** (error). Assigning
+a locus value produced somewhere else — `self.held = make_row(…);`,
+or `let c = Conn { … }; self.conn = c;` — is rejected, because
+ownership would be ambiguous: the field claims the instance (its
+teardown reclaims it when self dissolves) and so does the frame
+that produced the value (its scope exit reclaims what it built).
+Nothing in the language decides between them.
+
+That ambiguity is not hypothetical. Until this rule, a locus
+returned from a free fn was routed to a program-lifetime arena and
+never reclaimed, which is what made such a store *appear* to work:
+the field's pointer stayed valid because nothing ever freed it —
+the leak was the safety mechanism. Every attempt to give those loci
+a real lifetime produced either a use-after-free or silently wrong
+values.
+
+Two remedies, both existing shapes:
+
+- **Assign a literal** — construction in place, the lifecycle
+  transition above, unambiguously owned by the field.
+- **Route membership through `accept(c: L)`** — parent/child
+  ownership, which is the language's answer for "this locus holds
+  that one" whenever the child is not a `params` field.
+
+This is the same principle as the no-locus-return rule on methods
+(`fn get() -> SomeLocus` is rejected): **a locus is structure, not
+a value to hand around.** Ordinary `let`-bound loci — including
+factory results — are unaffected; they are owned by the binding
+that names them.
+
 ## Mode invocation
 
 `self.bulk()` / `self.harmonic()` / `self.resolution()` invoke
