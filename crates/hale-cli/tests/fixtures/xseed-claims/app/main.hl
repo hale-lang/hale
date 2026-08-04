@@ -1,0 +1,18 @@
+import "lib/delta" as delta;
+import "lib/gamma" as gamma;
+
+// The two wings, named via the cross-seed forms: a glob over the
+// delta seed's decls, and one qualified decl from gamma.
+group delta_wing = { delta::* };
+group gamma_wing = { gamma::Research };
+
+main locus Org {
+    params {
+        triage: delta::Triage = delta::Triage { };
+        research: gamma::Research = gamma::Research { };
+    }
+    claims {
+        iso_dg: forbid reaches(delta_wing, gamma_wing);
+    }
+}
+fn main() { Org { }; }

@@ -492,6 +492,13 @@ fn register_top_decls(
                 // walk that list when they need the target
                 // info.
             }
+            TopDecl::Group(_) => {
+                // GH #382: claim vocabulary — not a value/type
+                // symbol anything references in expression
+                // position. The claims pass (`claims::claims_diags`)
+                // resolves group members against the merged bundle
+                // itself, where imported decls are visible.
+            }
         }
     }
 }

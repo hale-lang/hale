@@ -419,6 +419,37 @@ impl<'a> QualifiedRenameApplier<'a> {
                 // no TypeExprs the import-rename pass needs
                 // to rewrite.
             }
+            TopDecl::Group(g) => {
+                // GH #382: canonicalize qualified group members the
+                // same way qualified topic refs are canonicalized
+                // (#334) — at the mangle stage, never by name-suffix
+                // matching. `alias::Name` collapses to the mangled
+                // single segment. Glob members (`alias::*`) stay as
+                // written and expand in `claims::claims_diags` via
+                // the bundle's rename table.
+                for m in &mut g.members {
+                    if m.glob || m.segments.len() < 2 {
+                        continue;
+                    }
+                    let segs: Vec<String> = m
+                        .segments
+                        .iter()
+                        .map(|s| s.name.clone())
+                        .collect();
+                    for (key, mangled) in self.renames {
+                        if key.len() == segs.len()
+                            && key.iter().zip(segs.iter()).all(|(k, p)| k == p)
+                        {
+                            let span = m.segments[0].span;
+                            m.segments = vec![Ident {
+                                name: mangled.clone(),
+                                span,
+                            }];
+                            break;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -505,6 +536,57 @@ impl<'a> QualifiedRenameApplier<'a> {
             | LocusMember::Placement(_)
             | LocusMember::Topology(_)
             | LocusMember::BirthCheck(_) => {}
+            // GH #382 phases 2/5: qualified TOPIC references in
+            // claim entries (`publish t::Digest;` grants, `require
+            // …, topic t::Tasks`, `count …(topic t::X)`)
+            // canonicalize exactly as qualified topic refs in bus
+            // blocks do (#334) — collapse to the mangled single
+            // segment. Group names and effect classes are same-seed
+            // / interned and need no rewriting.
+            LocusMember::Claims(cb) => {
+                let rewrite = |t: &mut TopicRef,
+                               renames: &[(Vec<String>, String)]| {
+                    if t.segments.len() < 2 {
+                        return;
+                    }
+                    let segs: Vec<String> = t
+                        .segments
+                        .iter()
+                        .map(|s| s.name.clone())
+                        .collect();
+                    for (key, mangled) in renames {
+                        if key.len() == segs.len()
+                            && key
+                                .iter()
+                                .zip(segs.iter())
+                                .all(|(k, p)| k == p)
+                        {
+                            let span = t.segments[0].span;
+                            t.segments = vec![Ident {
+                                name: mangled.clone(),
+                                span,
+                            }];
+                            return;
+                        }
+                    }
+                };
+                for e in &mut cb.entries {
+                    match &mut e.form {
+                        ClaimForm::OnlyEdges { grants, .. } => {
+                            for g in grants {
+                                rewrite(&mut g.topic, self.renames);
+                            }
+                        }
+                        ClaimForm::Require { topic, .. }
+                        | ClaimForm::Count { topic, .. } => {
+                            rewrite(topic, self.renames);
+                        }
+                        ClaimForm::ForbidReaches { .. }
+                        | ClaimForm::Bound { .. }
+                        | ClaimForm::Cover { .. } => {}
+                    }
+                }
+            }
         }
     }
 }
@@ -525,6 +607,9 @@ fn top_decl_name(d: &TopDecl) -> Option<&str> {
         TopDecl::RingLayout(r) => Some(&r.name.name),
         TopDecl::Module(_) => None,
         TopDecl::Target(t) => Some(&t.name.name),
+        // GH #382: imported groups get mangled names like any other
+        // decl, so two seeds' same-named groups cannot collide.
+        TopDecl::Group(g) => Some(&g.name.name),
     }
 }
 
@@ -591,6 +676,18 @@ impl<'a> Mangler<'a> {
                 // not user-namespace names, so they don't
                 // participate in the import rename table.
                 self.rewrite_ident(&mut t.name.name);
+            }
+            TopDecl::Group(g) => {
+                // GH #382: rewrite the decl name plus single-
+                // segment members (references to this seed's own
+                // decls). Multi-segment members resolve later via
+                // the path-rename table (QualifiedRenameApplier).
+                self.rewrite_ident(&mut g.name.name);
+                for m in &mut g.members {
+                    if m.segments.len() == 1 && !m.glob {
+                        self.rewrite_ident(&mut m.segments[0].name);
+                    }
+                }
             }
         }
         self.pop_scope();
@@ -725,6 +822,12 @@ impl<'a> Mangler<'a> {
                     self.walk_expr(payload);
                 }
                 self.rewrite_ident(&mut bc.closure_name.name);
+            }
+            LocusMember::Claims(_) => {
+                // GH #382: claims live only in the CLOSING build's
+                // main locus (the parser enforces main-only), and
+                // they reference group names + effect classes —
+                // neither participates in the seed rename table.
             }
         }
     }

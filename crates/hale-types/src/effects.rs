@@ -40,7 +40,7 @@ use crate::callgraph::{self, Probe};
 
 
 /// Is this an `@ffi`-declared fn in the bundle?
-fn ffi_names(programs: &[&Program]) -> BTreeSet<String> {
+pub(crate) fn ffi_names(programs: &[&Program]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for p in programs {
         for item in &p.items {
@@ -92,7 +92,7 @@ fn demangle_stdlib(rendered: &str) -> String {
 /// unconstrained; a phase present with `{}` forbids everything.
 /// The seed's user effect-class intern table. Single-seed at v1, so the
 /// first non-empty table is the one every `User(i)` indexes into.
-fn effect_names_of(programs: &[&Program]) -> Vec<String> {
+pub(crate) fn effect_names_of(programs: &[&Program]) -> Vec<String> {
     programs
         .iter()
         .map(|p| &p.effect_names)
@@ -108,7 +108,7 @@ fn effect_names_of(programs: &[&Program]) -> Vec<String> {
 /// Cheap near-miss test for the did-you-mean hint: one edit apart, or
 /// a shared prefix long enough that a transposition is the likely
 /// cause. Not a general spell-checker — it only has to catch typing.
-fn close(a: &str, b: &str) -> bool {
+pub(crate) fn close(a: &str, b: &str) -> bool {
     if a == b {
         return false;
     }
@@ -152,7 +152,7 @@ fn class_universe(declared: &std::collections::BTreeSet<u16>) -> Vec<EffectClass
 
 /// #354: the seed's composed-class definitions, index-parallel to
 /// `effect_names`.
-fn defs_of(programs: &[&Program]) -> Vec<Option<Vec<EffectClass>>> {
+pub(crate) fn defs_of(programs: &[&Program]) -> Vec<Option<Vec<EffectClass>>> {
     programs
         .iter()
         .map(|p| &p.effect_defs)
@@ -161,7 +161,7 @@ fn defs_of(programs: &[&Program]) -> Vec<Option<Vec<EffectClass>>> {
         .unwrap_or_default()
 }
 
-fn declared_of(programs: &[&Program]) -> std::collections::BTreeSet<u16> {
+pub(crate) fn declared_of(programs: &[&Program]) -> std::collections::BTreeSet<u16> {
     programs
         .iter()
         .find(|p| !p.effect_names.is_empty())
@@ -658,6 +658,27 @@ fn effect_diags_inner(
                         if allowed.contains(&c) {
                             continue;
                         }
+                        // The complement quantifies over ATOMIC
+                        // classes only. A composed class owns no bit
+                        // — its mask is its members' — so it adds
+                        // nothing the atomic complement misses, and
+                        // including it is a fail-CLOSED-too-far: an
+                        // `only:` listing a member (e.g.
+                        // `knowledge(delta)`) would be rejected
+                        // because the unlisted composition
+                        // (`knowledge(*)`, or a hand-written union)
+                        // overlaps the allowed bit. Found by the
+                        // #382 phase-3 star classes; the same shape
+                        // existed for any hand-written composed
+                        // class.
+                        if let EffectClass::User(i) = c {
+                            if defs_v
+                                .get(i as usize)
+                                .map_or(false, |d| d.is_some())
+                            {
+                                continue;
+                            }
+                        }
                         let before = diags.len();
                         check_class(
                             &summary, key, *span, c, &ffi, &names, &defs_v,
@@ -992,6 +1013,19 @@ fn check_class(
                 return Some(format!(
                     "`{}` — an indirect call through a function-typed \
                      parameter, whose target this fn cannot determine",
+                    name
+                ));
+            }
+            // #382 receiver-typing: a method call on a receiver that
+            // STILL cannot be typed (an index result, a match value,
+            // a foreign expression) is a method of some bundle locus
+            // reached through an opaque expression — same fail-closed
+            // rule as an indirect call.
+            if edge.receiver_present && edge.recv_ty.is_none() {
+                return Some(format!(
+                    "`{}` — a method call on a receiver the compiler \
+                     cannot type; bind the receiver to a typed field \
+                     or local so the call resolves",
                     name
                 ));
             }

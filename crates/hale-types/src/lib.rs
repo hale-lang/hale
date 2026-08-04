@@ -28,6 +28,8 @@ pub mod callgraph;
 pub mod effects;
 pub mod frontier;
 pub mod check;
+pub mod claims;
+pub mod topology;
 pub mod stdlib_bodies;
 pub mod stdlib_surface;
 pub mod ownership_graph;

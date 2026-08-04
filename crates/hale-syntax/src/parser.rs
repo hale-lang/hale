@@ -49,6 +49,13 @@ struct Parser {
     /// #354: parallel to `effect_names`; `Some` for a class declared
     /// as a union of others.
     effect_defs: Vec<Option<Vec<EffectClass>>>,
+    /// #382 phase 3: `domain wing = { delta, gamma };` — closed
+    /// index domains for effect families. Parser-local (no AST
+    /// item, like `effect`): a family instantiates against a domain
+    /// declared EARLIER IN THE SAME FILE, which is what lets the
+    /// parser expand every instantiation eagerly and keep the whole
+    /// reduction inside the existing class machinery.
+    domains: Vec<(String, Vec<String>)>,
     /// v1.x-FORM-1: tracks whether we're inside the body of a
     /// fallible fn. When true, leading-statement `fail` Ident is
     /// recognized as the fail-keyword. Outside that context,
@@ -66,8 +73,45 @@ impl Parser {
             effect_names: Vec::new(),
             declared_effects: Vec::new(),
             effect_defs: Vec::new(),
+            domains: Vec::new(),
             in_fallible_body: false,
         }
+    }
+
+    /// #382 phase 3: optional `(index)` suffix on an effect-class
+    /// name — `knowledge(delta)` / `knowledge(*)`. The
+    /// instantiation interns as an ordinary class whose NAME is the
+    /// full spelling, so everything downstream (masks, complements,
+    /// remap, did-you-mean) works unchanged. Returns the full name.
+    fn finish_class_name(&mut self, base: String) -> Result<String, Diag> {
+        if !matches!(self.peek(), TokenKind::LParen) {
+            return Ok(base);
+        }
+        self.bump(); // `(`
+        let arg_tok = self.peek_token().clone();
+        let arg = match &arg_tok.kind {
+            TokenKind::Ident(s) => {
+                let s = s.clone();
+                self.bump();
+                s
+            }
+            TokenKind::Star => {
+                self.bump();
+                "*".to_string()
+            }
+            other => {
+                return Err(Diag::parse(
+                    arg_tok.span,
+                    format!(
+                        "expected an index name or `*` inside `{}(...)`, \
+                         got {:?}",
+                        base, other
+                    ),
+                ));
+            }
+        };
+        self.expect(TokenKind::RParen, ")")?;
+        Ok(format!("{}({})", base, arg))
     }
 
     // === helpers ==========================================
@@ -755,8 +799,67 @@ impl Parser {
             locus.supervised = supervised_locus;
             return Ok(TopDecl::Locus(locus));
         }
+        // #382 phase 3: `domain wing = { delta, gamma };` — a
+        // closed index domain for effect families. Registry-only,
+        // like `effect` (the declaration IS the entry). Contextual.
+        if matches!(self.peek(), TokenKind::Ident(s) if s == "domain")
+            && matches!(self.peek_at(1), TokenKind::Ident(_))
+        {
+            self.bump();
+            let name_tok = self.peek_token().clone();
+            let TokenKind::Ident(dname) = &name_tok.kind else {
+                unreachable!("peeked an ident")
+            };
+            let dname = dname.clone();
+            self.bump();
+            self.expect(TokenKind::Eq, "=")?;
+            self.expect(TokenKind::LBrace, "{")?;
+            let mut members: Vec<String> = Vec::new();
+            while !matches!(self.peek(), TokenKind::RBrace) {
+                let t = self.peek_token().clone();
+                let TokenKind::Ident(m) = &t.kind else {
+                    return Err(Diag::parse(
+                        t.span,
+                        "expected a domain member name".to_string(),
+                    ));
+                };
+                members.push(m.clone());
+                self.bump();
+                if matches!(self.peek(), TokenKind::Comma) {
+                    self.bump();
+                }
+            }
+            self.expect(TokenKind::RBrace, "}")?;
+            self.expect(TokenKind::Semi, ";")?;
+            if members.is_empty() {
+                return Err(Diag::parse(
+                    name_tok.span,
+                    format!(
+                        "domain `{}` has no members — an empty index \
+                         domain makes every family over it vacuous",
+                        dname
+                    ),
+                ));
+            }
+            if self.domains.iter().any(|(n, _)| n == &dname) {
+                return Err(Diag::parse(
+                    name_tok.span,
+                    format!("domain `{}` is declared more than once", dname),
+                ));
+            }
+            self.domains.push((dname, members));
+            return self.parse_top_decl();
+        }
         // #345: `effect NAME;` declares a user effect class.
         // Contextual ident so `effect` stays usable as an identifier.
+        // #382 phase 3: `effect NAME(domain);` declares an INDEXED
+        // FAMILY — every instantiation `NAME(m)` interns as an
+        // ordinary class, and `NAME(*)` as an auto-populated
+        // composed class over all of them. The reduction keeps the
+        // whole feature inside shipped machinery: masks, `only:`
+        // complements (a domain member added later lands OUTSIDE
+        // every existing contract — #354's fail-closed inherited,
+        // not re-derived), cross-seed remap, did-you-mean.
         if matches!(self.peek(), TokenKind::Ident(s) if s == "effect")
             && matches!(self.peek_at(1), TokenKind::Ident(_))
         {
@@ -767,6 +870,74 @@ impl Parser {
             };
             let name = name.clone();
             self.bump();
+            // Family form: `effect NAME(domain);`.
+            if matches!(self.peek(), TokenKind::LParen) {
+                self.bump();
+                let dom_tok = self.peek_token().clone();
+                let TokenKind::Ident(dom) = &dom_tok.kind else {
+                    return Err(Diag::parse(
+                        dom_tok.span,
+                        "expected a domain name inside `effect NAME(...)`",
+                    ));
+                };
+                let dom = dom.clone();
+                self.bump();
+                self.expect(TokenKind::RParen, ")")?;
+                self.expect(TokenKind::Semi, ";")?;
+                let Some((_, members)) = self
+                    .domains
+                    .iter()
+                    .find(|(n, _)| n == &dom)
+                    .cloned()
+                else {
+                    return Err(Diag::parse(
+                        dom_tok.span,
+                        format!(
+                            "effect family `{}` indexes domain `{}`, which \
+                             is not declared in this file. Declare `domain \
+                             {} = {{ … }};` above the family — index \
+                             domains are closed and source-declared",
+                            name, dom, dom
+                        ),
+                    ));
+                };
+                // Intern every instantiation as a declared class…
+                let mut inst_classes = Vec::new();
+                let mut last_idx = 0u16;
+                for m in &members {
+                    let full = format!("{}({})", name, m);
+                    let idx = self.intern_effect(&full);
+                    last_idx = idx;
+                    if !self.declared_effects.contains(&idx) {
+                        self.declared_effects.push(idx);
+                    }
+                    inst_classes.push(EffectClass::User(idx));
+                }
+                // …and `NAME(*)` as the composed union of them.
+                let star = format!("{}(*)", name);
+                let star_idx = self.intern_effect(&star);
+                last_idx = last_idx.max(star_idx);
+                self.effect_defs[star_idx as usize] =
+                    Some(inst_classes);
+                if !self.declared_effects.contains(&star_idx) {
+                    self.declared_effects.push(star_idx);
+                }
+                if u32::from(last_idx) >= EffectClass::USER_CAPACITY {
+                    return Err(Diag::parse(
+                        name_tok.span,
+                        format!(
+                            "effect family `{}` over domain `{}` overflows \
+                             the effect mask ({} classes available). \
+                             Effect classes are a domain vocabulary — \
+                             merge families or shrink the domain.",
+                            name,
+                            dom,
+                            EffectClass::USER_CAPACITY
+                        ),
+                    ));
+                }
+                return self.parse_top_decl();
+            }
             // #354: optional definition — `effect io = { a, b };`.
             let mut members: Option<Vec<EffectClass>> = None;
             if matches!(self.peek(), TokenKind::Eq) {
@@ -783,6 +954,9 @@ impl Parser {
                     };
                     let m = m.clone();
                     self.bump();
+                    // #382 phase 3: members may be instantiations
+                    // (`knowledge(delta)`).
+                    let m = self.finish_class_name(m)?;
                     ms.push(
                         EffectClass::from_ident(&m).unwrap_or_else(|| {
                             EffectClass::User(self.intern_effect(&m))
@@ -852,6 +1026,12 @@ impl Parser {
             TokenKind::Ident(s) if s == "target" => {
                 self.parse_target_decl().map(TopDecl::Target)
             }
+            // GH #382 phase 1: `group NAME = { member, ... };` —
+            // declared claim vocabulary. Contextual keyword, same
+            // pattern as `topic` / `target`.
+            TokenKind::Ident(s) if s == "group" => {
+                self.parse_group_decl().map(TopDecl::Group)
+            }
             // `main locus Foo { ... }` — Phase 2 entry-point
             // marker. Same contextual-keyword pattern. The
             // following token must be `locus`.
@@ -906,6 +1086,616 @@ impl Parser {
             capabilities,
             span: kw.span.merge(close.span),
         })
+    }
+
+    /// GH #382 phase 1: `group NAME = { member, ... } [may_be_empty];`
+    ///
+    /// Grammar:
+    ///   group_decl   = 'group' , IDENT , '=' , '{' ,
+    ///                  [ group_member { ',' group_member } [ ',' ] ] ,
+    ///                  '}' , [ 'may_be_empty' ] , ';'
+    ///   group_member = IDENT { '::' IDENT } [ '::' '*' ]
+    ///
+    /// `group` and `may_be_empty` are contextual keywords. The glob
+    /// is trailing-only and single-`*` — enumeration over a closed
+    /// declared set, not a pattern language (mirrors the trailing
+    /// `**` rule for bus subjects). Membership resolution (unknown
+    /// name = error, vacuity) lives in `hale-types::claims`.
+    fn parse_group_decl(&mut self) -> Result<GroupDecl, Diag> {
+        let kw_tok = self.peek_token().clone();
+        match &kw_tok.kind {
+            TokenKind::Ident(s) if s == "group" => {
+                self.bump();
+            }
+            _ => {
+                return Err(Diag::parse(
+                    kw_tok.span,
+                    "expected `group` keyword",
+                ));
+            }
+        }
+        let name = self.expect_ident("group name")?;
+        self.expect(TokenKind::Eq, "=")?;
+        self.expect(TokenKind::LBrace, "{")?;
+        let mut members = Vec::new();
+        while !matches!(self.peek(), TokenKind::RBrace) {
+            members.push(self.parse_group_member()?);
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(TokenKind::RBrace, "}")?;
+        let may_be_empty = match self.peek() {
+            TokenKind::Ident(s) if s == "may_be_empty" => {
+                self.bump();
+                true
+            }
+            _ => false,
+        };
+        let semi = self.expect(TokenKind::Semi, ";")?;
+        Ok(GroupDecl {
+            name,
+            members,
+            may_be_empty,
+            span: kw_tok.span.merge(semi.span),
+        })
+    }
+
+    /// One group member: `Name`, `alias::Name`, or `alias::*`.
+    fn parse_group_member(&mut self) -> Result<GroupMember, Diag> {
+        let head = self.expect_ident("group member name")?;
+        let mut segments = vec![head.clone()];
+        let mut glob = false;
+        let mut end_span = head.span;
+        while self.eat(&TokenKind::ColonColon) {
+            match self.peek() {
+                TokenKind::Star => {
+                    let t = self.peek_token().clone();
+                    self.bump();
+                    end_span = t.span;
+                    glob = true;
+                    // Trailing-only: `a::*::b` is a parse error.
+                    if matches!(self.peek(), TokenKind::ColonColon) {
+                        return Err(Diag::parse(
+                            self.peek_token().span,
+                            "`*` must be the last segment of a group \
+                             member — the glob is trailing-only, like \
+                             `**` in bus subjects",
+                        ));
+                    }
+                    break;
+                }
+                _ => {
+                    let seg =
+                        self.expect_ident("group member segment after `::`")?;
+                    end_span = seg.span;
+                    segments.push(seg);
+                }
+            }
+        }
+        Ok(GroupMember {
+            segments,
+            glob,
+            span: head.span.merge(end_span),
+        })
+    }
+
+    /// GH #382 phase 1: `claims { NAME: forbid reaches(A, B)
+    /// [via { calls, bus }]; ... }` — the main-locus claims block.
+    ///
+    /// Grammar:
+    ///   claims_block = 'claims' , '{' , { claim_entry } , '}'
+    ///   claim_entry  = IDENT , ':' , claim_form , ';'
+    ///   claim_form   = 'forbid' , 'reaches' , '(' , claim_set ,
+    ///                  ',' , claim_set , ')' , [ via_clause ]
+    ///   claim_set    = IDENT | 'effects' , '(' , IDENT , ')'
+    ///   via_clause   = 'via' , '{' , IDENT { ',' IDENT } , '}'
+    ///
+    /// All introducers are contextual keywords, discriminated by
+    /// position exactly as `unix` is in a bindings entry. The
+    /// "must be inside `main locus`" check fires in
+    /// `parse_locus_decl` (parallel to bindings/placement).
+    fn parse_claims_block(&mut self) -> Result<ClaimsBlock, Diag> {
+        let kw_tok = self.peek_token().clone();
+        self.bump(); // consume `claims` ident
+        self.expect(TokenKind::LBrace, "{")?;
+        let mut entries = Vec::new();
+        while !matches!(self.peek(), TokenKind::RBrace) {
+            let name = self.expect_ident("claim name")?;
+            self.expect(TokenKind::Colon, ":")?;
+            let form = self.parse_claim_form()?;
+            let semi = self.expect(TokenKind::Semi, ";")?;
+            entries.push(ClaimDecl {
+                name: name.clone(),
+                form,
+                span: name.span.merge(semi.span),
+            });
+        }
+        let close = self.expect(TokenKind::RBrace, "}")?;
+        Ok(ClaimsBlock {
+            entries,
+            span: kw_tok.span.merge(close.span),
+        })
+    }
+
+    fn parse_claim_form(&mut self) -> Result<ClaimForm, Diag> {
+        let verb_tok = self.peek_token().clone();
+        let verb = match &verb_tok.kind {
+            TokenKind::Ident(s) => s.clone(),
+            other => {
+                return Err(Diag::parse(
+                    verb_tok.span,
+                    format!(
+                        "expected a claim verb (`forbid`, `only`, \
+                         `bound`, `require`, `cover`, `count`), got {:?}",
+                        other
+                    ),
+                ));
+            }
+        };
+        match verb.as_str() {
+            "forbid" => self.parse_forbid_form(),
+            "only" => self.parse_only_edges_form(),
+            "bound" => self.parse_bound_form(),
+            "require" => self.parse_require_form(),
+            "cover" => self.parse_cover_form(),
+            "count" => self.parse_count_form(),
+            other => Err(Diag::parse(
+                verb_tok.span,
+                format!(
+                    "unknown claim verb `{}` — the verbs are `forbid`, \
+                     `only`, `bound`, `require`, `cover`, `count` \
+                     (GH #382)",
+                    other
+                ),
+            )),
+        }
+    }
+
+    fn parse_forbid_form(&mut self) -> Result<ClaimForm, Diag> {
+        self.bump(); // `forbid`
+        let rel_tok = self.peek_token().clone();
+        match &rel_tok.kind {
+            TokenKind::Ident(s) if s == "reaches" => {
+                self.bump();
+            }
+            other => {
+                return Err(Diag::parse(
+                    rel_tok.span,
+                    format!(
+                        "expected `reaches` after `forbid`, got {:?}",
+                        other
+                    ),
+                ));
+            }
+        }
+        self.expect(TokenKind::LParen, "(")?;
+        let src = self.parse_claim_set()?;
+        self.expect(TokenKind::Comma, ",")?;
+        let dst = self.parse_claim_set()?;
+        self.expect(TokenKind::RParen, ")")?;
+        // Optional modifiers, any order: `via { calls, bus }`,
+        // `during <phase>`, `avoiding <group>`. Absent `via` = the
+        // full composition (more edges — the conservative
+        // direction).
+        let mut via_calls = true;
+        let mut via_bus = true;
+        let mut during: Option<Ident> = None;
+        let mut avoiding: Option<Ident> = None;
+        loop {
+            match self.peek() {
+                TokenKind::Ident(s) if s == "via" => {
+                    let via_tok = self.peek_token().clone();
+                    self.bump();
+                    self.expect(TokenKind::LBrace, "{")?;
+                    via_calls = false;
+                    via_bus = false;
+                    while !matches!(self.peek(), TokenKind::RBrace) {
+                        let tok = self.peek_token().clone();
+                        match &tok.kind {
+                            // `bus` is a hard keyword (the bus
+                            // block), so it arrives as its own
+                            // token here.
+                            TokenKind::Bus => {
+                                self.bump();
+                                via_bus = true;
+                            }
+                            TokenKind::Ident(s) if s == "calls" => {
+                                self.bump();
+                                via_calls = true;
+                            }
+                            other => {
+                                return Err(Diag::parse(
+                                    tok.span,
+                                    format!(
+                                        "unknown relation {:?} in `via` \
+                                         — the composable relations are \
+                                         `calls` and `bus`",
+                                        other
+                                    ),
+                                ));
+                            }
+                        }
+                        if !self.eat(&TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(TokenKind::RBrace, "}")?;
+                    if !via_calls && !via_bus {
+                        return Err(Diag::parse(
+                            via_tok.span,
+                            "`via` must name at least one relation \
+                             (`calls`, `bus`)",
+                        ));
+                    }
+                }
+                TokenKind::Ident(s) if s == "during" => {
+                    self.bump();
+                    // Lifecycle names are hard keywords; accept
+                    // them alongside plain idents.
+                    let t = self.peek_token().clone();
+                    let name = match &t.kind {
+                        TokenKind::Ident(s) => s.clone(),
+                        TokenKind::Birth => "birth".to_string(),
+                        TokenKind::Accept => "accept".to_string(),
+                        TokenKind::Release => "release".to_string(),
+                        TokenKind::Run => "run".to_string(),
+                        TokenKind::Drain => "drain".to_string(),
+                        TokenKind::Dissolve => "dissolve".to_string(),
+                        other => {
+                            return Err(Diag::parse(
+                                t.span,
+                                format!(
+                                    "expected a phase name after \
+                                     `during`, got {:?}",
+                                    other
+                                ),
+                            ));
+                        }
+                    };
+                    self.bump();
+                    during = Some(Ident { name, span: t.span });
+                }
+                TokenKind::Ident(s) if s == "avoiding" => {
+                    self.bump();
+                    avoiding =
+                        Some(self.expect_ident("group name after `avoiding`")?);
+                }
+                _ => break,
+            }
+        }
+        Ok(ClaimForm::ForbidReaches {
+            src,
+            dst,
+            via_calls,
+            via_bus,
+            during,
+            avoiding,
+        })
+    }
+
+    /// `only edges SRC -> DST { publish T; subscribe T; ... }`.
+    fn parse_only_edges_form(&mut self) -> Result<ClaimForm, Diag> {
+        self.bump(); // `only`
+        let ed_tok = self.peek_token().clone();
+        match &ed_tok.kind {
+            TokenKind::Ident(s) if s == "edges" => {
+                self.bump();
+            }
+            other => {
+                return Err(Diag::parse(
+                    ed_tok.span,
+                    format!("expected `edges` after `only`, got {:?}", other),
+                ));
+            }
+        }
+        let src = self.expect_ident("source group name")?;
+        self.expect(TokenKind::Arrow, "->")?;
+        let dst = self.expect_ident("target group name")?;
+        self.expect(TokenKind::LBrace, "{")?;
+        let mut grants = Vec::new();
+        while !matches!(self.peek(), TokenKind::RBrace) {
+            let t = self.peek_token().clone();
+            let publish = match &t.kind {
+                // `publish` / `subscribe` are hard bus keywords.
+                TokenKind::Publish => true,
+                TokenKind::Subscribe => false,
+                other => {
+                    return Err(Diag::parse(
+                        t.span,
+                        format!(
+                            "expected a grant (`publish <topic>;` or \
+                             `subscribe <topic>;`), got {:?}. Call edges \
+                             are not grantable — cross-boundary calls \
+                             are always un-granted edges",
+                            other
+                        ),
+                    ));
+                }
+            };
+            self.bump();
+            let topic = self.parse_topic_ref()?;
+            let semi = self.expect(TokenKind::Semi, ";")?;
+            grants.push(EdgeGrant {
+                publish,
+                topic,
+                span: t.span.merge(semi.span),
+            });
+        }
+        self.expect(TokenKind::RBrace, "}")?;
+        Ok(ClaimForm::OnlyEdges { src, dst, grants })
+    }
+
+    /// `bound C <= N on paths from G`.
+    fn parse_bound_form(&mut self) -> Result<ClaimForm, Diag> {
+        self.bump(); // `bound`
+        let cls_tok = self.peek_token().clone();
+        let base = match &cls_tok.kind {
+            TokenKind::Ident(s) => {
+                let s = s.clone();
+                self.bump();
+                s
+            }
+            other => {
+                return Err(Diag::parse(
+                    cls_tok.span,
+                    format!(
+                        "expected an effect class after `bound`, got {:?}",
+                        other
+                    ),
+                ));
+            }
+        };
+        let class_name = self.finish_class_name(base)?;
+        let class = EffectClass::from_ident(&class_name)
+            .unwrap_or_else(|| {
+                EffectClass::User(self.intern_effect(&class_name))
+            });
+        self.expect(TokenKind::LtEq, "<=")?;
+        let n_tok = self.peek_token().clone();
+        let TokenKind::IntLit(n) = n_tok.kind else {
+            return Err(Diag::parse(
+                n_tok.span,
+                "expected an integer bound after `<=`",
+            ));
+        };
+        self.bump();
+        if n < 0 {
+            return Err(Diag::parse(
+                n_tok.span,
+                "a bound must be non-negative",
+            ));
+        }
+        self.expect(TokenKind::On, "on")?;
+        let p_tok = self.peek_token().clone();
+        match &p_tok.kind {
+            TokenKind::Ident(s) if s == "paths" => {
+                self.bump();
+            }
+            other => {
+                return Err(Diag::parse(
+                    p_tok.span,
+                    format!("expected `paths` after `on`, got {:?}", other),
+                ));
+            }
+        }
+        let f_tok = self.peek_token().clone();
+        match &f_tok.kind {
+            TokenKind::Ident(s) if s == "from" => {
+                self.bump();
+            }
+            other => {
+                return Err(Diag::parse(
+                    f_tok.span,
+                    format!("expected `from` after `paths`, got {:?}", other),
+                ));
+            }
+        }
+        let from = self.expect_ident("group name after `from`")?;
+        Ok(ClaimForm::Bound {
+            class,
+            class_name,
+            class_span: cls_tok.span,
+            limit: n as u64,
+            from,
+        })
+    }
+
+    /// `require subscribes(some G, topic T)` /
+    /// `require publishes(some G, topic T)`.
+    fn parse_require_form(&mut self) -> Result<ClaimForm, Diag> {
+        self.bump(); // `require`
+        let pred_tok = self.peek_token().clone();
+        let publishers = match &pred_tok.kind {
+            TokenKind::Ident(s) if s == "subscribes" => false,
+            TokenKind::Ident(s) if s == "publishes" => true,
+            other => {
+                return Err(Diag::parse(
+                    pred_tok.span,
+                    format!(
+                        "expected `subscribes` or `publishes` after \
+                         `require`, got {:?}",
+                        other
+                    ),
+                ));
+            }
+        };
+        self.bump();
+        self.expect(TokenKind::LParen, "(")?;
+        let s_tok = self.peek_token().clone();
+        match &s_tok.kind {
+            TokenKind::Ident(s) if s == "some" => {
+                self.bump();
+            }
+            other => {
+                return Err(Diag::parse(
+                    s_tok.span,
+                    format!("expected `some` before the group, got {:?}", other),
+                ));
+            }
+        }
+        let group = self.expect_ident("group name")?;
+        self.expect(TokenKind::Comma, ",")?;
+        self.expect_contextual("topic")?;
+        let topic = self.parse_topic_ref()?;
+        self.expect(TokenKind::RParen, ")")?;
+        Ok(ClaimForm::Require {
+            publishers,
+            group,
+            topic,
+        })
+    }
+
+    /// `cover topic in seed(a): subscribed_by(some G)`.
+    fn parse_cover_form(&mut self) -> Result<ClaimForm, Diag> {
+        self.bump(); // `cover`
+        self.expect_contextual("topic")?;
+        self.expect(TokenKind::In, "in")?;
+        self.expect_contextual("seed")?;
+        self.expect(TokenKind::LParen, "(")?;
+        let alias = self.expect_ident("import alias inside `seed(...)`")?;
+        self.expect(TokenKind::RParen, ")")?;
+        self.expect(TokenKind::Colon, ":")?;
+        self.expect_contextual("subscribed_by")?;
+        self.expect(TokenKind::LParen, "(")?;
+        let s_tok = self.peek_token().clone();
+        match &s_tok.kind {
+            TokenKind::Ident(s) if s == "some" => {
+                self.bump();
+            }
+            other => {
+                return Err(Diag::parse(
+                    s_tok.span,
+                    format!("expected `some` before the group, got {:?}", other),
+                ));
+            }
+        }
+        let group = self.expect_ident("group name")?;
+        self.expect(TokenKind::RParen, ")")?;
+        Ok(ClaimForm::Cover { alias, group })
+    }
+
+    /// `count publishers(topic T) == N` (`<=`, `>=`); also
+    /// `count subscribers(topic T) ...`.
+    fn parse_count_form(&mut self) -> Result<ClaimForm, Diag> {
+        self.bump(); // `count`
+        let pred_tok = self.peek_token().clone();
+        let publishers = match &pred_tok.kind {
+            TokenKind::Ident(s) if s == "publishers" => true,
+            TokenKind::Ident(s) if s == "subscribers" => false,
+            other => {
+                return Err(Diag::parse(
+                    pred_tok.span,
+                    format!(
+                        "expected `publishers` or `subscribers` after \
+                         `count`, got {:?}",
+                        other
+                    ),
+                ));
+            }
+        };
+        self.bump();
+        self.expect(TokenKind::LParen, "(")?;
+        self.expect_contextual("topic")?;
+        let topic = self.parse_topic_ref()?;
+        self.expect(TokenKind::RParen, ")")?;
+        let cmp_tok = self.peek_token().clone();
+        let cmp = match &cmp_tok.kind {
+            TokenKind::EqEq => CountCmp::Eq,
+            TokenKind::LtEq => CountCmp::Le,
+            TokenKind::GtEq => CountCmp::Ge,
+            other => {
+                return Err(Diag::parse(
+                    cmp_tok.span,
+                    format!(
+                        "expected `==`, `<=` or `>=` after the count \
+                         set, got {:?}",
+                        other
+                    ),
+                ));
+            }
+        };
+        self.bump();
+        let n_tok = self.peek_token().clone();
+        let TokenKind::IntLit(n) = n_tok.kind else {
+            return Err(Diag::parse(
+                n_tok.span,
+                "expected an integer after the comparison",
+            ));
+        };
+        self.bump();
+        if n < 0 {
+            return Err(Diag::parse(
+                n_tok.span,
+                "a count must be non-negative",
+            ));
+        }
+        Ok(ClaimForm::Count {
+            publishers,
+            topic,
+            cmp,
+            n: n as u64,
+        })
+    }
+
+    /// Expect a specific contextual (Ident-lexed) keyword.
+    fn expect_contextual(&mut self, word: &str) -> Result<(), Diag> {
+        let t = self.peek_token().clone();
+        match &t.kind {
+            TokenKind::Ident(s) if s == word => {
+                self.bump();
+                Ok(())
+            }
+            other => Err(Diag::parse(
+                t.span,
+                format!("expected `{}`, got {:?}", word, other),
+            )),
+        }
+    }
+
+    /// A topic reference: `T` or `alias::T`.
+    fn parse_topic_ref(&mut self) -> Result<TopicRef, Diag> {
+        let head = self.expect_ident("topic name")?;
+        let mut segments = vec![head.clone()];
+        let mut end = head.span;
+        while self.eat(&TokenKind::ColonColon) {
+            let seg = self.expect_ident("topic path segment after `::`")?;
+            end = seg.span;
+            segments.push(seg);
+        }
+        Ok(TopicRef {
+            segments,
+            span: head.span.merge(end),
+        })
+    }
+
+    /// `IDENT` (a declared group name) or `effects(<class>)`.
+    fn parse_claim_set(&mut self) -> Result<ClaimSet, Diag> {
+        if matches!(self.peek(), TokenKind::Ident(s) if s == "effects")
+            && matches!(self.peek_at(1), TokenKind::LParen)
+        {
+            let kw_tok = self.peek_token().clone();
+            self.bump(); // `effects`
+            self.bump(); // `(`
+            let cls = self.expect_ident("effect class name")?;
+            // #382 phase 3: instantiations — `effects(knowledge(delta))`
+            // / `effects(knowledge(*))`.
+            let full = self.finish_class_name(cls.name.clone())?;
+            let close = self.expect(TokenKind::RParen, ")")?;
+            let class = EffectClass::from_ident(&full)
+                .unwrap_or_else(|| {
+                    EffectClass::User(self.intern_effect(&full))
+                });
+            return Ok(ClaimSet::Effects {
+                class,
+                name: full,
+                span: kw_tok.span.merge(close.span),
+            });
+        }
+        let name = self.expect_ident(
+            "group name or `effects(<class>)` in claim position",
+        )?;
+        Ok(ClaimSet::Group(name))
     }
 
     fn parse_capability(&mut self) -> Result<Capability, Diag> {
@@ -1473,6 +2263,9 @@ impl Parser {
                                 }
                             }
                         }
+                        // #382 phase 3: `knowledge(delta)` /
+                        // `knowledge(*)` instantiations.
+                        let name = self.finish_class_name(name)?;
                         items.push(name);
                         if matches!(self.peek(), TokenKind::Comma) {
                             self.bump();
@@ -1797,6 +2590,9 @@ impl Parser {
                 }
             };
             self.bump();
+            // #382 phase 3: `@budget(knowledge(delta) = 1)` — an
+            // indexed-family instantiation as a budget dimension.
+            let key = self.finish_class_name(key)?;
             self.expect(TokenKind::Eq, "=")?;
             let n_tok = self.peek_token().clone();
             let n = match &n_tok.kind {
@@ -1833,13 +2629,35 @@ impl Parser {
                 alloc = Some(n as u32);
             } else if let Some(d) = QuantDim::from_ident(&key) {
                 dims.push((d, n));
+            } else if EffectClass::from_ident(&key).is_none() {
+                // #382 phase 3 companion: `@budget(<user class> = N)`
+                // bounds calls to declared carriers of the class.
+                // Interned like every user-class reference; an
+                // undeclared name is rejected at check with a
+                // did-you-mean, not silently zero.
+                let idx = self.intern_effect(&key);
+                if dims
+                    .iter()
+                    .any(|(e, _)| *e == QuantDim::UserClass(idx))
+                {
+                    return Err(Diag::parse(
+                        key_tok.span,
+                        format!(
+                            "budget dimension `{}` is given twice — the \
+                             later value would silently replace the \
+                             earlier one. State it once.",
+                            key
+                        ),
+                    ));
+                }
+                dims.push((QuantDim::UserClass(idx), n));
             } else {
                 return Err(Diag::parse(
                     key_tok.span,
                     format!(
-                        "unknown budget dimension `{}` — expected \
-                         `alloc_per_call`, `stack_bytes`, `block_points`, \
-                         `publish`, or `fanout`",
+                        "budget dimension `{}` is a built-in effect class \
+                         — the counted built-ins keep their own keys \
+                         (`publish`, `block_points`, `alloc_per_call`)",
                         key
                     ),
                 ));
@@ -2027,6 +2845,19 @@ impl Parser {
                             "`placement` block is only valid inside `main \
                              locus`; locus `{}` is not declared with the \
                              `main` modifier",
+                            name.name
+                        ),
+                    ));
+                }
+                if let LocusMember::Claims(cb) = m {
+                    return Err(Diag::parse(
+                        cb.span,
+                        format!(
+                            "`claims` block is only valid inside `main \
+                             locus`; locus `{}` is not declared with the \
+                             `main` modifier. Main is the closed-world \
+                             gate — bundle-wide claims cannot be \
+                             evaluated anywhere earlier",
                             name.name
                         ),
                     ));
@@ -2440,6 +3271,13 @@ impl Parser {
             // `parse_locus_decl` (parallel to placement/bindings).
             TokenKind::Ident(s) if s == "topology" => {
                 self.parse_topology_block().map(LocusMember::Topology)
+            }
+            // GH #382 phase 1 contextual keyword — `claims { ... }`.
+            // Lexes as Ident; recognized here. The "must be inside
+            // `main locus`" check fires in `parse_locus_decl`
+            // (parallel to placement/bindings).
+            TokenKind::Ident(s) if s == "claims" => {
+                self.parse_claims_block().map(LocusMember::Claims)
             }
             // F.27 v2 contextual keyword — `birth_check { EXPR }
             // -> violate NAME;`. Lexes as Ident; recognized here.
@@ -6631,10 +7469,30 @@ locus L {
     }
 
     #[test]
-    fn parse_budget_rejects_unknown_dimension() {
-        let err = parse_str("@budget(bytes_per_call = 8) fn f() { }")
+    fn parse_budget_accepts_a_user_class_dimension() {
+        // #382 phase 3: an unknown key is no longer a parse error —
+        // it interns as a USER effect-class dimension
+        // (`@budget(llm = 1)`), and an undeclared class is rejected
+        // at typecheck with a did-you-mean (the same
+        // declaration-required split as `@effects(...)` references).
+        let prog = parse_str("@budget(bytes_per_call = 8) fn f() { }")
+            .expect("user-class budget keys parse");
+        let TopDecl::Fn(f) = &prog.items[0] else {
+            panic!("expected fn")
+        };
+        assert!(
+            matches!(
+                f.quantities.as_slice(),
+                [(QuantDim::UserClass(_), 8)]
+            ),
+            "the key must intern as a user-class dimension: {:?}",
+            f.quantities
+        );
+        // A BUILT-IN class as a key stays an error — the counted
+        // built-ins keep their own spellings.
+        let err = parse_str("@budget(syscall = 1) fn f() { }")
             .expect_err("expected parse error");
-        assert!(format!("{:?}", err).contains("alloc_per_call"));
+        assert!(format!("{:?}", err).contains("built-in effect class"));
     }
 
     #[test]

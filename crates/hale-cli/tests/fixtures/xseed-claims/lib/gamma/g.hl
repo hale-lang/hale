@@ -1,0 +1,6 @@
+// The gamma wing: research, fed by the shared metrics subject.
+locus Research {
+    params { total: Int = 0; }
+    bus { subscribe "org.metrics" as on_metric of type Int; }
+    fn on_metric(n: Int) { self.total = self.total + n; }
+}

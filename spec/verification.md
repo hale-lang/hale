@@ -62,6 +62,171 @@ self-republish guarded by `if`/`match`/loop is a terminating state
 machine, not unbounded recursion, and is left alone. See
 `spec/semantics.md` type-check rules 9–10.
 
+## Claims — domain requirements as checked sentences (GH #382, phase 1)
+
+Bundle-level, **named** sentences over the program graph, declared in
+the main locus and evaluated in `hale check` as **errors** — never
+advisories (an advisory claim reads as law and doesn't bind, the #354
+fail-open shape). The motivating property is multi-tenant isolation:
+"no path from domain A to domain B" as one declaration with a name a
+contract can cite, instead of per-fn `@effects` contracts scattered
+across every position with completeness by hope.
+
+```
+group delta_wing = { delta::*, DeltaStore };
+group gamma_wing = { gamma::Research };
+
+main locus Org {
+    params { ... }
+    claims {
+        iso_dg: forbid reaches(delta_wing, gamma_wing);
+        iso_calls: forbid reaches(delta_wing, gamma_wing) via { calls };
+        no_spend: forbid reaches(gamma_wing, effects(money));
+    }
+}
+```
+
+- **Groups are declared vocabulary, never patterns.** A `group` names
+  a set of declared program elements (loci, free fns, imported
+  decls). An unknown member is an **error, not an empty set** — the
+  misspelt-effect-class lesson applied at the group layer — with a
+  did-you-mean. An empty group is a **vacuity error** unless it opts
+  out with `may_be_empty`: a `forbid` trivially satisfied by an empty
+  quantification domain is a fail-open wearing formal clothing. The
+  only glob is `alias::*` — trailing-only enumeration of an imported
+  seed's decl set via the same rename table codegen resolves
+  `alias::Name` through, deliberately mirroring the trailing-`**`
+  rule for bus subjects. Qualified members (`alias::Name`)
+  canonicalize at the mangle stage (#334's path), never by
+  name-suffix matching.
+- **`forbid reaches(SRC, DST)`** — absence under closure: no path
+  from any element of SRC to any element of DST. Evaluation is
+  fn-grained: a locus member projects to all of its methods,
+  lifecycle hooks, and modes, which only ever *adds* sources and
+  sinks (the conservative direction). Edges are the resolved call
+  graph (stdlib bodies merged, handle-method calls resolved) and the
+  declared bus graph (a publish site composes with every subscriber
+  of its subject, wildcard subscribers included). `via { calls }` /
+  `via { bus }` restricts which relations compose; the default is
+  the **full composition** — more edges, conservative. `bus`
+  composes publish sites in the visited fn's own body; the default
+  (with `calls`) is the sound transitive closure.
+- **`effects(<class>)`** in target position: the declared carriers
+  of an effect class (an `@effects(is: {…})` frontier entry or a
+  classified leaf), composed-class masks included. An undeclared
+  class in claim position is an error with a did-you-mean.
+- **Witnesses.** A violation renders a minimal countermodel path in
+  author spelling — `` `delta::Triage::on_task` -(publishes
+  "org.metrics")-> `gamma::Research::on_metric` `` — cross-seed
+  symbols demangled. One witness per claim (the minimal
+  countermodel, not an enumeration).
+- **Unknown ⇒ violation.** An indirect call (function-typed
+  parameter, #353) or a computed publish subject on a path from a
+  `forbid` source cannot be certified and is reported as a
+  violation, exactly as `@no_syscall` treats the same shapes. And
+  the **unresolved-callee backstop**: EVERY method call on a
+  receiver the summarizer cannot type (a struct-literal receiver,
+  a chained `self.a.b` field, a call result, a branch value) fails
+  closed in any judgment that traverses calls — without it,
+  `forbid reaches(A, B)` certified while the forbidden path
+  executed (found by the #382 soundness audit), and a name-keyed
+  version was still blind to WRAPPERS reaching the target
+  transitively (found by the follow-up review). No name comparison
+  is sound; the edge itself is the uncertainty, and the artifact
+  records it (`untyped_receiver_call:<callee>`) inside the hashed
+  model half. Synthesized form/builtin methods (`counts.set`)
+  carry a known receiver type and are exempt; the effect system
+  shares the underlying summarizer gap, tracked on #382.
+- **Placement.** `claims { }` is only legal inside `main locus`
+  (parse error elsewhere): main is the closed-world gate, so
+  bundle-wide claims cannot be evaluated anywhere earlier, and
+  one-main-per-bundle makes the claims root unique. Claim names are
+  the contract-of-record and must be unique.
+
+The remaining verbs (#382 phases 2–5):
+
+- **`only edges A -> B { publish T; subscribe T; }`** — isolation
+  with an exhaustive grant enumeration: every DIRECT edge from A to
+  B must match a granted line, and every un-granted edge is
+  reported (the grant list is the review surface, so the full diff
+  matters). `publish T` and `subscribe T` admit the same bus edge —
+  the verb names which end's declaration is the reviewable line.
+  Call edges are never grantable: a direct call across the boundary
+  is always an un-granted edge. Transitive paths through third
+  parties are `forbid reaches` territory; a subscriber outside B
+  (the `log.**` sink shape) is not an A→B edge and needs no grant.
+- **`bound C <= N on paths from G`** — `@budget`'s per-call
+  semiring behind a claims surface: total sites of user class C
+  reachable per invocation (a call-tree SUM, exactly
+  `@budget(C = N)`'s semantics — two calls to a carrier are two
+  sites). A recursion cycle, loop-nested carrier, indirect call, or
+  computed publish subject is unbounded and violates. The witness
+  carries the count and a representative chain. Built-ins keep
+  their `@budget` spellings.
+- **`require subscribes|publishes(some G, topic T)`** — existence
+  over the DECLARED bus ends (the `bus { }` blocks — "wired" is a
+  declaration property).
+- **`cover topic in seed(a): subscribed_by(some G)`** — bounded
+  universal: every topic the seed imported as `a` declares has a
+  subscriber in G. Every uncovered topic is named. A seed with no
+  topics is an error at the claim (an empty coverage domain holds
+  vacuously).
+- **`count publishers|subscribers(topic T) ==|<=|>= N`** — the
+  cardinality family over distinct loci; `== 1` is the invariant
+  behind every single-writer pattern, and a violation names the
+  competing writers.
+- **`during P`** on `forbid` — restricts sources to the named
+  lifecycle phase / method of each source locus (`during birth` is
+  the quiet-boot claim). A phase naming nothing in the group is an
+  error, not a vacuously-holding claim.
+- **`avoiding G`** on `forbid` — masks G's vertices out of the
+  walk, which makes it the interposition form: "every path from A
+  to B passes through the gate" is `forbid reaches(A, B) avoiding
+  gate`.
+
+**Indexed effect families** (#382 phase 3): `domain wing = { delta,
+gamma };` declares a closed index domain; `effect knowledge(wing);`
+declares a family. Every instantiation `knowledge(delta)` interns
+as an ordinary declared class and `knowledge(*)` as an
+auto-populated composed class over all of them — the whole feature
+is a reduction onto shipped machinery (masks, `only:` complements,
+cross-seed remap, did-you-mean), so a misspelt index is an
+undeclared-class error and a domain member added later lands
+OUTSIDE every existing `only:` contract (#354's fail-closed,
+inherited rather than re-derived). The domain must be declared
+earlier in the same file as the family. Companion:
+`@budget(<user class> = N)` bounds calls to declared carriers of a
+class along any path, with the same loop/indirect unboundedness
+rules as every per-call dimension.
+
+**The topology artifact** (#382 phase 2): `hale check <t>
+--dump-topology` emits the serialized model — sorts (loci, fns,
+topics), relations (calls, publishes, subscribes), the declared
+**groups**, the effect **labels** (declared carriers), and the
+**unknowns** (fns with indirect calls or computed publish subjects
+— the places evaluation failed closed), all in author spelling —
+plus every named claim's normalized form and result, under a
+schema version and a `shape_hash` (FNV-1a/64 over the canonical
+model half, which includes groups/labels/unknowns; claim RESULTS
+are excluded, so one topology under different law keeps one
+shape). `--check-topology <path>` diffs against a committed
+baseline and fails with a regenerate hint — the `.hale.effects`
+precedent: an unreviewed topology or law change fails CI the way
+an API break does. v1 scope, stated honestly: the artifact
+supports independent replay of the serialized user call/bus graph,
+group boundaries, declared bus-end existence/cardinality, and
+declared user-effect carrier labels; every other claim result —
+anything needing the phase relation (`during`), seed membership
+(`cover`), compiler-derived built-in effects, or the
+stdlib-expanded summary the evaluator itself walks — remains a
+compiler-certified report row until the normalized verification
+model lands (that export is the architectural milestone tracked on
+#382). The derivation (source → model) remains the trust root.
+
+Still later (#382): library-tier claims that travel with imports,
+and the annotations-lower-to-claim-IR unification (§8 of the
+issue) once the claim IR has survived real use.
+
 ## Structural & design rules
 
 | Check | Catches | Severity | Enforced by |

@@ -11261,6 +11261,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // ring_layout members are layout tokens, not
                     // type-bearing positions; nothing to collect.
                 }
+                TopDecl::Group(_) => {
+                    // GH #382: groups name decls, not types —
+                    // no type-bearing positions.
+                }
             }
         }
         Ok(())
@@ -11403,6 +11407,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | LocusMember::Bindings(_)
             | LocusMember::Placement(_)
             | LocusMember::Topology(_)
+            // GH #382: claims carry no type-bearing positions.
+            | LocusMember::Claims(_)
             | LocusMember::BirthCheck(_) => {}
             LocusMember::Capacity(_) => {
                 // F.22 slot cell types are concrete in v1; no

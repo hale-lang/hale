@@ -61,6 +61,13 @@ pub enum TopDecl {
     /// CAP-MISSING. v0.2 surface lands here as a parser /
     /// AST commit; the capability-enforcement pass is v0.3.
     Target(TargetDecl),
+    /// GH #382 phase 1: `group NAME = { member, ... };` — declared
+    /// vocabulary for bundle-level claims. A group names a set of
+    /// declared program elements (loci, free fns, imported decls);
+    /// membership is spelled out, never pattern-matched. Unknown
+    /// names are errors, not empty sets — the misspelt-effect-class
+    /// lesson applied at the group layer. Lowers to zero code.
+    Group(GroupDecl),
 }
 
 impl TopDecl {
@@ -76,6 +83,249 @@ impl TopDecl {
             TopDecl::Topic(t) => t.span,
             TopDecl::RingLayout(r) => r.span,
             TopDecl::Target(t) => t.span,
+            TopDecl::Group(g) => g.span,
+        }
+    }
+}
+
+/// GH #382 phase 1: `group NAME = { member, ... } [may_be_empty];`
+///
+/// Declared vocabulary for claims. Two hard rules, both bought with
+/// existing scar tissue: an unknown member name is an ERROR (never an
+/// empty set), and a group that resolves to nothing is a vacuity
+/// error unless it opts out with `may_be_empty` — a `forbid`
+/// trivially satisfied by an empty quantification domain is a
+/// fail-open wearing formal clothing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupDecl {
+    pub name: Ident,
+    pub members: Vec<GroupMember>,
+    /// `may_be_empty` suffix — the explicit opt-out from the
+    /// vacuity guard, for groups that are legitimately empty in
+    /// some configurations.
+    pub may_be_empty: bool,
+    pub span: Span,
+}
+
+/// One group member: a qualified name (`Triage`, `delta::Triage`)
+/// or a trailing glob over a closed declared set (`delta::*`).
+///
+/// The glob is enumeration, not a pattern language: it expands to
+/// the declared decls of the named import alias, trailing-only and
+/// single-segment — deliberately mirroring the trailing-`**` rule
+/// for bus subjects. No infix globs, no partial-name matching.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupMember {
+    /// Path segments before any glob; at least one.
+    pub segments: Vec<Ident>,
+    /// True when the member ends in `::*`.
+    pub glob: bool,
+    pub span: Span,
+}
+
+impl GroupMember {
+    /// The member as written, for diagnostics.
+    pub fn display(&self) -> String {
+        let mut s = self
+            .segments
+            .iter()
+            .map(|i| i.name.as_str())
+            .collect::<Vec<_>>()
+            .join("::");
+        if self.glob {
+            s.push_str("::*");
+        }
+        s
+    }
+}
+
+/// GH #382 phase 1: the `claims { }` main-locus member — named,
+/// bundle-level sentences over the program graph. Completes the
+/// main block family: `params` (who exists), `placement` (where),
+/// `bindings` (the boundary), `bus` (its edges), `claims` (what
+/// must be true of the assembled whole). The distinction from the
+/// existing members is constructive vs restrictive — the others
+/// make the system be some way; claims refuse systems that are
+/// not. Static; lowers to zero code (like `placement`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClaimsBlock {
+    pub entries: Vec<ClaimDecl>,
+    pub span: Span,
+}
+
+/// One named claim: `iso_dg: forbid reaches(a, b) via { calls };`.
+/// The name is the contract-of-record — what a violation, a CI
+/// check, and (later) the topology artifact display.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClaimDecl {
+    pub name: Ident,
+    pub form: ClaimForm,
+    pub span: Span,
+}
+
+/// The claim verbs (#382 build order, phases 1–5).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClaimForm {
+    /// `forbid reaches(SRC, DST) [via { calls, bus }] [during P]
+    /// [avoiding G]` — absence under closure. No path from any
+    /// element of SRC to any element of DST through the permitted
+    /// edge relations. The default (`via` absent) is the FULL
+    /// composition — more edges, the conservative direction.
+    /// `during P` restricts sources to the named lifecycle phase /
+    /// method of each source locus; `avoiding G` masks the named
+    /// group's vertices out of the walk, which makes it the
+    /// interposition form ("every path passes through the gate" =
+    /// no path exists that avoids it).
+    ForbidReaches {
+        src: ClaimSet,
+        dst: ClaimSet,
+        /// Follow call edges. Default true.
+        via_calls: bool,
+        /// Follow bus edges (publish ∘ subscribe). Default true.
+        via_bus: bool,
+        /// `during <phase>` — restrict source roots to this phase.
+        during: Option<Ident>,
+        /// `avoiding <group>` — vertex mask for the walk.
+        avoiding: Option<Ident>,
+    },
+    /// `only edges SRC -> DST { publish T; subscribe T; ... }` —
+    /// isolation with an exhaustive grant enumeration: every DIRECT
+    /// edge from SRC to DST must match a granted line. A grant is a
+    /// bus edge named by its topic; `publish T` and `subscribe T`
+    /// admit the same edge (the verb names which end's declaration
+    /// is the granted, reviewable line). Call edges are not
+    /// grantable — a direct call across the boundary is always an
+    /// un-granted edge. Transitive paths through third parties are
+    /// `forbid reaches` territory; this form constrains the
+    /// boundary itself.
+    OnlyEdges {
+        src: Ident,
+        dst: Ident,
+        grants: Vec<EdgeGrant>,
+    },
+    /// `bound C <= N on paths from G;` — the `@budget` semiring
+    /// behind a claims surface: sum of C-carrying sites along a
+    /// path, max at joins, must not exceed N on any path from any
+    /// fn in G. A cycle, loop-nested carrier, or indirect call on
+    /// a path is Unbounded and violates. v1: C is a user-declared
+    /// class (built-ins keep their `@budget` spellings).
+    Bound {
+        class: EffectClass,
+        /// The class name as written, for diagnostics.
+        class_name: String,
+        class_span: Span,
+        limit: u64,
+        from: Ident,
+    },
+    /// `require subscribes(some G, topic T);` /
+    /// `require publishes(some G, topic T);` — existence: at least
+    /// one member of G subscribes (publishes) T.
+    Require {
+        publishers: bool,
+        group: Ident,
+        topic: TopicRef,
+    },
+    /// `cover topic in seed(a): subscribed_by(some G);` — bounded
+    /// universal: every topic declared in the seed imported as `a`
+    /// has a subscriber in G. A seed with no topics is a vacuity
+    /// error.
+    Cover { alias: Ident, group: Ident },
+    /// `count publishers(topic T) == N;` (`<=`, `>=`) — the
+    /// cardinality family: exactly-one-publisher is the invariant
+    /// behind every single-writer pattern. Counts distinct loci.
+    Count {
+        publishers: bool,
+        topic: TopicRef,
+        cmp: CountCmp,
+        n: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CountCmp {
+    Eq,
+    Le,
+    Ge,
+}
+
+impl CountCmp {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CountCmp::Eq => "==",
+            CountCmp::Le => "<=",
+            CountCmp::Ge => ">=",
+        }
+    }
+    pub fn holds(self, actual: u64, n: u64) -> bool {
+        match self {
+            CountCmp::Eq => actual == n,
+            CountCmp::Le => actual <= n,
+            CountCmp::Ge => actual >= n,
+        }
+    }
+}
+
+/// A topic reference in claim position: `T` or `alias::T`.
+/// Qualified refs canonicalize to the mangled single segment at the
+/// mangle stage (the #334 path) — claims never match topics by
+/// name suffix.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TopicRef {
+    pub segments: Vec<Ident>,
+    pub span: Span,
+}
+
+impl TopicRef {
+    /// The ref as written, for diagnostics.
+    pub fn display(&self) -> String {
+        self.segments
+            .iter()
+            .map(|i| i.name.as_str())
+            .collect::<Vec<_>>()
+            .join("::")
+    }
+}
+
+/// One granted edge inside `only edges { ... }`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EdgeGrant {
+    /// `publish T` when true, `subscribe T` when false. Both admit
+    /// the same src→dst bus edge on T's subject; the verb names
+    /// which end's declaration is the reviewable line.
+    pub publish: bool,
+    pub topic: TopicRef,
+    pub span: Span,
+}
+
+/// A set expression in claim-argument position: a declared group
+/// name, or `effects(<class>)` — every element carrying the class.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClaimSet {
+    Group(Ident),
+    /// `effects(money)` — the set of declared carriers of an
+    /// effect class (an `@effects(is: {...})` frontier entry or a
+    /// classified leaf). Sink form only in phase 1.
+    Effects {
+        class: EffectClass,
+        /// The class name as written, for diagnostics.
+        name: String,
+        span: Span,
+    },
+}
+
+impl ClaimSet {
+    pub fn display(&self) -> String {
+        match self {
+            ClaimSet::Group(i) => i.name.clone(),
+            ClaimSet::Effects { name, .. } => {
+                format!("effects({})", name)
+            }
+        }
+    }
+    pub fn span(&self) -> Span {
+        match self {
+            ClaimSet::Group(i) => i.span,
+            ClaimSet::Effects { span, .. } => *span,
         }
     }
 }
@@ -716,6 +966,13 @@ pub enum LocusMember {
     /// `placement { }` / `bindings { }`. `pinned(node =)` /
     /// `pinned(l3 =)` placement entries resolve against it.
     Topology(TopologyBlock),
+    /// GH #382 phase 1: `claims { }` block — named bundle-level
+    /// claims over the program graph. Valid only inside `main
+    /// locus`: main is the closed-world gate, so bundle-wide
+    /// sentences cannot be evaluated anywhere earlier, and
+    /// one-main-per-bundle makes the claims root unique. Static;
+    /// lowers to zero code.
+    Claims(ClaimsBlock),
     /// F.27 v2 (2026-05-20): `birth_check { EXPR } -> violate
     /// NAME;` synthesis hook. After birth() completes (and birth-
     /// epoch closures fire), each declared birth_check expression
@@ -1534,6 +1791,11 @@ pub enum QuantDim {
     BlockPoints,
     Publish,
     Fanout,
+    /// #382 phase 3 companion: `@budget(<user class> = N)` — bounds
+    /// the number of calls to declared carriers of the class along
+    /// any path. Holds the interned class index; the name renders
+    /// through the seed's `effect_names` table.
+    UserClass(u16),
 }
 
 impl QuantDim {
@@ -1552,6 +1814,9 @@ impl QuantDim {
             QuantDim::BlockPoints => "block_points",
             QuantDim::Publish => "publish",
             QuantDim::Fanout => "fanout",
+            // Resolved against `Program::effect_names` by the
+            // checker (`quantitative::dim_display`).
+            QuantDim::UserClass(_) => "<user effect class>",
         }
     }
 }
@@ -2447,6 +2712,20 @@ pub fn remap_user_effects(items: &mut [TopDecl], map: &[u16]) {
                 EffectAssert::NoPanic => {}
             }
         }
+        // #382 phase 3: `@budget(<user class> = N)` carries an
+        // interned index too.
+        for (d, _) in &mut fd.quantities {
+            if let QuantDim::UserClass(i) = d {
+                if let Some(&to) = map.get(*i as usize) {
+                    *i = to;
+                }
+            }
+        }
+    }
+    fn claim_set(s: &mut ClaimSet, map: &[u16]) {
+        if let ClaimSet::Effects { class: c, .. } = s {
+            class(c, map);
+        }
     }
     for item in items {
         match item {
@@ -2458,8 +2737,35 @@ pub fn remap_user_effects(items: &mut [TopDecl], map: &[u16]) {
                     }
                 }
                 for m in &mut l.members {
-                    if let LocusMember::Fn(fd) = m {
-                        fn_decl(fd, map);
+                    match m {
+                        LocusMember::Fn(fd) => fn_decl(fd, map),
+                        // GH #382: `effects(<class>)` in claim
+                        // position carries a User index too — a
+                        // stale one silently means a DIFFERENT
+                        // class in the merged table, the exact
+                        // aliasing bug this pass exists to prevent.
+                        LocusMember::Claims(cb) => {
+                            for e in &mut cb.entries {
+                                match &mut e.form {
+                                    ClaimForm::ForbidReaches {
+                                        src,
+                                        dst,
+                                        ..
+                                    } => {
+                                        claim_set(src, map);
+                                        claim_set(dst, map);
+                                    }
+                                    ClaimForm::Bound {
+                                        class: c, ..
+                                    } => class(c, map),
+                                    ClaimForm::OnlyEdges { .. }
+                                    | ClaimForm::Require { .. }
+                                    | ClaimForm::Cover { .. }
+                                    | ClaimForm::Count { .. } => {}
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }

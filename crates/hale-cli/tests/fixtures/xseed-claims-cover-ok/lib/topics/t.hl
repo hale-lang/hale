@@ -1,0 +1,14 @@
+// The shared vocabulary seed: one wired topic, one orphan, and the
+// per-wing knowledge family with its classified reader.
+type Task { id: Int; }
+type Digest { week: Int; }
+topic Tasks { payload: Task; }
+topic Digest_t { payload: Digest; }
+
+domain wing = { delta, gamma };
+effect knowledge(wing);
+
+@effects(is: { knowledge(delta) })
+fn read_delta(k: Int) -> Int {
+    return k;
+}

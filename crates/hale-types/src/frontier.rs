@@ -114,6 +114,19 @@ pub fn infer_effects(
                         acc = acc.union(EffectSet::UNCLASSIFIED);
                         continue;
                     }
+                    // #382 receiver-typing: a method call on a
+                    // receiver the summarizer STILL cannot type (an
+                    // index result, a match value, a foreign
+                    // expression — the common shapes now resolve)
+                    // is a method of some bundle locus reached
+                    // through an opaque expression. Same fail-closed
+                    // treatment as an indirect call: it may do
+                    // anything.
+                    if edge.receiver_present && edge.recv_ty.is_none()
+                    {
+                        acc = acc.union(EffectSet::UNCLASSIFIED);
+                        continue;
+                    }
                     let segs: Vec<&str> = name.split("::").collect();
                     if let Some(e) = stdlib_surface::effects_for(&segs) {
                         if !e.is_unclassified() {
