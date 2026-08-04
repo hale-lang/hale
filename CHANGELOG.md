@@ -8,6 +8,35 @@ behavior.
 
 ## Unreleased
 
+### Element chains: the full vocabulary
+
+The v0.13.0 chain mechanism (`filter` / `count` / `into`) gains the
+rest of its table. Stages: `map(expr)` rebinds the element.
+Terminals: `sum()` (Int elements; `map` first to project), `any(pred?)`
+/ `all(pred)` (Bool, with spec'd vacuous truth — `any` on empty is
+false, `all` on empty is true), `first()` / `find(pred?)` /
+`min(key?)` / `max(key?)` (element-valued, **fallible on empty** —
+they lower to an index search whose value is the source's own
+`get(idx)`, so an empty result is the ordinary IndexError and
+`or raise` / `or fallback` / `or handler(err)` apply with zero new
+error machinery), and `each { … }` (the block is spliced as the fused
+loop's body with `it` bound — no closure exists, and `break` /
+`continue` act on the loop; the desugared loop increments first, so
+`continue` advances rather than spinning).
+
+Everything still fuses to one loop with nothing produced between
+stages, so every chain remains legal under `@budget(alloc_per_call =
+0)` / `@hot`, and predicates' effects stay attributed to their own
+source lines. Recognition stays conservative: user facade methods
+named like terminals resolve normally — stage-less recognition
+requires an argument that mentions `it` (unbound outside a chain) or
+`each`'s block, both shapes no ordinary call can have. `min`/`max`
+return the *element* with the least/greatest key (`min_by_key`
+shape). `map` does not compose with the fallible terminals (the `or`
+fallback would need the mapped type while `get` yields the element);
+project after the find. `sort` / `reverse` / `group` remain future
+materializing terminals into caller storage.
+
 ### The caller-arena TLS can no longer outlive the arena it points to (GH #375)
 
 A free-fn factory that builds and grows a `@form(vec)` locus

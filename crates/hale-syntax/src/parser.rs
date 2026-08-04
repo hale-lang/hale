@@ -5344,6 +5344,20 @@ impl Parser {
             stmts.push(Stmt::Expr(expr));
             return Ok(None);
         }
+        // An `each { ... }` chain terminal is block-shaped: like
+        // `while`/`if`, it stands as a statement without a
+        // trailing `;`.
+        if let Expr::Call { callee, args, .. } = &expr {
+            if matches!(args.as_slice(), [Expr::Block(_)])
+                && matches!(
+                    callee.as_ref(),
+                    Expr::Field { name, .. } if name.name == "each"
+                )
+            {
+                stmts.push(Stmt::Expr(expr));
+                return Ok(None);
+            }
+        }
         if self.at(&TokenKind::RBrace) {
             return Ok(Some(expr));
         }
@@ -5580,6 +5594,32 @@ impl Parser {
                         self.expect_member_name()?
                     };
                     let span = expr.span().merge(name.span);
+                    // Chain terminal `each { ... }` (2026-08-04):
+                    // the ONLY place a block argument exists. Safe
+                    // to claim unconditionally after `.each` — no
+                    // type is named `each`, so `{` here can never
+                    // open a struct literal, and a user method
+                    // cannot take a block. The block becomes the
+                    // call's sole argument; the chain desugar
+                    // splices it as the fused loop's body with `it`
+                    // bound (no closure semantics — see chains.rs).
+                    if name.name == "each"
+                        && matches!(self.peek(), TokenKind::LBrace)
+                    {
+                        let b = self.parse_block()?;
+                        let bspan = b.span;
+                        let span2 = span.merge(bspan);
+                        expr = Expr::Call {
+                            callee: Box::new(Expr::Field {
+                                receiver: Box::new(expr),
+                                name,
+                                span,
+                            }),
+                            args: vec![Expr::Block(b)],
+                            span: span2,
+                        };
+                        continue;
+                    }
                     expr = Expr::Field {
                         receiver: Box::new(expr),
                         name,

@@ -164,3 +164,223 @@ fn a_bare_method_is_not_a_chain() {
     assert!(st.success(), "non-zero: {:?}", st);
     assert!(out.contains("len=2"), "got: {:?}", out);
 }
+
+// ==== 2026-08-04 vocabulary tranche ================================
+//
+// map / sum / any / all / first / find / min / max / each. Same
+// mechanism, more rows in the table. The struct-element source
+// exercises `it`-substitution through field access; the fallible
+// terminals ride the source's own `get` (IndexError + ordinary
+// `or`), which is also why they refuse to compose with `map`.
+
+const U: &str = r#"
+    type User { id: Int; age: Int; name: String; }
+
+    @form(vec)
+    locus Users { capacity { heap data of User; } }
+
+    @form(vec)
+    locus Ints { capacity { heap data of Int; } }
+
+    fn seed(us: Users) {
+        us.push(User { id: 1, age: 30, name: "ann" });
+        us.push(User { id: 2, age: 17, name: "bob" });
+        us.push(User { id: 3, age: 45, name: "cid" });
+        us.push(User { id: 4, age: 22, name: "dee" });
+    }
+"#;
+
+#[test]
+fn map_sum_and_stage_composition() {
+    let src = format!(
+        "{U}fn main() {{
+            let us = Users {{ }};
+            seed(us);
+            println(\"s=\", us.map(it.age).sum());
+            println(\"a=\", us.filter(it.age >= 18).map(it.age).sum());
+            println(\"c=\", us.filter(it.age >= 18).count());
+        }}"
+    );
+    let (out, st) = run("map_sum", &src);
+    assert!(st.success(), "non-zero: {:?}", st);
+    assert!(out.contains("s=114"), "got: {:?}", out);
+    assert!(out.contains("a=97"), "got: {:?}", out);
+    assert!(out.contains("c=3"), "got: {:?}", out);
+}
+
+#[test]
+fn any_all_including_vacuous_truth() {
+    let src = format!(
+        "{U}fn main() {{
+            let us = Users {{ }};
+            seed(us);
+            println(\"minor=\", us.any(it.age < 18));
+            println(\"all_adult=\", us.all(it.age >= 18));
+            println(\"all_named=\", us.all(len(it.name) > 0));
+            // vacuous cases on an emptied selection
+            println(\"v_any=\", us.filter(it.age > 100).any(true));
+            println(\"v_all=\", us.filter(it.age > 100).all(false));
+        }}"
+    );
+    let (out, st) = run("any_all", &src);
+    assert!(st.success(), "non-zero: {:?}", st);
+    assert!(out.contains("minor=true"), "got: {:?}", out);
+    assert!(out.contains("all_adult=false"), "got: {:?}", out);
+    assert!(out.contains("all_named=true"), "got: {:?}", out);
+    // any over nothing is false; all over nothing is true — spec'd
+    // vacuous truth, pinned here so nobody "fixes" it.
+    assert!(out.contains("v_any=false"), "got: {:?}", out);
+    assert!(out.contains("v_all=true"), "got: {:?}", out);
+}
+
+#[test]
+fn find_first_min_max_are_fallible_on_empty() {
+    let src = format!(
+        "{U}fn main() {{
+            let us = Users {{ }};
+            seed(us);
+            let bob = us.find(it.id == 2) or User {{ id: 0, age: 0, name: \"?\" }};
+            let ghost = us.find(it.id == 99) or User {{ id: 0, age: 0, name: \"ghost\" }};
+            let fm = us.filter(it.age < 18).first() or User {{ id: 0, age: 0, name: \"none\" }};
+            let young = us.min(it.age) or User {{ id: 0, age: 0, name: \"?\" }};
+            let old = us.max(it.age) or User {{ id: 0, age: 0, name: \"?\" }};
+            let none = us.filter(it.age > 100).min(it.age) or User {{ id: 0, age: 0, name: \"empty\" }};
+            println(\"bob=\", bob.name);
+            println(\"ghost=\", ghost.name);
+            println(\"fm=\", fm.name);
+            println(\"young=\", young.name);
+            println(\"old=\", old.name);
+            println(\"none=\", none.name);
+        }}"
+    );
+    let (out, st) = run("find_min_max", &src);
+    assert!(st.success(), "non-zero: {:?}", st);
+    assert!(out.contains("bob=bob"), "got: {:?}", out);
+    assert!(out.contains("ghost=ghost"), "got: {:?}", out);
+    assert!(out.contains("fm=bob"), "got: {:?}", out);
+    assert!(out.contains("young=bob"), "got: {:?}", out);
+    assert!(out.contains("old=cid"), "got: {:?}", out);
+    assert!(out.contains("none=empty"), "got: {:?}", out);
+}
+
+#[test]
+fn map_into_lands_mapped_elements() {
+    let src = format!(
+        "{U}fn main() {{
+            let us = Users {{ }};
+            seed(us);
+            let ages = Ints {{ }};
+            us.filter(it.age >= 18).map(it.age).into(ages);
+            println(\"n=\", ages.len());
+            println(\"s=\", ages.filter(true).sum());
+        }}"
+    );
+    let (out, st) = run("map_into", &src);
+    assert!(st.success(), "non-zero: {:?}", st);
+    assert!(out.contains("n=3"), "got: {:?}", out);
+    assert!(out.contains("s=97"), "got: {:?}", out);
+}
+
+/// `each { ... }` is the fused loop's body: side effects run per
+/// surviving element, and `continue` / `break` act on the loop —
+/// `continue` must advance to the NEXT element (the increment-first
+/// loop shape; an end-of-body increment would spin forever).
+#[test]
+fn each_block_with_continue_and_break() {
+    let src = format!(
+        "{U}fn main() {{
+            let us = Users {{ }};
+            seed(us);
+            let mut total = 0;
+            us.filter(it.age >= 18).each {{
+                total = total + it.age;
+                println(\"visit=\", it.name);
+            }}
+            println(\"total=\", total);
+            let mut seen = 0;
+            us.each {{
+                if it.id == 2 {{ continue; }}
+                if it.id == 3 {{ break; }}
+                seen = seen + it.age;
+            }}
+            println(\"seen=\", seen);
+        }}"
+    );
+    let (out, st) = run("each", &src);
+    assert!(st.success(), "non-zero: {:?}", st);
+    assert!(out.contains("visit=ann"), "got: {:?}", out);
+    assert!(out.contains("visit=cid"), "got: {:?}", out);
+    assert!(out.contains("visit=dee"), "got: {:?}", out);
+    assert!(out.contains("total=97"), "got: {:?}", out);
+    assert!(out.contains("seen=30"), "got: {:?}", out);
+}
+
+/// User facade methods that share terminal names keep resolving:
+/// stage-less calls whose arguments do not mention `it` are ordinary
+/// method calls, never chains. The hijack-safety half of the
+/// recognition gate.
+#[test]
+fn user_methods_named_like_terminals_still_resolve() {
+    let src = r#"
+        locus Counterish {
+            params { hits: Int = 0; }
+            fn any(v: Int) -> Bool { self.hits = self.hits + 1; return v > 0; }
+            fn find(v: Int) -> Int { return v * 2; }
+        }
+        fn main() {
+            let c = Counterish { };
+            println("a=", c.any(5));
+            println("f=", c.find(21));
+        }
+    "#;
+    let (out, st) = run("facade", src);
+    assert!(st.success(), "non-zero: {:?}", st);
+    assert!(out.contains("a=true"), "got: {:?}", out);
+    assert!(out.contains("f=42"), "got: {:?}", out);
+}
+
+/// A chain nested inside another chain's predicate.
+#[test]
+fn nested_chain_in_a_predicate() {
+    let src = format!(
+        "{U}fn main() {{
+            let us = Users {{ }};
+            seed(us);
+            let above = us.filter(it.age > us.map(it.age).sum() / 4).count();
+            println(\"above=\", above);
+        }}"
+    );
+    let (out, st) = run("nested", &src);
+    assert!(st.success(), "non-zero: {:?}", st);
+    // avg = 114/4 = 28 -> ages 30, 45 above.
+    assert!(out.contains("above=2"), "got: {:?}", out);
+}
+
+/// A find miss under `or raise` diverges like any raised fallible —
+/// the process exits non-zero rather than fabricating an element.
+#[test]
+fn find_miss_or_raise_diverges() {
+    let src = format!(
+        "{U}fn main() {{
+            let us = Users {{ }};
+            seed(us);
+            let hit = us.find(it.id == 2) or raise;
+            println(\"hit=\", hit.name);
+            let gone = us.find(it.id == 99) or raise;
+            println(\"unreachable=\", gone.name);
+        }}"
+    );
+    let (out, st) = run("find_raise", &src);
+    assert!(
+        !st.success(),
+        "a raised find miss must not exit clean: {:?}\n{}",
+        st,
+        out
+    );
+    assert!(out.contains("hit=bob"), "the hit path runs first: {:?}", out);
+    assert!(
+        !out.contains("unreachable="),
+        "the miss must diverge: {:?}",
+        out
+    );
+}
