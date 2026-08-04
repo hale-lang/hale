@@ -19250,6 +19250,40 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 } else {
                     if in_method_with_scratch {
+                        // GH #383: dissolve loci bound in this method
+                        // body BEFORE the scratch dies. `return` used
+                        // to leave the deferred-dissolve frame to be
+                        // popped UNFLUSHED by the terminated-body arm
+                        // in locus/method.rs, so a locus `let`-bound
+                        // in any method that returns was never
+                        // dissolved — only fall-through exits ran the
+                        // flush. Independent of factory returns: a
+                        // plain `let w = Watcher { };` leaked the same
+                        // way.
+                        //
+                        // Order is load-bearing. A dissolve is a
+                        // method call, and its call site publishes the
+                        // caller-arena TLS — so flushing AFTER
+                        // `close_method_scratch()` publishes a pointer
+                        // to freed scratch, reproducing the #375/#381
+                        // use-after-free signature. Flush first.
+                        //
+                        // The frame CONTENTS are saved and restored
+                        // for the same reason the scratch state below
+                        // is: the flush pops, and a body with N
+                        // returns must emit dissolves on every path
+                        // while the epilogue's single pop still
+                        // balances.
+                        let saved_frame = self
+                            .deferred_dissolves
+                            .last()
+                            .cloned()
+                            .unwrap_or_default();
+                        self.flush_dissolve_frame_kind(false)?;
+                        self.push_dissolve_frame();
+                        if let Some(f) = self.deferred_dissolves.last_mut() {
+                            *f = saved_frame;
+                        }
                         // Save/restore scratch state so subsequent
                         // `return` statements in the same method
                         // body also emit the destroy. Without this,
@@ -19398,6 +19432,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 } else if in_method_with_scratch {
                     let copied = self.emit_method_return_deep_copy(v, &declared_ty)?;
+                    // GH #383: flush before the scratch dies — see the
+                    // void-return arm for the ordering argument. The
+                    // deep-copy above already moved the return value
+                    // into the caller's arena, so dissolving here
+                    // cannot strand it.
+                    let saved_frame = self
+                        .deferred_dissolves
+                        .last()
+                        .cloned()
+                        .unwrap_or_default();
+                    self.flush_dissolve_frame_kind(false)?;
+                    self.push_dissolve_frame();
+                    if let Some(f) = self.deferred_dissolves.last_mut() {
+                        *f = saved_frame;
+                    }
                     // Multi-return scratch-destroy fix — see
                     // matching note in the void-return arm above.
                     let saved_scratch = self.current_method_scratch;
