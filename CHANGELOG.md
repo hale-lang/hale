@@ -8,6 +8,40 @@ behavior.
 
 ## Unreleased
 
+### Receiver typing: the summarizer root fix (GH #382 soundness audit)
+
+The four receiver shapes behind the audit's false-certificate class
+are now TYPED at the source: a struct-literal receiver
+(`B { }.work(n)`), a chained field (`self.mid.inner.work(n)`, via
+the per-locus field maps applied transitively, plain-struct fields
+included), a call-result receiver (`let b = make_b(); b.work(n)`,
+via a free-fn return-type map — methods never return loci, per the
+no-locus-return rule), and a uniform if/else value. Typing also
+covers the iteration shapes real programs walk: `for` binders over
+array-typed fields, capacity slots, array-typed params, array
+literals, and the implicit accepted-children collection (`for
+child in self.children` types from the `accept` param); `or`
+dispositions unwrap to the inner value's type; and a single-slot
+collection's `.get(i)` returns its element type (the stdlib
+chain-runner shape). Net effect on the committed corpus baseline:
+ZERO rows changed — identical certificates, with the
+false-certificate shapes closed and no over-fire. Each resolves to a real call-graph edge,
+so `@effects(none:)`, every `@no_*` certificate, `@budget`, the
+quantitative dimensions, AND the claims evaluators now see the
+path and report real witnesses instead of refusing to certify —
+the audit's repro programs ship as standing negative controls for
+both systems (`receiver_shapes.rs`).
+
+The residue — a receiver that still cannot be typed (an index
+result, a match value, a foreign expression) — now fails closed
+consistently in every judgment that traverses calls: the claims
+backstop, `@effects` classes, `@budget`, and the quantitative
+dimensions all treat the edge as may-do-anything. This closes the
+temporarily inconsistent state where a bundle-level claim refused a
+path that a fn-level certificate quietly passed. The topology
+artifact keeps recording residual edges
+(`untyped_receiver_call:<callee>`) inside the hashed model half.
+
 ### Claims: the unresolved-callee backstop (GH #382 soundness audit)
 
 An adversarial audit of the claims evaluators found a

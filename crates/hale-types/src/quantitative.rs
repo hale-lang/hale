@@ -261,7 +261,11 @@ fn count_dim(
     // `return f(v);` passed while the callee allocated, which is the
     // budget half of the same certificate hole as the effect classes.
     for edge in &fs.calls {
-        if edge.indirect {
+        // #382: an untypeable-receiver method call gets the same
+        // unbounded treatment as an indirect call.
+        if edge.indirect
+            || (edge.receiver_present && edge.recv_ty.is_none())
+        {
             total = total.add(Qty::Unbounded);
         }
     }

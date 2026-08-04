@@ -831,20 +831,23 @@ fn resolve_member(
 
 // ===================== unresolved-callee backstop =================
 
-/// The unresolved-callee backstop (#382 soundness audit, round 2).
+/// The unresolved-callee backstop (#382 soundness audit).
 ///
-/// The summarizer resolves receivers it can type (params fields,
-/// annotated locals, direct-literal lets); a receiver it cannot —
-/// a struct-literal receiver, a chained `self.a.b`, a call result,
-/// a branch value — lands as `Unresolved` with `recv_ty: None` and
+/// After the receiver-typing root fix, the summarizer types struct-
+/// literal receivers, chained fields, call results, and uniform
+/// branch values — those all resolve to real edges now. What lands
+/// here is the RESIDUE: a receiver that still cannot be typed at
+/// this layer (an index result, a match value, a foreign
+/// expression), recorded as `Unresolved` with `recv_ty: None` and
 /// `receiver_present: true`. Such a call is a method of SOME bundle
-/// locus, reached through an expression the walk cannot see
-/// through — and because it may be a WRAPPER that reaches the
-/// target transitively, no name comparison against the target set
-/// is sound (the wrapper's name matches nothing). Any judgment
-/// that traverses calls must fail closed on the edge itself.
-/// `recv_ty: Some` edges (synthesized form/builtin methods like
-/// `counts.set`) are known non-locus receivers and stay exempt.
+/// locus reached through an opaque expression — and because it may
+/// be a WRAPPER that reaches the target transitively, no name
+/// comparison against the target set is sound. Any judgment that
+/// traverses calls fails closed on the edge itself; the effect and
+/// budget walkers apply the same rule, so fn-level certificates
+/// and bundle-level claims agree. `recv_ty: Some` edges
+/// (synthesized form/builtin methods like `counts.set`) are known
+/// non-locus receivers and stay exempt.
 fn unresolved_untyped_receiver(
     edge: &crate::alloc_summary::CallEdge,
 ) -> bool {

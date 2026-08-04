@@ -694,17 +694,18 @@ fn a_projection_empty_group_is_an_error_at_either_endpoint() {
 }
 
 // =====================================================================
-// The unresolved-callee backstop (#382 soundness audit)
+// Receiver typing (#382 soundness audit — the root fix)
 // =====================================================================
 //
-// Four receiver shapes land in the call graph as `Unresolved` with
-// no receiver type — a struct-literal receiver, a chained field, a
-// call result, a branch value — and a walk that ignored them
-// certified a `forbid` while the forbidden path executed at
-// runtime. The backstop fails closed when such a call's NAME
-// matches a method of the claim's target set.
+// Four receiver shapes — a struct-literal receiver, a chained
+// field, a call result, a branch value — used to land as untyped
+// unresolved edges the walk silently dropped: a claim certified
+// while the forbidden path executed at runtime. The summarizer now
+// TYPES those receivers, so each shape resolves to a real edge and
+// the claim reports a real witness. The fail-closed backstop
+// remains for what stays genuinely untypeable (an index result).
 
-fn backstop_fixture(go_body: &str) -> String {
+fn typing_fixture(go_body: &str) -> String {
     format!(
         r#"
         locus B {{ fn work(n: Int) -> Int {{ return n * 2; }} }}
@@ -725,83 +726,68 @@ fn backstop_fixture(go_body: &str) -> String {
     )
 }
 
-fn assert_fails_closed(body: &str, shape: &str) {
-    let ds = diags(&backstop_fixture(body));
+fn assert_real_witness(body: &str, shape: &str) {
+    let ds = diags(&typing_fixture(body));
+    let hit = ds
+        .iter()
+        .find(|m| m.contains("claim `iso` violated"))
+        .unwrap_or_else(|| {
+            panic!("{} must resolve to a real violation: {:?}", shape, ds)
+        });
     assert!(
-        ds.iter().any(|m| m.contains("claim `iso` cannot be certified")
-            && m.contains("receiver the compiler cannot type")),
-        "{} must fail closed, not certify: {:?}",
+        hit.contains("B::work"),
+        "{} must produce a witness reaching the target: {}",
         shape,
-        ds
+        hit
+    );
+    assert!(
+        !hit.contains("cannot be certified"),
+        "{} must be a resolved edge, not a fail-closed one: {}",
+        shape,
+        hit
     );
 }
 
-/// AUDIT SHAPE 3: struct-literal receiver.
+/// AUDIT SHAPE 3: struct-literal receiver — resolved.
 #[test]
-fn a_literal_receiver_call_fails_closed() {
-    assert_fails_closed("return B { }.work(n);", "a literal receiver");
+fn a_literal_receiver_resolves_to_a_real_witness() {
+    assert_real_witness("return B { }.work(n);", "a literal receiver");
 }
 
-/// AUDIT SHAPE 5: chained field receiver.
+/// AUDIT SHAPE 5: chained field receiver — resolved through the
+/// per-locus field maps.
 #[test]
-fn a_chained_field_receiver_call_fails_closed() {
-    assert_fails_closed(
+fn a_chained_field_receiver_resolves_to_a_real_witness() {
+    assert_real_witness(
         "return self.mid.inner.work(n);",
         "a chained field receiver",
     );
 }
 
-/// AUDIT SHAPE 6: call-result receiver.
+/// AUDIT SHAPE 6: call-result receiver — resolved through the
+/// free-fn return-type map.
 #[test]
-fn a_call_result_receiver_call_fails_closed() {
-    assert_fails_closed(
+fn a_call_result_receiver_resolves_to_a_real_witness() {
+    assert_real_witness(
         "let b = make_b(); return b.work(n);",
         "a call-result receiver",
     );
 }
 
-/// AUDIT SHAPE 8: branch-valued receiver.
+/// AUDIT SHAPE 8: branch-valued receiver — resolved when every
+/// branch types to the same locus.
 #[test]
-fn a_branch_valued_receiver_call_fails_closed() {
-    assert_fails_closed(
+fn a_branch_valued_receiver_resolves_to_a_real_witness() {
+    assert_real_witness(
         "let b = if n > 0 { B { } } else { B { } }; return b.work(n);",
         "a branch-valued receiver",
     );
 }
 
-/// EVERY untyped-receiver call fails closed, even one whose name
-/// the target set does not declare — it could be a WRAPPER
-/// reaching the target transitively (the follow-up review's
-/// counterexample class), so no name comparison is sound.
+/// The follow-up review's wrapper counterexample — now a RESOLVED
+/// two-hop witness, not a fail-closed refusal.
 #[test]
-fn an_unresolved_call_fails_closed_regardless_of_name() {
-    let src = r#"
-        locus B { fn work(n: Int) -> Int { return n * 2; } }
-        locus C { fn other(n: Int) -> Int { return n + 1; } }
-        locus A {
-            fn go(n: Int) -> Int { return C { }.other(n); }
-        }
-        group a_side = { A };
-        group b_side = { B };
-        main locus App {
-            params { a: A = A { }; }
-            claims { iso: forbid reaches(a_side, b_side); }
-        }
-        fn main() { App { }; }
-    "#;
-    let ds = diags(src);
-    assert!(
-        ds.iter().any(|m| m.contains("cannot be certified")),
-        "an untyped receiver must fail closed even when the name \
-         is outside the target set — it could be a wrapper: {:?}",
-        ds
-    );
-}
-
-/// The reviewer's wrapper counterexamples: an untyped-receiver
-/// call to a WRAPPER that reaches the target/carrier transitively.
-#[test]
-fn an_untyped_receiver_wrapper_reaching_the_group_target_fails_closed() {
+fn a_wrapper_through_an_untyped_receiver_resolves_end_to_end() {
     let src = r#"
         locus B { fn work(n: Int) -> Int { return n * 2; } }
         locus Bridge {
@@ -820,17 +806,53 @@ fn an_untyped_receiver_wrapper_reaching_the_group_target_fails_closed() {
         fn main() { App { }; }
     "#;
     let ds = diags(src);
+    let hit = ds
+        .iter()
+        .find(|m| m.contains("claim `iso` violated"))
+        .unwrap_or_else(|| {
+            panic!("the wrapper must resolve to a violation: {:?}", ds)
+        });
     assert!(
-        ds.iter().any(|m| m.contains("claim `iso` cannot be certified")
-            && m.contains("`hop`")),
-        "the wrapper hop must fail closed: {:?}",
+        hit.contains("Bridge::hop") && hit.contains("B::work"),
+        "the witness must carry the full wrapper path: {}",
+        hit
+    );
+}
+
+/// The resolution CONTROL: a resolved edge to a locus OUTSIDE the
+/// target group certifies — typing the receiver means no more
+/// blanket fail-closed on these shapes.
+#[test]
+fn a_resolved_receiver_outside_the_target_certifies() {
+    let src = r#"
+        locus B { fn work(n: Int) -> Int { return n * 2; } }
+        locus C { fn other(n: Int) -> Int { return n + 1; } }
+        locus A {
+            fn go(n: Int) -> Int { return C { }.other(n); }
+        }
+        group a_side = { A };
+        group b_side = { B };
+        main locus App {
+            params { a: A = A { }; }
+            claims { iso: forbid reaches(a_side, b_side); }
+        }
+        fn main() { App { }; }
+    "#;
+    let ds = diags(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("violated")
+            || m.contains("cannot be certified")),
+        "a typed literal receiver outside the target must certify: {:?}",
         ds
     );
 }
 
+/// Wrapper reaching an effect carrier / bound carrier — resolved
+/// with real verdicts (the follow-up review's other two
+/// counterexamples).
 #[test]
-fn an_untyped_receiver_wrapper_reaching_an_effect_carrier_fails_closed() {
-    let src = r#"
+fn wrapper_effect_and_bound_carriers_resolve() {
+    let effects = r#"
         effect money;
         @effects(is: {money})
         fn charge(n: Int) -> Int { return n; }
@@ -847,18 +869,13 @@ fn an_untyped_receiver_wrapper_reaching_an_effect_carrier_fails_closed() {
         }
         fn main() { App { }; }
     "#;
-    let ds = diags(src);
+    let ds = diags(effects);
     assert!(
-        ds.iter()
-            .any(|m| m.contains("claim `no_spend` cannot be certified")),
-        "the wrapper to the carrier must fail closed: {:?}",
+        ds.iter().any(|m| m.contains("claim `no_spend` violated")),
+        "the wrapper to the carrier must be a real violation: {:?}",
         ds
     );
-}
-
-#[test]
-fn an_untyped_receiver_wrapper_reaching_a_bound_carrier_fails_closed() {
-    let src = r#"
+    let bound = r#"
         effect llm;
         @effects(is: {llm})
         fn ask(n: Int) -> Int { return n; }
@@ -875,50 +892,44 @@ fn an_untyped_receiver_wrapper_reaching_a_bound_carrier_fails_closed() {
         }
         fn main() { App { }; }
     "#;
-    let ds = diags(src);
+    let ds = diags(bound);
     assert!(
         ds.iter().any(|m| m.contains("claim `none` violated")
-            && m.contains("unbounded")),
-        "the wrapper to the bound carrier must be unbounded: {:?}",
+            && m.contains("carries 1")),
+        "the wrapper carrier must COUNT (one site, limit zero): {:?}",
         ds
     );
 }
 
-/// The backstop covers `only edges` and `bound` too.
+// =====================================================================
+// The fail-closed backstop, for what stays genuinely untypeable
+// =====================================================================
+
+/// An INDEX-result receiver has no declared type at this layer —
+/// the backstop still refuses to certify over it.
 #[test]
-fn the_backstop_covers_only_edges_and_bound() {
-    let only = backstop_fixture("return B { }.work(n);").replace(
-        "iso: forbid reaches(a_side, b_side);",
-        "gate: only edges a_side -> b_side { };",
-    );
-    let ds = diags(&only);
-    assert!(
-        ds.iter().any(|m| m.contains("claim `gate` cannot be certified")),
-        "only edges must fail closed on the untyped receiver: {:?}",
-        ds
-    );
-    let bound = r#"
-        effect llm;
-        locus Model {
-            @effects(is: {llm})
-            fn ask(p: Int) -> Int { return p; }
+fn an_index_receiver_still_fails_closed() {
+    let src = r#"
+        locus B { fn work(n: Int) -> Int { return n * 2; } }
+        locus A {
+            fn go(n: Int) -> Int {
+                let xs = [B { }];
+                return xs[0].work(n);
+            }
         }
-        locus Planner {
-            fn plan(n: Int) -> Int { return Model { }.ask(n); }
-        }
-        group planners = { Planner };
+        group a_side = { A };
+        group b_side = { B };
         main locus App {
-            params { p: Planner = Planner { }; }
-            claims { one: bound llm <= 5 on paths from planners; }
+            params { a: A = A { }; }
+            claims { iso: forbid reaches(a_side, b_side); }
         }
         fn main() { App { }; }
     "#;
-    let ds = diags(bound);
+    let ds = diags(src);
     assert!(
-        ds.iter().any(|m| m.contains("claim `one` violated")
-            && m.contains("unbounded")),
-        "bound must treat an untyped carrier-named call as \
-         unbounded: {:?}",
+        ds.iter().any(|m| m.contains("claim `iso` cannot be certified")
+            && m.contains("receiver the compiler cannot type")),
+        "an index receiver must fail closed: {:?}",
         ds
     );
 }

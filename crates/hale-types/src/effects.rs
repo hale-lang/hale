@@ -1016,6 +1016,19 @@ fn check_class(
                     name
                 ));
             }
+            // #382 receiver-typing: a method call on a receiver that
+            // STILL cannot be typed (an index result, a match value,
+            // a foreign expression) is a method of some bundle locus
+            // reached through an opaque expression — same fail-closed
+            // rule as an indirect call.
+            if edge.receiver_present && edge.recv_ty.is_none() {
+                return Some(format!(
+                    "`{}` — a method call on a receiver the compiler \
+                     cannot type; bind the receiver to a typed field \
+                     or local so the call resolves",
+                    name
+                ));
+            }
             let segs: Vec<&str> = name.split("::").collect();
             let Some(eff) = crate::stdlib_surface::effects_for(&segs) else {
                 // ABSENT must fail closed, exactly like UNCLASSIFIED.
