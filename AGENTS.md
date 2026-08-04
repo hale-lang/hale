@@ -246,6 +246,12 @@ surprises:
 
 - Bus subscriber declared after publisher fired → instantiate
   subscribers first.
+- Process boots, then idles — a handler "never fires", a socket
+  "never opened" → check params order. An inline-on-main child
+  whose `run()` never returns blocks every LATER param from being
+  born (its `birth()` never runs). Declare the keep-alive child
+  last, or place it `pinned` / on a non-`main` pool. `hale check`
+  warns on the provable shape.
 - Topic ref used as expression value → topics aren't values;
   they address bus channels only.
 - `self` outside a method body → you're in a free fn or top

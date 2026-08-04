@@ -472,6 +472,16 @@ websocket's client is the reference). **[convention]**
 - **One non-returning `run()` per classic cooperative pool** —
   a second never starts. Give daemons their own pool or pin
   them. **[convention]**
+- **Declare non-returning inline children last.** Params birth in
+  declaration order and an inline-on-main child's `run()` runs
+  synchronously during its own birth — so a keep-alive child
+  declared early means every later param is never **born**: its
+  `birth()` never runs, its subscriptions and sockets never
+  exist, and the process looks like it booted and idles. Declare
+  the blocker last, or move it off the main thread (`pinned` /
+  a non-`main` pool) — only the blocker's placement matters. The
+  compiler warns where it can prove the shape; absence of the
+  warning is not a guarantee. **[warn]**
 - A single-writer state locus read from other pools: pin it, and
   poll scalar fields across pools rather than sharing heap
   values. **[convention]**
@@ -928,9 +938,14 @@ Write the workaround knowing it's a placeholder.
   retire** (String leaves do, since v0.11.3). Until then:
   genuinely-churning Bytes fields in a reused `BytesBuilder`;
   nested compound fields in their own locus or flattened.
-- **Synced (cross-pool) `@form` maps don't retire** replaced
-  cells (needs an epoch scheme). Churned shared maps on hot
-  paths stay single-pool for now.
+- **`striped` / `lockfree` `@form` maps don't retire** replaced
+  cells — a churned String-bearing cell on those modes still
+  accumulates. (`sync = serialized` retires since 2026-08-03:
+  reads are owned snapshots cloned into the caller's arena, so
+  churned shared maps no longer need to stay single-pool. The
+  clone is per String field per read — a read-heavy hot path on
+  a String-bearing cell now pays it, so weigh serialized against
+  single-pool on read-dominated shapes.)
 - **Dynamic per-instance bus subjects** (the conversation-per-
   topic shape). Keyed routing covers the *bounded/known* key-set
   case — including String keys — but an unbounded,
