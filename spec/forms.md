@@ -789,6 +789,27 @@ into a plain `@form(hashmap)` receiver are typecheck-rejected
 - **Cross-pool, write-heavy, cap unknown / dynamic**:
   `sync = serialized`. Per-map mutex; writers serialize but
   the path is short. Beats striped on 2-core / cheap-payload.
+
+  **Reads are owned snapshots; replaced clones retire
+  (2026-08-03, downstream handoff P1).** Every read path on a
+  serialized map whose cell carries String fields (`get`,
+  `entry_at`, `for` iteration) clones those Strings into the
+  *caller's* arena, inside the same critical section that read
+  the cell. The value a reader holds is therefore a plain owned
+  value — it stays intact regardless of later writes, and a
+  reader never observes a writer's in-place mutations through a
+  previously-read result. That ownership is what lets the map
+  retire replaced clones exactly like a `sync = none` map (the
+  anchor-retirement machinery in `memory.md`): previously a
+  serialized map never retired, because a raw cell pointer held
+  by an off-pool reader could outlive the writer's activation —
+  the leak was the safety mechanism. A continuously-churned
+  serialized map now holds steady-state RSS instead of growing
+  per replace. `striped` and `lockfree` maps do **not** retire
+  yet (their read paths bracket on rwlock / lf_enter rather than
+  the map mutex, and their grow rebuilds slots concurrently — a
+  separate audit); a churned String-bearing cell on those modes
+  still accumulates.
 - **Cross-pool, read-heavy or per-op work is expensive**:
   `sync = striped`. Rwlock lets concurrent readers run in
   parallel; cache-padded cells avoid false-sharing between
