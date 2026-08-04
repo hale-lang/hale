@@ -633,6 +633,66 @@ fn the_star_family_works_as_a_claim_sink() {
     );
 }
 
+/// Projection vacuity: a group of fn-less loci passes the
+/// decl-grain guard but projects to no executable vertices — a
+/// claim over it proves nothing and must refuse, at either
+/// endpoint.
+#[test]
+fn a_projection_empty_group_is_an_error_at_either_endpoint() {
+    let base = r#"
+        locus Store { params { cap: Int = 8; } }
+        locus A { fn go(n: Int) -> Int { return n; } }
+        group data = { Store };
+        group a_side = { A };
+        main locus App {
+            params { s: Store = Store { }; a: A = A { }; }
+            claims { CLAIM }
+        }
+        fn main() { App { }; }
+    "#;
+    let ds = diags(&base.replace(
+        "CLAIM",
+        "iso: forbid reaches(data, a_side);",
+    ));
+    assert!(
+        ds.iter().any(|m| m.contains("projects to no executable")
+            && m.contains("source")),
+        "a fn-less source must refuse: {:?}",
+        ds
+    );
+    let ds = diags(&base.replace(
+        "CLAIM",
+        "iso: forbid reaches(a_side, data);",
+    ));
+    assert!(
+        ds.iter().any(|m| m.contains("projects to no executable")
+            && m.contains("target")),
+        "a fn-less target must refuse: {:?}",
+        ds
+    );
+    let ds = diags(&base.replace(
+        "CLAIM",
+        "one: bound llm <= 1 on paths from data;",
+    ));
+    // (`llm` is undeclared here — both errors are acceptable
+    // evidence that the claim refused; assert the projection one
+    // fires when the class exists.)
+    let ds2 = diags(
+        &base
+            .replace("locus Store", "effect llm;\n        locus Store")
+            .replace(
+                "CLAIM",
+                "one: bound llm <= 1 on paths from data;",
+            ),
+    );
+    assert!(
+        ds2.iter().any(|m| m.contains("projects to no executable")),
+        "a fn-less bound source must refuse: {:?} (first run: {:?})",
+        ds2,
+        ds
+    );
+}
+
 /// Domain declaration guards: empty and duplicate domains are parse
 /// errors.
 #[test]

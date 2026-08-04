@@ -144,6 +144,37 @@ impl ResolvedGroup {
     }
 }
 
+/// Projection vacuity: vocabulary-nonempty (the group names decls)
+/// is not the same as relation-projection-nonempty (this claim has
+/// executable vertices). A group of fn-less loci — pure-data stores
+/// — passes the decl-grain vacuity guard but projects to nothing
+/// the fn-grained walk can see, so a `forbid`/`bound`/`only edges`
+/// over it proves nothing while reading as law. Fail closed.
+fn projection_vacuity(
+    c: &ClaimDecl,
+    which: &str,
+    name: &Ident,
+    g: &ResolvedGroup,
+    summary: &AllocSummary,
+    diags: &mut Vec<Diag>,
+) -> bool {
+    if g.decl_count == 0 || !g.fn_set(summary).is_empty() {
+        return false;
+    }
+    diags.push(Diag::ty(
+        name.span,
+        format!(
+            "claim `{}`: group `{}` projects to no executable {} \
+             vertices — its declarations have no fns, so the claim \
+             proves nothing about them. The fn-grained walk cannot \
+             see pure-data access; name the loci that HOLD the \
+             behavior, or drop the claim",
+            c.name.name, name.name, which
+        ),
+    ));
+    true
+}
+
 /// Everything the evaluators share.
 struct Cx<'a> {
     groups: BTreeMap<String, ResolvedGroup>,
@@ -828,6 +859,19 @@ fn evaluate_forbid_reaches(
         unreachable!("rejected in validation")
     };
     let src_group = &cx.groups[&src_name.name];
+    if projection_vacuity(
+        c, "source", src_name, src_group, &cx.summary, diags,
+    ) {
+        return "invalid";
+    }
+    if let ClaimSet::Group(dst_name) = dst {
+        let dst_group = &cx.groups[&dst_name.name];
+        if projection_vacuity(
+            c, "target", dst_name, dst_group, &cx.summary, diags,
+        ) {
+            return "invalid";
+        }
+    }
     let mut roots = src_group.fn_set(&cx.summary);
     // `during P` — restrict sources to the named phase / method of
     // each source locus. Free fns have no phases and drop out.
@@ -1037,6 +1081,13 @@ fn evaluate_only_edges(
     };
     let src_g = &cx.groups[&src.name];
     let dst_g = &cx.groups[&dst.name];
+    if projection_vacuity(c, "source", src, src_g, &cx.summary, diags)
+        || projection_vacuity(
+            c, "target", dst, dst_g, &cx.summary, diags,
+        )
+    {
+        return "invalid";
+    }
     let granted: BTreeSet<&str> = grants
         .iter()
         .map(|g| g.topic.segments[0].name.as_str())
@@ -1192,6 +1243,10 @@ fn evaluate_bound(
     };
     let mask = crate::frontier::class_mask_with(*class, &cx.defs);
     let group = &cx.groups[&from.name];
+    if projection_vacuity(c, "source", from, group, &cx.summary, diags)
+    {
+        return "invalid";
+    }
     let mut worst: Heaviest = Some((0, Vec::new()));
     let mut worst_is_unbounded = false;
     for root in group.fn_set(&cx.summary) {

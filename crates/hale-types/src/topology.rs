@@ -26,6 +26,20 @@
 //! `--check-topology <path>` — the `.hale.effects` manifest
 //! precedent: emit for review, commit, and an unreviewed topology
 //! change fails CI the way an API break does.
+//!
+//! v1 SCOPE (honest contract): the artifact carries the sorts, the
+//! call/publish/subscribe relations, the declared groups, the
+//! effect labels (declared carriers), and the UNKNOWNS (fns with
+//! indirect calls or computed publish subjects — the places the
+//! evaluator failed closed). That is enough to independently
+//! re-evaluate the reachability-class claims (`forbid reaches`,
+//! `only edges`, `require`/`cover`/`count`) and to audit where
+//! certification stopped. It is NOT yet the complete normalized
+//! verification model (no per-edge spans, weights, phase relation,
+//! or seed-membership sort); exporting that model is the
+//! architectural milestone tracked on #382, and until then this is
+//! a topology + claims REPORT whose passing rows are certified by
+//! the derivation, not re-derivable from the file alone.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -154,6 +168,74 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
         }
     }
 
+    // ---- groups (the claim vocabulary, as declared) ----
+    let mut group_rows: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    fn walk_groups<'a>(items: &'a [TopDecl], out: &mut Vec<&'a GroupDecl>) {
+        for item in items {
+            match item {
+                TopDecl::Group(g) => out.push(g),
+                TopDecl::Module(m) => walk_groups(&m.items, out),
+                _ => {}
+            }
+        }
+    }
+    let mut group_decls = Vec::new();
+    for p in &programs {
+        walk_groups(&p.items, &mut group_decls);
+    }
+    for g in group_decls {
+        group_rows.insert(
+            name(&g.name.name),
+            g.members.iter().map(|m| name(&m.display())).collect(),
+        );
+    }
+
+    // ---- labels: declared effect carriers (`is:` tags) ----
+    let effect_names = crate::effects::effect_names_of(&programs);
+    let mut labels: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (k, set) in &summary.carries {
+        if !user_key(k) {
+            continue;
+        }
+        let classes =
+            crate::frontier::render_effects_named(*set, &effect_names);
+        if !classes.is_empty() {
+            labels.insert(fn_name(k), classes);
+        }
+    }
+
+    // ---- unknowns: where the evaluator fails closed ----
+    let mut unknowns: BTreeMap<String, BTreeSet<&'static str>> =
+        BTreeMap::new();
+    for (k, fs) in &summary.fns {
+        if !user_key(k) {
+            continue;
+        }
+        for edge in &fs.calls {
+            let indirect = match &edge.callee {
+                Callee::Resolved(_) => false,
+                Callee::Unresolved(n) => {
+                    edge.indirect
+                        || fs.fn_params.iter().any(|p| p == n)
+                }
+            };
+            if indirect {
+                unknowns
+                    .entry(fn_name(k))
+                    .or_default()
+                    .insert("indirect_call");
+            }
+        }
+        for site in &fs.effect_sites {
+            if matches!(site.kind, EffectSiteKind::Publish(None)) {
+                unknowns
+                    .entry(fn_name(k))
+                    .or_default()
+                    .insert("computed_publish");
+            }
+        }
+    }
+
     // ---- claims ----
     let (_diags, outcomes) = crate::claims::claims_report(
         &programs,
@@ -222,7 +304,45 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
         ));
     }
     trim_trailing_comma(&mut model);
-    model.push_str("    ]\n  }");
+    model.push_str("    ]\n  },\n");
+    // Groups, labels, and unknowns are VERIFICATION-relevant, so
+    // they live inside the hashed model half: a carrier added, a
+    // group widened, or a new fail-closed site all change the
+    // shape identity (the review's "two identities" concern,
+    // resolved by making the one hash cover what evaluation reads).
+    model.push_str("  \"groups\": {\n");
+    for (g, members) in &group_rows {
+        model.push_str(&format!(
+            "    {}: [{}],\n",
+            quote(g),
+            join_str(members.iter())
+        ));
+    }
+    trim_trailing_comma(&mut model);
+    model.push_str("  },\n  \"labels\": {\n");
+    for (f, classes) in &labels {
+        model.push_str(&format!(
+            "    {}: [{}],\n",
+            quote(f),
+            join_str(classes.iter())
+        ));
+    }
+    trim_trailing_comma(&mut model);
+    model.push_str("  },\n  \"unknowns\": [\n");
+    for (f, reasons) in &unknowns {
+        let rs = reasons
+            .iter()
+            .map(|r| quote(r))
+            .collect::<Vec<_>>()
+            .join(", ");
+        model.push_str(&format!(
+            "    {{\"fn\": {}, \"reasons\": [{}]}},\n",
+            quote(f),
+            rs
+        ));
+    }
+    trim_trailing_comma(&mut model);
+    model.push_str("  ]");
 
     let shape_hash = fnv1a64(model.as_bytes());
 

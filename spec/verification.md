@@ -188,17 +188,23 @@ rules as every per-call dimension.
 
 **The topology artifact** (#382 phase 2): `hale check <t>
 --dump-topology` emits the serialized model — sorts (loci, fns,
-topics), relations (calls, publishes, subscribes) in author
-spelling — plus every named claim's normalized form and result,
-under a schema version and a `shape_hash` (FNV-1a/64 over the
-canonical model half; claims excluded, so one topology under
-different law keeps one shape). `--check-topology <path>` diffs
-against a committed baseline and fails with a regenerate hint —
-the `.hale.effects` precedent: an unreviewed topology or law
-change fails CI the way an API break does. A third party can
-re-evaluate every claim against the artifact without trusting the
-compiler's evaluator; the derivation (source → model) remains the
-trust root.
+topics), relations (calls, publishes, subscribes), the declared
+**groups**, the effect **labels** (declared carriers), and the
+**unknowns** (fns with indirect calls or computed publish subjects
+— the places evaluation failed closed), all in author spelling —
+plus every named claim's normalized form and result, under a
+schema version and a `shape_hash` (FNV-1a/64 over the canonical
+model half, which includes groups/labels/unknowns; claim RESULTS
+are excluded, so one topology under different law keeps one
+shape). `--check-topology <path>` diffs against a committed
+baseline and fails with a regenerate hint — the `.hale.effects`
+precedent: an unreviewed topology or law change fails CI the way
+an API break does. v1 scope, stated honestly: this is enough to
+independently re-evaluate the reachability-class claims and audit
+where certification stopped; it is not yet the complete normalized
+verification model (no per-edge spans, weights, phase relation, or
+seed sort — that export is the architectural milestone tracked on
+#382). The derivation (source → model) remains the trust root.
 
 Still later (#382): library-tier claims that travel with imports,
 and the annotations-lower-to-claim-IR unification (§8 of the
