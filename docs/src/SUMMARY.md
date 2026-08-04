@@ -51,6 +51,7 @@
 
 - [Memory & lifetime](./systems/memory.md)
 - [Effects & contracts](./effects.md)
+- [Claims & the law](./claims.md)
 - [Performance](./systems/performance.md)
 - [Forms under the hood](./systems/forms.md)
 - [Zero-copy & the high-frequency bus](./systems/zero-copy-bus.md)
