@@ -16,13 +16,16 @@ receiver (`B { }.work(n)`), a chained field (`self.mid.inner.work`),
 a call result, a branch value — land in the call graph as
 unresolved edges with no receiver type, and a walk that ignored
 them certified `forbid reaches(A, B)` while the forbidden path
-executed at runtime. Claims now fail closed when such a call's
-name matches a method of the claim's target set (forbid targets,
-only-edges targets, bound carriers): "calls `work` on a receiver
-the compiler cannot type, and the target set declares a method of
-that name." Synthesized form/builtin methods carry a known
-receiver type and are exempt, so existing certificates over
-`counts.set(x)` and friends are unaffected. The underlying
+executed at runtime. Claims now fail closed on EVERY such
+untyped-receiver call in any judgment that traverses calls (forbid,
+only-edges, bound) — a follow-up review showed a name-keyed
+backstop was still blind to wrappers reaching the target
+transitively, so no name comparison is sound; the edge itself is
+the uncertainty. The topology artifact records each one
+(`untyped_receiver_call:<callee>`) inside the hashed model half,
+so introducing one changes `shape_hash`. Synthesized form/builtin
+methods carry a known receiver type and are exempt, so existing
+certificates over `counts.set(x)` and friends are unaffected. The underlying
 summarizer gap is shared with the effect system (`@effects(none:)`
 misses the same shapes — pre-existing, not new to claims); the
 root fix (typing those four receiver shapes in the summarizer,

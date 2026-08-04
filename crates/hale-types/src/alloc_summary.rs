@@ -321,6 +321,17 @@ pub struct CallEdge {
     /// The name was already computed one line earlier to attempt
     /// resolution; this keeps it instead of throwing it away.
     pub recv_ty: Option<String>,
+    /// #382 soundness audit: this call was written WITH a method
+    /// receiver (`expr.m(...)`) that is not `self` and not an import
+    /// alias — so if the receiver could not be typed, the callee is a
+    /// method of SOME bundle locus reached through an expression the
+    /// summarizer cannot see through (a struct literal, a chained
+    /// field, a call result, a branch value). Recorded so a soundness
+    /// judgment can fail closed on `receiver_present &&
+    /// recv_ty.is_none() && unresolved` instead of silently dropping
+    /// the edge — the wrapper variant of the same hole that made
+    /// #353 record `indirect`.
+    pub receiver_present: bool,
     /// #353: this call goes through a FUNCTION-TYPED PARAMETER of the
     /// enclosing fn — an indirect call whose target is not knowable
     /// from this fn alone.
@@ -2236,6 +2247,7 @@ impl<'a> Walker<'a> {
 
     fn record_call(&mut self, callee: &Expr, span: Span, depth: u32, escape: Escape) {
         let mut recv_ty: Option<String> = None;
+        let mut receiver_present = false;
         let resolved = match callee {
             Expr::Ident(id) => {
                 let key = FnKey::free_fn(id.name.clone());
@@ -2269,6 +2281,23 @@ impl<'a> Walker<'a> {
                 }
             }
             Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } => {
+                // #382: a receiver that is a bare ident naming an
+                // IMPORT ALIAS is a qualified free-fn call
+                // (`pay::charge(n)`), not a method receiver. Any
+                // other non-`self` receiver expression is a real
+                // method receiver.
+                let is_alias = match receiver.as_ref() {
+                    Expr::Ident(r) => {
+                        let prefix = format!("{}::", r.name);
+                        self.rename_map
+                            .keys()
+                            .any(|k| k.starts_with(&prefix))
+                    }
+                    _ => false,
+                };
+                receiver_present =
+                    !matches!(receiver.as_ref(), Expr::KwSelf(_))
+                        && !is_alias;
                 // `self.m()` — the enclosing locus is the receiver type.
                 let owner = if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
                     self.enclosing_locus.clone()
@@ -2296,7 +2325,14 @@ impl<'a> Walker<'a> {
                     None => Callee::Unresolved(name.name.clone()),
                 }
             }
-            _ => Callee::Unresolved("<expr>".to_string()),
+            _ => {
+                // A call through an arbitrary expression — nothing
+                // the walk can see through. Conservative: treat as
+                // receiver-present so soundness judgments fail
+                // closed.
+                receiver_present = true;
+                Callee::Unresolved("<expr>".to_string())
+            }
         };
         let indirect = match &resolved {
             Callee::Unresolved(n) => self.fn_params.iter().any(|p| p == n),
@@ -2304,6 +2340,7 @@ impl<'a> Walker<'a> {
         };
         self.calls.push(CallEdge {
             recv_ty,
+            receiver_present,
             callee: resolved,
             indirect,
             loop_depth: depth,

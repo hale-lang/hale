@@ -124,15 +124,19 @@ main locus Org {
   parameter, #353) or a computed publish subject on a path from a
   `forbid` source cannot be certified and is reported as a
   violation, exactly as `@no_syscall` treats the same shapes. And
-  the **unresolved-callee backstop**: a method call on a receiver
-  the summarizer cannot type (a struct-literal receiver, a chained
-  `self.a.b` field, a call result, a branch value) whose name
-  matches a method of the claim's target set also fails closed —
-  without it, `forbid reaches(A, B)` certified while the forbidden
-  path executed (found by the #382 soundness audit; the effect
-  system shares the underlying summarizer gap, tracked on #382).
-  Synthesized form/builtin methods (`counts.set`) carry a known
-  receiver type and are exempt.
+  the **unresolved-callee backstop**: EVERY method call on a
+  receiver the summarizer cannot type (a struct-literal receiver,
+  a chained `self.a.b` field, a call result, a branch value) fails
+  closed in any judgment that traverses calls — without it,
+  `forbid reaches(A, B)` certified while the forbidden path
+  executed (found by the #382 soundness audit), and a name-keyed
+  version was still blind to WRAPPERS reaching the target
+  transitively (found by the follow-up review). No name comparison
+  is sound; the edge itself is the uncertainty, and the artifact
+  records it (`untyped_receiver_call:<callee>`) inside the hashed
+  model half. Synthesized form/builtin methods (`counts.set`)
+  carry a known receiver type and are exempt; the effect system
+  shares the underlying summarizer gap, tracked on #382.
 - **Placement.** `claims { }` is only legal inside `main locus`
   (parse error elsewhere): main is the closed-world gate, so
   bundle-wide claims cannot be evaluated anywhere earlier, and

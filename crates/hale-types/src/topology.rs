@@ -2,17 +2,17 @@
 //!
 //! The claims DSL's real interface is the SCHEMA of the derived
 //! model — sorts, relations, labels — not its syntax. The artifact
-//! is that model serialized, plus every named claim's result, so a
-//! third party can re-evaluate each claim against the artifact
-//! without trusting the compiler's evaluator. The remaining trust
-//! root is the derivation (source → model), which is where it
-//! should be — that half is defended by the classified frontier and
-//! the conformance loops.
+//! is that model serialized, plus every named claim's result. The
+//! degree of independent re-evaluation this buys is scoped
+//! honestly below (see "v1 SCOPE") — the trust root is the
+//! derivation (source → model), which is where it should be; that
+//! half is defended by the classified frontier and the conformance
+//! loops.
 //!
 //! Identity: `shape_hash` is FNV-1a/64 over the canonical
-//! serialization of the MODEL half (sorts + relations, stable
-//! BTree order, claims excluded — two builds with one topology and
-//! different law share a shape). v1 note: this is the compiler-side
+//! serialization of the MODEL half (sorts + relations + groups +
+//! labels + unknowns, stable BTree order; claim RESULTS excluded —
+//! two builds with one topology and different law share a shape). v1 note: this is the compiler-side
 //! shape identity; reconciling it with the observer protocol's
 //! runtime per-topic `shape_hash` (lotus_obs.c, PROTOCOL.md) is
 //! tracked on #382 — the two live in different namespaces until
@@ -30,8 +30,10 @@
 //! v1 SCOPE (honest contract): the artifact carries the sorts, the
 //! call/publish/subscribe relations, the declared groups, the
 //! effect labels (declared carriers), and the UNKNOWNS (fns with
-//! indirect calls or computed publish subjects — the places the
-//! evaluator failed closed). That is enough to independently
+//! indirect calls, untyped-receiver method calls — recorded with
+//! the callee name so an outside evaluator can apply the same
+//! fail-closed rule — or computed publish subjects: every place
+//! the evaluator failed closed). That is enough to independently
 //! re-evaluate the reachability-class claims (`forbid reaches`,
 //! `only edges`, `require`/`cover`/`count`) and to audit where
 //! certification stopped. It is NOT yet the complete normalized
@@ -205,25 +207,37 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     }
 
     // ---- unknowns: where the evaluator fails closed ----
-    let mut unknowns: BTreeMap<String, BTreeSet<&'static str>> =
+    let mut unknowns: BTreeMap<String, BTreeSet<String>> =
         BTreeMap::new();
     for (k, fs) in &summary.fns {
         if !user_key(k) {
             continue;
         }
         for edge in &fs.calls {
-            let indirect = match &edge.callee {
-                Callee::Resolved(_) => false,
+            match &edge.callee {
+                Callee::Resolved(_) => {}
                 Callee::Unresolved(n) => {
-                    edge.indirect
+                    if edge.indirect
                         || fs.fn_params.iter().any(|p| p == n)
+                    {
+                        unknowns
+                            .entry(fn_name(k))
+                            .or_default()
+                            .insert("indirect_call".to_string());
+                    } else if edge.receiver_present
+                        && edge.recv_ty.is_none()
+                    {
+                        // The wrapper-shaped hole: a method call on
+                        // a receiver the summarizer cannot type.
+                        // Recorded WITH the callee name so an
+                        // outside evaluator can apply the same
+                        // fail-closed rule — and so introducing one
+                        // changes shape_hash.
+                        unknowns.entry(fn_name(k)).or_default().insert(
+                            format!("untyped_receiver_call:{}", n),
+                        );
+                    }
                 }
-            };
-            if indirect {
-                unknowns
-                    .entry(fn_name(k))
-                    .or_default()
-                    .insert("indirect_call");
             }
         }
         for site in &fs.effect_sites {
@@ -231,7 +245,7 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
                 unknowns
                     .entry(fn_name(k))
                     .or_default()
-                    .insert("computed_publish");
+                    .insert("computed_publish".to_string());
             }
         }
     }

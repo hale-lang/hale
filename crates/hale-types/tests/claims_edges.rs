@@ -769,12 +769,12 @@ fn a_branch_valued_receiver_call_fails_closed() {
     );
 }
 
-/// The backstop's own control: the same unresolved shape with a
-/// name the target set does NOT declare stays certifiable — the
-/// backstop keys on the target's method names, not on every
-/// unresolved edge.
+/// EVERY untyped-receiver call fails closed, even one whose name
+/// the target set does not declare — it could be a WRAPPER
+/// reaching the target transitively (the follow-up review's
+/// counterexample class), so no name comparison is sound.
 #[test]
-fn an_unresolved_call_not_matching_the_target_certifies() {
+fn an_unresolved_call_fails_closed_regardless_of_name() {
     let src = r#"
         locus B { fn work(n: Int) -> Int { return n * 2; } }
         locus C { fn other(n: Int) -> Int { return n + 1; } }
@@ -791,9 +791,95 @@ fn an_unresolved_call_not_matching_the_target_certifies() {
     "#;
     let ds = diags(src);
     assert!(
-        !ds.iter().any(|m| m.contains("cannot be certified")),
-        "an unresolved name outside the target set must not trip \
-         the backstop: {:?}",
+        ds.iter().any(|m| m.contains("cannot be certified")),
+        "an untyped receiver must fail closed even when the name \
+         is outside the target set — it could be a wrapper: {:?}",
+        ds
+    );
+}
+
+/// The reviewer's wrapper counterexamples: an untyped-receiver
+/// call to a WRAPPER that reaches the target/carrier transitively.
+#[test]
+fn an_untyped_receiver_wrapper_reaching_the_group_target_fails_closed() {
+    let src = r#"
+        locus B { fn work(n: Int) -> Int { return n * 2; } }
+        locus Bridge {
+            params { b: B = B { }; }
+            fn hop(n: Int) -> Int { return self.b.work(n); }
+        }
+        locus A {
+            fn go(n: Int) -> Int { return Bridge { }.hop(n); }
+        }
+        group a_side = { A };
+        group b_side = { B };
+        main locus App {
+            params { a: A = A { }; }
+            claims { iso: forbid reaches(a_side, b_side); }
+        }
+        fn main() { App { }; }
+    "#;
+    let ds = diags(src);
+    assert!(
+        ds.iter().any(|m| m.contains("claim `iso` cannot be certified")
+            && m.contains("`hop`")),
+        "the wrapper hop must fail closed: {:?}",
+        ds
+    );
+}
+
+#[test]
+fn an_untyped_receiver_wrapper_reaching_an_effect_carrier_fails_closed() {
+    let src = r#"
+        effect money;
+        @effects(is: {money})
+        fn charge(n: Int) -> Int { return n; }
+        locus Bridge {
+            fn hop(n: Int) -> Int { return charge(n); }
+        }
+        locus A {
+            fn go(n: Int) -> Int { return Bridge { }.hop(n); }
+        }
+        group a_side = { A };
+        main locus App {
+            params { a: A = A { }; }
+            claims { no_spend: forbid reaches(a_side, effects(money)); }
+        }
+        fn main() { App { }; }
+    "#;
+    let ds = diags(src);
+    assert!(
+        ds.iter()
+            .any(|m| m.contains("claim `no_spend` cannot be certified")),
+        "the wrapper to the carrier must fail closed: {:?}",
+        ds
+    );
+}
+
+#[test]
+fn an_untyped_receiver_wrapper_reaching_a_bound_carrier_fails_closed() {
+    let src = r#"
+        effect llm;
+        @effects(is: {llm})
+        fn ask(n: Int) -> Int { return n; }
+        locus Bridge {
+            fn hop(n: Int) -> Int { return ask(n); }
+        }
+        locus Planner {
+            fn plan(n: Int) -> Int { return Bridge { }.hop(n); }
+        }
+        group planners = { Planner };
+        main locus App {
+            params { p: Planner = Planner { }; }
+            claims { none: bound llm <= 0 on paths from planners; }
+        }
+        fn main() { App { }; }
+    "#;
+    let ds = diags(src);
+    assert!(
+        ds.iter().any(|m| m.contains("claim `none` violated")
+            && m.contains("unbounded")),
+        "the wrapper to the bound carrier must be unbounded: {:?}",
         ds
     );
 }

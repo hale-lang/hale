@@ -831,44 +831,24 @@ fn resolve_member(
 
 // ===================== unresolved-callee backstop =================
 
-/// Method names declared on any locus in `loci` — the set an
-/// UNRESOLVED method call could be silently targeting.
+/// The unresolved-callee backstop (#382 soundness audit, round 2).
 ///
 /// The summarizer resolves receivers it can type (params fields,
 /// annotated locals, direct-literal lets); a receiver it cannot —
 /// a struct-literal receiver, a chained `self.a.b`, a call result,
-/// a branch value — lands as `Unresolved(bare_name)` with
-/// `recv_ty: None`, and a walk that ignores it can certify a
-/// `forbid` while the forbidden path executes (found by the #382
-/// soundness audit; the effect system shares the summarizer gap).
-/// The backstop: if such a call's NAME matches a method of the
-/// claim's target set, fail closed. `recv_ty: Some` edges
-/// (synthesized form/builtin methods like `counts.set`) stay
-/// exempt — they are known non-locus receivers.
-fn method_names_of<'a>(
-    summary: &'a AllocSummary,
-    loci: &BTreeSet<String>,
-) -> BTreeSet<&'a str> {
-    summary
-        .fns
-        .keys()
-        .filter(|k| {
-            k.locus.as_ref().map_or(false, |l| loci.contains(l))
-        })
-        .map(|k| k.fn_name.as_str())
-        .collect()
-}
-
-/// Is this unresolved edge one the backstop must treat as possibly
-/// targeting `names`?
-fn unresolved_may_target(
+/// a branch value — lands as `Unresolved` with `recv_ty: None` and
+/// `receiver_present: true`. Such a call is a method of SOME bundle
+/// locus, reached through an expression the walk cannot see
+/// through — and because it may be a WRAPPER that reaches the
+/// target transitively, no name comparison against the target set
+/// is sound (the wrapper's name matches nothing). Any judgment
+/// that traverses calls must fail closed on the edge itself.
+/// `recv_ty: Some` edges (synthesized form/builtin methods like
+/// `counts.set`) are known non-locus receivers and stay exempt.
+fn unresolved_untyped_receiver(
     edge: &crate::alloc_summary::CallEdge,
-    name: &str,
-    names: &BTreeSet<&str>,
 ) -> bool {
-    edge.recv_ty.is_none()
-        && !name.contains("::")
-        && names.contains(name)
+    edge.receiver_present && edge.recv_ty.is_none()
 }
 
 // ===================== forbid reaches =============================
@@ -961,18 +941,6 @@ fn evaluate_forbid_reaches(
             return "holds";
         }
     }
-    // The unresolved-callee backstop set: names an untyped-receiver
-    // call could silently be targeting.
-    let backstop: BTreeSet<&str> = match &dst_test {
-        DstTest::Group(g) => method_names_of(&cx.summary, &g.loci),
-        DstTest::Effects(mask) => cx
-            .summary
-            .carries
-            .iter()
-            .filter(|(_, set)| set.0 & mask.0 != 0)
-            .map(|(k, _)| k.fn_name.as_str())
-            .collect(),
-    };
 
     let mut parent: BTreeMap<FnKey, (FnKey, Step)> = BTreeMap::new();
     let mut queue: VecDeque<FnKey> = VecDeque::new();
@@ -1064,23 +1032,20 @@ fn evaluate_forbid_reaches(
                             return "violated";
                         }
                         // The backstop: an untyped-receiver call
-                        // whose NAME matches a target method could
-                        // be the forbidden edge. Fail closed.
-                        if unresolved_may_target(
-                            edge, name, &backstop,
-                        ) {
+                        // is a method of SOME locus, possibly a
+                        // wrapper reaching the target. Fail closed.
+                        if unresolved_untyped_receiver(edge) {
                             diags.push(Diag::ty(
                                 c.name.span,
                                 format!(
                                     "claim `{}` cannot be certified: \
                                      `{}` (reachable from `{}`) calls \
                                      `{}` on a receiver the compiler \
-                                     cannot type, and the target set \
-                                     declares a method of that name. \
-                                     An unresolvable edge fails \
-                                     closed — bind the receiver to a \
-                                     typed field or local so the \
-                                     call resolves",
+                                     cannot type, so the walk cannot \
+                                     follow the edge. An unresolvable \
+                                     edge fails closed — bind the \
+                                     receiver to a typed field or \
+                                     local so the call resolves",
                                     c.name.name,
                                     k.display(),
                                     src_name.name,
@@ -1181,7 +1146,6 @@ fn evaluate_only_edges(
             .collect::<Vec<_>>()
             .join(", ")
     };
-    let backstop = method_names_of(&cx.summary, &dst_g.loci);
     let mut violated = false;
     let mut reported: BTreeSet<String> = BTreeSet::new();
     for k in src_g.fn_set(&cx.summary) {
@@ -1233,21 +1197,20 @@ fn evaluate_only_edges(
                         ));
                         return "violated";
                     }
-                    if unresolved_may_target(edge, name, &backstop) {
+                    if unresolved_untyped_receiver(edge) {
                         diags.push(Diag::ty(
                             c.name.span,
                             format!(
                                 "claim `{}` cannot be certified: `{}` \
                                  calls `{}` on a receiver the \
-                                 compiler cannot type, and `{}` \
-                                 declares a method of that name. An \
+                                 compiler cannot type, so the walk \
+                                 cannot follow the edge. An \
                                  unresolvable edge fails closed — \
                                  bind the receiver to a typed field \
                                  or local so the call resolves",
                                 c.name.name,
                                 k.display(),
-                                name,
-                                dst.name
+                                name
                             ),
                         ));
                         return "violated";
@@ -1347,15 +1310,6 @@ fn evaluate_bound(
     {
         return "invalid";
     }
-    // The unresolved-callee backstop: an untyped-receiver call whose
-    // name matches a CARRIER method could be an uncounted site.
-    let backstop: BTreeSet<&str> = cx
-        .summary
-        .carries
-        .iter()
-        .filter(|(_, set)| set.0 & mask.0 != 0)
-        .map(|(k, _)| k.fn_name.as_str())
-        .collect();
     let mut worst: Heaviest = Some((0, Vec::new()));
     let mut worst_is_unbounded = false;
     for root in group.fn_set(&cx.summary) {
@@ -1364,8 +1318,7 @@ fn evaluate_bound(
             BTreeMap::new();
         let mut steps = 0u32;
         match site_count(
-            &root, cx, mask, &backstop, &mut stack, &mut memo,
-            &mut steps,
+            &root, cx, mask, &mut stack, &mut memo, &mut steps,
         ) {
             None => {
                 worst_is_unbounded = true;
@@ -1425,7 +1378,6 @@ fn site_count(
     k: &FnKey,
     cx: &Cx,
     mask: EffectSet,
-    backstop: &BTreeSet<&str>,
     stack: &mut Vec<FnKey>,
     memo: &mut BTreeMap<FnKey, (u64, Vec<FnKey>)>,
     steps: &mut u32,
@@ -1457,9 +1409,8 @@ fn site_count(
     for edge in &fs.calls {
         match &edge.callee {
             Callee::Resolved(next) => {
-                match site_count(
-                    next, cx, mask, backstop, stack, memo, steps,
-                ) {
+                match site_count(next, cx, mask, stack, memo, steps)
+                {
                     None => {
                         unbounded = true;
                         break;
@@ -1482,10 +1433,11 @@ fn site_count(
             Callee::Unresolved(name) => {
                 if edge.indirect
                     || fs.fn_params.iter().any(|p| p == name)
-                    // The backstop: an untyped-receiver call whose
-                    // name matches a carrier method could be an
-                    // uncounted site. Fail closed (unbounded).
-                    || unresolved_may_target(edge, name, backstop)
+                    // The backstop: an untyped-receiver call could
+                    // be a wrapper reaching a carrier — an
+                    // uncountable contribution. Fail closed
+                    // (unbounded).
+                    || unresolved_untyped_receiver(edge)
                 {
                     unbounded = true;
                     break;
@@ -1506,9 +1458,8 @@ fn site_count(
                 subscribers_of(cx.graph, subj)
             {
                 let next = FnKey::method(sub_locus, sub_handler);
-                match site_count(
-                    &next, cx, mask, backstop, stack, memo, steps,
-                ) {
+                match site_count(&next, cx, mask, stack, memo, steps)
+                {
                     None => {
                         unbounded = true;
                         break;
