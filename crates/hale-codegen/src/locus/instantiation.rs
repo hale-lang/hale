@@ -1514,19 +1514,75 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                             CodegenTy::TypeRef(n) => Some(n.clone()),
                             _ => None,
                         };
-                        // sync = none ONLY: synced maps are read
-                        // cross-pool, and a reader on another
-                        // thread can hold a cell copy's string
-                        // pointer across THIS pool's activation
-                        // boundaries — retirement there needs an
-                        // epoch scheme, not a flush.
-                        let cell_name = if slot.sync_mode
-                            == SyncMode::None
-                        {
+                        // 2026-08-03 (downstream handoff P1):
+                        // synced maps retire too, now that their
+                        // READ paths clone the cell's Strings into
+                        // the caller's arena
+                        // (lotus_hashmap_*_cloned). Previously the
+                        // descriptor was withheld for sync != none
+                        // because a reader on another pool could
+                        // hold a cell copy's string pointer across
+                        // this pool's activation boundaries — the
+                        // leak was what kept that pointer valid.
+                        // Clone-on-read removes the off-thread
+                        // reader, so the ordinary flush is sound
+                        // and no epoch scheme is needed.
+                        //
+                        // `striped` and `lockfree` stay excluded:
+                        // their read paths are bracketed by
+                        // lf_enter/rwlock rather than the map
+                        // mutex, and their grow path rebuilds
+                        // slots concurrently — a separate audit.
+                        let cell_name = if matches!(
+                            slot.sync_mode,
+                            SyncMode::None | SyncMode::Serialized
+                        ) {
                             cell_name
                         } else {
                             None
                         };
+                        // A serialized map's arena is written from
+                        // more than one pool: serialize its bump
+                        // allocator and retire lists.
+                        if slot.sync_mode == SyncMode::Serialized {
+                            let arena_field = self
+                                .builder
+                                .build_struct_gep(
+                                    info.struct_ty,
+                                    self_ptr,
+                                    info.arena_field_idx,
+                                    "shared.arena.ptr",
+                                )
+                                .map_err(|e| {
+                                    CodegenError::LlvmEmit(e.to_string())
+                                })?;
+                            let ptr_ty = self
+                                .context
+                                .ptr_type(AddressSpace::default());
+                            let arena = self
+                                .builder
+                                .build_load(
+                                    ptr_ty,
+                                    arena_field,
+                                    "shared.arena",
+                                )
+                                .map_err(|e| {
+                                    CodegenError::LlvmEmit(e.to_string())
+                                })?;
+                            let mark_fn = self
+                                .module
+                                .get_function("lotus_arena_mark_shared")
+                                .expect("mark_shared declared");
+                            self.builder
+                                .build_call(
+                                    mark_fn,
+                                    &[arena.into()],
+                                    "arena.mark_shared",
+                                )
+                                .map_err(|e| {
+                                    CodegenError::LlvmEmit(e.to_string())
+                                })?;
+                        }
                         if let Some(cn) = cell_name {
                             if let Some(ci) = self.user_types.get(&cn) {
                                 let mut offs: Vec<u32> = Vec::new();

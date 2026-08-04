@@ -18285,32 +18285,68 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // fill: one batch call; count entries land in buf, the
         // resume slot (or -1) lands in cursor_slot.
         self.builder.position_at_end(fill_bb);
-        let batch_fn = self
-            .module
-            .get_function(if ptr_mode {
-                "lotus_hashmap_iter_batch_ptrs"
-            } else {
-                "lotus_hashmap_iter_batch"
-            })
-            .expect("iter_batch declared");
-        let count = self
-            .builder
-            .build_call(
-                batch_fn,
-                &[
-                    map_handle.into(),
-                    cursor.into(),
-                    buf.into(),
-                    i64_t.const_int(BATCH, false).into(),
-                    cursor_slot.into(),
-                ],
-                "for.entries.batch",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .try_as_basic_value()
-            .left()
-            .expect("iter_batch returns i64")
-            .into_int_value();
+        // Downstream handoff P1 (2026-08-03): iterating a synced
+        // String-bearing map clones each cell's Strings into this
+        // activation's arena, for the same reason `get` does.
+        // Without it, enabling the writer's retirement would turn
+        // the old leak into a use-after-free the moment an
+        // iteration overlapped a concurrent set.
+        let synced_clone_reads = slot.sync_mode == SyncMode::Serialized
+            && cell_info
+                .fields
+                .values()
+                .any(|(_, t)| matches!(t, CodegenTy::String));
+        let count = if synced_clone_reads {
+            let dest = self.current_arena_ptr()?;
+            let batch_fn = self
+                .module
+                .get_function("lotus_hashmap_iter_batch_cloned")
+                .expect("iter_batch_cloned declared");
+            self.builder
+                .build_call(
+                    batch_fn,
+                    &[
+                        map_handle.into(),
+                        cursor.into(),
+                        buf.into(),
+                        i64_t.const_int(BATCH, false).into(),
+                        cursor_slot.into(),
+                        dest.into(),
+                    ],
+                    "for.entries.batch.cloned",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("iter_batch returns i64")
+                .into_int_value()
+        } else {
+            let batch_fn = self
+                .module
+                .get_function(if ptr_mode {
+                    "lotus_hashmap_iter_batch_ptrs"
+                } else {
+                    "lotus_hashmap_iter_batch"
+                })
+                .expect("iter_batch declared");
+            self.builder
+                .build_call(
+                    batch_fn,
+                    &[
+                        map_handle.into(),
+                        cursor.into(),
+                        buf.into(),
+                        i64_t.const_int(BATCH, false).into(),
+                        cursor_slot.into(),
+                    ],
+                    "for.entries.batch",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("iter_batch returns i64")
+                .into_int_value()
+        };
         self.builder
             .build_store(count_slot, count)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -28858,11 +28894,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                     matches!(
                                         sl.form,
                                         Some(SlotForm::Hashmap)
-                                    ) && sl.sync_mode == SyncMode::None
-                                        && matches!(
-                                            sl.elem_ty,
-                                            CodegenTy::TypeRef(_)
-                                        )
+                                    ) && matches!(
+                                        sl.sync_mode,
+                                        SyncMode::None
+                                            | SyncMode::Serialized
+                                    ) && matches!(
+                                        sl.elem_ty,
+                                        CodegenTy::TypeRef(_)
+                                    )
                                 })
                             })
                             .unwrap_or(false)
@@ -28932,11 +28971,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 matches!(
                                     sl.form,
                                     Some(SlotForm::Hashmap)
-                                ) && sl.sync_mode == SyncMode::None
-                                    && matches!(
-                                        sl.elem_ty,
-                                        CodegenTy::TypeRef(_)
-                                    )
+                                ) && matches!(
+                                    sl.sync_mode,
+                                    SyncMode::None | SyncMode::Serialized
+                                ) && matches!(
+                                    sl.elem_ty,
+                                    CodegenTy::TypeRef(_)
+                                )
                             },
                         );
                         if retires {

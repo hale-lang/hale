@@ -438,6 +438,22 @@ typedef struct lotus_arena {
      * the bind is a no-op and the arena allocates normally. Set at
      * create time via `lotus_arena_create_labeled_on_node`. */
     int                  numa_node;
+    /* Synced-map retirement (2026-08-03, downstream handoff P1).
+     * A `sync = serialized` @form(hashmap) is written from more
+     * than one pool, so its retire lists (pending / shells / free /
+     * free_small) are touched by more than one thread: pushes come
+     * from the set path under the MAP's mutex, but flushes come
+     * from each writer's own activation boundary with no map lock
+     * held, and pops come from the allocator. This mutex serializes
+     * all three. It is DISTINCT from subregion_lock on purpose —
+     * the push path allocates a shell via lotus_arena_alloc, which
+     * takes subregion_lock when shared_concurrent is set, so a
+     * single lock would self-deadlock. Lock order is retire_lock
+     * then subregion_lock, never the reverse.
+     *
+     * Taken only when shared_concurrent is set, so every
+     * single-threaded arena keeps the untouched lock-free path. */
+    pthread_mutex_t      retire_lock;
 } lotus_arena_t;
 
 /* Per-thread freelist of default-sized chunks (2026-05-21
@@ -1549,6 +1565,7 @@ static lotus_arena_t *lotus_arena_alloc_struct(void) {
     a->next_slot  = 0;
     a->fixed_size = 0;
     a->shared_concurrent = 0;
+    pthread_mutex_init(&a->retire_lock, NULL);
     a->chunk_byte_total = 0;
     a->chunk_byte_cap   = 0;
     a->cap_diag_name    = NULL;
@@ -1990,6 +2007,16 @@ void *lotus_arena_alloc(lotus_arena_t *a, uint64_t size, uint64_t align) {
     return lotus_arena_alloc_nolock(a, size, align);
 }
 
+/* Mark an arena as concurrently reachable: serializes the bump
+ * allocator on subregion_lock and the retire lists on retire_lock.
+ * Codegen emits this at instantiation for a @form locus hosting a
+ * SYNCED hashmap, whose blobs are allocated, retired and flushed
+ * from more than one pool. Idempotent. */
+void lotus_arena_mark_shared(void *arena_ptr) {
+    lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
+    if (a) a->shared_concurrent = 1;
+}
+
 void lotus_arena_destroy(lotus_arena_t *a) {
     if (!a) return;
 
@@ -2068,6 +2095,10 @@ void lotus_arena_destroy(lotus_arena_t *a) {
      * mutex holds no resources to release (perf opt, 2026-05-29;
      * reuses mt_barrier read above). */
     if (mt_barrier) pthread_mutex_destroy(&a->subregion_lock);
+    /* retire_lock is pthread_mutex_init'd unconditionally at create
+     * (unlike subregion_lock's static init), so it is destroyed
+     * unconditionally too. */
+    pthread_mutex_destroy(&a->retire_lock);
     free(a);
 }
 
@@ -3928,7 +3959,55 @@ static size_t lotus_hashmap_find_slot_striped(lotus_hashmap_t *m,
     }
 }
 
-int lotus_hashmap_get(void *map_ptr, const void *key, void *out_value) {
+/* Clone-on-get for SYNCED maps (2026-08-03, downstream handoff P1).
+ *
+ * A plain get memcpy's the cell, so its String fields come out as
+ * raw pointers into the MAP's arena. For `sync = none` that is fine:
+ * one thread, and retirement is deferred to that thread's activation
+ * boundary, so the pointer stays valid for exactly as long as the
+ * reader can hold it. For a SYNCED map it is not — the reader is on
+ * another pool and can hold the pointer across the writer's
+ * boundaries. That is why synced maps never installed a retire
+ * descriptor at all: the leak WAS the safety mechanism.
+ *
+ * Cloning the strings out, under the same lock that read the cell,
+ * makes the reader own its copy. The writer's blobs then have no
+ * off-thread readers and can retire exactly like `sync = none` —
+ * reusing the whole shipped retirement path instead of needing an
+ * epoch scheme.
+ *
+ * The clone MUST happen inside the critical section: between an
+ * unlock and the clone, a writer could overwrite the slot, retire
+ * the old blob, and flush it onto the reuse freelist.
+ *
+ * Destination is the CALLER's arena (its method scratch, in
+ * practice), which is where the returned cell buffer already lives —
+ * so the clone shares the lifetime of the struct that holds it.
+ * `dest == NULL`, or a map with no String fields, is a plain get. */
+char *lotus_str_clone(lotus_arena_t *a, const char *s);
+
+static void lotus_hashmap_clone_out_strings(const lotus_hashmap_t *m,
+                                            void *out_value,
+                                            void *dest_arena) {
+    if (!dest_arena || m->retire_n == 0) return;
+    char *v = (char *)out_value;
+    for (int32_t ri = 0; ri < m->retire_n; ri++) {
+        int32_t off = m->retire_offsets[ri];
+        char *p;
+        memcpy(&p, v + off, sizeof(char *));
+        if (!p) continue;
+        /* Static literals and pointers already in `dest` pass
+         * through untouched (lotus_str_clone's own fast paths).
+         * Two fields aliasing one blob become two blobs — that is
+         * the single-owner rule, not a regression. */
+        char *c = lotus_str_clone((lotus_arena_t *)dest_arena, p);
+        if (!c) continue;
+        memcpy(v + off, &c, sizeof(char *));
+    }
+}
+
+static int lotus_hashmap_get_into(void *map_ptr, const void *key,
+                                  void *out_value, void *dest_arena) {
     if (!map_ptr || !key || !out_value) return 0;
     lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;
     if (m->sync_mode == LOTUS_HASHMAP_SYNC_LOCKFREE) {
@@ -3941,6 +4020,7 @@ int lotus_hashmap_get(void *map_ptr, const void *key, void *out_value) {
             if (i < m->cap) {
                 char *slot = m->slots + i * lotus_hashmap_entry_size(m);
                 memcpy(out_value, slot + 1 + m->key_size, m->value_size);
+                lotus_hashmap_clone_out_strings(m, out_value, dest_arena);
                 r = 1;
             }
         }
@@ -3955,6 +4035,7 @@ int lotus_hashmap_get(void *map_ptr, const void *key, void *out_value) {
             if (i < m->cap) {
                 char *slot = m->slots + i * lotus_hashmap_entry_size(m);
                 memcpy(out_value, slot + 1 + m->key_size, m->value_size);
+                lotus_hashmap_clone_out_strings(m, out_value, dest_arena);
                 r = 1;
             }
         }
@@ -3973,11 +4054,23 @@ int lotus_hashmap_get(void *map_ptr, const void *key, void *out_value) {
             r = 0;
         } else {
             memcpy(out_value, slot + 1 + m->key_size, m->value_size);
+            lotus_hashmap_clone_out_strings(m, out_value, dest_arena);
             r = 1;
         }
     }
     lotus_hashmap_unlock(m);
     return r;
+}
+
+int lotus_hashmap_get(void *map_ptr, const void *key, void *out_value) {
+    return lotus_hashmap_get_into(map_ptr, key, out_value, NULL);
+}
+
+/* Codegen emits this instead of `lotus_hashmap_get` when the slot is
+ * a synced map with String cell fields. See the note above. */
+int lotus_hashmap_get_cloned(void *map_ptr, const void *key,
+                             void *out_value, void *dest_arena) {
+    return lotus_hashmap_get_into(map_ptr, key, out_value, dest_arena);
 }
 
 int lotus_hashmap_has(void *map_ptr, const void *key) {
@@ -4819,9 +4912,11 @@ int64_t lotus_hashmap_iter_next(void *map_ptr, int64_t start_slot,
  * BATCH instead of per element — the follow-up to iter_next that
  * closes the per-element call overhead against native iterators.
  * Occupancy/locking discipline mirrors iter_next. */
-int64_t lotus_hashmap_iter_batch(void *map_ptr, int64_t start_slot,
-                                 void *out_buf, int64_t max,
-                                 int64_t *out_next) {
+static int64_t lotus_hashmap_iter_batch_into(void *map_ptr,
+                                            int64_t start_slot,
+                                            void *out_buf, int64_t max,
+                                            int64_t *out_next,
+                                            void *dest_arena) {
     if (!map_ptr || !out_buf || !out_next || start_slot < 0 || max <= 0) {
         if (out_next) *out_next = -1;
         return 0;
@@ -4844,6 +4939,7 @@ int64_t lotus_hashmap_iter_batch(void *map_ptr, int64_t start_slot,
                 __atomic_load_n((unsigned char *)slot, __ATOMIC_ACQUIRE);
             if (occ == LOTUS_CELL_COMMITTED) {
                 memcpy(dst, slot + 1 + m->key_size, m->value_size);
+                lotus_hashmap_clone_out_strings(m, dst, dest_arena);
                 dst += m->value_size;
                 n++;
             }
@@ -4858,6 +4954,7 @@ int64_t lotus_hashmap_iter_batch(void *map_ptr, int64_t start_slot,
         char *slot = m->slots + s * es;
         if (*(unsigned char *)slot) {
             memcpy(dst, slot + 1 + m->key_size, m->value_size);
+                lotus_hashmap_clone_out_strings(m, dst, dest_arena);
             dst += m->value_size;
             n++;
         }
@@ -4865,6 +4962,26 @@ int64_t lotus_hashmap_iter_batch(void *map_ptr, int64_t start_slot,
     if (s < m->cap) *out_next = (int64_t)s;
     lotus_hashmap_unlock(m);
     return n;
+}
+
+int64_t lotus_hashmap_iter_batch(void *map_ptr, int64_t start_slot,
+                                 void *out_buf, int64_t max,
+                                 int64_t *out_next) {
+    return lotus_hashmap_iter_batch_into(map_ptr, start_slot, out_buf,
+                                         max, out_next, NULL);
+}
+
+/* Synced-map iteration: clone each cell's Strings into the caller's
+ * arena so the writer may retire its own. Without this, enabling
+ * retirement on synced maps would turn the old leak into a
+ * use-after-free the moment an iteration outlived a concurrent set.
+ * See lotus_hashmap_get_cloned. */
+int64_t lotus_hashmap_iter_batch_cloned(void *map_ptr, int64_t start_slot,
+                                        void *out_buf, int64_t max,
+                                        int64_t *out_next,
+                                        void *dest_arena) {
+    return lotus_hashmap_iter_batch_into(map_ptr, start_slot, out_buf,
+                                         max, out_next, dest_arena);
 }
 
 /* Pointer-mode batch for PLAIN (sync = none, single-pool) maps:
@@ -4901,6 +5018,16 @@ int64_t lotus_hashmap_iter_batch_ptrs(void *map_ptr, int64_t start_slot,
 
 int lotus_arena_contains_ptr(const lotus_arena_t *a, const void *p);
 
+/* Retire-list guards. No-ops on a private arena (the overwhelming
+ * majority); a real lock only on an arena backing a synced map.
+ * See the retire_lock field comment for the ordering rule. */
+static inline void lotus_retire_lock(lotus_arena_t *a) {
+    if (a->shared_concurrent) pthread_mutex_lock(&a->retire_lock);
+}
+static inline void lotus_retire_unlock(lotus_arena_t *a) {
+    if (a->shared_concurrent) pthread_mutex_unlock(&a->retire_lock);
+}
+
 typedef struct lotus_retire_shell {
     void *blob;                    /* [i64 len][bytes][NUL] blob   */
     size_t size;                   /* full block size              */
@@ -4915,18 +5042,20 @@ static void lotus_arena_retire_sized(lotus_arena_t *a, void *blob,
                                      size_t size) {
     if (!a || !blob) return;
     if (!lotus_arena_contains_ptr(a, blob)) return;
+    lotus_retire_lock(a);
     lotus_retire_shell_t *sh = (lotus_retire_shell_t *)a->retire_shells;
     if (sh) {
         a->retire_shells = sh->next;
     } else {
         sh = (lotus_retire_shell_t *)lotus_arena_alloc(
             a, sizeof(lotus_retire_shell_t), 8);
-        if (!sh) return;
+        if (!sh) { lotus_retire_unlock(a); return; }
     }
     sh->blob = blob;
     sh->size = size;
     sh->next = (lotus_retire_shell_t *)a->retire_pending;
     a->retire_pending = sh;
+    lotus_retire_unlock(a);
 }
 
 /* Hale Strings are NUL-terminated char* — the clone family
@@ -5081,6 +5210,7 @@ void lotus_form_retire_replaced(void *arena_ptr, void *old_blob,
 void lotus_arena_flush_retired(void *arena_ptr) {
     lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
     if (!a) return;
+    lotus_retire_lock(a);
     lotus_retire_shell_t *sh = (lotus_retire_shell_t *)a->retire_pending;
     a->retire_pending = NULL;
     while (sh) {
@@ -5109,6 +5239,7 @@ void lotus_arena_flush_retired(void *arena_ptr) {
         }
         sh = next;
     }
+    lotus_retire_unlock(a);
 }
 
 /* Bounded first-fit pop for the allocator (mirrors the
@@ -5184,9 +5315,14 @@ void *lotus_arena_alloc_reusable(void *arena_ptr, uint64_t size,
      * candidate ADDRESS alignment, so a 16-align request simply
      * skips under-aligned blocks. */
     if (align <= 16) {
+        /* Lock released before the fall-through: lotus_arena_alloc
+         * takes subregion_lock, and holding both would invert the
+         * documented order on the push path. */
+        lotus_retire_lock(a);
         void *b = size >= 16
             ? lotus_retire_free_pop(a, (size_t)size, (size_t)align)
             : lotus_retire_free_small_pop(a, (size_t)size, (size_t)align);
+        lotus_retire_unlock(a);
         if (b) return b;
     }
     return lotus_arena_alloc(a, size, align);
@@ -5242,7 +5378,9 @@ int lotus_hashmap_key_at(void *map_ptr, int64_t i, void *out_key) {
     return r;
 }
 
-int lotus_hashmap_value_at(void *map_ptr, int64_t i, void *out_value) {
+static int lotus_hashmap_value_at_into(void *map_ptr, int64_t i,
+                                      void *out_value,
+                                      void *dest_arena) {
     if (!map_ptr || !out_value || i < 0) return 0;
     lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;
     if (m->sync_mode == LOTUS_HASHMAP_SYNC_LOCKFREE) {
@@ -5255,6 +5393,7 @@ int lotus_hashmap_value_at(void *map_ptr, int64_t i, void *out_value) {
                 size_t es = lotus_hashmap_entry_size(m);
                 char *slot = m->slots + s * es;
                 memcpy(out_value, slot + 1 + m->key_size, m->value_size);
+                lotus_hashmap_clone_out_strings(m, out_value, dest_arena);
                 r = 1;
             }
         }
@@ -5271,6 +5410,7 @@ int lotus_hashmap_value_at(void *map_ptr, int64_t i, void *out_value) {
                 size_t es = lotus_hashmap_entry_size(m);
                 char *slot = m->slots + s * es;
                 memcpy(out_value, slot + 1 + m->key_size, m->value_size);
+                lotus_hashmap_clone_out_strings(m, out_value, dest_arena);
                 r = 1;
             }
         }
@@ -5285,11 +5425,23 @@ int lotus_hashmap_value_at(void *map_ptr, int64_t i, void *out_value) {
             size_t es = lotus_hashmap_entry_size(m);
             char *slot = m->slots + s * es;
             memcpy(out_value, slot + 1 + m->key_size, m->value_size);
+                lotus_hashmap_clone_out_strings(m, out_value, dest_arena);
             r = 1;
         }
     }
     lotus_hashmap_unlock(m);
     return r;
+}
+
+int lotus_hashmap_value_at(void *map_ptr, int64_t i, void *out_value) {
+    return lotus_hashmap_value_at_into(map_ptr, i, out_value, NULL);
+}
+
+/* Synced-map read: clone the cell's Strings into the caller's arena
+ * so the writer may retire its own. See lotus_hashmap_get_cloned. */
+int lotus_hashmap_value_at_cloned(void *map_ptr, int64_t i,
+                                  void *out_value, void *dest_arena) {
+    return lotus_hashmap_value_at_into(map_ptr, i, out_value, dest_arena);
 }
 
 void lotus_hashmap_destroy(void *map_ptr) {
