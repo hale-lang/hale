@@ -123,7 +123,16 @@ main locus Org {
 - **Unknown ⇒ violation.** An indirect call (function-typed
   parameter, #353) or a computed publish subject on a path from a
   `forbid` source cannot be certified and is reported as a
-  violation, exactly as `@no_syscall` treats the same shapes.
+  violation, exactly as `@no_syscall` treats the same shapes. And
+  the **unresolved-callee backstop**: a method call on a receiver
+  the summarizer cannot type (a struct-literal receiver, a chained
+  `self.a.b` field, a call result, a branch value) whose name
+  matches a method of the claim's target set also fails closed —
+  without it, `forbid reaches(A, B)` certified while the forbidden
+  path executed (found by the #382 soundness audit; the effect
+  system shares the underlying summarizer gap, tracked on #382).
+  Synthesized form/builtin methods (`counts.set`) carry a known
+  receiver type and are exempt.
 - **Placement.** `claims { }` is only legal inside `main locus`
   (parse error elsewhere): main is the closed-world gate, so
   bundle-wide claims cannot be evaluated anywhere earlier, and

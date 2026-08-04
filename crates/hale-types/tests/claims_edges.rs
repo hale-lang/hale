@@ -693,6 +693,150 @@ fn a_projection_empty_group_is_an_error_at_either_endpoint() {
     );
 }
 
+// =====================================================================
+// The unresolved-callee backstop (#382 soundness audit)
+// =====================================================================
+//
+// Four receiver shapes land in the call graph as `Unresolved` with
+// no receiver type — a struct-literal receiver, a chained field, a
+// call result, a branch value — and a walk that ignored them
+// certified a `forbid` while the forbidden path executed at
+// runtime. The backstop fails closed when such a call's NAME
+// matches a method of the claim's target set.
+
+fn backstop_fixture(go_body: &str) -> String {
+    format!(
+        r#"
+        locus B {{ fn work(n: Int) -> Int {{ return n * 2; }} }}
+        locus Mid {{ params {{ inner: B = B {{ }}; }} }}
+        fn make_b() -> B {{ return B {{ }}; }}
+        locus A {{
+            params {{ mid: Mid = Mid {{ }}; }}
+            fn go(n: Int) -> Int {{ {go_body} }}
+        }}
+        group a_side = {{ A }};
+        group b_side = {{ B }};
+        main locus App {{
+            params {{ a: A = A {{ }}; }}
+            claims {{ iso: forbid reaches(a_side, b_side); }}
+        }}
+        fn main() {{ App {{ }}; }}
+    "#
+    )
+}
+
+fn assert_fails_closed(body: &str, shape: &str) {
+    let ds = diags(&backstop_fixture(body));
+    assert!(
+        ds.iter().any(|m| m.contains("claim `iso` cannot be certified")
+            && m.contains("receiver the compiler cannot type")),
+        "{} must fail closed, not certify: {:?}",
+        shape,
+        ds
+    );
+}
+
+/// AUDIT SHAPE 3: struct-literal receiver.
+#[test]
+fn a_literal_receiver_call_fails_closed() {
+    assert_fails_closed("return B { }.work(n);", "a literal receiver");
+}
+
+/// AUDIT SHAPE 5: chained field receiver.
+#[test]
+fn a_chained_field_receiver_call_fails_closed() {
+    assert_fails_closed(
+        "return self.mid.inner.work(n);",
+        "a chained field receiver",
+    );
+}
+
+/// AUDIT SHAPE 6: call-result receiver.
+#[test]
+fn a_call_result_receiver_call_fails_closed() {
+    assert_fails_closed(
+        "let b = make_b(); return b.work(n);",
+        "a call-result receiver",
+    );
+}
+
+/// AUDIT SHAPE 8: branch-valued receiver.
+#[test]
+fn a_branch_valued_receiver_call_fails_closed() {
+    assert_fails_closed(
+        "let b = if n > 0 { B { } } else { B { } }; return b.work(n);",
+        "a branch-valued receiver",
+    );
+}
+
+/// The backstop's own control: the same unresolved shape with a
+/// name the target set does NOT declare stays certifiable — the
+/// backstop keys on the target's method names, not on every
+/// unresolved edge.
+#[test]
+fn an_unresolved_call_not_matching_the_target_certifies() {
+    let src = r#"
+        locus B { fn work(n: Int) -> Int { return n * 2; } }
+        locus C { fn other(n: Int) -> Int { return n + 1; } }
+        locus A {
+            fn go(n: Int) -> Int { return C { }.other(n); }
+        }
+        group a_side = { A };
+        group b_side = { B };
+        main locus App {
+            params { a: A = A { }; }
+            claims { iso: forbid reaches(a_side, b_side); }
+        }
+        fn main() { App { }; }
+    "#;
+    let ds = diags(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("cannot be certified")),
+        "an unresolved name outside the target set must not trip \
+         the backstop: {:?}",
+        ds
+    );
+}
+
+/// The backstop covers `only edges` and `bound` too.
+#[test]
+fn the_backstop_covers_only_edges_and_bound() {
+    let only = backstop_fixture("return B { }.work(n);").replace(
+        "iso: forbid reaches(a_side, b_side);",
+        "gate: only edges a_side -> b_side { };",
+    );
+    let ds = diags(&only);
+    assert!(
+        ds.iter().any(|m| m.contains("claim `gate` cannot be certified")),
+        "only edges must fail closed on the untyped receiver: {:?}",
+        ds
+    );
+    let bound = r#"
+        effect llm;
+        locus Model {
+            @effects(is: {llm})
+            fn ask(p: Int) -> Int { return p; }
+        }
+        locus Planner {
+            fn plan(n: Int) -> Int { return Model { }.ask(n); }
+        }
+        group planners = { Planner };
+        main locus App {
+            params { p: Planner = Planner { }; }
+            claims { one: bound llm <= 5 on paths from planners; }
+        }
+        fn main() { App { }; }
+    "#;
+    let ds = diags(bound);
+    assert!(
+        ds.iter().any(|m| m.contains("claim `one` violated")
+            && m.contains("unbounded")),
+        "bound must treat an untyped carrier-named call as \
+         unbounded: {:?}",
+        ds
+    );
+}
+
 /// Domain declaration guards: empty and duplicate domains are parse
 /// errors.
 #[test]
