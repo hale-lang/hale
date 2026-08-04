@@ -848,10 +848,16 @@ fn resolve_member(
 /// and bundle-level claims agree. `recv_ty: Some` edges
 /// (synthesized form/builtin methods like `counts.set`) are known
 /// non-locus receivers and stay exempt.
-fn unresolved_untyped_receiver(
+///
+/// #392: interface-dispatch calls never reach this predicate — a
+/// dispatch WITH conformers arrives already fanned out to `Resolved`
+/// alternatives, and one through an uninhabited interface is dead
+/// code (no value of the interface can exist in this closed world),
+/// which the walk skips like the summarizer's other non-edges.
+fn unresolved_opaque_receiver(
     edge: &crate::alloc_summary::CallEdge,
 ) -> bool {
-    edge.receiver_present && edge.recv_ty.is_none()
+    edge.opaque_method_call()
 }
 
 // ===================== forbid reaches =============================
@@ -1037,7 +1043,7 @@ fn evaluate_forbid_reaches(
                         // The backstop: an untyped-receiver call
                         // is a method of SOME locus, possibly a
                         // wrapper reaching the target. Fail closed.
-                        if unresolved_untyped_receiver(edge) {
+                        if unresolved_opaque_receiver(edge) {
                             diags.push(Diag::ty(
                                 c.name.span,
                                 format!(
@@ -1200,7 +1206,7 @@ fn evaluate_only_edges(
                         ));
                         return "violated";
                     }
-                    if unresolved_untyped_receiver(edge) {
+                    if unresolved_opaque_receiver(edge) {
                         diags.push(Diag::ty(
                             c.name.span,
                             format!(
@@ -1408,6 +1414,13 @@ fn site_count(
     stack.push(k.clone());
     let mut total: u64 = 0;
     let mut best_child: (u64, Vec<FnKey>) = (0, Vec::new());
+    // #392: fanned-out interface-dispatch alternatives share a group;
+    // a dispatch invokes exactly ONE of them, so the group contributes
+    // its MAX, not its sum — summing would count phantom calls that no
+    // execution performs. (Any unbounded alternative still poisons the
+    // whole count: dispatch may choose it.)
+    let mut group_best: BTreeMap<u32, (u64, Vec<FnKey>)> =
+        BTreeMap::new();
     let mut unbounded = false;
     for edge in &fs.calls {
         match &edge.callee {
@@ -1426,9 +1439,21 @@ fn site_count(
                             unbounded = true;
                             break;
                         }
-                        total = total.saturating_add(w);
-                        if w > best_child.0 {
-                            best_child = (w, p);
+                        match edge.dispatch_group {
+                            Some(g) => {
+                                let e = group_best
+                                    .entry(g)
+                                    .or_insert((0, Vec::new()));
+                                if w > e.0 {
+                                    *e = (w, p);
+                                }
+                            }
+                            None => {
+                                total = total.saturating_add(w);
+                                if w > best_child.0 {
+                                    best_child = (w, p);
+                                }
+                            }
                         }
                     }
                 }
@@ -1440,11 +1465,19 @@ fn site_count(
                     // be a wrapper reaching a carrier — an
                     // uncountable contribution. Fail closed
                     // (unbounded).
-                    || unresolved_untyped_receiver(edge)
+                    || unresolved_opaque_receiver(edge)
                 {
                     unbounded = true;
                     break;
                 }
+            }
+        }
+    }
+    if !unbounded {
+        for (w, p) in group_best.into_values() {
+            total = total.saturating_add(w);
+            if w > best_child.0 {
+                best_child = (w, p);
             }
         }
     }

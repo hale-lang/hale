@@ -263,9 +263,7 @@ fn count_dim(
     for edge in &fs.calls {
         // #382: an untypeable-receiver method call gets the same
         // unbounded treatment as an indirect call.
-        if edge.indirect
-            || (edge.receiver_present && edge.recv_ty.is_none())
-        {
+        if edge.indirect || edge.opaque_method_call() {
             total = total.add(Qty::Unbounded);
         }
     }
@@ -286,8 +284,12 @@ fn count_dim(
             }
         }
     }
-    // Resolved callees.
+    // Resolved callees. #392: fanned-out interface-dispatch
+    // alternatives share a `dispatch_group`; a dispatch invokes
+    // exactly one of them, so a group contributes the MAX over its
+    // alternatives where a real call sequence would sum.
     path.push(key.clone());
+    let mut group_max: BTreeMap<u32, Qty> = BTreeMap::new();
     for edge in &fs.calls {
         *steps += 1;
         if *steps > callgraph::MAX_STEPS {
@@ -295,39 +297,52 @@ fn count_dim(
             return Qty::Unbounded;
         }
         if let Callee::Resolved(callee) = &edge.callee {
+            let mut contrib = Qty::Finite(0);
             if path.contains(callee) {
-                total = total.add(Qty::Unbounded);
-                continue;
-            }
-            // #382 phase 3: a call to a declared CARRIER of the
-            // budgeted user class counts one site (loop-nested is
-            // unbounded, like every per-call contributor).
-            if matches!(dim, QuantDim::UserClass(_)) {
-                let is_carrier = summary
-                    .carries
-                    .get(callee)
-                    .map_or(false, |c| c.0 & carrier_mask.0 != 0);
-                if is_carrier {
-                    total = total.add(if edge.loop_depth > 0 {
-                        Qty::Unbounded
-                    } else {
-                        Qty::Finite(1)
-                    });
-                }
-            }
-            let sub = count_dim(
-                summary, callee, dim, fanout_of, carrier_mask, path,
-                steps,
-            );
-            total = total.add(if edge.loop_depth > 0 {
-                match sub {
-                    Qty::Finite(0) => Qty::Finite(0),
-                    _ => Qty::Unbounded,
-                }
+                contrib = contrib.add(Qty::Unbounded);
             } else {
-                sub
-            });
+                // #382 phase 3: a call to a declared CARRIER of the
+                // budgeted user class counts one site (loop-nested is
+                // unbounded, like every per-call contributor).
+                if matches!(dim, QuantDim::UserClass(_)) {
+                    let is_carrier = summary
+                        .carries
+                        .get(callee)
+                        .map_or(false, |c| c.0 & carrier_mask.0 != 0);
+                    if is_carrier {
+                        contrib = contrib.add(if edge.loop_depth > 0 {
+                            Qty::Unbounded
+                        } else {
+                            Qty::Finite(1)
+                        });
+                    }
+                }
+                let sub = count_dim(
+                    summary, callee, dim, fanout_of, carrier_mask,
+                    path, steps,
+                );
+                contrib = contrib.add(if edge.loop_depth > 0 {
+                    match sub {
+                        Qty::Finite(0) => Qty::Finite(0),
+                        _ => Qty::Unbounded,
+                    }
+                } else {
+                    sub
+                });
+            }
+            match edge.dispatch_group {
+                Some(g) => {
+                    let e = group_max
+                        .entry(g)
+                        .or_insert(Qty::Finite(0));
+                    *e = e.max(contrib);
+                }
+                None => total = total.add(contrib),
+            }
         }
+    }
+    for q in group_max.into_values() {
+        total = total.add(q);
     }
     path.pop();
     total

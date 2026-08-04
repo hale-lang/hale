@@ -135,8 +135,30 @@ main locus Org {
   is sound; the edge itself is the uncertainty, and the artifact
   records it (`untyped_receiver_call:<callee>`) inside the hashed
   model half. Synthesized form/builtin methods (`counts.set`)
-  carry a known receiver type and are exempt; the effect system
-  shares the underlying summarizer gap, tracked on #382.
+  carry a known receiver type and are exempt. The rule is one
+  shared predicate applied by every judgment that traverses calls
+  — claims, effect inference, effect certificates, `@budget`, and
+  the quantitative dims — so fn-level certificates and
+  bundle-level claims always agree (#392 closed the `@budget`
+  guard, which had the message but not the test).
+- **Interface dispatch fans out.** A method call on an
+  interface-typed value (`route.handler.handle(ctx)` — the stdlib
+  router's own shape) is resolved by closed-world enumeration
+  (#392): the summarizer fans the one written edge out to every
+  conforming locus. Conformance here is structural name + arity
+  over the declarations — a superset of the checker's typed
+  conformance, safe because over-approximation only adds edges.
+  Reachability and effect judgments walk every alternative;
+  counting judgments (`bound`, `@budget`, the quantitative dims)
+  take the **max** over the alternatives of one dispatch site,
+  because one invocation dispatches to exactly one target — a sum
+  would count phantom calls no execution performs. An interface NO
+  locus conforms to has no values in a closed world (an interface
+  value only arises by coercing a conformer), so its call sites
+  are dead: they contribute nothing to any judgment, and the
+  artifact records each (`uninhabited_interface_call:<iface>.<callee>`)
+  inside the hashed model half so a conformer appearing later
+  changes `shape_hash`.
 - **Placement.** `claims { }` is only legal inside `main locus`
   (parse error elsewhere): main is the closed-world gate, so
   bundle-wide claims cannot be evaluated anywhere earlier, and

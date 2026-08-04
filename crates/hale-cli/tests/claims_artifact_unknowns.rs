@@ -94,3 +94,69 @@ fn an_untyped_receiver_edge_changes_shape_hash() {
         "the unknown class must be part of the shape identity"
     );
 }
+
+// ---- #392: interface dispatch in the artifact ----------------------
+
+const DISPATCHED: &str = r#"
+interface Notifier { fn send(n: Int) -> Int; }
+locus Email { fn send(n: Int) -> Int { return n; } }
+type Route { handler: Notifier; }
+locus A {
+    fn go(n: Int) -> Int {
+        let r = Route { handler: Email { } };
+        return r.handler.send(n);
+    }
+}
+group a_side = { A };
+group sinks = { Email };
+main locus App {
+    params { a: A = A { }; }
+    claims { iso: forbid reaches(a_side, sinks); }
+}
+fn main() { App { }; }
+"#;
+
+/// A dispatch WITH conformers is fanned out to ordinary resolved
+/// call edges — the artifact's call relation carries them, and no
+/// unknown row appears.
+#[test]
+fn a_conforming_dispatch_appears_as_call_edges_not_unknowns() {
+    let art = dump(DISPATCHED, "dispatched");
+    assert!(
+        art.contains(r#"{"from": "A::go", "to": "Email::send"}"#),
+        "the fanned-out edge must land in the call relation:\n{}",
+        art
+    );
+    assert!(
+        !art.contains("uninhabited_interface_call")
+            && !art.contains("untyped_receiver_call"),
+        "a resolved dispatch is not an unknown:\n{}",
+        art
+    );
+}
+
+/// An interface nothing conforms to records its own unknown class —
+/// with the interface AND callee named, so an outside evaluator can
+/// apply the same fail-closed rule — and it changes `shape_hash`.
+#[test]
+fn an_uninhabited_interface_call_is_an_unknown_and_changes_the_hash()
+{
+    // Remove the conformer: same program, `Email::send` renamed so
+    // nothing satisfies `Notifier`.
+    let uninhabited = DISPATCHED.replace(
+        "locus Email { fn send(n: Int) -> Int { return n; } }",
+        "locus Email { fn deliver(n: Int) -> Int { return n; } }",
+    );
+    let art = dump(&uninhabited, "uninhabited");
+    assert!(
+        art.contains("uninhabited_interface_call:Notifier.send")
+            && art.contains("\"A::go\""),
+        "the unknown must name the interface and callee:\n{}",
+        art
+    );
+    assert_ne!(
+        shape_hash(&dump(DISPATCHED, "hash_inhabited")),
+        shape_hash(&art),
+        "losing the last conformer must change the shape identity"
+    );
+}

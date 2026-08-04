@@ -226,6 +226,25 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
                             .entry(fn_name(k))
                             .or_default()
                             .insert("indirect_call".to_string());
+                    } else if let Some(iface) = &edge.via_interface {
+                        // #392: a call through an interface no locus
+                        // in the build conforms to. Not an unknown
+                        // in the fail-closed sense — an uninhabited
+                        // interface has no values in a closed world,
+                        // so every walker treats the site as DEAD.
+                        // Recorded (inside the hashed model half) so
+                        // an outside evaluator applies the same rule
+                        // and a conformer appearing later changes
+                        // `shape_hash`. (A dispatch WITH conformers
+                        // is already fanned out to ordinary resolved
+                        // call edges above and never lands here.)
+                        unknowns.entry(fn_name(k)).or_default().insert(
+                            format!(
+                                "uninhabited_interface_call:{}.{}",
+                                name(iface),
+                                n
+                            ),
+                        );
                     } else if edge.receiver_present
                         && edge.recv_ty.is_none()
                     {

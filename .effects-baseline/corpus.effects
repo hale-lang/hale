@@ -341,7 +341,7 @@ __docs_dir  does={env}
 __render_doc  does={syscall,env,alloc}
 __render_index  does={syscall,env,alloc}
 __wrap_html_page  does={alloc}
-handle_request  does={syscall,block,env,alloc}
+handle_request  does={syscall,block,publish,env,alloc}
 main  does={syscall,env,alloc}
 ### fitter-applier-demo
 ActionLogL::on_action  does={syscall}
@@ -354,7 +354,7 @@ main  does={alloc}
 HelloL::birth  does={syscall}
 main  does={alloc}
 ### http-hello
-handle_request  does={syscall,block,alloc}
+handle_request  does={syscall,block,publish,alloc}
 main  does={syscall,env,alloc}
 ### io-demo
 main  does={syscall,env,alloc}

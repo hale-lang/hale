@@ -1020,8 +1020,10 @@ fn check_class(
             // STILL cannot be typed (an index result, a match value,
             // a foreign expression) is a method of some bundle locus
             // reached through an opaque expression — same fail-closed
-            // rule as an indirect call.
-            if edge.receiver_present && edge.recv_ty.is_none() {
+            // rule as an indirect call. (#392 interface dispatch
+            // never lands here: with conformers it is fanned out to
+            // resolved edges; without any it is dead code.)
+            if edge.opaque_method_call() {
                 return Some(format!(
                     "`{}` — a method call on a receiver the compiler \
                      cannot type; bind the receiver to a typed field \

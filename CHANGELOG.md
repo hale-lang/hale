@@ -6,6 +6,69 @@ behavior.
 
 ---
 
+## Unreleased
+
+### Interface-dispatch edges: closed-world fan-out (GH #392 thread 4)
+
+A method call on an interface-typed value
+(`route.handler.handle(ctx)` — the stdlib router's own shape)
+used to land as an unresolved edge that every walker silently
+dropped: the one receiver shape left, after the v0.14.0 root fix,
+where a real call contributed nothing to any judgment. An
+`@effects(none: …)` certificate over a fn dispatching through
+`std::http::Router` certified while the handler performed the
+effect.
+
+The world is closed, so the implementor set is enumerable. The
+summarizer now fans the written edge out to every conforming
+locus (structural name-and-arity conformance over the
+declarations — a superset of the checker's typed conformance;
+over-approximation only adds edges). Reachability and effect
+judgments walk every alternative. Counting judgments — `bound`,
+`@budget`, the quantitative dims — take the **max** over one
+dispatch site's alternatives (a dispatch invokes exactly one
+target; a sum would count phantom calls no execution performs),
+carried by a `dispatch_group` tag on the fanned edges and a
+`join_alternatives` fold in the shared call-graph walker.
+
+An interface **no** locus conforms to has no values in a closed
+world (an interface value only arises by coercing a conformer),
+so its call sites are dead — they contribute nothing, rather than
+failing closed. The everyday instance is the router's
+`m.before(cur)` over an empty middleware list: failing closed
+there would refuse every certificate through the stdlib router.
+The topology artifact records each such site
+(`uninhabited_interface_call:<iface>.<callee>`) inside the hashed
+model half, so a conformer appearing later changes `shape_hash`.
+
+Two adjacent holes closed in the same change:
+
+- **Path-written stdlib types now type receivers.** A param or
+  field written `std::io::tcp::Stream` / `std::http::Router`
+  recorded only its last path segment, a name no summary map is
+  keyed by — so method calls on such receivers were unresolved
+  and invisible. They now resolve through the same std-vs-user
+  rule struct-literal receivers already used. The committed
+  effects baseline gains `publish` on two corpus `handle_request`
+  rows — real: `Stream::recv` publishes to the tcp log-event
+  topic, previously unseen.
+- **`@budget(alloc_per_call)` fails closed on untyped
+  receivers.** The v0.14.0 root fix wrote the dual-cause message
+  but widened only the other walkers' guards; the budget's own
+  guard still tested `indirect` alone, leaving the receiver
+  branch dead and the budget certifiable through a wrapper. The
+  shared predicate (`CallEdge::opaque_method_call`) now backs all
+  five walkers.
+
+Spec: `spec/verification.md` § Claims (fan-out, max-over-
+alternatives, dead-dispatch rules). Docs: the claims chapter's
+fail-closed section and artifact schema. Tests:
+`interface_dispatch.rs` (14: canary + control per judgment form,
+incl. the router end-to-end pair), artifact rows + `shape_hash`
+sensitivity in `claims_artifact_unknowns.rs`.
+
+---
+
 ## v0.14.0 — claims: the program owns the law, the compiler owns the proof (2026-08-04)
 
 ### Receiver typing: the summarizer root fix (GH #382 soundness audit)

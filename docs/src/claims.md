@@ -465,6 +465,29 @@ judgment that traverses calls refuses to certify over:
   subscriber);
 - a walk exceeding the step ceiling.
 
+**Interface dispatch fans out.** A method call on an
+interface-typed value — `route.handler.handle(ctx)`, the stdlib
+router's own shape — is not an unknown: the world is closed, so
+the implementor set is enumerable. The summarizer fans the one
+written edge out to every conforming locus (structural
+name-and-arity conformance over the declarations — a superset of
+the checker's typed conformance, safe because over-approximation
+only adds edges). Reachability and effect judgments walk every
+alternative; counting judgments (`bound`, `@budget`, the
+quantitative dims) take the **max** over one dispatch site's
+alternatives, because an invocation dispatches to exactly one
+target — a sum would count phantom calls no execution performs.
+
+An interface *no* locus conforms to is different again: an
+interface value only ever arises by coercing a conforming locus,
+so in a closed world an uninhabited interface has no values and
+its call sites are **dead** — they contribute nothing to any
+judgment (the router's `m.before(cur)` over an empty middleware
+list is the everyday case). The artifact records each such site
+(`uninhabited_interface_call:<interface>.<callee>`) inside the
+hashed model half, so a conformer appearing in a later build
+changes `shape_hash`.
+
 ## Every diagnostic
 
 The complete catalog, grouped by stage. Parse errors:
@@ -534,6 +557,7 @@ The artifact shape (schema `1.0`):
   "labels":    { "<fn>": [declared effect classes] },
   "unknowns":  [ {"fn": …, "reasons": ["indirect_call" |
                   "untyped_receiver_call:<callee>" |
+                  "uninhabited_interface_call:<iface>.<callee>" |
                   "computed_publish"]} ],
   "claims":    [ {"name", "form", "result": "holds"|"violated"|"invalid"} ]
 }
@@ -543,8 +567,8 @@ Everything renders in author spelling (cross-seed symbols
 demangled). `shape_hash` covers the **model half** — sorts,
 relations, groups, labels, unknowns — and excludes claim
 *results*, so one topology under a different law keeps one shape
-while any graph, vocabulary, carrier, or new fail-closed site
-changes the identity. `--check-topology` diffs against the
+while any graph, vocabulary, carrier, or new fail-closed or
+dead-dispatch site changes the identity. `--check-topology` diffs against the
 committed baseline and fails with a regenerate hint, separating
 two review questions: *does the program still satisfy the law?*
 and *did the graph change in a way reviewers should see?*

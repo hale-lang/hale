@@ -147,6 +147,17 @@ impl FactVisitor for BudgetVisitor {
     fn is_zero(&self, f: &Count) -> bool {
         !f.nonzero()
     }
+    /// #392: one interface dispatch invokes ONE conforming target, so
+    /// the alternatives of a dispatch group bound the count by their
+    /// max, not their sum.
+    fn join_alternatives(&self, a: Count, b: Count) -> Count {
+        match (a, b) {
+            (Count::Finite(x), Count::Finite(y)) => {
+                Count::Finite(x.max(y))
+            }
+            _ => Count::Unbounded,
+        }
+    }
 
     fn site(&mut self, _key: &FnKey, site: &AllocSite, emit: bool) -> Count {
         if site.loop_depth > 0 {
@@ -186,7 +197,12 @@ impl FactVisitor for BudgetVisitor {
         // "opaque calls are invisible" boundary covers calls whose
         // callee is fixed and simply unmodelled; this one has no fixed
         // callee at all, so it counts as unbounded.
-        if edge.indirect {
+        //
+        // #392: `opaque_method_call` joins the same rule — the #382
+        // untyped-receiver wrapper shape. The guard here previously
+        // tested only `indirect`, leaving the receiver branch of this
+        // message dead and the budget certifiable through a wrapper.
+        if edge.indirect || edge.opaque_method_call() {
             if emit {
                 self.offenders.push(Offender {
                     span: edge.span,
