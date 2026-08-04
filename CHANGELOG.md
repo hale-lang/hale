@@ -8,6 +8,38 @@ behavior.
 
 ## Unreleased
 
+### The caller-arena TLS can no longer outlive the arena it points to (GH #375)
+
+A free-fn factory that builds and grows a `@form(vec)` locus
+segfaulted deterministically when called after a locus-method failure
+was caught with an `or` handler — the cross-seed shape downstream
+worked around with inline construction. Root cause: the caller-arena
+TLS is a set-and-forget channel. A fallible method chain that
+published its own method scratch and then exited down the error edge
+left the TLS pointing at the destroyed scratch, and the next TLS
+reader without its own preceding publish allocated out of freed
+memory (ASan: heap-use-after-free in `lotus_arena_alloc`).
+
+Three layers, each independently sound:
+
+1. `lotus_arena_destroy` clears the TLS when it points at the dying
+   arena — the single point every arena death passes through, so a
+   destroyed (or recycled) arena is never reachable via the TLS
+   again; readers fall back to the documented global-arena path.
+2. Free-fn prologues publish their `__caller_arena` param to the
+   TLS, re-healing it on entry and giving TLS readers the same
+   lifetime an inlined body would have used. Gated on the body
+   containing a construct that can read the TLS (an instantiation
+   or a call) so scalar leaf fns skip the publish — ungated it
+   measured +86% on the 2ns/call microbench.
+3. Method epilogues restore the entry-time snapshot on both the ok
+   and the error exit, making method calls TLS-neutral.
+
+The reported reproducer (two pond seeds + probe) runs 10/10 clean,
+ASan-clean; a minimal two-seed regression test is pinned in-tree —
+notable because every single-file reduction stays clean, which is
+why the issue's toy matrix could not reproduce it.
+
 ### Synced `@form(hashmap)` maps now retire replaced String clones (downstream handoff P1)
 
 A `sync = serialized` map never installed a retire descriptor, so
