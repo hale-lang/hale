@@ -454,7 +454,11 @@ impl<'a> QualifiedRenameApplier<'a> {
             // block — its qualified topic refs (of ITS sub-imports)
             // canonicalize with the same rule as main's block.
             TopDecl::Claims(cb) => {
-                rewrite_claim_topic_refs(cb, self.renames);
+                rewrite_claim_topic_refs(&mut cb.entries, self.renames);
+            }
+            // GH #409: same rule for a named constitution.
+            TopDecl::Constitution(cd) => {
+                rewrite_claim_topic_refs(&mut cd.entries, self.renames);
             }
         }
     }
@@ -550,7 +554,7 @@ impl<'a> QualifiedRenameApplier<'a> {
             // segment. Group names and effect classes are same-seed
             // / interned and need no rewriting.
             LocusMember::Claims(cb) => {
-                rewrite_claim_topic_refs(cb, self.renames);
+                rewrite_claim_topic_refs(&mut cb.entries, self.renames);
             }
         }
     }
@@ -561,7 +565,7 @@ impl<'a> QualifiedRenameApplier<'a> {
 /// the library tier's top-level blocks, whose own sub-imports
 /// resolve at ITS import stage with ITS rename table.
 fn rewrite_claim_topic_refs(
-    cb: &mut ClaimsBlock,
+    entries: &mut [ClaimDecl],
     renames: &[(Vec<String>, String)],
 ) {
     let rewrite = |t: &mut TopicRef| {
@@ -583,7 +587,7 @@ fn rewrite_claim_topic_refs(
             }
         }
     };
-    for e in &mut cb.entries {
+    for e in entries {
         match &mut e.form {
             ClaimForm::OnlyEdges { grants, .. } => {
                 for g in grants {
@@ -624,7 +628,10 @@ fn top_decl_name(d: &TopDecl) -> Option<&str> {
         // as written and report with seed attribution instead
         // (`alias::claim_name`), so a mangled symbol never appears
         // in a law diagnostic.
-        TopDecl::Claims(_) => None,
+        // GH #409: a constitution's NAME is law vocabulary, cited
+        // by `adopt` and in diagnostics — never a mangled symbol,
+        // for the same reason claim names are not.
+        TopDecl::Claims(_) | TopDecl::Constitution(_) => None,
     }
 }
 
@@ -720,61 +727,13 @@ impl<'a> Mangler<'a> {
             // merge flattens both into one program.
             TopDecl::Claims(cb) => {
                 cb.lib_tier = true;
-                for e in &mut cb.entries {
-                    match &mut e.form {
-                        ClaimForm::ForbidReaches {
-                            src,
-                            dst,
-                            avoiding,
-                            ..
-                        } => {
-                            for set in [src, dst] {
-                                if let ClaimSet::Group(g) = set {
-                                    self.rewrite_ident(&mut g.name);
-                                }
-                            }
-                            if let Some(g) = avoiding {
-                                self.rewrite_ident(&mut g.name);
-                            }
-                        }
-                        ClaimForm::OnlyEdges {
-                            src,
-                            dst,
-                            grants,
-                        } => {
-                            self.rewrite_ident(&mut src.name);
-                            self.rewrite_ident(&mut dst.name);
-                            for g in grants {
-                                if g.topic.segments.len() == 1 {
-                                    self.rewrite_ident(
-                                        &mut g.topic.segments[0].name,
-                                    );
-                                }
-                            }
-                        }
-                        ClaimForm::Bound { from, .. } => {
-                            self.rewrite_ident(&mut from.name);
-                        }
-                        ClaimForm::Require { group, topic, .. } => {
-                            self.rewrite_ident(&mut group.name);
-                            if topic.segments.len() == 1 {
-                                self.rewrite_ident(
-                                    &mut topic.segments[0].name,
-                                );
-                            }
-                        }
-                        ClaimForm::Cover { group, .. } => {
-                            self.rewrite_ident(&mut group.name);
-                        }
-                        ClaimForm::Count { topic, .. } => {
-                            if topic.segments.len() == 1 {
-                                self.rewrite_ident(
-                                    &mut topic.segments[0].name,
-                                );
-                            }
-                        }
-                    }
-                }
+                self.rewrite_claim_entry_idents(&mut cb.entries);
+            }
+            // GH #409: a constitution can live in an imported seed
+            // — that is the point of it — so its references resolve
+            // through the same table.
+            TopDecl::Constitution(cd) => {
+                self.rewrite_claim_entry_idents(&mut cd.entries);
             }
         }
         self.pop_scope();
@@ -787,6 +746,70 @@ impl<'a> Mangler<'a> {
         }
         for m in &mut l.members {
             self.walk_locus_member(m);
+        }
+    }
+
+
+    /// GH #409: canonicalize the group / topic idents inside a set
+    /// of claim entries. Shared by a library-tier `claims { }` block
+    /// and by a `constitution` — both are claimsets that can arrive
+    /// through an import, so both resolve their references through
+    /// the same rename table.
+    fn rewrite_claim_entry_idents(&mut self, entries: &mut [ClaimDecl]) {
+        for e in entries {
+                match &mut e.form {
+                    ClaimForm::ForbidReaches {
+                        src,
+                        dst,
+                        avoiding,
+                        ..
+                    } => {
+                        for set in [src, dst] {
+                            if let ClaimSet::Group(g) = set {
+                                self.rewrite_ident(&mut g.name);
+                            }
+                        }
+                        if let Some(g) = avoiding {
+                            self.rewrite_ident(&mut g.name);
+                        }
+                    }
+                    ClaimForm::OnlyEdges {
+                        src,
+                        dst,
+                        grants,
+                    } => {
+                        self.rewrite_ident(&mut src.name);
+                        self.rewrite_ident(&mut dst.name);
+                        for g in grants {
+                            if g.topic.segments.len() == 1 {
+                                self.rewrite_ident(
+                                    &mut g.topic.segments[0].name,
+                                );
+                            }
+                        }
+                    }
+                    ClaimForm::Bound { from, .. } => {
+                        self.rewrite_ident(&mut from.name);
+                    }
+                    ClaimForm::Require { group, topic, .. } => {
+                        self.rewrite_ident(&mut group.name);
+                        if topic.segments.len() == 1 {
+                            self.rewrite_ident(
+                                &mut topic.segments[0].name,
+                            );
+                        }
+                    }
+                    ClaimForm::Cover { group, .. } => {
+                        self.rewrite_ident(&mut group.name);
+                    }
+                    ClaimForm::Count { topic, .. } => {
+                        if topic.segments.len() == 1 {
+                            self.rewrite_ident(
+                                &mut topic.segments[0].name,
+                            );
+                        }
+                    }
+                }
         }
     }
 

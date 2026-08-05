@@ -607,6 +607,102 @@ Violations (the claim's result is `violated`):
 | `count` | the actual count + the participating loci |
 | any call-traversing claim | "cannot be certified" for indirect calls, untypeable receivers, computed subjects — with the repair named |
 
+## One law, many entrypoints
+
+`claims { }` is only legal inside `main locus`, and that rule is
+load-bearing: claims are closed-world statements, and `main` is the
+only place a world is closed. But that constrains *evaluation*, not
+*authoring*. Copy-pasting a law into twenty main loci means the copy
+somebody forgets fails open, silently.
+
+A **constitution** is a named claimset declared once, outside any
+main, and adopted by each entrypoint:
+
+```hale
+constitution Core {
+    tenant_iso: forbid reaches(billing, research);
+    one_writer: count publishers(topic Settled) == 1;
+}
+
+main locus App {
+    params { b: Billing = Billing { }; r: Research = Research { }; }
+    claims {
+        adopt Core;
+        local_rule: require publishes(some billing, topic Settled);
+    }
+}
+```
+
+Every clause is still evaluated **here**, in this entrypoint's closed
+world. One text, N evaluations, N worlds — nothing about the
+soundness argument changes.
+
+### Environments compose it
+
+```hale
+constitution Dev extends Core {
+    no_real_payments: forbid reaches(app, payment_provider);
+}
+```
+
+An environment may **add** laws, never drop them. Development wanting
+*stricter* law than production is the safe direction and a genuinely
+useful one — "nothing reaches the real payment provider", satisfied by
+the dev entrypoint wiring a stub. The dangerous direction is the
+reverse: a law in production that development lacks means development
+never exercised production's architecture, and the first violation
+surfaces at the production build.
+
+Composition is **union, and nothing else**. A derived constitution
+cannot replace an inherited clause:
+
+```hale
+constitution B extends A { rule: count publishers(topic T) == 9; }
+//                         ^ error if `A` also declares `rule`
+```
+
+That looks like a restriction and is actually the point. If override
+were allowed, weakening would be expressible and would read exactly
+like ordinary composition at the adoption site — and telling
+strengthening from weakening means proving one sentence implies
+another, which fails open when it gets that wrong. With union only, a
+stricter bound is simply a second named claim that coexists with the
+inherited one. Both are checked; the stricter one does the work.
+Weakening isn't rejected, it's **unexpressible**.
+
+Two mechanics follow. Claim names are one flat namespace, so two
+constitutions declaring one name is an error naming both origins —
+and so is a local clause shadowing an adopted one. A **diamond** (two
+constitutions extending a common base) contributes the shared base
+exactly once, deduped by origin rather than by name, so a real
+two-origin collision still surfaces.
+
+### Groups resolve over shared vocabulary
+
+A constitution applied to every entrypoint cannot name any one
+application's internals. It doesn't need to: it names **shared library
+vocabulary**, which every entrypoint either imports or doesn't. An
+entrypoint that doesn't import a seed gets an empty group, and
+`may_be_empty` is the existing opt-out for exactly that.
+
+### Provenance, not annotation
+
+Once environments can add laws, two kinds of sentence live in one
+block with opposite lifetimes: **product laws**, true everywhere, and
+**environment rails** like "nothing reaches the real payment
+provider", deliberately false in production. They read identically.
+
+So the artifact records which constitution each clause came from
+rather than asking you to mark them:
+
+```json
+{"name": "tenant_iso", "form": "…", "result": "holds", "source": "Core"}
+```
+
+A clause written in the main itself has no `source`. The distinction
+is structural and cannot drift from reality the way a hand-applied
+marker can.
+
 ## Checking a repository with many seeds
 
 `hale check` operates on **one seed** and does not recurse — a
@@ -718,11 +814,11 @@ reports as *unverifiable* rather than as valid — a consumer may
 choose to accept it, but must never read "nothing to check" as
 "checked and intact".
 
-The artifact shape (schema `1.4`):
+The artifact shape (schema `1.5`):
 
 ```text
 {
-  "schema": "1.4",
+  "schema": "1.5",
   "shape_hash": "<fnv1a-64 over the model half>",
   "sorts":     { "loci": […], "fns": […], "topics": […] },
   "relations": {
@@ -744,7 +840,7 @@ The artifact shape (schema `1.4`):
   "provenance": { "calls": [+span], "publishes": [+span],
                   "subscribes": [+span], "decls": {name: span} },
   "topics":    [ {"name", "subject", "shape", "payload_hash"} ],
-  "claims":    [ {"name", "form", "result": <verdict>} ],
+  "claims":    [ {"name", "form", "result": <verdict>, "source"?} ],
   "lowered":   [ {"subject", "form", "result": <verdict>} ],
   "verdict":   "clean" | "law_failed"
 }

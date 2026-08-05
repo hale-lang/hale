@@ -80,7 +80,7 @@ fn cover_catches_an_uncovered_topic_across_seeds() {
 fn the_topology_artifact_round_trips() {
     let dump = dump_artifact();
     assert!(
-        dump.contains("\"schema\": \"1.4\"")
+        dump.contains("\"schema\": \"1.5\"")
             && dump.contains("\"shape_hash\": \""),
         "the artifact must carry schema + shape_hash:\n{}",
         dump

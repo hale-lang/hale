@@ -235,7 +235,7 @@ earlier in the same file as the family. Companion:
 class along any path, with the same loop/indirect unboundedness
 rules as every per-call dimension.
 
-**The topology artifact** (#382 phase 2; schema 1.4):
+**The topology artifact** (#382 phase 2; schema 1.5):
 `hale check <t> --dump-topology` emits the serialized model —
 sorts (loci, fns, topics), relations (calls with **weights**: loop
 nesting, unbounded-loop membership, interface-dispatch tags;

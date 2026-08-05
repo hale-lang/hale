@@ -51,7 +51,10 @@ fn top_name(d: &TopDecl) -> Option<&str> {
         TopDecl::Module(_) => None,
         TopDecl::Target(t) => Some(&t.name.name),
         TopDecl::Group(g) => Some(&g.name.name),
-        TopDecl::Claims(_) => None,
+        // Law, not a symbol: a claims block declares no name, and a
+        // constitution's name is claim vocabulary cited by `adopt`
+        // rather than a mangled decl.
+        TopDecl::Claims(_) | TopDecl::Constitution(_) => None,
     }
 }
 

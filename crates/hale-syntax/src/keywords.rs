@@ -61,6 +61,9 @@ pub const CONTEXTUAL_KEYWORDS: &[&str] = &[
     "group", "claims", "forbid", "reaches", "via", "may_be_empty",
     "domain", "edges", "bound", "require", "cover", "count",
     "during", "avoiding", "seed",
+    // GH #409: constitutions — a named claimset shared across
+    // entrypoints, composed per environment.
+    "constitution", "extends", "adopt",
 ];
 
 /// The union of [`HARD_KEYWORDS`] and [`CONTEXTUAL_KEYWORDS`], sorted and

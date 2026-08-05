@@ -91,8 +91,9 @@ use crate::symbol::Bundle;
 /// `verdict` (`clean` / `law_failed`), the document's own outcome;
 /// and one result vocabulary across `claims` and `lowered` — see
 /// [`crate::verdict::Verdict`], which adds `uncertified` as a state
-/// distinct from `violated`.
-pub const TOPOLOGY_SCHEMA: &str = "1.4";
+/// distinct from `violated`. 1.5 (#409): a claim row gains an
+/// optional `source` — the constitution an adopted clause came from.
+pub const TOPOLOGY_SCHEMA: &str = "1.5";
 
 /// Serialize the bundle's model + claim results as the topology
 /// artifact (JSON).
@@ -757,11 +758,21 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     out.push_str("  ]");
     out.push_str(",\n  \"claims\": [\n");
     for o in &outcomes {
+        // GH #409: `source` names the constitution an adopted clause
+        // came from, absent for one written in this main. It is what
+        // makes "product law or environment rail?" answerable by
+        // looking, and it is what a workspace check reads to ask
+        // whether every entrypoint adopted the shared claimset.
+        let src = match &o.source {
+            Some(c) => format!(", \"source\": {}", quote(c)),
+            None => String::new(),
+        };
         out.push_str(&format!(
-            "    {{\"name\": {}, \"form\": {}, \"result\": {}}},\n",
+            "    {{\"name\": {}, \"form\": {}, \"result\": {}{}}},\n",
             quote(&o.name),
             quote(&demangle_str(&o.form)),
-            quote(o.result.as_str())
+            quote(o.result.as_str()),
+            src
         ));
     }
     trim_trailing_comma(&mut out);

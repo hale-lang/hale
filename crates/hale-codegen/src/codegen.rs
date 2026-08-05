@@ -11678,9 +11678,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // GH #382: groups name decls, not types —
                     // no type-bearing positions.
                 }
-                TopDecl::Claims(_) => {
-                    // #392: claims lower to no code and carry no
-                    // type-bearing positions.
+                TopDecl::Claims(_) | TopDecl::Constitution(_) => {
+                    // #392 / #409: claims and constitutions lower to
+                    // no code and carry no type-bearing positions.
                 }
             }
         }

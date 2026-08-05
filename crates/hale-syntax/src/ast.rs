@@ -78,6 +78,23 @@ pub enum TopDecl {
     /// not brick downstream builds with world-claims" — a library
     /// can only NAME what it can see, its own decls and imports).
     Claims(ClaimsBlock),
+    /// GH #409: `constitution NAME [extends A, B] { ... }` — a named
+    /// claimset declared outside any main, adopted by entrypoints.
+    ///
+    /// One codebase with many entrypoints needs its law stated once
+    /// rather than copy-pasted into twenty main loci, where the copy
+    /// somebody forgets fails open silently.
+    ///
+    /// `extends` composes by UNION and nothing else. Letting a
+    /// derived constitution OVERRIDE an inherited clause would make
+    /// weakening expressible and indistinguishable from ordinary
+    /// composition at the adoption site — and telling strengthening
+    /// from weakening means proving one sentence implies another,
+    /// which fails open when it gets that wrong. With union only, a
+    /// stricter bound is simply a second named claim coexisting with
+    /// the inherited one: weakening is not rejected, it is
+    /// unexpressible.
+    Constitution(ConstitutionDecl),
 }
 
 impl TopDecl {
@@ -95,6 +112,7 @@ impl TopDecl {
             TopDecl::Target(t) => t.span,
             TopDecl::Group(g) => g.span,
             TopDecl::Claims(c) => c.span,
+            TopDecl::Constitution(c) => c.span,
         }
     }
 }
@@ -115,6 +133,18 @@ pub struct GroupDecl {
     /// vacuity guard, for groups that are legitimately empty in
     /// some configurations.
     pub may_be_empty: bool,
+    pub span: Span,
+}
+
+/// GH #409: a named, composable claimset.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConstitutionDecl {
+    pub name: Ident,
+    /// Bases, in `extends A, B` order. Composition is union; a
+    /// diamond (two bases sharing one) contributes each clause once,
+    /// deduped by (origin constitution, claim name).
+    pub extends: Vec<Ident>,
+    pub entries: Vec<ClaimDecl>,
     pub span: Span,
 }
 
@@ -161,6 +191,12 @@ impl GroupMember {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClaimsBlock {
     pub entries: Vec<ClaimDecl>,
+    /// GH #409: `adopt Core;` lines. A constitution is authored once,
+    /// outside any main, and every entrypoint adopting it is checked
+    /// against every clause — evaluated HERE, in this main's closed
+    /// world, because that is the only place a world IS closed.
+    /// Authoring is shared; evaluation is not.
+    pub adopts: Vec<Ident>,
     /// #392 thread 2: true iff this block arrived through the
     /// import pipeline — set by the mangle stage, which by
     /// definition only touches imported seeds. The seed merge
