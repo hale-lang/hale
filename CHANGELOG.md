@@ -8,6 +8,28 @@ behavior.
 
 ## Unreleased
 
+### `require_subscribes` needs a route, not just an endpoint (GH #408)
+
+Found by running the fleet checker against a real downstream
+deployment slice rather than a synthetic fixture.
+
+`require_subscribes` / `require_publishes` checked only that some
+instance in the group *exposes* the endpoint. So a plan where the
+ledger subscribes `exec.fill` and nothing in the plan publishes it
+reported `holds` — and the law "fills must reach the ledger" could not
+catch a missing route, which is the one thing it exists for.
+
+Both halves are now required: the endpoint exists **and** a route in
+the plan carries the subject to (or from) it. The diagnostic
+distinguishes the two failures, because "nobody subscribes" and
+"somebody subscribes and nothing connects them" have different fixes.
+
+A synthetic fixture hides this, because whoever writes one routes
+everything they assert. It surfaced only because the real slice's
+publisher sat outside the selected instances — and adding that
+instance makes the claim hold again, which is the round trip that
+confirms the check is not simply always-failing.
+
 ### Fleet claims over the composed model (GH #408 Phase 2)
 
 `forbid_reaches` (with `avoiding`), `only_edges`, `require_subscribes`

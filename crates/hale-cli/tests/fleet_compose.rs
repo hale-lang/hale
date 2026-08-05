@@ -678,3 +678,59 @@ fn an_empty_or_unknown_group_is_an_error() {
         out
     );
 }
+
+/// A downstream conformance run found this: `require_subscribes`
+/// checked only that the endpoint EXISTS, so a plan where the ledger
+/// subscribes `exec.fill` and nothing publishes it reported `holds`.
+///
+/// The law "fills must reach the ledger" then cannot catch a missing
+/// route, which is the one thing it is for. A synthetic fixture hides
+/// it because whoever writes one routes everything they assert — this
+/// only surfaced against a real deployment slice whose publisher
+/// happened to sit outside the selected instances.
+#[test]
+fn require_subscribes_needs_a_route_not_just_an_endpoint() {
+    let r = fleet("unrouted");
+    // The gateway subscribes `svc.order.request` and the OMS
+    // publishes it — but the plan carries only the intent route, so
+    // nothing delivers order requests.
+    let plan = with_claims(PLAN, "")
+        .replace(
+            r#",
+    {"id": "request", "transport": "unix",
+     "publishers":  [{"instance": "oms-0", "topic": "t::OrderRequest"}],
+     "subscribers": [{"instance": "gw-0",  "topic": "t::OrderRequest"}]}"#,
+            "",
+        );
+    write(&r, "unrouted.plan.json", &plan);
+    let (out, code) = hale(&[
+        "fleet",
+        "check",
+        r.join("unrouted.plan.json").to_str().expect("utf8"),
+    ]);
+
+    assert_ne!(
+        code, 0,
+        "the endpoint exists but nothing routes to it — the claim is \
+         about traffic, and no traffic flows: {}",
+        out
+    );
+    assert!(
+        out.contains("gw_receives_orders")
+            && out.contains("no route in this plan carries it"),
+        "and the failure must say the endpoint is unconnected rather \
+         than absent: {}",
+        out
+    );
+
+    // Control: with the route restored it holds, so the check is not
+    // simply rejecting every require_subscribes.
+    write(&r, "routed.plan.json", &with_claims(PLAN, ""));
+    let (out2, code2) = hale(&[
+        "fleet",
+        "check",
+        r.join("routed.plan.json").to_str().expect("utf8"),
+    ]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(code2, 0, "the routed plan still passes: {}", out2);
+}

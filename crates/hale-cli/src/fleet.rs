@@ -266,6 +266,11 @@ pub fn compose(plan_path: &Path) -> Result<String, Vec<String>> {
     // ---- steps 4-6: routes ----
     let mut routes_out: Vec<String> = Vec::new();
     let mut route_edges: Vec<(String, String, String)> = Vec::new();
+    // (id, wire subject, publisher instances, subscriber instances) —
+    // what a `require_*` claim needs to ask whether the plan actually
+    // DELIVERS a subject, not merely whether somebody could receive it.
+    let mut resolved_routes: Vec<(String, String, Vec<String>, Vec<String>)> =
+        Vec::new();
     for r in &plan.routes {
         if r.publishers.is_empty() || r.subscribers.is_empty() {
             errs.push(format!(
@@ -358,6 +363,12 @@ pub fn compose(plan_path: &Path) -> Result<String, Vec<String>> {
                 }
             }
         }
+        resolved_routes.push((
+            r.id.clone(),
+            w.subject.clone(),
+            r.publishers.iter().map(|e| e.instance.clone()).collect(),
+            r.subscribers.iter().map(|e| e.instance.clone()).collect(),
+        ));
         routes_out.push(format!(
             "    {{\"id\": {}, \"subject\": {}, \"payload_hash\": {}, \
              \"transport\": {}}}",
@@ -396,7 +407,7 @@ pub fn compose(plan_path: &Path) -> Result<String, Vec<String>> {
     }
     let claim_rows = evaluate_claims(
         &plan, &groups, &comps, &by_id, &call_edges, &local_bus,
-        &route_edges, &mut errs,
+        &route_edges, &resolved_routes, &mut errs,
     );
     if !errs.is_empty() {
         return Err(errs);
@@ -467,6 +478,7 @@ fn evaluate_claims(
     calls: &[(String, String)],
     local_bus: &[(String, String)],
     routed: &[(String, String, String)],
+    resolved_routes: &[(String, String, Vec<String>, Vec<String>)],
     errs: &mut Vec<String>,
 ) -> Vec<String> {
     let inst_of = |v: &str| -> String {
@@ -520,9 +532,9 @@ fn evaluate_claims(
                 }
             }
         } else if let Some(r) = &c.require_subscribes {
-            endpoint_claim(r, groups, comps, false, &c.name, errs)
+            endpoint_claim(r, groups, comps, resolved_routes, false, &c.name, errs)
         } else if let Some(r) = &c.require_publishes {
-            endpoint_claim(r, groups, comps, true, &c.name, errs)
+            endpoint_claim(r, groups, comps, resolved_routes, true, &c.name, errs)
         } else if let Some(k) = &c.count_publisher_instances {
             count_claim(k, comps, true)
         } else if let Some(k) = &c.count_subscriber_instances {
@@ -700,10 +712,21 @@ fn decl_location(a: &serde_json::Value, local: &str) -> Option<String> {
         .and_then(|s| s["path"].as_str().map(str::to_string))
 }
 
+/// `require subscribes/publishes` is a STRUCTURAL DEPLOYMENT
+/// statement: some instance in the group exposes the endpoint **and
+/// the plan connects it**.
+///
+/// Checking only that the endpoint exists was a fail-open, and a real
+/// deployment found it: a slice where the ledger subscribes
+/// `exec.fill` but nothing in the plan publishes it reported `holds`.
+/// The law "fills must reach the ledger" then cannot catch a missing
+/// route, which is the one thing it is for. A synthetic fixture hides
+/// this because whoever writes it routes everything they assert.
 fn endpoint_claim(
     r: &RequireEndpoint,
     groups: &BTreeMap<String, BTreeSet<String>>,
     comps: &[Component],
+    resolved_routes: &[(String, String, Vec<String>, Vec<String>)],
     publishing: bool,
     claim: &str,
     errs: &mut Vec<String>,
@@ -716,19 +739,45 @@ fn endpoint_claim(
         ));
         return ("invalid", String::new());
     };
-    let found = comps.iter().any(|c| {
-        g.contains(&c.id) && has_endpoint(&c.artifact, &r.subject, publishing)
+    let verb = if publishing { "publishes" } else { "subscribes" };
+    let exposing: Vec<&str> = comps
+        .iter()
+        .filter(|c| {
+            g.contains(&c.id)
+                && has_endpoint(&c.artifact, &r.subject, publishing)
+        })
+        .map(|c| c.id.as_str())
+        .collect();
+    if exposing.is_empty() {
+        return (
+            "violated",
+            format!("no instance in `{}` {} `{}`", r.group, verb, r.subject),
+        );
+    }
+    // …and a route must actually carry it to (or from) one of them.
+    let connected = resolved_routes.iter().any(|(_, subj, pubs, subs)| {
+        subj == &r.subject
+            && {
+                let side = if publishing { pubs } else { subs };
+                side.iter().any(|i| exposing.contains(&i.as_str()))
+            }
+            // a route with an empty other side delivers nothing
+            && !pubs.is_empty()
+            && !subs.is_empty()
     });
-    if found {
+    if connected {
         ("holds", String::new())
     } else {
         (
             "violated",
             format!(
-                "no instance in `{}` {} `{}`",
-                r.group,
-                if publishing { "publishes" } else { "subscribes" },
-                r.subject
+                "`{}` {} `{}`, but no route in this plan carries it {} \
+                 them — the endpoint exists and nothing connects it, so \
+                 the traffic this claim is about does not flow",
+                exposing.join(", "),
+                verb,
+                r.subject,
+                if publishing { "from" } else { "to" }
             ),
         )
     }
