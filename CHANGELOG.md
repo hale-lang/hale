@@ -29,6 +29,34 @@ everything they assert. It surfaced only because the real slice's
 publisher sat outside the selected instances — and adding that
 instance makes the claim hold again, which is the round trip that
 confirms the check is not simply always-failing.
+### `[fleets]`: check every declared deployment (GH #408 Phase 5)
+
+```toml
+[fleets]
+production = "ops/fleet/prod.plan.json"
+staging    = "ops/fleet/staging.plan.json"
+```
+
+`hale fleet check` with no plan now checks every deployment the
+workspace declares. A repository usually has more than one, and
+checking whichever one somebody remembered to name is the same
+partial-coverage problem `--matrix` solves for entrypoints. Every
+fleet runs even when an earlier one fails; the exit status is the
+worst of them, so a missing plan is not masked by an ordinary claim
+failure elsewhere. A workspace declaring no `[fleets]` is a usage
+error rather than a vacuous success.
+
+`[fleets]` and `[environments]` are **separate axes**. An environment
+binds law to an entrypoint at the application tier; a fleet is an
+arrangement of deployed instances. A workspace may declare both, and
+`production` in one need not mean `production` in the other —
+collapsing them would force every entrypoint's law to be a function of
+some deployment it may not even appear in.
+
+There is deliberately no coverage check over plans: unlike
+entrypoints, which are discoverable seeds, a plan is an arbitrary file
+path, so "every plan in the repository is declared" cannot be asked
+without guessing.
 
 ### Fleet claims over the composed model (GH #408 Phase 2)
 

@@ -572,6 +572,32 @@ Unknown keys in a plan are rejected, for the reason they are rejected
 in the environment manifest: a misspelled field and an omitted one
 look identical to a verifier.
 
+### The workspace's deployments
+
+```toml
+[fleets]
+production = "ops/fleet/prod.plan.json"
+staging    = "ops/fleet/staging.plan.json"
+```
+
+`hale fleet check` with no plan checks every declared deployment.
+A repository usually has more than one, and checking whichever one
+somebody remembered to name is the same partial-coverage problem
+`--matrix` solves for entrypoints. Every fleet runs even when an
+earlier one fails, and the exit status is the worst of them.
+
+`[fleets]` and `[environments]` are **separate axes** and a workspace
+may declare both. An environment binds law to an ENTRYPOINT at the
+application tier; a fleet is an ARRANGEMENT of deployed instances.
+`production` in one need not mean `production` in the other, and
+collapsing them would force every entrypoint's law to be a function
+of some deployment it may not even appear in.
+
+There is deliberately no coverage check over plans — unlike
+entrypoints, which are discoverable seeds, a plan is an arbitrary
+file path, so "every plan in the repository is declared" is not a
+question that can be asked without guessing.
+
 ### Fleet claims (GH #408 Phase 2)
 
 Claims over the composed model, carried in the plan as normalized

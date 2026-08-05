@@ -74,6 +74,18 @@ pub struct Manifest {
     /// violation after the fact.
     #[serde(default)]
     pub claims: ClaimsManifest,
+    /// GH #408 Phase 5: `[fleets] <name> = "<plan path>"` — the
+    /// deployments this workspace declares.
+    ///
+    /// Deliberately a SEPARATE axis from `[environments]`. An
+    /// environment binds law to an entrypoint at the application
+    /// tier; a fleet is an arrangement of deployed instances. A
+    /// workspace can have a `production` environment and a
+    /// `production` fleet that mean different things, and collapsing
+    /// them would force every entrypoint's law to be a function of
+    /// some deployment it might not even appear in.
+    #[serde(default)]
+    pub fleets: BTreeMap<String, String>,
 }
 
 /// The `[claims]` section.
@@ -533,4 +545,19 @@ pub fn read_claims_config(
         }
     }
     Ok((m.environments, m.claims.base))
+}
+
+/// GH #408 Phase 5: the `[fleets]` table — name → plan path,
+/// relative to the manifest.
+pub fn read_fleets(
+    manifest: &Path,
+) -> Result<BTreeMap<String, String>, String> {
+    if !manifest.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let src = fs::read_to_string(manifest)
+        .map_err(|e| format!("read {}: {}", manifest.display(), e))?;
+    let m: Manifest = toml::from_str(&src)
+        .map_err(|e| format!("parse {}: {}", manifest.display(), e))?;
+    Ok(m.fleets)
 }
