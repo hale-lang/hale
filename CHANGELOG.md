@@ -6,6 +6,48 @@ behavior.
 
 ---
 
+## Unreleased
+
+### The per-topic observation identity, pinned and exported (GH #399)
+
+The observer protocol's open item — "exact shape_hash definition,
+needs the canonicalization pinned down with the hale team" — is
+closed, and the reconciliation ruling with it:
+
+- **One implementation.** `hale_types::topic_identity` owns the
+  wire-subject rule (parent-joined `subject:` dot-path, declared
+  name as fallback), the canonical payload shape (`field:tag`
+  list, tags `i f b d t u s y struct`, name-free for compounds;
+  empty for non-struct payloads), and the hash (FNV-1a/64 over
+  `subject ++ ':' ++ shape`). Codegen now calls it for both bus
+  routing and observer shape registration; the pinned test vectors
+  are wire contract.
+- **Emitter fix.** Shape registration previously keyed by the
+  UNJOINED declared subject while publish-side manifest rows key
+  by the parent-joined wire subject — a parented topic's manifest
+  row hashed the empty shape. Registration now uses the joined
+  subject, so parented topics' identities include their payload
+  shape. (Manifest hashes for parented topics change.)
+- **Artifact schema 1.2 — the join document.** The topology
+  artifact gains an unhashed `topics` section: per topic, the
+  author-spelled name, the RAW wire subject (byte-exact manifest
+  join key — a subject-less imported topic registers under its
+  mangled local name; declare `subject:` on shared topics to fuse
+  across binaries), the canonical shape, and `payload_hash`. A
+  recording/WAL segment carrying `(name, shape_hash)` matches a
+  row and names the exact checked topology it ran under. The
+  ruling is REFERENCE, not fusion: payload field shape does not
+  affect claim evaluation, so the model `shape_hash` is unchanged
+  — a payload field edit changes the topic row and no model
+  identity (pinned by test).
+
+Protocol: iris PROTOCOL.md §4 (definition + vectors; open item
+struck). Spec: `spec/verification.md` § Claims. Docs: the claims
+chapter's artifact section. Tests: `topic_identity` unit vectors,
+`topology_v2.rs` identity row + hash-separation canary.
+
+---
+
 ## v0.15.0 — claims: the law travels, the witness says where (2026-08-04)
 
 ### Library-tier claims: law that travels with an import (GH #392 thread 2)

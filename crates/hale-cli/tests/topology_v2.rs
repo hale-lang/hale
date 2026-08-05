@@ -219,3 +219,47 @@ fn main() { Engine { }; }
         art
     );
 }
+
+/// #399 — the per-topic observation identity: the artifact's
+/// `topics` rows carry the same (subject, shape, hash) the runtime
+/// manifest fuses on, so a WAL segment names the checked topology.
+/// The hash vector here is the protocol's (PROTOCOL.md §4);
+/// changing it is a wire break.
+#[test]
+fn the_artifact_exports_the_observation_identity() {
+    let src = r#"
+type Task { id: Int; label: String; }
+topic Tasks { payload: Task; }
+locus A {
+    bus { publish Tasks; }
+    fn go(n: Int) { Tasks <- Task { id: n, label: "t" }; }
+}
+fn main() { A { }; }
+"#;
+    let art = dump(src, "obs_identity");
+    assert!(
+        art.contains(
+            r#"{"name": "Tasks", "subject": "Tasks", "shape": "id:i;label:s", "payload_hash": "f7d174542aa33437"}"#
+        ),
+        "the topics row must carry the protocol-vector identity:\n{}",
+        art
+    );
+    // Unhashed: an edit to a payload FIELD changes the topic row
+    // but must not change the model shape identity (topology is
+    // unchanged).
+    let renamed = src
+        .replace("label: String", "tag: String")
+        .replace("label: \"t\"", "tag: \"t\"");
+    let a = dump(src, "obs_identity_a");
+    let b = dump(&renamed, "obs_identity_b");
+    assert_ne!(
+        a.lines().find(|l| l.contains("payload_hash")),
+        b.lines().find(|l| l.contains("payload_hash")),
+        "a payload field edit must change the observation identity"
+    );
+    assert_eq!(
+        shape_hash(&a),
+        shape_hash(&b),
+        "a payload field edit must NOT change the model shape_hash"
+    );
+}

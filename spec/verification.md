@@ -235,7 +235,7 @@ earlier in the same file as the family. Companion:
 class along any path, with the same loop/indirect unboundedness
 rules as every per-call dimension.
 
-**The topology artifact** (#382 phase 2; schema 1.1 per #392):
+**The topology artifact** (#382 phase 2; schema 1.2 per #399):
 `hale check <t> --dump-topology` emits the serialized model —
 sorts (loci, fns, topics), relations (calls with **weights**: loop
 nesting, unbounded-loop membership, interface-dispatch tags;
@@ -255,6 +255,24 @@ topology under different law keeps one shape). A **provenance**
 section carries per-edge and per-decl source spans as
 bundle-global byte offsets; it is excluded from the hash on
 purpose — moving code must not change the shape identity.
+A **`topics`** section (unhashed, #399) carries the per-topic
+OBSERVATION identity: the wire subject, the canonical payload
+shape, and `payload_hash` = FNV-1a/64 over
+`wire_subject ++ ':' ++ shape` — byte-identical to the value the
+native emitter registers in the runtime observation manifest
+(`lotus_obs.c`; the shared implementation is
+`hale_types::topic_identity`, which codegen also calls, so binary
+and artifact cannot drift). This is the reconciliation ruling for
+the compiler-side vs runtime-side identities: they stay separate
+(payload field shape does not affect claim evaluation, so it is
+not part of the model `shape_hash`), and the artifact is the JOIN
+document — a recording/WAL segment carrying `(name, shape_hash)`
+matches a row here and thereby names the exact checked topology
+it ran under. The `subject` field stays raw (it is the join key);
+a subject-less topic registers under its declared — possibly
+mangled — local name, so shared topics should declare `subject:`
+to fuse across binaries. The exact definition and test vectors
+live in iris PROTOCOL.md §4.
 `--check-topology <path>` diffs against a committed baseline and
 fails with a regenerate hint — the `.hale.effects` precedent: an
 unreviewed topology or law change fails CI the way an API break

@@ -63,7 +63,7 @@ fn cover_catches_an_uncovered_topic_across_seeds() {
 fn the_topology_artifact_round_trips() {
     let (dump, _ok) = check(&["--dump-topology"]);
     assert!(
-        dump.contains("\"schema\": \"1.1\"")
+        dump.contains("\"schema\": \"1.2\"")
             && dump.contains("\"shape_hash\": \""),
         "the artifact must carry schema + shape_hash:\n{}",
         dump
@@ -88,9 +88,33 @@ fn the_topology_artifact_round_trips() {
         "the artifact must record the holding claims too:\n{}",
         dump
     );
+    // #399: the `topics` section's `subject` field is deliberately
+    // RAW — it is the byte-exact join key with the runtime
+    // manifest (the hash is computed over it), and a subject-less
+    // imported topic really does register under its mangled local
+    // name (the artifact exposing that non-portable identity is
+    // the point; declare `subject:` to fuse across binaries).
+    // Everything OUTSIDE that section stays author-spelled.
+    let without_topics: String = {
+        let mut skip = false;
+        dump.lines()
+            .filter(|l| {
+                if l.starts_with("  \"topics\": [") {
+                    skip = true;
+                }
+                let keep = !skip;
+                if skip && l.starts_with("  ],") {
+                    skip = false;
+                }
+                keep
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
     assert!(
-        !dump.contains("__lib_"),
-        "the artifact must be in author spelling:\n{}",
+        !without_topics.contains("__lib_"),
+        "the artifact (outside the raw-subject topics section) must \
+         be in author spelling:\n{}",
         dump
     );
 

@@ -20,7 +20,14 @@
 //!
 //! Names render in AUTHOR spelling (cross-seed symbols demangled)
 //! — an artifact naming `__lib_lib_delta_d_Triage` points at
-//! something that appears nowhere in anyone's source.
+//! something that appears nowhere in anyone's source. ONE
+//! exception (#399): the `topics` section's `subject` field is the
+//! byte-exact runtime-manifest join key and stays RAW — a
+//! subject-less imported topic really does register under its
+//! mangled local name, and the artifact exposing that
+//! non-portable identity is deliberate (declare `subject:` on
+//! shared topics to fuse across binaries). Each row carries the
+//! author-spelled `name` beside it.
 //!
 //! Consumed by `hale check <t> --dump-topology` and diffed by
 //! `--check-topology <path>` — the `.hale.effects` manifest
@@ -73,8 +80,11 @@ use crate::symbol::Bundle;
 /// changes are breaking. 1.1 (#392): weights on call edges,
 /// `calls_via_stdlib`, `phases`, `seeds`, `effects` in the hashed
 /// half (existing `shape_hash` values change); unhashed
-/// `provenance` section.
-pub const TOPOLOGY_SCHEMA: &str = "1.1";
+/// `provenance` section. 1.2 (#399): unhashed `topics` section —
+/// the per-topic OBSERVATION identity (wire subject, canonical
+/// payload shape, `payload_hash`), the join key a recording/WAL
+/// segment carries; model `shape_hash` values unchanged.
+pub const TOPOLOGY_SCHEMA: &str = "1.2";
 
 /// Serialize the bundle's model + claim results as the topology
 /// artifact (JSON).
@@ -670,6 +680,73 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     }
     trim_trailing_comma(&mut out);
     out.push_str("    }\n  }");
+    // #399: the per-topic OBSERVATION identity — the join between
+    // this artifact and a recording. The runtime manifest fuses
+    // topics on (name, shape_hash) where shape_hash =
+    // FNV-1a/64(wire_subject ++ ':' ++ canonical_shape); a WAL
+    // segment carrying that pair matches a row here, which names
+    // the exact checked topology it ran under. Computed by the
+    // SAME `topic_identity` functions codegen registers shapes
+    // with, so the artifact and the emitted binary cannot drift.
+    // UNHASHED by ruling: payload field shape does not affect
+    // claim evaluation, so it is not part of the model identity —
+    // the artifact document is the reference, not the fusion.
+    out.push_str(",\n  \"topics\": [\n");
+    {
+        let mut rows: BTreeSet<(String, String, String, u64)> =
+            BTreeSet::new();
+        for p in &programs {
+            let wire =
+                crate::topic_identity::topic_wire_subjects(&p.items);
+            fn topics_of<'a>(
+                items: &'a [TopDecl],
+                out: &mut Vec<&'a TopicDecl>,
+            ) {
+                for item in items {
+                    match item {
+                        TopDecl::Topic(t) => out.push(t),
+                        TopDecl::Module(m) => {
+                            topics_of(&m.items, out)
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let mut ts = Vec::new();
+            topics_of(&p.items, &mut ts);
+            for t in ts {
+                let subj = wire
+                    .get(&t.name.name)
+                    .cloned()
+                    .unwrap_or_else(|| t.name.name.clone());
+                let shape =
+                    crate::topic_identity::canonical_topic_shape(
+                        &p.items, t,
+                    );
+                let h = crate::topic_identity::topic_shape_hash(
+                    &subj, &shape,
+                );
+                rows.insert((
+                    name(&t.name.name),
+                    subj,
+                    shape,
+                    h,
+                ));
+            }
+        }
+        for (tname, subj, shape, h) in &rows {
+            out.push_str(&format!(
+                "    {{\"name\": {}, \"subject\": {}, \"shape\": {}, \
+                 \"payload_hash\": \"{:016x}\"}},\n",
+                quote(tname),
+                quote(subj),
+                quote(shape),
+                h
+            ));
+        }
+    }
+    trim_trailing_comma(&mut out);
+    out.push_str("  ]");
     out.push_str(",\n  \"claims\": [\n");
     for o in &outcomes {
         out.push_str(&format!(
