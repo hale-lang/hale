@@ -605,8 +605,11 @@ set.
   address. There are no cross-process calls to grant.
 - **`require_subscribes` / `require_publishes`** are structural
   deployment statements: some instance in the group exposes the
-  endpoint. "Ledger listens for fills" is provable; "every fill is
-  durably booked" is not implied by it.
+  endpoint **and the plan connects it**. Both halves are load-bearing
+  — checking only that the endpoint exists lets a plan where nothing
+  publishes a subject satisfy "the ledger receives fills", which is
+  the one thing that claim is for. "Ledger listens for fills" is
+  provable; "every fill is durably booked" is not implied by it.
 - **`count_publisher_instances` / `count_subscriber_instances`**
   count instance-qualified **endpoints**, which is a different sort
   from the application tier's declaration count — hence the different
