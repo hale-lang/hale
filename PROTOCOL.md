@@ -166,9 +166,73 @@ ManifestEntry (32 B):
 ```
 
 - **Topic identity across binaries** (fusion join key):
-  `shape_hash` = content hash of the qualified topic name +
-  payload shape. Two emitters built from the same
-  declaration agree; iris fuses on (name, shape_hash).
+  `shape_hash` = content hash of the wire subject + payload
+  shape. Two emitters built from the same declaration agree;
+  iris fuses on (name, shape_hash).
+
+  **Exact definition** *(pinned with the hale team,
+  hale#399; the reference implementation is
+  `hale_types::topic_identity`, which both hale codegen and
+  the topology artifact call; `lotus_obs.c::obs_fnv` is the
+  emitter-side mirror)*:
+
+  ```
+  shape_hash = FNV-1a/64 over:
+      wire_subject bytes, one ':' byte, shape bytes
+    offset basis 0xcbf29ce484222325, prime 0x100000001b3
+
+  wire_subject = parent-joined dot-path of declared
+    `subject:` values, child-last; a topic without
+    `subject:` contributes its declared name AS WRITTEN.
+    Only explicitly declared subjects are stable across
+    binaries — a name fallback carries the declaring
+    binary's local (possibly mangled) spelling and will not
+    fuse. Shared topics MUST declare `subject:`.
+
+  shape = for a payload written as a bare, non-generic
+    named struct: the struct's fields in declaration order
+    as "<field>:<tag>" joined by ";". Tags:
+      i  Int/Uint        f  Float       b  Bool
+      d  Decimal         t  Time        u  Duration
+      s  String/StringView
+      y  Bytes/BytesView/BytesMut
+      struct  anything else (nested structs deliberately
+              name-free: the hash must never depend on a
+              declaring binary's local type names)
+    Any other payload form hashes the EMPTY shape (the ':'
+    separator is still hashed).
+  ```
+
+  Test vectors (wire contract; breaking any is a protocol
+  break):
+
+  ```
+  subject "Tasks", payload struct
+    { id: Int; label: String; }:
+      shape        "id:i;label:s"
+      shape_hash   0xf7d174542aa33437
+  subject "Tasks", empty shape:
+      shape_hash   0xf3573379dcc4dcd5
+  parented: topic Org (subject "org"), child topic
+    Metrics : Org (subject "metrics"):
+      wire_subject "org.metrics"
+  ```
+
+  The hashed subject is the JOINED wire subject — the same
+  string publish-side manifest rows key by. *(Amended: the
+  original native emitter registered shapes under the
+  unjoined declared subject, so a parented topic's manifest
+  row hashed the empty shape; fixed with the pinning.)*
+
+  The compiler-side topology artifact (schema 1.2) exports
+  each topic's `(subject, shape, payload_hash)` in an
+  unhashed `topics` section — the join document: a
+  recording/WAL segment carrying `(name, shape_hash)`
+  matches a row and names the exact checked topology it ran
+  under. The two identities stay separate namespaces by
+  ruling (payload shape does not affect claim evaluation,
+  so it is not part of the model `shape_hash`); the
+  artifact references, never fuses.
 - **Dynamic registration.** The native emitter writes the
   manifest once at startup (from `.hale.topo`). The library
   emitter learns topics at runtime and appends. Append
@@ -425,9 +489,10 @@ library emitter's abort hook (ours, M3) produces them.
   lifetime) and wraparound story.
 - Ring sizing defaults (slots per scheduler) and whether
   FIREHOSE gets a dedicated ring.
-- Exact shape_hash definition — needs the qualified-name +
-  payload-shape canonicalization pinned down with the hale
-  team so native and library emitters agree.
+- ~~Exact shape_hash definition~~ — **closed** (hale#399):
+  pinned in §4 with test vectors; reference implementation
+  `hale_types::topic_identity`, exported by the topology
+  artifact (schema 1.2) as the recording↔topology join.
 - Whether `sample_n` is global (current) or per-topic
   (another mode-mask-sized table).
 - macOS: POSIX shm name limits and `memfd`-equivalent —
