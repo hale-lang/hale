@@ -8,6 +8,46 @@ behavior.
 
 ## Unreleased
 
+### `only edges` and `bound` say where to edit (downstream review)
+
+`forbid` names the crossing call, or the publish and the receiving
+subscription. The other two path claims anchored only at the claim
+line, which for `only edges` defeats the point — it is explicitly a
+*reviewable boundary inventory*, and making the reviewer hand-find
+the crossing is the work it exists to save.
+
+**`only edges`** now points at the un-granted publish, at the
+subscription that receives it (with the exact grant line to add), and
+at an un-grantable call — with why a grant is not the fix there.
+
+**`bound`** knew which of four conditions made a count unbounded and
+printed all four:
+
+> a recursion cycle, loop-nested carrier, indirect call, or computed
+> publish subject makes the count unbounded
+
+Now it names the one that applies and points at it:
+
+```
+claim `one` violated: paths from `planners` carry an unbounded number of
+`llm` sites (limit 1) — a carrier is reached from inside a loop in
+`Planner::go`, so it repeats per iteration
+
+bnd.hl:10:22: claim `one`: this is the loop-nested carrier
+                self.n = model_call(i);
+                         ^^^^^^^^^^^^^
+```
+
+The classification was always computed — reaching the verdict
+requires it — and then discarded. Keeping it costs one enum on the
+unbounded side of the heaviest-path result. Recursion and the step
+ceiling are properties of a walk rather than of one expression, so
+they name the fn and omit the caret; the other three carry a site.
+
+Secondary spans follow the same bundle-only rule as the `forbid`
+witness: stdlib bodies parse in their own offset space, so a span
+from there would point at the wrong source.
+
 ### Interface dispatch is named in the witness (downstream review)
 
 A call on an interface fans out to **every** conforming locus, which
