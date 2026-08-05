@@ -685,14 +685,24 @@ cannot write two conflicting `adopt` lines. So the environment binding
 lives in `hale.toml`, where the deployment facts already are:
 
 ```toml
+[claims]
+base = "Core"                 # carried by EVERY environment
+
 [environments.dev]
-constitution = "Dev"
+constitution = "Dev"          # …and dev adds this
 entrypoints  = ["apps/prober", "apps/dashboard"]
 
 [environments.prod]
 constitution = "Prod"
 entrypoints  = ["apps/prober"]
 ```
+
+The base is what makes "an environment may add law, never drop it"
+true of the mechanism rather than of convention — every evaluation
+carries it by construction. A workspace with environments must decide
+explicitly: `base = "…"` or `no_base = true`. An environment adding
+nothing of its own says `source_only = true`. In each case an omission
+would be indistinguishable from a typo.
 
 ```sh
 hale check apps/prober --env prod    # adopts Prod for this run
@@ -866,11 +876,11 @@ reports as *unverifiable* rather than as valid — a consumer may
 choose to accept it, but must never read "nothing to check" as
 "checked and intact".
 
-The artifact shape (schema `1.6`):
+The artifact shape (schema `1.7`):
 
 ```text
 {
-  "schema": "1.6",
+  "schema": "1.7",
   "shape_hash": "<fnv1a-64 over the model half>",
   "sorts":     { "loci": […], "fns": […], "topics": […] },
   "relations": {

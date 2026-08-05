@@ -79,6 +79,12 @@ main locus A { params { r: lb::Research = lb::Research { }; } }
 fn main() { A { }; }
 "#;
 
+/// Like `workspace`, but the manifest is written verbatim — for
+/// tests about the manifest itself.
+fn workspace_raw(tag: &str, manifest: &str) -> PathBuf {
+    workspace(tag, manifest)
+}
+
 fn workspace(tag: &str, manifest: &str) -> PathBuf {
     let r = root(tag);
     write(&r, "lib/lib.hl", LIB);
@@ -94,7 +100,7 @@ fn workspace(tag: &str, manifest: &str) -> PathBuf {
 fn the_same_entrypoint_is_judged_by_where_it_deploys() {
     let r = workspace(
         "twoenv",
-        "[environments.dev]\nconstitution = \"Core\"\nentrypoints = [\"app-a\"]\n\
+        "[claims]\nno_base = true\n\n[environments.dev]\nconstitution = \"Core\"\nentrypoints = [\"app-a\"]\n\
          \n[environments.prod]\nconstitution = \"Prod\"\nentrypoints = [\"app-a\"]\n",
     );
     let app = r.join("app-a");
@@ -121,7 +127,7 @@ fn the_same_entrypoint_is_judged_by_where_it_deploys() {
 fn the_artifact_records_which_constitution_each_clause_came_from() {
     let r = workspace(
         "prov",
-        "[environments.prod]\nconstitution = \"Prod\"\nentrypoints = [\"app-a\"]\n",
+        "[claims]\nno_base = true\n\n[environments.prod]\nconstitution = \"Prod\"\nentrypoints = [\"app-a\"]\n",
     );
     let app = r.join("app-a");
     let out = hale_stdout(&[
@@ -163,7 +169,7 @@ fn the_artifact_records_which_constitution_each_clause_came_from() {
 fn the_matrix_checks_every_pair() {
     let r = workspace(
         "matrix",
-        "[environments.dev]\nconstitution = \"Core\"\nentrypoints = [\"app-a\", \"app-b\"]\n\
+        "[claims]\nno_base = true\n\n[environments.dev]\nconstitution = \"Core\"\nentrypoints = [\"app-a\", \"app-b\"]\n\
          \n[environments.prod]\nconstitution = \"Core\"\nentrypoints = [\"app-a\"]\n",
     );
     let (out, code) =
@@ -186,7 +192,7 @@ fn the_matrix_checks_every_pair() {
 fn an_entrypoint_in_no_environment_is_an_error() {
     let r = workspace(
         "unbound",
-        "[environments.dev]\nconstitution = \"Core\"\nentrypoints = [\"app-a\"]\n",
+        "[claims]\nno_base = true\n\n[environments.dev]\nconstitution = \"Core\"\nentrypoints = [\"app-a\"]\n",
     );
     let (out, code) =
         hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
@@ -207,7 +213,7 @@ fn an_entrypoint_in_no_environment_is_an_error() {
 fn a_library_seed_is_not_an_entrypoint() {
     let r = workspace(
         "libonly",
-        "[environments.dev]\nconstitution = \"Core\"\nentrypoints = [\"app-a\", \"app-b\"]\n",
+        "[claims]\nno_base = true\n\n[environments.dev]\nconstitution = \"Core\"\nentrypoints = [\"app-a\", \"app-b\"]\n",
     );
     let (out, code) =
         hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
@@ -221,7 +227,7 @@ fn a_library_seed_is_not_an_entrypoint() {
 fn a_listed_entrypoint_that_does_not_exist_is_reported() {
     let r = workspace(
         "missing",
-        "[environments.dev]\nconstitution = \"Core\"\nentrypoints = [\"app-a\", \"app-b\", \"ghost\"]\n",
+        "[claims]\nno_base = true\n\n[environments.dev]\nconstitution = \"Core\"\nentrypoints = [\"app-a\", \"app-b\", \"ghost\"]\n",
     );
     let (out, code) =
         hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
@@ -234,7 +240,7 @@ fn a_listed_entrypoint_that_does_not_exist_is_reported() {
 fn an_unknown_environment_name_is_a_usage_error() {
     let r = workspace(
         "unknownenv",
-        "[environments.dev]\nconstitution = \"Core\"\nentrypoints = [\"app-a\", \"app-b\"]\n",
+        "[claims]\nno_base = true\n\n[environments.dev]\nconstitution = \"Core\"\nentrypoints = [\"app-a\", \"app-b\"]\n",
     );
     let app = r.join("app-a");
     let (out, code) = hale(&[
@@ -256,7 +262,7 @@ fn an_unknown_environment_name_is_a_usage_error() {
 fn env_requires_a_value() {
     let r = workspace(
         "noval",
-        "[environments.dev]\nconstitution = \"Core\"\nentrypoints = [\"app-a\", \"app-b\"]\n",
+        "[claims]\nno_base = true\n\n[environments.dev]\nconstitution = \"Core\"\nentrypoints = [\"app-a\", \"app-b\"]\n",
     );
     let app = r.join("app-a");
     let (out, code) =
@@ -290,7 +296,7 @@ fn a_manifest_with_no_environments_is_a_usage_error() {
 fn a_misspelled_manifest_field_is_rejected() {
     let r = workspace(
         "typo",
-        "[environments.dev]\nconstituton = \"Core\"\nentrypoints = [\"app-a\", \"app-b\"]\n",
+        "[claims]\nno_base = true\n\n[environments.dev]\nconstituton = \"Core\"\nentrypoints = [\"app-a\", \"app-b\"]\n",
     );
     let (out, code) =
         hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
@@ -304,7 +310,7 @@ fn a_misspelled_manifest_field_is_rejected() {
 fn an_omitted_constitution_must_be_explicit() {
     let r = workspace(
         "omitted",
-        "[environments.dev]\nentrypoints = [\"app-a\", \"app-b\"]\n",
+        "[claims]\nno_base = true\n\n[environments.dev]\nentrypoints = [\"app-a\", \"app-b\"]\n",
     );
     let (out, code) =
         hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
@@ -315,7 +321,7 @@ fn an_omitted_constitution_must_be_explicit() {
     // …and saying so explicitly works.
     let r2 = workspace(
         "sourceonly",
-        "[environments.dev]\nsource_only = true\nentrypoints = [\"app-a\", \"app-b\"]\n",
+        "[claims]\nno_base = true\n\n[environments.dev]\nsource_only = true\nentrypoints = [\"app-a\", \"app-b\"]\n",
     );
     let (out2, code2) =
         hale(&["check".as_ref(), "--matrix".as_ref(), r2.as_os_str()]);
@@ -327,7 +333,7 @@ fn an_omitted_constitution_must_be_explicit() {
 fn constitution_and_source_only_are_mutually_exclusive() {
     let r = workspace(
         "both",
-        "[environments.dev]\nconstitution = \"Core\"\nsource_only = true\nentrypoints = [\"app-a\", \"app-b\"]\n",
+        "[claims]\nno_base = true\n\n[environments.dev]\nconstitution = \"Core\"\nsource_only = true\nentrypoints = [\"app-a\", \"app-b\"]\n",
     );
     let (out, code) =
         hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
@@ -365,9 +371,9 @@ fn the_workspace_base_rides_along_with_every_environment() {
     let names = |s: &str| -> Vec<String> {
         let v: serde_json::Value =
             serde_json::from_str(s).expect("artifact parses");
-        v["evaluation"]["constitutions"]
+        v["evaluation"]["closure"]
             .as_array()
-            .expect("constitutions")
+            .expect("evaluation.closure")
             .iter()
             .map(|c| c["name"].as_str().unwrap_or("").to_string())
             .collect()
@@ -392,7 +398,7 @@ fn the_workspace_base_rides_along_with_every_environment() {
 fn the_artifact_names_the_constitutions_it_evaluated() {
     let r = workspace(
         "eval",
-        "[environments.prod]\nconstitution = \"Prod\"\nentrypoints = [\"app-a\", \"app-b\"]\n",
+        "[claims]\nno_base = true\n\n[environments.prod]\nconstitution = \"Prod\"\nentrypoints = [\"app-a\", \"app-b\"]\n",
     );
     let app = r.join("app-a");
     let out = hale_stdout(&[
@@ -404,9 +410,9 @@ fn the_artifact_names_the_constitutions_it_evaluated() {
 
     let v: serde_json::Value =
         serde_json::from_str(&out).expect("artifact parses");
-    let cs = v["evaluation"]["constitutions"]
+    let cs = v["evaluation"]["closure"]
         .as_array()
-        .expect("evaluation.constitutions");
+        .expect("evaluation.closure");
     assert!(
         cs.iter().any(|c| c["name"] == "Prod")
             && cs.iter().any(|c| c["name"] == "Core"),
@@ -429,7 +435,7 @@ fn the_artifact_names_the_constitutions_it_evaluated() {
 fn a_malformed_seed_cannot_vanish_from_coverage() {
     let r = workspace(
         "malformed",
-        "[environments.dev]\nsource_only = true\nentrypoints = [\"app-a\", \"app-b\"]\n",
+        "[claims]\nno_base = true\n\n[environments.dev]\nsource_only = true\nentrypoints = [\"app-a\", \"app-b\"]\n",
     );
     // A main locus missing its closing brace.
     write(&r, "broken/main.hl", "main locus C { params { n: Int = 0; }\nfn main() { C { }; }\n");
@@ -469,7 +475,7 @@ fn one_environment_may_not_mean_two_different_claimsets() {
     write(
         &r,
         "hale.toml",
-        "[environments.prod]\nconstitution = \"Core\"\nentrypoints = [\"app-a\", \"app-b\"]\n",
+        "[claims]\nno_base = true\n\n[environments.prod]\nconstitution = \"Core\"\nentrypoints = [\"app-a\", \"app-b\"]\n",
     );
 
     let (out, code) =
@@ -519,7 +525,7 @@ fn an_entrypoint_without_a_component_declares_an_empty_group() {
     write(
         &r,
         "hale.toml",
-        "[environments.dev]\nconstitution = \"Core\"\nentrypoints = [\"app-a\"]\n",
+        "[claims]\nno_base = true\n\n[environments.dev]\nconstitution = \"Core\"\nentrypoints = [\"app-a\"]\n",
     );
     let (out, code) =
         hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
@@ -542,5 +548,207 @@ fn an_entrypoint_without_a_component_declares_an_empty_group() {
         out2.contains("never declared"),
         "with the unknown-name error, not a silent empty set: {}",
         out2
+    );
+}
+
+// =====================================================================
+// Second review: identity boundary
+// =====================================================================
+
+/// Required canary. A constitution that contributes NO clause of its
+/// own — pure composition — emitted no claim row, so deriving
+/// identities from claim-row `source` dropped it entirely. Two
+/// entrypoints resolving the SAME directly-selected `Dev` to
+/// different bases then shared no comparison key and the matrix
+/// passed.
+///
+/// Pure composition is not exotic: #415's own corpus fixture uses
+/// `constitution Both extends Core, Dev { }`.
+#[test]
+fn a_pure_composition_constitution_is_still_compared() {
+    let r = root("purecomp");
+    let seed = |extra_rule: &str| {
+        format!(
+            "type Msg {{ v: Int; }}\n\
+             topic Settled {{ payload: Msg; subject: \"app.settled\"; }}\n\
+             locus S {{ params {{ n: Int = 0; }} bus {{ publish Settled; }} \
+             fn go() {{ let m = Msg {{ v: 1 }}; Settled <- m; }} }}\n\
+             group all = {{ S }};\n\
+             constitution Base {{ {} }}\n\
+             constitution Dev extends Base {{ }}\n",
+            extra_rule
+        )
+    };
+    write(&r, "p1/p.hl", &seed("r: count publishers(topic Settled) == 1;"));
+    // Same `Dev`, different base closure.
+    write(
+        &r,
+        "p2/p.hl",
+        &seed("r: count publishers(topic Settled) == 1; s: count subscribers(topic Settled) == 0;"),
+    );
+    let app = |alias: &str, n: &str| {
+        format!(
+            "import \"../{}\" as p;\nmain locus {} {{ params {{ s: p::S = p::S {{ }}; }} }}\nfn main() {{ {} {{ }}; }}\n",
+            alias, n, n
+        )
+    };
+    write(&r, "app-a/main.hl", &app("p1", "A"));
+    write(&r, "app-b/main.hl", &app("p2", "B"));
+    write(
+        &r,
+        "hale.toml",
+        "[claims]\nno_base = true\n\n[environments.prod]\nconstitution = \"Dev\"\nentrypoints = [\"app-a\", \"app-b\"]\n",
+    );
+
+    let (out, code) =
+        hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
+    let _ = std::fs::remove_dir_all(&r);
+
+    assert_ne!(code, 0, "two different `Dev` closures must fail: {}", out);
+    assert!(
+        out.contains("resolves `Dev`"),
+        "and must fail on Dev specifically — the directly selected \
+         constitution — not merely on whichever base emitted rows: {}",
+        out
+    );
+}
+
+/// Required canary. `[claims] base` means ONE constitution carried by
+/// every environment, so it must agree workspace-wide. Keying the
+/// comparison per-environment meant two environments with disjoint
+/// entrypoints never shared a key, and a base resolving differently
+/// in dev and prod went undetected.
+#[test]
+fn the_workspace_base_must_agree_across_environments() {
+    let r = root("basescope");
+    let seed = |rules: &str| {
+        format!(
+            "type Msg {{ v: Int; }}\n\
+             topic Settled {{ payload: Msg; subject: \"app.settled\"; }}\n\
+             locus S {{ params {{ n: Int = 0; }} bus {{ publish Settled; }} \
+             fn go() {{ let m = Msg {{ v: 1 }}; Settled <- m; }} }}\n\
+             group all = {{ S }};\n\
+             constitution Core {{ {} }}\n",
+            rules
+        )
+    };
+    write(&r, "p1/p.hl", &seed("r: count publishers(topic Settled) == 1;"));
+    write(
+        &r,
+        "p2/p.hl",
+        &seed("r: count publishers(topic Settled) == 1; s: count subscribers(topic Settled) == 0;"),
+    );
+    let app = |alias: &str, n: &str| {
+        format!(
+            "import \"../{}\" as p;\nmain locus {} {{ params {{ s: p::S = p::S {{ }}; }} }}\nfn main() {{ {} {{ }}; }}\n",
+            alias, n, n
+        )
+    };
+    write(&r, "app-a/main.hl", &app("p1", "A"));
+    write(&r, "app-b/main.hl", &app("p2", "B"));
+    // DISJOINT entrypoint sets: nothing forces the two to meet
+    // except the base being workspace-scoped.
+    write(
+        &r,
+        "hale.toml",
+        "[claims]\nbase = \"Core\"\n\n\
+         [environments.dev]\nsource_only = true\nentrypoints = [\"app-a\"]\n\n\
+         [environments.prod]\nsource_only = true\nentrypoints = [\"app-b\"]\n",
+    );
+
+    let (out, code) =
+        hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
+    let _ = std::fs::remove_dir_all(&r);
+
+    assert_ne!(code, 0, "the base resolves two ways: {}", out);
+    assert!(
+        out.contains("the workspace base"),
+        "and the failure must say the BASE is what disagrees, not one \
+         environment: {}",
+        out
+    );
+}
+
+/// A workspace declaring environments must decide about a base.
+/// Absence is indistinguishable from a misspelled `[claim]` section,
+/// and the intended baseline would vanish while every environment
+/// still looked explicit and valid.
+#[test]
+fn a_workspace_base_decision_is_required() {
+    let r = workspace_raw(
+        "nobase",
+        "[environments.dev]\nsource_only = true\nentrypoints = [\"app-a\", \"app-b\"]\n",
+    );
+    let (out, code) =
+        hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(code, 2, "{}", out);
+    assert!(out.contains("no_base = true"), "name the opt-out: {}", out);
+}
+
+#[test]
+fn base_and_no_base_are_mutually_exclusive() {
+    let r = workspace_raw(
+        "bothbase",
+        "[claims]\nbase = \"Core\"\nno_base = true\n\n[environments.dev]\nsource_only = true\nentrypoints = [\"app-a\", \"app-b\"]\n",
+    );
+    let (out, code) =
+        hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(code, 2, "{}", out);
+    assert!(out.contains("one or the other"), "{}", out);
+}
+
+/// An environment binds law to an ENTRYPOINT. Checking that only
+/// while injecting meant a `source_only` environment with no base
+/// injected nothing, and a library path passed as a checked pair.
+#[test]
+fn env_requires_the_target_to_be_an_entrypoint() {
+    let r = workspace(
+        "libtarget",
+        "[claims]\nno_base = true\n\n[environments.dev]\nsource_only = true\nentrypoints = [\"app-a\", \"app-b\"]\n",
+    );
+    let lib = r.join("lib");
+    let (out, code) = hale(&[
+        "check".as_ref(),
+        lib.as_os_str(),
+        "--env".as_ref(),
+        "dev".as_ref(),
+    ]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(code, 2, "a library is not a deployment target: {}", out);
+    assert!(out.contains("declares no `main locus`"), "{}", out);
+}
+
+/// The artifact must say WHICH deployment it certifies, not only
+/// which law applied — two environment labels can select identical
+/// law and would otherwise produce indistinguishable certificates.
+#[test]
+fn the_artifact_records_the_environment_and_its_roots() {
+    let r = workspace(
+        "envlabel",
+        "[claims]\nno_base = true\n\n[environments.prod]\nconstitution = \"Prod\"\nentrypoints = [\"app-a\", \"app-b\"]\n",
+    );
+    let app = r.join("app-a");
+    let out = hale_stdout(&[
+        "check".as_ref(), app.as_os_str(),
+        "--env".as_ref(), "prod".as_ref(),
+        "--dump-topology".as_ref(),
+    ]);
+    let _ = std::fs::remove_dir_all(&r);
+    let v: serde_json::Value =
+        serde_json::from_str(&out).expect("artifact parses");
+    assert_eq!(v["evaluation"]["environment"], "prod", "{}", out);
+    let roots: Vec<String> = v["evaluation"]["roots"]
+        .as_array()
+        .expect("roots")
+        .iter()
+        .map(|c| c["name"].as_str().unwrap_or("").to_string())
+        .collect();
+    assert_eq!(
+        roots,
+        vec!["Prod".to_string()],
+        "roots is what was ASKED for; the closure is what applied: {}",
+        out
     );
 }

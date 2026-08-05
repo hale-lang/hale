@@ -235,7 +235,7 @@ earlier in the same file as the family. Companion:
 class along any path, with the same loop/indirect unboundedness
 rules as every per-call dimension.
 
-**The topology artifact** (#382 phase 2; schema 1.6):
+**The topology artifact** (#382 phase 2; schema 1.7):
 `hale check <t> --dump-topology` emits the serialized model —
 sorts (loci, fns, topics), relations (calls with **weights**: loop
 nesting, unbounded-loop membership, interface-dispatch tags;
@@ -370,8 +370,16 @@ as if written there. Authoring is shared, evaluation is not.
 A constitution's **display name** is flat and unmangled so
 diagnostics cite it as written. Its **identity** is the digest of its
 normalized closure — its own `(name, rendered form)` pairs, sorted,
-plus its bases' digests, recursively. Two declarations are the same
-constitution iff their closures agree.
+plus its **deduplicated** bases' digests, recursively. `extends A, A`
+and `extends A` evaluate identically, so they must digest identically.
+Two declarations are the same constitution iff their closures agree.
+
+Identities come from the adoption **traversal**, not from inspecting
+which claims were emitted: a constitution that contributes no clause
+of its own (`constitution Dev extends Base { }`) has a meaningful
+closure and must still be compared. An evaluation reports both its
+`roots` — the constitutions named directly, by source `adopt` or by
+environment binding — and the `closure` those roots reach.
 
 The distinction is load-bearing across entrypoints: two seeds may
 each declare `Core` with different clauses, so a binding by bare name
@@ -403,10 +411,28 @@ can be checked twice.
 
 `[claims] base` is what makes "an environment may add law, never drop
 it" true of the mechanism rather than only of `extends` — every
-evaluation carries the base by construction. An environment naming no
-constitution must say `source_only = true`; an omission is
-indistinguishable from a typo, and unknown keys in an environment
-section are rejected for the same reason.
+evaluation carries the base by construction. A workspace declaring
+environments must decide about a base explicitly: either `base = "…"`
+or `no_base = true`. An absent `[claims]` section is indistinguishable
+from a misspelled one, and the intended baseline would vanish while
+every environment still looked valid.
+
+An environment naming no constitution must say `source_only = true`
+for the same reason, and unknown keys in an environment section are
+rejected.
+
+The base is compared **workspace-wide** (`base::<name>`); an
+environment's own addition is compared within that environment
+(`env::<env>::<name>`). Keying the base per-environment meant two
+environments with disjoint entrypoint sets never shared a comparison
+key, so a base resolving to different closures in dev and prod went
+undetected — the mechanism proved consistency *within* each
+environment and nothing about the base being shared.
+
+`--env` requires its target to be an entrypoint, whether or not the
+environment contributes any constitution: an environment binds law to
+a deployment target, and a `source_only` environment with no base
+would otherwise check a library and report success.
 
 `--matrix` checks every declared (entrypoint, environment) pair. It
 does not short-circuit; the exit status reflects every pair. An
@@ -416,9 +442,10 @@ otherwise a syntax error would erase a seed from coverage. Within one
 environment, all entrypoints must resolve each constitution to the
 same closure digest.
 
-The artifact records both: per-claim `source` (where this clause came
-from) and an `evaluation` section naming the adopted constitutions
-with their digests (which claimset this run certified). The second is
+The artifact records three things: per-claim `source` (where this
+clause came from), and an `evaluation` section carrying the
+`environment` label plus `roots` and `closure` with their digests
+(which deployment this run certified, and under what law). All are
 inside the integrity-covered body — an evaluation context editable
 after the fact would certify nothing.
 

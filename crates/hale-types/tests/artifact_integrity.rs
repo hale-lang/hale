@@ -169,7 +169,7 @@ fn only_holds_passes() {
 fn the_document_verdict_reflects_its_rows() {
     let a = artifact();
     let v: serde_json::Value = serde_json::from_str(&a).expect("valid JSON");
-    assert_eq!(v["schema"], "1.6");
+    assert_eq!(v["schema"], "1.7");
     assert_eq!(
         v["verdict"], "clean",
         "every claim in the fixture holds: {}",
