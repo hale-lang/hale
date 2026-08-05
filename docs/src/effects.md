@@ -156,6 +156,12 @@ only `params` still has a birth. A phase that names *nothing* on the
 locus — a typo, or a handler you renamed — is an error, because a
 contract nobody checks is worse than no contract.
 
+The closed set covers **your own effect classes** too: a phase that
+reaches a declared `money` carrier without listing `money` violates,
+and `run: {money}` permits it — the same closed-universe rule as
+`only:`, composed classes excluded from the complement (they own no
+bit of their own).
+
 **Empty braces and omission are opposites**, and this is the part to
 get right:
 

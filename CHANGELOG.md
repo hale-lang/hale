@@ -45,6 +45,28 @@ spans incl. the foreign-span guard, phase selection, model
 derivation), `topology_v2.rs` (sections, motion-insensitivity
 canary, contracted edges).
 
+### §8 — one schema of record, and `@phase_effects` user classes (GH #392 thread 1)
+
+- **Certificates as lowered claim rows.** The topology artifact
+  gains an unhashed `lowered` array: every fn-grained certificate —
+  each `@effects` assert, each `@phase_effects` phase contract, each
+  `@budget` in both families — reported as the claim form it is
+  pointwise sugar for, with its verdict (`forbid reaches({F},
+  effects(money))`, `bound alloc <= N on paths from {F}`, `only
+  effects {…} on {L} during birth`). Rows come from the same
+  evaluations that gate the build, so the report and the build
+  cannot disagree. One schema of record: all law, bundle-quantified
+  and fn-grained, in one artifact.
+- **`@phase_effects` closes over user classes.** A phase contract is
+  now closed over the live class universe like `only:` — a phase
+  reaching a declared user-class carrier without listing the class
+  violates, and listing it permits it (atomic-only complement;
+  composed classes own no bit). Previously the walker iterated a
+  hardcoded nine-class list and the parser rejected user class
+  names outright — the documented deficiency. Programs with
+  `@phase_effects` AND declared user classes may see new (correct)
+  violations.
+
 ### Interface-dispatch edges: closed-world fan-out (GH #392 thread 4)
 
 A method call on an interface-typed value

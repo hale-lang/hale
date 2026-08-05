@@ -269,9 +269,20 @@ max). Remaining compiler-certified: `bound` over built-in classes
 serialized) and any walk past the step ceiling. The derivation
 (source → model) remains the trust root.
 
-Still later (#392): library-tier claims that travel with imports,
-and the annotations-lower-to-claim-IR unification (§8 of the
-original issue) riding this model.
+**§8 — one schema of record** (#392): every fn-grained certificate
+— each `@effects` assert, each `@phase_effects` phase contract,
+each `@budget` in both families — is REPORTED as the claim form it
+is pointwise sugar for, with its verdict, in the artifact's
+`lowered` array (`forbid reaches({F}, effects(money))`,
+`bound alloc <= N on paths from {F}`,
+`only effects {…} on {L} during birth`, …). Rows come from the
+same evaluations that gate the build, so the report and the build
+cannot disagree. The traversal substrate is already one engine
+(the shared call-graph walker plus the shared summary and the
+shared fail-closed predicate); the annotation voices keep their
+diagnostics.
+
+Still later (#392): library-tier claims that travel with imports.
 
 ## Structural & design rules
 
@@ -527,11 +538,14 @@ assume the others in a build:
   `@phase_effects(birth: {alloc}, run: {})` **is** the DO-178 "no
   dynamic memory after initialization" discipline, stated directly
   rather than assembled from two unrelated flags. Each phase names
-  the classes it may perform (`alloc`, plus the `@effects` classes);
-  a phase omitted is unconstrained, a phase with `{}` forbids
-  everything. Phases resolve to lifecycle hooks (`birth`, `run`,
-  `drain`, `dissolve`, `accept`, `release`) or to any member fn /
-  handler by name.
+  the classes it may perform (`alloc`, plus the `@effects` classes,
+  **including declared user classes** — #392 closed the contract
+  over the live class universe like `only:`, with the same
+  atomic-only complement; the hardcoded built-in list was the
+  documented deficiency); a phase omitted is unconstrained, a phase
+  with `{}` forbids everything. Phases resolve to lifecycle hooks
+  (`birth`, `run`, `drain`, `dissolve`, `accept`, `release`) or to
+  any member fn / handler by name.
 - **`@no_panic` — disposition coverage** (GH #265, 2026-07-29).
   Deliberately *not* an effect class: this is a syntactic property of
   a body, not a query over the classified frontier. A fn asserting

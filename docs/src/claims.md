@@ -582,7 +582,8 @@ The artifact shape (schema `1.0`):
                   "computed_publish"]} ],
   "provenance": { "calls": [+span], "publishes": [+span],
                   "subscribes": [+span], "decls": {name: span} },
-  "claims":    [ {"name", "form", "result": "holds"|"violated"|"invalid"} ]
+  "claims":    [ {"name", "form", "result": "holds"|"violated"|"invalid"} ],
+  "lowered":   [ {"subject", "form", "result": "holds"|"violated"} ]
 }
 ```
 
@@ -619,6 +620,14 @@ The pieces worth knowing:
 - **`provenance`.** Bundle-global byte-offset spans (`[start,
   end]`) for every user edge and decl — the "where to edit" data,
   unhashed by design.
+- **`lowered`.** Every fn-grained certificate — each `@effects`
+  assert, each `@phase_effects` phase contract, each `@budget` —
+  as the claim form it is pointwise sugar for, with the verdict of
+  the same evaluation that gates the build: `forbid
+  reaches({F}, effects(money))`, `bound alloc <= N on paths from
+  {F}`, `only effects {…} on {L} during birth`. One schema of
+  record: the artifact carries all law, bundle-quantified and
+  fn-grained, in one place. Unhashed like the claim results.
 
 v2 scope: every claim verb replays independently over the exported
 relations. Still compiler-certified: `bound` over **built-in**

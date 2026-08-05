@@ -321,17 +321,52 @@ fn budget_diags_inner(
     programs: &[&Program],
     import_renames: &[(Vec<String>, String)],
 ) -> Vec<Diag> {
+    budget_report_inner(programs, import_renames).0
+}
+
+/// #392 §8: every `@budget(alloc_per_call)` contract as a lowered
+/// claim row with its verdict — the same evaluation that produces
+/// the diagnostics, so the two cannot disagree.
+pub fn certificate_rows(
+    programs: &[&Program],
+    import_renames: &[(Vec<String>, String)],
+) -> Vec<crate::effects::LoweredCertificate> {
+    budget_report_inner(programs, import_renames).1
+}
+
+fn budget_report_inner(
+    programs: &[&Program],
+    import_renames: &[(Vec<String>, String)],
+) -> (Vec<Diag>, Vec<crate::effects::LoweredCertificate>) {
     let summary =
         alloc_summary::summarize_programs_with_renames(programs, import_renames);
     let mut diags = Vec::new();
+    let mut rows = Vec::new();
 
+    let one = |key: &FnKey,
+                   budget: u32,
+                   fd: &FnDecl,
+                   diags: &mut Vec<Diag>,
+                   rows: &mut Vec<crate::effects::LoweredCertificate>| {
+        let before = diags.len();
+        check_one(key, budget, fd, &summary, diags);
+        rows.push(crate::effects::LoweredCertificate {
+            subject: key.display(),
+            form: format!(
+                "bound alloc <= {} on paths from {{{}}}",
+                budget,
+                key.display()
+            ),
+            violated: diags.len() > before,
+        });
+    };
     for program in programs {
         for item in &program.items {
             match item {
                 TopDecl::Fn(fd) => {
                     if let Some(budget) = fd.budget {
                         let key = FnKey::free_fn(fd.name.name.clone());
-                        check_one(&key, budget, fd, &summary, &mut diags);
+                        one(&key, budget, fd, &mut diags, &mut rows);
                     }
                 }
                 TopDecl::Locus(l) => {
@@ -342,7 +377,7 @@ fn budget_diags_inner(
                                     l.name.name.clone(),
                                     fd.name.name.clone(),
                                 );
-                                check_one(&key, budget, fd, &summary, &mut diags);
+                                one(&key, budget, fd, &mut diags, &mut rows);
                             }
                         }
                     }
@@ -351,7 +386,7 @@ fn budget_diags_inner(
             }
         }
     }
-    diags
+    (diags, rows)
 }
 
 /// The cap on how many offender pinpoints one violation emits, so a

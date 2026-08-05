@@ -680,6 +680,41 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
         ));
     }
     trim_trailing_comma(&mut out);
+    // #392 §8: every fn-grained certificate — `@effects` asserts,
+    // `@phase_effects` contracts, `@budget` in both families —
+    // lowered to the claim IR's vocabulary with its verdict, from
+    // the same evaluations that gate the build. One schema of
+    // record: the artifact carries ALL law, bundle-quantified and
+    // fn-grained, in one place. Unhashed like the claim results —
+    // rows are law + verdicts, not topology.
+    let mut lowered = crate::effects::certificate_rows(
+        &programs,
+        &bundle.import_renames,
+    );
+    lowered.extend(crate::budget_check::certificate_rows(
+        &programs,
+        &bundle.import_renames,
+    ));
+    let fanout = |subj: &str| -> u64 {
+        graph
+            .subjects
+            .get(subj)
+            .map(|si| si.subscribers.len().max(1) as u64)
+            .unwrap_or(1)
+    };
+    lowered.extend(crate::quantitative::certificate_rows(
+        &programs, &fanout,
+    ));
+    out.push_str(",\n  \"lowered\": [\n");
+    for r in &lowered {
+        out.push_str(&format!(
+            "    {{\"subject\": {}, \"form\": {}, \"result\": {}}},\n",
+            quote(&demangle_str(&r.subject)),
+            quote(&demangle_str(&r.form)),
+            quote(if r.violated { "violated" } else { "holds" })
+        ));
+    }
+    trim_trailing_comma(&mut out);
     out.push_str("  ]\n}\n");
     out
 }

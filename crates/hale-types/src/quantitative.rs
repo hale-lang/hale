@@ -355,6 +355,23 @@ pub fn quantitative_diags(
     programs: &[&Program],
     fanout_of: &dyn Fn(&str) -> u64,
 ) -> Vec<Diag> {
+    quantitative_report(programs, fanout_of).0
+}
+
+/// #392 §8: every quantitative `@budget(<dim> = N)` contract as a
+/// lowered claim row with its verdict — same evaluation as the
+/// diagnostics, so the two cannot disagree.
+pub fn certificate_rows(
+    programs: &[&Program],
+    fanout_of: &dyn Fn(&str) -> u64,
+) -> Vec<crate::effects::LoweredCertificate> {
+    quantitative_report(programs, fanout_of).1
+}
+
+fn quantitative_report(
+    programs: &[&Program],
+    fanout_of: &dyn Fn(&str) -> u64,
+) -> (Vec<Diag>, Vec<crate::effects::LoweredCertificate>) {
     let mut roots: Vec<(FnKey, Vec<(QuantDim, u64)>, Span)> = Vec::new();
     for program in programs {
         for item in &program.items {
@@ -385,7 +402,7 @@ pub fn quantitative_diags(
         }
     }
     if roots.is_empty() {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     let summary = alloc_summary::summarize_programs(programs);
     let frames = frame_map(programs);
@@ -393,6 +410,7 @@ pub fn quantitative_diags(
     let declared = crate::effects::declared_of(programs);
     let defs = crate::effects::defs_of(programs);
     let mut diags = Vec::new();
+    let mut rows = Vec::new();
     for (key, dims, span) in &roots {
         for (dim, cap) in dims {
             // #382 phase 3: a user-class dimension must name a
@@ -459,6 +477,16 @@ pub fn quantitative_diags(
                     )
                 }
             };
+            rows.push(crate::effects::LoweredCertificate {
+                subject: key.display(),
+                form: format!(
+                    "bound {} <= {} on paths from {{{}}}",
+                    dim_display(*dim, &names),
+                    cap,
+                    key.display()
+                ),
+                violated: measured.exceeds(*cap),
+            });
             if !measured.exceeds(*cap) {
                 continue;
             }
@@ -496,5 +524,5 @@ pub fn quantitative_diags(
             ));
         }
     }
-    diags
+    (diags, rows)
 }

@@ -2538,15 +2538,17 @@ impl Parser {
                         ))
                     }
                 };
-                match EffectClass::from_ident(&name) {
-                    Some(c) => classes.push(c),
-                    None => {
-                        return Err(Diag::parse(
-                            t.span,
-                            format!("unknown effect class `{}`", name),
-                        ))
-                    }
-                }
+                // #392 §8: user classes join the phase contract's
+                // closed set — the same interning fallback every
+                // other class position has (`is:`, `only:`, `none:`,
+                // `causes:`). Rejecting them here was the documented
+                // deficiency that made `@phase_effects` blind to the
+                // classes a program declares itself.
+                classes.push(
+                    EffectClass::from_ident(&name).unwrap_or_else(
+                        || EffectClass::User(self.intern_effect(&name)),
+                    ),
+                );
                 self.bump();
                 if matches!(self.peek(), TokenKind::Comma) {
                     self.bump();

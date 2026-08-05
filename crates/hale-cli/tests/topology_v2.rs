@@ -158,3 +158,64 @@ fn main() {
         art
     );
 }
+
+/// #392 §8 — every fn-grained certificate exported as a lowered
+/// claim row (one schema of record), with the verdict of the same
+/// evaluation that gates the build.
+#[test]
+fn certificates_appear_as_lowered_claim_rows() {
+    let src = r#"
+effect money;
+@effects(is: {money})
+fn charge(n: Int) -> Int { return n; }
+
+type P { a: Int; }
+
+@effects(none: {money})
+fn clean(n: Int) -> Int { return n + 1; }
+
+@effects(none: {money})
+fn dirty(n: Int) -> Int { return charge(n); }
+
+@budget(alloc_per_call = 2)
+fn boxed(n: Int) -> P { return P { a: n }; }
+
+@phase_effects(run: {})
+locus Engine {
+    params { seen: Int = 0; }
+    run() { self.seen = charge(1); }
+}
+
+fn main() { Engine { }; }
+"#;
+    let art = dump(src, "lowered");
+    assert!(
+        art.contains(
+            r#"{"subject": "clean", "form": "forbid reaches({clean}, effects(money))", "result": "holds"}"#
+        ),
+        "a holding certificate must appear as a lowered row:\n{}",
+        art
+    );
+    assert!(
+        art.contains(
+            r#"{"subject": "dirty", "form": "forbid reaches({dirty}, effects(money))", "result": "violated"}"#
+        ),
+        "a violated certificate must appear as a lowered row:\n{}",
+        art
+    );
+    assert!(
+        art.contains(
+            r#"{"subject": "boxed", "form": "bound alloc <= 2 on paths from {boxed}", "result": "holds"}"#
+        ),
+        "a budget contract must appear as a lowered bound row:\n{}",
+        art
+    );
+    assert!(
+        art.contains(
+            r#"{"subject": "Engine", "form": "only effects {} on {Engine} during run", "result": "violated"}"#
+        ),
+        "a phase contract must appear as a lowered row (violated by \
+         the unlisted user class):\n{}",
+        art
+    );
+}
