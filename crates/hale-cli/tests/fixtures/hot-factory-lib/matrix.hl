@@ -1,0 +1,15 @@
+/// A locus factory. `build` here returns a locus; the same tail name
+/// in `hot-factory-ambig` does not.
+locus Matrix {
+    params { n: Int = 0; }
+}
+
+fn build(n: Int) -> Matrix {
+    let m = Matrix { n: n };
+    return m;
+}
+
+fn zeros(n: Int) -> Matrix {
+    let m = Matrix { n: n };
+    return m;
+}

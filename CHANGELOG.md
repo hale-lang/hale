@@ -46,6 +46,28 @@ mode for something whose job is to gate CI.
 `crates/hale-cli/tests/topology_artifact_contract.rs` pins all
 four, in both directions where a gate is involved — a loose gate
 that never fires is the same fail-open wearing a different hat.
+### The hot-path lint now sees factory calls (GH #402)
+
+The advisory that flags a locus allocated per loop iteration matched
+a locus **literal** only. But a method cannot return a locus (m90), so
+factoring construction out of a body leaves a free-fn factory — and
+`let m = zeros(rows, cols)` in a loop allocates a fresh arena every
+iteration exactly as `Matrix { }` would, reclaimed only when the
+enclosing fn returns.
+
+The result was silence precisely where it mattered. A workload built
+entirely on factories — the #402 reference workload is — grew linearly
+with no diagnostic at all. The lint now resolves a call's callee to
+its signature and fires when the return type is a locus, naming both
+the factory and the locus it returns. Cross-seed calls resolve too
+(the callee keeps its author spelling while the symbol is merged
+mangled); an ambiguous tail name is dropped rather than guessed.
+
+Only the `let`-bound form warns: since the previous release an unbound
+factory result is registered and reclaimed at its statement, so
+dropping the binding is a *fix* the advisory suggests, not a finding it
+reports. Straight-line calls outside a loop or handler stay silent, as
+they always have. The in-tree corpus produces zero new warnings.
 
 ### The per-topic observation identity, pinned and exported (GH #399)
 
