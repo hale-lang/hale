@@ -1338,6 +1338,8 @@ pub fn build_executable_with_options(
         reclaim_fns: BTreeMap::new(),
         handler_reclaim_wrappers: BTreeMap::new(),
         vtables: BTreeMap::new(),
+        fresh_locus_factories: compute_fresh_locus_factories(&merged, import_renames),
+        returned_bindings: compute_returned_bindings(&merged),
         current_fn_skip_exit_drain: false,
         bus_inert,
         di: None,
@@ -2558,6 +2560,416 @@ fn stdlib_bus_tainted_namespaces(
     })
 }
 
+
+/// GH #383 — which free fns provably return a FRESH locus?
+///
+/// Since v0.14 a locus-typed field may only be assigned a locus
+/// LITERAL (`check_locus_field_store`), so a locus a factory returns
+/// has exactly one place it can come to rest: the binding that names
+/// it. That is what makes caller-scoped teardown sound — the
+/// ownership ambiguity which defeated the earlier attempts on this
+/// issue is now a compile error rather than a runtime guess.
+///
+/// A fn qualifies when:
+///   - its declared return type names a locus L (resolved through the
+///     import-rename table, so `mat::Matrix` counts);
+///   - every return is a direct `L { … }` literal, or one single
+///     `let`-bound ident whose binding is itself fresh — an `L { … }`
+///     literal or a call to an already-qualifying factory (hence the
+///     fixpoint: helpers build on other factories);
+///   - that binding never escapes into argument position, another
+///     literal, or a reassignment (receiver-position use such as
+///     `m.set(i, v)` is fine — using a locus is not transferring it);
+///   - no syntax this walk does not explicitly recognize appears.
+///
+/// Every "don't know" answers NOT fresh, preserving the old
+/// program-lifetime behavior rather than risking a double dissolve.
+/// GH #383 — for EVERY free fn, the local binding names it hands back
+/// via `return <ident>;` (or a tail ident).
+///
+/// Distinct from `compute_fresh_locus_factories` and needed
+/// separately: a fn that does NOT qualify as a clean factory can
+/// still return a locus it bound from one. `nn::forward` is the
+/// case that proved it — it binds several factory results, returns
+/// one, and fails the freshness walk. Without this set, the caller-
+/// scoped dissolve fired on the binding the fn hands back and the
+/// caller received a dissolved locus (reads came back as zeros).
+///
+/// Conservative by construction: a name in this set merely
+/// suppresses a dissolve, which is the old leak — never a
+/// double-free.
+fn compute_returned_bindings(
+    program: &Program,
+) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn walk(b: &Block, out: &mut BTreeSet<String>) {
+        for s in &b.stmts {
+            match s {
+                Stmt::Return(Some(Expr::Ident(i)), _) => {
+                    out.insert(i.name.clone());
+                }
+                Stmt::While { body, .. } | Stmt::For { body, .. } => {
+                    walk(body, out)
+                }
+                Stmt::If(i) => {
+                    walk(&i.then_block, out);
+                    let mut cur = i.else_block.as_deref();
+                    while let Some(eb) = cur {
+                        match eb {
+                            ElseBranch::Else(bb) => {
+                                walk(bb, out);
+                                cur = None;
+                            }
+                            ElseBranch::ElseIf(ei) => {
+                                walk(&ei.then_block, out);
+                                cur = ei.else_block.as_deref();
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(Expr::Ident(i)) = b.tail.as_deref() {
+            out.insert(i.name.clone());
+        }
+    }
+
+    let mut m: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for item in &program.items {
+        if let TopDecl::Fn(f) = item {
+            let mut set = BTreeSet::new();
+            walk(&f.body, &mut set);
+            if !set.is_empty() {
+                m.insert(f.name.name.clone(), set);
+            }
+        }
+    }
+    m
+}
+
+fn compute_fresh_locus_factories(
+    program: &Program,
+    import_renames: &[(Vec<String>, String)],
+) -> std::collections::BTreeMap<String, (String, Option<String>)> {
+    use std::collections::BTreeMap;
+
+    fn resolve(
+        v: &[String],
+        renames: &[(Vec<String>, String)],
+    ) -> Option<String> {
+        if v.len() == 1 {
+            return Some(v[0].clone());
+        }
+        let refs: Vec<&str> = v.iter().map(|s| s.as_str()).collect();
+        if let Some(m) = stdlib_mangled_for_path(&refs) {
+            return Some(m.to_string());
+        }
+        renames
+            .iter()
+            .find(|(p, _)| p.len() == v.len() && p.iter().zip(v).all(|(a, b)| a == b))
+            .map(|(_, m)| m.clone())
+    }
+
+    fn qname(q: &QualifiedName) -> Vec<String> {
+        q.segments.iter().map(|s| s.name.clone()).collect()
+    }
+
+    fn ret_locus_name(
+        f: &FnDecl,
+        renames: &[(Vec<String>, String)],
+    ) -> Option<String> {
+        match f.ret.as_ref()? {
+            TypeExpr::Named { path, .. } => resolve(&qname(path), renames),
+            _ => None,
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    enum Freshness {
+        Literal,
+        CallTo(String),
+        Other,
+    }
+
+    /// Accepts both spellings of a qualified callee: `a::b` parses to
+    /// `Path2`, and some paths normalize to `Field` before this pass.
+    /// Accepting only one silently classified every cross-seed
+    /// factory call as opaque.
+    fn callee_name(
+        callee: &Expr,
+        renames: &[(Vec<String>, String)],
+    ) -> Option<String> {
+        fn segs(e: &Expr, out: &mut Vec<String>) -> bool {
+            match e {
+                Expr::Ident(i) => {
+                    out.push(i.name.clone());
+                    true
+                }
+                // THREE spellings reach here for a qualified callee:
+                // `Path` (the whole-name form the parser produces for
+                // `mat::zeros(...)`), plus `Path2` / `Field` for the
+                // receiver-chain forms. Missing `Path` silently
+                // classified every cross-seed factory call as opaque,
+                // which is why the neural helpers never qualified.
+                Expr::Path(q) => {
+                    out.extend(q.segments.iter().map(|i| i.name.clone()));
+                    true
+                }
+                Expr::Path2 { receiver, name, .. }
+                | Expr::Field { receiver, name, .. } => {
+                    if !segs(receiver, out) {
+                        return false;
+                    }
+                    out.push(name.name.clone());
+                    true
+                }
+                _ => false,
+            }
+        }
+        let mut v = Vec::new();
+        if !segs(callee, &mut v) {
+            return None;
+        }
+        resolve(&v, renames)
+    }
+
+    fn expr_ok(e: &Expr, x: &str) -> bool {
+        match e {
+            Expr::Ident(i) => i.name != x,
+            Expr::Literal(..) => true,
+            Expr::Field { receiver, .. } => recv_ok(receiver, x),
+            Expr::Call { callee, args, .. } => {
+                let c = match callee.as_ref() {
+                    Expr::Field { receiver, .. } => recv_ok(receiver, x),
+                    Expr::Ident(i) => i.name != x,
+                    other => expr_ok(other, x),
+                };
+                c && args.iter().all(|a| expr_ok(a, x))
+            }
+            Expr::Binary { left, right, .. } => {
+                expr_ok(left, x) && expr_ok(right, x)
+            }
+            Expr::Unary { operand, .. } => expr_ok(operand, x),
+            Expr::Index { receiver, index, .. } => {
+                recv_ok(receiver, x) && expr_ok(index, x)
+            }
+            Expr::Path2 { receiver, .. } => recv_ok(receiver, x),
+            Expr::Or { inner, disposition, .. } => {
+                let d = match disposition {
+                    OrDisposition::Substitute(e) => expr_ok(e, x),
+                    OrDisposition::Fail(e, _) => expr_ok(e, x),
+                    _ => true,
+                };
+                expr_ok(inner, x) && d
+            }
+            Expr::Struct { inits, .. } => {
+                inits.iter().all(|i| expr_ok(&i.value, x))
+            }
+            Expr::Array(parts, _) => parts.iter().all(|p| expr_ok(p, x)),
+            Expr::Block(b) => block_ok(b, x),
+            other => !format!("{:?}", other)
+                .contains(&format!("name: \"{}\"", x)),
+        }
+    }
+
+    fn recv_ok(e: &Expr, x: &str) -> bool {
+        match e {
+            Expr::Ident(_) => true,
+            Expr::Field { receiver, .. } => recv_ok(receiver, x),
+            Expr::Index { receiver, index, .. } => {
+                recv_ok(receiver, x) && expr_ok(index, x)
+            }
+            Expr::Call { callee, args, .. } => {
+                let c = match callee.as_ref() {
+                    Expr::Field { receiver, .. } => recv_ok(receiver, x),
+                    other => expr_ok(other, x),
+                };
+                c && args.iter().all(|a| expr_ok(a, x))
+            }
+            other => expr_ok(other, x),
+        }
+    }
+
+    fn block_ok(b: &Block, x: &str) -> bool {
+        b.stmts.iter().all(|s| stmt_ok(s, x))
+            && b.tail.as_ref().map_or(true, |t| expr_ok(t, x))
+    }
+
+    fn stmt_ok(s: &Stmt, x: &str) -> bool {
+        match s {
+            Stmt::Let { name, value, .. } => {
+                name.name != x && expr_ok(value, x)
+            }
+            Stmt::Assign { target, value, .. } => {
+                target.head.name != x && expr_ok(value, x)
+            }
+            Stmt::Expr(e) => expr_ok(e, x),
+            Stmt::While { cond, body, .. } => {
+                expr_ok(cond, x) && block_ok(body, x)
+            }
+            Stmt::For { body, iter, .. } => {
+                expr_ok(iter, x) && block_ok(body, x)
+            }
+            Stmt::If(i) => if_ok(i, x),
+            Stmt::Return(Some(Expr::Ident(i)), _) if i.name == x => true,
+            Stmt::Return(Some(e), _) => expr_ok(e, x),
+            Stmt::Return(None, _) => true,
+            Stmt::Break(_) | Stmt::Continue(_) => true,
+            Stmt::Fail { value, .. } => expr_ok(value, x),
+            _ => false,
+        }
+    }
+
+    fn if_ok(i: &IfStmt, x: &str) -> bool {
+        expr_ok(&i.cond, x)
+            && block_ok(&i.then_block, x)
+            && i.else_block.as_ref().map_or(true, |e| match e.as_ref() {
+                ElseBranch::Else(b) => block_ok(b, x),
+                ElseBranch::ElseIf(e) => if_ok(e, x),
+            })
+    }
+
+    /// Skips the defining `let x = …;` (its own name check would trip).
+    fn body_ok(b: &Block, x: &str) -> bool {
+        for s in &b.stmts {
+            match s {
+                Stmt::Let { name, value, .. } if name.name == x => {
+                    if !expr_ok(value, x) {
+                        return false;
+                    }
+                }
+                other => {
+                    if !stmt_ok(other, x) {
+                        return false;
+                    }
+                }
+            }
+        }
+        b.tail.as_ref().map_or(true, |t| match t.as_ref() {
+            Expr::Ident(i) if i.name == x => true,
+            e => expr_ok(e, x),
+        })
+    }
+
+    fn collect(
+        b: &Block,
+        rets: &mut Vec<Expr>,
+        lets: &mut Vec<(String, Freshness)>,
+        l: &str,
+        renames: &[(Vec<String>, String)],
+    ) {
+        for s in &b.stmts {
+            match s {
+                Stmt::Return(Some(e), _) => rets.push(e.clone()),
+                Stmt::Let { name, value, .. } => {
+                    let fr = match value {
+                        Expr::Struct { path, .. }
+                            if resolve(&qname(path), renames).as_deref()
+                                == Some(l) =>
+                        {
+                            Freshness::Literal
+                        }
+                        Expr::Call { callee, .. } => {
+                            match callee_name(callee, renames) {
+                                Some(n) => Freshness::CallTo(n),
+                                None => Freshness::Other,
+                            }
+                        }
+                        _ => Freshness::Other,
+                    };
+                    lets.push((name.name.clone(), fr));
+                }
+                Stmt::While { body, .. } | Stmt::For { body, .. } => {
+                    collect(body, rets, lets, l, renames)
+                }
+                Stmt::If(i) => {
+                    collect(&i.then_block, rets, lets, l, renames);
+                    let mut cur = i.else_block.as_deref();
+                    while let Some(eb) = cur {
+                        match eb {
+                            ElseBranch::Else(bb) => {
+                                collect(bb, rets, lets, l, renames);
+                                cur = None;
+                            }
+                            ElseBranch::ElseIf(ei) => {
+                                collect(&ei.then_block, rets, lets, l, renames);
+                                cur = ei.else_block.as_deref();
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(t) = &b.tail {
+            rets.push((**t).clone());
+        }
+    }
+
+    let mut out: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
+    loop {
+        let mut added = false;
+        for item in &program.items {
+            let TopDecl::Fn(f) = item else { continue };
+            if out.contains_key(&f.name.name) {
+                continue;
+            }
+            let Some(l) = ret_locus_name(f, import_renames) else {
+                continue;
+            };
+            let mut rets = Vec::new();
+            let mut lets = Vec::new();
+            collect(&f.body, &mut rets, &mut lets, &l, import_renames);
+            if rets.is_empty() {
+                continue;
+            }
+            let mut fresh_name: Option<String> = None;
+            let mut ok = true;
+            for r in &rets {
+                match r {
+                    Expr::Struct { path, .. }
+                        if resolve(&qname(path), import_renames).as_deref()
+                            == Some(l.as_str()) => {}
+                    Expr::Ident(i) => match &fresh_name {
+                        None => fresh_name = Some(i.name.clone()),
+                        Some(n) if *n == i.name => {}
+                        Some(_) => { ok = false; break; }
+                    },
+                    _ => { ok = false; break; }
+                }
+            }
+            if !ok {
+                continue;
+            }
+            if let Some(x) = &fresh_name {
+                let bindings: Vec<&(String, Freshness)> =
+                    lets.iter().filter(|(n, _)| n == x).collect();
+                if bindings.len() != 1 {
+                    continue;
+                }
+                let fresh_binding = match &bindings[0].1 {
+                    Freshness::Literal => true,
+                    Freshness::CallTo(c) => {
+                        out.get(c).map(|(cl, _)| *cl == l).unwrap_or(false)
+                    }
+                    Freshness::Other => false,
+                };
+                if !fresh_binding || !body_ok(&f.body, x) {
+                    continue;
+                }
+            }
+            out.insert(f.name.name.clone(), (l, fresh_name));
+            added = true;
+        }
+        if !added {
+            break;
+        }
+    }
+    out
+}
+
 fn stdlib_mangled_for_path(segs: &[&str]) -> Option<&'static str> {
     if !matches!(segs.first(), Some(&"std")) {
         return None;
@@ -3335,6 +3747,15 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// C/Rust/Go agree at ~0.77 ns/call, Hale paid 1.93 ns — a
     /// push/pop + global load + lotus_bus_queue_drain call per
     /// invocation of a two-instruction function.
+    /// GH #383: fn name -> (locus it freshly returns, the let-binding
+    /// it returns if any). See `compute_fresh_locus_factories`.
+    pub(crate) fresh_locus_factories:
+        std::collections::BTreeMap<String, (String, Option<String>)>,
+    /// GH #383: fn name -> the local bindings it returns. Ownership
+    /// of those transfers to the caller, so this frame must not
+    /// dissolve them. See `compute_returned_bindings`.
+    pub(crate) returned_bindings:
+        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     pub(crate) current_fn_skip_exit_drain: bool,
     /// Static drain elision (2026-08-03): true when the merged
     /// program can never enqueue a bus cell (no topics, no bus
@@ -5580,6 +6001,43 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// tables produce `&'static str` and the per-build table
     /// produces an owned String, so the method's return is
     /// uniformly owned.
+    /// GH #383: resolve a call's callee to the merged-program fn
+    /// name, for the fresh-factory lookup. Accepts both `Path2` and
+    /// `Field` spellings, matching the analysis pass.
+    fn callee_fn_name(&self, callee: &Expr) -> Option<String> {
+        fn segs(e: &Expr, out: &mut Vec<String>) -> bool {
+            match e {
+                Expr::Ident(i) => {
+                    out.push(i.name.clone());
+                    true
+                }
+                // See the analysis-side twin: three spellings.
+                Expr::Path(q) => {
+                    out.extend(q.segments.iter().map(|i| i.name.clone()));
+                    true
+                }
+                Expr::Path2 { receiver, name, .. }
+                | Expr::Field { receiver, name, .. } => {
+                    if !segs(receiver, out) {
+                        return false;
+                    }
+                    out.push(name.name.clone());
+                    true
+                }
+                _ => false,
+            }
+        }
+        let mut v = Vec::new();
+        if !segs(callee, &mut v) {
+            return None;
+        }
+        if v.len() == 1 {
+            return Some(v.remove(0));
+        }
+        let refs: Vec<&str> = v.iter().map(|s| s.as_str()).collect();
+        self.mangled_for_path(&refs)
+    }
+
     pub(crate) fn mangled_for_path(&self, segs: &[&str]) -> Option<String> {
         if let Some(name) = stdlib_mangled_for_path(segs) {
             return Some(name.to_string());
@@ -12485,6 +12943,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.current_user_fn_ret = Some(sig.ret.clone());
         self.current_self = None;
         self.loops.clear();
+        // Entering a new subprogram: drop the previous function's
+        // debug location. Entry-block allocas emitted before the
+        // body's first statement sets a location would otherwise
+        // inherit it, and LLVM rejects the module — "!dbg attachment
+        // points at wrong subprogram", seen concretely as `%j` in
+        // `matrix_add` carrying `matrix_matmul`'s location. Latent
+        // until something emits an entry alloca that early; the
+        // reset belongs here regardless of what triggers it.
+        self.di_current_loc = None;
+        self.builder.unset_current_debug_location();
         // Fn-call protocol shave: non-allocating bodies can't publish,
         // so their (empty-frame) scope-exit flushes skip the bus drain.
         let prev_skip_drain = self.current_fn_skip_exit_drain;
@@ -15106,6 +15574,45 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.lower_expr_into(value_to_lower, scope, hint_ty.as_ref());
                 self.defer_next_locus_dissolve = false;
                 let (mut val, mut ty) = lower_result?;
+                // GH #383: a let-bound call to a proven-fresh locus
+                // factory is owned by THIS binding, so it dissolves
+                // at this scope's exit like any let-bound locus.
+                // Sound because a locus value can no longer escape
+                // into a field (`check_locus_field_store`), so the
+                // binding is the only place the result can rest.
+                let mut fresh_dissolve_of: Option<String> = None;
+                if let CodegenTy::LocusRef(lname) = &ty {
+                    if let Expr::Call { callee, .. } = value_to_lower {
+                        let is_fresh = self
+                            .callee_fn_name(callee)
+                            .and_then(|f| {
+                                self.fresh_locus_factories.get(&f).cloned()
+                            })
+                            .map(|(l, _)| l == *lname)
+                            .unwrap_or(false);
+                        // Ownership transfers exactly once. If this
+                        // binding is one the enclosing fn hands back,
+                        // the CALLER owns it — dissolving here frees
+                        // it out from under them. Checked against
+                        // EVERY fn's returned bindings, not just
+                        // qualifying factories: a fn can fail the
+                        // freshness walk and still return a locus it
+                        // bound from one (`nn::forward` — the case
+                        // that caught this, where reads came back as
+                        // zeros).
+                        let is_my_returned_binding = self
+                            .current_fn
+                            .map(|f| f.get_name().to_string_lossy().to_string())
+                            .and_then(|fname| {
+                                self.returned_bindings.get(&fname).cloned()
+                            })
+                            .map(|set| set.contains(&name.name))
+                            .unwrap_or(false);
+                        if is_fresh && !is_my_returned_binding {
+                            fresh_dissolve_of = Some(lname.clone());
+                        }
+                    }
+                }
                 // Int → Float widening at a Float-ascribed let
                 // binding. `let nf: Float = self.n;` where `n: Int`
                 // is the canonical case. Resolves
@@ -15161,6 +15668,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.di_declare_variable(
                         alloca, &name.name, &ty, None, fi, ln, loc,
                     );
+                }
+                // GH #383 registration. The binding's own alloca IS
+                // the dissolve slot: ptr-typed, entry-block, already
+                // holding the locus pointer — exactly what
+                // `flush_dissolve_frame` loads. Reusing it avoids
+                // minting a second entry-block slot, which trips
+                // LLVM's "!dbg attachment points at wrong subprogram".
+                if let Some(lname) = fresh_dissolve_of {
+                    if !self.deferred_dissolves.is_empty() {
+                        self.deferred_dissolves
+                            .last_mut()
+                            .expect("checked non-empty")
+                            .push((alloca, lname, None));
+                    }
                 }
                 scope.locals.insert(name.name.clone(), (alloca, ty));
                 Ok(BlockEnd::Open)
