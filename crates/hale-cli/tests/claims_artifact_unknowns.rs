@@ -144,13 +144,36 @@ fn a_conforming_dispatch_appears_as_call_edges_not_unknowns() {
 #[test]
 fn an_uninhabited_interface_call_is_an_unknown_and_changes_the_hash()
 {
-    // Remove the conformer: same program, `Email::send` renamed so
-    // nothing satisfies `Notifier`.
-    let uninhabited = DISPATCHED.replace(
-        "locus Email { fn send(n: Int) -> Int { return n; } }",
-        "locus Email { fn deliver(n: Int) -> Int { return n; } }",
-    );
-    let art = dump(&uninhabited, "uninhabited");
+    // The interface must be uninhabited in a program that still
+    // TYPECHECKS. The obvious construction — take `DISPATCHED` and
+    // rename `Email::send` — does not: `Route { handler: Email { } }`
+    // then stores a non-conformer in a `Notifier` field, which is a
+    // type error ("locus `Email` does not satisfy interface
+    // `Notifier`"). An artifact is only emitted for a program whose
+    // model is sound, so that construction produced no artifact at
+    // all and this test was asserting against an empty string.
+    //
+    // Take the interface as a PARAMETER instead. The body is
+    // checkable, nothing conforms, and the call site is dead in this
+    // build — which is exactly the case the unknown class exists to
+    // record.
+    const UNINHABITED: &str = r#"
+interface Notifier { fn send(n: Int) -> Int; }
+locus Email { fn deliver(n: Int) -> Int { return n; } }
+locus A {
+    fn go(x: Notifier, n: Int) -> Int {
+        return x.send(n);
+    }
+}
+group a_side = { A };
+group sinks = { Email };
+main locus App {
+    params { a: A = A { }; }
+    claims { iso: forbid reaches(a_side, sinks); }
+}
+fn main() { App { }; }
+"#;
+    let art = dump(UNINHABITED, "uninhabited");
     assert!(
         art.contains("uninhabited_interface_call:Notifier.send")
             && art.contains("\"A::go\""),

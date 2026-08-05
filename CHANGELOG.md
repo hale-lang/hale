@@ -39,6 +39,68 @@ the conformer from the group.
 The fact was already in the model (the artifact tags these edges
 `via_interface`); it just never reached the human. Witnesses with no
 interface in them are unchanged.
+### Topology artifact schema 1.4: one verdict vocabulary, and the document's own verdict
+
+Bundle claims and fn-grained certificates (`@effects`, `@budget`,
+`@phase_effects`) are the same kind of statement at different
+granularity — #392 §8 already reports the second as the claim form it
+is pointwise sugar for. They disagreed about how to spell an outcome:
+claim rows carried three states, `lowered` rows carried a bool.
+
+Both now use `Verdict`, and it distinguishes a case that was
+previously folded away:
+
+| verdict | meaning | repair |
+|---|---|---|
+| `holds` | proved | nothing |
+| `violated` | disproved — a counterexample exists | fix the program |
+| `uncertified` | well-formed but not provable — the graph has an unknown | resolve the unknown edge |
+| `invalid` | the statement is malformed | fix the claim |
+
+`violated` and `uncertified` were one value because **unknown ⇒
+violation** — an indirect call fails closed rather than certifying an
+absence nothing established. That rule is unchanged and both still
+fail the build. What changes is that the artifact records which
+happened: the repairs differ, and composing models across binaries
+needs a propagated unknown to read as "not provable" rather than as
+disproved when nothing disproved it.
+
+The artifact also gains a top-level **`verdict`** (`clean` /
+`law_failed`) — every law reduced to one field, so a consumer does
+not reconstruct it by walking two arrays and knowing which strings
+count as passing. Only `holds` passes: a law that could not be
+checked has not been satisfied. It says nothing about whether the
+program typechecks, because an artifact is only emitted for one that
+does.
+
+### A topology artifact is only emitted for a program that typechecks
+
+`hale check broken.hl --dump-topology` emitted a **full artifact** for
+a program with a type error: populated relations, and claims evaluated
+over a graph derived from source the compiler could not understand. A
+claim would report `"result": "holds"` for a program that cannot
+compile — a certificate asserting a property of something that will
+never run.
+
+That is worse for a consumer than emitting nothing, because it fails
+open: an admission step looking for "no violated claims" *passes* it,
+since there are none.
+
+The artifact's existence now means the model is sound. A program that
+does not typecheck emits no artifact and says why.
+
+A **violated** claim is the opposite case and still emits, unchanged:
+the model is well-defined, the row is a truthful report, and replaying
+a violation independently is the point of publishing the model. The
+new `DiagKind::Claim` separates the two — errors like any other, and
+rendered identically (the message already begins "claim `x`
+violated", so a distinct prefix would only stutter), marked at the one
+place every claim diagnostic funnels through rather than at its ~30
+construction sites.
+
+`check` now runs its analysis once and shares it between the artifact
+gate and the diagnostic report, so this costs nothing on a
+`--dump-topology` run.
 
 ### Topology artifact schema 1.3: an integrity digest
 

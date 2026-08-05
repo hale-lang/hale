@@ -87,8 +87,12 @@ use crate::symbol::Bundle;
 /// unhashed-by-`shape_hash` but now COVERED `artifact_digest` — a
 /// whole-body integrity hash as the final key, so a consumer that
 /// trusts an artifact it did not produce can verify the sections
-/// `shape_hash` omits (`topics`, `provenance`, claim results).
-pub const TOPOLOGY_SCHEMA: &str = "1.3";
+/// `shape_hash` omits (`topics`, `provenance`, claim results). 1.4:
+/// `verdict` (`clean` / `law_failed`), the document's own outcome;
+/// and one result vocabulary across `claims` and `lowered` — see
+/// [`crate::verdict::Verdict`], which adds `uncertified` as a state
+/// distinct from `violated`.
+pub const TOPOLOGY_SCHEMA: &str = "1.4";
 
 /// Serialize the bundle's model + claim results as the topology
 /// artifact (JSON).
@@ -757,7 +761,7 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
             "    {{\"name\": {}, \"form\": {}, \"result\": {}}},\n",
             quote(&o.name),
             quote(&demangle_str(&o.form)),
-            quote(o.result)
+            quote(o.result.as_str())
         ));
     }
     trim_trailing_comma(&mut out);
@@ -798,11 +802,34 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
             "    {{\"subject\": {}, \"form\": {}, \"result\": {}}},\n",
             quote(&demangle_str(&r.subject)),
             quote(&demangle_str(&r.form)),
-            quote(if r.violated { "violated" } else { "holds" })
+            quote(r.result.as_str())
         ));
     }
     trim_trailing_comma(&mut out);
     out.push_str("  ]");
+
+    // The document's own verdict (schema 1.4). Every law in this
+    // artifact — bundle claims and fn-grained certificates alike —
+    // reduces to one field a consumer can read without scanning
+    // rows.
+    //
+    // Composing artifacts across binaries requires "did this
+    // component pass?" as a precondition, and reconstructing that by
+    // walking two arrays and knowing which verdict strings count as
+    // passing is exactly the kind of thing a consumer gets subtly
+    // wrong. `Verdict::passed()` is the single definition, and only
+    // `holds` passes — `uncertified` does not, because a law that
+    // could not be checked has not been satisfied.
+    //
+    // Note this says nothing about whether the program TYPECHECKS.
+    // It does not have to: an artifact is only emitted for a program
+    // that does, so its existence already carries that.
+    let all_pass = outcomes.iter().all(|o| o.result.passed())
+        && lowered.iter().all(|r| r.result.passed());
+    out.push_str(&format!(
+        ",\n  \"verdict\": {}",
+        quote(if all_pass { "clean" } else { "law_failed" })
+    ));
 
     // Integrity (schema 1.3). `shape_hash` is an IDENTITY, not an
     // integrity check: it deliberately covers the model half only,

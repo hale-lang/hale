@@ -633,6 +633,35 @@ Dumping does **not** change what the command means: a program whose
 claims fail still exits non-zero with its witnesses, it just prints
 the artifact on the way.
 
+### One verdict vocabulary
+
+Bundle claims and fn-grained certificates (`@effects`, `@budget`,
+`@phase_effects`) are the same kind of statement at different
+granularity, so they report in the same words. Four states, told
+apart by what you should do about each:
+
+| verdict | meaning | repair |
+|---|---|---|
+| `holds` | proved | nothing |
+| `violated` | disproved — a counterexample exists | fix the program; the witness says where |
+| `uncertified` | well-formed but not provable here — the graph has an unknown (an indirect call, an untypeable receiver, a computed subject) | resolve the unknown edge, or accept that this law can't be checked here |
+| `invalid` | the statement itself is malformed — an unknown group member, an undeclared effect class | fix the claim |
+
+`violated` and `uncertified` used to be one value, because **unknown
+⇒ violation**: an indirect call fails closed rather than certifying
+an absence nothing established. That rule is unchanged and both
+still fail the build. What changed is that the artifact records
+which happened, because the repairs are different — and because
+composing models across binaries needs a propagated unknown to make
+a claim `uncertified` rather than report it as disproved when
+nothing disproved it.
+
+The document's own `verdict` is `clean` only if every row — claims
+and lowered alike — reports `holds`. `uncertified` does not pass: a
+law that could not be checked has not been satisfied. It says
+nothing about whether the program typechecks, because it doesn't
+have to — an artifact is only emitted for a program that does.
+
 ### Identity vs. integrity
 
 Two different hashes, and conflating them is a trap:
@@ -659,11 +688,11 @@ reports as *unverifiable* rather than as valid — a consumer may
 choose to accept it, but must never read "nothing to check" as
 "checked and intact".
 
-The artifact shape (schema `1.3`):
+The artifact shape (schema `1.4`):
 
 ```text
 {
-  "schema": "1.3",
+  "schema": "1.4",
   "shape_hash": "<fnv1a-64 over the model half>",
   "sorts":     { "loci": […], "fns": […], "topics": […] },
   "relations": {
@@ -685,8 +714,9 @@ The artifact shape (schema `1.3`):
   "provenance": { "calls": [+span], "publishes": [+span],
                   "subscribes": [+span], "decls": {name: span} },
   "topics":    [ {"name", "subject", "shape", "payload_hash"} ],
-  "claims":    [ {"name", "form", "result": "holds"|"violated"|"invalid"} ],
-  "lowered":   [ {"subject", "form", "result": "holds"|"violated"} ]
+  "claims":    [ {"name", "form", "result": <verdict>} ],
+  "lowered":   [ {"subject", "form", "result": <verdict>} ],
+  "verdict":   "clean" | "law_failed"
 }
 ```
 

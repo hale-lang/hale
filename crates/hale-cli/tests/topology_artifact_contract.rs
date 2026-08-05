@@ -257,3 +257,111 @@ fn the_shape_gate_ignores_source_motion_but_not_graph_changes() {
         "adding a locus changes the model and MUST trip the shape gate"
     );
 }
+
+/// A program that does not TYPECHECK must not produce an artifact at
+/// all. This is the other half of "observing a program must not
+/// change its verdict", and it fails in the more dangerous direction.
+///
+/// Verified against the shipped behavior before the fix: a program
+/// with a type error emitted a full artifact — populated relations,
+/// and claims evaluated over a graph derived from source the compiler
+/// could not understand. A claim reported `"result": "holds"` for a
+/// program that cannot compile. That is worse for a consumer than no
+/// artifact, because an admission step looking for "no violated
+/// claims" passes it: there are none.
+///
+/// A VIOLATED claim is the opposite case and must still emit — the
+/// model is well-defined, the row is truthful, and replaying a
+/// violation independently is the point of publishing the model.
+#[test]
+fn a_program_that_does_not_typecheck_emits_no_artifact() {
+    const TYPE_ERROR: &str = r#"
+        type T { v: Int; }
+        topic Tk { payload: T; subject: "app.t"; }
+        locus Sub {
+            params { got: Int = 0; }
+            bus { subscribe Tk as on_t; }
+            fn on_t(t: T) { self.got = t.v; }
+            fn broken() -> Int { return self.no_such_field; }
+        }
+        group subs = { Sub };
+        main locus App {
+            params { s: Sub = Sub { }; }
+            claims { wired: require subscribes(some subs, topic Tk); }
+        }
+        fn main() { App { }; }
+    "#;
+    let path = write_tmp("typeerr", TYPE_ERROR);
+    let (stdout, code) =
+        hale(&["check".as_ref(), path.as_os_str(), "--dump-topology".as_ref()]);
+    let _ = std::fs::remove_file(&path);
+
+    assert!(
+        stdout.trim().is_empty(),
+        "no artifact may be emitted for a program that does not \
+         typecheck — its model describes no program: {}",
+        stdout
+    );
+    assert_ne!(code, 0, "the type error must still fail the run");
+}
+
+/// The distinction the fix rests on: a violated claim still emits.
+#[test]
+fn a_violated_claim_still_emits_its_artifact() {
+    let path = write_tmp("violated_emits", FAILING);
+    let (stdout, code) =
+        hale(&["check".as_ref(), path.as_os_str(), "--dump-topology".as_ref()]);
+    let _ = std::fs::remove_file(&path);
+
+    assert_ne!(code, 0, "the violated claim must fail the run");
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!("a claims-violated program must still emit a parseable artifact: {e}\n{stdout}")
+    });
+    assert!(
+        v["claims"].as_array().is_some_and(|c| !c.is_empty()),
+        "and it must carry the claim rows that explain the failure: {}",
+        stdout
+    );
+}
+
+/// A violated **fn-grained certificate** is a law failure, not a type
+/// error, so the artifact must still be emitted — the `lowered` rows
+/// exist precisely to record that verdict.
+///
+/// This is the case CI caught and local runs did not. The soundness
+/// gate first keyed on `DiagKind::Claim`, which only bundle claims
+/// carried, so a program that typechecked but broke a `@budget` or
+/// `@effects` contract was refused an artifact. Its model is
+/// perfectly sound; only a rule was broken.
+#[test]
+fn a_violated_certificate_still_emits_its_artifact() {
+    const OVER_BUDGET: &str = r#"
+        type P { a: Int; }
+        @budget(alloc_per_call = 0)
+        fn boxed(n: Int) -> P { return P { a: n }; }
+        main locus App { params { n: Int = 0; } }
+        fn main() { App { }; let p = boxed(1); }
+    "#;
+    let path = write_tmp("certificate", OVER_BUDGET);
+    let (stdout, code) =
+        hale(&["check".as_ref(), path.as_os_str(), "--dump-topology".as_ref()]);
+    let _ = std::fs::remove_file(&path);
+
+    assert_ne!(code, 0, "the broken contract must fail the run: {}", stdout);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!(
+            "a violated CERTIFICATE is law, not a broken model — the \
+             artifact must still be emitted: {e}\n{stdout}"
+        )
+    });
+    assert!(
+        v["lowered"].as_array().is_some_and(|r| !r.is_empty()),
+        "and carry the lowered rows that record the verdict: {}",
+        stdout
+    );
+    assert_eq!(
+        v["verdict"], "law_failed",
+        "the document verdict covers certificates too: {}",
+        stdout
+    );
+}

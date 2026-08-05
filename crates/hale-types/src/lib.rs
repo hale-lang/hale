@@ -32,6 +32,7 @@ pub mod claims;
 pub mod model;
 pub mod topic_identity;
 pub mod topology;
+pub mod verdict;
 pub mod stdlib_bodies;
 pub mod stdlib_surface;
 pub mod ownership_graph;

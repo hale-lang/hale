@@ -12,3 +12,7 @@ hale-syntax = { path = "../hale-syntax" }
 
 [dev-dependencies]
 hale-corpus = { path = "../hale-corpus" }
+# The artifact contract tests PARSE the whole document rather than
+# asserting on substrings — the only shape of test that catches a
+# structural error, which is how an unclosed array once shipped.
+serde_json = "1"

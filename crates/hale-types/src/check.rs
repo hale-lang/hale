@@ -416,6 +416,19 @@ pub fn check_bundle(
     // allocates more than its declared per-call ceiling (0 = zero-alloc
     // certificate). Reuses the `alloc_summary` call graph.
     {
+        // Everything in this block is LAW — fn-grained certificates
+        // (`@budget`, `@effects`, `@phase_effects`, the frontier
+        // contracts) and bundle claims. #392 §8 already reports the
+        // first as the claim form it is pointwise sugar for, and the
+        // artifact records both in one vocabulary.
+        //
+        // They are marked `DiagKind::Claim` as a batch below, which
+        // matters for one thing: a law failure means the program
+        // typechecks and breaks a rule, so its model is sound and the
+        // artifact must still be emitted to record the verdict. A
+        // TYPE error means the model describes no program and the
+        // artifact must not exist. Rendering is identical either way.
+        let law_start = diags.len();
         let programs_vec: Vec<&Program> = bundle.programs.values().copied().collect();
         diags.extend(crate::budget_check::budget_diags_with_renames(
             &programs_vec,
@@ -461,6 +474,11 @@ pub fn check_bundle(
                 &programs_vec,
                 &fanout,
             ));
+        }
+        for d in &mut diags[law_start..] {
+            if d.kind == hale_syntax::error::DiagKind::Type {
+                d.kind = hale_syntax::error::DiagKind::Claim;
+            }
         }
     }
     // 2026-05-29: a bus-subscribing locus instantiated non-owned

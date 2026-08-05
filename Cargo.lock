@@ -108,6 +108,7 @@ dependencies = [
  "hale-corpus",
  "hale-stdlib",
  "hale-syntax",
+ "serde_json",
 ]
 
 [[package]]

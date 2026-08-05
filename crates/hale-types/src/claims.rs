@@ -48,6 +48,7 @@ use hale_syntax::Diag;
 
 use crate::alloc_summary::{AllocSummary, Callee, EffectSiteKind, FnKey};
 use crate::bus_graph::BusGraph;
+use crate::verdict::Verdict;
 use crate::callgraph;
 use crate::effects::{
     close, declared_of, defs_of, effect_names_of, ffi_names,
@@ -60,9 +61,9 @@ pub struct ClaimOutcome {
     pub name: String,
     /// The normalized sentence, rendered.
     pub form: String,
-    /// `"holds"`, `"violated"`, or `"invalid"` (a vocabulary /
-    /// reference error prevented evaluation).
-    pub result: &'static str,
+    /// See [`crate::verdict::Verdict`] — one vocabulary shared with
+    /// the fn-grained certificates in `lowered`.
+    pub result: Verdict,
 }
 
 /// Diagnostics only — the `hale check` entry point.
@@ -85,6 +86,16 @@ pub fn claims_report(
     let (mut out, outcomes) =
         claims_report_inner(programs, graph, import_renames);
     crate::stdlib_bodies::demangle_imports(&mut out, import_renames);
+    // Mark the whole batch at the one place they all funnel through,
+    // rather than at ~30 construction sites. Rendering is unchanged
+    // (`DiagKind::Claim` prints "type error" too); the kind exists so
+    // a consumer can separate "does not typecheck" from "typechecks
+    // and breaks a law" — see `DiagKind::Claim`.
+    for d in &mut out {
+        if d.kind == hale_syntax::error::DiagKind::Type {
+            d.kind = hale_syntax::error::DiagKind::Claim;
+        }
+    }
     (out, outcomes)
 }
 
@@ -447,7 +458,7 @@ fn claims_report_inner(
     for c in &claims {
         let valid = validate_claim(c, &cx, &mut diags);
         let result = if !valid {
-            "invalid"
+            Verdict::Invalid
         } else {
             match &c.form {
                 ClaimForm::ForbidReaches { .. } => {
@@ -974,7 +985,7 @@ fn evaluate_forbid_reaches(
     c: &ClaimDecl,
     cx: &Cx,
     diags: &mut Vec<Diag>,
-) -> &'static str {
+) -> Verdict {
     let ClaimForm::ForbidReaches {
         src,
         dst,
@@ -993,14 +1004,14 @@ fn evaluate_forbid_reaches(
     if projection_vacuity(
         c, "source", src_name, src_group, &cx.summary, diags,
     ) {
-        return "invalid";
+        return Verdict::Invalid;
     }
     if let ClaimSet::Group(dst_name) = dst {
         let dst_group = &cx.groups[&dst_name.name];
         if projection_vacuity(
             c, "target", dst_name, dst_group, &cx.summary, diags,
         ) {
-            return "invalid";
+            return Verdict::Invalid;
         }
     }
     let mut roots = src_group.fn_set(&cx.summary);
@@ -1029,7 +1040,7 @@ fn evaluate_forbid_reaches(
                     c.name.name, phase.name, src_name.name
                 ),
             ));
-            return "invalid";
+            return Verdict::Invalid;
         }
     }
     // `avoiding G` — the vertex mask. Masked vertices are neither
@@ -1056,7 +1067,7 @@ fn evaluate_forbid_reaches(
     // fired at the group decl if that was unintentional.
     if let DstTest::Group(g) = &dst_test {
         if g.is_empty() {
-            return "holds";
+            return Verdict::Holds;
         }
     }
 
@@ -1084,7 +1095,7 @@ fn evaluate_forbid_reaches(
                     callgraph::MAX_STEPS
                 ),
             ));
-            return "violated";
+            return Verdict::Violated;
         }
         // Membership hit? Roots included: a decl in BOTH groups is a
         // zero-length path — a real boundary confusion `forbid`
@@ -1106,7 +1117,7 @@ fn evaluate_forbid_reaches(
                 cx,
                 diags,
             );
-            return "violated";
+            return Verdict::Violated;
         }
         let Some(fs) = cx.summary.fns.get(&k) else { continue };
         if *via_calls {
@@ -1157,7 +1168,7 @@ fn evaluate_forbid_reaches(
                                     src_name.name
                                 ),
                             ));
-                            return "violated";
+                            return Verdict::Uncertified;
                         }
                         // The backstop: an untyped-receiver call
                         // is a method of SOME locus, possibly a
@@ -1180,7 +1191,7 @@ fn evaluate_forbid_reaches(
                                     name
                                 ),
                             ));
-                            return "violated";
+                            return Verdict::Uncertified;
                         }
                     }
                 }
@@ -1207,7 +1218,7 @@ fn evaluate_forbid_reaches(
                             src_name.name
                         ),
                     ));
-                    return "violated";
+                    return Verdict::Uncertified;
                 };
                 for (sub_locus, sub_handler, sub_span) in
                     subscribers_of(cx.graph, subj)
@@ -1237,7 +1248,7 @@ fn evaluate_forbid_reaches(
             }
         }
     }
-    "holds"
+    Verdict::Holds
 }
 
 // ===================== only edges =================================
@@ -1250,7 +1261,7 @@ fn evaluate_only_edges(
     c: &ClaimDecl,
     cx: &Cx,
     diags: &mut Vec<Diag>,
-) -> &'static str {
+) -> Verdict {
     let ClaimForm::OnlyEdges { src, dst, grants } = &c.form else {
         unreachable!("dispatched on form")
     };
@@ -1261,7 +1272,7 @@ fn evaluate_only_edges(
             c, "target", dst, dst_g, &cx.summary, diags,
         )
     {
-        return "invalid";
+        return Verdict::Invalid;
     }
     let granted: BTreeSet<&str> = grants
         .iter()
@@ -1325,7 +1336,7 @@ fn evaluate_only_edges(
                                 k.display()
                             ),
                         ));
-                        return "violated";
+                        return Verdict::Uncertified;
                     }
                     if unresolved_opaque_receiver(edge) {
                         diags.push(Diag::ty(
@@ -1343,7 +1354,7 @@ fn evaluate_only_edges(
                                 name
                             ),
                         ));
-                        return "violated";
+                        return Verdict::Uncertified;
                     }
                 }
             }
@@ -1364,7 +1375,7 @@ fn evaluate_only_edges(
                         k.display()
                     ),
                 ));
-                return "violated";
+                return Verdict::Uncertified;
             };
             for (sub_locus, sub_handler, _sub_span) in
                 subscribers_of(cx.graph, subj)
@@ -1405,9 +1416,9 @@ fn evaluate_only_edges(
         }
     }
     if violated {
-        "violated"
+        Verdict::Violated
     } else {
-        "holds"
+        Verdict::Holds
     }
 }
 
@@ -1423,7 +1434,7 @@ fn evaluate_bound(
     c: &ClaimDecl,
     cx: &Cx,
     diags: &mut Vec<Diag>,
-) -> &'static str {
+) -> Verdict {
     let ClaimForm::Bound {
         class,
         class_name,
@@ -1438,7 +1449,7 @@ fn evaluate_bound(
     let group = &cx.groups[&from.name];
     if projection_vacuity(c, "source", from, group, &cx.summary, diags)
     {
-        return "invalid";
+        return Verdict::Invalid;
     }
     let mut worst: Heaviest = Some((0, Vec::new()));
     let mut worst_is_unbounded = false;
@@ -1473,11 +1484,11 @@ fn evaluate_bound(
                 c.name.name, from.name, class_name, limit
             ),
         ));
-        return "violated";
+        return Verdict::Violated;
     }
     let (w, path) = worst.expect("finite worst");
     if w <= *limit {
-        return "holds";
+        return Verdict::Holds;
     }
     let chain = path
         .iter()
@@ -1492,7 +1503,7 @@ fn evaluate_bound(
             c.name.name, from.name, w, class_name, limit, chain
         ),
     ));
-    "violated"
+    Verdict::Violated
 }
 
 /// DFS: total carrier sites reachable from `k` per invocation — a
@@ -1658,7 +1669,7 @@ fn evaluate_require(
     c: &ClaimDecl,
     cx: &Cx,
     diags: &mut Vec<Diag>,
-) -> &'static str {
+) -> Verdict {
     let ClaimForm::Require {
         publishers,
         group,
@@ -1681,7 +1692,7 @@ fn evaluate_require(
         }
     });
     if hit {
-        return "holds";
+        return Verdict::Holds;
     }
     diags.push(Diag::ty(
         c.name.span,
@@ -1693,7 +1704,7 @@ fn evaluate_require(
             topic.display()
         ),
     ));
-    "violated"
+    Verdict::Violated
 }
 
 /// `cover topic in seed(a): subscribed_by(some G)` — every topic the
@@ -1703,7 +1714,7 @@ fn evaluate_cover(
     c: &ClaimDecl,
     cx: &Cx,
     diags: &mut Vec<Diag>,
-) -> &'static str {
+) -> Verdict {
     let ClaimForm::Cover { alias, group } = &c.form else {
         unreachable!("dispatched on form")
     };
@@ -1722,7 +1733,7 @@ fn evaluate_cover(
         }
     }
     if uncovered.is_empty() {
-        return "holds";
+        return Verdict::Holds;
     }
     let list = uncovered
         .iter()
@@ -1741,7 +1752,7 @@ fn evaluate_cover(
             list
         ),
     ));
-    "violated"
+    Verdict::Violated
 }
 
 /// `count publishers/subscribers(topic T) cmp N` — distinct loci on
@@ -1750,7 +1761,7 @@ fn evaluate_count(
     c: &ClaimDecl,
     cx: &Cx,
     diags: &mut Vec<Diag>,
-) -> &'static str {
+) -> Verdict {
     let ClaimForm::Count {
         publishers,
         topic,
@@ -1775,7 +1786,7 @@ fn evaluate_count(
     }
     let actual = loci.len() as u64;
     if cmp.holds(actual, *n) {
-        return "holds";
+        return Verdict::Holds;
     }
     let who = if loci.is_empty() {
         String::new()
@@ -1806,7 +1817,7 @@ fn evaluate_count(
             n
         ),
     ));
-    "violated"
+    Verdict::Violated
 }
 
 // ===================== shared helpers =============================
