@@ -499,6 +499,10 @@ fn register_top_decls(
                 // resolves group members against the merged bundle
                 // itself, where imported decls are visible.
             }
+            TopDecl::Claims(_) => {
+                // #392 thread 2: a library-tier claims block — law,
+                // not a symbol. Evaluated by the same claims pass.
+            }
         }
     }
 }

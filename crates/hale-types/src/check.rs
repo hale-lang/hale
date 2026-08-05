@@ -5642,6 +5642,12 @@ impl<'a> Checker<'a> {
                 // the target name; no use-site checks here yet.
             }
             TopDecl::RingLayout(r) => self.check_ring_layout(r),
+            TopDecl::Claims(_) => {
+                // #392 thread 2: a library-tier claims block. Its
+                // placement rule (library seeds only, never the
+                // closing seed) and evaluation live in the bundle-
+                // level claims pass — this checker is per-decl.
+            }
         }
     }
 

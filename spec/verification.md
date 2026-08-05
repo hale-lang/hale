@@ -119,7 +119,15 @@ main locus Org {
   author spelling — `` `delta::Triage::on_task` -(publishes
   "org.metrics")-> `gamma::Research::on_metric` `` — cross-seed
   symbols demangled. One witness per claim (the minimal
-  countermodel, not an enumeration).
+  countermodel, not an enumeration). **Provenance** (#392): the
+  witness also says where to edit, as secondary diagnostics in the
+  effect system's root + leaf shape — the callsite that crosses the
+  boundary (or the publish site and the subscription decl for a bus
+  hop) and the forbidden destination's declaration. Spans are
+  emitted only for bundle decls: stdlib bodies parse in their own
+  offset space, and a span from there attributed to a bundle file
+  would name the wrong source, so a stdlib-interior hop renders by
+  name alone.
 - **Unknown ⇒ violation.** An indirect call (function-typed
   parameter, #353) or a computed publish subject on a path from a
   `forbid` source cannot be certified and is reported as a
@@ -135,8 +143,30 @@ main locus Org {
   is sound; the edge itself is the uncertainty, and the artifact
   records it (`untyped_receiver_call:<callee>`) inside the hashed
   model half. Synthesized form/builtin methods (`counts.set`)
-  carry a known receiver type and are exempt; the effect system
-  shares the underlying summarizer gap, tracked on #382.
+  carry a known receiver type and are exempt. The rule is one
+  shared predicate applied by every judgment that traverses calls
+  — claims, effect inference, effect certificates, `@budget`, and
+  the quantitative dims — so fn-level certificates and
+  bundle-level claims always agree (#392 closed the `@budget`
+  guard, which had the message but not the test).
+- **Interface dispatch fans out.** A method call on an
+  interface-typed value (`route.handler.handle(ctx)` — the stdlib
+  router's own shape) is resolved by closed-world enumeration
+  (#392): the summarizer fans the one written edge out to every
+  conforming locus. Conformance here is structural name + arity
+  over the declarations — a superset of the checker's typed
+  conformance, safe because over-approximation only adds edges.
+  Reachability and effect judgments walk every alternative;
+  counting judgments (`bound`, `@budget`, the quantitative dims)
+  take the **max** over the alternatives of one dispatch site,
+  because one invocation dispatches to exactly one target — a sum
+  would count phantom calls no execution performs. An interface NO
+  locus conforms to has no values in a closed world (an interface
+  value only arises by coercing a conformer), so its call sites
+  are dead: they contribute nothing to any judgment, and the
+  artifact records each (`uninhabited_interface_call:<iface>.<callee>`)
+  inside the hashed model half so a conformer appearing later
+  changes `shape_hash`.
 - **Placement.** `claims { }` is only legal inside `main locus`
   (parse error elsewhere): main is the closed-world gate, so
   bundle-wide claims cannot be evaluated anywhere earlier, and
@@ -176,9 +206,15 @@ The remaining verbs (#382 phases 2–5):
   behind every single-writer pattern, and a violation names the
   competing writers.
 - **`during P`** on `forbid` — restricts sources to the named
-  lifecycle phase / method of each source locus (`during birth` is
-  the quiet-boot claim). A phase naming nothing in the group is an
-  error, not a vacuously-holding claim.
+  phase of each source locus (`during birth` is the quiet-boot
+  claim), evaluated against the model's **phase relation** (#392):
+  lifecycle hooks (`birth`, `accept`, `release`, `run`, `drain`,
+  `dissolve`) and modes (`bulk`, `harmonic`, `resolution`) are
+  hook-phases the runtime drives; an ordinary method is its own
+  source-slice phase. The relation is exported in the topology
+  artifact, which is what makes a `during` row independently
+  re-derivable. A phase naming nothing in the group is an error,
+  not a vacuously-holding claim.
 - **`avoiding G`** on `forbid` — masks G's vertices out of the
   walk, which makes it the interposition form: "every path from A
   to B passes through the gate" is `forbid reaches(A, B) avoiding
@@ -199,33 +235,73 @@ earlier in the same file as the family. Companion:
 class along any path, with the same loop/indirect unboundedness
 rules as every per-call dimension.
 
-**The topology artifact** (#382 phase 2): `hale check <t>
---dump-topology` emits the serialized model — sorts (loci, fns,
-topics), relations (calls, publishes, subscribes), the declared
-**groups**, the effect **labels** (declared carriers), and the
-**unknowns** (fns with indirect calls or computed publish subjects
-— the places evaluation failed closed), all in author spelling —
-plus every named claim's normalized form and result, under a
-schema version and a `shape_hash` (FNV-1a/64 over the canonical
-model half, which includes groups/labels/unknowns; claim RESULTS
-are excluded, so one topology under different law keeps one
-shape). `--check-topology <path>` diffs against a committed
-baseline and fails with a regenerate hint — the `.hale.effects`
-precedent: an unreviewed topology or law change fails CI the way
-an API break does. v1 scope, stated honestly: the artifact
-supports independent replay of the serialized user call/bus graph,
-group boundaries, declared bus-end existence/cardinality, and
-declared user-effect carrier labels; every other claim result —
-anything needing the phase relation (`during`), seed membership
-(`cover`), compiler-derived built-in effects, or the
-stdlib-expanded summary the evaluator itself walks — remains a
-compiler-certified report row until the normalized verification
-model lands (that export is the architectural milestone tracked on
-#382). The derivation (source → model) remains the trust root.
+**The topology artifact** (#382 phase 2; schema 1.1 per #392):
+`hale check <t> --dump-topology` emits the serialized model —
+sorts (loci, fns, topics), relations (calls with **weights**: loop
+nesting, unbounded-loop membership, interface-dispatch tags;
+publishes; subscribes), the through-stdlib **contracted** edges
+(`calls_via_stdlib`: user→user paths whose interior is stdlib
+bodies, collapsed to their endpoints with a conservative loop
+flag, so reachability over the artifact matches reachability as
+evaluated), the declared **groups**, the effect **labels**
+(declared carriers), the **phase relation**, the **seed sort**,
+the compiler-**derived** per-fn effect sets, and the **unknowns**
+(fns with indirect calls, untyped-receiver calls, dead
+uninhabited-interface dispatch, or computed publish subjects), all
+in author spelling — plus every named claim's normalized form and
+result, under a schema version and a `shape_hash` (FNV-1a/64 over
+the canonical model half; claim RESULTS are excluded, so one
+topology under different law keeps one shape). A **provenance**
+section carries per-edge and per-decl source spans as
+bundle-global byte offsets; it is excluded from the hash on
+purpose — moving code must not change the shape identity.
+`--check-topology <path>` diffs against a committed baseline and
+fails with a regenerate hint — the `.hale.effects` precedent: an
+unreviewed topology or law change fails CI the way an API break
+does. v2 scope: every claim verb replays independently over the
+exported relations — `forbid`/`only edges` including
+through-stdlib reachability, `require`/`count` cardinality,
+`cover` via the seed sort, `during` via the phase relation,
+`bound` over user classes via labels + weights (dispatch
+alternatives group by (from, interface, method) and fold with
+max). Remaining compiler-certified: `bound` over built-in classes
+(site counting through the stdlib interior, deliberately not
+serialized) and any walk past the step ceiling. The derivation
+(source → model) remains the trust root.
 
-Still later (#382): library-tier claims that travel with imports,
-and the annotations-lower-to-claim-IR unification (§8 of the
-issue) once the claim IR has survived real use.
+**§8 — one schema of record** (#392): every fn-grained certificate
+— each `@effects` assert, each `@phase_effects` phase contract,
+each `@budget` in both families — is REPORTED as the claim form it
+is pointwise sugar for, with its verdict, in the artifact's
+`lowered` array (`forbid reaches({F}, effects(money))`,
+`bound alloc <= N on paths from {F}`,
+`only effects {…} on {L} during birth`, …). Rows come from the
+same evaluations that gate the build, so the report and the build
+cannot disagree. The traversal substrate is already one engine
+(the shared call-graph walker plus the shared summary and the
+shared fail-closed predicate); the annotation voices keep their
+diagnostics.
+
+**Library-tier claims** (#392 thread 2): a TOP-LEVEL `claims { }`
+block — legal outside any locus — is the LIBRARY tier: a seed
+swears about **itself and its own boundary**, the block travels
+with the import, and it re-evaluates in every closing build over
+the merged world. Checked standalone, a library's claims evaluate
+over its own world; at close, the same sentences quantify over
+everything the merge added — a second subscriber the app wires
+onto a library topic violates the library's own
+`count subscribers(topic T) <= 1`, reported with seed attribution
+(`pay::single_settle`, never a mangled symbol) and pointing at the
+library's own claim line. World-quantification stays main's: a
+seed that declares `main locus` states its law inside that locus,
+and its writing the top-level form is a check error. That tier
+split is the enforcement surface for "a dependency may not brick
+downstream builds with world-claims" — a library can only NAME
+what it can see (its own decls and its own imports), and its
+traveling block is marked at the mangle stage, which only ever
+touches imported seeds. Group and topic references inside a
+traveling block canonicalize to mangled decls exactly as group
+decls do (#334); claim names are never mangled.
 
 ## Structural & design rules
 
@@ -481,11 +557,14 @@ assume the others in a build:
   `@phase_effects(birth: {alloc}, run: {})` **is** the DO-178 "no
   dynamic memory after initialization" discipline, stated directly
   rather than assembled from two unrelated flags. Each phase names
-  the classes it may perform (`alloc`, plus the `@effects` classes);
-  a phase omitted is unconstrained, a phase with `{}` forbids
-  everything. Phases resolve to lifecycle hooks (`birth`, `run`,
-  `drain`, `dissolve`, `accept`, `release`) or to any member fn /
-  handler by name.
+  the classes it may perform (`alloc`, plus the `@effects` classes,
+  **including declared user classes** — #392 closed the contract
+  over the live class universe like `only:`, with the same
+  atomic-only complement; the hardcoded built-in list was the
+  documented deficiency); a phase omitted is unconstrained, a phase
+  with `{}` forbids everything. Phases resolve to lifecycle hooks
+  (`birth`, `run`, `drain`, `dissolve`, `accept`, `release`) or to
+  any member fn / handler by name.
 - **`@no_panic` — disposition coverage** (GH #265, 2026-07-29).
   Deliberately *not* an effect class: this is a syntactic property of
   a body, not a query over the classified frontier. A fn asserting

@@ -125,7 +125,30 @@ fn is_growing_insert(form_name: &str, method: &str) -> bool {
 /// `path::to::SegVec`), or `None` for primitives / arrays / etc.
 fn type_expr_name(te: &TypeExpr) -> Option<String> {
     match te {
-        TypeExpr::Named { path, .. } => path.segments.last().map(|s| s.name.clone()),
+        TypeExpr::Named { path, .. } => {
+            // #392: a PATH-written stdlib type (`std::http::Router`,
+            // `std::http::RouteHandler`) resolves to the name its
+            // decl actually carries — the same std-vs-user rule
+            // struct-literal receivers already apply. Recording the
+            // bare last segment ("Router") put these values in a
+            // name space no summary map is keyed by, so a receiver
+            // typed by one landed `Unresolved` and every judgment
+            // dropped the edge — including the router chain's
+            // interface dispatch.
+            if path.segments.len() > 1 {
+                let segs: Vec<&str> = path
+                    .segments
+                    .iter()
+                    .map(|s| s.name.as_str())
+                    .collect();
+                if let Some(m) =
+                    crate::stdlib_bodies::mangled_locus_name(&segs)
+                {
+                    return Some(m.to_string());
+                }
+            }
+            path.segments.last().map(|s| s.name.clone())
+        }
         _ => None,
     }
 }
@@ -360,7 +383,54 @@ pub struct CallEdge {
     /// where the slot is implicit from `@form`). The solver (D2) pairs this
     /// with the method name + `LocusShape` to classify a slot insert.
     pub receiver_slot: Option<String>,
+    /// #392: this call dispatches through an INTERFACE-typed receiver
+    /// (`route.handler.handle(ctx)`). Set on two edge shapes, both
+    /// produced by the fan-out pass at the end of summary construction:
+    ///
+    ///  * a `Resolved` alternative — the closed world makes the
+    ///    implementor set enumerable, so the one written call becomes
+    ///    one edge per conforming locus (over-approximation: only adds
+    ///    edges). The interface name is kept for diagnostics and the
+    ///    topology artifact.
+    ///  * a still-`Unresolved` edge whose interface has NO conforming
+    ///    locus in the bundle. That is not an unknown: an interface
+    ///    value only ever comes from coercing a conforming locus, so
+    ///    an uninhabited interface has no values and the call site is
+    ///    DEAD in this build. Walkers contribute nothing for it; the
+    ///    topology artifact records it (inside the hashed model half)
+    ///    so an outside evaluator applies the same rule and a
+    ///    conformer appearing later changes `shape_hash`. (The
+    ///    router's `m.before(cur)` over an empty middleware list is
+    ///    the everyday instance — failing closed there would refuse
+    ///    every certificate through the stdlib router.)
+    pub via_interface: Option<String>,
+    /// #392: groups the fanned-out `Resolved` alternatives of ONE
+    /// dispatch site (unique across the summary). A dispatch invokes
+    /// exactly one alternative at runtime, so counting judgments
+    /// (`bound`, `@budget`, quantitative dims) take the MAX over a
+    /// group where a real call sequence would SUM; reachability and
+    /// effect-union judgments walk every alternative as usual.
+    pub dispatch_group: Option<u32>,
     pub span: Span,
+}
+
+impl CallEdge {
+    /// The shared fail-closed test for an `Unresolved` method call —
+    /// the #382 backstop, in one place for all five walkers. True when
+    /// the receiver was written but could not be typed (an index
+    /// result, a match value, a foreign expression: the callee is a
+    /// method of SOME bundle locus reached through an expression the
+    /// walk cannot see through, possibly a wrapper). Every judgment
+    /// that traverses calls refuses such an edge — unknown ⇒
+    /// violation — so fn-level certificates and bundle-level claims
+    /// agree.
+    ///
+    /// Deliberately NOT included: an unresolved dispatch through an
+    /// uninhabited interface (`via_interface` on an `Unresolved`
+    /// edge). That edge is dead, not unknown — see the field doc.
+    pub fn opaque_method_call(&self) -> bool {
+        self.receiver_present && self.recv_ty.is_none()
+    }
 }
 
 /// A loop in a body. `bounded` carries a const trip count when the loop is
@@ -1622,6 +1692,111 @@ pub fn summarize_programs_with_renames(
     summary.carries = carries;
     summary.unbounded_fns = unbounded_fns;
     summary.locus_shapes = locus_shapes;
+
+    // #392 — interface dispatch. A method call on an interface-typed
+    // value (`route.handler.handle(ctx)`) types its receiver to the
+    // INTERFACE name, which owns no bodies, so the edge lands
+    // `Unresolved` — and before this pass it was silently dropped by
+    // every judgment, the one remaining receiver shape where a real
+    // call contributed nothing. The closed world makes the implementor
+    // set enumerable: fan the one written call out to an edge per
+    // conforming locus (over-approximation — only adds edges), tagged
+    // with a dispatch group so counting judgments take the max over
+    // the alternatives. An interface nothing conforms to has no
+    // values in this build (a value only arises by coercing a
+    // conformer), so its call sites are DEAD: the edge stays
+    // unresolved but tagged, walkers skip it, the artifact records it.
+    //
+    // Conformance here is name + arity over the ASTs — a superset of
+    // the checker's full structural check (which also compares types).
+    // A false extra conformer only adds edges; the direction is safe.
+    let mut ifaces: BTreeMap<String, Vec<(String, usize)>> =
+        BTreeMap::new();
+    let mut locus_methods: BTreeMap<String, BTreeMap<String, usize>> =
+        BTreeMap::new();
+    for program in programs {
+        for item in &program.items {
+            match item {
+                TopDecl::Interface(i) => {
+                    ifaces.insert(
+                        i.name.name.clone(),
+                        i.methods
+                            .iter()
+                            .map(|m| (m.name.name.clone(), m.params.len()))
+                            .collect(),
+                    );
+                }
+                TopDecl::Locus(l) => {
+                    let e = locus_methods
+                        .entry(l.name.name.clone())
+                        .or_default();
+                    for m in &l.members {
+                        if let LocusMember::Fn(fd) = m {
+                            e.insert(
+                                fd.name.name.clone(),
+                                fd.params.len(),
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut conformers: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (iname, methods) in &ifaces {
+        let mut who: Vec<&str> = Vec::new();
+        for (lname, lmethods) in &locus_methods {
+            if methods.iter().all(|(m, arity)| {
+                lmethods.get(m).is_some_and(|a| a == arity)
+            }) {
+                who.push(lname);
+            }
+        }
+        conformers.insert(iname, who);
+    }
+    let mut next_group: u32 = 0;
+    for fs in summary.fns.values_mut() {
+        let mut rewritten: Vec<CallEdge> =
+            Vec::with_capacity(fs.calls.len());
+        for edge in fs.calls.drain(..) {
+            let dispatch = match (&edge.callee, edge.recv_ty.as_deref())
+            {
+                (Callee::Unresolved(m), Some(t))
+                    if edge.receiver_present
+                        && ifaces.contains_key(t) =>
+                {
+                    Some((m.clone(), t.to_string()))
+                }
+                _ => None,
+            };
+            let Some((method, iface)) = dispatch else {
+                rewritten.push(edge);
+                continue;
+            };
+            let targets: Vec<FnKey> = conformers[iface.as_str()]
+                .iter()
+                .map(|l| FnKey::method(l.to_string(), method.clone()))
+                .filter(|k| known.contains(k))
+                .collect();
+            if targets.is_empty() {
+                let mut e = edge;
+                e.via_interface = Some(iface);
+                rewritten.push(e);
+                continue;
+            }
+            let gid = next_group;
+            next_group += 1;
+            for t in targets {
+                let mut e = edge.clone();
+                e.callee = Callee::Resolved(t);
+                e.via_interface = Some(iface.clone());
+                e.dispatch_group = Some(gid);
+                rewritten.push(e);
+            }
+        }
+        fs.calls = rewritten;
+    }
     summary
 }
 
@@ -2710,6 +2885,8 @@ impl<'a> Walker<'a> {
             in_unbounded_loop: self.loop_stack.iter().any(|bounded| !bounded),
             escape,
             receiver_slot: self_slot_receiver(callee),
+            via_interface: None,
+            dispatch_group: None,
             span,
         });
     }

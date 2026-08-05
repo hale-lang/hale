@@ -187,6 +187,9 @@ struct Cx<'a> {
     defs: Vec<Option<Vec<EffectClass>>>,
     declared: BTreeSet<u16>,
     effect_names: Vec<String>,
+    /// #392: the normalized model — decl provenance (witness spans,
+    /// origin gating), the phase relation (`during`), the seed sort.
+    model: crate::model::Model,
 }
 
 fn claims_report_inner(
@@ -195,38 +198,116 @@ fn claims_report_inner(
     import_renames: &[(Vec<String>, String)],
 ) -> (Vec<Diag>, Vec<ClaimOutcome>) {
     // ---- collect group decls + claims blocks (modules included) ----
+    //
+    // #392 thread 2 — two tiers. Main-locus blocks are the WORLD
+    // tier (bundle-wide law, as shipped). A TOP-LEVEL `claims { }`
+    // block is the LIBRARY tier: a seed swears about itself and its
+    // own boundary, the block travels with the import, and it
+    // re-evaluates here — in the closing build's merged world —
+    // every time. Library claims report with seed attribution
+    // (`alias::name`), never as mangled symbols. A program that
+    // declares `main locus` may not use the top-level form: world
+    // law belongs in main (the closed-world gate), and the tier
+    // split is what keeps a dependency from stating world-claims.
+    let mut diags: Vec<Diag> = Vec::new();
     let mut group_decls: Vec<&GroupDecl> = Vec::new();
-    let mut claims: Vec<&ClaimDecl> = Vec::new();
+    let mut claims: Vec<ClaimDecl> = Vec::new();
+    let mangled_to_alias: BTreeMap<&str, &str> = import_renames
+        .iter()
+        .filter_map(|(segs, mangled)| {
+            segs.first().map(|a| (mangled.as_str(), a.as_str()))
+        })
+        .collect();
     fn walk_items<'a>(
         items: &'a [TopDecl],
         groups: &mut Vec<&'a GroupDecl>,
-        claims: &mut Vec<&'a ClaimDecl>,
+        claims: &mut Vec<ClaimDecl>,
+        top_blocks: &mut Vec<&'a ClaimsBlock>,
+        has_main: &mut bool,
     ) {
         for item in items {
             match item {
                 TopDecl::Group(g) => groups.push(g),
                 TopDecl::Locus(l) if l.is_main => {
+                    *has_main = true;
                     for m in &l.members {
                         if let LocusMember::Claims(cb) = m {
-                            claims.extend(cb.entries.iter());
+                            claims.extend(cb.entries.iter().cloned());
                         }
                     }
                 }
-                TopDecl::Module(m) => {
-                    walk_items(&m.items, groups, claims)
-                }
+                TopDecl::Claims(cb) => top_blocks.push(cb),
+                TopDecl::Module(m) => walk_items(
+                    &m.items,
+                    groups,
+                    claims,
+                    top_blocks,
+                    has_main,
+                ),
                 _ => {}
             }
         }
     }
+    let mut top_blocks: Vec<&ClaimsBlock> = Vec::new();
+    let mut has_main = false;
     for p in programs {
-        walk_items(&p.items, &mut group_decls, &mut claims);
+        walk_items(
+            &p.items,
+            &mut group_decls,
+            &mut claims,
+            &mut top_blocks,
+            &mut has_main,
+        );
+    }
+    for cb in top_blocks {
+        // The seed merge flattens imported items into the closing
+        // program, so position cannot tell the tiers apart — the
+        // mangle stage's `lib_tier` marker can: it only ever
+        // touches imported seeds. An unmarked top-level block in a
+        // bundle that closes (declares main) is the closing seed's
+        // own — the world-claim surface the tier split forbids.
+        if !cb.lib_tier && has_main {
+            diags.push(Diag::ty(
+                cb.span,
+                "a top-level `claims { }` block is the LIBRARY \
+                 tier — a seed swearing about itself and its own \
+                 boundary. This seed declares `main locus`, the \
+                 closed-world gate: state world law inside it"
+                    .to_string(),
+            ));
+            continue;
+        }
+        // Attribution: the block's own group/topic refs were
+        // canonicalized to mangled decl names, which map back to
+        // the import alias — so a library claim reports as
+        // `alias::name`, never as a mangled symbol.
+        let alias = cb.entries.iter().find_map(|e| {
+            let name = match &e.form {
+                ClaimForm::ForbidReaches { src, .. } => match src {
+                    ClaimSet::Group(g) => Some(&g.name),
+                    _ => None,
+                },
+                ClaimForm::OnlyEdges { src, .. } => Some(&src.name),
+                ClaimForm::Bound { from, .. } => Some(&from.name),
+                ClaimForm::Require { group, .. }
+                | ClaimForm::Cover { group, .. } => Some(&group.name),
+                ClaimForm::Count { topic, .. } => {
+                    topic.segments.first().map(|s| &s.name)
+                }
+            }?;
+            mangled_to_alias.get(name.as_str()).copied()
+        });
+        for e in &cb.entries {
+            let mut c = e.clone();
+            if let Some(a) = alias {
+                c.name.name = format!("{}::{}", a, c.name.name);
+            }
+            claims.push(c);
+        }
     }
     if group_decls.is_empty() && claims.is_empty() {
-        return (Vec::new(), Vec::new());
+        return (diags, Vec::new());
     }
-
-    let mut diags: Vec<Diag> = Vec::new();
 
     // ---- decl indexes for member / topic resolution ----
     let mut locus_names: BTreeSet<String> = BTreeSet::new();
@@ -358,6 +439,7 @@ fn claims_report_inner(
         defs: defs_of(programs),
         declared: declared_of(programs),
         effect_names: effect_names_of(programs),
+        model: crate::model::Model::derive(programs, import_renames),
     };
 
     // ---- validate, then evaluate ----
@@ -848,18 +930,33 @@ fn resolve_member(
 /// and bundle-level claims agree. `recv_ty: Some` edges
 /// (synthesized form/builtin methods like `counts.set`) are known
 /// non-locus receivers and stay exempt.
-fn unresolved_untyped_receiver(
+///
+/// #392: interface-dispatch calls never reach this predicate — a
+/// dispatch WITH conformers arrives already fanned out to `Resolved`
+/// alternatives, and one through an uninhabited interface is dead
+/// code (no value of the interface can exist in this closed world),
+/// which the walk skips like the summarizer's other non-edges.
+fn unresolved_opaque_receiver(
     edge: &crate::alloc_summary::CallEdge,
 ) -> bool {
-    edge.receiver_present && edge.recv_ty.is_none()
+    edge.opaque_method_call()
 }
 
 // ===================== forbid reaches =============================
 
-/// One step of a witness path.
+/// One step of a witness path. #392: each step carries the span of
+/// the source decision that introduced the edge — the callsite, or
+/// the publish site + subscription decl — so a violation can say
+/// where to edit, not just which names are involved.
 enum Step {
-    Call,
-    Bus { subject: String },
+    Call {
+        span: hale_syntax::Span,
+    },
+    Bus {
+        subject: String,
+        publish_span: hale_syntax::Span,
+        sub_span: hale_syntax::Span,
+    },
 }
 
 /// Evaluate `forbid reaches(src, dst)` by BFS over the composed
@@ -898,11 +995,20 @@ fn evaluate_forbid_reaches(
         }
     }
     let mut roots = src_group.fn_set(&cx.summary);
-    // `during P` — restrict sources to the named phase / method of
-    // each source locus. Free fns have no phases and drop out.
+    // `during P` — restrict sources to the named phase of each
+    // source locus, evaluated against the model's PHASE RELATION
+    // (#392): lifecycle hooks and modes carry their runtime-driven
+    // phase, ordinary methods their own name (the shipped
+    // source-slice doctrine, now an explicit exported relation the
+    // artifact carries — which is what makes a `during` row
+    // independently re-derivable). Free fns have no phases and
+    // drop out.
     if let Some(phase) = during {
         roots.retain(|k| {
-            k.locus.is_some() && k.fn_name == phase.name
+            cx.model
+                .phases
+                .get(k)
+                .is_some_and(|p| p.phase == phase.name)
         });
         if roots.is_empty() && !src_group.is_empty() {
             diags.push(Diag::ty(
@@ -982,13 +1088,15 @@ fn evaluate_forbid_reaches(
             }
         };
         if hit {
-            diags.push(render_violation(
+            render_violation(
                 c,
                 src_name,
                 &dst.display(),
                 &k,
                 &parent,
-            ));
+                cx,
+                diags,
+            );
             return "violated";
         }
         let Some(fs) = cx.summary.fns.get(&k) else { continue };
@@ -1004,7 +1112,10 @@ fn evaluate_forbid_reaches(
                         if seen.insert(next.clone()) {
                             parent.insert(
                                 next.clone(),
-                                (k.clone(), Step::Call),
+                                (
+                                    k.clone(),
+                                    Step::Call { span: edge.span },
+                                ),
                             );
                             queue.push_back(next.clone());
                         }
@@ -1037,7 +1148,7 @@ fn evaluate_forbid_reaches(
                         // The backstop: an untyped-receiver call
                         // is a method of SOME locus, possibly a
                         // wrapper reaching the target. Fail closed.
-                        if unresolved_untyped_receiver(edge) {
+                        if unresolved_opaque_receiver(edge) {
                             diags.push(Diag::ty(
                                 c.name.span,
                                 format!(
@@ -1084,7 +1195,7 @@ fn evaluate_forbid_reaches(
                     ));
                     return "violated";
                 };
-                for (sub_locus, sub_handler) in
+                for (sub_locus, sub_handler, sub_span) in
                     subscribers_of(cx.graph, subj)
                 {
                     let next =
@@ -1101,6 +1212,8 @@ fn evaluate_forbid_reaches(
                                 k.clone(),
                                 Step::Bus {
                                     subject: subj.clone(),
+                                    publish_span: site.span,
+                                    sub_span,
                                 },
                             ),
                         );
@@ -1200,7 +1313,7 @@ fn evaluate_only_edges(
                         ));
                         return "violated";
                     }
-                    if unresolved_untyped_receiver(edge) {
+                    if unresolved_opaque_receiver(edge) {
                         diags.push(Diag::ty(
                             c.name.span,
                             format!(
@@ -1239,7 +1352,7 @@ fn evaluate_only_edges(
                 ));
                 return "violated";
             };
-            for (sub_locus, sub_handler) in
+            for (sub_locus, sub_handler, _sub_span) in
                 subscribers_of(cx.graph, subj)
             {
                 if !dst_g.loci.contains(&sub_locus) {
@@ -1408,6 +1521,13 @@ fn site_count(
     stack.push(k.clone());
     let mut total: u64 = 0;
     let mut best_child: (u64, Vec<FnKey>) = (0, Vec::new());
+    // #392: fanned-out interface-dispatch alternatives share a group;
+    // a dispatch invokes exactly ONE of them, so the group contributes
+    // its MAX, not its sum — summing would count phantom calls that no
+    // execution performs. (Any unbounded alternative still poisons the
+    // whole count: dispatch may choose it.)
+    let mut group_best: BTreeMap<u32, (u64, Vec<FnKey>)> =
+        BTreeMap::new();
     let mut unbounded = false;
     for edge in &fs.calls {
         match &edge.callee {
@@ -1426,9 +1546,21 @@ fn site_count(
                             unbounded = true;
                             break;
                         }
-                        total = total.saturating_add(w);
-                        if w > best_child.0 {
-                            best_child = (w, p);
+                        match edge.dispatch_group {
+                            Some(g) => {
+                                let e = group_best
+                                    .entry(g)
+                                    .or_insert((0, Vec::new()));
+                                if w > e.0 {
+                                    *e = (w, p);
+                                }
+                            }
+                            None => {
+                                total = total.saturating_add(w);
+                                if w > best_child.0 {
+                                    best_child = (w, p);
+                                }
+                            }
                         }
                     }
                 }
@@ -1440,11 +1572,19 @@ fn site_count(
                     // be a wrapper reaching a carrier — an
                     // uncountable contribution. Fail closed
                     // (unbounded).
-                    || unresolved_untyped_receiver(edge)
+                    || unresolved_opaque_receiver(edge)
                 {
                     unbounded = true;
                     break;
                 }
+            }
+        }
+    }
+    if !unbounded {
+        for (w, p) in group_best.into_values() {
+            total = total.saturating_add(w);
+            if w > best_child.0 {
+                best_child = (w, p);
             }
         }
     }
@@ -1457,7 +1597,7 @@ fn site_count(
                 unbounded = true;
                 break;
             };
-            for (sub_locus, sub_handler) in
+            for (sub_locus, sub_handler, _sub_span) in
                 subscribers_of(cx.graph, subj)
             {
                 let next = FnKey::method(sub_locus, sub_handler);
@@ -1663,7 +1803,7 @@ fn evaluate_count(
 fn subscribers_of(
     graph: &BusGraph,
     subject: &str,
-) -> Vec<(String, String)> {
+) -> Vec<(String, String, hale_syntax::Span)> {
     let mut out = Vec::new();
     for (key, info) in &graph.subjects {
         let covers = key == subject
@@ -1673,7 +1813,7 @@ fn subscribers_of(
             continue;
         }
         for s in &info.subscribers {
-            out.push((s.locus.clone(), s.handler.clone()));
+            out.push((s.locus.clone(), s.handler.clone(), s.span));
         }
     }
     out
@@ -1733,7 +1873,9 @@ fn render_violation(
     dst_disp: &str,
     hit: &FnKey,
     parent: &BTreeMap<FnKey, (FnKey, Step)>,
-) -> Diag {
+    cx: &Cx,
+    diags: &mut Vec<Diag>,
+) {
     // Walk hit -> root collecting (node, incoming step), then
     // render forward.
     let mut rev: Vec<(FnKey, Option<&Step>)> = Vec::new();
@@ -1755,10 +1897,10 @@ fn render_violation(
     for (node, incoming) in &rev {
         match incoming {
             None => path.push_str(&format!("`{}`", node.display())),
-            Some(Step::Call) => {
+            Some(Step::Call { .. }) => {
                 path.push_str(&format!(" -> `{}`", node.display()));
             }
-            Some(Step::Bus { subject }) => {
+            Some(Step::Bus { subject, .. }) => {
                 path.push_str(&format!(
                     " -(publishes \"{}\")-> `{}`",
                     subject,
@@ -1767,11 +1909,70 @@ fn render_violation(
             }
         }
     }
-    Diag::ty(
+    diags.push(Diag::ty(
         c.name.span,
         format!(
             "claim `{}` violated: `{}` reaches `{}` — witness: {}",
             c.name.name, src_name.name, dst_disp, path,
         ),
-    )
+    ));
+    // #392 provenance: the witness names WHO; these point at WHERE
+    // to edit — the source decision that introduced the crossing
+    // edge, and the destination's declaration. Spans are emitted
+    // only for bundle decls (`Model::is_bundle_fn`): stdlib bodies
+    // parse in their own offset space, and a span from there
+    // attributed to a bundle file would point at the wrong source.
+    if let Some((entered, Some(step))) = rev.last().map(|(n, s)| (n, s))
+    {
+        // The fn whose body holds the crossing edge.
+        let from = rev.len().checked_sub(2).map(|i| &rev[i].0);
+        match step {
+            Step::Call { span } => {
+                if from.is_some_and(|f| cx.model.is_bundle_fn(f)) {
+                    diags.push(Diag::ty(
+                        *span,
+                        format!(
+                            "claim `{}`: the boundary into `{}` is \
+                             crossed by this call",
+                            c.name.name, dst_disp
+                        ),
+                    ));
+                }
+            }
+            Step::Bus { publish_span, sub_span, .. } => {
+                if from.is_some_and(|f| cx.model.is_bundle_fn(f)) {
+                    diags.push(Diag::ty(
+                        *publish_span,
+                        format!(
+                            "claim `{}`: the crossing publish \
+                             happens here",
+                            c.name.name
+                        ),
+                    ));
+                }
+                if cx.model.is_bundle_fn(entered) {
+                    diags.push(Diag::ty(
+                        *sub_span,
+                        format!(
+                            "claim `{}`: delivered at this \
+                             subscription",
+                            c.name.name
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    let dst_decl =
+        hit.locus.as_deref().unwrap_or(hit.fn_name.as_str());
+    if let Some(span) = cx.model.decl_span(dst_decl) {
+        diags.push(Diag::ty(
+            span,
+            format!(
+                "claim `{}`: the forbidden destination `{}` is \
+                 declared here",
+                c.name.name, dst_decl
+            ),
+        ));
+    }
 }

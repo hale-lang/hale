@@ -450,6 +450,12 @@ impl<'a> QualifiedRenameApplier<'a> {
                     }
                 }
             }
+            // #392 thread 2: a library seed's own top-level claims
+            // block — its qualified topic refs (of ITS sub-imports)
+            // canonicalize with the same rule as main's block.
+            TopDecl::Claims(cb) => {
+                rewrite_claim_topic_refs(cb, self.renames);
+            }
         }
     }
 
@@ -544,49 +550,53 @@ impl<'a> QualifiedRenameApplier<'a> {
             // segment. Group names and effect classes are same-seed
             // / interned and need no rewriting.
             LocusMember::Claims(cb) => {
-                let rewrite = |t: &mut TopicRef,
-                               renames: &[(Vec<String>, String)]| {
-                    if t.segments.len() < 2 {
-                        return;
-                    }
-                    let segs: Vec<String> = t
-                        .segments
-                        .iter()
-                        .map(|s| s.name.clone())
-                        .collect();
-                    for (key, mangled) in renames {
-                        if key.len() == segs.len()
-                            && key
-                                .iter()
-                                .zip(segs.iter())
-                                .all(|(k, p)| k == p)
-                        {
-                            let span = t.segments[0].span;
-                            t.segments = vec![Ident {
-                                name: mangled.clone(),
-                                span,
-                            }];
-                            return;
-                        }
-                    }
-                };
-                for e in &mut cb.entries {
-                    match &mut e.form {
-                        ClaimForm::OnlyEdges { grants, .. } => {
-                            for g in grants {
-                                rewrite(&mut g.topic, self.renames);
-                            }
-                        }
-                        ClaimForm::Require { topic, .. }
-                        | ClaimForm::Count { topic, .. } => {
-                            rewrite(topic, self.renames);
-                        }
-                        ClaimForm::ForbidReaches { .. }
-                        | ClaimForm::Bound { .. }
-                        | ClaimForm::Cover { .. } => {}
-                    }
+                rewrite_claim_topic_refs(cb, self.renames);
+            }
+        }
+    }
+}
+
+/// #334-style canonicalization of qualified topic refs inside a
+/// claims block — shared by main-locus blocks and (#392 thread 2)
+/// the library tier's top-level blocks, whose own sub-imports
+/// resolve at ITS import stage with ITS rename table.
+fn rewrite_claim_topic_refs(
+    cb: &mut ClaimsBlock,
+    renames: &[(Vec<String>, String)],
+) {
+    let rewrite = |t: &mut TopicRef| {
+        if t.segments.len() < 2 {
+            return;
+        }
+        let segs: Vec<String> =
+            t.segments.iter().map(|s| s.name.clone()).collect();
+        for (key, mangled) in renames {
+            if key.len() == segs.len()
+                && key.iter().zip(segs.iter()).all(|(k, p)| k == p)
+            {
+                let span = t.segments[0].span;
+                t.segments = vec![Ident {
+                    name: mangled.clone(),
+                    span,
+                }];
+                return;
+            }
+        }
+    };
+    for e in &mut cb.entries {
+        match &mut e.form {
+            ClaimForm::OnlyEdges { grants, .. } => {
+                for g in grants {
+                    rewrite(&mut g.topic);
                 }
             }
+            ClaimForm::Require { topic, .. }
+            | ClaimForm::Count { topic, .. } => {
+                rewrite(topic);
+            }
+            ClaimForm::ForbidReaches { .. }
+            | ClaimForm::Bound { .. }
+            | ClaimForm::Cover { .. } => {}
         }
     }
 }
@@ -610,6 +620,11 @@ fn top_decl_name(d: &TopDecl) -> Option<&str> {
         // GH #382: imported groups get mangled names like any other
         // decl, so two seeds' same-named groups cannot collide.
         TopDecl::Group(g) => Some(&g.name.name),
+        // #392: a claims block declares no name — claim names stay
+        // as written and report with seed attribution instead
+        // (`alias::claim_name`), so a mangled symbol never appears
+        // in a law diagnostic.
+        TopDecl::Claims(_) => None,
     }
 }
 
@@ -686,6 +701,78 @@ impl<'a> Mangler<'a> {
                 for m in &mut g.members {
                     if m.segments.len() == 1 && !m.glob {
                         self.rewrite_ident(&mut m.segments[0].name);
+                    }
+                }
+            }
+            // #392 thread 2: a library seed's top-level claims
+            // block. Its group and topic REFERENCES name this
+            // seed's own decls, whose declarations were just
+            // mangled — rewrite them the same way, or the claim's
+            // vocabulary silently detaches from its decls at the
+            // merge. Claim names stay as written (they report with
+            // seed attribution, never as mangled symbols); `during`
+            // names a locus-local phase; a `cover` alias names this
+            // seed's own import, which is not a decl. The block is
+            // marked `lib_tier` — the mangle stage only ever
+            // touches imported seeds, so the marker is what lets
+            // the claims pass tell a traveling library block from a
+            // closing seed's (illegal) top-level one after the seed
+            // merge flattens both into one program.
+            TopDecl::Claims(cb) => {
+                cb.lib_tier = true;
+                for e in &mut cb.entries {
+                    match &mut e.form {
+                        ClaimForm::ForbidReaches {
+                            src,
+                            dst,
+                            avoiding,
+                            ..
+                        } => {
+                            for set in [src, dst] {
+                                if let ClaimSet::Group(g) = set {
+                                    self.rewrite_ident(&mut g.name);
+                                }
+                            }
+                            if let Some(g) = avoiding {
+                                self.rewrite_ident(&mut g.name);
+                            }
+                        }
+                        ClaimForm::OnlyEdges {
+                            src,
+                            dst,
+                            grants,
+                        } => {
+                            self.rewrite_ident(&mut src.name);
+                            self.rewrite_ident(&mut dst.name);
+                            for g in grants {
+                                if g.topic.segments.len() == 1 {
+                                    self.rewrite_ident(
+                                        &mut g.topic.segments[0].name,
+                                    );
+                                }
+                            }
+                        }
+                        ClaimForm::Bound { from, .. } => {
+                            self.rewrite_ident(&mut from.name);
+                        }
+                        ClaimForm::Require { group, topic, .. } => {
+                            self.rewrite_ident(&mut group.name);
+                            if topic.segments.len() == 1 {
+                                self.rewrite_ident(
+                                    &mut topic.segments[0].name,
+                                );
+                            }
+                        }
+                        ClaimForm::Cover { group, .. } => {
+                            self.rewrite_ident(&mut group.name);
+                        }
+                        ClaimForm::Count { topic, .. } => {
+                            if topic.segments.len() == 1 {
+                                self.rewrite_ident(
+                                    &mut topic.segments[0].name,
+                                );
+                            }
+                        }
                     }
                 }
             }

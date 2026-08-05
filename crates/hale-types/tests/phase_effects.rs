@@ -207,3 +207,61 @@ fn handler_name_works_as_a_phase() {
         ds
     );
 }
+
+// =====================================================================
+// #392 §8 — user classes join the phase contract's closed set
+// =====================================================================
+
+/// CANARY: a phase reaching a declared USER-class carrier without
+/// listing the class violates — the hardcoded built-in list made
+/// the contract blind to the classes a program declares itself.
+#[test]
+fn a_user_class_carrier_violates_an_unlisted_phase() {
+    let src = r#"
+        effect money;
+        @effects(is: {money})
+        fn charge(n: Int) -> Int { return n; }
+        @phase_effects(run: {})
+        locus Engine {
+            params { seen: Int = 0; }
+            run() {
+                self.seen = charge(1);
+            }
+        }
+        fn main() { Engine { }; }
+    "#;
+    let ds = diags_for(src);
+    assert!(
+        ds.iter().any(|m| m.contains("phase `run`")
+            && m.contains("money")),
+        "an unlisted user class reached in the phase must violate: {:?}",
+        ds
+    );
+}
+
+/// CONTROL: listing the user class in the phase's allowed set
+/// permits it — and parses (rejecting user classes at parse was
+/// the other half of the deficiency).
+#[test]
+fn a_listed_user_class_is_allowed_in_the_phase() {
+    let src = r#"
+        effect money;
+        @effects(is: {money})
+        fn charge(n: Int) -> Int { return n; }
+        @phase_effects(run: {money})
+        locus Engine {
+            params { seen: Int = 0; }
+            run() {
+                self.seen = charge(1);
+            }
+        }
+        fn main() { Engine { }; }
+    "#;
+    let ds = diags_for(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("phase `run`")
+            && m.contains("money")),
+        "a listed user class must be allowed in the phase: {:?}",
+        ds
+    );
+}

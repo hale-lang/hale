@@ -169,14 +169,31 @@ pub(crate) fn declared_of(programs: &[&Program]) -> std::collections::BTreeSet<u
         .unwrap_or_default()
 }
 
+/// #392 §8: a fn-grained certificate lowered to the claim IR's
+/// vocabulary, with its verdict. The engines stay what they are —
+/// the shared call-graph substrate (R1) plus per-class probes — but
+/// every annotation is REPORTED as the claim form it is pointwise
+/// sugar for, so the topology artifact carries all law (bundle
+/// claims and fn certificates) in one schema of record.
+pub struct LoweredCertificate {
+    /// The annotated fn / locus, post-mangle (demangled at
+    /// serialization like every artifact name).
+    pub subject: String,
+    /// The lowered claim form, display voice.
+    pub form: String,
+    pub violated: bool,
+}
+
 fn phase_effects_diags(
     programs: &[&Program],
     summary: &AllocSummary,
     ffi: &BTreeSet<String>,
+    rows: &mut Vec<LoweredCertificate>,
 ) -> Vec<Diag> {
     let mut out = Vec::new();
     let names = &effect_names_of(programs);
     let defs = &defs_of(programs);
+    let declared = declared_of(programs);
     for p in programs {
         for item in &p.items {
             let TopDecl::Locus(l) = item else { continue };
@@ -267,7 +284,14 @@ fn phase_effects_diags(
                 };
                 let key = FnKey::method(l.name.name.clone(), phase.clone());
                 // The frontier/graph classes: anything NOT allowed.
-                for class in [
+                // #392 §8: DECLARED user classes join the closed set
+                // — a phase contract is closed over the live class
+                // universe, exactly like `only:` (and with the same
+                // atomic-only complement: a composed class owns no
+                // bit of its own). The hardcoded built-in list was
+                // the documented deficiency that made the contract
+                // blind to the classes a program declares itself.
+                let mut classes: Vec<EffectClass> = vec![
                     EffectClass::Alloc,
                     EffectClass::Syscall,
                     EffectClass::Block,
@@ -277,7 +301,15 @@ fn phase_effects_diags(
                     EffectClass::Ffi,
                     EffectClass::Publish,
                     EffectClass::Spawn,
-                ] {
+                ];
+                classes.extend(declared.iter().filter_map(|i| {
+                    match defs.get(*i as usize) {
+                        Some(Some(_)) => None, // composed: atomic-only
+                        _ => Some(EffectClass::User(*i)),
+                    }
+                }));
+                let phase_before = out.len();
+                for class in classes {
                     if allowed.contains(&class) {
                         continue;
                     }
@@ -291,6 +323,20 @@ fn phase_effects_diags(
                         );
                     }
                 }
+                rows.push(LoweredCertificate {
+                    subject: l.name.name.clone(),
+                    form: format!(
+                        "only effects {{{}}} on {{{}}} during {}",
+                        allowed
+                            .iter()
+                            .map(|c| cls_name(*c, names))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        l.name.name,
+                        phase
+                    ),
+                    violated: out.len() > phase_before,
+                });
             }
         }
     }
@@ -483,6 +529,26 @@ fn effect_diags_inner(
     programs: &[&Program],
     import_renames: &[(Vec<String>, String)],
 ) -> Vec<Diag> {
+    effect_report_inner(programs, import_renames).0
+}
+
+/// #392 §8: every fn-grained effect certificate (incl. the phase
+/// contracts) as a lowered claim row with its verdict — evaluated
+/// by the SAME pass that produces the diagnostics, so the two can
+/// never disagree. The topology artifact serializes these beside
+/// the bundle claims: one schema of record for all law.
+pub fn certificate_rows(
+    programs: &[&Program],
+    import_renames: &[(Vec<String>, String)],
+) -> Vec<LoweredCertificate> {
+    effect_report_inner(programs, import_renames).1
+}
+
+fn effect_report_inner(
+    programs: &[&Program],
+    import_renames: &[(Vec<String>, String)],
+) -> (Vec<Diag>, Vec<LoweredCertificate>) {
+    let mut rows: Vec<LoweredCertificate> = Vec::new();
     let mut roots: Vec<(FnKey, Vec<EffectAssert>, Span)> = Vec::new();
     for program in programs {
         for item in &program.items {
@@ -521,9 +587,11 @@ fn effect_diags_inner(
     let mut placement = placement_implied_diags(programs, &summary);
     // #265 step 6: phase-indexed effect contracts on loci.
     let ffi_all = ffi_names(programs);
-    placement.extend(phase_effects_diags(programs, &summary, &ffi_all));
+    placement.extend(phase_effects_diags(
+        programs, &summary, &ffi_all, &mut rows,
+    ));
     if roots.is_empty() {
-        return placement;
+        return (placement, rows);
     }
     let ffi = ffi_names(programs);
     let names = effect_names_of(programs);
@@ -638,10 +706,20 @@ fn effect_diags_inner(
                 EffectAssert::Carries(_) => {}
                 EffectAssert::Forbid(classes) => {
                     for c in classes {
+                        let before = diags.len();
                         check_class(
                             &summary, key, *span, *c, &ffi, &names, &defs_v,
                             &mut diags,
                         );
+                        rows.push(LoweredCertificate {
+                            subject: key.display(),
+                            form: format!(
+                                "forbid reaches({{{}}}, effects({}))",
+                                key.display(),
+                                cls_name(*c, &names)
+                            ),
+                            violated: diags.len() > before,
+                        });
                     }
                 }
                 // #354: the closed dual. Checked as `none:` over the
@@ -654,6 +732,7 @@ fn effect_diags_inner(
                 EffectAssert::Only(allowed) => {
                     let set: Vec<String> =
                         allowed.iter().map(|c| cls_name(*c, &names)).collect();
+                    let only_before = diags.len();
                     for c in class_universe(&declared) {
                         if allowed.contains(&c) {
                             continue;
@@ -706,24 +785,54 @@ fn effect_diags_inner(
                             );
                         }
                     }
+                    rows.push(LoweredCertificate {
+                        subject: key.display(),
+                        form: format!(
+                            "only effects {{{}}} on {{{}}}",
+                            set.join(", "),
+                            key.display()
+                        ),
+                        violated: diags.len() > only_before,
+                    });
                 }
                 EffectAssert::PublishSet(allowed) => {
+                    let before = diags.len();
                     check_publish_set(&summary, key, *span, allowed, &mut diags);
+                    rows.push(LoweredCertificate {
+                        subject: key.display(),
+                        form: format!(
+                            "only publishes {{{}}} from {{{}}}",
+                            allowed.join(", "),
+                            key.display()
+                        ),
+                        violated: diags.len() > before,
+                    });
                 }
                 EffectAssert::NoPanic => {
+                    let before = diags.len();
                     check_no_panic(programs, key, *span, &mut diags);
+                    rows.push(LoweredCertificate {
+                        subject: key.display(),
+                        form: format!(
+                            "forbid reaches({{{}}}, panic)",
+                            key.display()
+                        ),
+                        violated: diags.len() > before,
+                    });
                 }
                 EffectAssert::Causes(classes) => {
                     // Cross-actor causality needs the bus graph;
                     // effect_diags is graph-free, so the check runs
                     // in `check.rs` where the graph is built (see
-                    // `frontier::causes_diags`). Nothing to do here.
+                    // `frontier::causes_diags`). Nothing to do here
+                    // — and no lowered row: the row belongs to the
+                    // pass that owns the verdict.
                     let _ = classes;
                 }
             }
         }
     }
-    diags
+    (diags, rows)
 }
 
 /// GH #265 coherence: ONE dispatcher over the effect classes. Every
@@ -1020,8 +1129,10 @@ fn check_class(
             // STILL cannot be typed (an index result, a match value,
             // a foreign expression) is a method of some bundle locus
             // reached through an opaque expression — same fail-closed
-            // rule as an indirect call.
-            if edge.receiver_present && edge.recv_ty.is_none() {
+            // rule as an indirect call. (#392 interface dispatch
+            // never lands here: with conformers it is fanned out to
+            // resolved edges; without any it is dead code.)
+            if edge.opaque_method_call() {
                 return Some(format!(
                     "`{}` — a method call on a receiver the compiler \
                      cannot type; bind the receiver to a typed field \

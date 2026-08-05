@@ -1,0 +1,21 @@
+// The payments seed. It swears about its own boundary in a
+// TOP-LEVEL claims block — the library tier (#392 thread 2): the
+// law travels with the import and re-evaluates in every closing
+// build over the merged world.
+type Charge { amount: Int; }
+topic Charges { payload: Charge; }
+
+locus Wire {
+    params { seen: Int = 0; }
+    bus { subscribe Charges as on_charge; }
+    fn on_charge(c: Charge) {
+        self.seen = self.seen + c.amount;
+    }
+}
+
+group settlers = { Wire };
+
+claims {
+    single_settle: count subscribers(topic Charges) <= 1;
+    wired: require subscribes(some settlers, topic Charges);
+}

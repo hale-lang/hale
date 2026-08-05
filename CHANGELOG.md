@@ -6,6 +6,159 @@ behavior.
 
 ---
 
+## Unreleased
+
+### Library-tier claims: law that travels with an import (GH #392 thread 2)
+
+A library seed states its own law in a TOP-LEVEL `claims { }` block
+— no `main locus` required. The block travels with the import and
+re-evaluates in **every closing build** over the merged world:
+checked standalone the seed satisfies itself; when an app quietly
+wires a second subscriber onto the library's topic, the library's
+own `count subscribers(topic Charges) <= 1` refuses the build —
+with seed attribution (``claim `pay::single_settle` violated``,
+never a mangled symbol) and a span pointing at the library's own
+claim line.
+
+The tier split is the enforcement surface for "a dependency may
+not brick downstream builds with world-claims": a seed swears
+about *itself and its own boundary* (it can only name what it can
+see — its own decls, its own imports), world-quantification stays
+main's, and a seed that declares `main locus` writing the
+top-level form is a check error. Traveling blocks are marked at
+the mangle stage (which only ever touches imported seeds); their
+group and topic references canonicalize across the seed boundary
+exactly as group declarations do (#334), and claim names are
+never mangled — attribution is `alias::name`. Claim-name
+uniqueness is per seed.
+
+Grammar: `spec/grammar.ebnf` (`top_decl` gains `claims_block`).
+Spec: `spec/verification.md` § Claims (library tier). Docs: the
+claims chapter (placement + a dedicated section). Tests:
+`library_claims.rs` (tier rejection, standalone evaluation),
+`xseed_library_claims.rs` + the `xseed-library-claims` fixture
+(travel, re-check at close, attribution, demangling).
+
+### The normalized, provenance-bearing model (GH #392 thread 1)
+
+The architectural milestone every reviewer of the #382 stack named:
+one derived model — declaration provenance, the phase relation, the
+seed sort — consumed by every judgment and exported whole.
+
+- **Witnesses say where to edit.** A `forbid` violation now emits
+  secondary diagnostics in the effect system's root + leaf shape:
+  the call that crosses the boundary (or, for a bus hop, the
+  publish site and the subscription declaration) and the forbidden
+  destination's declaration. Spans are emitted only for bundle
+  decls — stdlib bodies parse in their own offset space, and a span
+  from there attributed to a user file names the wrong line (a
+  pre-existing misattribution this change also stops).
+- **`during` rides the phase relation.** Lifecycle hooks and modes
+  are hook-phases, methods their own source-slice phase; the
+  relation is explicit, exported, and what the evaluator reads.
+- **Topology artifact schema 1.1 — the model export.** The hashed
+  model half gains call-edge weights (`loop`, `unbounded`,
+  `via_interface`), the through-stdlib contraction
+  (`calls_via_stdlib`: user→user paths with stdlib interiors,
+  collapsed with a conservative loop flag), the `phases` relation,
+  the `seeds` sort, and compiler-derived per-fn `effects`. A new
+  UNHASHED `provenance` section carries per-edge and per-decl spans
+  as bundle-global byte offsets — moving code changes every span
+  and no identity. v2 scope: every claim verb replays independently
+  over the exported relations; still compiler-certified: `bound`
+  over built-in classes and walks past the step ceiling. Existing
+  `shape_hash` values change (the hashed half grew).
+
+Spec: `spec/verification.md` § Claims (witness provenance, phase
+relation, artifact scope). Docs: the claims chapter (witness,
+`during`, artifact schema). Tests: `model_provenance.rs` (witness
+spans incl. the foreign-span guard, phase selection, model
+derivation), `topology_v2.rs` (sections, motion-insensitivity
+canary, contracted edges).
+
+### §8 — one schema of record, and `@phase_effects` user classes (GH #392 thread 1)
+
+- **Certificates as lowered claim rows.** The topology artifact
+  gains an unhashed `lowered` array: every fn-grained certificate —
+  each `@effects` assert, each `@phase_effects` phase contract, each
+  `@budget` in both families — reported as the claim form it is
+  pointwise sugar for, with its verdict (`forbid reaches({F},
+  effects(money))`, `bound alloc <= N on paths from {F}`, `only
+  effects {…} on {L} during birth`). Rows come from the same
+  evaluations that gate the build, so the report and the build
+  cannot disagree. One schema of record: all law, bundle-quantified
+  and fn-grained, in one artifact.
+- **`@phase_effects` closes over user classes.** A phase contract is
+  now closed over the live class universe like `only:` — a phase
+  reaching a declared user-class carrier without listing the class
+  violates, and listing it permits it (atomic-only complement;
+  composed classes own no bit). Previously the walker iterated a
+  hardcoded nine-class list and the parser rejected user class
+  names outright — the documented deficiency. Programs with
+  `@phase_effects` AND declared user classes may see new (correct)
+  violations.
+
+### Interface-dispatch edges: closed-world fan-out (GH #392 thread 4)
+
+A method call on an interface-typed value
+(`route.handler.handle(ctx)` — the stdlib router's own shape)
+used to land as an unresolved edge that every walker silently
+dropped: the one receiver shape left, after the v0.14.0 root fix,
+where a real call contributed nothing to any judgment. An
+`@effects(none: …)` certificate over a fn dispatching through
+`std::http::Router` certified while the handler performed the
+effect.
+
+The world is closed, so the implementor set is enumerable. The
+summarizer now fans the written edge out to every conforming
+locus (structural name-and-arity conformance over the
+declarations — a superset of the checker's typed conformance;
+over-approximation only adds edges). Reachability and effect
+judgments walk every alternative. Counting judgments — `bound`,
+`@budget`, the quantitative dims — take the **max** over one
+dispatch site's alternatives (a dispatch invokes exactly one
+target; a sum would count phantom calls no execution performs),
+carried by a `dispatch_group` tag on the fanned edges and a
+`join_alternatives` fold in the shared call-graph walker.
+
+An interface **no** locus conforms to has no values in a closed
+world (an interface value only arises by coercing a conformer),
+so its call sites are dead — they contribute nothing, rather than
+failing closed. The everyday instance is the router's
+`m.before(cur)` over an empty middleware list: failing closed
+there would refuse every certificate through the stdlib router.
+The topology artifact records each such site
+(`uninhabited_interface_call:<iface>.<callee>`) inside the hashed
+model half, so a conformer appearing later changes `shape_hash`.
+
+Two adjacent holes closed in the same change:
+
+- **Path-written stdlib types now type receivers.** A param or
+  field written `std::io::tcp::Stream` / `std::http::Router`
+  recorded only its last path segment, a name no summary map is
+  keyed by — so method calls on such receivers were unresolved
+  and invisible. They now resolve through the same std-vs-user
+  rule struct-literal receivers already used. The committed
+  effects baseline gains `publish` on two corpus `handle_request`
+  rows — real: `Stream::recv` publishes to the tcp log-event
+  topic, previously unseen.
+- **`@budget(alloc_per_call)` fails closed on untyped
+  receivers.** The v0.14.0 root fix wrote the dual-cause message
+  but widened only the other walkers' guards; the budget's own
+  guard still tested `indirect` alone, leaving the receiver
+  branch dead and the budget certifiable through a wrapper. The
+  shared predicate (`CallEdge::opaque_method_call`) now backs all
+  five walkers.
+
+Spec: `spec/verification.md` § Claims (fan-out, max-over-
+alternatives, dead-dispatch rules). Docs: the claims chapter's
+fail-closed section and artifact schema. Tests:
+`interface_dispatch.rs` (14: canary + control per judgment form,
+incl. the router end-to-end pair), artifact rows + `shape_hash`
+sensitivity in `claims_artifact_unknowns.rs`.
+
+---
+
 ## v0.14.0 — claims: the program owns the law, the compiler owns the proof (2026-08-04)
 
 ### Receiver typing: the summarizer root fix (GH #382 soundness audit)

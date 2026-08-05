@@ -96,6 +96,19 @@ pub trait FactVisitor {
         sub: Self::Fact,
         emit: bool,
     ) -> Self::Fact;
+    /// #392: fold the facts of two ALTERNATIVES of one interface-
+    /// dispatch site (edges sharing a `dispatch_group`). A dispatch
+    /// invokes exactly one alternative, so this is a join, not a
+    /// sequence: counting visitors should return the pointwise max.
+    /// The default falls back to `combine` (sums the alternatives) —
+    /// over-approximate, never under-counting.
+    fn join_alternatives(
+        &self,
+        a: Self::Fact,
+        b: Self::Fact,
+    ) -> Self::Fact {
+        self.combine(a, b)
+    }
 }
 
 /// Fact-accumulating DFS from `root`. Traversal semantics are
@@ -144,46 +157,93 @@ fn walk_inner<V: FactVisitor>(
     }
 
     path.push(key.clone());
-    for edge in &fs.calls {
+    // #392: fanned-out interface-dispatch alternatives (consecutive
+    // edges sharing a `dispatch_group`) fold via `join_alternatives`
+    // — one dispatch invokes one alternative — before combining into
+    // the running total like any other edge.
+    let mut i = 0;
+    while i < fs.calls.len() {
         *steps += 1;
         if *steps > MAX_STEPS {
             path.pop();
             return visitor.saturated();
         }
-        let in_loop = edge.loop_depth > 0;
-        match &edge.callee {
-            Callee::Resolved(callee_key) => {
-                if path.contains(callee_key) {
-                    let f =
-                        visitor.recursion(key, edge, callee_key, emit);
-                    total = visitor.combine(total, f);
-                    continue;
-                }
-                if in_loop {
-                    let sub = walk_inner(
-                        summary, callee_key, visitor, path, steps, false,
-                    );
-                    if !visitor.is_zero(&sub) {
-                        let f = visitor
-                            .loop_call(key, edge, callee_key, sub, emit);
-                        total = visitor.combine(total, f);
-                    }
-                } else {
-                    let sub = walk_inner(
-                        summary, callee_key, visitor, path, steps, emit,
-                    );
-                    total = visitor.combine(total, sub);
-                }
-            }
-            Callee::Unresolved(name) => {
-                let f =
-                    visitor.unresolved(key, edge, name, in_loop, emit);
+        let edge = &fs.calls[i];
+        match edge.dispatch_group {
+            None => {
+                let f = edge_fact(
+                    summary, key, edge, visitor, path, steps, emit,
+                );
                 total = visitor.combine(total, f);
+                i += 1;
+            }
+            Some(g) => {
+                let mut alt: Option<V::Fact> = None;
+                while i < fs.calls.len()
+                    && fs.calls[i].dispatch_group == Some(g)
+                {
+                    let f = edge_fact(
+                        summary,
+                        key,
+                        &fs.calls[i],
+                        visitor,
+                        path,
+                        steps,
+                        emit,
+                    );
+                    alt = Some(match alt {
+                        None => f,
+                        Some(a) => visitor.join_alternatives(a, f),
+                    });
+                    i += 1;
+                }
+                if let Some(a) = alt {
+                    total = visitor.combine(total, a);
+                }
             }
         }
     }
     path.pop();
     total
+}
+
+/// One call edge's contribution — traversal semantics unchanged from
+/// the original inline loop: ancestor-path callee is `recursion`; a
+/// loop callee is probed silently and only a non-zero probe produces
+/// a `loop_call` event; otherwise the callee's walk folds in
+/// directly; an unresolved callee asks the visitor.
+fn edge_fact<V: FactVisitor>(
+    summary: &AllocSummary,
+    key: &FnKey,
+    edge: &CallEdge,
+    visitor: &mut V,
+    path: &mut Vec<FnKey>,
+    steps: &mut u32,
+    emit: bool,
+) -> V::Fact {
+    let in_loop = edge.loop_depth > 0;
+    match &edge.callee {
+        Callee::Resolved(callee_key) => {
+            if path.contains(callee_key) {
+                return visitor.recursion(key, edge, callee_key, emit);
+            }
+            if in_loop {
+                let sub = walk_inner(
+                    summary, callee_key, visitor, path, steps, false,
+                );
+                if !visitor.is_zero(&sub) {
+                    visitor.loop_call(key, edge, callee_key, sub, emit)
+                } else {
+                    visitor.identity()
+                }
+            } else {
+                walk_inner(summary, callee_key, visitor, path, steps, emit)
+            }
+        }
+        Callee::Unresolved(name) => {
+            visitor.unresolved(key, edge, name, in_loop, emit)
+        }
+    }
 }
 
 /// One step of a witness path: the fn whose body contains the hop,

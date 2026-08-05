@@ -121,9 +121,10 @@ pub fn infer_effects(
                     // is a method of some bundle locus reached
                     // through an opaque expression. Same fail-closed
                     // treatment as an indirect call: it may do
-                    // anything.
-                    if edge.receiver_present && edge.recv_ty.is_none()
-                    {
+                    // anything. (#392 interface dispatch never lands
+                    // here: fanned out when conformers exist, dead
+                    // code when none do.)
+                    if edge.opaque_method_call() {
                         acc = acc.union(EffectSet::UNCLASSIFIED);
                         continue;
                     }

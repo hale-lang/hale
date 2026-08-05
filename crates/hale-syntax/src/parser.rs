@@ -1032,6 +1032,14 @@ impl Parser {
             TokenKind::Ident(s) if s == "group" => {
                 self.parse_group_decl().map(TopDecl::Group)
             }
+            // #392 thread 2: a top-level `claims { }` block — the
+            // LIBRARY tier: a seed swears about itself and its own
+            // boundary, and the block travels with the import.
+            // World law stays in `main locus`; a closing seed
+            // writing this form is rejected at check.
+            TokenKind::Ident(s) if s == "claims" => {
+                self.parse_claims_block().map(TopDecl::Claims)
+            }
             // `main locus Foo { ... }` — Phase 2 entry-point
             // marker. Same contextual-keyword pattern. The
             // following token must be `locus`.
@@ -1214,6 +1222,7 @@ impl Parser {
         let close = self.expect(TokenKind::RBrace, "}")?;
         Ok(ClaimsBlock {
             entries,
+            lib_tier: false,
             span: kw_tok.span.merge(close.span),
         })
     }
@@ -2538,15 +2547,17 @@ impl Parser {
                         ))
                     }
                 };
-                match EffectClass::from_ident(&name) {
-                    Some(c) => classes.push(c),
-                    None => {
-                        return Err(Diag::parse(
-                            t.span,
-                            format!("unknown effect class `{}`", name),
-                        ))
-                    }
-                }
+                // #392 §8: user classes join the phase contract's
+                // closed set — the same interning fallback every
+                // other class position has (`is:`, `only:`, `none:`,
+                // `causes:`). Rejecting them here was the documented
+                // deficiency that made `@phase_effects` blind to the
+                // classes a program declares itself.
+                classes.push(
+                    EffectClass::from_ident(&name).unwrap_or_else(
+                        || EffectClass::User(self.intern_effect(&name)),
+                    ),
+                );
                 self.bump();
                 if matches!(self.peek(), TokenKind::Comma) {
                     self.bump();

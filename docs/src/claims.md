@@ -83,6 +83,8 @@ effect_family_decl
                   = "effect" , IDENTIFIER , "(" , IDENTIFIER , ")" , ";" ;
 
 claims_block      = "claims" , "{" , { claim_entry } , "}" ;
+                  (* inside main locus: the world tier;
+                     at top level: the library tier (#392) *)
 claim_entry       = IDENTIFIER , ":" , claim_form , ";" ;
 claim_form        = forbid_form | only_edges_form | bound_form
                   | require_form | cover_form | count_form ;
@@ -233,11 +235,21 @@ built-ins keep their own spellings: `alloc_per_call`, `publish`,
 
 ## `claims { }` — placement and naming
 
-The block is only legal inside `main locus` — a parse error
-anywhere else. Main is the closed-world gate: bundle-wide sentences
-cannot be evaluated before the whole application graph exists, and
-one-main-per-bundle makes the claims root unique. A main locus may
-carry several `claims { }` blocks; their entries concatenate.
+The block has two homes, one per tier:
+
+- **Inside `main locus`** — the WORLD tier. Main is the
+  closed-world gate: bundle-wide sentences cannot be evaluated
+  before the whole application graph exists, and
+  one-main-per-bundle makes the claims root unique. Inside any
+  other locus it is a parse error.
+- **At top level in a LIBRARY seed** — the library tier (see
+  [Library-tier claims](#library-tier-claims) below): a seed
+  swears about itself and its own boundary, and the block travels
+  with the import. A seed that declares `main locus` writing the
+  top-level form is a check error — world law belongs in main.
+
+A main locus may carry several `claims { }` blocks; their entries
+concatenate.
 
 Every entry is `name: form;`. The **name is the contract of
 record** — it is what the diagnostic, the CI check, the review
@@ -300,14 +312,17 @@ nothing: the claim holds. An empty SRC likewise. Both are only
 reachable through the explicit opt-out; everything else fails the
 group guards first.
 
-**`during <phase>`.** Restricts SRC's projection to the fns named
-`<phase>` on each member locus — a lifecycle name (`birth`,
-`accept`, `release`, `run`, `drain`, `dissolve`) or any method or
-handler name. Free fns have no phases and drop out. If the filter
-empties a non-empty projection, that is an error ("phase names
-nothing in group"), not a vacuous pass. This is a source slice,
-not a temporal logic; a real phase relation belongs to the
-normalized model if state-dependent claims are ever needed.
+**`during <phase>`.** Restricts SRC's projection to the members of
+`<phase>` in the model's **phase relation**: lifecycle hooks
+(`birth`, `accept`, `release`, `run`, `drain`, `dissolve`) and
+modes (`bulk`, `harmonic`, `resolution`) are hook-phases the
+runtime drives; any method or handler name is its own source-slice
+phase. Free fns have no phases and drop out. If the filter empties
+a non-empty projection, that is an error ("phase names nothing in
+group"), not a vacuous pass. The relation is exported in the
+topology artifact (`phases`), which is what makes a `during` row
+independently re-derivable; it is still a source slice, not a
+temporal logic.
 
 **`avoiding <group>`.** Masks the named group's vertices out of
 the walk entirely — neither traversed nor tested. This is the
@@ -324,6 +339,15 @@ Modifiers stack in any order:
 path from a source root to the hit, calls rendered `->`, bus hops
 rendered `-(publishes "subject")->`, every name in author spelling
 (cross-seed symbols demangled).
+
+**Where to edit.** The witness names *who*; secondary diagnostics
+point at *where* — the call that crosses the boundary (or, for a
+bus hop, the publish site and the subscription declaration) and
+the forbidden destination's declaration, in the effect system's
+root + leaf shape. A hop whose source lives inside a stdlib body
+renders by name alone: stdlib source parses in its own offset
+space, and a span from there would point at the wrong line of your
+file.
 
 ## `only edges A -> B { … }` — the boundary form
 
@@ -424,6 +448,53 @@ over declarations, not a runtime census of replicated instances —
 exact instance claims belong to deployment elaboration, when it
 lands.
 
+## Library-tier claims
+
+A library seed states its own law in a **top-level** `claims { }`
+block — no `main locus` required:
+
+```hale,fragment
+type Charge { amount: Int; }
+topic Charges { payload: Charge; }
+
+locus Wire {
+    params { seen: Int = 0; }
+    bus { subscribe Charges as on_charge; }
+    fn on_charge(c: Charge) { self.seen = self.seen + c.amount; }
+}
+
+group settlers = { Wire };
+
+claims {
+    single_settle: count subscribers(topic Charges) <= 1;
+    wired: require subscribes(some settlers, topic Charges);
+}
+```
+
+Two properties make this the *library* tier:
+
+- **The law travels.** Import the seed and its claims come along,
+  re-evaluating in **every closing build** over the merged world.
+  Checked standalone, the seed satisfies itself; when an app
+  quietly wires a second subscriber onto `Charges`, the library's
+  own `single_settle` refuses the build — reported with seed
+  attribution (``claim `pay::single_settle` violated``, never a
+  mangled symbol) and pointing at the library's own claim line.
+  Getting stricter as the world grows is the point: the claim
+  quantifies over whatever the merge added.
+- **The tier is the enforcement surface.** A seed swears about
+  *itself and its own boundary* — it can only name what it can
+  see: its own decls, its own imports. World-quantification stays
+  main's, and a seed that declares `main locus` writing the
+  top-level form is a check error. A dependency cannot brick a
+  downstream build with world-claims because it has no way to
+  state one.
+
+Claim names stay per-seed (`pay::single_settle` and your own
+`single_settle` coexist); group and topic references inside a
+traveling block canonicalize across the seed boundary exactly as
+group declarations do.
+
 ## The evaluation model
 
 What the sentences quantify over:
@@ -464,6 +535,29 @@ judgment that traverses calls refuses to certify over:
 - a **computed publish subject** (it could route to any
   subscriber);
 - a walk exceeding the step ceiling.
+
+**Interface dispatch fans out.** A method call on an
+interface-typed value — `route.handler.handle(ctx)`, the stdlib
+router's own shape — is not an unknown: the world is closed, so
+the implementor set is enumerable. The summarizer fans the one
+written edge out to every conforming locus (structural
+name-and-arity conformance over the declarations — a superset of
+the checker's typed conformance, safe because over-approximation
+only adds edges). Reachability and effect judgments walk every
+alternative; counting judgments (`bound`, `@budget`, the
+quantitative dims) take the **max** over one dispatch site's
+alternatives, because an invocation dispatches to exactly one
+target — a sum would count phantom calls no execution performs.
+
+An interface *no* locus conforms to is different again: an
+interface value only ever arises by coercing a conforming locus,
+so in a closed world an uninhabited interface has no values and
+its call sites are **dead** — they contribute nothing to any
+judgment (the router's `m.before(cur)` over an empty middleware
+list is the everyday case). The artifact records each such site
+(`uninhabited_interface_call:<interface>.<callee>`) inside the
+hashed model half, so a conformer appearing in a later build
+changes `shape_hash`.
 
 ## Every diagnostic
 
@@ -526,36 +620,78 @@ The artifact shape (schema `1.0`):
 
 ```text
 {
-  "schema": "1.0",
+  "schema": "1.1",
   "shape_hash": "<fnv1a-64 over the model half>",
   "sorts":     { "loci": […], "fns": […], "topics": […] },
-  "relations": { "calls": […], "publishes": […], "subscribes": […] },
+  "relations": {
+    "calls": [ {"from", "to",
+                "loop"?: true, "unbounded"?: true,
+                "via_interface"?: "<iface>"} ],
+    "calls_via_stdlib": [ {"from", "to", "loop"?: true} ],
+    "publishes": […], "subscribes": […]
+  },
   "groups":    { "<name>": [members as declared] },
   "labels":    { "<fn>": [declared effect classes] },
+  "phases":    { "<fn>": {"phase", "kind": "hook"|"method"} },
+  "seeds":     { "<alias>": [member decls] },
+  "effects":   { "<fn>": [derived effect classes] },
   "unknowns":  [ {"fn": …, "reasons": ["indirect_call" |
                   "untyped_receiver_call:<callee>" |
+                  "uninhabited_interface_call:<iface>.<callee>" |
                   "computed_publish"]} ],
-  "claims":    [ {"name", "form", "result": "holds"|"violated"|"invalid"} ]
+  "provenance": { "calls": [+span], "publishes": [+span],
+                  "subscribes": [+span], "decls": {name: span} },
+  "claims":    [ {"name", "form", "result": "holds"|"violated"|"invalid"} ],
+  "lowered":   [ {"subject", "form", "result": "holds"|"violated"} ]
 }
 ```
 
 Everything renders in author spelling (cross-seed symbols
 demangled). `shape_hash` covers the **model half** — sorts,
-relations, groups, labels, unknowns — and excludes claim
-*results*, so one topology under a different law keeps one shape
-while any graph, vocabulary, carrier, or new fail-closed site
-changes the identity. `--check-topology` diffs against the
-committed baseline and fails with a regenerate hint, separating
-two review questions: *does the program still satisfy the law?*
-and *did the graph change in a way reviewers should see?*
+relations (with weights and the through-stdlib contraction),
+groups, labels, phases, seeds, derived effects, unknowns — and
+excludes claim *results* and *provenance*: one topology under a
+different law keeps one shape, and moving code changes every span
+but no identity, while any graph, vocabulary, carrier, phase, or
+new fail-closed or dead-dispatch site changes it.
+`--check-topology` diffs against the committed baseline and fails
+with a regenerate hint, separating two review questions: *does the
+program still satisfy the law?* and *did the graph change in a way
+reviewers should see?*
 
-v1 scope, stated honestly: the artifact supports independent
-replay of the serialized user call/bus graph, group boundaries,
-declared bus-end existence and cardinality, and declared carrier
-labels. Results needing the phase relation (`during`), seed
-membership (`cover`), compiler-derived built-in effects, or the
-stdlib-expanded walk remain compiler-certified report rows until
-the normalized verification model lands.
+The pieces worth knowing:
+
+- **Weights.** A call row marked `"loop": true` sits inside a
+  loop; `"unbounded": true` inside a loop with no compile-time
+  trip bound. `bound` replay reads these. A `"via_interface"` row
+  is one fanned-out dispatch alternative — alternatives sharing
+  (from, interface, method) fold with **max**, one dispatch
+  invokes one target.
+- **`calls_via_stdlib`.** The evaluator walks stdlib bodies; the
+  artifact serializes user rows. Every user→user path whose
+  interior is stdlib collapses to one contracted edge (loop flag
+  conservative: true if *any* such path crosses a loop), so
+  reachability over the artifact matches reachability as
+  evaluated.
+- **`phases` / `seeds` / `effects`.** What `during`, `cover`, and
+  effect-class endpoints evaluate against, exported — the rows
+  that used to be compiler-certified-only.
+- **`provenance`.** Bundle-global byte-offset spans (`[start,
+  end]`) for every user edge and decl — the "where to edit" data,
+  unhashed by design.
+- **`lowered`.** Every fn-grained certificate — each `@effects`
+  assert, each `@phase_effects` phase contract, each `@budget` —
+  as the claim form it is pointwise sugar for, with the verdict of
+  the same evaluation that gates the build: `forbid
+  reaches({F}, effects(money))`, `bound alloc <= N on paths from
+  {F}`, `only effects {…} on {L} during birth`. One schema of
+  record: the artifact carries all law, bundle-quantified and
+  fn-grained, in one place. Unhashed like the claim results.
+
+v2 scope: every claim verb replays independently over the exported
+relations. Still compiler-certified: `bound` over **built-in**
+classes (site counting through the stdlib interior, deliberately
+not serialized) and any walk past the step ceiling.
 
 ## What claims are not
 
