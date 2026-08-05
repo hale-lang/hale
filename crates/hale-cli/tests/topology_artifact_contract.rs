@@ -323,3 +323,45 @@ fn a_violated_claim_still_emits_its_artifact() {
         stdout
     );
 }
+
+/// A violated **fn-grained certificate** is a law failure, not a type
+/// error, so the artifact must still be emitted — the `lowered` rows
+/// exist precisely to record that verdict.
+///
+/// This is the case CI caught and local runs did not. The soundness
+/// gate first keyed on `DiagKind::Claim`, which only bundle claims
+/// carried, so a program that typechecked but broke a `@budget` or
+/// `@effects` contract was refused an artifact. Its model is
+/// perfectly sound; only a rule was broken.
+#[test]
+fn a_violated_certificate_still_emits_its_artifact() {
+    const OVER_BUDGET: &str = r#"
+        type P { a: Int; }
+        @budget(alloc_per_call = 0)
+        fn boxed(n: Int) -> P { return P { a: n }; }
+        main locus App { params { n: Int = 0; } }
+        fn main() { App { }; let p = boxed(1); }
+    "#;
+    let path = write_tmp("certificate", OVER_BUDGET);
+    let (stdout, code) =
+        hale(&["check".as_ref(), path.as_os_str(), "--dump-topology".as_ref()]);
+    let _ = std::fs::remove_file(&path);
+
+    assert_ne!(code, 0, "the broken contract must fail the run: {}", stdout);
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+        panic!(
+            "a violated CERTIFICATE is law, not a broken model — the \
+             artifact must still be emitted: {e}\n{stdout}"
+        )
+    });
+    assert!(
+        v["lowered"].as_array().is_some_and(|r| !r.is_empty()),
+        "and carry the lowered rows that record the verdict: {}",
+        stdout
+    );
+    assert_eq!(
+        v["verdict"], "law_failed",
+        "the document verdict covers certificates too: {}",
+        stdout
+    );
+}

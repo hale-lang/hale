@@ -36,7 +36,13 @@ fn build_and_run(tag: &str, src: &str) -> (String, bool) {
     let diags = hale_types::check_program(&program);
     let hard: Vec<String> = diags
         .iter()
-        .filter(|d| matches!(d.kind, hale_syntax::DiagKind::Type))
+        // `is_error()` rather than a kind match: a violated
+        // assertion is now `DiagKind::Claim` (law, not a type
+        // error), and matching on `Type` alone would silently stop
+        // seeing the very thing this guard exists to catch. It also
+        // picks up parse and codegen errors, which it always should
+        // have.
+        .filter(|d| d.is_error())
         .map(|d| d.message.clone())
         .collect();
     assert!(
