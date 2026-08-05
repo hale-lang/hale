@@ -613,8 +613,16 @@ The checked model exports, diffs, and gates:
 
 ```text
 hale check app --dump-topology > .hale.topology
-hale check app --check-topology .hale.topology
+hale check app --dump-topology=.hale.topology     # or write it directly
+hale check app --check-topology .hale.topology    # exact snapshot gate
+hale check app --check-topology-shape .hale.topology   # model-only gate
 ```
+
+Both spellings work for every flag operand (`--flag value` and
+`--flag=value`); a missing operand is a usage error rather than a
+silent no-op. And `--dump-topology` does **not** change what the
+command means: a program whose claims fail still exits non-zero
+with its witnesses, it just prints the artifact on the way.
 
 The artifact shape (schema `1.0`):
 
@@ -655,8 +663,20 @@ excludes claim *results* and *provenance*: one topology under a
 different law keeps one shape, and moving code changes every span
 but no identity, while any graph, vocabulary, carrier, phase, or
 new fail-closed or dead-dispatch site changes it.
-`--check-topology` diffs against the committed baseline and fails
-with a regenerate hint, separating two review questions: *does the
+Two gates, named for what they compare:
+
+- **`--check-topology`** — an exact artifact snapshot: law, model
+  *and* provenance. Strictest, and the right default when you want
+  every change to the file reviewed. Note that it therefore fires on
+  a claim rename or a comment that shifts spans, even though the
+  model is identical.
+- **`--check-topology-shape`** — the model identity (`shape_hash`)
+  only. Renames and source motion pass; a changed graph,
+  vocabulary, carrier, phase, or new fail-closed site fails. Use
+  this when baseline churn from provenance is costing more than it
+  catches.
+
+Either way the gate separates two review questions: *does the
 program still satisfy the law?* and *did the graph change in a way
 reviewers should see?*
 

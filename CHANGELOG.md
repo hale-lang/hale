@@ -8,6 +8,45 @@ behavior.
 
 ## Unreleased
 
+### The claims artifact's external contract (downstream handoff)
+
+Four findings from an outside developer-experience review of the
+claims tooling. Every one of them was a **fail-open**: the tool
+reported success while doing nothing, which is the worst failure
+mode for something whose job is to gate CI.
+
+- **The artifact was not valid JSON.** The `claims` array was
+  never closed before `"lowered"` began, so *every* artifact —
+  no claims, one, many — was rejected by any standards-compliant
+  parser. It survived because the existing tests assert on
+  substrings and grep out the `shape_hash` line; none parsed the
+  whole document. The new `artifact_is_valid_json` does, which is
+  the only shape of test that could have caught it.
+- **Observing a program changed its verdict.** `hale check
+  failing.hl --dump-topology` exited 0, while the same file
+  without the flag exited 1 with its witness — dump mode returned
+  before the checker ran. A CI job that added the flag to collect
+  an artifact silently stopped gating. The dump now prints and
+  falls through to the check.
+- **`--flag=value` was ignored, and the command still succeeded.**
+  Both spellings (`--flag value` and `--flag=value`) are now
+  accepted, and a missing operand is a usage error (exit 2)
+  rather than a silent no-op. `--dump-topology=<path>` writes the
+  artifact to that file instead of ignoring it.
+- **The baseline gate could not distinguish a moved comment from
+  a changed program.** `--check-topology` compares the entire
+  artifact including provenance offsets, so a leading comment
+  failed the gate reporting that the "model" had changed when
+  `shape_hash` — the model's identity — had not. Both gates now
+  exist and are named for what they compare:
+  `--check-topology` is the exact snapshot (law + model +
+  provenance); `--check-topology-shape` gates the model alone and
+  is immune to source motion and claim renames.
+
+`crates/hale-cli/tests/topology_artifact_contract.rs` pins all
+four, in both directions where a gate is involved — a loose gate
+that never fires is the same fail-open wearing a different hat.
+
 ### The per-topic observation identity, pinned and exported (GH #399)
 
 The observer protocol's open item — "exact shape_hash definition,

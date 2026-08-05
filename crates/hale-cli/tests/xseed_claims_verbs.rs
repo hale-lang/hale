@@ -14,6 +14,23 @@ fn fixture() -> PathBuf {
         .join("tests/fixtures/xseed-claims-verbs/app")
 }
 
+/// The ARTIFACT alone. `check` below folds stderr into its result so
+/// message assertions can ignore which stream a diagnostic took; a
+/// baseline must not inherit that. Since the devex fix, `--dump-topology`
+/// no longer short-circuits the checker (observing a program must not
+/// change its verdict), so a failing program emits diagnostics
+/// alongside the dump — and folding those into the baseline made a
+/// freshly-dumped artifact fail its own gate.
+fn dump_artifact() -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .arg("check")
+        .arg(fixture())
+        .arg("--dump-topology")
+        .output()
+        .expect("run hale check");
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
 fn check(extra: &[&str]) -> (String, bool) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_hale"));
     cmd.arg("check").arg(fixture());
@@ -61,7 +78,7 @@ fn cover_catches_an_uncovered_topic_across_seeds() {
 /// artifact passes, a stale artifact fails with a diff).
 #[test]
 fn the_topology_artifact_round_trips() {
-    let (dump, _ok) = check(&["--dump-topology"]);
+    let dump = dump_artifact();
     assert!(
         dump.contains("\"schema\": \"1.2\"")
             && dump.contains("\"shape_hash\": \""),
@@ -129,7 +146,7 @@ fn the_topology_artifact_round_trips() {
     // The claims themselves still fail the build (no_orphans), but
     // the topology gate must not add a mismatch complaint.
     assert!(
-        !out.contains("topology changed"),
+        !out.contains("topology artifact changed"),
         "a freshly-dumped artifact must match:\n{}",
         out
     );
@@ -141,7 +158,7 @@ fn the_topology_artifact_round_trips() {
     let (out, ok) =
         check(&["--check-topology", tmp.to_str().unwrap()]);
     assert!(
-        !ok && out.contains("topology changed")
+        !ok && out.contains("topology artifact changed")
             && out.contains("--dump-topology"),
         "a stale artifact must fail with the regenerate hint:\n{}",
         out

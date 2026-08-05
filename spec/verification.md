@@ -273,7 +273,10 @@ a subject-less topic registers under its declared — possibly
 mangled — local name, so shared topics should declare `subject:`
 to fuse across binaries. The exact definition and test vectors
 live in iris PROTOCOL.md §4.
-`--check-topology <path>` diffs against a committed baseline and
+`--check-topology-shape <path>` gates the model identity alone —
+`shape_hash` — so claim renames and source motion pass while a
+changed graph fails. `--check-topology <path>` diffs against a
+committed baseline and
 fails with a regenerate hint — the `.hale.effects` precedent: an
 unreviewed topology or law change fails CI the way an API break
 does. v2 scope: every claim verb replays independently over the

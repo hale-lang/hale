@@ -32,10 +32,17 @@ fn __internal() -> Int { return 0; }
 fn main() { Room { }; }
 "#;
 
-fn write_fixture() -> std::path::PathBuf {
+/// Per-TEST fixture directory. The pid alone is not a uniquifier —
+/// every test in this file shares one process, so all three raced on
+/// the same `app.hl` and one would intermittently read a
+/// half-written file under a parallel run. Same hazard the binary
+/// harness solved with `unique_bin`; source fixtures were never
+/// covered.
+fn write_fixture_for(tag: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "hale_doc_test_{}",
-        std::process::id()
+        "hale_doc_test_{}_{}",
+        std::process::id(),
+        tag
     ));
     std::fs::create_dir_all(&dir).expect("mkdir");
     let f = dir.join("app.hl");
@@ -45,7 +52,7 @@ fn write_fixture() -> std::path::PathBuf {
 
 #[test]
 fn markdown_reference_with_docs_and_members() {
-    let f = write_fixture();
+    let f = write_fixture_for("markdown");
     let out = Command::new(env!("CARGO_BIN_EXE_hale"))
         .arg("doc")
         .arg(&f)
@@ -74,7 +81,7 @@ fn markdown_reference_with_docs_and_members() {
 
 #[test]
 fn json_records() {
-    let f = write_fixture();
+    let f = write_fixture_for("json");
     let out = Command::new(env!("CARGO_BIN_EXE_hale"))
         .args(["doc", "--json"])
         .arg(&f)

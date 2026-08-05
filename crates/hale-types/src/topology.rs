@@ -782,7 +782,13 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     lowered.extend(crate::quantitative::certificate_rows(
         &programs, &fanout,
     ));
-    out.push_str(",\n  \"lowered\": [\n");
+    // Close the `claims` array before opening `lowered` — omitting
+    // this emitted a document no standards-compliant JSON parser
+    // accepts, for every shape (no claims, one, many, with or
+    // without lowered rows). It survived because the artifact tests
+    // asserted on substrings and never parsed the whole document;
+    // `topology_artifact_is_valid_json` now does.
+    out.push_str("  ],\n  \"lowered\": [\n");
     for r in &lowered {
         out.push_str(&format!(
             "    {{\"subject\": {}, \"form\": {}, \"result\": {}}},\n",

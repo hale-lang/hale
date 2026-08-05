@@ -2584,21 +2584,144 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
     // `shape_hash` identity over the model half. Emit for review /
     // third-party re-evaluation, or DIFF against a committed copy so
     // an unreviewed topology or law change fails CI.
-    if std::env::args().any(|a| a == "--dump-topology") {
-        print!("{}", hale_types::topology::dump_topology(&bundle));
-        return ExitCode::SUCCESS;
+    // Dump-mode must not change what `check` MEANS. Returning
+    // SUCCESS here made `hale check failing.hl --dump-topology` exit
+    // 0 with no diagnostics, so a CI job that added the flag to
+    // collect an artifact silently stopped gating — the same file
+    // without the flag exits 1 with its witness. Print the artifact,
+    // then fall through to the ordinary checker so the exit status
+    // and diagnostics are unchanged by observing the program.
+    //
+    // Flag operands accept both spellings (`--flag value` and
+    // `--flag=value`). Previously `--check-topology=base.json` was
+    // silently ignored and the command SUCCEEDED — the worst
+    // failure mode for a CI gate, since the job looks green while
+    // gating nothing. A missing operand is likewise a hard usage
+    // error rather than a silent no-op.
+    let argv: Vec<String> = std::env::args().collect();
+    let flag_value = |flag: &str| -> Result<Option<String>, String> {
+        if let Some(eq) = argv.iter().find(|a| {
+            a.starts_with(flag) && a.as_bytes().get(flag.len()) == Some(&b'=')
+        }) {
+            let v = &eq[flag.len() + 1..];
+            if v.is_empty() {
+                return Err(format!("{}= requires a path", flag));
+            }
+            return Ok(Some(v.to_string()));
+        }
+        if let Some(i) = argv.iter().position(|a| a == flag) {
+            return match argv.get(i + 1) {
+                Some(v) if !v.starts_with('-') => Ok(Some(v.clone())),
+                _ => Err(format!(
+                    "{} requires a path (got nothing). Use `{} <path>`                      or `{}=<path>`.",
+                    flag, flag, flag
+                )),
+            };
+        }
+        Ok(None)
+    };
+
+    let dump_topology = argv.iter().any(|a| a == "--dump-topology");
+    let dump_topology_to = match flag_value("--dump-topology") {
+        Ok(v) => v,
+        // A bare `--dump-topology` is legal (stdout); only the
+        // `=`-with-empty-value form is an error here.
+        Err(_) => None,
+    };
+    if dump_topology || dump_topology_to.is_some() {
+        let artifact = hale_types::topology::dump_topology(&bundle);
+        match &dump_topology_to {
+            Some(path) => {
+                if let Err(e) = std::fs::write(path, &artifact) {
+                    eprintln!("could not write {}: {}", path, e);
+                    return ExitCode::from(2);
+                }
+            }
+            None => print!("{}", artifact),
+        }
     }
-    if let Some(path) = std::env::args()
-        .position(|a| a == "--check-topology")
-        .and_then(|i| std::env::args().nth(i + 1))
-    {
+    // P2 from the devex review: `--check-topology` compares the
+    // ENTIRE artifact text, so a claim rename or a comment-only edit
+    // that moves every provenance offset fails the gate and reports
+    // that the program's "model" changed — even when `shape_hash`,
+    // which is the model's identity, did not. Both gates now exist
+    // and are named for what they compare:
+    //   --check-topology        exact artifact snapshot (law +
+    //                           model + provenance)
+    //   --check-topology-shape  the model identity only
+    // `shape_hash` was already verified stable across renames and
+    // source motion, and sensitive to a real graph change, so it is
+    // the right key for the loose gate.
+    let shape_gate = match flag_value("--check-topology-shape") {
+        Ok(v) => v,
+        Err(msg) => {
+            eprintln!("{}", msg);
+            return ExitCode::from(2);
+        }
+    };
+    if let Some(path) = shape_gate {
+        let current = hale_types::topology::dump_topology(&bundle);
+        // The hash VALUE, not the raw line — the gate's whole point
+        // is that this is the model's identity, and a diagnostic
+        // that makes you read past `"shape_hash": ` and a trailing
+        // comma to compare two hex strings is working against that.
+        let hash_of = |s: &str| -> Option<String> {
+            s.lines()
+                .find(|l| l.contains("\"shape_hash\""))
+                .and_then(|l| l.split(':').nth(1))
+                .map(|v| v.trim().trim_matches(',').trim_matches('"').to_string())
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(expected) => match (hash_of(&expected), hash_of(&current)) {
+                (Some(a), Some(b)) if a != b => {
+                    eprintln!(
+                        "topology SHAPE changed — the program's \
+                         model no longer matches {}.\n  baseline: \
+                         {}\n  current:  {}\n\nClaim renames and \
+                         source motion do NOT affect this gate; a \
+                         changed graph does. Regenerate:\n  hale \
+                         check <target> --dump-topology > {}",
+                        path, a, b, path
+                    );
+                    return ExitCode::from(1);
+                }
+                (None, _) | (_, None) => {
+                    eprintln!(
+                        "topology baseline {} has no shape_hash line",
+                        path
+                    );
+                    return ExitCode::from(2);
+                }
+                _ => {}
+            },
+            Err(_) => {
+                eprintln!(
+                    "topology baseline not found: {}\nCreate \
+                     it:\n  hale check <target> --dump-topology > {}",
+                    path, path
+                );
+                return ExitCode::from(1);
+            }
+        }
+    }
+    let check_topology_path = match flag_value("--check-topology") {
+        Ok(v) => v,
+        Err(msg) => {
+            eprintln!("{}", msg);
+            return ExitCode::from(2);
+        }
+    };
+    if let Some(path) = check_topology_path {
         let current = hale_types::topology::dump_topology(&bundle);
         match std::fs::read_to_string(&path) {
             Ok(expected) => {
                 if expected != current {
                     eprintln!(
-                        "topology changed — {} no longer matches the \
-                         program's model.",
+                        "topology artifact changed — {} no longer matches \
+                         byte-for-byte. This gate covers law, model AND \
+                         provenance, so a claim rename or source motion \
+                         trips it even when the model is identical; use \
+                         --check-topology-shape to gate the model alone.",
                         path
                     );
                     for line in diff_lines(&expected, &current) {
