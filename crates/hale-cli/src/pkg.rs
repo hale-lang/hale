@@ -48,6 +48,34 @@ pub struct Manifest {
     /// that don't use `@ffi("c")` declarations.
     #[serde(default)]
     pub ffi: FfiManifest,
+    /// GH #409: `[environments.<name>]` — which claimset each
+    /// deployment target requires, and which entrypoints deploy
+    /// there.
+    ///
+    /// The constitution is bound HERE rather than in source because
+    /// it is a property of where you are deploying, not of the
+    /// program: one entrypoint deployed to two environments must
+    /// satisfy both claimsets, and it cannot say two different
+    /// `adopt` lines. A source-level `adopt` still means "always,
+    /// everywhere"; the two compose by union like everything else in
+    /// this system.
+    #[serde(default)]
+    pub environments: BTreeMap<String, EnvSpec>,
+}
+
+/// One `[environments.<name>]` section.
+#[derive(Deserialize, Default, Clone, Debug)]
+pub struct EnvSpec {
+    /// The constitution every listed entrypoint must satisfy when
+    /// deployed here. Absent = this environment imposes no extra
+    /// law beyond what the entrypoints already adopt.
+    pub constitution: Option<String>,
+    /// Seed directories, relative to the manifest. An entrypoint
+    /// listed in NO environment is an error rather than a skip:
+    /// silently unconstrained is the failure mode this whole
+    /// feature exists to remove.
+    #[serde(default)]
+    pub entrypoints: Vec<String>,
 }
 
 /// `[ffi]` section of `hale.toml`. Paths in `csrc` are resolved
@@ -393,4 +421,20 @@ mod tests {
 #[allow(dead_code)]
 fn _phantom_pathbuf_use() -> PathBuf {
     PathBuf::new()
+}
+
+/// GH #409: the `[environments.*]` table, or an empty map when the
+/// manifest is absent. A missing `hale.toml` is not an error here —
+/// most seeds have none — but a malformed one is.
+pub fn read_environments(
+    manifest: &Path,
+) -> Result<BTreeMap<String, EnvSpec>, String> {
+    if !manifest.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let src = fs::read_to_string(manifest)
+        .map_err(|e| format!("read {}: {}", manifest.display(), e))?;
+    let m: Manifest = toml::from_str(&src)
+        .map_err(|e| format!("parse {}: {}", manifest.display(), e))?;
+    Ok(m.environments)
 }

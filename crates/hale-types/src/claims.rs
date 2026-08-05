@@ -64,6 +64,14 @@ pub struct ClaimOutcome {
     /// See [`crate::verdict::Verdict`] — one vocabulary shared with
     /// the fn-grained certificates in `lowered`.
     pub result: Verdict,
+    /// GH #409: the constitution this clause came from, if it was
+    /// adopted rather than written in this main. Recorded rather
+    /// than left to an annotation because two kinds of sentence end
+    /// up in one block with opposite lifetimes — a product law true
+    /// everywhere, and an environment rail deliberately false in
+    /// production — and provenance cannot drift from reality the way
+    /// a hand-applied marker can.
+    pub source: Option<String>,
 }
 
 /// Diagnostics only — the `hale check` entry point.
@@ -203,6 +211,170 @@ struct Cx<'a> {
     model: crate::model::Model,
 }
 
+/// GH #409: expand a main's `adopt` lines into its claim set,
+/// returning claim-name → originating constitution.
+///
+/// Composition is UNION. A derived constitution may add clauses and
+/// may not replace one, which is enforced by the collision rule
+/// below: the same claim name arriving from two different origins is
+/// an error. That is what makes weakening *unexpressible* rather
+/// than merely discouraged — a stricter bound is a second named
+/// claim that coexists with the inherited one, and both are checked.
+fn expand_adoptions(
+    consts: &[&ConstitutionDecl],
+    adopts: &[Ident],
+    lib_adopts: &[Ident],
+    claims: &mut Vec<ClaimDecl>,
+    diags: &mut Vec<Diag>,
+) -> BTreeMap<String, String> {
+    let mut origins: BTreeMap<String, String> = BTreeMap::new();
+
+    // A library seed may DECLARE a constitution — that is how one is
+    // shared — but adopting is the closing world's act, because
+    // adoption is what fixes which world the clauses are evaluated
+    // against.
+    for a in lib_adopts {
+        diags.push(Diag::ty(
+            a.span,
+            format!(
+                "`adopt {}` is only legal in a `main locus`'s \
+                 `claims` block. A constitution is evaluated against \
+                 a CLOSED world, and a library seed does not close \
+                 one — declare the constitution here and adopt it in \
+                 each entrypoint",
+                a.name
+            ),
+        ));
+    }
+
+    let mut by_name: BTreeMap<&str, &ConstitutionDecl> = BTreeMap::new();
+    for c in consts {
+        if let Some(prev) = by_name.insert(c.name.name.as_str(), c) {
+            diags.push(Diag::ty(
+                c.name.span,
+                format!(
+                    "constitution `{}` is declared twice — the second \
+                     would silently shadow the first, and a claimset \
+                     cited by name must resolve to one thing",
+                    prev.name.name
+                ),
+            ));
+        }
+    }
+    if adopts.is_empty() {
+        return origins;
+    }
+
+    // Expansion, depth-first, deduped by CONSTITUTION. A diamond
+    // (two bases sharing one) contributes the shared base's clauses
+    // exactly once — dedup by origin, not by claim name, so a real
+    // collision between two distinct origins still surfaces below.
+    let mut done: BTreeSet<String> = BTreeSet::new();
+    let mut collected: Vec<(String, ClaimDecl)> = Vec::new();
+    fn visit(
+        name: &Ident,
+        by_name: &BTreeMap<&str, &ConstitutionDecl>,
+        done: &mut BTreeSet<String>,
+        stack: &mut Vec<String>,
+        out: &mut Vec<(String, ClaimDecl)>,
+        diags: &mut Vec<Diag>,
+    ) {
+        if stack.contains(&name.name) {
+            diags.push(Diag::ty(
+                name.span,
+                format!(
+                    "constitution `{}` extends itself, directly or \
+                     through {}",
+                    name.name,
+                    stack.join(" -> ")
+                ),
+            ));
+            return;
+        }
+        if !done.insert(name.name.clone()) {
+            return; // already contributed (diamond)
+        }
+        let Some(cd) = by_name.get(name.name.as_str()) else {
+            let mut msg = format!(
+                "unknown constitution `{}` — nothing declares it",
+                name.name
+            );
+            if let Some(near) = by_name.keys().find(|k| {
+                k.len().abs_diff(name.name.len()) <= 2
+                    && k.chars().next() == name.name.chars().next()
+            }) {
+                msg.push_str(&format!(". Did you mean `{}`?", near));
+            }
+            diags.push(Diag::ty(name.span, msg));
+            return;
+        };
+        stack.push(name.name.clone());
+        for base in &cd.extends {
+            visit(base, by_name, done, stack, out, diags);
+        }
+        stack.pop();
+        for e in &cd.entries {
+            out.push((cd.name.name.clone(), e.clone()));
+        }
+    }
+    let mut stack = Vec::new();
+    for a in adopts {
+        visit(
+            a,
+            &by_name,
+            &mut done,
+            &mut stack,
+            &mut collected,
+            diags,
+        );
+    }
+
+    // Collisions. Claim names are the contract of record — cited in
+    // reviews, in diagnostics, in the artifact — and are deliberately
+    // never mangled, so they are one flat namespace.
+    let local: BTreeSet<String> =
+        claims.iter().map(|c| c.name.name.clone()).collect();
+    for (origin, decl) in &collected {
+        if local.contains(&decl.name.name) {
+            diags.push(Diag::ty(
+                decl.name.span,
+                format!(
+                    "claim `{}` is declared in this main AND adopted \
+                     from constitution `{}`. A local clause cannot \
+                     replace an adopted one — that is how a law gets \
+                     quietly weakened. Rename one; a stricter \
+                     variant is a separate named claim",
+                    decl.name.name, origin
+                ),
+            ));
+            continue;
+        }
+        match origins.get(&decl.name.name) {
+            Some(prev) if prev != origin => {
+                diags.push(Diag::ty(
+                    decl.name.span,
+                    format!(
+                        "claim `{}` is declared by two constitutions, \
+                         `{}` and `{}`. Composition is union, so a \
+                         name must mean one thing across the whole \
+                         adopted set",
+                        decl.name.name, prev, origin
+                    ),
+                ));
+            }
+            Some(_) => {}
+            None => {
+                origins.insert(
+                    decl.name.name.clone(),
+                    origin.clone(),
+                );
+                claims.push(decl.clone());
+            }
+        }
+    }
+    origins
+}
+
 fn claims_report_inner(
     programs: &[&Program],
     graph: &BusGraph,
@@ -229,12 +401,16 @@ fn claims_report_inner(
             segs.first().map(|a| (mangled.as_str(), a.as_str()))
         })
         .collect();
+    #[allow(clippy::too_many_arguments)]
     fn walk_items<'a>(
         items: &'a [TopDecl],
         groups: &mut Vec<&'a GroupDecl>,
         claims: &mut Vec<ClaimDecl>,
         top_blocks: &mut Vec<&'a ClaimsBlock>,
         has_main: &mut bool,
+        consts: &mut Vec<&'a ConstitutionDecl>,
+        adopts: &mut Vec<Ident>,
+        lib_adopts: &mut Vec<Ident>,
     ) {
         for item in items {
             match item {
@@ -244,16 +420,24 @@ fn claims_report_inner(
                     for m in &l.members {
                         if let LocusMember::Claims(cb) = m {
                             claims.extend(cb.entries.iter().cloned());
+                            adopts.extend(cb.adopts.iter().cloned());
                         }
                     }
                 }
-                TopDecl::Claims(cb) => top_blocks.push(cb),
+                TopDecl::Claims(cb) => {
+                    top_blocks.push(cb);
+                    lib_adopts.extend(cb.adopts.iter().cloned());
+                }
+                TopDecl::Constitution(cd) => consts.push(cd),
                 TopDecl::Module(m) => walk_items(
                     &m.items,
                     groups,
                     claims,
                     top_blocks,
                     has_main,
+                    consts,
+                    adopts,
+                    lib_adopts,
                 ),
                 _ => {}
             }
@@ -261,6 +445,9 @@ fn claims_report_inner(
     }
     let mut top_blocks: Vec<&ClaimsBlock> = Vec::new();
     let mut has_main = false;
+    let mut consts: Vec<&ConstitutionDecl> = Vec::new();
+    let mut adopts: Vec<Ident> = Vec::new();
+    let mut lib_adopts: Vec<Ident> = Vec::new();
     for p in programs {
         walk_items(
             &p.items,
@@ -268,8 +455,21 @@ fn claims_report_inner(
             &mut claims,
             &mut top_blocks,
             &mut has_main,
+            &mut consts,
+            &mut adopts,
+            &mut lib_adopts,
         );
     }
+    // GH #409: expand adopted constitutions into this main's claim
+    // set. Authoring is shared, evaluation is not — every clause is
+    // checked HERE, against this entrypoint's closed world.
+    let origins = expand_adoptions(
+        &consts,
+        &adopts,
+        &lib_adopts,
+        &mut claims,
+        &mut diags,
+    );
     for cb in top_blocks {
         // The seed merge flattens imported items into the closing
         // program, so position cannot tell the tiers apart — the
@@ -485,6 +685,7 @@ fn claims_report_inner(
             name: c.name.name.clone(),
             form: render_form(&c.form),
             result,
+            source: origins.get(&c.name.name).cloned(),
         });
     }
     (diags, outcomes)

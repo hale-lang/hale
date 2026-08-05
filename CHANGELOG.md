@@ -8,6 +8,92 @@ behavior.
 
 ## Unreleased
 
+### `--env` and the entrypoint x environment matrix (GH #409)
+
+The tooling half of constitutions. `adopt Core;` in source means
+*always, everywhere* — but an entrypoint deployed to two environments
+must satisfy both claimsets, and it cannot write two conflicting
+`adopt` lines. So the environment binding lives in `hale.toml`, where
+the deployment facts already are:
+
+```toml
+[environments.prod]
+constitution = "Prod"
+entrypoints  = ["apps/prober"]
+```
+
+```sh
+hale check apps/prober --env prod    # adopts Prod for this run
+hale check --matrix                  # every (entrypoint, environment) pair
+```
+
+`--env` injects the environment's constitution exactly as if the
+source had written `adopt` — same evaluation, same closed world, union
+with whatever the source already adopts. One entrypoint therefore gets
+one verdict per environment without its source knowing where it will
+be deployed.
+
+`--matrix` checks every pair the manifest declares. **An entrypoint
+listed in no environment is an error, not a skip** — that is the one
+hole composition cannot close by construction, since no single
+compilation can see that a sibling was left out. A seed with no `main
+locus` is not an entrypoint and is not demanded of the manifest; a
+listed path that does not exist, an unknown environment name, and a
+`--matrix` run against a manifest with no `[environments]` are all
+errors rather than quiet successes.
+
+### Constitutions: one claimset across many entrypoints (GH #409)
+
+`claims { }` is only legal inside `main locus`, and that rule is
+load-bearing — claims are closed-world statements and `main` is the
+only place a world is closed. But it constrains *evaluation*, not
+*authoring*, so a law meant to hold for twenty entrypoints had to be
+copy-pasted into twenty main loci, where the copy somebody forgets
+fails open silently.
+
+```hale
+constitution Core {
+    tenant_iso: forbid reaches(billing, research);
+    one_writer: count publishers(topic Settled) == 1;
+}
+
+constitution Dev extends Core {
+    no_real_payments: forbid reaches(app, payment_provider);
+}
+
+main locus App {
+    params { … }
+    claims { adopt Dev; local_rule: require …; }
+}
+```
+
+Every clause is still evaluated in the adopting entrypoint's own
+closed world. One text, N evaluations, N worlds — the soundness
+argument is unchanged.
+
+Composition is **union and nothing else**. A derived constitution may
+add clauses and may not replace one: two constitutions declaring a
+name is an error naming both origins, and so is a local clause
+shadowing an adopted one. That looks like a restriction and is the
+point — if override were allowed, weakening would be expressible and
+would read exactly like ordinary composition at the adoption site,
+and telling strengthening from weakening means proving one sentence
+implies another, which fails open when it gets that wrong. A stricter
+bound is simply a second named claim coexisting with the inherited
+one. Weakening isn't rejected; it's unexpressible.
+
+A diamond contributes its shared base exactly once, deduped by origin
+rather than by name so a genuine two-origin collision still surfaces.
+`extends` cycles, unknown names (with a did-you-mean) and `adopt` in
+a library-tier block are all errors — adoption is the closing world's
+act, since it fixes which world the clauses are evaluated against.
+
+Artifact schema **1.5**: a claim row gains an optional `source`, the
+constitution an adopted clause came from. Once environments may add
+laws, product laws and environment rails (deliberately false in
+production) live in one block and read identically — provenance makes
+the distinction structural instead of a marker that can drift.
+
 ### `only edges` and `bound` say where to edit (downstream review)
 
 `forbid` names the crossing call, or the publish and the receiving

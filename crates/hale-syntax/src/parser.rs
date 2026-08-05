@@ -1040,6 +1040,10 @@ impl Parser {
             TokenKind::Ident(s) if s == "claims" => {
                 self.parse_claims_block().map(TopDecl::Claims)
             }
+            // GH #409: `constitution NAME [extends A, B] { ... }`.
+            TokenKind::Ident(s) if s == "constitution" => {
+                self.parse_constitution_decl().map(TopDecl::Constitution)
+            }
             // `main locus Foo { ... }` — Phase 2 entry-point
             // marker. Same contextual-keyword pattern. The
             // following token must be `locus`.
@@ -1203,12 +1207,81 @@ impl Parser {
     /// position exactly as `unix` is in a bindings entry. The
     /// "must be inside `main locus`" check fires in
     /// `parse_locus_decl` (parallel to bindings/placement).
+    /// GH #409: `constitution NAME [extends A [, B]*] { claim; ... }`.
+    ///
+    /// The body is the same claim grammar as a `claims { }` block —
+    /// a constitution IS a claimset, just a named and reusable one —
+    /// minus `adopt`, which belongs to the entrypoint that closes the
+    /// world rather than to a claimset being composed.
+    fn parse_constitution_decl(
+        &mut self,
+    ) -> Result<ConstitutionDecl, Diag> {
+        let kw = self.peek_token().clone();
+        self.bump(); // `constitution`
+        let name = self.expect_ident("constitution name")?;
+        let mut extends = Vec::new();
+        if matches!(self.peek(), TokenKind::Ident(s) if s == "extends") {
+            self.bump();
+            loop {
+                extends.push(self.expect_ident("base constitution")?);
+                if matches!(self.peek(), TokenKind::Comma) {
+                    self.bump();
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect(TokenKind::LBrace, "{")?;
+        let mut entries = Vec::new();
+        while !matches!(self.peek(), TokenKind::RBrace) {
+            if matches!(self.peek(), TokenKind::Ident(s) if s == "adopt")
+            {
+                return Err(Diag::parse(
+                    self.peek_token().span,
+                    "`adopt` belongs to a main locus's `claims` block, \
+                     not to a constitution — compose claimsets with \
+                     `extends` instead"
+                        .to_string(),
+                ));
+            }
+            let n = self.expect_ident("claim name")?;
+            self.expect(TokenKind::Colon, ":")?;
+            let form = self.parse_claim_form()?;
+            let semi = self.expect(TokenKind::Semi, ";")?;
+            entries.push(ClaimDecl {
+                name: n.clone(),
+                form,
+                span: n.span.merge(semi.span),
+            });
+        }
+        let close = self.expect(TokenKind::RBrace, "}")?;
+        Ok(ConstitutionDecl {
+            name,
+            extends,
+            entries,
+            span: kw.span.merge(close.span),
+        })
+    }
+
     fn parse_claims_block(&mut self) -> Result<ClaimsBlock, Diag> {
         let kw_tok = self.peek_token().clone();
         self.bump(); // consume `claims` ident
         self.expect(TokenKind::LBrace, "{")?;
         let mut entries = Vec::new();
+        let mut adopts = Vec::new();
         while !matches!(self.peek(), TokenKind::RBrace) {
+            // GH #409: `adopt Core;` — pull in a named constitution.
+            // It sits inside `claims { }` rather than beside it so
+            // that all of a main's law reads in one place, adopted
+            // and local alike.
+            if matches!(self.peek(), TokenKind::Ident(s) if s == "adopt")
+            {
+                self.bump();
+                let n = self.expect_ident("constitution name")?;
+                self.expect(TokenKind::Semi, ";")?;
+                adopts.push(n);
+                continue;
+            }
             let name = self.expect_ident("claim name")?;
             self.expect(TokenKind::Colon, ":")?;
             let form = self.parse_claim_form()?;
@@ -1222,6 +1295,7 @@ impl Parser {
         let close = self.expect(TokenKind::RBrace, "}")?;
         Ok(ClaimsBlock {
             entries,
+            adopts,
             lib_tier: false,
             span: kw_tok.span.merge(close.span),
         })

@@ -499,9 +499,11 @@ fn register_top_decls(
                 // resolves group members against the merged bundle
                 // itself, where imported decls are visible.
             }
-            TopDecl::Claims(_) => {
-                // #392 thread 2: a library-tier claims block — law,
-                // not a symbol. Evaluated by the same claims pass.
+            TopDecl::Claims(_) | TopDecl::Constitution(_) => {
+                // #392 thread 2 / GH #409: law, not a symbol.
+                // Evaluated by the bundle-level claims pass. A
+                // constitution is a claimset, so it registers no
+                // name a type expression could refer to.
             }
         }
     }
