@@ -6,7 +6,7 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.15.0 — claims: the law travels, the witness says where (2026-08-04)
 
 ### Library-tier claims: law that travels with an import (GH #392 thread 2)
 
