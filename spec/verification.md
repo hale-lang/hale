@@ -235,7 +235,7 @@ earlier in the same file as the family. Companion:
 class along any path, with the same loop/indirect unboundedness
 rules as every per-call dimension.
 
-**The topology artifact** (#382 phase 2; schema 1.5):
+**The topology artifact** (#382 phase 2; schema 1.6):
 `hale check <t> --dump-topology` emits the serialized model —
 sorts (loci, fns, topics), relations (calls with **weights**: loop
 nesting, unbounded-loop membership, interface-dispatch tags;
@@ -323,6 +323,104 @@ traveling block is marked at the mangle stage, which only ever
 touches imported seeds. Group and topic references inside a
 traveling block canonicalize to mangled decls exactly as group
 decls do (#334); claim names are never mangled.
+
+## Constitutions — one authored claimset, many closed worlds (GH #409)
+
+A **constitution** is a named claimset declared outside any main and
+adopted by entrypoints with `adopt NAME;` inside a main-locus
+`claims { }` block. It is not a new quantification horizon: every
+clause is evaluated in the adopting main's own closed world, exactly
+as if written there. Authoring is shared, evaluation is not.
+
+- **Placement.** `constitution` is top-level only. `adopt` is legal
+  only in a MAIN-LOCUS `claims { }` block — adoption is what fixes
+  which world the clauses are evaluated against, and a library seed
+  closes none. `adopt` inside a `constitution` is a parse error;
+  claimsets compose with `extends`.
+- **Composition is union.** `extends A, B` contributes A's and B's
+  clauses. A derived constitution may ADD and may not REPLACE: a
+  claim name declared by two constitutions in one adopted set is an
+  error naming both origins, as is a local main clause shadowing an
+  adopted one. This is what makes weakening *unexpressible* — a
+  stricter bound is a second named claim that coexists with the
+  inherited one, and both are checked. Deciding whether a replacement
+  strengthens or weakens would require proving implication between
+  claims, which fails open when it is wrong.
+- **Duplicates within one constitution are an error.** Diamond
+  duplication is resolved by constitution-level traversal, so a
+  repeated `(origin, claim name)` can only be two clauses declared
+  under one name — silently keeping the first would leave law the
+  author wrote unchecked.
+- **Diamonds dedup by ORIGIN.** Two constitutions extending a common
+  base contribute the base once. Dedup is by originating
+  constitution, never by claim name: deduping by name would swallow
+  the genuine two-origin collision the union rule depends on.
+- **Cycles** in `extends`, unknown constitution names (with a
+  did-you-mean), and duplicate constitution declarations are errors.
+- **Groups are not implied.** A constitution names group vocabulary,
+  and every adopting entrypoint must DECLARE those groups. An
+  undeclared name is an unknown-name error, not an empty set;
+  `may_be_empty` applies only to a group that is declared and
+  resolves to zero members. An entrypoint lacking a component
+  therefore writes `group thing = { } may_be_empty;` rather than
+  omitting the declaration.
+
+### Identity
+
+A constitution's **display name** is flat and unmangled so
+diagnostics cite it as written. Its **identity** is the digest of its
+normalized closure — its own `(name, rendered form)` pairs, sorted,
+plus its bases' digests, recursively. Two declarations are the same
+constitution iff their closures agree.
+
+The distinction is load-bearing across entrypoints: two seeds may
+each declare `Core` with different clauses, so a binding by bare name
+proves only that each entrypoint had *some* constitution called
+`Core`, not that all were evaluated against one claimset.
+
+### Deployment environments
+
+`hale.toml` binds constitutions to deployment targets:
+
+```toml
+[claims]
+base = "Core"                # every environment carries this
+
+[environments.prod]
+constitution = "Prod"        # …and prod adds this
+entrypoints  = ["apps/riskgw"]
+
+[environments.dev]
+source_only  = true          # explicit: this environment adds none
+entrypoints  = ["apps/riskgw"]
+```
+
+`--env <name>` injects the base and the environment's constitution as
+if the source had written `adopt`. Binding here rather than in source
+is what lets one entrypoint satisfy different claimsets in different
+environments: it cannot write two conflicting `adopt` lines, but it
+can be checked twice.
+
+`[claims] base` is what makes "an environment may add law, never drop
+it" true of the mechanism rather than only of `extends` — every
+evaluation carries the base by construction. An environment naming no
+constitution must say `source_only = true`; an omission is
+indistinguishable from a typo, and unknown keys in an environment
+section are rejected for the same reason.
+
+`--matrix` checks every declared (entrypoint, environment) pair. It
+does not short-circuit; the exit status reflects every pair. An
+entrypoint in no environment is an error, and a seed that fails to
+PARSE is an unknown entrypoint rather than a non-entrypoint —
+otherwise a syntax error would erase a seed from coverage. Within one
+environment, all entrypoints must resolve each constitution to the
+same closure digest.
+
+The artifact records both: per-claim `source` (where this clause came
+from) and an `evaluation` section naming the adopted constitutions
+with their digests (which claimset this run certified). The second is
+inside the integrity-covered body — an evaluation context editable
+after the fact would certify nothing.
 
 ## Structural & design rules
 

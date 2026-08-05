@@ -711,13 +711,31 @@ close by construction, since no single compilation can see that a
 sibling was left out. A seed with no `main locus` is not an entrypoint
 and is not demanded of the manifest.
 
-### Groups resolve over shared vocabulary
+### Groups must be declared by every adopting entrypoint
 
 A constitution applied to every entrypoint cannot name any one
-application's internals. It doesn't need to: it names **shared library
-vocabulary**, which every entrypoint either imports or doesn't. An
-entrypoint that doesn't import a seed gets an empty group, and
-`may_be_empty` is the existing opt-out for exactly that.
+application's internals. It names **shared vocabulary** — but that
+vocabulary has to exist in each adopting entrypoint, and an
+*undeclared* name is an error, not an empty set:
+
+```
+type error: claim `iso` names group `payment_provider`, which is never
+declared. Add `group payment_provider = { … };` at the top level.
+```
+
+`may_be_empty` applies only to a group that IS declared and resolves
+to zero members. So an entrypoint that genuinely lacks a component
+declares the vocabulary and says so:
+
+```hale
+group payment_provider = { } may_be_empty;
+```
+
+The usual way to satisfy this is for the entrypoints to import the
+same seed that declares both the constitution and its groups — then
+the vocabulary arrives with the law. An entrypoint that deliberately
+lacks a component writes the empty group explicitly, which is a line
+a reviewer can see rather than an absence they must infer.
 
 ### Provenance, not annotation
 
@@ -848,11 +866,11 @@ reports as *unverifiable* rather than as valid — a consumer may
 choose to accept it, but must never read "nothing to check" as
 "checked and intact".
 
-The artifact shape (schema `1.5`):
+The artifact shape (schema `1.6`):
 
 ```text
 {
-  "schema": "1.5",
+  "schema": "1.6",
   "shape_hash": "<fnv1a-64 over the model half>",
   "sorts":     { "loci": […], "fns": […], "topics": […] },
   "relations": {

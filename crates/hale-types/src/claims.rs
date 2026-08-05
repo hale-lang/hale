@@ -86,6 +86,103 @@ pub fn claims_diags(
 /// Diagnostics plus per-claim outcomes (the artifact's rows).
 /// Demangles cross-seed symbols in the diagnostics so witnesses name
 /// what the author wrote.
+/// GH #409 (review finding 3): a constitution's identity is its
+/// NORMALIZED CLOSURE, not its display name.
+///
+/// Constitution names are flat and unmangled so diagnostics can cite
+/// them as written. That is right for display and useless for
+/// identity: two seeds can each declare `Core` with different
+/// clauses, and an environment binding a bare name would accept
+/// either. The matrix would then have proved "each entrypoint had
+/// SOME constitution called Core" — not "every entrypoint was
+/// evaluated against one shared claimset".
+///
+/// The digest covers the constitution's own clauses (name + rendered
+/// form, sorted) and, recursively, its bases' digests. Two
+/// declarations agree iff their whole closure agrees.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConstitutionIdentity {
+    pub name: String,
+    pub digest: String,
+}
+
+/// Diagnostics, outcomes, and the identities of the constitutions
+/// actually adopted.
+pub fn claims_report_with_identities(
+    programs: &[&Program],
+    graph: &BusGraph,
+    import_renames: &[(Vec<String>, String)],
+) -> (Vec<Diag>, Vec<ClaimOutcome>, Vec<ConstitutionIdentity>) {
+    let (d, o) = claims_report(programs, graph, import_renames);
+    let mut consts: Vec<&ConstitutionDecl> = Vec::new();
+    fn walk<'a>(items: &'a [TopDecl], out: &mut Vec<&'a ConstitutionDecl>) {
+        for i in items {
+            match i {
+                TopDecl::Constitution(c) => out.push(c),
+                TopDecl::Module(m) => walk(&m.items, out),
+                _ => {}
+            }
+        }
+    }
+    for p in programs {
+        walk(&p.items, &mut consts);
+    }
+    let by_name: BTreeMap<&str, &ConstitutionDecl> =
+        consts.iter().map(|c| (c.name.name.as_str(), *c)).collect();
+    // Only the constitutions whose clauses actually landed — the
+    // adopted closure, which is what an environment's identity is
+    // about.
+    let adopted: BTreeSet<String> =
+        o.iter().filter_map(|r| r.source.clone()).collect();
+    adopted
+        .iter()
+        .map(|n| ConstitutionIdentity {
+            name: n.clone(),
+            digest: constitution_digest(n, &by_name, &mut Vec::new()),
+        })
+        .fold((d, o, Vec::new()), |(d, o, mut v), id| {
+            v.push(id);
+            (d, o, v)
+        })
+}
+
+/// FNV-1a/64 over the normalized closure. Same family as the
+/// artifact's other identities, and dependency-free.
+fn constitution_digest(
+    name: &str,
+    by_name: &BTreeMap<&str, &ConstitutionDecl>,
+    stack: &mut Vec<String>,
+) -> String {
+    if stack.iter().any(|s| s == name) {
+        return "cycle".to_string();
+    }
+    let Some(cd) = by_name.get(name) else {
+        return "unresolved".to_string();
+    };
+    stack.push(name.to_string());
+    let mut parts: Vec<String> = cd
+        .extends
+        .iter()
+        .map(|b| constitution_digest(&b.name, by_name, stack))
+        .collect();
+    parts.sort();
+    let mut own: Vec<String> = cd
+        .entries
+        .iter()
+        .map(|e| format!("{}={}", e.name.name, render_form(&e.form)))
+        .collect();
+    own.sort();
+    parts.extend(own);
+    stack.pop();
+    let joined = parts.join(";");
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in joined.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{:016x}", h)
+}
+
 pub fn claims_report(
     programs: &[&Program],
     graph: &BusGraph,
@@ -362,7 +459,26 @@ fn expand_adoptions(
                     ),
                 ));
             }
-            Some(_) => {}
+            // Same origin, same name. Diamond duplication is already
+            // handled by the constitution-level `done` set, so a
+            // constitution's entries are collected exactly once —
+            // which means reaching here can only be TWO clauses
+            // declared with one name inside a single constitution.
+            // Skipping it silently dropped the second clause and let
+            // the build pass while a law the author wrote went
+            // unchecked.
+            Some(_) => {
+                diags.push(Diag::ty(
+                    decl.name.span,
+                    format!(
+                        "constitution `{}` declares claim `{}` twice. \
+                         The second would silently replace nothing and \
+                         go unchecked — claim names are the contract \
+                         of record, so one name means one clause",
+                        origin, decl.name.name
+                    ),
+                ));
+            }
             None => {
                 origins.insert(
                     decl.name.name.clone(),

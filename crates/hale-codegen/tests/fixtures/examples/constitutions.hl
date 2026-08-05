@@ -1,0 +1,48 @@
+// GH #409: the constitution surface, for the parse corpus.
+//
+// A named claimset declared outside any main, composed with
+// `extends` (union only — a derived constitution may add clauses and
+// may not replace one), and adopted by an entrypoint whose closed
+// world every clause is evaluated against.
+
+type Msg { v: Int; }
+topic Settled { payload: Msg; subject: "app.settled"; }
+
+locus Billing {
+    params { n: Int = 0; }
+    bus { publish Settled; }
+    fn go() { let m = Msg { v: 1 }; Settled <- m; }
+}
+locus Research {
+    params { n: Int = 0; }
+    fn look() -> Int { return self.n; }
+}
+
+group billing = { Billing };
+group research = { Research };
+
+constitution Core {
+    tenant_iso: forbid reaches(billing, research);
+    one_writer: count publishers(topic Settled) == 1;
+}
+
+constitution Dev extends Core {
+    quiet: count subscribers(topic Settled) == 0;
+}
+
+// Multiple bases, and a diamond: both extend `Core`, which
+// contributes its clauses exactly once.
+constitution Both extends Core, Dev { }
+
+main locus App {
+    params {
+        b: Billing = Billing { };
+        r: Research = Research { };
+    }
+    claims {
+        adopt Both;
+        local_rule: require publishes(some billing, topic Settled);
+    }
+}
+
+fn main() { App { }; }
