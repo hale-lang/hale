@@ -1069,3 +1069,170 @@ fn main() { App { }; }
     );
     assert!(witness.contains(" -> "), "plain call arrow:\n{}", witness);
 }
+
+// =====================================================================
+// Provenance for `only edges` and `bound` (downstream review, item 4)
+// =====================================================================
+//
+// `forbid` says WHERE to edit: the crossing call, or the publish and
+// the receiving subscription. `only edges` and `bound` anchored only
+// at the claim line — and `only edges` is explicitly a reviewable
+// boundary inventory, so making the reviewer hand-find the crossing
+// defeats the point of it.
+
+const BOUNDARY: &str = r#"
+type Cmd { v: Int; }
+topic Allowed { payload: Cmd; subject: "app.allowed"; }
+topic Sneaky  { payload: Cmd; subject: "app.sneaky"; }
+
+locus Ops {
+    params { n: Int = 0; }
+    bus { publish Allowed; publish Sneaky; }
+    fn act() {
+        let c = Cmd { v: 1 };
+        Allowed <- c;
+        Sneaky <- c;
+        let k = Core { };
+        k.poked();
+    }
+}
+locus Core {
+    params { n: Int = 0; }
+    bus { subscribe Allowed as on_allowed; subscribe Sneaky as on_sneaky; }
+    fn on_allowed(c: Cmd) { self.n = c.v; }
+    fn on_sneaky(c: Cmd) { self.n = c.v; }
+    fn poked() { self.n = 99; }
+}
+group ops = { Ops };
+group core = { Core };
+main locus App {
+    params { o: Ops = Ops { }; c: Core = Core { }; }
+    claims { boundary: only edges ops -> core { publish Allowed; }; }
+}
+fn main() { App { }; }
+"#;
+
+#[test]
+fn only_edges_points_at_the_ungranted_publish_and_subscription() {
+    let ds = diags(BOUNDARY);
+    assert!(
+        ds.iter().any(|m| m.contains("the un-granted publish happens here")),
+        "the publish site must be named: {:#?}",
+        ds
+    );
+    let recv = ds
+        .iter()
+        .find(|m| m.contains("received here"))
+        .unwrap_or_else(|| panic!("the subscription must be named: {:#?}", ds));
+    assert!(
+        recv.contains("publish Sneaky;"),
+        "and the repair must be the exact grant line to add: {}",
+        recv
+    );
+}
+
+#[test]
+fn only_edges_points_at_the_ungrantable_call() {
+    let ds = diags(BOUNDARY);
+    let call = ds
+        .iter()
+        .find(|m| m.contains("this call crosses the boundary"))
+        .unwrap_or_else(|| panic!("the call site must be named: {:#?}", ds));
+    assert!(
+        call.contains("cannot be granted"),
+        "and say why a grant is not the fix here: {}",
+        call
+    );
+}
+
+/// `bound` knew which of four conditions made a count unbounded and
+/// printed all four, at the claim line, nowhere near the construct.
+fn bound_src(body: &str, extra: &str) -> String {
+    format!(
+        r#"
+effect llm;
+@effects(is: {{llm}})
+fn model_call(p: Int) -> Int {{ return p; }}
+{extra}
+locus Planner {{
+    params {{ n: Int = 0; }}
+    fn go() {{ {body} }}
+}}
+group planners = {{ Planner }};
+main locus App {{
+    params {{ p: Planner = Planner {{ }}; }}
+    claims {{ one: bound llm <= 1 on paths from planners; }}
+}}
+fn main() {{ App {{ }}; }}
+"#
+    )
+}
+
+#[test]
+fn an_unbounded_bound_names_the_loop_and_points_at_the_carrier() {
+    let src = bound_src(
+        "let mut i = 0; while i < 10 { self.n = model_call(i); i = i + 1; }",
+        "",
+    );
+    let ds = diags(&src);
+    let primary = ds
+        .iter()
+        .find(|m| m.contains("claim `one` violated"))
+        .unwrap_or_else(|| panic!("expected a violation: {:#?}", ds));
+    assert!(
+        primary.contains("inside a loop") && primary.contains("Planner::go"),
+        "the primary must name THIS condition, not list four: {}",
+        primary
+    );
+    assert!(
+        !primary.contains("recursion cycle, loop-nested carrier"),
+        "the four-way disjunction must be gone: {}",
+        primary
+    );
+    assert!(
+        ds.iter().any(|m| m.contains("this is the loop-nested carrier")),
+        "and point at the carrier site: {:#?}",
+        ds
+    );
+}
+
+#[test]
+fn an_unbounded_bound_names_recursion() {
+    let src = bound_src(
+        "self.n = recur(3);",
+        "fn recur(n: Int) -> Int { if n <= 0 { return model_call(n); } return recur(n - 1); }",
+    );
+    let primary = diags(&src)
+        .into_iter()
+        .find(|m| m.contains("claim `one` violated"))
+        .expect("expected a violation");
+    assert!(
+        primary.contains("reachable from itself")
+            && primary.contains("`recur`"),
+        "recursion must be named, with the fn: {}",
+        primary
+    );
+}
+
+#[test]
+fn an_unbounded_bound_points_at_an_unfollowable_call() {
+    let src = bound_src(
+        "self.n = thru(model_call, 1);",
+        "fn thru(f: fn(Int) -> Int, n: Int) -> Int { return f(n); }",
+    );
+    let ds = diags(&src);
+    let primary = ds
+        .iter()
+        .find(|m| m.contains("claim `one` violated"))
+        .unwrap_or_else(|| panic!("expected a violation: {:#?}", ds));
+    assert!(
+        primary.contains("cannot follow"),
+        "the unfollowable call must be named: {}",
+        primary
+    );
+    assert!(
+        ds.iter().any(|m| m.contains("this is the call the walk cannot follow")),
+        "and pointed at: {:#?}",
+        ds
+    );
+}

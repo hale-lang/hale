@@ -1305,6 +1305,28 @@ fn evaluate_only_edges(
                                     dst.name
                                 ),
                             ));
+                            // #392 provenance, to `forbid` quality:
+                            // the claim line says WHAT, this says
+                            // WHERE. `only edges` is explicitly a
+                            // reviewable boundary inventory, so
+                            // anchoring only at the claim left the
+                            // reviewer to find the crossing by hand
+                            // — the one thing the inventory exists
+                            // to save them.
+                            if cx.model.is_bundle_fn(&k) {
+                                diags.push(Diag::ty(
+                                    edge.span,
+                                    format!(
+                                        "claim `{}`: this call \
+                                         crosses the boundary. A \
+                                         call cannot be granted — \
+                                         route it through a topic \
+                                         named in the grant list, or \
+                                         move the callee out of `{}`",
+                                        c.name.name, dst.name
+                                    ),
+                                ));
+                            }
                             violated = true;
                         }
                     }
@@ -1366,7 +1388,7 @@ fn evaluate_only_edges(
                 ));
                 return "violated";
             };
-            for (sub_locus, sub_handler, _sub_span) in
+            for (sub_locus, sub_handler, sub_span) in
                 subscribers_of(cx.graph, subj)
             {
                 if !dst_g.loci.contains(&sub_locus) {
@@ -1399,6 +1421,25 @@ fn evaluate_only_edges(
                             granted_disp
                         ),
                     ));
+                    if cx.model.is_bundle_fn(&k) {
+                        diags.push(Diag::ty(
+                            site.span,
+                            format!(
+                                "claim `{}`: the un-granted publish \
+                                 happens here",
+                                c.name.name
+                            ),
+                        ));
+                    }
+                    diags.push(Diag::ty(
+                        sub_span,
+                        format!(
+                            "claim `{}`: received here. Grant this \
+                             edge with `publish {};` if it is \
+                             intended",
+                            c.name.name, subj
+                        ),
+                    ));
                     violated = true;
                 }
             }
@@ -1413,9 +1454,94 @@ fn evaluate_only_edges(
 
 // ===================== bound ======================================
 
-/// Heaviest-path result: `None` = unbounded (cycle, loop-nested
-/// carrier, indirect call, or computed subject on the path).
-type Heaviest = Option<(u64, Vec<FnKey>)>;
+/// Why a count is unbounded — the construct AND where it is.
+///
+/// The checker has always had to classify this to reach the verdict
+/// at all; it just threw the classification away and printed a
+/// four-way disjunction at the claim line ("a recursion cycle,
+/// loop-nested carrier, indirect call, or computed publish subject
+/// makes the count unbounded"), leaving the reader to work out which
+/// of the four applied to their program. Keeping it costs one enum.
+enum Unbounded {
+    /// A recursion cycle: the walk re-entered a fn already on the
+    /// stack, so the count repeats per recursion.
+    Cycle(FnKey),
+    /// A carrier reached from inside a loop: it repeats per
+    /// iteration, exactly like every per-call contributor in
+    /// `@budget`.
+    LoopCarrier { at: FnKey, span: hale_syntax::Span },
+    /// A call the walk cannot follow — through a fn-typed parameter,
+    /// or on a receiver the compiler cannot type. Fails closed.
+    Unfollowable { at: FnKey, span: hale_syntax::Span },
+    /// A publish whose subject is computed: it could route to any
+    /// subscriber, so the contribution is uncountable.
+    ComputedSubject { at: FnKey, span: hale_syntax::Span },
+    /// The walk hit the step ceiling before settling.
+    StepCeiling,
+}
+
+impl Unbounded {
+    /// The clause that goes in the primary diagnostic.
+    fn why(&self) -> String {
+        match self {
+            Unbounded::Cycle(k) => format!(
+                "`{}` is reachable from itself, so the count repeats \
+                 per recursion",
+                k.display()
+            ),
+            Unbounded::LoopCarrier { at, .. } => format!(
+                "a carrier is reached from inside a loop in `{}`, so \
+                 it repeats per iteration",
+                at.display()
+            ),
+            Unbounded::Unfollowable { at, .. } => format!(
+                "`{}` makes a call the walk cannot follow, so the \
+                 contribution beyond it is unknown",
+                at.display()
+            ),
+            Unbounded::ComputedSubject { at, .. } => format!(
+                "`{}` publishes to a computed subject, which could \
+                 route to any subscriber",
+                at.display()
+            ),
+            Unbounded::StepCeiling => {
+                "the walk hit its step ceiling before settling".into()
+            }
+        }
+    }
+
+    /// Where to look, when there is a single site to point at. A
+    /// cycle and a step ceiling are properties of a walk rather than
+    /// of one expression, so they have none.
+    fn site(&self) -> Option<(hale_syntax::Span, &'static str)> {
+        match self {
+            Unbounded::LoopCarrier { span, .. } => {
+                Some((*span, "this is the loop-nested carrier"))
+            }
+            Unbounded::Unfollowable { span, .. } => {
+                Some((*span, "this is the call the walk cannot follow"))
+            }
+            Unbounded::ComputedSubject { span, .. } => {
+                Some((*span, "this is the computed publish subject"))
+            }
+            Unbounded::Cycle(_) | Unbounded::StepCeiling => None,
+        }
+    }
+
+    /// The fn whose body holds the site, for the bundle-span guard.
+    fn at(&self) -> Option<&FnKey> {
+        match self {
+            Unbounded::LoopCarrier { at, .. }
+            | Unbounded::Unfollowable { at, .. }
+            | Unbounded::ComputedSubject { at, .. } => Some(at),
+            Unbounded::Cycle(k) => Some(k),
+            Unbounded::StepCeiling => None,
+        }
+    }
+}
+
+/// Heaviest-path result: `Err` = unbounded, carrying why.
+type Heaviest = Result<(u64, Vec<FnKey>), Unbounded>;
 
 /// Evaluate `bound C <= N on paths from G` — sum of carrier sites
 /// along a path, max at joins, over the composed call ∘ bus graph.
@@ -1440,8 +1566,8 @@ fn evaluate_bound(
     {
         return "invalid";
     }
-    let mut worst: Heaviest = Some((0, Vec::new()));
-    let mut worst_is_unbounded = false;
+    let mut worst: (u64, Vec<FnKey>) = (0, Vec::new());
+    let mut why: Option<Unbounded> = None;
     for root in group.fn_set(&cx.summary) {
         let mut stack = Vec::new();
         let mut memo: BTreeMap<FnKey, (u64, Vec<FnKey>)> =
@@ -1450,32 +1576,48 @@ fn evaluate_bound(
         match site_count(
             &root, cx, mask, &mut stack, &mut memo, &mut steps,
         ) {
-            None => {
-                worst_is_unbounded = true;
+            Err(u) => {
+                why = Some(u);
                 break;
             }
-            Some((w, p)) => {
-                if worst.as_ref().map_or(true, |(bw, _)| w > *bw) {
-                    worst = Some((w, p));
+            Ok((w, p)) => {
+                if w > worst.0 {
+                    worst = (w, p);
                 }
             }
         }
     }
-    if worst_is_unbounded {
+    if let Some(u) = why {
+        // The checker classified the condition to reach this verdict.
+        // Saying "a recursion cycle, loop-nested carrier, indirect
+        // call, or computed publish subject" made the reader
+        // re-derive which of the four applied — from a diagnostic
+        // anchored at the claim, nowhere near the construct.
         diags.push(Diag::ty(
             c.name.span,
             format!(
                 "claim `{}` violated: paths from `{}` carry an \
-                 unbounded number of `{}` sites (limit {}) — a \
-                 recursion cycle, loop-nested carrier, indirect \
-                 call, or computed publish subject makes the count \
-                 unbounded",
-                c.name.name, from.name, class_name, limit
+                 unbounded number of `{}` sites (limit {}) — {}",
+                c.name.name,
+                from.name,
+                class_name,
+                limit,
+                u.why()
             ),
         ));
+        // …and point at it, on the same bundle-span rule the
+        // `forbid` witness uses.
+        if let (Some((span, label)), Some(at)) = (u.site(), u.at()) {
+            if cx.model.is_bundle_fn(at) {
+                diags.push(Diag::ty(
+                    span,
+                    format!("claim `{}`: {}", c.name.name, label),
+                ));
+            }
+        }
         return "violated";
     }
-    let (w, path) = worst.expect("finite worst");
+    let (w, path) = worst;
     if w <= *limit {
         return "holds";
     }
@@ -1513,14 +1655,14 @@ fn site_count(
     steps: &mut u32,
 ) -> Heaviest {
     if let Some(hit) = memo.get(k) {
-        return Some(hit.clone());
+        return Ok(hit.clone());
     }
     if stack.contains(k) {
-        return None; // cycle
+        return Err(Unbounded::Cycle(k.clone()));
     }
     *steps += 1;
     if *steps > callgraph::MAX_STEPS {
-        return None;
+        return Err(Unbounded::StepCeiling);
     }
     let own: u64 = cx
         .summary
@@ -1530,7 +1672,7 @@ fn site_count(
     let Some(fs) = cx.summary.fns.get(k) else {
         let r = (own, vec![k.clone()]);
         memo.insert(k.clone(), r.clone());
-        return Some(r);
+        return Ok(r);
     };
     stack.push(k.clone());
     let mut total: u64 = 0;
@@ -1542,22 +1684,25 @@ fn site_count(
     // whole count: dispatch may choose it.)
     let mut group_best: BTreeMap<u32, (u64, Vec<FnKey>)> =
         BTreeMap::new();
-    let mut unbounded = false;
+    let mut unbounded: Option<Unbounded> = None;
     for edge in &fs.calls {
         match &edge.callee {
             Callee::Resolved(next) => {
                 match site_count(next, cx, mask, stack, memo, steps)
                 {
-                    None => {
-                        unbounded = true;
+                    Err(u) => {
+                        unbounded = Some(u);
                         break;
                     }
-                    Some((w, p)) => {
+                    Ok((w, p)) => {
                         // A carrier reached inside a loop repeats
                         // per iteration — unbounded, like every
                         // per-call contributor in `@budget`.
                         if edge.loop_depth > 0 && w > 0 {
-                            unbounded = true;
+                            unbounded = Some(Unbounded::LoopCarrier {
+                                at: k.clone(),
+                                span: edge.span,
+                            });
                             break;
                         }
                         match edge.dispatch_group {
@@ -1588,13 +1733,16 @@ fn site_count(
                     // (unbounded).
                     || unresolved_opaque_receiver(edge)
                 {
-                    unbounded = true;
+                    unbounded = Some(Unbounded::Unfollowable {
+                        at: k.clone(),
+                        span: edge.span,
+                    });
                     break;
                 }
             }
         }
     }
-    if !unbounded {
+    if unbounded.is_none() {
         for (w, p) in group_best.into_values() {
             total = total.saturating_add(w);
             if w > best_child.0 {
@@ -1602,13 +1750,16 @@ fn site_count(
             }
         }
     }
-    if !unbounded {
+    if unbounded.is_none() {
         for site in &fs.effect_sites {
             let EffectSiteKind::Publish(subj) = &site.kind else {
                 continue;
             };
             let Some(subj) = subj else {
-                unbounded = true;
+                unbounded = Some(Unbounded::ComputedSubject {
+                    at: k.clone(),
+                    span: site.span,
+                });
                 break;
             };
             for (sub_locus, sub_handler, _sub_span) in
@@ -1617,13 +1768,16 @@ fn site_count(
                 let next = FnKey::method(sub_locus, sub_handler);
                 match site_count(&next, cx, mask, stack, memo, steps)
                 {
-                    None => {
-                        unbounded = true;
+                    Err(u) => {
+                        unbounded = Some(u);
                         break;
                     }
-                    Some((w, p)) => {
+                    Ok((w, p)) => {
                         if site.loop_depth > 0 && w > 0 {
-                            unbounded = true;
+                            unbounded = Some(Unbounded::LoopCarrier {
+                                at: k.clone(),
+                                span: site.span,
+                            });
                             break;
                         }
                         total = total.saturating_add(w);
@@ -1633,20 +1787,20 @@ fn site_count(
                     }
                 }
             }
-            if unbounded {
+            if unbounded.is_some() {
                 break;
             }
         }
     }
     stack.pop();
-    if unbounded {
-        return None;
+    if let Some(u) = unbounded {
+        return Err(u);
     }
     let mut path = vec![k.clone()];
     path.extend(best_child.1);
     let r = (own + total, path);
     memo.insert(k.clone(), r.clone());
-    Some(r)
+    Ok(r)
 }
 
 // ===================== require / cover / count ====================
