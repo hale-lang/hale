@@ -35,6 +35,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use hale_syntax::ast::*;
 use hale_syntax::{Diag, Span};
 
+use crate::verdict::Verdict;
 use crate::alloc_summary::{self, AllocSummary, FnKey};
 use crate::callgraph::{self, Probe};
 
@@ -181,7 +182,10 @@ pub struct LoweredCertificate {
     pub subject: String,
     /// The lowered claim form, display voice.
     pub form: String,
-    pub violated: bool,
+    /// See [`crate::verdict::Verdict`]. A certificate is a claim at
+    /// fn granularity, so it reports in the same vocabulary the
+    /// bundle claims use rather than a private bool.
+    pub result: Verdict,
 }
 
 fn phase_effects_diags(
@@ -335,7 +339,11 @@ fn phase_effects_diags(
                         l.name.name,
                         phase
                     ),
-                    violated: out.len() > phase_before,
+                    result: if out.len() > phase_before {
+                        Verdict::Violated
+                    } else {
+                        Verdict::Holds
+                    },
                 });
             }
         }
@@ -718,7 +726,11 @@ fn effect_report_inner(
                                 key.display(),
                                 cls_name(*c, &names)
                             ),
-                            violated: diags.len() > before,
+                            result: if diags.len() > before {
+                        Verdict::Violated
+                    } else {
+                        Verdict::Holds
+                    },
                         });
                     }
                 }
@@ -792,7 +804,11 @@ fn effect_report_inner(
                             set.join(", "),
                             key.display()
                         ),
-                        violated: diags.len() > only_before,
+                        result: if diags.len() > only_before {
+                        Verdict::Violated
+                    } else {
+                        Verdict::Holds
+                    },
                     });
                 }
                 EffectAssert::PublishSet(allowed) => {
@@ -805,7 +821,11 @@ fn effect_report_inner(
                             allowed.join(", "),
                             key.display()
                         ),
-                        violated: diags.len() > before,
+                        result: if diags.len() > before {
+                        Verdict::Violated
+                    } else {
+                        Verdict::Holds
+                    },
                     });
                 }
                 EffectAssert::NoPanic => {
@@ -817,7 +837,11 @@ fn effect_report_inner(
                             "forbid reaches({{{}}}, panic)",
                             key.display()
                         ),
-                        violated: diags.len() > before,
+                        result: if diags.len() > before {
+                        Verdict::Violated
+                    } else {
+                        Verdict::Holds
+                    },
                     });
                 }
                 EffectAssert::Causes(classes) => {

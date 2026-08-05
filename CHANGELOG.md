@@ -39,6 +39,40 @@ the conformer from the group.
 The fact was already in the model (the artifact tags these edges
 `via_interface`); it just never reached the human. Witnesses with no
 interface in them are unchanged.
+### Topology artifact schema 1.4: one verdict vocabulary, and the document's own verdict
+
+Bundle claims and fn-grained certificates (`@effects`, `@budget`,
+`@phase_effects`) are the same kind of statement at different
+granularity — #392 §8 already reports the second as the claim form it
+is pointwise sugar for. They disagreed about how to spell an outcome:
+claim rows carried three states, `lowered` rows carried a bool.
+
+Both now use `Verdict`, and it distinguishes a case that was
+previously folded away:
+
+| verdict | meaning | repair |
+|---|---|---|
+| `holds` | proved | nothing |
+| `violated` | disproved — a counterexample exists | fix the program |
+| `uncertified` | well-formed but not provable — the graph has an unknown | resolve the unknown edge |
+| `invalid` | the statement is malformed | fix the claim |
+
+`violated` and `uncertified` were one value because **unknown ⇒
+violation** — an indirect call fails closed rather than certifying an
+absence nothing established. That rule is unchanged and both still
+fail the build. What changes is that the artifact records which
+happened: the repairs differ, and composing models across binaries
+needs a propagated unknown to read as "not provable" rather than as
+disproved when nothing disproved it.
+
+The artifact also gains a top-level **`verdict`** (`clean` /
+`law_failed`) — every law reduced to one field, so a consumer does
+not reconstruct it by walking two arrays and knowing which strings
+count as passing. Only `holds` passes: a law that could not be
+checked has not been satisfied. It says nothing about whether the
+program typechecks, because an artifact is only emitted for one that
+does.
+
 ### A topology artifact is only emitted for a program that typechecks
 
 `hale check broken.hl --dump-topology` emitted a **full artifact** for

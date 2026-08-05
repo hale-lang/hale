@@ -38,6 +38,7 @@
 use hale_syntax::ast::*;
 use hale_syntax::{Diag, Span};
 
+use crate::verdict::Verdict;
 use crate::alloc_summary::{self, AllocKind, AllocSite, AllocSummary,
     CallEdge, FnKey};
 use crate::callgraph::{self, FactVisitor};
@@ -357,7 +358,11 @@ fn budget_report_inner(
                 budget,
                 key.display()
             ),
-            violated: diags.len() > before,
+            result: if diags.len() > before {
+                        Verdict::Violated
+                    } else {
+                        Verdict::Holds
+                    },
         });
     };
     for program in programs {

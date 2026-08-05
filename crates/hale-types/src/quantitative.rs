@@ -33,6 +33,7 @@ use std::collections::BTreeMap;
 use hale_syntax::ast::*;
 use hale_syntax::{Diag, Span};
 
+use crate::verdict::Verdict;
 use crate::alloc_summary::{self, AllocSummary, Callee, FnKey};
 use crate::callgraph;
 
@@ -485,7 +486,11 @@ fn quantitative_report(
                     cap,
                     key.display()
                 ),
-                violated: measured.exceeds(*cap),
+                result: if measured.exceeds(*cap) {
+                        Verdict::Violated
+                    } else {
+                        Verdict::Holds
+                    },
             });
             if !measured.exceeds(*cap) {
                 continue;

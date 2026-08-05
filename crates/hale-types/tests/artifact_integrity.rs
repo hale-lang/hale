@@ -1,4 +1,4 @@
-//! The topology artifact's integrity digest (schema 1.3).
+//! The topology artifact's integrity digest (schema 1.3+).
 //!
 //! `shape_hash` is an IDENTITY, not an integrity check. It covers
 //! the model half only — deliberately, so that moving a comment or
@@ -139,4 +139,92 @@ fn a_different_program_produces_a_different_digest() {
         a, b,
         "adding a locus must change the artifact"
     );
+}
+
+// ---- schema 1.4: one verdict vocabulary --------------------------
+//
+// Claims and lowered certificates are the same kind of statement at
+// different granularity, so they must not disagree about how to
+// spell an outcome. Before 1.4 claim rows carried three states while
+// lowered rows carried a bool, and `violated` did double duty for
+// "disproved" and "could not be proved".
+
+use hale_types::verdict::Verdict;
+
+#[test]
+fn only_holds_passes() {
+    assert!(Verdict::Holds.passed());
+    for v in [Verdict::Violated, Verdict::Uncertified, Verdict::Invalid] {
+        assert!(
+            !v.passed(),
+            "{:?} must not pass — a law that could not be checked has \
+             not been satisfied, and treating that as success is the \
+             fail-open this vocabulary exists to prevent",
+            v
+        );
+    }
+}
+
+#[test]
+fn the_document_verdict_reflects_its_rows() {
+    let a = artifact();
+    let v: serde_json::Value = serde_json::from_str(&a).expect("valid JSON");
+    assert_eq!(v["schema"], "1.4");
+    assert_eq!(
+        v["verdict"], "clean",
+        "every claim in the fixture holds: {}",
+        a
+    );
+
+    // A claim naming a topic nothing subscribes fails, and the
+    // document says so without the reader scanning rows.
+    let failing = SRC.replace(
+        "bus { subscribe Tk as on_t; }",
+        "",
+    ).replace("fn on_t(t: T) { self.got = t.v; }", "");
+    let b = dump(&failing);
+    let w: serde_json::Value = serde_json::from_str(&b).expect("valid JSON");
+    assert_ne!(
+        w["verdict"], "clean",
+        "a claim that no longer holds must move the document verdict: {}",
+        b
+    );
+}
+
+/// An unresolvable edge is `uncertified`, not `violated`. Both fail
+/// the build — unknown still means fail-closed — but the artifact
+/// must record which happened, because the repairs differ and
+/// because cross-binary composition needs a propagated unknown to
+/// read as "not provable" rather than "disproved".
+#[test]
+fn an_unresolvable_edge_is_uncertified_not_violated() {
+    const INDIRECT: &str = r#"
+        locus Sink { params { n: Int = 0; } fn take(x: Int) { self.n = x; } }
+        locus Src {
+            params { n: Int = 0; }
+            fn go(f: fn(Int)) { f(self.n); }
+        }
+        group srcs = { Src };
+        group sinks = { Sink };
+        main locus App {
+            params { s: Src = Src { }; k: Sink = Sink { }; }
+            claims { iso: forbid reaches(srcs, sinks); }
+        }
+        fn main() { App { }; }
+    "#;
+    let a = dump(INDIRECT);
+    let v: serde_json::Value = serde_json::from_str(&a).expect("valid JSON");
+    let claims = v["claims"].as_array().expect("claims array");
+    let iso = claims
+        .iter()
+        .find(|c| c["name"] == "iso")
+        .expect("the claim is recorded");
+    assert_eq!(
+        iso["result"], "uncertified",
+        "a call through a fn-typed param is not knowable statically — \
+         nothing disproved the claim, so it must not read as \
+         `violated`: {}",
+        a
+    );
+    assert_ne!(v["verdict"], "clean", "and it still does not pass");
 }
