@@ -123,8 +123,11 @@ fn main() { App { }; }
 fn a_conforming_dispatch_appears_as_call_edges_not_unknowns() {
     let art = dump(DISPATCHED, "dispatched");
     assert!(
-        art.contains(r#"{"from": "A::go", "to": "Email::send"}"#),
-        "the fanned-out edge must land in the call relation:\n{}",
+        art.contains(
+            r#"{"from": "A::go", "to": "Email::send", "via_interface": "Notifier"}"#
+        ),
+        "the fanned-out edge must land in the call relation, tagged \
+         with its interface:\n{}",
         art
     );
     assert!(

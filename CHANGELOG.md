@@ -8,6 +8,43 @@ behavior.
 
 ## Unreleased
 
+### The normalized, provenance-bearing model (GH #392 thread 1)
+
+The architectural milestone every reviewer of the #382 stack named:
+one derived model — declaration provenance, the phase relation, the
+seed sort — consumed by every judgment and exported whole.
+
+- **Witnesses say where to edit.** A `forbid` violation now emits
+  secondary diagnostics in the effect system's root + leaf shape:
+  the call that crosses the boundary (or, for a bus hop, the
+  publish site and the subscription declaration) and the forbidden
+  destination's declaration. Spans are emitted only for bundle
+  decls — stdlib bodies parse in their own offset space, and a span
+  from there attributed to a user file names the wrong line (a
+  pre-existing misattribution this change also stops).
+- **`during` rides the phase relation.** Lifecycle hooks and modes
+  are hook-phases, methods their own source-slice phase; the
+  relation is explicit, exported, and what the evaluator reads.
+- **Topology artifact schema 1.1 — the model export.** The hashed
+  model half gains call-edge weights (`loop`, `unbounded`,
+  `via_interface`), the through-stdlib contraction
+  (`calls_via_stdlib`: user→user paths with stdlib interiors,
+  collapsed with a conservative loop flag), the `phases` relation,
+  the `seeds` sort, and compiler-derived per-fn `effects`. A new
+  UNHASHED `provenance` section carries per-edge and per-decl spans
+  as bundle-global byte offsets — moving code changes every span
+  and no identity. v2 scope: every claim verb replays independently
+  over the exported relations; still compiler-certified: `bound`
+  over built-in classes and walks past the step ceiling. Existing
+  `shape_hash` values change (the hashed half grew).
+
+Spec: `spec/verification.md` § Claims (witness provenance, phase
+relation, artifact scope). Docs: the claims chapter (witness,
+`during`, artifact schema). Tests: `model_provenance.rs` (witness
+spans incl. the foreign-span guard, phase selection, model
+derivation), `topology_v2.rs` (sections, motion-insensitivity
+canary, contracted edges).
+
 ### Interface-dispatch edges: closed-world fan-out (GH #392 thread 4)
 
 A method call on an interface-typed value

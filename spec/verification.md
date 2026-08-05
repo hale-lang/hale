@@ -119,7 +119,15 @@ main locus Org {
   author spelling — `` `delta::Triage::on_task` -(publishes
   "org.metrics")-> `gamma::Research::on_metric` `` — cross-seed
   symbols demangled. One witness per claim (the minimal
-  countermodel, not an enumeration).
+  countermodel, not an enumeration). **Provenance** (#392): the
+  witness also says where to edit, as secondary diagnostics in the
+  effect system's root + leaf shape — the callsite that crosses the
+  boundary (or the publish site and the subscription decl for a bus
+  hop) and the forbidden destination's declaration. Spans are
+  emitted only for bundle decls: stdlib bodies parse in their own
+  offset space, and a span from there attributed to a bundle file
+  would name the wrong source, so a stdlib-interior hop renders by
+  name alone.
 - **Unknown ⇒ violation.** An indirect call (function-typed
   parameter, #353) or a computed publish subject on a path from a
   `forbid` source cannot be certified and is reported as a
@@ -198,9 +206,15 @@ The remaining verbs (#382 phases 2–5):
   behind every single-writer pattern, and a violation names the
   competing writers.
 - **`during P`** on `forbid` — restricts sources to the named
-  lifecycle phase / method of each source locus (`during birth` is
-  the quiet-boot claim). A phase naming nothing in the group is an
-  error, not a vacuously-holding claim.
+  phase of each source locus (`during birth` is the quiet-boot
+  claim), evaluated against the model's **phase relation** (#392):
+  lifecycle hooks (`birth`, `accept`, `release`, `run`, `drain`,
+  `dissolve`) and modes (`bulk`, `harmonic`, `resolution`) are
+  hook-phases the runtime drives; an ordinary method is its own
+  source-slice phase. The relation is exported in the topology
+  artifact, which is what makes a `during` row independently
+  re-derivable. A phase naming nothing in the group is an error,
+  not a vacuously-holding claim.
 - **`avoiding G`** on `forbid` — masks G's vertices out of the
   walk, which makes it the interposition form: "every path from A
   to B passes through the gate" is `forbid reaches(A, B) avoiding
@@ -221,33 +235,43 @@ earlier in the same file as the family. Companion:
 class along any path, with the same loop/indirect unboundedness
 rules as every per-call dimension.
 
-**The topology artifact** (#382 phase 2): `hale check <t>
---dump-topology` emits the serialized model — sorts (loci, fns,
-topics), relations (calls, publishes, subscribes), the declared
-**groups**, the effect **labels** (declared carriers), and the
-**unknowns** (fns with indirect calls or computed publish subjects
-— the places evaluation failed closed), all in author spelling —
-plus every named claim's normalized form and result, under a
-schema version and a `shape_hash` (FNV-1a/64 over the canonical
-model half, which includes groups/labels/unknowns; claim RESULTS
-are excluded, so one topology under different law keeps one
-shape). `--check-topology <path>` diffs against a committed
-baseline and fails with a regenerate hint — the `.hale.effects`
-precedent: an unreviewed topology or law change fails CI the way
-an API break does. v1 scope, stated honestly: the artifact
-supports independent replay of the serialized user call/bus graph,
-group boundaries, declared bus-end existence/cardinality, and
-declared user-effect carrier labels; every other claim result —
-anything needing the phase relation (`during`), seed membership
-(`cover`), compiler-derived built-in effects, or the
-stdlib-expanded summary the evaluator itself walks — remains a
-compiler-certified report row until the normalized verification
-model lands (that export is the architectural milestone tracked on
-#382). The derivation (source → model) remains the trust root.
+**The topology artifact** (#382 phase 2; schema 1.1 per #392):
+`hale check <t> --dump-topology` emits the serialized model —
+sorts (loci, fns, topics), relations (calls with **weights**: loop
+nesting, unbounded-loop membership, interface-dispatch tags;
+publishes; subscribes), the through-stdlib **contracted** edges
+(`calls_via_stdlib`: user→user paths whose interior is stdlib
+bodies, collapsed to their endpoints with a conservative loop
+flag, so reachability over the artifact matches reachability as
+evaluated), the declared **groups**, the effect **labels**
+(declared carriers), the **phase relation**, the **seed sort**,
+the compiler-**derived** per-fn effect sets, and the **unknowns**
+(fns with indirect calls, untyped-receiver calls, dead
+uninhabited-interface dispatch, or computed publish subjects), all
+in author spelling — plus every named claim's normalized form and
+result, under a schema version and a `shape_hash` (FNV-1a/64 over
+the canonical model half; claim RESULTS are excluded, so one
+topology under different law keeps one shape). A **provenance**
+section carries per-edge and per-decl source spans as
+bundle-global byte offsets; it is excluded from the hash on
+purpose — moving code must not change the shape identity.
+`--check-topology <path>` diffs against a committed baseline and
+fails with a regenerate hint — the `.hale.effects` precedent: an
+unreviewed topology or law change fails CI the way an API break
+does. v2 scope: every claim verb replays independently over the
+exported relations — `forbid`/`only edges` including
+through-stdlib reachability, `require`/`count` cardinality,
+`cover` via the seed sort, `during` via the phase relation,
+`bound` over user classes via labels + weights (dispatch
+alternatives group by (from, interface, method) and fold with
+max). Remaining compiler-certified: `bound` over built-in classes
+(site counting through the stdlib interior, deliberately not
+serialized) and any walk past the step ceiling. The derivation
+(source → model) remains the trust root.
 
-Still later (#382): library-tier claims that travel with imports,
+Still later (#392): library-tier claims that travel with imports,
 and the annotations-lower-to-claim-IR unification (§8 of the
-issue) once the claim IR has survived real use.
+original issue) riding this model.
 
 ## Structural & design rules
 

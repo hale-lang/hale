@@ -27,23 +27,40 @@
 //! precedent: emit for review, commit, and an unreviewed topology
 //! change fails CI the way an API break does.
 //!
-//! v1 SCOPE (honest contract): the artifact carries the sorts, the
-//! call/publish/subscribe relations, the declared groups, the
-//! effect labels (declared carriers), and the UNKNOWNS (fns with
-//! indirect calls, untyped-receiver method calls — recorded with
-//! the callee name so an outside evaluator can apply the same
-//! fail-closed rule — or computed publish subjects: every place
-//! the evaluator failed closed). What that supports independently
-//! replaying: the serialized USER call/bus graph, group
-//! boundaries, declared bus-end existence/cardinality
-//! (`require`/`count`), and declared user-effect carrier labels.
-//! Every other claim result — anything needing the phase relation
-//! (`during`), seed membership (`cover`), compiler-derived
-//! built-in effects, or the stdlib-expanded call summary the
-//! evaluator itself walks — remains a COMPILER-CERTIFIED report
-//! row until the normalized verification model lands (per-edge
-//! spans, weights, phase relation, seed sort — the architectural
-//! milestone tracked on #382).
+//! v2 SCOPE (schema 1.1, #392 thread 1 — the normalized model
+//! export): the hashed model half carries the sorts, the
+//! call/publish/subscribe relations WITH WEIGHTS (loop nesting,
+//! unbounded-loop membership, interface-dispatch tags), the
+//! through-stdlib CONTRACTED user→user call edges
+//! (`calls_via_stdlib` — the paths the evaluator walks through
+//! stdlib bodies, collapsed to their user endpoints with a
+//! conservative loop flag), the declared groups, the effect labels
+//! (declared carriers), the PHASE RELATION (`phases` — lifecycle
+//! hooks and modes vs. ordinary methods, what `during` evaluates
+//! against), the SEED SORT (`seeds` — alias → member decls, what
+//! `cover` evaluates against), the compiler-DERIVED per-fn effect
+//! sets (`effects` — the full-walk inference, what effect-class
+//! claim endpoints evaluate against), and the UNKNOWNS (fns with
+//! indirect calls, untyped-receiver method calls, dead
+//! uninhabited-interface dispatch, or computed publish subjects —
+//! each recorded so an outside evaluator applies the same rule).
+//!
+//! What that supports independently replaying: every claim verb
+//! over the exported relations — `forbid`/`only edges` incl.
+//! through-stdlib reachability, `require`/`count` bus-end
+//! cardinality, `cover` via the seed sort, `during` via the phase
+//! relation, and `bound` over USER classes via labels + weights
+//! (dispatch alternatives group by (from fn, interface, method)
+//! and fold with max). Remaining compiler-certified: `bound` over
+//! BUILT-IN classes (site counting through the stdlib interior,
+//! which the artifact deliberately does not serialize) and any
+//! walk past the step ceiling.
+//!
+//! PROVENANCE (unhashed): a `provenance` section carries per-edge
+//! and per-decl source spans as bundle-global byte offsets
+//! (`[start, end]`). It is excluded from `shape_hash` on purpose —
+//! moving code must not change the shape identity — and sits with
+//! the claim results in the unhashed half.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -53,8 +70,11 @@ use crate::alloc_summary::{self, Callee, EffectSiteKind, FnKey};
 use crate::symbol::Bundle;
 
 /// The artifact's schema version. Additions are minor versions;
-/// changes are breaking.
-pub const TOPOLOGY_SCHEMA: &str = "1.0";
+/// changes are breaking. 1.1 (#392): weights on call edges,
+/// `calls_via_stdlib`, `phases`, `seeds`, `effects` in the hashed
+/// half (existing `shape_hash` values change); unhashed
+/// `provenance` section.
+pub const TOPOLOGY_SCHEMA: &str = "1.1";
 
 /// Serialize the bundle's model + claim results as the topology
 /// artifact (JSON).
@@ -140,9 +160,24 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
         }
     }
 
-    // ---- relations (with provenance implicit in the names) ----
-    let mut calls: BTreeSet<(String, String)> = BTreeSet::new();
+    // ---- relations, with weights (#392) ----
+    // A call row's weights: merged over parallel edges between one
+    // (from, to) pair, in the conservative direction (any loop-
+    // nested edge marks the row looped).
+    #[derive(Default)]
+    struct EdgeMeta {
+        looped: bool,
+        unbounded: bool,
+        via_interface: Option<String>,
+    }
+    let mut calls: BTreeMap<(String, String), EdgeMeta> =
+        BTreeMap::new();
     let mut publishes: BTreeSet<(String, String)> = BTreeSet::new();
+    // Provenance (unhashed): bundle-global byte-offset spans.
+    let mut call_spans: BTreeSet<(String, String, u32, u32)> =
+        BTreeSet::new();
+    let mut publish_spans: BTreeSet<(String, String, u32, u32)> =
+        BTreeSet::new();
     for (k, fs) in &summary.fns {
         if !user_key(k) {
             continue;
@@ -150,17 +185,93 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
         for edge in &fs.calls {
             if let Callee::Resolved(next) = &edge.callee {
                 if user_key(next) {
-                    calls.insert((fn_name(k), fn_name(next)));
+                    let m = calls
+                        .entry((fn_name(k), fn_name(next)))
+                        .or_default();
+                    m.looped |= edge.loop_depth > 0;
+                    m.unbounded |= edge.in_unbounded_loop;
+                    if let Some(i) = &edge.via_interface {
+                        m.via_interface = Some(name(i));
+                    }
+                    call_spans.insert((
+                        fn_name(k),
+                        fn_name(next),
+                        edge.span.start.as_usize() as u32,
+                        edge.span.end.as_usize() as u32,
+                    ));
                 }
             }
         }
         for site in &fs.effect_sites {
             if let EffectSiteKind::Publish(Some(s)) = &site.kind {
                 publishes.insert((fn_name(k), name(s)));
+                publish_spans.insert((
+                    fn_name(k),
+                    name(s),
+                    site.span.start.as_usize() as u32,
+                    site.span.end.as_usize() as u32,
+                ));
+            }
+        }
+    }
+
+    // ---- through-stdlib contraction (#392) ----
+    // The evaluator walks the stdlib-merged summary; the artifact
+    // deliberately serializes only user rows. Collapse every path
+    // that ENTERS non-user bodies and re-emerges at a user fn into
+    // one contracted edge, so reachability over the artifact matches
+    // reachability as evaluated. `looped` is conservative: true if
+    // ANY contraction path crosses a loop-nested or unbounded edge.
+    let merged = crate::stdlib_bodies::summarize_with_stdlib_and_renames(
+        &programs,
+        &bundle.import_renames,
+    );
+    let mut via_stdlib: BTreeMap<(String, String), bool> =
+        BTreeMap::new();
+    for (k, fs) in &merged.fns {
+        if !user_key(k) {
+            continue;
+        }
+        let mut stack: Vec<(FnKey, bool)> = Vec::new();
+        let mut seen: BTreeSet<FnKey> = BTreeSet::new();
+        for edge in &fs.calls {
+            if let Callee::Resolved(next) = &edge.callee {
+                if !user_key(next) && seen.insert(next.clone()) {
+                    stack.push((
+                        next.clone(),
+                        edge.loop_depth > 0 || edge.in_unbounded_loop,
+                    ));
+                }
+            }
+        }
+        let mut steps = 0u32;
+        while let Some((n, lp)) = stack.pop() {
+            steps += 1;
+            if steps > crate::callgraph::MAX_STEPS {
+                break;
+            }
+            let Some(nfs) = merged.fns.get(&n) else { continue };
+            for edge in &nfs.calls {
+                let Callee::Resolved(next) = &edge.callee else {
+                    continue;
+                };
+                let l2 = lp
+                    || edge.loop_depth > 0
+                    || edge.in_unbounded_loop;
+                if user_key(next) {
+                    let e = via_stdlib
+                        .entry((fn_name(k), fn_name(next)))
+                        .or_insert(false);
+                    *e |= l2;
+                } else if seen.insert(next.clone()) {
+                    stack.push((next.clone(), l2));
+                }
             }
         }
     }
     let mut subscribes: BTreeSet<(String, String, String)> =
+        BTreeSet::new();
+    let mut subscribe_spans: BTreeSet<(String, String, String, u32, u32)> =
         BTreeSet::new();
     for (subject, info) in &graph.subjects {
         for s in &info.subscribers {
@@ -169,7 +280,65 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
                 name(&s.locus),
                 s.handler.clone(),
             ));
+            subscribe_spans.insert((
+                name(subject),
+                name(&s.locus),
+                s.handler.clone(),
+                s.span.start.as_usize() as u32,
+                s.span.end.as_usize() as u32,
+            ));
         }
+    }
+
+    // ---- the normalized model (#392): phases, seeds, decl spans ----
+    let vmodel =
+        crate::model::Model::derive(&programs, &bundle.import_renames);
+    // Phase relation, user loci only (the sort the artifact serializes).
+    let mut phase_rows: BTreeMap<String, (String, bool)> =
+        BTreeMap::new();
+    for (k, p) in &vmodel.phases {
+        if user_key(k) {
+            phase_rows
+                .insert(fn_name(k), (p.phase.clone(), p.hook));
+        }
+    }
+    // Seed sort: alias -> author-spelled member decls.
+    let mut seed_rows: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (alias, members) in &vmodel.seeds {
+        seed_rows.insert(
+            alias.clone(),
+            members.iter().map(|m| name(m)).collect(),
+        );
+    }
+    // Compiler-derived per-fn effect sets over the stdlib-merged
+    // walk — what an effect-class claim endpoint evaluates against.
+    // PURE fns are omitted; an unclassifiable walk renders as
+    // ["unclassified"], honestly.
+    let effect_names = crate::effects::effect_names_of(&programs);
+    let ffi = crate::effects::ffi_names(&programs);
+    let mut derived_effects: BTreeMap<String, Vec<String>> =
+        BTreeMap::new();
+    for k in merged.fns.keys() {
+        if !user_key(k) {
+            continue;
+        }
+        let e = crate::frontier::infer_effects(&merged, k, &ffi);
+        let classes =
+            crate::frontier::render_effects_named(e, &effect_names);
+        if !classes.is_empty() {
+            derived_effects.insert(fn_name(k), classes);
+        }
+    }
+    // Decl spans (unhashed provenance).
+    let mut decl_spans: BTreeMap<String, (u32, u32)> = BTreeMap::new();
+    for (decl, info) in &vmodel.decls {
+        decl_spans.insert(
+            name(decl),
+            (
+                info.span.start.as_usize() as u32,
+                info.span.end.as_usize() as u32,
+            ),
+        );
     }
 
     // ---- groups (the claim vocabulary, as declared) ----
@@ -195,7 +364,6 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     }
 
     // ---- labels: declared effect carriers (`is:` tags) ----
-    let effect_names = crate::effects::effect_names_of(&programs);
     let mut labels: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (k, set) in &summary.carries {
         if !user_key(k) {
@@ -312,12 +480,40 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     ));
     model.push_str("  },\n");
     model.push_str("  \"relations\": {\n    \"calls\": [\n");
-    for (from, to) in &calls {
-        model.push_str(&format!(
-            "      {{\"from\": {}, \"to\": {}}},\n",
+    for ((from, to), meta) in &calls {
+        let mut row = format!(
+            "      {{\"from\": {}, \"to\": {}",
             quote(from),
             quote(to)
-        ));
+        );
+        if meta.looped {
+            row.push_str(", \"loop\": true");
+        }
+        if meta.unbounded {
+            row.push_str(", \"unbounded\": true");
+        }
+        if let Some(i) = &meta.via_interface {
+            row.push_str(&format!(", \"via_interface\": {}", quote(i)));
+        }
+        row.push_str("},\n");
+        model.push_str(&row);
+    }
+    trim_trailing_comma(&mut model);
+    // Contracted through-stdlib user→user edges (#392): what the
+    // evaluator's stdlib-merged walk reaches, collapsed to user
+    // endpoints. Reachability replay composes `calls` ∪ this.
+    model.push_str("    ],\n    \"calls_via_stdlib\": [\n");
+    for ((from, to), looped) in &via_stdlib {
+        let mut row = format!(
+            "      {{\"from\": {}, \"to\": {}",
+            quote(from),
+            quote(to)
+        );
+        if *looped {
+            row.push_str(", \"loop\": true");
+        }
+        row.push_str("},\n");
+        model.push_str(&row);
     }
     trim_trailing_comma(&mut model);
     model.push_str("    ],\n    \"publishes\": [\n");
@@ -363,6 +559,38 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
         ));
     }
     trim_trailing_comma(&mut model);
+    // #392: the phase relation, the seed sort, and the compiler-
+    // derived per-fn effect sets — the rows `during`, `cover`, and
+    // effect-class endpoints evaluate against. Hashed: each is
+    // verification-relevant, so changing one changes the identity.
+    model.push_str("  },\n  \"phases\": {\n");
+    for (f, (phase, hook)) in &phase_rows {
+        model.push_str(&format!(
+            "    {}: {{\"phase\": {}, \"kind\": {}}},\n",
+            quote(f),
+            quote(phase),
+            quote(if *hook { "hook" } else { "method" })
+        ));
+    }
+    trim_trailing_comma(&mut model);
+    model.push_str("  },\n  \"seeds\": {\n");
+    for (alias, members) in &seed_rows {
+        model.push_str(&format!(
+            "    {}: [{}],\n",
+            quote(alias),
+            join_str(members.iter())
+        ));
+    }
+    trim_trailing_comma(&mut model);
+    model.push_str("  },\n  \"effects\": {\n");
+    for (f, classes) in &derived_effects {
+        model.push_str(&format!(
+            "    {}: [{}],\n",
+            quote(f),
+            join_str(classes.iter())
+        ));
+    }
+    trim_trailing_comma(&mut model);
     model.push_str("  },\n  \"unknowns\": [\n");
     for (f, reasons) in &unknowns {
         let rs = reasons
@@ -392,6 +620,56 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
         shape_hash
     ));
     out.push_str(&model);
+    // Provenance (#392): source spans as bundle-global byte offsets
+    // [start, end]. UNHASHED on purpose — moving code must not
+    // change the shape identity — so it sits in the results half
+    // beside the claim rows.
+    out.push_str(",\n  \"provenance\": {\n    \"calls\": [\n");
+    for (from, to, s, e) in &call_spans {
+        out.push_str(&format!(
+            "      {{\"from\": {}, \"to\": {}, \"span\": [{}, {}]}},\n",
+            quote(from),
+            quote(to),
+            s,
+            e
+        ));
+    }
+    trim_trailing_comma(&mut out);
+    out.push_str("    ],\n    \"publishes\": [\n");
+    for (f, subj, s, e) in &publish_spans {
+        out.push_str(&format!(
+            "      {{\"fn\": {}, \"subject\": {}, \"span\": [{}, {}]}},\n",
+            quote(f),
+            quote(subj),
+            s,
+            e
+        ));
+    }
+    trim_trailing_comma(&mut out);
+    out.push_str("    ],\n    \"subscribes\": [\n");
+    for (subj, locus, handler, s, e) in &subscribe_spans {
+        out.push_str(&format!(
+            "      {{\"subject\": {}, \"locus\": {}, \"handler\": {}, \
+             \"span\": [{}, {}]}},\n",
+            quote(subj),
+            quote(locus),
+            quote(handler),
+            s,
+            e
+        ));
+    }
+    trim_trailing_comma(&mut out);
+    out.push_str("    ],\n    \"decls\": {\n");
+    for (decl, (s, e)) in &decl_spans {
+        out.push_str(&format!(
+            "      {}: [{}, {}],\n",
+            quote(decl),
+            s,
+            e
+        ));
+    }
+    trim_trailing_comma(&mut out);
+    out.push_str("    }\n  }");
     out.push_str(",\n  \"claims\": [\n");
     for o in &outcomes {
         out.push_str(&format!(

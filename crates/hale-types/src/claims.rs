@@ -187,6 +187,9 @@ struct Cx<'a> {
     defs: Vec<Option<Vec<EffectClass>>>,
     declared: BTreeSet<u16>,
     effect_names: Vec<String>,
+    /// #392: the normalized model — decl provenance (witness spans,
+    /// origin gating), the phase relation (`during`), the seed sort.
+    model: crate::model::Model,
 }
 
 fn claims_report_inner(
@@ -358,6 +361,7 @@ fn claims_report_inner(
         defs: defs_of(programs),
         declared: declared_of(programs),
         effect_names: effect_names_of(programs),
+        model: crate::model::Model::derive(programs, import_renames),
     };
 
     // ---- validate, then evaluate ----
@@ -862,10 +866,19 @@ fn unresolved_opaque_receiver(
 
 // ===================== forbid reaches =============================
 
-/// One step of a witness path.
+/// One step of a witness path. #392: each step carries the span of
+/// the source decision that introduced the edge — the callsite, or
+/// the publish site + subscription decl — so a violation can say
+/// where to edit, not just which names are involved.
 enum Step {
-    Call,
-    Bus { subject: String },
+    Call {
+        span: hale_syntax::Span,
+    },
+    Bus {
+        subject: String,
+        publish_span: hale_syntax::Span,
+        sub_span: hale_syntax::Span,
+    },
 }
 
 /// Evaluate `forbid reaches(src, dst)` by BFS over the composed
@@ -904,11 +917,20 @@ fn evaluate_forbid_reaches(
         }
     }
     let mut roots = src_group.fn_set(&cx.summary);
-    // `during P` — restrict sources to the named phase / method of
-    // each source locus. Free fns have no phases and drop out.
+    // `during P` — restrict sources to the named phase of each
+    // source locus, evaluated against the model's PHASE RELATION
+    // (#392): lifecycle hooks and modes carry their runtime-driven
+    // phase, ordinary methods their own name (the shipped
+    // source-slice doctrine, now an explicit exported relation the
+    // artifact carries — which is what makes a `during` row
+    // independently re-derivable). Free fns have no phases and
+    // drop out.
     if let Some(phase) = during {
         roots.retain(|k| {
-            k.locus.is_some() && k.fn_name == phase.name
+            cx.model
+                .phases
+                .get(k)
+                .is_some_and(|p| p.phase == phase.name)
         });
         if roots.is_empty() && !src_group.is_empty() {
             diags.push(Diag::ty(
@@ -988,13 +1010,15 @@ fn evaluate_forbid_reaches(
             }
         };
         if hit {
-            diags.push(render_violation(
+            render_violation(
                 c,
                 src_name,
                 &dst.display(),
                 &k,
                 &parent,
-            ));
+                cx,
+                diags,
+            );
             return "violated";
         }
         let Some(fs) = cx.summary.fns.get(&k) else { continue };
@@ -1010,7 +1034,10 @@ fn evaluate_forbid_reaches(
                         if seen.insert(next.clone()) {
                             parent.insert(
                                 next.clone(),
-                                (k.clone(), Step::Call),
+                                (
+                                    k.clone(),
+                                    Step::Call { span: edge.span },
+                                ),
                             );
                             queue.push_back(next.clone());
                         }
@@ -1090,7 +1117,7 @@ fn evaluate_forbid_reaches(
                     ));
                     return "violated";
                 };
-                for (sub_locus, sub_handler) in
+                for (sub_locus, sub_handler, sub_span) in
                     subscribers_of(cx.graph, subj)
                 {
                     let next =
@@ -1107,6 +1134,8 @@ fn evaluate_forbid_reaches(
                                 k.clone(),
                                 Step::Bus {
                                     subject: subj.clone(),
+                                    publish_span: site.span,
+                                    sub_span,
                                 },
                             ),
                         );
@@ -1245,7 +1274,7 @@ fn evaluate_only_edges(
                 ));
                 return "violated";
             };
-            for (sub_locus, sub_handler) in
+            for (sub_locus, sub_handler, _sub_span) in
                 subscribers_of(cx.graph, subj)
             {
                 if !dst_g.loci.contains(&sub_locus) {
@@ -1490,7 +1519,7 @@ fn site_count(
                 unbounded = true;
                 break;
             };
-            for (sub_locus, sub_handler) in
+            for (sub_locus, sub_handler, _sub_span) in
                 subscribers_of(cx.graph, subj)
             {
                 let next = FnKey::method(sub_locus, sub_handler);
@@ -1696,7 +1725,7 @@ fn evaluate_count(
 fn subscribers_of(
     graph: &BusGraph,
     subject: &str,
-) -> Vec<(String, String)> {
+) -> Vec<(String, String, hale_syntax::Span)> {
     let mut out = Vec::new();
     for (key, info) in &graph.subjects {
         let covers = key == subject
@@ -1706,7 +1735,7 @@ fn subscribers_of(
             continue;
         }
         for s in &info.subscribers {
-            out.push((s.locus.clone(), s.handler.clone()));
+            out.push((s.locus.clone(), s.handler.clone(), s.span));
         }
     }
     out
@@ -1766,7 +1795,9 @@ fn render_violation(
     dst_disp: &str,
     hit: &FnKey,
     parent: &BTreeMap<FnKey, (FnKey, Step)>,
-) -> Diag {
+    cx: &Cx,
+    diags: &mut Vec<Diag>,
+) {
     // Walk hit -> root collecting (node, incoming step), then
     // render forward.
     let mut rev: Vec<(FnKey, Option<&Step>)> = Vec::new();
@@ -1788,10 +1819,10 @@ fn render_violation(
     for (node, incoming) in &rev {
         match incoming {
             None => path.push_str(&format!("`{}`", node.display())),
-            Some(Step::Call) => {
+            Some(Step::Call { .. }) => {
                 path.push_str(&format!(" -> `{}`", node.display()));
             }
-            Some(Step::Bus { subject }) => {
+            Some(Step::Bus { subject, .. }) => {
                 path.push_str(&format!(
                     " -(publishes \"{}\")-> `{}`",
                     subject,
@@ -1800,11 +1831,70 @@ fn render_violation(
             }
         }
     }
-    Diag::ty(
+    diags.push(Diag::ty(
         c.name.span,
         format!(
             "claim `{}` violated: `{}` reaches `{}` — witness: {}",
             c.name.name, src_name.name, dst_disp, path,
         ),
-    )
+    ));
+    // #392 provenance: the witness names WHO; these point at WHERE
+    // to edit — the source decision that introduced the crossing
+    // edge, and the destination's declaration. Spans are emitted
+    // only for bundle decls (`Model::is_bundle_fn`): stdlib bodies
+    // parse in their own offset space, and a span from there
+    // attributed to a bundle file would point at the wrong source.
+    if let Some((entered, Some(step))) = rev.last().map(|(n, s)| (n, s))
+    {
+        // The fn whose body holds the crossing edge.
+        let from = rev.len().checked_sub(2).map(|i| &rev[i].0);
+        match step {
+            Step::Call { span } => {
+                if from.is_some_and(|f| cx.model.is_bundle_fn(f)) {
+                    diags.push(Diag::ty(
+                        *span,
+                        format!(
+                            "claim `{}`: the boundary into `{}` is \
+                             crossed by this call",
+                            c.name.name, dst_disp
+                        ),
+                    ));
+                }
+            }
+            Step::Bus { publish_span, sub_span, .. } => {
+                if from.is_some_and(|f| cx.model.is_bundle_fn(f)) {
+                    diags.push(Diag::ty(
+                        *publish_span,
+                        format!(
+                            "claim `{}`: the crossing publish \
+                             happens here",
+                            c.name.name
+                        ),
+                    ));
+                }
+                if cx.model.is_bundle_fn(entered) {
+                    diags.push(Diag::ty(
+                        *sub_span,
+                        format!(
+                            "claim `{}`: delivered at this \
+                             subscription",
+                            c.name.name
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    let dst_decl =
+        hit.locus.as_deref().unwrap_or(hit.fn_name.as_str());
+    if let Some(span) = cx.model.decl_span(dst_decl) {
+        diags.push(Diag::ty(
+            span,
+            format!(
+                "claim `{}`: the forbidden destination `{}` is \
+                 declared here",
+                c.name.name, dst_decl
+            ),
+        ));
+    }
 }

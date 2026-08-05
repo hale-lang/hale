@@ -300,14 +300,17 @@ nothing: the claim holds. An empty SRC likewise. Both are only
 reachable through the explicit opt-out; everything else fails the
 group guards first.
 
-**`during <phase>`.** Restricts SRC's projection to the fns named
-`<phase>` on each member locus — a lifecycle name (`birth`,
-`accept`, `release`, `run`, `drain`, `dissolve`) or any method or
-handler name. Free fns have no phases and drop out. If the filter
-empties a non-empty projection, that is an error ("phase names
-nothing in group"), not a vacuous pass. This is a source slice,
-not a temporal logic; a real phase relation belongs to the
-normalized model if state-dependent claims are ever needed.
+**`during <phase>`.** Restricts SRC's projection to the members of
+`<phase>` in the model's **phase relation**: lifecycle hooks
+(`birth`, `accept`, `release`, `run`, `drain`, `dissolve`) and
+modes (`bulk`, `harmonic`, `resolution`) are hook-phases the
+runtime drives; any method or handler name is its own source-slice
+phase. Free fns have no phases and drop out. If the filter empties
+a non-empty projection, that is an error ("phase names nothing in
+group"), not a vacuous pass. The relation is exported in the
+topology artifact (`phases`), which is what makes a `during` row
+independently re-derivable; it is still a source slice, not a
+temporal logic.
 
 **`avoiding <group>`.** Masks the named group's vertices out of
 the walk entirely — neither traversed nor tested. This is the
@@ -324,6 +327,15 @@ Modifiers stack in any order:
 path from a source root to the hit, calls rendered `->`, bus hops
 rendered `-(publishes "subject")->`, every name in author spelling
 (cross-seed symbols demangled).
+
+**Where to edit.** The witness names *who*; secondary diagnostics
+point at *where* — the call that crosses the boundary (or, for a
+bus hop, the publish site and the subscription declaration) and
+the forbidden destination's declaration, in the effect system's
+root + leaf shape. A hop whose source lives inside a stdlib body
+renders by name alone: stdlib source parses in its own offset
+space, and a span from there would point at the wrong line of your
+file.
 
 ## `only edges A -> B { … }` — the boundary form
 
@@ -549,37 +561,69 @@ The artifact shape (schema `1.0`):
 
 ```text
 {
-  "schema": "1.0",
+  "schema": "1.1",
   "shape_hash": "<fnv1a-64 over the model half>",
   "sorts":     { "loci": […], "fns": […], "topics": […] },
-  "relations": { "calls": […], "publishes": […], "subscribes": […] },
+  "relations": {
+    "calls": [ {"from", "to",
+                "loop"?: true, "unbounded"?: true,
+                "via_interface"?: "<iface>"} ],
+    "calls_via_stdlib": [ {"from", "to", "loop"?: true} ],
+    "publishes": […], "subscribes": […]
+  },
   "groups":    { "<name>": [members as declared] },
   "labels":    { "<fn>": [declared effect classes] },
+  "phases":    { "<fn>": {"phase", "kind": "hook"|"method"} },
+  "seeds":     { "<alias>": [member decls] },
+  "effects":   { "<fn>": [derived effect classes] },
   "unknowns":  [ {"fn": …, "reasons": ["indirect_call" |
                   "untyped_receiver_call:<callee>" |
                   "uninhabited_interface_call:<iface>.<callee>" |
                   "computed_publish"]} ],
+  "provenance": { "calls": [+span], "publishes": [+span],
+                  "subscribes": [+span], "decls": {name: span} },
   "claims":    [ {"name", "form", "result": "holds"|"violated"|"invalid"} ]
 }
 ```
 
 Everything renders in author spelling (cross-seed symbols
 demangled). `shape_hash` covers the **model half** — sorts,
-relations, groups, labels, unknowns — and excludes claim
-*results*, so one topology under a different law keeps one shape
-while any graph, vocabulary, carrier, or new fail-closed or
-dead-dispatch site changes the identity. `--check-topology` diffs against the
-committed baseline and fails with a regenerate hint, separating
-two review questions: *does the program still satisfy the law?*
-and *did the graph change in a way reviewers should see?*
+relations (with weights and the through-stdlib contraction),
+groups, labels, phases, seeds, derived effects, unknowns — and
+excludes claim *results* and *provenance*: one topology under a
+different law keeps one shape, and moving code changes every span
+but no identity, while any graph, vocabulary, carrier, phase, or
+new fail-closed or dead-dispatch site changes it.
+`--check-topology` diffs against the committed baseline and fails
+with a regenerate hint, separating two review questions: *does the
+program still satisfy the law?* and *did the graph change in a way
+reviewers should see?*
 
-v1 scope, stated honestly: the artifact supports independent
-replay of the serialized user call/bus graph, group boundaries,
-declared bus-end existence and cardinality, and declared carrier
-labels. Results needing the phase relation (`during`), seed
-membership (`cover`), compiler-derived built-in effects, or the
-stdlib-expanded walk remain compiler-certified report rows until
-the normalized verification model lands.
+The pieces worth knowing:
+
+- **Weights.** A call row marked `"loop": true` sits inside a
+  loop; `"unbounded": true` inside a loop with no compile-time
+  trip bound. `bound` replay reads these. A `"via_interface"` row
+  is one fanned-out dispatch alternative — alternatives sharing
+  (from, interface, method) fold with **max**, one dispatch
+  invokes one target.
+- **`calls_via_stdlib`.** The evaluator walks stdlib bodies; the
+  artifact serializes user rows. Every user→user path whose
+  interior is stdlib collapses to one contracted edge (loop flag
+  conservative: true if *any* such path crosses a loop), so
+  reachability over the artifact matches reachability as
+  evaluated.
+- **`phases` / `seeds` / `effects`.** What `during`, `cover`, and
+  effect-class endpoints evaluate against, exported — the rows
+  that used to be compiler-certified-only.
+- **`provenance`.** Bundle-global byte-offset spans (`[start,
+  end]`) for every user edge and decl — the "where to edit" data,
+  unhashed by design.
+
+v2 scope: every claim verb replays independently over the exported
+relations. Still compiler-certified: `bound` over **built-in**
+classes (site counting through the stdlib interior, deliberately
+not serialized) and any walk past the step ceiling.
 
 ## What claims are not
 
