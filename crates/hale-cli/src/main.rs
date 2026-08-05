@@ -2790,7 +2790,45 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
         .find_map(|a| a.strip_prefix("--dump-topology="))
         .filter(|v| !v.is_empty())
         .map(|v| v.to_string());
+    // One analysis pass, shared by the artifact gate below and the
+    // diagnostic report further down. `check_bundle_opts` is the
+    // expensive part of `check`, and nothing mutates `bundle`
+    // between the two, so running it twice would just double the
+    // cost of every `--dump-topology` invocation.
+    let allow_unowned =
+        std::env::args().any(|a| a == "--allow-unowned-subscriber");
+    let checked = hale_types::check_bundle_opts(&bundle, allow_unowned);
+
     if dump_topology || dump_topology_to.is_some() {
+        // The artifact's EXISTENCE means the model is sound.
+        //
+        // A program that fails to typecheck still produced a full
+        // artifact — populated relations, and claims evaluated over a
+        // graph derived from source the compiler could not
+        // understand. A claim would report `"result": "holds"` for a
+        // program that cannot compile: a certificate asserting a
+        // property of something that will never run. Worse for a
+        // consumer than no artifact, because an admission step
+        // looking for "no violated claims" passes it.
+        //
+        // A VIOLATED claim is the opposite case and still emits: the
+        // model is well-defined, the row is a truthful report, and
+        // being able to replay a violation independently is the point
+        // of publishing the model at all. `DiagKind::Claim` is what
+        // separates the two.
+        if let Some(d) = checked
+            .iter()
+            .find(|d| d.is_error() && d.kind != hale_syntax::error::DiagKind::Claim)
+        {
+            eprintln!(
+                "refusing to emit a topology artifact: `{}` does not \
+                 typecheck, so its model is not a truthful \
+                 description of any program. Fix the {} first.",
+                target.display(),
+                d.kind_str()
+            );
+            return ExitCode::from(1);
+        }
         let artifact = hale_types::topology::dump_topology(&bundle);
         match &dump_topology_to {
             Some(path) => {
@@ -2979,9 +3017,7 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
             return ExitCode::from(1);
         }
     }
-    let allow_unowned =
-        std::env::args().any(|a| a == "--allow-unowned-subscriber");
-    let mut diags = hale_types::check_bundle_opts(&bundle, allow_unowned);
+    let mut diags = checked;
     // Advisories about code the target does not own are dropped.
     //
     // `check` resolving imports is what makes cross-seed ERRORS

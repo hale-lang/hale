@@ -85,6 +85,16 @@ pub fn claims_report(
     let (mut out, outcomes) =
         claims_report_inner(programs, graph, import_renames);
     crate::stdlib_bodies::demangle_imports(&mut out, import_renames);
+    // Mark the whole batch at the one place they all funnel through,
+    // rather than at ~30 construction sites. Rendering is unchanged
+    // (`DiagKind::Claim` prints "type error" too); the kind exists so
+    // a consumer can separate "does not typecheck" from "typechecks
+    // and breaks a law" — see `DiagKind::Claim`.
+    for d in &mut out {
+        if d.kind == hale_syntax::error::DiagKind::Type {
+            d.kind = hale_syntax::error::DiagKind::Claim;
+        }
+    }
     (out, outcomes)
 }
 

@@ -17,6 +17,18 @@ pub enum DiagKind {
     Parse,
     /// Type-checker errors.
     Type,
+    /// Claim violations and claim-vocabulary errors. Errors like any
+    /// other, and rendered identically to `Type` on purpose — the
+    /// message already begins "claim `x` violated", so a distinct
+    /// prefix would only stutter.
+    ///
+    /// The kind exists so a consumer can tell "this program does not
+    /// typecheck" from "this program typechecks and breaks a law".
+    /// The topology artifact needs exactly that distinction: a
+    /// violated claim is a truthful report about a sound model, while
+    /// a type error means the model was derived from a program the
+    /// compiler could not understand and must not be published at all.
+    Claim,
     /// GH #241: codegen-raised errors that carry a source span
     /// (CodegenError::UnsupportedAt) — rendered with the same
     /// location + caret treatment as check diagnostics.
@@ -90,6 +102,8 @@ impl Diag {
             DiagKind::Lex => "lex error",
             DiagKind::Parse => "parse error",
             DiagKind::Type => "type error",
+            // deliberately the same label — see the variant's doc
+            DiagKind::Claim => "type error",
             DiagKind::Codegen => "codegen error",
             DiagKind::Warn => "warning",
         }

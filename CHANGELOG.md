@@ -39,6 +39,34 @@ the conformer from the group.
 The fact was already in the model (the artifact tags these edges
 `via_interface`); it just never reached the human. Witnesses with no
 interface in them are unchanged.
+### A topology artifact is only emitted for a program that typechecks
+
+`hale check broken.hl --dump-topology` emitted a **full artifact** for
+a program with a type error: populated relations, and claims evaluated
+over a graph derived from source the compiler could not understand. A
+claim would report `"result": "holds"` for a program that cannot
+compile — a certificate asserting a property of something that will
+never run.
+
+That is worse for a consumer than emitting nothing, because it fails
+open: an admission step looking for "no violated claims" *passes* it,
+since there are none.
+
+The artifact's existence now means the model is sound. A program that
+does not typecheck emits no artifact and says why.
+
+A **violated** claim is the opposite case and still emits, unchanged:
+the model is well-defined, the row is a truthful report, and replaying
+a violation independently is the point of publishing the model. The
+new `DiagKind::Claim` separates the two — errors like any other, and
+rendered identically (the message already begins "claim `x`
+violated", so a distinct prefix would only stutter), marked at the one
+place every claim diagnostic funnels through rather than at its ~30
+construction sites.
+
+`check` now runs its analysis once and shares it between the artifact
+gate and the diagnostic report, so this costs nothing on a
+`--dump-topology` run.
 
 ### Topology artifact schema 1.3: an integrity digest
 
