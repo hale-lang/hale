@@ -141,6 +141,34 @@ construction sites.
 `check` now runs its analysis once and shares it between the artifact
 gate and the diagnostic report, so this costs nothing on a
 `--dump-topology` run.
+### `hale check --workspace` (downstream review)
+
+`check` operates on one seed and does not recurse — correctly, since
+a directory is one compilation unit. The consequence was that a
+repository with several seeds needed a shell loop each project wrote
+itself, and a library or main-locus claim was enforced only where
+somebody remembered to point `check`.
+
+```sh
+hale check --workspace .        # every seed under `.`, each on its own
+hale verify --workspace .       # same, with advisories gated too
+```
+
+Every seed runs even when an earlier one fails: a runner that stopped
+at the first failure would report a subset of the truth, which is the
+shape of thing this exists to remove. The summary names the failing
+seeds, and the exit status is the worst of them so a usage error is
+not masked by an ordinary failure elsewhere. `vendor/`, `target/` and
+dot-directories are skipped — a seed you do not own is not yours to
+gate.
+
+It does **not** connect seeds. Each stays its own closed world; two
+binaries publishing and subscribing one topic are not linked by this,
+because nothing about a deployment is visible from source and
+inventing those edges would certify a system nobody deploys.
+Per-seed artifact flags are rejected in combination with
+`--workspace`: N seeds are N models, so there is no single artifact
+to emit or gate against.
 
 ### Topology artifact schema 1.3: an integrity digest
 

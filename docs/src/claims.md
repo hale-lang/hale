@@ -607,6 +607,36 @@ Violations (the claim's result is `violated`):
 | `count` | the actual count + the participating loci |
 | any call-traversing claim | "cannot be certified" for indirect calls, untypeable receivers, computed subjects — with the repair named |
 
+## Checking a repository with many seeds
+
+`hale check` operates on **one seed** and does not recurse — a
+directory is one compilation unit, and that is the right unit for a
+closed-world check. The consequence is that a repository with several
+seeds needs something to enumerate them, or a claim is enforced only
+where somebody remembered to point `check`.
+
+```sh
+hale check --workspace .        # every seed under `.`, each on its own
+hale verify --workspace .       # same, with advisories gated too
+```
+
+Every seed runs even if an earlier one fails — a runner that stopped
+at the first failure would report a subset of the truth. The summary
+names which seeds failed, and the exit status is the worst of them, so
+a usage error is not masked by an ordinary check failure elsewhere.
+
+`vendor/`, `target/` and dot-directories are skipped: a seed you do
+not own is not yours to gate.
+
+What this does **not** do is connect seeds to each other. Each stays
+its own closed world with its own model. Two binaries that publish and
+subscribe the same topic are not linked by this command — nothing
+about a deployment is visible from source alone, and inventing those
+edges would certify a system nobody deploys. Per-seed artifact flags
+(`--dump-topology`, `--check-topology*`, the effects and budget
+equivalents) are therefore rejected in combination with `--workspace`:
+N seeds are N models, and there is no single artifact to emit or gate.
+
 ## The topology artifact
 
 The checked model exports, diffs, and gates:
