@@ -46,6 +46,30 @@ struck). Spec: `spec/verification.md` § Claims. Docs: the claims
 chapter's artifact section. Tests: `topic_identity` unit vectors,
 `topology_v2.rs` identity row + hash-separation canary.
 
+### Factory-returned loci: unbound temporaries and call-valued return arms (GH #402)
+
+Two shapes #383 left on the program-lifetime path now reclaim too.
+
+**Unbound temporaries.** `add(matmul(w, a), b)` — the inner result is
+consumed as an argument and never named, so #383's binding-scoped
+rule had nothing to attach ownership to. The frame that evaluates it
+owns it now. The suppression flags that say "this value's owner is
+already decided" (a `let` RHS, a `return` expression) are one-shot
+rather than sticky: left sticky they swallow the whole subtree, and
+the nested temporary in `let z = add(matmul(..), b);` goes unowned
+again — which is the bug itself.
+
+**Call-valued return arms.** A factory whose guard arm is
+`return error_matrix();` was disqualified wholesale, even though that
+arm hands back a value as fresh as the main one. Freshness is
+transitive there for the same reason it is for let-bindings, and the
+fixpoint already had the machinery to decide it.
+
+Measured on the reference workload: leak 5320 → 3888 bytes, values
+correct, no use-after-free. The residual is still linear in call
+count, so #402 stays open — the remaining allocations are matrices
+the analysis does not yet prove fresh, not a new mechanism.
+
 ### Factory-returned loci are reclaimed by the binding that names them (GH #383)
 
 `let m = zeros(n);` used to leak: a locus returned from a free fn is

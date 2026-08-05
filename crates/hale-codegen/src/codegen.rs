@@ -1340,6 +1340,8 @@ pub fn build_executable_with_options(
         vtables: BTreeMap::new(),
         fresh_locus_factories: compute_fresh_locus_factories(&merged, import_renames),
         returned_bindings: compute_returned_bindings(&merged),
+        suppress_fresh_temp: false,
+        in_fresh_temp_hook: false,
         current_fn_skip_exit_drain: false,
         bus_inert,
         di: None,
@@ -2932,6 +2934,21 @@ fn compute_fresh_locus_factories(
                     Expr::Struct { path, .. }
                         if resolve(&qname(path), import_renames).as_deref()
                             == Some(l.as_str()) => {}
+                    // GH #402 shape 2: a return arm that is itself a
+                    // call to an already-qualifying factory of the
+                    // same locus. `matmul`'s guard arm — `if bad {
+                    // return error_matrix(); }` — disqualified the
+                    // whole fn under the original literal-or-ident
+                    // rule, even though that arm hands back a value
+                    // as fresh as the main one. Freshness is
+                    // transitive here for the same reason it is for
+                    // let-bindings, and the fixpoint already decides
+                    // it.
+                    Expr::Call { callee, .. }
+                        if callee_name(callee, import_renames)
+                            .and_then(|c| out.get(&c).cloned())
+                            .map(|(cl, _)| cl == l)
+                            .unwrap_or(false) => {}
                     Expr::Ident(i) => match &fresh_name {
                         None => fresh_name = Some(i.name.clone()),
                         Some(n) if *n == i.name => {}
@@ -3756,6 +3773,16 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// dissolve them. See `compute_returned_bindings`.
     pub(crate) returned_bindings:
         std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    /// GH #402: set while lowering an expression whose fresh-factory
+    /// result already has an owner decided by the caller — a `let`'s
+    /// direct RHS (the binding owns it) or a `return`'s expression
+    /// (the CALLER owns it). Temporary registration is suppressed
+    /// there; everywhere else a fresh-factory call produces a value
+    /// nothing names, and this frame owns it.
+    pub(crate) suppress_fresh_temp: bool,
+    /// GH #402: re-entry guard for the fresh-temp hook, cleared
+    /// immediately on entry so nested calls still get their own.
+    pub(crate) in_fresh_temp_hook: bool,
     pub(crate) current_fn_skip_exit_drain: bool,
     /// Static drain elision (2026-08-03): true when the merged
     /// program can never enqueue a bus cell (no topics, no bus
@@ -15570,8 +15597,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let hint_ty = ascribed
                     .as_ref()
                     .and_then(|asc| self.type_expr_to_codegen_ty(asc).ok());
+                // GH #402: the binding decides ownership for its own
+                // RHS (below), so suppress temporary registration for
+                // the top-level call — otherwise the value would be
+                // registered twice and dissolved twice.
+                let prev_sft = self.suppress_fresh_temp;
+                self.suppress_fresh_temp = true;
                 let lower_result =
                     self.lower_expr_into(value_to_lower, scope, hint_ty.as_ref());
+                self.suppress_fresh_temp = prev_sft;
                 self.defer_next_locus_dissolve = false;
                 let (mut val, mut ty) = lower_result?;
                 // GH #383: a let-bound call to a proven-fresh locus
@@ -19606,6 +19640,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         expr: Option<&Expr>,
         scope: &Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
+        // GH #402: a fresh-factory call in return position is handed
+        // to the CALLER, who owns it — this frame must not register
+        // it as a temporary and dissolve it on the way out. Same
+        // rule the returned-BINDING guard enforces for `return m;`,
+        // applied to `return make(...)` .
+        let _sft_guard = ();
+        let prev_sft = self.suppress_fresh_temp;
+        self.suppress_fresh_temp = true;
+        let r = self.lower_return_inner(expr, scope);
+        self.suppress_fresh_temp = prev_sft;
+        return r;
+    }
+
+    fn lower_return_inner(
+        &mut self,
+        expr: Option<&Expr>,
+        scope: &Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
         if self.in_main {
             // Return from main maps to the C entry point's i32
             // exit code. A bare `return;` exits 0; `return n;`
@@ -20076,6 +20128,61 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         e: &Expr,
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        // GH #402 shape 1: a fresh-factory call whose result nothing
+        // names — `add(matmul(w, a), b)`, where the inner value is
+        // consumed as an argument and dropped. #383's rule attaches
+        // ownership to a BINDING, so a temporary had no owner and
+        // stayed on the program-lifetime path. Give it one: this
+        // frame.
+        //
+        // Both flags are ONE-SHOT (`mem::replace`), and that is the
+        // whole subtlety. `suppress_fresh_temp` says "the owner of
+        // the NEXT call is already decided" — a `let` RHS (the
+        // binding owns it) or a `return` expression (the caller
+        // does). Left sticky it would swallow the entire subtree,
+        // and the nested `matmul` in a `let z = add(matmul(..), b);`
+        // would go unowned again — which is exactly the bug this
+        // shape is. `in_fresh_temp_hook` is the re-entry guard for
+        // the single node being re-lowered, cleared immediately so
+        // nested calls still get their own hook.
+        let reentry = std::mem::replace(&mut self.in_fresh_temp_hook, false);
+        if !reentry {
+            if let Expr::Call { callee, .. } = e {
+                if let Some((lname, _)) = self
+                    .callee_fn_name(callee)
+                    .and_then(|f| self.fresh_locus_factories.get(&f).cloned())
+                {
+                    let owned_elsewhere =
+                        std::mem::replace(&mut self.suppress_fresh_temp, false);
+                    self.in_fresh_temp_hook = true;
+                    let res = self.lower_expr(e, scope);
+                    self.in_fresh_temp_hook = false;
+                    let (val, ty) = res?;
+                    if !owned_elsewhere
+                        && ty == CodegenTy::LocusRef(lname.clone())
+                        && !self.deferred_dissolves.is_empty()
+                        && val.is_pointer_value()
+                    {
+                        let ptr_t =
+                            self.context.ptr_type(AddressSpace::default());
+                        let slot = self.alloca_in_entry(
+                            ptr_t.into(),
+                            &format!("{}.fresh_temp", lname),
+                        )?;
+                        self.builder
+                            .build_store(slot, val)
+                            .map_err(|e| {
+                                CodegenError::LlvmEmit(e.to_string())
+                            })?;
+                        self.deferred_dissolves
+                            .last_mut()
+                            .expect("checked non-empty")
+                            .push((slot, lname, None));
+                    }
+                    return Ok((val, ty));
+                }
+            }
+        }
         match e {
             // m46: `sum(expr)` inside a closure assertion is the
             // accumulator load (sample-update already ran);
