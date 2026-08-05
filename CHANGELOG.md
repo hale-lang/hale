@@ -8,6 +8,49 @@ behavior.
 
 ## Unreleased
 
+### Constitution identity, corrected at the boundary (GH #409)
+
+A second review found that the identity mechanism shipped in the
+previous entry had two holes of its own. Both were reproduced before
+fixing.
+
+- **Pure-composition constitutions vanished from identity.**
+  Identities were derived from the `source` of emitted claim rows, and
+  a constitution contributing no clause of its own emits none. So
+  `constitution Dev extends Left { }` — directly selected by the
+  manifest — appeared in no artifact and in no comparison. Two
+  entrypoints resolving the *same* `Dev` to different bases shared no
+  comparison key and the matrix passed. Pure composition is not
+  exotic: the corpus fixture added last release uses it. Identities
+  now come from the adoption **traversal**, which already visits every
+  constitution reached, and an evaluation reports its `roots` (named
+  directly) as well as its `closure`.
+- **`[claims] base` was compared per environment.** The key included
+  the environment name, so two environments with disjoint entrypoint
+  sets never shared one — a base resolving to different closures in
+  dev and prod went undetected. The mechanism proved consistency
+  *within* each environment and nothing about the base being shared.
+  The base now compares workspace-wide.
+
+Three smaller corrections:
+
+- **A workspace declaring environments must decide about a base**,
+  either `base = "…"` or `no_base = true`. An absent `[claims]`
+  section is indistinguishable from a misspelled one, and the intended
+  baseline would vanish while every environment still looked valid.
+- **`--env` requires an entrypoint** whether or not the environment
+  contributes a constitution. The check happened while injecting, so a
+  `source_only` environment with no base injected nothing, checked
+  nothing, and reported success for a library path.
+- **Duplicate bases normalize.** `extends Core, Core` and `extends
+  Core` evaluate identically, but the digest hashed the base twice and
+  reported a false mismatch — so a value called a *normalized* closure
+  was not normalized.
+
+Artifact schema **1.7**: `evaluation` splits into `roots` and
+`closure`, and gains the `environment` label. The prose promised this
+section says which deployment a run certified; only the label can.
+
 ### Constitution review fixes: three fail-opens, identity, and the spec (GH #409)
 
 An outside review of the constitutions PR found problems in shipped

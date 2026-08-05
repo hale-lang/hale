@@ -81,6 +81,16 @@ pub struct Manifest {
 #[serde(deny_unknown_fields)]
 pub struct ClaimsManifest {
     pub base: Option<String>,
+    /// `no_base = true` — this workspace deliberately has no shared
+    /// base, so environments may bind unrelated constitutions.
+    ///
+    /// Required rather than inferred, for the same reason
+    /// `source_only` is: an absent `[claims]` section is
+    /// indistinguishable from a misspelled one (`[claim]`), and the
+    /// intended workspace baseline would vanish while every
+    /// environment still looked explicit and valid.
+    #[serde(default)]
+    pub no_base: bool,
 }
 
 /// One `[environments.<name>]` section.
@@ -500,6 +510,29 @@ pub fn read_claims_config(
                      prevent",
                     manifest.display(),
                     name
+                ))
+            }
+            _ => {}
+        }
+    }
+    if !m.environments.is_empty() {
+        match (&m.claims.base, m.claims.no_base) {
+            (Some(_), true) => {
+                return Err(format!(
+                    "{}: `[claims]` sets both `base` and `no_base` — \
+                     say one or the other",
+                    manifest.display()
+                ))
+            }
+            (None, false) => {
+                return Err(format!(
+                    "{}: declares environments but no `[claims] base`. \
+                     Without one, environments may bind unrelated \
+                     constitutions and \"an environment may add law, \
+                     never drop it\" is not a property of the \
+                     mechanism. Say `[claims] base = \"…\"`, or \
+                     `[claims] no_base = true` if that is deliberate",
+                    manifest.display()
                 ))
             }
             _ => {}

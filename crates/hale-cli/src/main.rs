@@ -2812,7 +2812,9 @@ fn run_matrix(root: &Path, verify: bool) -> ExitCode {
                     adopt.push(c.clone());
                 }
             }
-            let code = run_check_impl_env(&target, verify, &adopt);
+            let code = run_check_impl_labelled(
+                &target, verify, &adopt, Some(env),
+            );
             if code != 0 {
                 failed.push(format!("{} @ {}", ep, env));
             }
@@ -2825,18 +2827,35 @@ fn run_matrix(root: &Path, verify: bool) -> ExitCode {
             for (name, digest) in
                 constitution_identities(&target, &adopt)
             {
-                let key = format!("{}::{}", env, name);
+                // The `[claims] base` is ONE constitution carried by
+                // every environment, so it must agree workspace-wide.
+                // Keying it per-environment meant two environments
+                // with disjoint entrypoints never shared a key, and a
+                // base resolving to different closures in dev and
+                // prod went undetected — the mechanism proved
+                // consistency WITHIN each environment and nothing
+                // about the base being shared.
+                let key = if Some(&name) == base.as_ref() {
+                    format!("base::{}", name)
+                } else {
+                    format!("env::{}::{}", env, name)
+                };
+                let scope = if Some(&name) == base.as_ref() {
+                    "the workspace base".to_string()
+                } else {
+                    format!("environment `{}`", env)
+                };
                 match seen_identity.get(&key) {
                     Some((prev_digest, prev_ep))
                         if *prev_digest != digest =>
                     {
                         eprintln!(
-                            "environment `{}` resolves `{}` to two \
-                             different claimsets: {} sees {}, {} sees \
-                             {}. One environment must mean one law — \
-                             the entrypoints are importing different \
-                             declarations that happen to share a name",
-                            env, name, prev_ep, prev_digest, ep, digest
+                            "{} resolves `{}` to two different \
+                             claimsets: {} sees {}, {} sees {}. One \
+                             name must mean one law — the entrypoints \
+                             are importing different declarations \
+                             that happen to share it",
+                            scope, name, prev_ep, prev_digest, ep, digest
                         );
                         failed.push(format!(
                             "{} @ {} (constitution identity)",
@@ -2903,7 +2922,10 @@ fn constitution_identities(
         &graph,
         &bundle.import_renames,
     );
-    ids.into_iter().map(|i| (i.name, i.digest)).collect()
+    // ROOTS, not the whole closure: the manifest asked for these by
+    // name, so these are what must agree across entrypoints. The
+    // closure follows from them.
+    ids.roots.into_iter().map(|i| (i.name, i.digest)).collect()
 }
 
 /// Is this seed an entrypoint? Parse-only — an entrypoint is a
@@ -3152,10 +3174,11 @@ fn run_check_cli(rest: &[String], verify: bool) -> ExitCode {
             }
         },
     };
-    ExitCode::from(run_check_impl_env(
+    ExitCode::from(run_check_impl_labelled(
         &PathBuf::from(positionals[0]),
         verify,
         &adopt,
+        env_name.as_deref(),
     ))
 }
 
@@ -3222,6 +3245,16 @@ fn run_check_impl_env(
     gate_warnings: bool,
     adopt_env: &[String],
 ) -> u8 {
+    run_check_impl_labelled(target, gate_warnings, adopt_env, None)
+}
+
+fn run_check_impl_labelled(
+    target: &Path,
+    gate_warnings: bool,
+    adopt_env: &[String],
+    env_label: Option<&str>,
+) -> u8 {
+    hale_types::claims::set_environment(env_label.map(str::to_string));
     // `check` MUST resolve cross-seed imports the same way `build`
     // and `run` do. It used to bundle only the target's own `.hl`
     // files, so an imported seed's bodies were never in the program
@@ -3242,6 +3275,28 @@ fn run_check_impl_env(
     // path will see. Without this, `check` warns on
     // auto-inferable cross-pool calls while `build` silently
     // applies — same source, divergent answers.
+    // An environment binds law to an ENTRYPOINT, so the target must
+    // be one — whether or not that environment happens to contribute
+    // a constitution. Checking this only while injecting meant a
+    // `source_only` environment with no workspace base injected
+    // nothing, checked nothing, and reported success for a library
+    // path; a matrix could count that as a covered pair.
+    if env_label.is_some() {
+        let has_main = programs.values().any(|p| {
+            p.items.iter().any(|i| {
+                matches!(i, hale_syntax::ast::TopDecl::Locus(l) if l.is_main)
+            })
+        });
+        if !has_main {
+            eprintln!(
+                "{}: `--env` names a deployment target, and a \
+                 deployment target is an ENTRYPOINT — this seed \
+                 declares no `main locus`",
+                target.display()
+            );
+            return 2;
+        }
+    }
     for cname in adopt_env {
         let mut injected = false;
         for prog in programs.values_mut() {

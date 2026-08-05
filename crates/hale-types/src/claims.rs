@@ -112,8 +112,10 @@ pub fn claims_report_with_identities(
     programs: &[&Program],
     graph: &BusGraph,
     import_renames: &[(Vec<String>, String)],
-) -> (Vec<Diag>, Vec<ClaimOutcome>, Vec<ConstitutionIdentity>) {
-    let (d, o) = claims_report(programs, graph, import_renames);
+) -> (Vec<Diag>, Vec<ClaimOutcome>, Adoption) {
+    let (mut d, o, adoption) =
+        claims_report_inner(programs, graph, import_renames);
+    crate::stdlib_bodies::demangle_imports(&mut d, import_renames);
     let mut consts: Vec<&ConstitutionDecl> = Vec::new();
     fn walk<'a>(items: &'a [TopDecl], out: &mut Vec<&'a ConstitutionDecl>) {
         for i in items {
@@ -129,21 +131,27 @@ pub fn claims_report_with_identities(
     }
     let by_name: BTreeMap<&str, &ConstitutionDecl> =
         consts.iter().map(|c| (c.name.name.as_str(), *c)).collect();
-    // Only the constitutions whose clauses actually landed — the
-    // adopted closure, which is what an environment's identity is
-    // about.
-    let adopted: BTreeSet<String> =
-        o.iter().filter_map(|r| r.source.clone()).collect();
-    adopted
-        .iter()
-        .map(|n| ConstitutionIdentity {
-            name: n.clone(),
-            digest: constitution_digest(n, &by_name, &mut Vec::new()),
-        })
-        .fold((d, o, Vec::new()), |(d, o, mut v), id| {
-            v.push(id);
-            (d, o, v)
-        })
+    let id_of = |n: &String| ConstitutionIdentity {
+        name: n.clone(),
+        digest: constitution_digest(n, &by_name, &mut Vec::new()),
+    };
+    let out = Adoption {
+        roots: adoption.roots.iter().map(&id_of).collect(),
+        closure: adoption.closure.iter().map(&id_of).collect(),
+    };
+    (d, o, out)
+}
+
+/// The identities an evaluation adopted: the roots it named directly,
+/// and the whole closure those roots reach.
+///
+/// A consumer needs both. `roots` is what the manifest asked for, so
+/// it is what a matrix must compare across entrypoints; `closure` is
+/// the law that actually applied.
+#[derive(Debug, Default, Clone)]
+pub struct Adoption {
+    pub roots: Vec<ConstitutionIdentity>,
+    pub closure: Vec<ConstitutionIdentity>,
 }
 
 /// FNV-1a/64 over the normalized closure. Same family as the
@@ -160,10 +168,19 @@ fn constitution_digest(
         return "unresolved".to_string();
     };
     stack.push(name.to_string());
-    let mut parts: Vec<String> = cd
-        .extends
+    // Dedup the bases. Expansion already visits each constitution
+    // once, so `extends Core, Core` and `extends Core` have identical
+    // evaluated clauses — hashing the base twice gave them different
+    // digests, which would report a false mismatch between two
+    // semantically identical closures. Fail-closed, but it means the
+    // value called a NORMALIZED closure was not normalized.
+    let mut bases: Vec<&str> =
+        cd.extends.iter().map(|b| b.name.as_str()).collect();
+    bases.sort_unstable();
+    bases.dedup();
+    let mut parts: Vec<String> = bases
         .iter()
-        .map(|b| constitution_digest(&b.name, by_name, stack))
+        .map(|b| constitution_digest(b, by_name, stack))
         .collect();
     parts.sort();
     let mut own: Vec<String> = cd
@@ -188,7 +205,7 @@ pub fn claims_report(
     graph: &BusGraph,
     import_renames: &[(Vec<String>, String)],
 ) -> (Vec<Diag>, Vec<ClaimOutcome>) {
-    let (mut out, outcomes) =
+    let (mut out, outcomes, _adoption) =
         claims_report_inner(programs, graph, import_renames);
     crate::stdlib_bodies::demangle_imports(&mut out, import_renames);
     // Mark the whole batch at the one place they all funnel through,
@@ -308,6 +325,37 @@ struct Cx<'a> {
     model: crate::model::Model,
 }
 
+thread_local! {
+    /// The environment name a `--env` / matrix run was for, so the
+    /// artifact can record WHICH deployment it certifies. A
+    /// thread-local because the artifact is serialized far from the
+    /// CLI that knows the label, and threading an `Option<String>`
+    /// through every intervening signature would buy nothing.
+    static ENVIRONMENT: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Record the environment this evaluation is for.
+pub fn set_environment(name: Option<String>) {
+    ENVIRONMENT.with(|e| *e.borrow_mut() = name);
+}
+
+pub fn current_environment() -> Option<String> {
+    ENVIRONMENT.with(|e| e.borrow().clone())
+}
+
+/// GH #409: what an evaluation adopted.
+///
+/// `roots` are the constitutions named directly (by source `adopt`
+/// lines and by `--env` injection); `closure` is every constitution
+/// reached from them. Both come from the adoption traversal, never
+/// from inspecting which claims happened to be emitted.
+#[derive(Debug, Default, Clone)]
+pub struct AdoptionInfo {
+    pub roots: Vec<String>,
+    pub closure: Vec<String>,
+}
+
 /// GH #409: expand a main's `adopt` lines into its claim set,
 /// returning claim-name → originating constitution.
 ///
@@ -323,6 +371,7 @@ fn expand_adoptions(
     lib_adopts: &[Ident],
     claims: &mut Vec<ClaimDecl>,
     diags: &mut Vec<Diag>,
+    info: &mut AdoptionInfo,
 ) -> BTreeMap<String, String> {
     let mut origins: BTreeMap<String, String> = BTreeMap::new();
 
@@ -416,6 +465,9 @@ fn expand_adoptions(
     }
     let mut stack = Vec::new();
     for a in adopts {
+        if !info.roots.contains(&a.name) {
+            info.roots.push(a.name.clone());
+        }
         visit(
             a,
             &by_name,
@@ -425,6 +477,19 @@ fn expand_adoptions(
             diags,
         );
     }
+    // The EFFECTIVE closure comes from the traversal, which visits
+    // every constitution reached — directly adopted roots, empty
+    // composition constitutions, intermediates, bases, and
+    // diamond-deduplicated ancestors alike.
+    //
+    // Deriving it instead from the `source` of emitted claim rows
+    // silently dropped any constitution that contributes no clause of
+    // its own. `constitution Dev extends Left { }` was then absent
+    // from the artifact and from the matrix's identity comparison —
+    // so two entrypoints resolving the SAME `Dev` to different bases
+    // shared no comparison key and passed. Pure composition is not an
+    // edge case; #415's own corpus fixture uses it.
+    info.closure = done.iter().cloned().collect();
 
     // Collisions. Claim names are the contract of record — cited in
     // reviews, in diagnostics, in the artifact — and are deliberately
@@ -495,7 +560,7 @@ fn claims_report_inner(
     programs: &[&Program],
     graph: &BusGraph,
     import_renames: &[(Vec<String>, String)],
-) -> (Vec<Diag>, Vec<ClaimOutcome>) {
+) -> (Vec<Diag>, Vec<ClaimOutcome>, AdoptionInfo) {
     // ---- collect group decls + claims blocks (modules included) ----
     //
     // #392 thread 2 — two tiers. Main-locus blocks are the WORLD
@@ -579,12 +644,14 @@ fn claims_report_inner(
     // GH #409: expand adopted constitutions into this main's claim
     // set. Authoring is shared, evaluation is not — every clause is
     // checked HERE, against this entrypoint's closed world.
+    let mut adoption = AdoptionInfo::default();
     let origins = expand_adoptions(
         &consts,
         &adopts,
         &lib_adopts,
         &mut claims,
         &mut diags,
+        &mut adoption,
     );
     for cb in top_blocks {
         // The seed merge flattens imported items into the closing
@@ -633,7 +700,7 @@ fn claims_report_inner(
         }
     }
     if group_decls.is_empty() && claims.is_empty() {
-        return (diags, Vec::new());
+        return (diags, Vec::new(), adoption);
     }
 
     // ---- decl indexes for member / topic resolution ----
@@ -730,7 +797,7 @@ fn claims_report_inner(
     }
 
     if claims.is_empty() {
-        return (diags, Vec::new());
+        return (diags, Vec::new(), adoption);
     }
 
     // ---- claim names are the contract-of-record ----
@@ -804,7 +871,7 @@ fn claims_report_inner(
             source: origins.get(&c.name.name).cloned(),
         });
     }
-    (diags, outcomes)
+    (diags, outcomes, adoption)
 }
 
 // ===================== validation =================================

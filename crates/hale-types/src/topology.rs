@@ -96,8 +96,12 @@ use crate::symbol::Bundle;
 /// 1.6 (#409 review): an `evaluation` section naming the adopted
 /// constitutions and the digest of each one's normalized closure, so
 /// two entrypoints can be shown to have resolved the SAME claimset
-/// rather than merely the same name.
-pub const TOPOLOGY_SCHEMA: &str = "1.6";
+/// rather than merely the same name. 1.7 (#415 review 2): that
+/// section splits into `roots` (named directly) and `closure`
+/// (everything they reach), and gains the `environment` label —
+/// identities now come from the adoption traversal, so a constitution
+/// contributing no clause of its own is no longer invisible.
+pub const TOPOLOGY_SCHEMA: &str = "1.7";
 
 /// Serialize the bundle's model + claim results as the topology
 /// artifact (JSON).
@@ -834,16 +838,39 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     //
     // Inside the digest-covered body: an evaluation context that
     // could be edited after the fact would certify nothing.
-    out.push_str(",\n  \"evaluation\": {\n    \"constitutions\": [\n");
-    for (i, id) in identities.iter().enumerate() {
+    out.push_str(",\n  \"evaluation\": {\n");
+    // The environment this run was for, when one was named. Two
+    // environment labels selecting identical law produce equivalent
+    // certificates on the `closure` alone — but the prose promised
+    // this section says WHICH deployment was certified, and only the
+    // label can say that.
+    if let Some(env) = crate::claims::current_environment() {
         out.push_str(&format!(
-            "      {{\"name\": {}, \"digest\": {}}}{}\n",
-            quote(&id.name),
-            quote(&id.digest),
-            if i + 1 == identities.len() { "" } else { "," }
+            "    \"environment\": {},\n",
+            quote(&env)
         ));
     }
-    out.push_str("    ]\n  }");
+    // `roots` — what was asked for. `closure` — what applied.
+    //
+    // Both come from the adoption traversal. Deriving them from the
+    // `source` of emitted claim rows dropped every constitution that
+    // contributes no clause of its own, so a directly-selected
+    // `constitution Dev extends Left { }` never appeared at all.
+    let mut section = |label: &str, ids: &[crate::claims::ConstitutionIdentity], last: bool| {
+        out.push_str(&format!("    \"{}\": [\n", label));
+        for (i, id) in ids.iter().enumerate() {
+            out.push_str(&format!(
+                "      {{\"name\": {}, \"digest\": {}}}{}\n",
+                quote(&id.name),
+                quote(&id.digest),
+                if i + 1 == ids.len() { "" } else { "," }
+            ));
+        }
+        out.push_str(if last { "    ]\n" } else { "    ],\n" });
+    };
+    section("roots", &identities.roots, false);
+    section("closure", &identities.closure, true);
+    out.push_str("  }");
 
     // The document's own verdict (schema 1.4). Every law in this
     // artifact — bundle claims and fn-grained certificates alike —

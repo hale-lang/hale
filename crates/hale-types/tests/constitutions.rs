@@ -338,7 +338,7 @@ fn constitution_identity_follows_the_closure_not_the_name() {
             bundle.programs.values().copied().collect();
         let (_, _, ids) =
             claims_report_with_identities(&progs, &graph, &[]);
-        ids.into_iter().map(|i| (i.name, i.digest)).collect()
+        ids.closure.into_iter().map(|i| (i.name, i.digest)).collect()
     }
 
     let base = program(
@@ -390,7 +390,8 @@ fn a_changed_base_clause_changes_the_derived_digest() {
             bundle.programs.values().copied().collect();
         let (_, _, ids) =
             claims_report_with_identities(&progs, &graph, &[]);
-        ids.into_iter()
+        ids.closure
+            .into_iter()
             .find(|i| i.name == want)
             .unwrap_or_else(|| panic!("no identity for {}", want))
             .digest
@@ -414,5 +415,148 @@ main locus App {
         digest_of(&src, "Dev"),
         digest_of(&changed, "Dev"),
         "`Dev`'s own clauses did not change, but its CLOSURE did"
+    );
+}
+
+/// Second review: a constitution that contributes no clause of its
+/// own must still have an identity. Deriving identities from the
+/// `source` of emitted claim rows dropped it, because it emitted
+/// none.
+#[test]
+fn a_pure_composition_constitution_has_an_identity() {
+    use hale_types::bus_graph::build_bus_graph;
+    use hale_types::claims::claims_report_with_identities;
+
+    fn adoption(src: &str) -> (Vec<String>, Vec<String>) {
+        let prog = parse_source(src).expect("parse");
+        let mut programs = std::collections::BTreeMap::new();
+        programs.insert("app.hl".to_string(), &prog);
+        let bundle = hale_types::Bundle::new(programs);
+        let (top, _) = hale_types::resolve::build_top_scope(&bundle);
+        let graph = build_bus_graph(&bundle, &top);
+        let progs: Vec<&hale_syntax::ast::Program> =
+            bundle.programs.values().copied().collect();
+        let (_, _, a) = claims_report_with_identities(&progs, &graph, &[]);
+        (
+            a.roots.iter().map(|i| i.name.clone()).collect(),
+            a.closure.iter().map(|i| i.name.clone()).collect(),
+        )
+    }
+
+    let src = program(
+        r#"
+constitution Base { r: count publishers(topic Settled) == 1; }
+constitution Dev extends Base { }
+main locus App {
+    params { b: Billing = Billing { }; r: Research = Research { }; }
+    claims { adopt Dev; }
+}
+"#,
+    );
+    let (roots, closure) = adoption(&src);
+    assert_eq!(
+        roots,
+        vec!["Dev".to_string()],
+        "the directly selected constitution is the root, even with no \
+         clauses of its own"
+    );
+    assert!(
+        closure.contains(&"Dev".to_string())
+            && closure.contains(&"Base".to_string()),
+        "and the closure holds both: {:?}",
+        closure
+    );
+}
+
+/// Two `Dev`s that differ only in their base must not share a digest
+/// — that is the whole point of comparing closures.
+#[test]
+fn pure_composition_digests_follow_the_base() {
+    use hale_types::bus_graph::build_bus_graph;
+    use hale_types::claims::claims_report_with_identities;
+
+    fn dev_digest(src: &str) -> String {
+        let prog = parse_source(src).expect("parse");
+        let mut programs = std::collections::BTreeMap::new();
+        programs.insert("app.hl".to_string(), &prog);
+        let bundle = hale_types::Bundle::new(programs);
+        let (top, _) = hale_types::resolve::build_top_scope(&bundle);
+        let graph = build_bus_graph(&bundle, &top);
+        let progs: Vec<&hale_syntax::ast::Program> =
+            bundle.programs.values().copied().collect();
+        let (_, _, a) = claims_report_with_identities(&progs, &graph, &[]);
+        a.roots
+            .iter()
+            .find(|i| i.name == "Dev")
+            .expect("Dev is a root")
+            .digest
+            .clone()
+    }
+
+    let base = program(
+        r#"
+constitution Base { r: count publishers(topic Settled) == 1; }
+constitution Dev extends Base { }
+main locus App {
+    params { b: Billing = Billing { }; r: Research = Research { }; }
+    claims { adopt Dev; }
+}
+"#,
+    );
+    let wider = base.replace(
+        "constitution Base { r: count publishers(topic Settled) == 1; }",
+        "constitution Base { r: count publishers(topic Settled) == 1; \
+         s: count subscribers(topic Settled) == 0; }",
+    );
+    assert_ne!(
+        dev_digest(&base),
+        dev_digest(&wider),
+        "`Dev`'s own body is empty and identical; its CLOSURE is not"
+    );
+}
+
+/// `extends Core, Core` and `extends Core` evaluate identically —
+/// expansion visits each constitution once — so they must digest
+/// identically. Hashing the base twice reported a false mismatch
+/// between semantically identical closures.
+#[test]
+fn duplicate_bases_normalize_to_one_digest() {
+    use hale_types::bus_graph::build_bus_graph;
+    use hale_types::claims::claims_report_with_identities;
+
+    fn digest(src: &str, want: &str) -> String {
+        let prog = parse_source(src).expect("parse");
+        let mut programs = std::collections::BTreeMap::new();
+        programs.insert("app.hl".to_string(), &prog);
+        let bundle = hale_types::Bundle::new(programs);
+        let (top, _) = hale_types::resolve::build_top_scope(&bundle);
+        let graph = build_bus_graph(&bundle, &top);
+        let progs: Vec<&hale_syntax::ast::Program> =
+            bundle.programs.values().copied().collect();
+        let (_, _, a) = claims_report_with_identities(&progs, &graph, &[]);
+        a.roots
+            .iter()
+            .find(|i| i.name == want)
+            .unwrap_or_else(|| panic!("no root {}", want))
+            .digest
+            .clone()
+    }
+
+    let one = program(
+        r#"
+constitution Core { r: count publishers(topic Settled) == 1; }
+constitution D extends Core { }
+main locus App {
+    params { b: Billing = Billing { }; r: Research = Research { }; }
+    claims { adopt D; }
+}
+"#,
+    );
+    let twice = one.replace("extends Core {", "extends Core, Core {");
+    assert_eq!(
+        digest(&one, "D"),
+        digest(&twice, "D"),
+        "a repeated base is deduplicated by expansion, so it must be \
+         deduplicated by the digest that claims to be normalized"
     );
 }
