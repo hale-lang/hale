@@ -620,7 +620,7 @@ The artifact shape (schema `1.0`):
 
 ```text
 {
-  "schema": "1.1",
+  "schema": "1.2",
   "shape_hash": "<fnv1a-64 over the model half>",
   "sorts":     { "loci": […], "fns": […], "topics": […] },
   "relations": {
@@ -641,6 +641,7 @@ The artifact shape (schema `1.0`):
                   "computed_publish"]} ],
   "provenance": { "calls": [+span], "publishes": [+span],
                   "subscribes": [+span], "decls": {name: span} },
+  "topics":    [ {"name", "subject", "shape", "payload_hash"} ],
   "claims":    [ {"name", "form", "result": "holds"|"violated"|"invalid"} ],
   "lowered":   [ {"subject", "form", "result": "holds"|"violated"} ]
 }
@@ -687,6 +688,17 @@ The pieces worth knowing:
   {F}`, `only effects {…} on {L} during birth`. One schema of
   record: the artifact carries all law, bundle-quantified and
   fn-grained, in one place. Unhashed like the claim results.
+- **`topics`.** The per-topic OBSERVATION identity: the wire
+  subject, the canonical payload shape, and `payload_hash` —
+  exactly the `(name, shape_hash)` pair the runtime manifest fuses
+  on (iris PROTOCOL §4), so a recording/WAL segment names the
+  checked topology it ran under. `subject` is deliberately RAW
+  (it is the byte-exact join key; a subject-less imported topic
+  registers under its mangled local name — declare `subject:` on
+  shared topics to fuse across binaries). Unhashed by ruling:
+  payload field shape does not affect claim evaluation, so it is
+  not part of the model identity — the artifact document is the
+  reference between the two identities, not a fusion of them.
 
 v2 scope: every claim verb replays independently over the exported
 relations. Still compiler-certified: `bound` over **built-in**

@@ -411,24 +411,6 @@ fn bce_ifstmt_safe(ifs: &IfStmt, vkey: &BceVecKey, var: &str) -> bool {
 
 /// True iff evaluating `expr` cannot mutate vec `vkey` (nor pass
 /// `self`/V by-reference somewhere that could). Default-bail.
-/// iris handoff-2 P6: coarse, stable field-type tags for the
-/// canonical topic shape string. Deliberately name-free for
-/// nested user types ("struct") so the hash never depends on a
-/// declaring binary's local type names.
-fn obs_shape_tag(ty: &CodegenTy) -> &'static str {
-    match ty {
-        CodegenTy::Int => "i",
-        CodegenTy::Float => "f",
-        CodegenTy::Bool => "b",
-        CodegenTy::Decimal => "d",
-        CodegenTy::Time => "t",
-        CodegenTy::Duration => "u",
-        CodegenTy::String | CodegenTy::StringView => "s",
-        CodegenTy::Bytes | CodegenTy::BytesView => "y",
-        _ => "struct",
-    }
-}
-
 fn bce_expr_safe(expr: &Expr, vkey: &BceVecKey, var: &str) -> bool {
     // A bare occurrence of V anywhere OTHER than as the receiver of a
     // read-only method call (handled in `bce_call_safe`, which does
@@ -8567,46 +8549,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // per topic, consulted lazily if/when observation
         // initializes.
         if !self.is_wasm {
+            // #399: subject and shape both come from the SHARED
+            // identity implementation (`hale_types::topic_identity`),
+            // which the topology artifact also exports — the manifest
+            // a consumer fuses on and the artifact a reviewer commits
+            // cannot drift. Using the parent-JOINED wire subject here
+            // also fixes a registration miss: publish-side manifest
+            // rows key by the joined dot-path, so a parented topic's
+            // shape registered under its bare subject was never found
+            // and its manifest row hashed the empty shape.
+            let wire = hale_types::topic_identity::topic_wire_subjects(
+                &self.program.items,
+            );
             let shapes: Vec<(String, String)> = self
                 .program
                 .items
                 .iter()
                 .filter_map(|it| match it {
                     TopDecl::Topic(t) => {
-                        let subj = t
-                            .subject
-                            .clone()
+                        let subj = wire
+                            .get(&t.name.name)
+                            .cloned()
                             .unwrap_or_else(|| t.name.name.clone());
-                        let shape = match &t.payload {
-                            TypeExpr::Named { path, generic_args, .. }
-                                if path.segments.len() == 1
-                                    && generic_args.is_empty() =>
-                            {
-                                self.user_types
-                                    .get(&path.segments[0].name)
-                                    .map(|ti| {
-                                        ti.field_order
-                                            .iter()
-                                            .filter_map(|f| {
-                                                ti.fields.get(f).map(
-                                                    |(_, fty)| {
-                                                        format!(
-                                                            "{}:{}",
-                                                            f,
-                                                            obs_shape_tag(
-                                                                fty
-                                                            )
-                                                        )
-                                                    },
-                                                )
-                                            })
-                                            .collect::<Vec<_>>()
-                                            .join(";")
-                                    })
-                                    .unwrap_or_default()
-                            }
-                            _ => String::new(),
-                        };
+                        let shape = hale_types::topic_identity::
+                            canonical_topic_shape(
+                                &self.program.items,
+                                t,
+                            );
                         Some((subj, shape))
                     }
                     _ => None,
@@ -10458,54 +10427,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         items: &[TopDecl],
         out: &mut BTreeMap<String, String>,
     ) {
-        // First gather raw (name → (parent, subject)) pairs.
-        struct Raw {
-            parent: Option<String>,
-            subject: String,
-        }
-        let mut raw: BTreeMap<String, Raw> = BTreeMap::new();
-        fn walk(items: &[TopDecl], raw: &mut BTreeMap<String, Raw>) {
-            for item in items {
-                match item {
-                    TopDecl::Topic(t) => {
-                        raw.insert(
-                            t.name.name.clone(),
-                            Raw {
-                                parent: t.parent.as_ref().map(|i| i.name.clone()),
-                                subject: t
-                                    .subject
-                                    .clone()
-                                    .unwrap_or_else(|| t.name.name.clone()),
-                            },
-                        );
-                    }
-                    TopDecl::Module(m) => walk(&m.items, raw),
-                    _ => {}
-                }
-            }
-        }
-        walk(items, &mut raw);
-
-        for (name, r) in raw.iter() {
-            let mut chain: Vec<String> = vec![r.subject.clone()];
-            let mut visited: Vec<String> = vec![name.clone()];
-            let mut cur = r.parent.clone();
-            while let Some(p) = cur {
-                if visited.contains(&p) {
-                    break;
-                }
-                visited.push(p.clone());
-                match raw.get(&p) {
-                    Some(pr) => {
-                        chain.push(pr.subject.clone());
-                        cur = pr.parent.clone();
-                    }
-                    None => break,
-                }
-            }
-            chain.reverse();
-            out.insert(name.clone(), chain.join("."));
-        }
+        // #399: the rule moved to `hale_types::topic_identity` so
+        // bus routing, observer shape registration, and the
+        // topology artifact's exported identity all read ONE
+        // implementation.
+        out.extend(hale_types::topic_identity::topic_wire_subjects(
+            items,
+        ));
     }
 
     fn emit_arena_destroy(&mut self) -> Result<(), CodegenError> {

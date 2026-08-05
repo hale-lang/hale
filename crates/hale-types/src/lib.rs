@@ -30,6 +30,7 @@ pub mod frontier;
 pub mod check;
 pub mod claims;
 pub mod model;
+pub mod topic_identity;
 pub mod topology;
 pub mod stdlib_bodies;
 pub mod stdlib_surface;
