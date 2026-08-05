@@ -2834,6 +2834,27 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
                 .map(|v| v.trim().trim_matches(',').trim_matches('"').to_string())
         };
         match std::fs::read_to_string(&path) {
+            Ok(expected) if matches!(
+                hale_types::topology::verify_artifact_digest(&expected),
+                Some(false)
+            ) =>
+            {
+                // This gate greps ONE line out of the baseline, so a
+                // baseline whose `shape_hash` line was edited to match
+                // would pass while the model it claims to describe
+                // says otherwise. The whole-body digest is what makes
+                // the grepped line trustworthy; a baseline that fails
+                // it is not a mismatch to report, it is a file that
+                // cannot be reasoned about.
+                eprintln!(
+                    "topology baseline {} is corrupt: its \
+                     `artifact_digest` does not match its contents. \
+                     Regenerate it:\n  hale check <target> \
+                     --dump-topology > {}",
+                    path, path
+                );
+                return ExitCode::from(2);
+            }
             Ok(expected) => match (hash_of(&expected), hash_of(&current)) {
                 (Some(a), Some(b)) if a != b => {
                     eprintln!(

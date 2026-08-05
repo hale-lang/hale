@@ -633,11 +633,37 @@ Dumping does **not** change what the command means: a program whose
 claims fail still exits non-zero with its witnesses, it just prints
 the artifact on the way.
 
-The artifact shape (schema `1.2`):
+### Identity vs. integrity
+
+Two different hashes, and conflating them is a trap:
+
+- **`shape_hash`** is an *identity*. It covers the model half only,
+  so claim renames, moved comments, and the `topics`/`provenance`
+  sections don't churn it. That's what makes
+  `--check-topology-shape` usable in CI.
+- **`artifact_digest`** is an *integrity* check. It covers the
+  entire body — model, topics, provenance and claim results alike —
+  and is the final key, so everything before it is exactly what was
+  hashed.
+
+You need the second as soon as anything trusts an artifact it didn't
+produce. A gate that greps `shape_hash` out of a committed baseline
+can be defeated by editing that one line; and a cross-binary
+consumer joining endpoints on the `topics` rows would otherwise be
+joining on data outside the hash it verified. Both baseline gates
+reject a file whose digest doesn't match its contents, as corrupt
+rather than as a mismatch.
+
+An artifact with no `artifact_digest` (anything before schema 1.3)
+reports as *unverifiable* rather than as valid — a consumer may
+choose to accept it, but must never read "nothing to check" as
+"checked and intact".
+
+The artifact shape (schema `1.3`):
 
 ```text
 {
-  "schema": "1.2",
+  "schema": "1.3",
   "shape_hash": "<fnv1a-64 over the model half>",
   "sorts":     { "loci": […], "fns": […], "topics": […] },
   "relations": {
