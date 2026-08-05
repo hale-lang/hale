@@ -956,3 +956,116 @@ fn domain_decl_guards() {
         errs
     );
 }
+
+// =====================================================================
+// Interface dispatch in the witness (downstream review, item 5)
+// =====================================================================
+//
+// The compiler fans an interface call out to EVERY conforming locus,
+// which is sound and deliberately conservative. But the witness used
+// to render that hop as an ordinary direct call, so a reader looking
+// at a line that constructs `Email` and a witness that names
+// `Sms::send` concluded the checker was wrong.
+//
+// A correct proof that reads as a bug is expensive: people stop
+// trusting the checker, or work around it. The fact was already in
+// the model (`via_interface`); it just never reached the human.
+
+const DISPATCH: &str = r#"
+interface Notifier { fn send(msg: String); }
+
+locus Email {
+    params { n: Int = 0; }
+    fn send(msg: String) { self.n = self.n + 1; }
+}
+locus Sms {
+    params { n: Int = 0; }
+    fn send(msg: String) { self.n = self.n + 1; }
+}
+
+locus A {
+    params { n: Int = 0; }
+    fn go() {
+        let e = Email { };
+        notify(e, "hi");
+    }
+}
+
+fn notify(x: Notifier, m: String) { x.send(m); }
+
+group callers = { A };
+group texting = { Sms };
+
+main locus App {
+    params { a: A = A { }; e: Email = Email { }; s: Sms = Sms { }; }
+    claims { no_sms: forbid reaches(callers, texting); }
+}
+fn main() { App { }; }
+"#;
+
+#[test]
+fn the_witness_names_the_dispatch_not_a_direct_call() {
+    let ds = diags(DISPATCH);
+    let witness = ds
+        .iter()
+        .find(|m| m.contains("claim `no_sms` violated"))
+        .unwrap_or_else(|| panic!("expected a violation: {:#?}", ds));
+    assert!(
+        witness.contains("-(dispatches Notifier.send)-> `Sms::send`"),
+        "the interface hop must be rendered AS a dispatch — shown as \
+         a plain `->` it reads as impossible, because the call site \
+         constructs an `Email`:\n{}",
+        witness
+    );
+}
+
+/// And the "where to edit" diagnostic has to explain the fanout,
+/// since that is the part the reader disbelieves.
+#[test]
+fn the_dispatch_site_explains_why_every_conformer_counts() {
+    let ds = diags(DISPATCH);
+    let site = ds
+        .iter()
+        .find(|m| m.contains("crossed by this dispatch"))
+        .unwrap_or_else(|| panic!("expected a dispatch site: {:#?}", ds));
+    assert!(
+        site.contains("`Notifier`") && site.contains("EVERY"),
+        "it must name the interface and say the call reaches every \
+         conformer:\n{}",
+        site
+    );
+    assert!(
+        site.contains("Narrow the receiver") || site.contains("exclude"),
+        "and name a repair:\n{}",
+        site
+    );
+}
+
+/// A direct call must be unaffected — no dispatch vocabulary leaks
+/// into a witness that has no interface in it.
+#[test]
+fn a_direct_call_witness_is_unchanged() {
+    const DIRECT: &str = r#"
+locus Sink { params { n: Int = 0; } fn take() { self.n = 1; } }
+locus Src { params { n: Int = 0; } fn go() { reach(); } }
+fn reach() { let s = Sink { }; s.take(); }
+group srcs = { Src };
+group sinks = { Sink };
+main locus App {
+    params { s: Src = Src { }; k: Sink = Sink { }; }
+    claims { iso: forbid reaches(srcs, sinks); }
+}
+fn main() { App { }; }
+"#;
+    let ds = diags(DIRECT);
+    let witness = ds
+        .iter()
+        .find(|m| m.contains("claim `iso` violated"))
+        .unwrap_or_else(|| panic!("expected a violation: {:#?}", ds));
+    assert!(
+        !witness.contains("dispatches"),
+        "no interface is involved here:\n{}",
+        witness
+    );
+    assert!(witness.contains(" -> "), "plain call arrow:\n{}", witness);
+}

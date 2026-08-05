@@ -951,6 +951,15 @@ fn unresolved_opaque_receiver(
 enum Step {
     Call {
         span: hale_syntax::Span,
+        /// The interface, when this edge is one alternative of a
+        /// dispatch rather than a direct call. Rendering it is the
+        /// difference between a witness that reads as impossible and
+        /// one that reads as conservative: the compiler fans an
+        /// interface call out to EVERY conformer, so a path can end
+        /// at `Sms::send` while the line in front of you constructs
+        /// an `Email`. Shown as a direct call, that looks like a
+        /// compiler bug; named as a dispatch, it is obviously sound.
+        via_interface: Option<String>,
     },
     Bus {
         subject: String,
@@ -1114,7 +1123,12 @@ fn evaluate_forbid_reaches(
                                 next.clone(),
                                 (
                                     k.clone(),
-                                    Step::Call { span: edge.span },
+                                    Step::Call {
+                                        span: edge.span,
+                                        via_interface: edge
+                                            .via_interface
+                                            .clone(),
+                                    },
                                 ),
                             );
                             queue.push_back(next.clone());
@@ -1897,6 +1911,15 @@ fn render_violation(
     for (node, incoming) in &rev {
         match incoming {
             None => path.push_str(&format!("`{}`", node.display())),
+            Some(Step::Call { via_interface: Some(iface), .. }) => {
+                // `-(dispatches Notifier.send)->` rather than `->`.
+                path.push_str(&format!(
+                    " -(dispatches {}.{})-> `{}`",
+                    iface,
+                    node.fn_name,
+                    node.display()
+                ));
+            }
             Some(Step::Call { .. }) => {
                 path.push_str(&format!(" -> `{}`", node.display()));
             }
@@ -1927,16 +1950,33 @@ fn render_violation(
         // The fn whose body holds the crossing edge.
         let from = rev.len().checked_sub(2).map(|i| &rev[i].0);
         match step {
-            Step::Call { span } => {
+            Step::Call { span, via_interface } => {
                 if from.is_some_and(|f| cx.model.is_bundle_fn(f)) {
-                    diags.push(Diag::ty(
-                        *span,
-                        format!(
+                    // The dispatch case needs the extra sentence.
+                    // Without it the reader looks at a line
+                    // constructing one conformer, sees a witness
+                    // naming another, and concludes the checker is
+                    // wrong — when it is being conservative on
+                    // purpose.
+                    let msg = match via_interface {
+                        Some(iface) => format!(
+                            "claim `{}`: the boundary into `{}` is \
+                             crossed by this dispatch through `{}`. \
+                             A call on an interface reaches EVERY \
+                             conforming locus, whatever this \
+                             expression happens to construct — so the \
+                             witness names one the claim forbids. \
+                             Narrow the receiver's type, or exclude \
+                             the conformer from the group",
+                            c.name.name, dst_disp, iface
+                        ),
+                        None => format!(
                             "claim `{}`: the boundary into `{}` is \
                              crossed by this call",
                             c.name.name, dst_disp
                         ),
-                    ));
+                    };
+                    diags.push(Diag::ty(*span, msg));
                 }
             }
             Step::Bus { publish_span, sub_span, .. } => {
