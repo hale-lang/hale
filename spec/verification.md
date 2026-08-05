@@ -235,7 +235,7 @@ earlier in the same file as the family. Companion:
 class along any path, with the same loop/indirect unboundedness
 rules as every per-call dimension.
 
-**The topology artifact** (#382 phase 2; schema 1.7):
+**The topology artifact** (#382 phase 2; schema 1.8):
 `hale check <t> --dump-topology` emits the serialized model —
 sorts (loci, fns, topics), relations (calls with **weights**: loop
 nesting, unbounded-loop membership, interface-dispatch tags;
@@ -465,6 +465,48 @@ clause came from), and an `evaluation` section carrying the
 (which deployment this run certified, and under what law). All are
 inside the integrity-covered body — an evaluation context editable
 after the fact would certify nothing.
+
+### Source maps and model semantics (GH #408 Phase 0)
+
+Spans in the artifact are **file-local**, resolved through a
+`sources` table:
+
+```json
+"sources": [{"id": 0, "path": "apps/api/main.hl", "digest": "…"}],
+"provenance": { "decls": { "App": {"source": 0, "span": [36, 39]} } }
+```
+
+They were bundle-global byte offsets — an artifact of concatenating
+the seed's files, meaningful only inside the process that produced
+them. A consumer composing artifacts from separately compiled
+applications cannot turn `[1204, 1231]` into a location, so no
+cross-artifact witness could say where to look.
+
+Paths are relative to the **workspace** (the nearest ancestor holding
+a `hale.toml`, else the deepest common ancestor of every source) and
+are canonicalized before being made relative. Both matter: an
+absolute path makes the artifact machine-specific, and rooting at the
+target alone leaves an imported seed — which usually lives outside it
+— absolute anyway. The artifact must be byte-identical for the same
+sources regardless of the working directory it was produced from,
+because comparing two of them is the point.
+
+Each source carries a content digest, so a consumer can tell whether
+two artifacts were built from the same text, and can catch a stale
+artifact paired with edited source, without the source being shipped.
+
+A span the map cannot place reports `"source": -1` rather than being
+attributed to the nearest file: an unplaceable location is more
+useful than a confidently wrong one.
+
+**`semantics`** is a version distinct from `schema`. Schema says a row
+has these fields; it cannot say that "an interface dispatch fans out
+to every conformer" or "unknown implies violation" were the rules in
+force when the rows were produced. Two compilers agreeing on the
+schema and disagreeing on the semantics would compose artifacts into
+a model neither would certify, with nothing in the document revealing
+it. A consumer that does not recognise the value must refuse rather
+than assume equivalence.
 
 ## Structural & design rules
 

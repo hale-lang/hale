@@ -114,8 +114,11 @@ fn moving_code_changes_provenance_but_not_shape_hash() {
         "provenance spans must track the moved source"
     );
     assert!(
-        a.contains("\"decls\": {") && a.contains("\"A\": ["),
-        "decl spans are exported:\n{}",
+        a.contains("\"decls\": {")
+            && a.contains("\"A\": {\"source\":"),
+        "decl spans are exported, resolved to a source file (#408 \
+         Phase 0 — a bare offset means nothing outside the process \
+         that produced it):\n{}",
         a
     );
 }

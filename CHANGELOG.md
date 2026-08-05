@@ -8,6 +8,44 @@ behavior.
 
 ## Unreleased
 
+### Artifact schema 1.8: source maps and model semantics (GH #408 Phase 0)
+
+The prerequisite for composing artifacts across separately compiled
+applications, and the reason #408's Phase 0 is where the risk is.
+
+**Spans resolve to files.** They were bundle-global byte offsets — an
+artifact of concatenating a seed's files, meaningful only inside the
+process that produced them. `[1204, 1231]` cannot be turned into a
+location by anyone else, so no cross-artifact witness could say where
+to look, which is most of what a witness is for. Provenance rows now
+carry `"source": <id>` alongside a file-local span, resolved through a
+new `sources` table.
+
+**Artifacts are reproducible.** Source paths are relative to the
+workspace — the nearest ancestor holding a `hale.toml`, else the
+deepest common ancestor of every source — and are canonicalized
+before being made relative. Both were needed: an absolute path makes
+the artifact machine-specific, and rooting at the target alone left
+imported seeds absolute, since they usually live outside it. The same
+sources now produce a byte-identical artifact from any working
+directory.
+
+Each source carries a content digest, so a consumer can tell whether
+two artifacts came from the same text — and catch a stale artifact
+paired with edited source — without the source being shipped. A span
+the map cannot place reports `"source": -1` rather than being
+attributed to the nearest file.
+
+**`semantics`**, a version distinct from `schema`. Schema says a row
+has these fields; it cannot say what they mean. Two compilers
+agreeing on the schema and disagreeing on the semantics would compose
+artifacts into a model neither would certify, with nothing in the
+document revealing it.
+
+*Breaking:* `provenance.decls` rows change from `[start, end]` to
+`{"source": id, "span": [start, end]}`, and every other provenance row
+gains a `source` field.
+
 ### Constitution edge cases: silent-ignore combinations and manifest provenance (GH #409)
 
 An edge-case sweep before starting the fleet tier. Four gaps, all of

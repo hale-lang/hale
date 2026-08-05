@@ -3394,6 +3394,99 @@ fn run_check_impl_labelled(
         .collect();
     let mut bundle = hale_types::Bundle::new(bundle_programs);
     bundle.import_renames = import_renames.clone();
+    // GH #408 Phase 0: hand the source map to the artifact, so a span
+    // resolves to a file outside this process. Paths are relative to
+    // the checked target (an absolute path would make the artifact
+    // differ per machine, and it is meant to be comparable), with
+    // forward slashes so a Windows-built artifact matches a
+    // Linux-built one.
+    {
+        // Root at the WORKSPACE, not the target. An imported seed
+        // usually lives outside the target directory (`apps/api`
+        // importing `../../lib`), so relativizing to the target left
+        // those paths absolute — and an artifact carrying absolute
+        // paths differs per machine, which defeats the comparability
+        // it exists for.
+        //
+        // The nearest ancestor holding a `hale.toml` is the natural
+        // root: it is where a fleet plan's repo-relative paths are
+        // anchored too. Failing that, the deepest common ancestor of
+        // every source, which is always fully relativizing.
+        let start = if target.is_dir() {
+            target.to_path_buf()
+        } else {
+            target.parent().unwrap_or(Path::new(".")).to_path_buf()
+        };
+        let start = start.canonicalize().unwrap_or(start);
+        let manifest_root = {
+            let mut d = Some(start.as_path());
+            let mut found = None;
+            while let Some(cur) = d {
+                if cur.join("hale.toml").exists() {
+                    found = Some(cur.to_path_buf());
+                    break;
+                }
+                d = cur.parent();
+            }
+            found
+        };
+        let root = manifest_root.unwrap_or_else(|| {
+            let mut common: Option<PathBuf> = None;
+            for (_, p, _) in &file_bases {
+                let dir = p.parent().unwrap_or(Path::new("/")).to_path_buf();
+                common = Some(match common {
+                    None => dir,
+                    Some(c) => {
+                        let mut shared = PathBuf::new();
+                        for (a, b) in c.components().zip(dir.components()) {
+                            if a != b {
+                                break;
+                            }
+                            shared.push(a);
+                        }
+                        shared
+                    }
+                });
+            }
+            common.unwrap_or(start)
+        });
+        bundle.sources = file_bases
+            .iter()
+            .enumerate()
+            .map(|(i, (base, path, len))| {
+                // Canonicalize first: the target's own file arrives
+                // as written on the command line while imported seeds
+                // arrive absolute, so stripping without this left the
+                // target's path relative to the CWD — and the same
+                // sources checked from two directories produced two
+                // different artifacts.
+                let abs = path.canonicalize().unwrap_or_else(|_| path.clone());
+                let rel = abs
+                    .strip_prefix(&root)
+                    .unwrap_or(&abs)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let digest = sources
+                    .get(path)
+                    .map(|src| {
+                        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+                        for b in src.as_bytes() {
+                            h ^= *b as u64;
+                            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+                        }
+                        format!("{:016x}", h)
+                    })
+                    .unwrap_or_else(|| "unknown".to_string());
+                hale_types::symbol::SourceFile {
+                    id: i as u32,
+                    path: rel,
+                    digest,
+                    base: *base,
+                    len: *len,
+                }
+            })
+            .collect();
+    }
     // GH #18 item 1 (step 1): dump the per-method allocation summary +
     // call graph and exit. A diagnostic view of the scaffold; no
     // bound-proving yet.
