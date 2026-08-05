@@ -6,6 +6,48 @@ behavior.
 
 ---
 
+## Unreleased
+
+### Factory-returned loci are reclaimed by the binding that names them (GH #383)
+
+`let m = zeros(n);` used to leak: a locus returned from a free fn is
+placed in a program-lifetime arena (m90) and nothing ever reclaimed
+it — its arena and any `@form` storage it grew lived until process
+exit, which in a `fit()`-style loop is unbounded.
+
+It is now owned by the binding and dissolves at that scope's exit,
+like any `let`-bound locus. What makes this sound is the v0.14
+ownership rule: a locus value cannot be assigned into a locus-typed
+field, so the binding is the only place a factory result can come to
+rest. The four earlier attempts on this issue failed precisely
+because they had to guess that owner.
+
+Two guards keep it correct, both pinned by tests:
+
+- A whitelist analysis admits a fn only when every return is a locus
+  literal or a single let-binding that is itself fresh (a literal, or
+  a call to another qualifying factory — fixpointed, so helpers built
+  on factories qualify), and that binding never escapes into argument
+  position or another literal. Anything unrecognized answers *not*
+  fresh: the old leak, never a double free.
+- A fn that does **not** qualify as a factory can still return a
+  locus it bound from one, so every free fn's returned bindings are
+  recorded and never dissolved by their own frame. Without this the
+  caller receives a dissolved locus, which reads back as zeros rather
+  than crashing.
+
+Also fixed en route: `di_current_loc` was not reset when lowering
+moved to a new function, so an entry-block alloca emitted before the
+body's first statement inherited the *previous* function's debug
+location and LLVM rejected the module ("!dbg attachment points at
+wrong subprogram"). Latent before; reachable now.
+
+Still leaking, and tracked on #383: unbound temporaries
+(`add(matmul(w, a), b)` — the inner result is never named, so a
+binding-scoped rule cannot reach it) and factories whose second
+return arm is a call. On the reference workload this closes roughly
+a third of the total; the remainder is those two shapes.
+
 ## v0.15.0 — claims: the law travels, the witness says where (2026-08-04)
 
 ### Library-tier claims: law that travels with an import (GH #392 thread 2)
