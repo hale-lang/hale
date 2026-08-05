@@ -33,6 +33,37 @@ pub struct Bundle<'a> {
     ///
     /// Empty for a single-seed bundle, which is every in-repo test.
     pub import_renames: Vec<(Vec<String>, String)>,
+    /// GH #408 Phase 0: the source map.
+    ///
+    /// Spans in this bundle are bundle-GLOBAL byte offsets — a
+    /// concatenation artifact, meaningful only inside the process
+    /// that built it. A consumer composing artifacts from separately
+    /// compiled applications cannot turn `[1204, 1231]` into a
+    /// location, so no cross-artifact witness can say where to look.
+    ///
+    /// Each entry maps a slice of that global space back to a file,
+    /// so the artifact can emit `(source, [local_start, local_end])`.
+    /// Paths are RELATIVE to the checked target: an absolute path
+    /// would make the artifact differ per machine, and the artifact
+    /// is supposed to be comparable.
+    pub sources: Vec<SourceFile>,
+}
+
+/// One file's slice of the bundle-global offset space.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceFile {
+    /// Stable within one artifact; provenance rows reference it.
+    pub id: u32,
+    /// Relative to the checked target, forward slashes.
+    pub path: String,
+    /// FNV-1a/64 of the file's bytes. Lets a consumer tell whether
+    /// two artifacts were built from the same text without shipping
+    /// the text, and catches a stale artifact paired with edited
+    /// source.
+    pub digest: String,
+    /// The file's start in the bundle-global space, and its length.
+    pub base: u32,
+    pub len: u32,
 }
 
 impl<'a> Bundle<'a> {
@@ -40,7 +71,11 @@ impl<'a> Bundle<'a> {
     pub fn new(
         programs: BTreeMap<String, &'a hale_syntax::ast::Program>,
     ) -> Self {
-        Self { programs, import_renames: Vec::new() }
+        Self {
+            programs,
+            import_renames: Vec::new(),
+            sources: Vec::new(),
+        }
     }
 }
 

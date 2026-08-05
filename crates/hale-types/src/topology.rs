@@ -101,7 +101,21 @@ use crate::symbol::Bundle;
 /// (everything they reach), and gains the `environment` label —
 /// identities now come from the adoption traversal, so a constitution
 /// contributing no clause of its own is no longer invisible.
-pub const TOPOLOGY_SCHEMA: &str = "1.7";
+pub const TOPOLOGY_SCHEMA: &str = "1.8";
+
+/// GH #408 Phase 0: what the rows MEAN, as distinct from their shape.
+///
+/// `schema` says a row has these fields. It cannot say that "an
+/// interface dispatch fans out to every conformer" or "unknown
+/// implies violation" were the rules in force when the rows were
+/// produced. Two compilers agreeing on the schema and disagreeing on
+/// the semantics would compose artifacts into a model neither of them
+/// would certify — and nothing in the document would reveal it.
+///
+/// Bump whenever the interpretation of any row changes, even when its
+/// shape does not. A consumer that does not recognise the value must
+/// refuse rather than assume equivalence.
+pub const MODEL_SEMANTICS: u32 = 1;
 
 /// Serialize the bundle's model + claim results as the topology
 /// artifact (JSON).
@@ -640,36 +654,76 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     let mut out = String::new();
     out.push_str("{\n");
     out.push_str(&format!(
-        "  \"schema\": {},\n",
-        quote(TOPOLOGY_SCHEMA)
+        "  \"schema\": {},\n  \"semantics\": {},\n",
+        quote(TOPOLOGY_SCHEMA),
+        MODEL_SEMANTICS
     ));
     out.push_str(&format!(
         "  \"shape_hash\": \"{:016x}\",\n",
         shape_hash
     ));
     out.push_str(&model);
-    // Provenance (#392): source spans as bundle-global byte offsets
-    // [start, end]. UNHASHED on purpose — moving code must not
-    // change the shape identity — so it sits in the results half
-    // beside the claim rows.
+    // GH #408 Phase 0: the source map, so a span means something
+    // outside the process that produced it.
+    //
+    // Bundle-global offsets are a concatenation artifact. A consumer
+    // composing artifacts from separately compiled applications
+    // cannot turn `[1204, 1231]` into a location, so no cross-artifact
+    // witness could say where to look — which is most of what a
+    // witness is for. Paths are relative to the checked target and
+    // carry a content digest, so an artifact stays comparable across
+    // machines and a consumer can tell a stale pairing from a fresh
+    // one.
+    out.push_str(",\n  \"sources\": [\n");
+    for (i, sf) in bundle.sources.iter().enumerate() {
+        out.push_str(&format!(
+            "    {{\"id\": {}, \"path\": {}, \"digest\": {}}}{}\n",
+            sf.id,
+            quote(&sf.path),
+            quote(&sf.digest),
+            if i + 1 == bundle.sources.len() { "" } else { "," }
+        ));
+    }
+    out.push_str("  ]");
+
+    // Provenance (#392): source spans, now resolved to
+    // `(source, [local_start, local_end])`. UNHASHED by `shape_hash`
+    // on purpose — moving code must not change the shape identity —
+    // so it sits in the results half beside the claim rows.
+    let loc = |pos: u32| -> (i64, u32) {
+        match bundle
+            .sources
+            .iter()
+            .filter(|f| pos >= f.base && pos < f.base.saturating_add(f.len + 1))
+            .max_by_key(|f| f.base)
+        {
+            Some(f) => (f.id as i64, pos - f.base),
+            // -1 rather than a guessed file: a span the map cannot
+            // place is better reported as unplaceable than attributed
+            // to the wrong source.
+            None => (-1, pos),
+        }
+    };
     out.push_str(",\n  \"provenance\": {\n    \"calls\": [\n");
     for (from, to, s, e) in &call_spans {
         out.push_str(&format!(
-            "      {{\"from\": {}, \"to\": {}, \"span\": [{}, {}]}},\n",
+            "      {{\"from\": {}, \"to\": {}, \"source\": {}, \"span\": [{}, {}]}},\n",
             quote(from),
             quote(to),
-            s,
-            e
+            loc(*s).0,
+            loc(*s).1,
+            loc(*e).1
         ));
     }
     trim_trailing_comma(&mut out);
     out.push_str("    ],\n    \"publishes\": [\n");
     for (f, subj, s, e) in &publish_spans {
         out.push_str(&format!(
-            "      {{\"fn\": {}, \"subject\": {}, \"span\": [{}, {}]}},\n",
+            "      {{\"fn\": {}, \"subject\": {}, \"source\": {}, \"span\": [{}, {}]}},\n",
             quote(f),
             quote(subj),
-            s,
+            loc(*s).0,
+            loc(*s).1,
             e
         ));
     }
@@ -678,22 +732,24 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     for (subj, locus, handler, s, e) in &subscribe_spans {
         out.push_str(&format!(
             "      {{\"subject\": {}, \"locus\": {}, \"handler\": {}, \
-             \"span\": [{}, {}]}},\n",
+             \"source\": {}, \"span\": [{}, {}]}},\n",
             quote(subj),
             quote(locus),
             quote(handler),
-            s,
-            e
+            loc(*s).0,
+            loc(*s).1,
+            loc(*e).1
         ));
     }
     trim_trailing_comma(&mut out);
     out.push_str("    ],\n    \"decls\": {\n");
     for (decl, (s, e)) in &decl_spans {
         out.push_str(&format!(
-            "      {}: [{}, {}],\n",
+            "      {}: {{\"source\": {}, \"span\": [{}, {}]}},\n",
             quote(decl),
-            s,
-            e
+            loc(*s).0,
+            loc(*s).1,
+            loc(*e).1
         ));
     }
     trim_trailing_comma(&mut out);

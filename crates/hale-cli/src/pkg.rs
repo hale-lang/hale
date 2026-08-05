@@ -473,12 +473,6 @@ fn _phantom_pathbuf_use() -> PathBuf {
 /// GH #409: the `[environments.*]` table, or an empty map when the
 /// manifest is absent. A missing `hale.toml` is not an error here —
 /// most seeds have none — but a malformed one is.
-pub fn read_environments(
-    manifest: &Path,
-) -> Result<BTreeMap<String, EnvSpec>, String> {
-    Ok(read_claims_config(manifest)?.0)
-}
-
 /// The `[environments.*]` table and the `[claims] base`, validated.
 pub fn read_claims_config(
     manifest: &Path,
