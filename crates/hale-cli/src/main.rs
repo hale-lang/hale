@@ -27,6 +27,7 @@ use std::process::ExitCode;
 use hale_syntax::ast::Program;
 
 use hale_lsp as lsp;
+mod fleet;
 mod mcp;
 mod pkg;
 
@@ -101,6 +102,15 @@ fn main() -> ExitCode {
     if cmd == "doc" {
         let rest: Vec<String> = args.iter().skip(2).cloned().collect();
         return run_doc(&rest);
+    }
+
+    // GH #408: `hale fleet check|dump <plan.json>` — compose
+    // topology artifacts into one fleet model. A CLIENT of the
+    // artifact, never a second source analyzer: it reads exactly what
+    // a third party would read.
+    if cmd == "fleet" {
+        let rest: Vec<String> = args.iter().skip(2).cloned().collect();
+        return run_fleet(&rest);
     }
 
     // `bench` is discovery-driven like `test`: *_bench.hl files,
@@ -2499,6 +2509,58 @@ fn file_of_span(
 /// following token would make `hale check --dump-topology app.hl`
 /// ambiguous — is `app.hl` the artifact destination or the target? —
 /// and flags are supposed to be positionable on either side.
+/// `hale fleet check <plan>` / `hale fleet dump <plan>`.
+///
+/// `check` composes and reports; `dump` writes the fleet artifact.
+/// Both fail on anything a composition cannot honestly build on — an
+/// unverifiable component, a semantics mismatch, a component whose
+/// own law fails, or endpoints that disagree about a wire contract.
+fn run_fleet(rest: &[String]) -> ExitCode {
+    let sub = rest.first().map(String::as_str);
+    let plan = rest.get(1);
+    let (sub, plan) = match (sub, plan) {
+        (Some("check"), Some(p)) | (Some("dump"), Some(p)) => {
+            (sub.unwrap(), p)
+        }
+        _ => {
+            eprintln!("hale fleet check <plan.json>    compose and check");
+            eprintln!("hale fleet dump  <plan.json>    write the fleet artifact");
+            eprintln!();
+            eprintln!("A plan names exact application INSTANCES and the");
+            eprintln!("routes between them. It composes artifacts, never");
+            eprintln!("source: matching wire identities establish");
+            eprintln!("compatibility, but only an explicit route creates");
+            eprintln!("a fleet edge.");
+            return ExitCode::from(2);
+        }
+    };
+    match fleet::compose(Path::new(plan)) {
+        Ok(artifact) => {
+            if sub == "dump" {
+                print!("{}", artifact);
+            } else {
+                let v: serde_json::Value =
+                    serde_json::from_str(&artifact).unwrap_or_default();
+                println!(
+                    "ok: fleet `{}` composed — {} instance(s), {} \
+                     route(s), fleet_shape_hash {}",
+                    v["name"].as_str().unwrap_or("?"),
+                    v["instances"].as_array().map(|a| a.len()).unwrap_or(0),
+                    v["routes"].as_array().map(|a| a.len()).unwrap_or(0),
+                    v["fleet_shape_hash"].as_str().unwrap_or("?")
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(errs) => {
+            for e in &errs {
+                eprintln!("{}", e);
+            }
+            ExitCode::from(1)
+        }
+    }
+}
+
 /// Flags that describe ONE evaluation: an artifact to emit, or a
 /// baseline to gate against. Meaningless when the command runs many
 /// evaluations.

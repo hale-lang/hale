@@ -8,6 +8,39 @@ behavior.
 
 ## Unreleased
 
+### `hale fleet`: compose artifacts across applications (GH #408 Phase 1)
+
+```sh
+hale fleet check prod.plan.json    # compose and validate
+hale fleet dump  prod.plan.json    # write the fleet artifact
+```
+
+A fleet is a named deployed system of application **instances**, and
+it composes *artifacts* — never source. A source-merged "super-main"
+would be unsound in both directions: an unbound topic is in-process by
+default, so merging two binaries makes matching publishers and
+subscribers look connected when no route joins them; deploy-time
+routes existing only in config would not appear; and calls, which
+cannot cross a process boundary, would become ordinary reachability.
+
+So **matching wire identities establish compatibility; only an
+explicit route creates a fleet edge.** Two instances that both declare
+a topic and are not routed stay unconnected, which has its own test.
+
+Validation refuses anything a certificate cannot rest on: integrity
+first (the whole-body digest, since `shape_hash` covers the model half
+and cannot vouch for the `topics` rows the join reads), then the
+`semantics` version, then the component's own verdict — local law is a
+precondition of admission. Routes join on `(subject, payload_hash)`,
+never the local topic name, so a shared name over a different payload
+is a plan that cannot be formed rather than a silent mismatch.
+
+`fleet_shape_hash` covers instance identities and cardinalities,
+routes and their wire identities, component shape hashes and the
+composed relations — and excludes provenance. Verified in both
+directions: a comment added to a component leaves it unchanged, while
+a changed transport or an added instance moves it.
+
 ### Artifact schema 1.8: source maps and model semantics (GH #408 Phase 0)
 
 The prerequisite for composing artifacts across separately compiled

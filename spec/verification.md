@@ -508,6 +508,70 @@ a model neither would certify, with nothing in the document revealing
 it. A consumer that does not recognise the value must refuse rather
 than assume equivalence.
 
+## Fleet composition (GH #408 Phase 1)
+
+A **fleet** is a named deployed system of application *instances* —
+not "every main in a repository". `hale fleet check|dump <plan.json>`
+composes **artifacts**, never source.
+
+That distinction is the design. A source-merged "super-main" would be
+unsound in both directions: an unbound topic is in-process by
+default, so merging two binaries makes matching publishers and
+subscribers look locally connected when no deployed route joins them;
+deploy-time routes that exist only in configuration would not appear
+at all; and calls, which cannot cross a process boundary, would
+become ordinary reachability. So **matching wire identities establish
+compatibility; only an explicit route creates a fleet edge.**
+
+A plan names exact, finite instances and routes. Autoscaling ranges
+and wildcard discovery are elaborator inputs, not sealed-plan
+contents: a bounded range is not one truth value for a cardinality
+claim.
+
+```json
+{
+  "schema": "1.0", "name": "prod",
+  "instances": [{"id": "oms-0", "artifact": "artifacts/oms.json", "labels": ["oms"]}],
+  "routes": [{"id": "request", "transport": "unix",
+              "publishers":  [{"instance": "oms-0", "topic": "t::OrderRequest"}],
+              "subscribers": [{"instance": "gw-0",  "topic": "t::OrderRequest"}]}]
+}
+```
+
+Composition:
+
+1. **Validate every component.** Integrity before meaning: the
+   whole-body `artifact_digest` is checked first, because
+   `shape_hash` covers the model half only and cannot vouch for the
+   `topics` rows the join reads. Then the `semantics` version, then
+   the component's own `verdict` — local law is a precondition of
+   fleet admission, and an artifact that fails it is not admissible.
+2. **Namespace under the instance id.** `oms-0::Oms::on_intent`. An
+   application type is not a deployed instance, and cardinality,
+   witnesses and multiple instances of one artifact all need that.
+3. **Retain interiors.** Calls stay strictly within one instance;
+   there is no cross-process call to invent.
+4. **Join on the wire identity** — `(subject, payload_hash)`, never
+   the local topic name, which can mean different shapes in different
+   applications. Endpoints that disagree are a plan that cannot be
+   formed. A topic with no declared `subject:` is not portable and is
+   rejected on a route.
+5. **Insert route edges explicitly**, so a cross-process hop keeps
+   its boundary rather than collapsing into a direct call.
+6. **Propagate unknowns.** Uncertainty in a component stays
+   uncertainty in the fleet: it may add paths, never delete one.
+
+`fleet_shape_hash` covers the model half — instance identities and
+cardinalities, routes and their wire identities, component shape
+hashes, the composed relations. Provenance and unknowns stay outside
+it, mirroring the application artifact's split: moving source must not
+change the identity of a deployment, but a changed transport or a
+second instance must.
+
+Unknown keys in a plan are rejected, for the reason they are rejected
+in the environment manifest: a misspelled field and an omitted one
+look identical to a verifier.
+
 ## Structural & design rules
 
 | Check | Catches | Severity | Enforced by |
