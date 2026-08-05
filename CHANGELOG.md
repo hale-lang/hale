@@ -8,6 +8,40 @@ behavior.
 
 ## Unreleased
 
+### Topology artifact schema 1.3: an integrity digest
+
+`shape_hash` is an **identity**, not an integrity check. It covers
+the model half only — deliberately, so a moved comment or a renamed
+claim doesn't churn the model's identity — which leaves `topics`,
+`provenance` and the claim results outside it.
+
+That was fine while the only consumer was the compiler that had just
+produced the document. It stops being fine as soon as anything trusts
+an artifact it did not produce, and two concrete holes follow:
+
+- **The baseline gate could be forged.** `--check-topology-shape`
+  greps the `shape_hash` line out of a committed baseline, and
+  nothing forced the rest of the document to agree with it. Editing
+  that one line made the gate pass.
+- **The cross-binary join key was unverified.** Composing artifacts
+  from separately compiled applications joins endpoints on the
+  `topics` rows (wire subject + payload hash) — a section
+  `shape_hash` does not cover. Verifying the shape hash and then
+  joining on those rows means the key was never checked.
+
+Schema 1.3 adds `artifact_digest`: FNV-1a/64 over the entire body,
+results and provenance included, emitted as the final key so
+everything preceding it is exactly what was hashed — verification is
+a prefix hash, with no re-serialization or canonicalization step.
+Both baseline gates now reject a file whose digest disagrees with its
+contents as *corrupt* (exit 2) rather than reporting it as a
+mismatch.
+
+`verify_artifact_digest` returns `None` for an artifact with no
+digest (anything before 1.3) rather than `true`. A consumer may
+choose to accept an older artifact; it must never read "nothing to
+check" as "checked and intact".
+
 ### `check` / `verify` argument handling, and claims in the README
 
 The rest of the v0.15.0 claims developer-experience review. The

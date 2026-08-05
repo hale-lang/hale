@@ -83,8 +83,12 @@ use crate::symbol::Bundle;
 /// `provenance` section. 1.2 (#399): unhashed `topics` section —
 /// the per-topic OBSERVATION identity (wire subject, canonical
 /// payload shape, `payload_hash`), the join key a recording/WAL
-/// segment carries; model `shape_hash` values unchanged.
-pub const TOPOLOGY_SCHEMA: &str = "1.2";
+/// segment carries; model `shape_hash` values unchanged. 1.3:
+/// unhashed-by-`shape_hash` but now COVERED `artifact_digest` — a
+/// whole-body integrity hash as the final key, so a consumer that
+/// trusts an artifact it did not produce can verify the sections
+/// `shape_hash` omits (`topics`, `provenance`, claim results).
+pub const TOPOLOGY_SCHEMA: &str = "1.3";
 
 /// Serialize the bundle's model + claim results as the topology
 /// artifact (JSON).
@@ -798,8 +802,58 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
         ));
     }
     trim_trailing_comma(&mut out);
-    out.push_str("  ]\n}\n");
+    out.push_str("  ]");
+
+    // Integrity (schema 1.3). `shape_hash` is an IDENTITY, not an
+    // integrity check: it deliberately covers the model half only,
+    // so `topics`, `provenance` and the claim results all sit
+    // outside it. That is right for what those sections were for —
+    // moving a comment must not churn the model identity — but it
+    // leaves two holes the moment anything TRUSTS an artifact it
+    // did not produce:
+    //
+    //   * cross-binary composition joins endpoints on the `topics`
+    //     rows (wire subject + payload hash). Verifying `shape_hash`
+    //     and then joining on unhashed rows means the join key is
+    //     outside the thing that was verified.
+    //   * a baseline gate that greps `shape_hash` out of a file can
+    //     be defeated by editing that one line — the rest of the
+    //     document need not agree with it.
+    //
+    // So the digest covers the ENTIRE body, results and provenance
+    // included, and is the last key: everything preceding it is
+    // exactly what was hashed, which makes verification a prefix
+    // hash with no need to re-serialize or canonicalize.
+    let digest = fnv1a64(out.as_bytes());
+    out.push_str(&format!(
+        "{}{:016x}\"\n}}\n",
+        ARTIFACT_DIGEST_KEY, digest
+    ));
     out
+}
+
+/// The exact byte sequence introducing the integrity digest. It is
+/// the artifact's final key, so everything before this marker is the
+/// hashed body. Written once and shared by the emitter and the
+/// verifier so the two cannot drift.
+pub const ARTIFACT_DIGEST_KEY: &str = ",\n  \"artifact_digest\": \"";
+
+/// Verify an artifact's integrity digest.
+///
+/// `None` means the document carries no digest — every artifact
+/// emitted before schema 1.3. That is reported distinctly from
+/// `Some(false)` on purpose: a consumer may choose to accept an
+/// older artifact, but it must never mistake "nothing to check"
+/// for "checked and intact".
+pub fn verify_artifact_digest(artifact: &str) -> Option<bool> {
+    // rfind: the digest is the final key, and searching from the end
+    // means a user-authored string that happens to contain the
+    // marker cannot shadow the real one.
+    let at = artifact.rfind(ARTIFACT_DIGEST_KEY)?;
+    let body = &artifact[..at];
+    let rest = &artifact[at + ARTIFACT_DIGEST_KEY.len()..];
+    let claimed = rest.split('"').next()?;
+    Some(claimed == format!("{:016x}", fnv1a64(body.as_bytes())))
 }
 
 fn join_str<'a>(items: impl Iterator<Item = &'a String>) -> String {
