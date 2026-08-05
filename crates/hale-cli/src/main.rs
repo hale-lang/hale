@@ -2651,7 +2651,7 @@ fn flag_value_in(
 fn resolve_env_constitution(
     target: &Path,
     env: &str,
-) -> Result<Option<String>, String> {
+) -> Result<Vec<String>, String> {
     let start = if target.is_dir() {
         target.to_path_buf()
     } else {
@@ -2661,9 +2661,20 @@ fn resolve_env_constitution(
     loop {
         let m = dir.join("hale.toml");
         if m.exists() {
-            let envs = crate::pkg::read_environments(&m)?;
+            let (envs, base) = crate::pkg::read_claims_config(&m)?;
             return match envs.get(env) {
-                Some(spec) => Ok(spec.constitution.clone()),
+                Some(spec) => {
+                    let mut v: Vec<String> = Vec::new();
+                    if let Some(b) = base {
+                        v.push(b);
+                    }
+                    if let Some(c) = &spec.constitution {
+                        if Some(c) != v.first() {
+                            v.push(c.clone());
+                        }
+                    }
+                    Ok(v)
+                }
                 None => Err(format!(
                     "no environment `{}` in {} (declared: {})",
                     env,
@@ -2701,13 +2712,14 @@ fn resolve_env_constitution(
 /// constitution bound per pair.
 fn run_matrix(root: &Path, verify: bool) -> ExitCode {
     let manifest_path = root.join("hale.toml");
-    let envs = match crate::pkg::read_environments(&manifest_path) {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("{}", e);
-            return ExitCode::from(2);
-        }
-    };
+    let (envs, base) =
+        match crate::pkg::read_claims_config(&manifest_path) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("{}", e);
+                return ExitCode::from(2);
+            }
+        };
     if envs.is_empty() {
         eprintln!(
             "no `[environments.<name>]` sections in {} — `--matrix` \
@@ -2724,8 +2736,15 @@ fn run_matrix(root: &Path, verify: bool) -> ExitCode {
     // feature exists to remove — so it is an error, not a skip.
     let mut seeds = Vec::new();
     collect_seeds(root, &mut seeds);
-    let entrypoints: Vec<PathBuf> =
-        seeds.into_iter().filter(|s| seed_has_main(s)).collect();
+    let mut entrypoints: Vec<PathBuf> = Vec::new();
+    let mut unparseable: Vec<PathBuf> = Vec::new();
+    for s in seeds {
+        match seed_entry_kind(&s) {
+            EntryKind::Yes => entrypoints.push(s),
+            EntryKind::No => {}
+            EntryKind::Unparseable(f) => unparseable.push(f),
+        }
+    }
 
     let mut bound: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
     for (env, spec) in &envs {
@@ -2736,6 +2755,17 @@ fn run_matrix(root: &Path, verify: bool) -> ExitCode {
     }
 
     let mut failed: Vec<String> = Vec::new();
+    let mut seen_identity: BTreeMap<String, (String, String)> =
+        BTreeMap::new();
+    for f in &unparseable {
+        eprintln!(
+            "{} does not parse, so whether it is an entrypoint is \
+             unknown — and an unknown entrypoint cannot be shown to \
+             be covered by any environment. Fix the syntax first",
+            f.display()
+        );
+        failed.push(format!("{} (unparseable)", f.display()));
+    }
     for e in &entrypoints {
         let canon = e.canonicalize().unwrap_or_else(|_| e.clone());
         let listed: Vec<&String> = bound
@@ -2769,13 +2799,56 @@ fn run_matrix(root: &Path, verify: bool) -> ExitCode {
                 continue;
             }
             println!("=== {} @ {} ===", target.display(), env);
-            let code = run_check_impl_env(
-                &target,
-                verify,
-                spec.constitution.as_deref(),
-            );
+            // The base first, then the environment's own addition.
+            // Every pair carries the base, so an environment can only
+            // ADD law — monotonicity by construction rather than a
+            // rule the manifest is trusted to respect.
+            let mut adopt: Vec<String> = Vec::new();
+            if let Some(b) = &base {
+                adopt.push(b.clone());
+            }
+            if let Some(c) = &spec.constitution {
+                if Some(c) != base.as_ref() {
+                    adopt.push(c.clone());
+                }
+            }
+            let code = run_check_impl_env(&target, verify, &adopt);
             if code != 0 {
                 failed.push(format!("{} @ {}", ep, env));
+            }
+            // Review finding 3: prove the entrypoints in ONE
+            // environment resolved the SAME claimset, not merely the
+            // same NAME. Constitution names are flat and unmangled,
+            // so two seeds can each declare `Core` with different
+            // clauses and both would satisfy the binding. The digest
+            // covers the normalized closure, so agreement is real.
+            for (name, digest) in
+                constitution_identities(&target, &adopt)
+            {
+                let key = format!("{}::{}", env, name);
+                match seen_identity.get(&key) {
+                    Some((prev_digest, prev_ep))
+                        if *prev_digest != digest =>
+                    {
+                        eprintln!(
+                            "environment `{}` resolves `{}` to two \
+                             different claimsets: {} sees {}, {} sees \
+                             {}. One environment must mean one law — \
+                             the entrypoints are importing different \
+                             declarations that happen to share a name",
+                            env, name, prev_ep, prev_digest, ep, digest
+                        );
+                        failed.push(format!(
+                            "{} @ {} (constitution identity)",
+                            ep, env
+                        ));
+                    }
+                    Some(_) => {}
+                    None => {
+                        seen_identity
+                            .insert(key, (digest, ep.clone()));
+                    }
+                }
             }
         }
     }
@@ -2797,26 +2870,85 @@ fn run_matrix(root: &Path, verify: bool) -> ExitCode {
     ExitCode::from(1)
 }
 
-/// Does this seed declare a `main locus`? Parse-only — an entrypoint
-/// is a structural fact, and a seed that fails to typecheck is still
-/// an entrypoint whose absence from the matrix should be reported.
-fn seed_has_main(dir: &Path) -> bool {
-    let Ok(entries) = fs::read_dir(dir) else { return false };
-    for entry in entries.flatten() {
-        let p = entry.path();
-        if p.extension().and_then(|s| s.to_str()) != Some("hl") {
-            continue;
-        }
-        let Ok(src) = fs::read_to_string(&p) else { continue };
-        if let Ok(prog) = hale_syntax::parse_source(&src) {
-            if prog.items.iter().any(|i| {
-                matches!(i, hale_syntax::ast::TopDecl::Locus(l) if l.is_main)
-            }) {
-                return true;
-            }
+/// The `(name, digest)` of each constitution adopted when `target`
+/// is checked with `adopt`. Reads the same artifact section a
+/// third party would, rather than a private side channel.
+fn constitution_identities(
+    target: &Path,
+    adopt: &[String],
+) -> Vec<(String, String)> {
+    let (programs, _s, _fb, renames, _own) = match collect_checkable(target)
+    {
+        Ok(x) => x,
+        Err(_) => return Vec::new(),
+    };
+    let mut programs = programs;
+    for c in adopt {
+        for prog in programs.values_mut() {
+            inject_adopt(prog, c);
         }
     }
-    false
+    let bundle_programs: BTreeMap<String, &Program> = programs
+        .iter()
+        .map(|(p, prog)| (p.display().to_string(), prog))
+        .collect();
+    let mut bundle = hale_types::Bundle::new(bundle_programs);
+    bundle.import_renames = renames;
+    let (top, _d) = hale_types::resolve::build_top_scope(&bundle);
+    let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top);
+    let progs: Vec<&Program> =
+        bundle.programs.values().copied().collect();
+    let (_d, _o, ids) = hale_types::claims::claims_report_with_identities(
+        &progs,
+        &graph,
+        &bundle.import_renames,
+    );
+    ids.into_iter().map(|i| (i.name, i.digest)).collect()
+}
+
+/// Is this seed an entrypoint? Parse-only — an entrypoint is a
+/// structural fact, and a seed that fails to TYPECHECK is still an
+/// entrypoint whose absence from the matrix must be reported.
+///
+/// A seed that fails to PARSE is `Unknown`, never `No`. Treating an
+/// unparseable file as "not a main" made a syntax error erase an
+/// entrypoint from coverage entirely: a broken seed listed in no
+/// environment reported `ok: 1 pair(s) checked`, exit 0, while the
+/// same seed made valid was correctly flagged. Breaking your file
+/// became a way out of the gate — in the mechanism built to stop law
+/// going missing quietly.
+enum EntryKind {
+    Yes,
+    No,
+    Unparseable(PathBuf),
+}
+
+fn seed_entry_kind(dir: &Path) -> EntryKind {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return EntryKind::No;
+    };
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("hl"))
+        .collect();
+    files.sort();
+    for p in files {
+        let Ok(src) = fs::read_to_string(&p) else {
+            return EntryKind::Unparseable(p);
+        };
+        match hale_syntax::parse_source(&src) {
+            Ok(prog) => {
+                if prog.items.iter().any(|i| {
+                    matches!(i, hale_syntax::ast::TopDecl::Locus(l) if l.is_main)
+                }) {
+                    return EntryKind::Yes;
+                }
+            }
+            Err(_) => return EntryKind::Unparseable(p),
+        }
+    }
+    EntryKind::No
 }
 
 /// `--workspace`: check EVERY seed under the target, independently.
@@ -3008,7 +3140,7 @@ fn run_check_cli(rest: &[String], verify: bool) -> ExitCode {
     // `--env X` binds the constitution `[environments.X]` requires,
     // resolved from the nearest `hale.toml` at or above the target.
     let adopt = match &env_name {
-        None => None,
+        None => Vec::new(),
         Some(e) => match resolve_env_constitution(
             &PathBuf::from(positionals[0]),
             e,
@@ -3023,7 +3155,7 @@ fn run_check_cli(rest: &[String], verify: bool) -> ExitCode {
     ExitCode::from(run_check_impl_env(
         &PathBuf::from(positionals[0]),
         verify,
-        adopt.as_deref(),
+        &adopt,
     ))
 }
 
@@ -3073,7 +3205,7 @@ fn inject_adopt(prog: &mut hale_syntax::ast::Program, name: &str) -> bool {
 }
 
 fn run_check_impl(target: &Path, gate_warnings: bool) -> u8 {
-    run_check_impl_env(target, gate_warnings, None)
+    run_check_impl_env(target, gate_warnings, &[])
 }
 
 /// GH #409: `adopt_env` names a constitution the *deployment target*
@@ -3088,7 +3220,7 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> u8 {
 fn run_check_impl_env(
     target: &Path,
     gate_warnings: bool,
-    adopt_env: Option<&str>,
+    adopt_env: &[String],
 ) -> u8 {
     // `check` MUST resolve cross-seed imports the same way `build`
     // and `run` do. It used to bundle only the target's own `.hl`
@@ -3110,7 +3242,7 @@ fn run_check_impl_env(
     // path will see. Without this, `check` warns on
     // auto-inferable cross-pool calls while `build` silently
     // applies — same source, divergent answers.
-    if let Some(cname) = adopt_env {
+    for cname in adopt_env {
         let mut injected = false;
         for prog in programs.values_mut() {
             if inject_adopt(prog, cname) {

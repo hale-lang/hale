@@ -93,7 +93,11 @@ use crate::symbol::Bundle;
 /// [`crate::verdict::Verdict`], which adds `uncertified` as a state
 /// distinct from `violated`. 1.5 (#409): a claim row gains an
 /// optional `source` — the constitution an adopted clause came from.
-pub const TOPOLOGY_SCHEMA: &str = "1.5";
+/// 1.6 (#409 review): an `evaluation` section naming the adopted
+/// constitutions and the digest of each one's normalized closure, so
+/// two entrypoints can be shown to have resolved the SAME claimset
+/// rather than merely the same name.
+pub const TOPOLOGY_SCHEMA: &str = "1.6";
 
 /// Serialize the bundle's model + claim results as the topology
 /// artifact (JSON).
@@ -459,7 +463,8 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     }
 
     // ---- claims ----
-    let (_diags, outcomes) = crate::claims::claims_report(
+    let (_diags, outcomes, identities) =
+        crate::claims::claims_report_with_identities(
         &programs,
         &graph,
         &bundle.import_renames,
@@ -818,6 +823,27 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     }
     trim_trailing_comma(&mut out);
     out.push_str("  ]");
+
+    // GH #409 (review finding 5): WHICH evaluation this artifact
+    // certifies. Per-claim `source` answers "where did this clause
+    // come from"; it cannot answer "which deployment was this run
+    // for". Two environments extending one base can produce
+    // identical claim rows, so without this the artifacts of a dev
+    // check and a prod check are indistinguishable while certifying
+    // different things.
+    //
+    // Inside the digest-covered body: an evaluation context that
+    // could be edited after the fact would certify nothing.
+    out.push_str(",\n  \"evaluation\": {\n    \"constitutions\": [\n");
+    for (i, id) in identities.iter().enumerate() {
+        out.push_str(&format!(
+            "      {{\"name\": {}, \"digest\": {}}}{}\n",
+            quote(&id.name),
+            quote(&id.digest),
+            if i + 1 == identities.len() { "" } else { "," }
+        ));
+    }
+    out.push_str("    ]\n  }");
 
     // The document's own verdict (schema 1.4). Every law in this
     // artifact — bundle claims and fn-grained certificates alike —

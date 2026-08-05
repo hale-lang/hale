@@ -41,6 +41,7 @@ top_decl          = locus_decl
                   | target_decl
                   | group_decl
                   | claims_block          (* #392: library tier *)
+                  | constitution_decl     (* #409 *)
                   ;
 
 (* #392 thread 2 — a TOP-LEVEL claims_block is the LIBRARY tier: a
@@ -69,6 +70,22 @@ group_decl        = "group" , IDENTIFIER , "=" , "{" ,
 group_member      = IDENTIFIER , { "::" , IDENTIFIER } , [ "::" , "*" ] ;
 
 module_decl       = "module" , IDENTIFIER , "{" , { top_decl } , "}" ;
+
+(* GH #409 — a named, composable claimset, declared outside any main
+   and adopted by entrypoints. `extends` composes by UNION: a derived
+   constitution may ADD clauses and may not replace one, so a name
+   declared by two constitutions in one adopted set is an error. That
+   is what makes weakening unexpressible rather than merely
+   discouraged — deciding whether a replacement strengthens or weakens
+   would mean proving implication between claims, which fails open
+   when it is wrong.
+
+   `adopt` is deliberately NOT a constitution member: claimsets
+   compose with `extends`, and two composition mechanisms with
+   different rules is one too many. *)
+constitution_decl = "constitution" , IDENTIFIER ,
+                    [ "extends" , IDENTIFIER , { "," , IDENTIFIER } ] ,
+                    "{" , { IDENTIFIER , ":" , claim_form , ";" } , "}" ;
 
 (* F.20 — structural interface. Declares a named set of method
    signatures; any locus whose method set is a superset
@@ -308,7 +325,11 @@ locus_member      = params_block
    introducers are contextual keywords except `bus` / `publish` /
    `subscribe` / `on` / `in`, which are existing hard keywords. *)
 claims_block      = "claims" , "{" , { claim_entry } , "}" ;
-claim_entry       = IDENTIFIER , ":" , claim_form , ";" ;
+(* GH #409: `adopt` pulls in a named constitution. It is legal only
+   in a MAIN-LOCUS claims block — adoption fixes which world the
+   clauses are evaluated against, and a library seed closes none. *)
+claim_entry       = ( IDENTIFIER , ":" , claim_form , ";" )
+                  | ( "adopt" , IDENTIFIER , ";" ) ;
 claim_form        = forbid_form | only_edges_form | bound_form
                   | require_form | cover_form | count_form ;
 forbid_form       = "forbid" , "reaches" , "(" , claim_set , "," ,

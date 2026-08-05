@@ -8,6 +8,60 @@ behavior.
 
 ## Unreleased
 
+### Constitution review fixes: three fail-opens, identity, and the spec (GH #409)
+
+An outside review of the constitutions PR found problems in shipped
+code. Three were fail-opens — which matters especially here, since the
+feature exists to stop law going missing quietly.
+
+- **A duplicate clause inside one constitution was silently dropped.**
+  Two clauses named `rule`, the second of which would have failed, and
+  the build *passed*. Diamond duplication is resolved at constitution
+  level, so a repeated `(origin, name)` can only be a duplicate
+  declaration; it is now an error.
+- **A misspelled manifest field silently removed all environment
+  law.** `constituton = "Prod"` parsed, left `constitution` as `None`,
+  and the entrypoint still counted as bound. `EnvSpec` now denies
+  unknown fields, and an environment that adds no law must say
+  `source_only = true` — an omission is indistinguishable from a typo.
+- **A malformed seed vanished from matrix coverage.** A seed with a
+  syntax error, listed in no environment, reported `ok: 1 pair(s)
+  checked`, exit 0 — while the same seed made valid was correctly
+  flagged. Breaking a file was a way out of the gate. Parse failure is
+  now an unknown entrypoint, never a non-entrypoint.
+
+**Constitution identity.** Names are flat and unmangled so diagnostics
+cite them as written — right for display, useless for identity. Two
+seeds can each declare `Core` with different clauses, so binding a
+bare name proved only that each entrypoint had *some* `Core`. A
+constitution's identity is now the digest of its normalized closure
+(its own clauses, sorted, plus its bases' digests), and `--matrix`
+rejects one environment resolving a name to two different claimsets.
+
+**`[claims] base`** makes "an environment may add law, never drop it"
+true of the mechanism rather than only of `extends`: every matrix
+evaluation carries the base by construction, so an environment can
+only add.
+
+**Artifact schema 1.6** gains an `evaluation` section naming the
+adopted constitutions and their closure digests. Per-claim `source`
+says where a clause came from; it cannot say which deployment the run
+certified, and two environments over one base can produce identical
+claim rows.
+
+**Documentation correction.** The previous docs said an entrypoint not
+importing a seed "gets an empty group, with `may_be_empty` as the
+opt-out". It does not: an undeclared group is an unknown-name error,
+and `may_be_empty` applies only to a group that IS declared and
+resolves to zero members. An entrypoint lacking a component writes
+`group thing = { } may_be_empty;` explicitly — a line a reviewer can
+see rather than an absence they must infer.
+
+The formal grammar gains `constitution_decl` and the `adopt` form, and
+`spec/verification.md` a normative account of placement, composition,
+collisions, diamonds, cycles, identity, environments and matrix
+completeness.
+
 ### `--env` and the entrypoint x environment matrix (GH #409)
 
 The tooling half of constitutions. `adopt Core;` in source means

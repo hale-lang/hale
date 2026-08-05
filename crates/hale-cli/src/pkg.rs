@@ -61,15 +61,52 @@ pub struct Manifest {
     /// this system.
     #[serde(default)]
     pub environments: BTreeMap<String, EnvSpec>,
+    /// GH #409: `[claims] base = "Core"` — a constitution every
+    /// environment carries.
+    ///
+    /// This is what makes "an environment may add law, never drop
+    /// it" true of the MECHANISM rather than only of `extends`.
+    /// Without it the manifest can bind unrelated constitutions to
+    /// dev and prod, and monotonicity is a documentation promise
+    /// nothing enforces. With it, every matrix evaluation adopts the
+    /// base plus whatever the environment adds — monotone by
+    /// construction, which beats a check that has to notice a
+    /// violation after the fact.
+    #[serde(default)]
+    pub claims: ClaimsManifest,
+}
+
+/// The `[claims]` section.
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct ClaimsManifest {
+    pub base: Option<String>,
 }
 
 /// One `[environments.<name>]` section.
+///
+/// `deny_unknown_fields` is load-bearing: without it a misspelled
+/// `constituton = "Prod"` parses fine, leaves `constitution` as
+/// `None`, and the entrypoint still counts as environment-bound —
+/// a typo silently removing all environment law from a deployment
+/// that reports success.
 #[derive(Deserialize, Default, Clone, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct EnvSpec {
     /// The constitution every listed entrypoint must satisfy when
-    /// deployed here. Absent = this environment imposes no extra
-    /// law beyond what the entrypoints already adopt.
+    /// deployed here.
+    ///
+    /// Absent is an ERROR unless `source_only` says so explicitly.
+    /// "No environment law" is a real configuration, but it must be
+    /// stated rather than inferred from an omission — an omission is
+    /// indistinguishable from a mistake, and this feature exists to
+    /// stop law going missing quietly.
     pub constitution: Option<String>,
+    /// `source_only = true` — this environment adds no law of its
+    /// own; the entrypoints' source-level `adopt` lines (and the
+    /// workspace base, if declared) are the whole of it.
+    #[serde(default)]
+    pub source_only: bool,
     /// Seed directories, relative to the manifest. An entrypoint
     /// listed in NO environment is an error rather than a skip:
     /// silently unconstrained is the failure mode this whole
@@ -429,12 +466,44 @@ fn _phantom_pathbuf_use() -> PathBuf {
 pub fn read_environments(
     manifest: &Path,
 ) -> Result<BTreeMap<String, EnvSpec>, String> {
+    Ok(read_claims_config(manifest)?.0)
+}
+
+/// The `[environments.*]` table and the `[claims] base`, validated.
+pub fn read_claims_config(
+    manifest: &Path,
+) -> Result<(BTreeMap<String, EnvSpec>, Option<String>), String> {
     if !manifest.exists() {
-        return Ok(BTreeMap::new());
+        return Ok((BTreeMap::new(), None));
     }
     let src = fs::read_to_string(manifest)
         .map_err(|e| format!("read {}: {}", manifest.display(), e))?;
     let m: Manifest = toml::from_str(&src)
         .map_err(|e| format!("parse {}: {}", manifest.display(), e))?;
-    Ok(m.environments)
+    for (name, spec) in &m.environments {
+        match (&spec.constitution, spec.source_only) {
+            (Some(_), true) => {
+                return Err(format!(
+                    "{}: environment `{}` sets both `constitution` \
+                     and `source_only` — say one or the other",
+                    manifest.display(),
+                    name
+                ))
+            }
+            (None, false) => {
+                return Err(format!(
+                    "{}: environment `{}` names no `constitution`. \
+                     If it deliberately adds no law of its own, say \
+                     `source_only = true` — an omission is \
+                     indistinguishable from a typo, and a silently \
+                     law-free deployment is what this is here to \
+                     prevent",
+                    manifest.display(),
+                    name
+                ))
+            }
+            _ => {}
+        }
+    }
+    Ok((m.environments, m.claims.base))
 }
