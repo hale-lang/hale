@@ -479,3 +479,96 @@ fn main() { }
         ds
     );
 }
+
+// ---- GH #402: the factory shape -------------------------------------
+//
+// The lint matched `Expr::Struct` only, so it saw a locus LITERAL in a
+// loop and nothing else. But m90 forbids a method returning a locus,
+// which means factoring construction out leaves you with a free fn —
+// and `let m = zeros(r, c)` in a loop allocates exactly the same fresh
+// arena per iteration, reclaimed only when the enclosing fn returns.
+//
+// That silence is what let the #402 residual go unnoticed: the leaking
+// workload allocated entirely through factories, so the compiler had
+// nothing to say while it grew 3888 bytes per training step.
+
+fn factory_warnings(src: &str) -> Vec<String> {
+    let prog = parse_source(src).expect("parse failed");
+    check_program(&prog)
+        .into_iter()
+        .map(|d| d.message)
+        .filter(|m| m.contains("returns the locus"))
+        .collect()
+}
+
+const FACTORY: &str = r#"
+locus Matrix { params { n: Int = 0; } }
+
+fn zeros(n: Int) -> Matrix {
+    let m = Matrix { n: n };
+    return m;
+}
+"#;
+
+#[test]
+fn a_let_bound_factory_result_in_a_loop_is_flagged() {
+    let src = format!(
+        "{}\nfn main() {{\n  let mut i = 0;\n  while i < 10 {{\n    \
+         let m = zeros(i);\n    i = i + 1;\n  }}\n}}",
+        FACTORY
+    );
+    let w = factory_warnings(&src);
+    assert_eq!(w.len(), 1, "expected exactly one finding: {:?}", w);
+    assert!(
+        w[0].contains("`zeros`") && w[0].contains("`Matrix`"),
+        "the finding must name both the factory and the locus it \
+         returns — the author has to know WHICH call allocates: {:?}",
+        w
+    );
+}
+
+/// The advisory tells you to drop the binding, so the unbound form
+/// must actually be silent — #403 registers and reclaims an unbound
+/// factory temporary at the statement. A lint that flags the fix it
+/// recommends is worse than no lint.
+#[test]
+fn an_unbound_factory_result_in_a_loop_is_silent() {
+    let src = format!(
+        "{}\nfn size_of(m: Matrix) -> Int {{ return m.n; }}\n\
+         fn main() {{\n  let mut i = 0;\n  while i < 10 {{\n    \
+         let t = size_of(zeros(i));\n    i = i + 1;\n  }}\n}}",
+        FACTORY
+    );
+    assert!(
+        factory_warnings(&src).is_empty(),
+        "an unbound factory result is reclaimed at the statement: {:?}",
+        factory_warnings(&src)
+    );
+}
+
+/// Depth 0 is not a hot path — a factory call in straight-line code
+/// dissolves at fn exit, which is simply the documented `let` rule.
+#[test]
+fn a_factory_result_outside_a_loop_is_silent() {
+    let src = format!("{}\nfn main() {{ let m = zeros(3); }}", FACTORY);
+    assert!(
+        factory_warnings(&src).is_empty(),
+        "straight-line construction is not a finding"
+    );
+}
+
+/// A fn that returns a plain value, not a locus, must never trip it.
+#[test]
+fn a_non_locus_returning_fn_in_a_loop_is_silent() {
+    let src = "
+fn double(n: Int) -> Int { return n * 2; }
+fn main() {
+  let mut i = 0;
+  while i < 10 { let d = double(i); i = i + 1; }
+}
+";
+    assert!(
+        factory_warnings(src).is_empty(),
+        "only locus-returning fns allocate an arena per call"
+    );
+}

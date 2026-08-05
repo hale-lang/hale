@@ -137,6 +137,15 @@ These are advisory warnings, not build failures:
   an instantiation outside a loop in a plain method reclaims at method
   exit — only the per-iteration / per-message cases, the unambiguous
   ones, warn.
+
+  This covers **factory calls**, not just literals: `let m =
+  zeros(r, c)` in a loop allocates a fresh `Matrix` — its own arena —
+  every iteration exactly as `Matrix { }` would. That case matters more
+  than it looks, because a method can't return a locus, so any codebase
+  that factors construction out is calling free-fn factories
+  everywhere. Only the **`let`-bound** form warns: an unbound factory
+  result is reclaimed at the statement, which is why "drop the binding
+  if you're only passing the value on" is one of the suggested fixes.
 - One structural warning: **`accept` without `release` on a locus whose
   `run()` loops forever**. Without a `release(c: C)` declaration every
   accepted child is *resident* — it lives until the accepting locus

@@ -1550,6 +1550,79 @@ fn hot_locus_name(path: &QualifiedName, top: &TopScope) -> Option<String> {
     None
 }
 
+/// GH #402: does `callee` name a free fn whose return type is a locus?
+/// Returns `(display spelling, locus name)`.
+///
+/// Factories are how loci get built once construction is factored out
+/// — m90 forbids a method returning a locus, so a free fn is the only
+/// shape available — which is precisely why the literal-only lint had
+/// a hole here.
+fn hot_factory_locus(
+    callee: &Expr,
+    top: &TopScope,
+) -> Option<(String, String)> {
+    let (disp, sym) = match callee {
+        Expr::Ident(id) => (id.name.clone(), top.lookup(&id.name)?),
+        Expr::Path(qn) => {
+            let segs: Vec<&str> =
+                qn.segments.iter().map(|s| s.name.as_str()).collect();
+            let disp = segs.join("::");
+            // An imported seed's fn is merged under a MANGLED name
+            // (`__lib_<id>_<stem>_<fn>`) while the call site keeps
+            // its author spelling (`lb::make`), so neither the
+            // joined form nor the bare tail resolves. Fall back to
+            // scanning for the mangled spelling.
+            //
+            // Two seeds can export the same tail name, and this
+            // layer has no alias table to tell them apart (the same
+            // limitation `topic_tail` documents). A lint must not
+            // invent a finding from an ambiguity, so a tail that
+            // matches candidates DISAGREEING about whether they
+            // return a locus is dropped.
+            let tail = *segs.last()?;
+            let sym = top.lookup(&disp).or_else(|| top.lookup(tail));
+            match sym {
+                Some(sym) => (disp, sym),
+                None => {
+                    let mut hit: Option<&TopSymbol> = None;
+                    for (k, v) in &top.symbols {
+                        let matches_tail = k
+                            .strip_prefix("__lib_")
+                            .is_some_and(|r| {
+                                r.rsplit('_').next() == Some(tail)
+                            });
+                        if !matches_tail {
+                            continue;
+                        }
+                        let is_factory = matches!(v, TopSymbol::Fn(sig)
+                            if matches!(&sig.ret, Ty::Named(n)
+                                if matches!(
+                                    top.lookup(n),
+                                    Some(TopSymbol::Locus(_))
+                                )));
+                        match (&hit, is_factory) {
+                            (None, true) => hit = Some(v),
+                            // a same-tail candidate that is NOT a
+                            // locus factory makes the tail ambiguous
+                            (_, false) if hit.is_some() => return None,
+                            (Some(_), true) => return None,
+                            _ => {}
+                        }
+                    }
+                    (disp, hit?)
+                }
+            }
+        }
+        _ => return None,
+    };
+    let TopSymbol::Fn(sig) = sym else { return None };
+    let Ty::Named(ret) = &sig.ret else { return None };
+    match top.lookup(ret) {
+        Some(TopSymbol::Locus(_)) => Some((disp, ret.clone())),
+        _ => None,
+    }
+}
+
 /// An allocating recv path-call (the result Bytes/String lands in the
 /// caller's scratch). `recv_into` is the zero-alloc alternative.
 fn allocating_recv_name(callee: &Expr) -> Option<String> {
@@ -1628,8 +1701,52 @@ fn hot_walk_stmt(s: &Stmt, cx: &mut HotPathCx) {
             hot_walk_block(body, cx);
             cx.loop_depth -= 1;
         }
-        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
-            hot_walk_expr(value, cx)
+        Stmt::Let { value, span, .. } | Stmt::LetTuple { value, span, .. } => {
+            hot_walk_expr(value, cx);
+            // GH #402: a locus does not have to be spelled as a
+            // LITERAL to be allocated here. `let m = mat::zeros(r, c)`
+            // in a loop body allocates a fresh Matrix — its own arena
+            // — every iteration and, being let-bound, is reclaimed
+            // only when the enclosing fn returns, exactly like the
+            // literal the advisory above already covers. The lint saw
+            // only `Expr::Struct`, so a codebase that factors its
+            // construction behind factory functions (the idiomatic
+            // shape, and the one m90 pushes you toward since a method
+            // cannot return a locus) got no warning at all while
+            // leaking linearly.
+            //
+            // Only the LET form warns. An unbound temporary in
+            // statement position is registered and reclaimed at the
+            // statement since #403, so it is the recommended fix
+            // rather than a finding.
+            if cx.loop_depth > 0 || cx.in_handler {
+                if let Expr::Call { callee, .. } = value {
+                    if let Some((fn_disp, locus)) =
+                        hot_factory_locus(callee, cx.top)
+                    {
+                        let where_ = if cx.loop_depth > 0 {
+                            "every iteration"
+                        } else {
+                            "every message"
+                        };
+                        cx.emit(
+                            *span,
+                            format!(
+                                "hot-path allocation: `{}` returns the locus `{}`, so a \
+                                 fresh instance (its own arena / heap buffer) is \
+                                 allocated {} and, being let-bound, is only reclaimed \
+                                 when the enclosing fn returns. Hoist the result to a \
+                                 reused field and refill it, drop the binding if the \
+                                 value is only passed on (an unbound factory result is \
+                                 reclaimed at the statement), or acknowledge an \
+                                 intentional shape with `@unbounded` on the enclosing \
+                                 fn/hook.",
+                                fn_disp, locus, where_
+                            ),
+                        );
+                    }
+                }
+            }
         }
         Stmt::Assign { target, value, span, .. } => {
             hot_walk_expr(value, cx);

@@ -148,6 +148,24 @@ fire-and-forget. When several `let`-bound loci share a scope,
 they dissolve in reverse order of creation (the later one, which
 may depend on the earlier, goes first).
 
+**The scope is the enclosing function, not the enclosing block.** A
+`let` inside a loop body therefore doesn't dissolve per iteration — the
+whole run accumulates and releases at once when the function returns:
+
+```hale,fragment
+while i < steps {
+    let m = zeros(rows, cols);   // a fresh arena every iteration…
+    i = i + 1;
+}                                // …none of them reclaimed yet
+```
+
+That's fine for a bounded loop and a real problem for a long-running
+one. Both spellings behave identically here — a factory call allocates
+just as a `Matrix { }` literal would — and the compiler warns about
+each of them. The fixes are to hoist one instance out of the loop and
+refill it, or, if the value is only passed straight on, to drop the
+binding: an unbound result is reclaimed at the end of its statement.
+
 ### Replacing a locus held in a field
 
 If a locus holds another locus in a field — say a server that
