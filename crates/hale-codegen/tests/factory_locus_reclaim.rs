@@ -185,3 +185,117 @@ fn a_factory_result_survives_being_passed_as_an_argument() {
     );
     assert!(out.contains("seen=2"), "got: {:?}", out);
 }
+
+// ==== GH #402: the two residual shapes ==========================
+
+/// Shape 1 — an unbound temporary. `outer(inner(...), x)`: the inner
+/// factory result is consumed as an argument and never named, so
+/// #383's binding-scoped rule had nothing to attach ownership to.
+/// This frame owns it now.
+///
+/// The subtlety worth pinning: the suppression flags are ONE-SHOT.
+/// A `let z = outer(inner(..), b);` decides ownership for the OUTER
+/// call only — left sticky, the suppression would swallow the whole
+/// subtree and the inner temporary would go unowned again, which is
+/// precisely the bug.
+#[test]
+fn unbound_temporaries_are_reclaimed() {
+    let src = format!(
+        "{LIB}
+        fn combine(a: Buf, b: Buf, n: Int) -> Buf {{
+            let out = zeros(n);
+            let mut i = 0;
+            while i < n {{
+                let x = a.get(i) or 0.0;
+                let y = b.get(i) or 0.0;
+                out.set(i, x + y) or discard;
+                i = i + 1;
+            }}
+            return out;
+        }}
+        locus Engine {{
+            params {{ runs: Int = 0; }}
+            fn step(n: Int) -> Float {{
+                // `ramp(n)` and `zeros(n)` here are UNBOUND
+                // temporaries — arguments, never named.
+                let z = combine(ramp(n), zeros(n), n);
+                let mut s = 0.0;
+                let mut i = 0;
+                while i < n {{
+                    let v = z.get(i) or 0.0 - 100.0;
+                    s = s + v;
+                    i = i + 1;
+                }}
+                self.runs = self.runs + 1;
+                return s;
+            }}
+        }}
+        fn main() {{
+            let e = Engine {{ }};
+            let mut t = 0.0;
+            let mut r = 0;
+            while r < 40 {{ t = t + e.step(4); r = r + 1; }}
+            print(\"t=\"); println(t);
+            print(\"runs=\"); println(e.runs);
+        }}"
+    );
+    let (out, st) = run("gh402_temporaries", &src);
+    assert!(st.success(), "non-zero exit: {:?}\n{}", st, out);
+    // ramp(4) = 0+1+2+3 = 6, zeros contributes 0, 40 rounds.
+    assert!(
+        out.contains("t=240"),
+        "temporaries must be reclaimed WITHOUT disturbing the value \
+         that outlives them: {:?}",
+        out
+    );
+    assert!(out.contains("runs=40"), "got: {:?}", out);
+}
+
+/// Shape 2 — a factory whose guard arm returns a CALL rather than a
+/// literal or a binding. `matmul`'s `if bad { return error_matrix(); }`
+/// disqualified the whole fn under the original rule, even though
+/// that arm hands back a value as fresh as the main one.
+#[test]
+fn a_call_valued_return_arm_still_qualifies() {
+    let src = format!(
+        "{LIB}
+        fn empty_buf() -> Buf {{
+            let e = Buf {{ n: 0 }};
+            return e;
+        }}
+        // two return arms: one a call to another factory, one a
+        // let-bound fresh value
+        fn guarded(n: Int) -> Buf {{
+            if n <= 0 {{ return empty_buf(); }}
+            let b = ramp(n);
+            return b;
+        }}
+        locus Engine {{
+            params {{ runs: Int = 0; }}
+            fn use_it(n: Int) -> Float {{
+                let g = guarded(n);
+                let bad = guarded(0);
+                self.runs = self.runs + 1;
+                let v = g.get(2) or 0.0 - 100.0;
+                let w = bad.get(0) or 0.0 - 7.0;
+                return v + w;
+            }}
+        }}
+        fn main() {{
+            let e = Engine {{ }};
+            let mut t = 0.0;
+            let mut r = 0;
+            while r < 30 {{ t = t + e.use_it(4); r = r + 1; }}
+            print(\"t=\"); println(t);
+        }}"
+    );
+    let (out, st) = run("gh402_call_return_arm", &src);
+    assert!(st.success(), "non-zero exit: {:?}\n{}", st, out);
+    // ramp(4)[2] = 2; guarded(0) is empty so the `or` substitutes
+    // -7.0; (2 - 7) x 30 = -150.
+    assert!(
+        out.contains("t=-150"),
+        "both return arms must hand back live values: {:?}",
+        out
+    );
+}
