@@ -40,7 +40,17 @@ top_decl          = locus_decl
                   | ring_layout_decl
                   | target_decl
                   | group_decl
+                  | claims_block          (* #392: library tier *)
                   ;
+
+(* #392 thread 2 — a TOP-LEVEL claims_block is the LIBRARY tier: a
+   seed swears about itself and its own boundary, and the block
+   travels with the import, re-evaluating in every closing build
+   over the merged world (attributed `alias::name`). A seed that
+   declares `main locus` states its law inside that locus; its
+   writing the top-level form is a check error — the tier split is
+   the enforcement surface keeping world-claims out of
+   dependencies. *)
 
 (* GH #382 phase 1 — `group NAME = { member, ... };` declares claim
    vocabulary: a named set of declared program elements (loci, free

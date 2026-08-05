@@ -51,6 +51,7 @@ fn top_name(d: &TopDecl) -> Option<&str> {
         TopDecl::Module(_) => None,
         TopDecl::Target(t) => Some(&t.name.name),
         TopDecl::Group(g) => Some(&g.name.name),
+        TopDecl::Claims(_) => None,
     }
 }
 

@@ -68,6 +68,16 @@ pub enum TopDecl {
     /// names are errors, not empty sets — the misspelt-effect-class
     /// lesson applied at the group layer. Lowers to zero code.
     Group(GroupDecl),
+    /// #392 thread 2: a TOP-LEVEL `claims { }` block — the LIBRARY
+    /// tier. A seed swears about itself and its own boundary; the
+    /// claims travel with the import and re-evaluate in every
+    /// closing build over the merged world. World-quantification
+    /// stays main's: a seed that declares `main locus` states its
+    /// law inside that locus, and a top-level block there is a
+    /// check error (the enforcement surface for "a dependency may
+    /// not brick downstream builds with world-claims" — a library
+    /// can only NAME what it can see, its own decls and imports).
+    Claims(ClaimsBlock),
 }
 
 impl TopDecl {
@@ -84,6 +94,7 @@ impl TopDecl {
             TopDecl::RingLayout(r) => r.span,
             TopDecl::Target(t) => t.span,
             TopDecl::Group(g) => g.span,
+            TopDecl::Claims(c) => c.span,
         }
     }
 }
@@ -150,6 +161,14 @@ impl GroupMember {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClaimsBlock {
     pub entries: Vec<ClaimDecl>,
+    /// #392 thread 2: true iff this block arrived through the
+    /// import pipeline — set by the mangle stage, which by
+    /// definition only touches imported seeds. The seed merge
+    /// flattens imported items into the closing program, so
+    /// syntactic position alone cannot tell a library's traveling
+    /// block from a closing seed's (illegal) top-level one; this
+    /// marker can. Parse always produces `false`.
+    pub lib_tier: bool,
     pub span: Span,
 }
 
@@ -2745,25 +2764,7 @@ pub fn remap_user_effects(items: &mut [TopDecl], map: &[u16]) {
                         // class in the merged table, the exact
                         // aliasing bug this pass exists to prevent.
                         LocusMember::Claims(cb) => {
-                            for e in &mut cb.entries {
-                                match &mut e.form {
-                                    ClaimForm::ForbidReaches {
-                                        src,
-                                        dst,
-                                        ..
-                                    } => {
-                                        claim_set(src, map);
-                                        claim_set(dst, map);
-                                    }
-                                    ClaimForm::Bound {
-                                        class: c, ..
-                                    } => class(c, map),
-                                    ClaimForm::OnlyEdges { .. }
-                                    | ClaimForm::Require { .. }
-                                    | ClaimForm::Cover { .. }
-                                    | ClaimForm::Count { .. } => {}
-                                }
-                            }
+                            claims_block(cb, map);
                         }
                         _ => {}
                     }
@@ -2776,9 +2777,28 @@ pub fn remap_user_effects(items: &mut [TopDecl], map: &[u16]) {
                     }
                 }
             }
+            // #392 thread 2: library-tier blocks carry the same
+            // class-index positions as main's.
+            TopDecl::Claims(cb) => claims_block(cb, map),
             // Modules nest arbitrarily deep.
             TopDecl::Module(m) => remap_user_effects(&mut m.items, map),
             _ => {}
+        }
+    }
+
+    fn claims_block(cb: &mut ClaimsBlock, map: &[u16]) {
+        for e in &mut cb.entries {
+            match &mut e.form {
+                ClaimForm::ForbidReaches { src, dst, .. } => {
+                    claim_set(src, map);
+                    claim_set(dst, map);
+                }
+                ClaimForm::Bound { class: c, .. } => class(c, map),
+                ClaimForm::OnlyEdges { .. }
+                | ClaimForm::Require { .. }
+                | ClaimForm::Cover { .. }
+                | ClaimForm::Count { .. } => {}
+            }
         }
     }
 }

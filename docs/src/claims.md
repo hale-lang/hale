@@ -83,6 +83,8 @@ effect_family_decl
                   = "effect" , IDENTIFIER , "(" , IDENTIFIER , ")" , ";" ;
 
 claims_block      = "claims" , "{" , { claim_entry } , "}" ;
+                  (* inside main locus: the world tier;
+                     at top level: the library tier (#392) *)
 claim_entry       = IDENTIFIER , ":" , claim_form , ";" ;
 claim_form        = forbid_form | only_edges_form | bound_form
                   | require_form | cover_form | count_form ;
@@ -233,11 +235,21 @@ built-ins keep their own spellings: `alloc_per_call`, `publish`,
 
 ## `claims { }` — placement and naming
 
-The block is only legal inside `main locus` — a parse error
-anywhere else. Main is the closed-world gate: bundle-wide sentences
-cannot be evaluated before the whole application graph exists, and
-one-main-per-bundle makes the claims root unique. A main locus may
-carry several `claims { }` blocks; their entries concatenate.
+The block has two homes, one per tier:
+
+- **Inside `main locus`** — the WORLD tier. Main is the
+  closed-world gate: bundle-wide sentences cannot be evaluated
+  before the whole application graph exists, and
+  one-main-per-bundle makes the claims root unique. Inside any
+  other locus it is a parse error.
+- **At top level in a LIBRARY seed** — the library tier (see
+  [Library-tier claims](#library-tier-claims) below): a seed
+  swears about itself and its own boundary, and the block travels
+  with the import. A seed that declares `main locus` writing the
+  top-level form is a check error — world law belongs in main.
+
+A main locus may carry several `claims { }` blocks; their entries
+concatenate.
 
 Every entry is `name: form;`. The **name is the contract of
 record** — it is what the diagnostic, the CI check, the review
@@ -435,6 +447,53 @@ actual count and names the participating loci. These are counts
 over declarations, not a runtime census of replicated instances —
 exact instance claims belong to deployment elaboration, when it
 lands.
+
+## Library-tier claims
+
+A library seed states its own law in a **top-level** `claims { }`
+block — no `main locus` required:
+
+```hale,fragment
+type Charge { amount: Int; }
+topic Charges { payload: Charge; }
+
+locus Wire {
+    params { seen: Int = 0; }
+    bus { subscribe Charges as on_charge; }
+    fn on_charge(c: Charge) { self.seen = self.seen + c.amount; }
+}
+
+group settlers = { Wire };
+
+claims {
+    single_settle: count subscribers(topic Charges) <= 1;
+    wired: require subscribes(some settlers, topic Charges);
+}
+```
+
+Two properties make this the *library* tier:
+
+- **The law travels.** Import the seed and its claims come along,
+  re-evaluating in **every closing build** over the merged world.
+  Checked standalone, the seed satisfies itself; when an app
+  quietly wires a second subscriber onto `Charges`, the library's
+  own `single_settle` refuses the build — reported with seed
+  attribution (``claim `pay::single_settle` violated``, never a
+  mangled symbol) and pointing at the library's own claim line.
+  Getting stricter as the world grows is the point: the claim
+  quantifies over whatever the merge added.
+- **The tier is the enforcement surface.** A seed swears about
+  *itself and its own boundary* — it can only name what it can
+  see: its own decls, its own imports. World-quantification stays
+  main's, and a seed that declares `main locus` writing the
+  top-level form is a check error. A dependency cannot brick a
+  downstream build with world-claims because it has no way to
+  state one.
+
+Claim names stay per-seed (`pay::single_settle` and your own
+`single_settle` coexist); group and topic references inside a
+traveling block canonicalize across the seed boundary exactly as
+group declarations do.
 
 ## The evaluation model
 

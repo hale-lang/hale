@@ -282,7 +282,26 @@ cannot disagree. The traversal substrate is already one engine
 shared fail-closed predicate); the annotation voices keep their
 diagnostics.
 
-Still later (#392): library-tier claims that travel with imports.
+**Library-tier claims** (#392 thread 2): a TOP-LEVEL `claims { }`
+block — legal outside any locus — is the LIBRARY tier: a seed
+swears about **itself and its own boundary**, the block travels
+with the import, and it re-evaluates in every closing build over
+the merged world. Checked standalone, a library's claims evaluate
+over its own world; at close, the same sentences quantify over
+everything the merge added — a second subscriber the app wires
+onto a library topic violates the library's own
+`count subscribers(topic T) <= 1`, reported with seed attribution
+(`pay::single_settle`, never a mangled symbol) and pointing at the
+library's own claim line. World-quantification stays main's: a
+seed that declares `main locus` states its law inside that locus,
+and its writing the top-level form is a check error. That tier
+split is the enforcement surface for "a dependency may not brick
+downstream builds with world-claims" — a library can only NAME
+what it can see (its own decls and its own imports), and its
+traveling block is marked at the mangle stage, which only ever
+touches imported seeds. Group and topic references inside a
+traveling block canonicalize to mangled decls exactly as group
+decls do (#334); claim names are never mangled.
 
 ## Structural & design rules
 

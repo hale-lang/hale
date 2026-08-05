@@ -1,0 +1,28 @@
+import "lib/pay" as pay;
+
+// The closing seed quietly adds a SECOND subscriber to the
+// library's topic — legal wiring, but the library's own
+// `single_settle` claim re-evaluates here and refuses it.
+locus Audit {
+    params { seen: Int = 0; }
+    bus { subscribe pay::Charges as on_charge; }
+    fn on_charge(c: pay::Charge) {
+        self.seen = self.seen + 1;
+    }
+}
+
+locus Biller {
+    bus { publish pay::Charges; }
+    fn bill(n: Int) {
+        pay::Charges <- pay::Charge { amount: n };
+    }
+}
+
+main locus App {
+    params {
+        w: pay::Wire = pay::Wire { };
+        aud: Audit = Audit { };
+        b: Biller = Biller { };
+    }
+}
+fn main() { App { }; }

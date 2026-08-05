@@ -198,38 +198,116 @@ fn claims_report_inner(
     import_renames: &[(Vec<String>, String)],
 ) -> (Vec<Diag>, Vec<ClaimOutcome>) {
     // ---- collect group decls + claims blocks (modules included) ----
+    //
+    // #392 thread 2 — two tiers. Main-locus blocks are the WORLD
+    // tier (bundle-wide law, as shipped). A TOP-LEVEL `claims { }`
+    // block is the LIBRARY tier: a seed swears about itself and its
+    // own boundary, the block travels with the import, and it
+    // re-evaluates here — in the closing build's merged world —
+    // every time. Library claims report with seed attribution
+    // (`alias::name`), never as mangled symbols. A program that
+    // declares `main locus` may not use the top-level form: world
+    // law belongs in main (the closed-world gate), and the tier
+    // split is what keeps a dependency from stating world-claims.
+    let mut diags: Vec<Diag> = Vec::new();
     let mut group_decls: Vec<&GroupDecl> = Vec::new();
-    let mut claims: Vec<&ClaimDecl> = Vec::new();
+    let mut claims: Vec<ClaimDecl> = Vec::new();
+    let mangled_to_alias: BTreeMap<&str, &str> = import_renames
+        .iter()
+        .filter_map(|(segs, mangled)| {
+            segs.first().map(|a| (mangled.as_str(), a.as_str()))
+        })
+        .collect();
     fn walk_items<'a>(
         items: &'a [TopDecl],
         groups: &mut Vec<&'a GroupDecl>,
-        claims: &mut Vec<&'a ClaimDecl>,
+        claims: &mut Vec<ClaimDecl>,
+        top_blocks: &mut Vec<&'a ClaimsBlock>,
+        has_main: &mut bool,
     ) {
         for item in items {
             match item {
                 TopDecl::Group(g) => groups.push(g),
                 TopDecl::Locus(l) if l.is_main => {
+                    *has_main = true;
                     for m in &l.members {
                         if let LocusMember::Claims(cb) = m {
-                            claims.extend(cb.entries.iter());
+                            claims.extend(cb.entries.iter().cloned());
                         }
                     }
                 }
-                TopDecl::Module(m) => {
-                    walk_items(&m.items, groups, claims)
-                }
+                TopDecl::Claims(cb) => top_blocks.push(cb),
+                TopDecl::Module(m) => walk_items(
+                    &m.items,
+                    groups,
+                    claims,
+                    top_blocks,
+                    has_main,
+                ),
                 _ => {}
             }
         }
     }
+    let mut top_blocks: Vec<&ClaimsBlock> = Vec::new();
+    let mut has_main = false;
     for p in programs {
-        walk_items(&p.items, &mut group_decls, &mut claims);
+        walk_items(
+            &p.items,
+            &mut group_decls,
+            &mut claims,
+            &mut top_blocks,
+            &mut has_main,
+        );
+    }
+    for cb in top_blocks {
+        // The seed merge flattens imported items into the closing
+        // program, so position cannot tell the tiers apart — the
+        // mangle stage's `lib_tier` marker can: it only ever
+        // touches imported seeds. An unmarked top-level block in a
+        // bundle that closes (declares main) is the closing seed's
+        // own — the world-claim surface the tier split forbids.
+        if !cb.lib_tier && has_main {
+            diags.push(Diag::ty(
+                cb.span,
+                "a top-level `claims { }` block is the LIBRARY \
+                 tier — a seed swearing about itself and its own \
+                 boundary. This seed declares `main locus`, the \
+                 closed-world gate: state world law inside it"
+                    .to_string(),
+            ));
+            continue;
+        }
+        // Attribution: the block's own group/topic refs were
+        // canonicalized to mangled decl names, which map back to
+        // the import alias — so a library claim reports as
+        // `alias::name`, never as a mangled symbol.
+        let alias = cb.entries.iter().find_map(|e| {
+            let name = match &e.form {
+                ClaimForm::ForbidReaches { src, .. } => match src {
+                    ClaimSet::Group(g) => Some(&g.name),
+                    _ => None,
+                },
+                ClaimForm::OnlyEdges { src, .. } => Some(&src.name),
+                ClaimForm::Bound { from, .. } => Some(&from.name),
+                ClaimForm::Require { group, .. }
+                | ClaimForm::Cover { group, .. } => Some(&group.name),
+                ClaimForm::Count { topic, .. } => {
+                    topic.segments.first().map(|s| &s.name)
+                }
+            }?;
+            mangled_to_alias.get(name.as_str()).copied()
+        });
+        for e in &cb.entries {
+            let mut c = e.clone();
+            if let Some(a) = alias {
+                c.name.name = format!("{}::{}", a, c.name.name);
+            }
+            claims.push(c);
+        }
     }
     if group_decls.is_empty() && claims.is_empty() {
-        return (Vec::new(), Vec::new());
+        return (diags, Vec::new());
     }
-
-    let mut diags: Vec<Diag> = Vec::new();
 
     // ---- decl indexes for member / topic resolution ----
     let mut locus_names: BTreeSet<String> = BTreeSet::new();

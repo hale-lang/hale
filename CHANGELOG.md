@@ -8,6 +8,37 @@ behavior.
 
 ## Unreleased
 
+### Library-tier claims: law that travels with an import (GH #392 thread 2)
+
+A library seed states its own law in a TOP-LEVEL `claims { }` block
+— no `main locus` required. The block travels with the import and
+re-evaluates in **every closing build** over the merged world:
+checked standalone the seed satisfies itself; when an app quietly
+wires a second subscriber onto the library's topic, the library's
+own `count subscribers(topic Charges) <= 1` refuses the build —
+with seed attribution (``claim `pay::single_settle` violated``,
+never a mangled symbol) and a span pointing at the library's own
+claim line.
+
+The tier split is the enforcement surface for "a dependency may
+not brick downstream builds with world-claims": a seed swears
+about *itself and its own boundary* (it can only name what it can
+see — its own decls, its own imports), world-quantification stays
+main's, and a seed that declares `main locus` writing the
+top-level form is a check error. Traveling blocks are marked at
+the mangle stage (which only ever touches imported seeds); their
+group and topic references canonicalize across the seed boundary
+exactly as group declarations do (#334), and claim names are
+never mangled — attribution is `alias::name`. Claim-name
+uniqueness is per seed.
+
+Grammar: `spec/grammar.ebnf` (`top_decl` gains `claims_block`).
+Spec: `spec/verification.md` § Claims (library tier). Docs: the
+claims chapter (placement + a dedicated section). Tests:
+`library_claims.rs` (tier rejection, standalone evaluation),
+`xseed_library_claims.rs` + the `xseed-library-claims` fixture
+(travel, re-check at close, attribution, demangling).
+
 ### The normalized, provenance-bearing model (GH #392 thread 1)
 
 The architectural milestone every reviewer of the #382 stack named:
