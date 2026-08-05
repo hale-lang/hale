@@ -1,0 +1,5 @@
+/// Same tail name as the factory next door, different return type.
+/// Neither seed can be told apart from a bare `build` at this layer.
+fn build(n: Int) -> Int {
+    return n * 2;
+}

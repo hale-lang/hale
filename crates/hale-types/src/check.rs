@@ -1585,6 +1585,7 @@ fn hot_factory_locus(
                 Some(sym) => (disp, sym),
                 None => {
                     let mut hit: Option<&TopSymbol> = None;
+                    let (mut factories, mut others) = (0usize, 0usize);
                     for (k, v) in &top.symbols {
                         let matches_tail = k
                             .strip_prefix("__lib_")
@@ -1600,14 +1601,23 @@ fn hot_factory_locus(
                                     top.lookup(n),
                                     Some(TopSymbol::Locus(_))
                                 )));
-                        match (&hit, is_factory) {
-                            (None, true) => hit = Some(v),
-                            // a same-tail candidate that is NOT a
-                            // locus factory makes the tail ambiguous
-                            (_, false) if hit.is_some() => return None,
-                            (Some(_), true) => return None,
-                            _ => {}
+                        if is_factory {
+                            hit = Some(v);
+                            factories += 1;
+                        } else {
+                            others += 1;
                         }
+                    }
+                    // Ambiguous either way: two seeds exporting a
+                    // locus factory under this tail, or one that does
+                    // and one that doesn't. Counting BOTH kinds
+                    // rather than short-circuiting keeps the verdict
+                    // independent of `symbols` iteration order — a
+                    // non-factory seen BEFORE the factory has to
+                    // poison the tail exactly as one seen after it
+                    // does.
+                    if factories != 1 || others > 0 {
+                        return None;
                     }
                     (disp, hit?)
                 }

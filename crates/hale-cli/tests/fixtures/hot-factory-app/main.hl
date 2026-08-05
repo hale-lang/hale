@@ -1,0 +1,19 @@
+import "../hot-factory-lib" as mat;
+import "../hot-factory-ambig" as plain;
+
+fn main() {
+    let mut i = 0;
+    // `zeros` has a unique tail: this must warn.
+    while i < 3 {
+        let m = mat::zeros(i);
+        i = i + 1;
+    }
+    // `build` is exported by BOTH seeds with different return types,
+    // so the tail is ambiguous and must stay silent.
+    let mut j = 0;
+    while j < 3 {
+        let b = mat::build(j);
+        j = j + 1;
+    }
+    println("done");
+}
