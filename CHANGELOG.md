@@ -8,6 +8,38 @@ behavior.
 
 ## Unreleased
 
+### Interface dispatch is named in the witness (downstream review)
+
+A call on an interface fans out to **every** conforming locus, which
+is sound and deliberately conservative. But the witness rendered that
+hop as an ordinary direct call, so a claim could report:
+
+```
+`A::go` -> `notify` -> `Sms::send`
+```
+
+while the line in front of you constructs an `Email`. A correct proof
+that reads as a compiler bug is expensive — people stop trusting the
+checker, or work around it.
+
+The hop is now rendered as what it is, and the "where to edit"
+diagnostic explains the fanout rather than leaving the reader to
+disbelieve it:
+
+```
+witness: `A::go` -> `notify` -(dispatches Notifier.send)-> `Sms::send`
+
+claim `no_sms`: the boundary into `texting` is crossed by this dispatch
+through `Notifier`. A call on an interface reaches EVERY conforming
+locus, whatever this expression happens to construct — so the witness
+names one the claim forbids. Narrow the receiver's type, or exclude
+the conformer from the group.
+```
+
+The fact was already in the model (the artifact tags these edges
+`via_interface`); it just never reached the human. Witnesses with no
+interface in them are unchanged.
+
 ### Topology artifact schema 1.3: an integrity digest
 
 `shape_hash` is an **identity**, not an integrity check. It covers
