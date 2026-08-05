@@ -210,6 +210,77 @@ will also *report* that — so a handler that quietly starts doing filesystem
 I/O is a one-line diff in review, even though nothing annotated changed.
 [Effects & contracts →](https://hale-lang.org/docs/effects)
 
+## State your architecture as law
+
+Effects bind one function at a time. Architecture is a property of the
+*whole* graph — "billing must never reach research", "exactly one thing
+writes settlements" — and saying that with per-function contracts means
+scattering them across every position and hoping you got them all.
+
+A **claim** is one named sentence about the program graph, declared in
+`main` and checked by `hale check` as an error:
+
+```hale
+import "../pay" as pay;
+import "../research" as research;
+
+group billing  = { pay::* };
+group research_wing = { research::Sandbox };
+
+main locus Org {
+    params { ledger: pay::Ledger = pay::Ledger { }; }
+    claims {
+        tenant_iso: forbid reaches(billing, research_wing);
+        one_writer: count publishers(topic pay::Settled) == 1;
+    }
+}
+```
+
+Violate one and you get a minimal countermodel in your own spelling —
+never a mangled symbol, never a rule number:
+
+```
+claim `tenant_iso` violated: `billing` reaches `research_wing` — witness:
+  `pay::Ledger::on_close` -(publishes "pay::Audit")-> `research::Sandbox::on_audit`
+```
+
+…followed by the three places you'd actually edit: the publish that
+crosses the boundary, the subscription that receives it, and the
+declaration of the destination.
+
+Six forms cover the shapes worth stating. `forbid reaches(A, B)` for
+absence, optionally narrowed `via { calls }` or `via { bus }`;
+`require subscribes(some G, topic T)` for existence; `count
+publishers(topic T) <= 1` for cardinality; `cover topic in seed(a):
+subscribed_by(some G)` so a new topic can't be quietly orphaned;
+`only edges A -> B { publish T; }` for a reviewable boundary
+inventory; and `bound alloc <= N on paths from G` for cost.
+
+Three things make this hold up in practice:
+
+- **Groups are vocabulary, not patterns.** A misspelt member is an
+  error with a did-you-mean, and an empty group is a vacuity error
+  unless it says `may_be_empty` — a `forbid` satisfied by an empty
+  set is a fail-open wearing formal clothing.
+- **Unknown means violation.** An indirect call the compiler can't
+  resolve refuses to certify rather than proving absence it can't see.
+- **Libraries carry their own laws.** A seed states claims about what
+  it can see, and they travel into every application that imports it —
+  so an app that wires a second subscriber onto a library topic breaks
+  the *library's* `count` claim, attributed to the library's own line.
+
+Claims cost nothing at runtime — they compile to no code. And the graph
+they were evaluated against is exportable, so review and CI can gate on
+it directly:
+
+```sh
+hale check .                              # claims are errors
+hale check . --dump-topology=topo.json    # the model, as JSON
+hale check . --check-topology-shape topo.json   # fail if the graph moved
+```
+
+[Claims →](https://hale-lang.org/docs/claims)
+
 ## Verified where it counts
 
 The substrate you stand on is checked, not hoped. Every concurrent primitive
