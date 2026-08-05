@@ -734,3 +734,115 @@ fn require_subscribes_needs_a_route_not_just_an_endpoint() {
     let _ = std::fs::remove_dir_all(&r);
     assert_eq!(code2, 0, "the routed plan still passes: {}", out2);
 }
+
+// =====================================================================
+// Phase 5: the workspace's declared deployments
+// =====================================================================
+
+/// A repository usually has more than one deployment — production,
+/// staging, a reconciliation arrangement. Checking whichever one you
+/// remembered to name is the same partial-coverage problem `--matrix`
+/// solves for entrypoints, so `hale fleet check` with no plan checks
+/// every fleet the workspace declares.
+fn hale_in(cwd: &Path, args: &[&str]) -> (String, i32) {
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .current_dir(cwd)
+        .args(args)
+        .output()
+        .expect("run hale");
+    (
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+        out.status.code().unwrap_or(-1),
+    )
+}
+
+#[test]
+fn fleet_check_with_no_plan_checks_every_declared_deployment() {
+    let r = fleet("allfleets");
+    write(&r, "staging.plan.json", &PLAN.replace("\"prod\"", "\"staging\""));
+    write(
+        &r,
+        "hale.toml",
+        "[deps]\n\n[fleets]\nproduction = \"prod.plan.json\"\nstaging = \"staging.plan.json\"\n",
+    );
+    let (out, code) = hale_in(&r, &["fleet", "check"]);
+    let _ = std::fs::remove_dir_all(&r);
+
+    assert_eq!(code, 0, "{}", out);
+    assert!(out.contains("2 fleet(s) checked"), "{}", out);
+    assert!(
+        out.contains("fleet `production`") && out.contains("fleet `staging`"),
+        "each deployment must be named as it is checked: {}",
+        out
+    );
+}
+
+/// One broken deployment must not hide the others, and the worst exit
+/// code wins so a missing plan is not masked by an ordinary claim
+/// failure elsewhere.
+#[test]
+fn a_missing_plan_fails_without_hiding_the_rest() {
+    let r = fleet("missingplan");
+    write(
+        &r,
+        "hale.toml",
+        "[deps]\n\n[fleets]\nproduction = \"prod.plan.json\"\nghost = \"nope.plan.json\"\n",
+    );
+    let (out, code) = hale_in(&r, &["fleet", "check"]);
+    let _ = std::fs::remove_dir_all(&r);
+
+    assert_eq!(code, 2, "a missing plan is a usage error: {}", out);
+    assert!(out.contains("plan not found"), "{}", out);
+    assert!(
+        out.contains("fleet `production`"),
+        "the healthy deployment must still have been checked: {}",
+        out
+    );
+}
+
+/// Reporting success for zero deployments would say nothing.
+#[test]
+fn a_workspace_with_no_declared_fleets_is_a_usage_error() {
+    let r = fleet("nofleets");
+    write(&r, "hale.toml", "[deps]\n");
+    let (out, code) = hale_in(&r, &["fleet", "check"]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(code, 2, "{}", out);
+    assert!(out.contains("declares no `[fleets]`"), "{}", out);
+}
+
+/// Fleets and environments are separate axes: a fleet is an
+/// arrangement of deployed instances, an environment is law bound to
+/// an entrypoint. Declaring both must not make either ambiguous, and
+/// a name may appear in both meaning different things.
+#[test]
+fn fleets_and_environments_are_independent_axes() {
+    let r = fleet("axes");
+    write(
+        &r,
+        "hale.toml",
+        "[claims]\nno_base = true\n\n\
+         [environments.production]\nsource_only = true\n\
+         entrypoints = [\"prober\", \"oms\", \"gw\"]\n\n\
+         [fleets]\nproduction = \"prod.plan.json\"\n",
+    );
+    // The fleet axis works…
+    let (out, code) = hale_in(&r, &["fleet", "check"]);
+    assert_eq!(code, 0, "fleet axis: {}", out);
+    assert!(out.contains("1 fleet(s) checked"), "{}", out);
+
+    // …and the entrypoint x environment axis works over the same
+    // manifest, with `production` meaning something different.
+    let (out2, code2) = hale_in(&r, &["check", "--matrix"]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(
+        code2, 0,
+        "the environment axis is unaffected by the fleets table: {}",
+        out2
+    );
+    assert!(out2.contains("pair(s) checked"), "{}", out2);
+}

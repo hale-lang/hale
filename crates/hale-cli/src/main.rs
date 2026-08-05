@@ -2509,6 +2509,98 @@ fn file_of_span(
 /// following token would make `hale check --dump-topology app.hl`
 /// ambiguous — is `app.hl` the artifact destination or the target? —
 /// and flags are supposed to be positionable on either side.
+/// Check every deployment declared in `[fleets]`.
+///
+/// Separate from `--matrix`, which is the ENTRYPOINT x ENVIRONMENT
+/// axis. A fleet is an arrangement of deployed instances; an
+/// environment is law bound to an entrypoint. A workspace declares
+/// both, and `production` in one need not mean `production` in the
+/// other.
+fn run_fleet_all() -> ExitCode {
+    let cwd =
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut dir = cwd.canonicalize().unwrap_or(cwd);
+    let manifest = loop {
+        let m = dir.join("hale.toml");
+        if m.exists() {
+            break Some(m);
+        }
+        match dir.parent() {
+            Some(p) => dir = p.to_path_buf(),
+            None => break None,
+        }
+    };
+    let Some(manifest) = manifest else {
+        eprintln!(
+            "`hale fleet check` with no plan checks every fleet in \
+             `[fleets]`, and no `hale.toml` was found at or above the \
+             current directory. Name a plan explicitly, or add one."
+        );
+        return ExitCode::from(2);
+    };
+    let fleets = match crate::pkg::read_fleets(&manifest) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("{}", e);
+            return ExitCode::from(2);
+        }
+    };
+    if fleets.is_empty() {
+        eprintln!(
+            "{} declares no `[fleets]`. Add `<name> = \"<plan path>\"` \
+             entries, or name a plan explicitly — reporting success for \
+             zero deployments would say nothing.",
+            manifest.display()
+        );
+        return ExitCode::from(2);
+    }
+    let base = manifest.parent().unwrap_or(Path::new(".")).to_path_buf();
+
+    let mut failed: Vec<(String, u8)> = Vec::new();
+    for (name, rel) in &fleets {
+        let path = base.join(rel);
+        println!("=== fleet `{}` ({}) ===", name, path.display());
+        if !path.exists() {
+            eprintln!("  plan not found: {}", path.display());
+            failed.push((name.clone(), 2));
+            continue;
+        }
+        // Every fleet runs. Stopping at the first failure would report
+        // a subset of the deployments as if it were all of them.
+        match fleet::compose(&path) {
+            Ok(artifact) => {
+                let v: serde_json::Value =
+                    serde_json::from_str(&artifact).unwrap_or_default();
+                println!(
+                    "  ok — {} instance(s), {} route(s), fleet_shape_hash {}",
+                    v["instances"].as_array().map(|a| a.len()).unwrap_or(0),
+                    v["routes"].as_array().map(|a| a.len()).unwrap_or(0),
+                    v["fleet_shape_hash"].as_str().unwrap_or("?")
+                );
+            }
+            Err(errs) => {
+                for e in &errs {
+                    eprintln!("  {}", e);
+                }
+                failed.push((name.clone(), 1));
+            }
+        }
+    }
+
+    println!();
+    if failed.is_empty() {
+        println!("ok: {} fleet(s) checked", fleets.len());
+        return ExitCode::SUCCESS;
+    }
+    eprintln!("{} of {} fleet(s) failed:", failed.len(), fleets.len());
+    for (n, _) in &failed {
+        eprintln!("  {}", n);
+    }
+    // Worst code wins, so a missing plan is not masked by an ordinary
+    // claim failure elsewhere.
+    ExitCode::from(failed.iter().map(|(_, c)| *c).max().unwrap_or(1))
+}
+
 /// `hale fleet check <plan>` / `hale fleet dump <plan>`.
 ///
 /// `check` composes and reports; `dump` writes the fleet artifact.
@@ -2518,12 +2610,22 @@ fn file_of_span(
 fn run_fleet(rest: &[String]) -> ExitCode {
     let sub = rest.first().map(String::as_str);
     let plan = rest.get(1);
+    // GH #408 Phase 5: `hale fleet check` with no plan checks EVERY
+    // deployment the workspace declares. A repository usually has
+    // more than one — production, staging, a reconciliation
+    // arrangement — and checking whichever one you remembered to name
+    // is the same partial-coverage problem `--matrix` solves for
+    // entrypoints.
+    if sub == Some("check") && plan.is_none() {
+        return run_fleet_all();
+    }
     let (sub, plan) = match (sub, plan) {
         (Some("check"), Some(p)) | (Some("dump"), Some(p)) => {
             (sub.unwrap(), p)
         }
         _ => {
-            eprintln!("hale fleet check <plan.json>    compose and check");
+            eprintln!("hale fleet check [plan.json]   compose and check");
+            eprintln!("                                (no plan: every fleet in [fleets])");
             eprintln!("hale fleet dump  <plan.json>    write the fleet artifact");
             eprintln!();
             eprintln!("A plan names exact application INSTANCES and the");
