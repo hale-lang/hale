@@ -418,3 +418,263 @@ fn an_unknown_plan_field_is_rejected() {
     let _ = std::fs::remove_dir_all(&r);
     assert_ne!(code, 0, "a misspelled plan key must not be ignored: {}", out);
 }
+
+// =====================================================================
+// Phase 2: fleet claims over the composed model
+// =====================================================================
+
+/// Groups quantify over INSTANCES, by id or label; claims are
+/// normalized rows rather than source grammar, so a generator can
+/// produce a plan without Hale syntax committing to a deployment
+/// format.
+fn with_claims(plan: &str, extra_routes: &str) -> String {
+    let groups_and_claims = format!(
+        r#""groups": {{
+    "strategies": {{"labels": ["strategy"]}},
+    "gateways":   {{"labels": ["gateway"]}},
+    "oms":        {{"instances": ["oms-0"]}}
+  }},
+  "claims": [
+    {{"name": "orders_pass_oms",
+     "forbid_reaches": {{"from": "strategies", "to": "gateways", "avoiding": "oms"}}}},
+    {{"name": "one_order_authority",
+     "count_publisher_instances": {{"subject": "svc.order.request", "eq": 1}}}},
+    {{"name": "gw_receives_orders",
+     "require_subscribes": {{"group": "gateways", "subject": "svc.order.request"}}}}
+  ],
+  "routes": [{}"#,
+        extra_routes
+    );
+    plan.replace("\"routes\": [", &groups_and_claims)
+}
+
+/// Every path from a strategy to a gateway crosses the OMS, so the
+/// interposition claim holds — and the cardinality and existence
+/// claims with it.
+#[test]
+fn fleet_claims_hold_on_a_compliant_plan() {
+    let r = fleet("claims_ok");
+    write(&r, "c.plan.json", &with_claims(PLAN, ""));
+    let out = hale_stdout(&[
+        "fleet",
+        "dump",
+        r.join("c.plan.json").to_str().expect("utf8"),
+    ]);
+    let v: serde_json::Value =
+        serde_json::from_str(&out).expect("fleet artifact parses");
+    let _ = std::fs::remove_dir_all(&r);
+
+    let results: Vec<(String, String)> = v["claims"]
+        .as_array()
+        .expect("claims")
+        .iter()
+        .map(|c| {
+            (
+                c["name"].as_str().unwrap_or("").to_string(),
+                c["result"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+    for (name, res) in &results {
+        assert_eq!(res, "holds", "claim `{}` should hold: {:?}", name, results);
+    }
+    assert_eq!(results.len(), 3, "{:?}", results);
+}
+
+/// The required canary, and the flagship of the whole tier: a route
+/// that skips the mediator. The witness must cross artifacts, name
+/// the route, and name the source file on each side — none of which
+/// a bundle-global offset could have supported, which is why Phase 0
+/// came first.
+#[test]
+fn a_bypass_route_violates_the_interposition_claim() {
+    let r = fleet("bypass");
+    // A prober that can publish the executable request directly.
+    write(
+        &r,
+        "rogue/main.hl",
+        &PROBER
+            .replace(
+                "bus { publish t::OrderIntent; }",
+                "bus { publish t::OrderIntent; publish t::OrderRequest; }",
+            )
+            .replace(
+                "fn submit() { let i = t::Intent { id: 1 }; t::OrderIntent <- i; }",
+                "fn submit() { let i = t::Intent { id: 1 }; t::OrderIntent <- i; \
+                 let o = t::Order { id: 1 }; t::OrderRequest <- o; }",
+            ),
+    );
+    let dst = r.join("artifacts/rogue.json");
+    let (_, code) = hale(&[
+        "check",
+        r.join("rogue").to_str().expect("utf8"),
+        &format!("--dump-topology={}", dst.display()),
+    ]);
+    assert_eq!(code, 0, "the rogue component itself is legal");
+
+    let plan = with_claims(PLAN, "")
+        .replace("artifacts/prober.json", "artifacts/rogue.json")
+        .replace(
+            r#"{"id": "request", "transport": "unix","#,
+            r#"{"id": "bypass", "transport": "unix",
+     "publishers":  [{"instance": "prober-0", "topic": "t::OrderRequest"}],
+     "subscribers": [{"instance": "gw-0",     "topic": "t::OrderRequest"}]},
+    {"id": "request", "transport": "unix","#,
+        );
+    write(&r, "bypass.plan.json", &plan);
+    let (out, code) = hale(&[
+        "fleet",
+        "check",
+        r.join("bypass.plan.json").to_str().expect("utf8"),
+    ]);
+    let _ = std::fs::remove_dir_all(&r);
+
+    assert_ne!(code, 0, "a bypass must fail the fleet: {}", out);
+    assert!(
+        out.contains("orders_pass_oms"),
+        "the interposition claim must be the one that fails: {}",
+        out
+    );
+    // The witness crosses two artifacts…
+    assert!(
+        out.contains("prober-0::Probe::submit")
+            && out.contains("gw-0::Gateway::on_order"),
+        "witness must name both ends, instance-qualified: {}",
+        out
+    );
+    // …names the route that carries it…
+    assert!(
+        out.contains("route `bypass`"),
+        "and the route, since the hop is not a call: {}",
+        out
+    );
+    // …and points at a source FILE on each side, which is what the
+    // Phase 0 source map exists for.
+    assert!(
+        out.contains("rogue/main.hl") && out.contains("gw/main.hl"),
+        "and the file each vertex lives in: {}",
+        out
+    );
+}
+
+/// Criterion 6: a second deployed publisher violates exact
+/// cardinality. Fleet cardinality counts instance-qualified
+/// endpoints, which is a different sort from the application tier's
+/// declaration count — both components are individually legal.
+#[test]
+fn a_second_deployed_publisher_violates_the_cardinality_claim() {
+    let r = fleet("cardinality");
+    write(
+        &r,
+        "rogue/main.hl",
+        &PROBER
+            .replace(
+                "bus { publish t::OrderIntent; }",
+                "bus { publish t::OrderIntent; publish t::OrderRequest; }",
+            )
+            .replace(
+                "fn submit() { let i = t::Intent { id: 1 }; t::OrderIntent <- i; }",
+                "fn submit() { let i = t::Intent { id: 1 }; t::OrderIntent <- i; \
+                 let o = t::Order { id: 1 }; t::OrderRequest <- o; }",
+            ),
+    );
+    let dst = r.join("artifacts/rogue.json");
+    hale(&[
+        "check",
+        r.join("rogue").to_str().expect("utf8"),
+        &format!("--dump-topology={}", dst.display()),
+    ]);
+    let plan = with_claims(PLAN, "")
+        .replace("artifacts/prober.json", "artifacts/rogue.json");
+    write(&r, "card.plan.json", &plan);
+    let (out, code) = hale(&[
+        "fleet",
+        "check",
+        r.join("card.plan.json").to_str().expect("utf8"),
+    ]);
+    let _ = std::fs::remove_dir_all(&r);
+
+    assert_ne!(code, 0, "{}", out);
+    assert!(
+        out.contains("one_order_authority")
+            && out.contains("counted 2 deployed publisher"),
+        "the count is over DEPLOYED endpoints, and must name them: {}",
+        out
+    );
+}
+
+/// Criterion 7: removing the required subscriber violates the
+/// structural existence claim.
+#[test]
+fn removing_the_required_subscriber_violates_the_existence_claim() {
+    let r = fleet("existence");
+    // A gateway that subscribes nothing.
+    write(
+        &r,
+        "gw/main.hl",
+        "import \"../lib\" as t;\n\
+         locus Gateway { params { n: Int = 0; } fn idle() -> Int { return self.n; } }\n\
+         main locus GwApp { params { g: Gateway = Gateway { }; } }\n\
+         fn main() { GwApp { }; }\n",
+    );
+    let dst = r.join("artifacts/gw.json");
+    let (_, code) = hale(&[
+        "check",
+        r.join("gw").to_str().expect("utf8"),
+        &format!("--dump-topology={}", dst.display()),
+    ]);
+    assert_eq!(code, 0, "a gateway that listens for nothing is legal alone");
+
+    // The route to it can no longer be formed either, so drop it and
+    // test the existence claim on its own.
+    let plan = with_claims(PLAN, "")
+        .replace(
+            r#"{"id": "request", "transport": "unix",
+     "publishers":  [{"instance": "oms-0", "topic": "t::OrderRequest"}],
+     "subscribers": [{"instance": "gw-0",  "topic": "t::OrderRequest"}]}"#,
+            "",
+        )
+        .replace("]},\n    \n  ]", "]}\n  ]");
+    write(&r, "gone.plan.json", &plan);
+    let (out, code) = hale(&[
+        "fleet",
+        "check",
+        r.join("gone.plan.json").to_str().expect("utf8"),
+    ]);
+    let _ = std::fs::remove_dir_all(&r);
+
+    assert_ne!(code, 0, "{}", out);
+    assert!(
+        out.contains("gw_receives_orders"),
+        "the existence claim must fail: {}",
+        out
+    );
+}
+
+/// An unknown group is an error, never an empty set — a `forbid`
+/// satisfied by an empty quantification domain is a fail-open
+/// wearing formal clothing.
+#[test]
+fn an_empty_or_unknown_group_is_an_error() {
+    let r = fleet("groups");
+    // Only the GROUP's label — `.replace` would otherwise rewrite the
+    // instance's label too, leaving them consistent and the group
+    // resolving fine.
+    let plan = with_claims(PLAN, "").replace(
+        r#""strategies": {"labels": ["strategy"]}"#,
+        r#""strategies": {"labels": ["nonexistent"]}"#,
+    );
+    write(&r, "g.plan.json", &plan);
+    let (out, code) = hale(&[
+        "fleet",
+        "check",
+        r.join("g.plan.json").to_str().expect("utf8"),
+    ]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(
+        out.contains("no instance carries") || out.contains("vacuously"),
+        "{}",
+        out
+    );
+}

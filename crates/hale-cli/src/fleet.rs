@@ -45,6 +45,88 @@ pub struct FleetPlan {
     pub instances: Vec<InstanceSpec>,
     #[serde(default)]
     pub routes: Vec<RouteSpec>,
+    /// Fleet groups quantify over INSTANCES, by id or by label. A
+    /// group's vertices are every vertex of its instances, which is
+    /// the same projection an application-tier group makes from a
+    /// locus to its methods — one altitude up.
+    #[serde(default)]
+    pub groups: BTreeMap<String, GroupSpec>,
+    #[serde(default)]
+    pub claims: Vec<ClaimSpec>,
+}
+
+#[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
+pub struct GroupSpec {
+    #[serde(default)]
+    pub instances: Vec<String>,
+    #[serde(default)]
+    pub labels: Vec<String>,
+}
+
+/// A fleet claim, as normalized rows rather than source grammar —
+/// the plan is an IR, so an external generator can produce one
+/// without Hale syntax committing to a deployment format.
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct ClaimSpec {
+    pub name: String,
+    #[serde(default)]
+    pub forbid_reaches: Option<ForbidReaches>,
+    #[serde(default)]
+    pub require_subscribes: Option<RequireEndpoint>,
+    #[serde(default)]
+    pub require_publishes: Option<RequireEndpoint>,
+    #[serde(default)]
+    pub count_publisher_instances: Option<CountSpec>,
+    #[serde(default)]
+    pub count_subscriber_instances: Option<CountSpec>,
+    #[serde(default)]
+    pub only_edges: Option<OnlyEdges>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct ForbidReaches {
+    pub from: String,
+    pub to: String,
+    /// Masking a group's vertices makes this the interposition form:
+    /// "every path passes through the gate" is "no path avoids it".
+    #[serde(default)]
+    pub avoiding: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct RequireEndpoint {
+    pub group: String,
+    pub subject: String,
+}
+
+/// Fleet cardinality counts INSTANCE-qualified endpoints, not source
+/// declarations — a different sort from the application tier, which
+/// is why it gets a different spelling.
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct CountSpec {
+    pub subject: String,
+    #[serde(default)]
+    pub eq: Option<usize>,
+    #[serde(default)]
+    pub max: Option<usize>,
+    #[serde(default)]
+    pub min: Option<usize>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct OnlyEdges {
+    pub from: String,
+    pub to: String,
+    /// Wire subjects that may cross this boundary. A grant names a
+    /// typed topic identity, not a transport address.
+    #[serde(default)]
+    pub grant_subjects: Vec<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -307,10 +389,398 @@ pub fn compose(plan_path: &Path) -> Result<String, Vec<String>> {
         }
     }
 
+    // ---- step 9-10: fleet claims over the composed model ----
+    let groups = resolve_groups(&plan, &comps, &mut errs);
+    if !errs.is_empty() {
+        return Err(errs);
+    }
+    let claim_rows = evaluate_claims(
+        &plan, &groups, &comps, &by_id, &call_edges, &local_bus,
+        &route_edges, &mut errs,
+    );
+    if !errs.is_empty() {
+        return Err(errs);
+    }
+
     Ok(render(
         &plan, &comps, &vertices, &call_edges, &local_bus, &route_edges,
-        &routes_out, &unknowns,
+        &routes_out, &unknowns, &claim_rows,
     ))
+}
+
+/// A group's vertices: every vertex of every instance it names, by id
+/// or by label. An unknown name is an error, never an empty set — the
+/// application tier's rule, and for the same reason: a `forbid`
+/// satisfied by an empty quantification domain is a fail-open wearing
+/// formal clothing.
+fn resolve_groups(
+    plan: &FleetPlan,
+    comps: &[Component],
+    errs: &mut Vec<String>,
+) -> BTreeMap<String, BTreeSet<String>> {
+    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for (name, g) in &plan.groups {
+        let mut insts: BTreeSet<String> = BTreeSet::new();
+        for id in &g.instances {
+            if comps.iter().any(|c| &c.id == id) {
+                insts.insert(id.clone());
+            } else {
+                errs.push(format!(
+                    "group `{}` names instance `{}`, which the plan does \
+                     not declare",
+                    name, id
+                ));
+            }
+        }
+        for l in &g.labels {
+            let hit: Vec<&Component> =
+                comps.iter().filter(|c| c.labels.contains(l)).collect();
+            if hit.is_empty() {
+                errs.push(format!(
+                    "group `{}` names label `{}`, which no instance \
+                     carries",
+                    name, l
+                ));
+            }
+            for c in hit {
+                insts.insert(c.id.clone());
+            }
+        }
+        if insts.is_empty() {
+            errs.push(format!(
+                "group `{}` resolves to no instances — a claim \
+                 quantifying over an empty group holds vacuously",
+                name
+            ));
+        }
+        out.insert(name.clone(), insts);
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_claims(
+    plan: &FleetPlan,
+    groups: &BTreeMap<String, BTreeSet<String>>,
+    comps: &[Component],
+    by_id: &BTreeMap<&str, &Component>,
+    calls: &[(String, String)],
+    local_bus: &[(String, String)],
+    routed: &[(String, String, String)],
+    errs: &mut Vec<String>,
+) -> Vec<String> {
+    let inst_of = |v: &str| -> String {
+        v.split("::").next().unwrap_or("").to_string()
+    };
+    let group = |n: &str, claim: &str, errs: &mut Vec<String>| {
+        match groups.get(n) {
+            Some(g) => Some(g.clone()),
+            None => {
+                errs.push(format!(
+                    "claim `{}` names group `{}`, which the plan does \
+                     not declare",
+                    claim, n
+                ));
+                None
+            }
+        }
+    };
+    // The composed edge set: interior calls, interior bus hops, and
+    // the explicit routes. Nothing else — a route is the ONLY way a
+    // vertex in one instance reaches one in another.
+    let mut adj: BTreeMap<&str, Vec<(&str, Option<&str>)>> =
+        BTreeMap::new();
+    for (f, t) in calls.iter().chain(local_bus.iter()) {
+        adj.entry(f).or_default().push((t, None));
+    }
+    for (f, t, r) in routed {
+        adj.entry(f).or_default().push((t, Some(r)));
+    }
+
+    let mut rows: Vec<String> = Vec::new();
+    for c in &plan.claims {
+        let (result, witness) = if let Some(fr) = &c.forbid_reaches {
+            let (Some(src), Some(dst)) = (
+                group(&fr.from, &c.name, errs),
+                group(&fr.to, &c.name, errs),
+            ) else {
+                continue;
+            };
+            let masked = match &fr.avoiding {
+                Some(m) => match group(m, &c.name, errs) {
+                    Some(g) => g,
+                    None => continue,
+                },
+                None => BTreeSet::new(),
+            };
+            match bfs(&adj, &src, &dst, &masked, &inst_of) {
+                None => ("holds", String::new()),
+                Some(path) => {
+                    ("violated", render_witness(&path, comps, by_id))
+                }
+            }
+        } else if let Some(r) = &c.require_subscribes {
+            endpoint_claim(r, groups, comps, false, &c.name, errs)
+        } else if let Some(r) = &c.require_publishes {
+            endpoint_claim(r, groups, comps, true, &c.name, errs)
+        } else if let Some(k) = &c.count_publisher_instances {
+            count_claim(k, comps, true)
+        } else if let Some(k) = &c.count_subscriber_instances {
+            count_claim(k, comps, false)
+        } else if let Some(oe) = &c.only_edges {
+            let (Some(src), Some(dst)) = (
+                group(&oe.from, &c.name, errs),
+                group(&oe.to, &c.name, errs),
+            ) else {
+                continue;
+            };
+            let granted: BTreeSet<&str> =
+                oe.grant_subjects.iter().map(String::as_str).collect();
+            let mut bad = Vec::new();
+            for (f, t, rid) in routed {
+                if src.contains(&inst_of(f)) && dst.contains(&inst_of(t)) {
+                    let subj = plan
+                        .routes
+                        .iter()
+                        .find(|r| &r.id == rid)
+                        .and_then(|r| {
+                            r.publishers.first().and_then(|ep| {
+                                by_id.get(ep.instance.as_str()).and_then(
+                                    |c| wire_id(&c.artifact, &ep.topic),
+                                )
+                            })
+                        })
+                        .map(|w| w.subject)
+                        .unwrap_or_default();
+                    if !granted.contains(subj.as_str()) {
+                        bad.push(format!(
+                            "{} -(route `{}`, subject `{}`)-> {}",
+                            f, rid, subj, t
+                        ));
+                    }
+                }
+            }
+            if bad.is_empty() {
+                ("holds", String::new())
+            } else {
+                ("violated", bad.join("; "))
+            }
+        } else {
+            errs.push(format!(
+                "claim `{}` names no verb — one of forbid_reaches, \
+                 require_subscribes, require_publishes, \
+                 count_publisher_instances, count_subscriber_instances, \
+                 only_edges",
+                c.name
+            ));
+            continue;
+        };
+        rows.push(format!(
+            "    {{\"name\": {}, \"result\": {}, \"witness\": {}}}",
+            q(&c.name),
+            q(result),
+            q(&witness)
+        ));
+        if result == "violated" {
+            errs.push(format!(
+                "fleet claim `{}` violated{}{}",
+                c.name,
+                if witness.is_empty() { "" } else { " — witness:\n  " },
+                witness
+            ));
+        }
+    }
+    rows
+}
+
+/// Shortest path over the composed graph, masking a group out. The
+/// mask is what makes `forbid reaches … avoiding G` the interposition
+/// form: any surviving path is a bypass.
+fn bfs(
+    adj: &BTreeMap<&str, Vec<(&str, Option<&str>)>>,
+    src: &BTreeSet<String>,
+    dst: &BTreeSet<String>,
+    masked: &BTreeSet<String>,
+    inst_of: &dyn Fn(&str) -> String,
+) -> Option<Vec<(String, Option<String>)>> {
+    let mut parent: BTreeMap<String, (String, Option<String>)> =
+        BTreeMap::new();
+    let mut queue: std::collections::VecDeque<String> =
+        std::collections::VecDeque::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for (v, _) in adj.iter() {
+        if src.contains(&inst_of(v)) && !masked.contains(&inst_of(v)) {
+            seen.insert((*v).to_string());
+            queue.push_back((*v).to_string());
+        }
+    }
+    while let Some(cur) = queue.pop_front() {
+        if dst.contains(&inst_of(&cur))
+            && !src.contains(&inst_of(&cur))
+        {
+            let mut path = vec![(cur.clone(), None)];
+            let mut at = cur;
+            while let Some((prev, via)) = parent.get(&at) {
+                path.push((prev.clone(), via.clone()));
+                at = prev.clone();
+            }
+            path.reverse();
+            // shift the route labels so each names the hop INTO the
+            // node that follows it
+            let mut out: Vec<(String, Option<String>)> = Vec::new();
+            for (i, (n, _)) in path.iter().enumerate() {
+                let via = if i == 0 {
+                    None
+                } else {
+                    path[i].1.clone().or_else(|| path[i - 1].1.clone())
+                };
+                out.push((n.clone(), via));
+            }
+            return Some(out);
+        }
+        for (next, via) in adj.get(cur.as_str()).into_iter().flatten() {
+            if masked.contains(&inst_of(next)) {
+                continue;
+            }
+            if seen.insert((*next).to_string()) {
+                parent.insert(
+                    (*next).to_string(),
+                    (cur.clone(), via.map(str::to_string)),
+                );
+                queue.push_back((*next).to_string());
+            }
+        }
+    }
+    None
+}
+
+/// A witness that crosses artifacts, naming the source file of each
+/// hop. Phase 0's source maps are what make this renderable: a bare
+/// bundle-global offset could not be turned into a location by
+/// anything outside the process that produced it.
+fn render_witness(
+    path: &[(String, Option<String>)],
+    _comps: &[Component],
+    by_id: &BTreeMap<&str, &Component>,
+) -> String {
+    let mut out = String::new();
+    for (i, (v, via)) in path.iter().enumerate() {
+        if i > 0 {
+            match via {
+                Some(r) => {
+                    out.push_str(&format!("\n  -(route `{}`)->\n  ", r))
+                }
+                None => out.push_str("\n  ->\n  "),
+            }
+        }
+        out.push_str(v);
+        // the file this vertex lives in, from its component's map
+        let inst = v.split("::").next().unwrap_or("");
+        let local = v.strip_prefix(&format!("{}::", inst)).unwrap_or(v);
+        if let Some(c) = by_id.get(inst) {
+            if let Some(loc) = decl_location(&c.artifact, local) {
+                out.push_str(&format!("  [{}]", loc));
+            }
+        }
+    }
+    out
+}
+
+/// `path/to/file.hl` for a vertex, via the artifact's source map.
+fn decl_location(a: &serde_json::Value, local: &str) -> Option<String> {
+    let decl = local.split("::").next().unwrap_or(local);
+    let row = a["provenance"]["decls"].get(decl)?;
+    let sid = row["source"].as_i64()?;
+    if sid < 0 {
+        return None;
+    }
+    arr(&a["sources"])
+        .iter()
+        .find(|s| s["id"].as_i64() == Some(sid))
+        .and_then(|s| s["path"].as_str().map(str::to_string))
+}
+
+fn endpoint_claim(
+    r: &RequireEndpoint,
+    groups: &BTreeMap<String, BTreeSet<String>>,
+    comps: &[Component],
+    publishing: bool,
+    claim: &str,
+    errs: &mut Vec<String>,
+) -> (&'static str, String) {
+    let Some(g) = groups.get(&r.group) else {
+        errs.push(format!(
+            "claim `{}` names group `{}`, which the plan does not \
+             declare",
+            claim, r.group
+        ));
+        return ("invalid", String::new());
+    };
+    let found = comps.iter().any(|c| {
+        g.contains(&c.id) && has_endpoint(&c.artifact, &r.subject, publishing)
+    });
+    if found {
+        ("holds", String::new())
+    } else {
+        (
+            "violated",
+            format!(
+                "no instance in `{}` {} `{}`",
+                r.group,
+                if publishing { "publishes" } else { "subscribes" },
+                r.subject
+            ),
+        )
+    }
+}
+
+fn count_claim(
+    k: &CountSpec,
+    comps: &[Component],
+    publishing: bool,
+) -> (&'static str, String) {
+    let hits: Vec<&str> = comps
+        .iter()
+        .filter(|c| has_endpoint(&c.artifact, &k.subject, publishing))
+        .map(|c| c.id.as_str())
+        .collect();
+    let n = hits.len();
+    let ok = k.eq.map(|e| n == e).unwrap_or(true)
+        && k.max.map(|m| n <= m).unwrap_or(true)
+        && k.min.map(|m| n >= m).unwrap_or(true);
+    if ok {
+        ("holds", String::new())
+    } else {
+        (
+            "violated",
+            format!(
+                "counted {} deployed {} endpoint(s) of `{}`: {}",
+                n,
+                if publishing { "publisher" } else { "subscriber" },
+                k.subject,
+                hits.join(", ")
+            ),
+        )
+    }
+}
+
+/// Does this component publish / subscribe the given WIRE subject?
+/// Resolved through its `topics` table, never by local name.
+fn has_endpoint(
+    a: &serde_json::Value,
+    subject: &str,
+    publishing: bool,
+) -> bool {
+    let locals: BTreeSet<String> = arr(&a["topics"])
+        .iter()
+        .filter(|t| t["subject"].as_str() == Some(subject))
+        .filter_map(|t| t["name"].as_str().map(str::to_string))
+        .collect();
+    let rel =
+        if publishing { "publishes" } else { "subscribes" };
+    arr(&a["relations"][rel]).iter().any(|r| {
+        r["subject"].as_str().is_some_and(|s| locals.contains(s))
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -323,6 +793,7 @@ fn render(
     route_edges: &[(String, String, String)],
     routes: &[String],
     unknowns: &[String],
+    claims: &[String],
 ) -> String {
     // The MODEL half — hashed. Instance identities and cardinalities,
     // route hyperedges, wire identities, component shape hashes.
@@ -398,7 +869,9 @@ fn render(
     out.push_str(&model);
     // Unhashed: provenance and uncertainty, like the application
     // artifact's results half.
-    out.push_str(",\n  \"unknowns\": [\n");
+    out.push_str(",\n  \"claims\": [\n");
+    out.push_str(&claims.join(",\n"));
+    out.push_str("\n  ],\n  \"unknowns\": [\n");
     out.push_str(&unknowns.join(",\n"));
     out.push_str("\n  ],\n  \"components\": [\n");
     out.push_str(
