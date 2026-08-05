@@ -752,3 +752,142 @@ fn the_artifact_records_the_environment_and_its_roots() {
         out
     );
 }
+
+// =====================================================================
+// Edge-case sweep before the fleet tier
+// =====================================================================
+
+/// Required control from the identity review, and the property that
+/// makes the feature usable at all: the SAME policy seed imported
+/// under DIFFERENT aliases must resolve to one identity. If it did
+/// not, a workspace whose apps happen to spell the import differently
+/// would be rejected for no reason — fail-closed, but unusable.
+#[test]
+fn one_policy_seed_under_two_aliases_is_one_identity() {
+    let r = root("aliases");
+    write(&r, "policy/p.hl", LIB);
+    let app = |alias: &str, n: &str| {
+        format!(
+            "import \"../policy\" as {a};\n\
+             main locus {n} {{ params {{ b: {a}::Billing = {a}::Billing {{ }}; \
+             r: {a}::Research = {a}::Research {{ }}; }} }}\n\
+             fn main() {{ {n} {{ }}; }}\n",
+            a = alias,
+            n = n
+        )
+    };
+    write(&r, "app-a/main.hl", &app("pol", "A"));
+    write(&r, "app-b/main.hl", &app("plc", "B"));
+    write(
+        &r,
+        "hale.toml",
+        "[claims]\nbase = \"Core\"\n\n[environments.prod]\nsource_only = true\nentrypoints = [\"app-a\", \"app-b\"]\n",
+    );
+    let (out, code) =
+        hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(
+        code, 0,
+        "the alias is not part of a constitution's identity: {}",
+        out
+    );
+}
+
+/// A matrix is N evaluations, so one artifact on stdout or one
+/// baseline to diff against is meaningless. Before this, `--matrix
+/// --dump-topology` emitted two concatenated artifacts (not valid
+/// JSON) and exited 0, and `--matrix --check-topology` compared one
+/// entrypoint's model to another's baseline and reported a failure
+/// that meant nothing.
+#[test]
+fn matrix_rejects_per_evaluation_flags() {
+    let r = workspace(
+        "matrixflags",
+        "[claims]\nno_base = true\n\n[environments.dev]\nsource_only = true\nentrypoints = [\"app-a\", \"app-b\"]\n",
+    );
+    for f in ["--dump-topology", "--check-topology-shape=/tmp/x.json"] {
+        let (out, code) = hale(&[
+            "check".as_ref(),
+            "--matrix".as_ref(),
+            r.as_os_str(),
+            f.as_ref(),
+        ]);
+        assert_eq!(code, 2, "`{}` with --matrix: {}", f, out);
+        assert!(out.contains("per-evaluation"), "{}", out);
+    }
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// Selectors that would silently do nothing are rejected rather than
+/// ignored — the failure mode this whole feature exists to remove.
+#[test]
+fn conflicting_selectors_are_rejected_not_ignored() {
+    let r = workspace(
+        "selectors",
+        "[claims]\nno_base = true\n\n[environments.dev]\nsource_only = true\nentrypoints = [\"app-a\", \"app-b\"]\n",
+    );
+    // --matrix already enumerates every pair.
+    for extra in ["--workspace", "--env"] {
+        let (out, code) = hale(&[
+            "check".as_ref(),
+            "--matrix".as_ref(),
+            r.as_os_str(),
+            extra.as_ref(),
+            "dev".as_ref(),
+        ]);
+        assert_eq!(code, 2, "`--matrix {}`: {}", extra, out);
+    }
+    // A workspace sweep includes libraries; an environment binds law
+    // to an entrypoint. Accepting and ignoring reported a green run
+    // the user believed was gated.
+    let (out, code) = hale(&[
+        "check".as_ref(),
+        "--workspace".as_ref(),
+        r.as_os_str(),
+        "--env".as_ref(),
+        "dev".as_ref(),
+    ]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(code, 2, "`--workspace --env`: {}", out);
+    assert!(out.contains("binds law to an entrypoint"), "{}", out);
+}
+
+/// An injected adoption has no source line, so the span lands on the
+/// main locus and the author sees no `adopt` to explain the error.
+#[test]
+fn an_unknown_environment_constitution_names_the_manifest() {
+    let r = workspace(
+        "provenance",
+        "[claims]\nno_base = true\n\n[environments.prod]\nconstitution = \"Nonexistent\"\nentrypoints = [\"app-a\", \"app-b\"]\n",
+    );
+    let app = r.join("app-a");
+    let (out, code) = hale(&[
+        "check".as_ref(),
+        app.as_os_str(),
+        "--env".as_ref(),
+        "prod".as_ref(),
+    ]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(
+        out.contains("[environments.prod]") && out.contains("hale.toml"),
+        "the error must say WHERE the constitution was required from, \
+         since the entrypoint has no `adopt` line to point at: {}",
+        out
+    );
+}
+
+/// An environment listing no entrypoints leaves the real ones bound
+/// to nothing, which the coverage check must catch.
+#[test]
+fn an_environment_with_no_entrypoints_leaves_them_unbound() {
+    let r = workspace(
+        "emptyenv",
+        "[claims]\nno_base = true\n\n[environments.dev]\nsource_only = true\nentrypoints = []\n",
+    );
+    let (out, code) =
+        hale(&["check".as_ref(), "--matrix".as_ref(), r.as_os_str()]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(out.contains("in no environment"), "{}", out);
+}

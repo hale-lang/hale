@@ -8,6 +8,39 @@ behavior.
 
 ## Unreleased
 
+### Constitution edge cases: silent-ignore combinations and manifest provenance (GH #409)
+
+An edge-case sweep before starting the fleet tier. Four gaps, all of
+the same shape the two reviews found — a combination that behaves
+plausibly instead of refusing.
+
+- **`--matrix --dump-topology` emitted N concatenated artifacts** to
+  one stdout — not valid JSON as a whole — and exited 0. A matrix is
+  many evaluations, so there is no single artifact to emit; likewise
+  `--matrix --check-topology` compared one entrypoint's model against
+  another's baseline and reported a failure that meant nothing.
+  `--workspace` already rejected these flags; `--matrix` did not.
+- **`--workspace --env prod` silently ignored `--env`**, reporting
+  "N seed(s) checked" with no environment law applied — a green run
+  the user believes was gated. A workspace sweep includes libraries;
+  an environment binds law to an entrypoint. Now rejected.
+- **`--matrix --env` / `--matrix --workspace`** likewise selected
+  nothing the matrix did not already enumerate. Rejected.
+- **A manifest-required constitution had no provenance.** An injected
+  adoption has no source line, so `unknown constitution \`Prod\``
+  pointed at a main locus containing no `adopt` at all. The
+  diagnostic now names the environment and the manifest.
+
+Five behaviors that were already correct but unpinned now have tests:
+one policy seed imported under two different aliases is one identity
+(the review's required control — and the property that makes the
+feature usable at all); a `claims` block outside `main locus` is a
+parse error with `adopt` in it; a repeated `adopt` is idempotent
+rather than a collision; an unknown `extends` base is an error; an
+environment with an empty entrypoint list leaves the real entrypoints
+unbound; and tampering with the artifact's `evaluation` section — the
+constitution digests a consumer compares — fails the body hash.
+
 ### Constitution identity, corrected at the boundary (GH #409)
 
 A second review found that the identity mechanism shipped in the

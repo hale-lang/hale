@@ -325,23 +325,58 @@ struct Cx<'a> {
     model: crate::model::Model,
 }
 
+/// What a deployment environment contributed to this evaluation: its
+/// label, and the constitutions it required.
+#[derive(Debug, Default, Clone)]
+pub struct EnvBinding {
+    pub name: Option<String>,
+    /// Constitutions injected by the manifest rather than written in
+    /// source. Kept so a diagnostic about one can say WHERE it was
+    /// required from — without this, "unknown constitution `Prod`"
+    /// points at a `main locus` containing no `adopt` line at all,
+    /// and the author has no way to know the manifest asked for it.
+    pub injected: Vec<String>,
+}
+
 thread_local! {
-    /// The environment name a `--env` / matrix run was for, so the
-    /// artifact can record WHICH deployment it certifies. A
-    /// thread-local because the artifact is serialized far from the
-    /// CLI that knows the label, and threading an `Option<String>`
-    /// through every intervening signature would buy nothing.
-    static ENVIRONMENT: std::cell::RefCell<Option<String>> =
-        const { std::cell::RefCell::new(None) };
+    /// A thread-local because the artifact is serialized, and claims
+    /// are evaluated, far from the CLI that knows the label —
+    /// threading an `EnvBinding` through every intervening signature
+    /// would buy nothing.
+    static ENV_BINDING: std::cell::RefCell<EnvBinding> =
+        const { std::cell::RefCell::new(EnvBinding {
+            name: None,
+            injected: Vec::new(),
+        }) };
 }
 
 /// Record the environment this evaluation is for.
-pub fn set_environment(name: Option<String>) {
-    ENVIRONMENT.with(|e| *e.borrow_mut() = name);
+pub fn set_env_binding(b: EnvBinding) {
+    ENV_BINDING.with(|e| *e.borrow_mut() = b);
 }
 
 pub fn current_environment() -> Option<String> {
-    ENVIRONMENT.with(|e| e.borrow().clone())
+    ENV_BINDING.with(|e| e.borrow().name.clone())
+}
+
+fn injected_from_manifest(name: &str) -> Option<String> {
+    ENV_BINDING.with(|e| {
+        let b = e.borrow();
+        if b.injected.iter().any(|i| i == name) {
+            Some(match &b.name {
+                Some(env) => format!(
+                    ". `[environments.{}]` in hale.toml requires it — \
+                     this entrypoint cannot see a declaration, so \
+                     either import the seed that declares it or fix \
+                     the manifest",
+                    env
+                ),
+                None => ". It was required by hale.toml".to_string(),
+            })
+        } else {
+            None
+        }
+    })
 }
 
 /// GH #409: what an evaluation adopted.
@@ -445,6 +480,12 @@ fn expand_adoptions(
                 "unknown constitution `{}` — nothing declares it",
                 name.name
             );
+            // Manifest provenance: an injected adoption has no source
+            // line, so the span points at the main locus and the
+            // author sees no `adopt` to explain the error.
+            if let Some(extra) = injected_from_manifest(&name.name) {
+                msg.push_str(&extra);
+            }
             if let Some(near) = by_name.keys().find(|k| {
                 k.len().abs_diff(name.name.len()) <= 2
                     && k.chars().next() == name.name.chars().next()
