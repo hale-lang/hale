@@ -2520,6 +2520,9 @@ const CHECK_FLAGS: &[(&str, bool)] = &[
     ("--warn-unbounded-alloc", false),
     ("--warn-resource-leak", false),
     ("--workspace", false),
+    // GH #409
+    ("--env", true),
+    ("--matrix", false),
 ];
 
 fn check_usage(verify: bool) {
@@ -2542,6 +2545,14 @@ fn check_usage(verify: bool) {
     println!("                                 dot-dirs. Every seed runs even");
     println!("                                 if an earlier one fails. It does");
     println!("                                 NOT connect seeds to each other.");
+    println!("  --env <name>                   also adopt the constitution that");
+    println!("                                 `[environments.<name>]` in hale.toml");
+    println!("                                 requires. One entrypoint deployed to");
+    println!("                                 two environments is checked twice.");
+    println!("  --matrix                       check every (entrypoint, environment)");
+    println!("                                 pair the manifest declares. An");
+    println!("                                 entrypoint listed in NO environment");
+    println!("                                 is an error, not a skip.");
     println!();
     println!("Claims and topology (spec/verification.md):");
     println!("  --dump-topology[=<path>]        emit the topology artifact");
@@ -2603,6 +2614,209 @@ fn collect_seeds(root: &Path, out: &mut Vec<PathBuf>) {
     for d in subdirs {
         collect_seeds(&d, out);
     }
+}
+
+/// A `--flag value` / `--flag=value` reader over an explicit argv
+/// slice. `flag_value` inside `run_check_impl` reads the process
+/// argv; the arg parser needs the same rules before it has decided
+/// what to run.
+fn flag_value_in(
+    rest: &[String],
+    flag: &str,
+) -> Result<Option<String>, String> {
+    if let Some(eq) = rest.iter().find(|a| {
+        a.starts_with(flag) && a.as_bytes().get(flag.len()) == Some(&b'=')
+    }) {
+        let v = &eq[flag.len() + 1..];
+        if v.is_empty() {
+            return Err(format!("{}= requires a value", flag));
+        }
+        return Ok(Some(v.to_string()));
+    }
+    if let Some(i) = rest.iter().position(|a| a == flag) {
+        return match rest.get(i + 1) {
+            Some(v) if !v.starts_with('-') => Ok(Some(v.clone())),
+            _ => Err(format!(
+                "{} requires a value. Use `{} <name>` or `{}=<name>`.",
+                flag, flag, flag
+            )),
+        };
+    }
+    Ok(None)
+}
+
+/// Which constitution does environment `env` require? Walks up from
+/// the target for the nearest `hale.toml`, so `hale check apps/a
+/// --env prod` works from anywhere in the tree.
+fn resolve_env_constitution(
+    target: &Path,
+    env: &str,
+) -> Result<Option<String>, String> {
+    let start = if target.is_dir() {
+        target.to_path_buf()
+    } else {
+        target.parent().unwrap_or(Path::new(".")).to_path_buf()
+    };
+    let mut dir = start.canonicalize().unwrap_or(start);
+    loop {
+        let m = dir.join("hale.toml");
+        if m.exists() {
+            let envs = crate::pkg::read_environments(&m)?;
+            return match envs.get(env) {
+                Some(spec) => Ok(spec.constitution.clone()),
+                None => Err(format!(
+                    "no environment `{}` in {} (declared: {})",
+                    env,
+                    m.display(),
+                    if envs.is_empty() {
+                        "none".to_string()
+                    } else {
+                        envs.keys().cloned().collect::<Vec<_>>().join(", ")
+                    }
+                )),
+            };
+        }
+        match dir.parent() {
+            Some(p) => dir = p.to_path_buf(),
+            None => {
+                return Err(format!(
+                    "`--env {}` needs a `hale.toml` declaring \
+                     `[environments.{}]`; none found at or above {}",
+                    env,
+                    env,
+                    target.display()
+                ))
+            }
+        }
+    }
+}
+
+/// GH #409: check every (entrypoint, environment) pair declared in
+/// `hale.toml`.
+///
+/// The property being enforced is "any entrypoint satisfies the
+/// claimset for wherever it deploys" — universal quantification over
+/// entrypoints, each still checked independently in its own closed
+/// world. It composes nothing; it is the workspace sweep with a
+/// constitution bound per pair.
+fn run_matrix(root: &Path, verify: bool) -> ExitCode {
+    let manifest_path = root.join("hale.toml");
+    let envs = match crate::pkg::read_environments(&manifest_path) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("{}", e);
+            return ExitCode::from(2);
+        }
+    };
+    if envs.is_empty() {
+        eprintln!(
+            "no `[environments.<name>]` sections in {} — `--matrix` \
+             checks entrypoints against the claimset each deployment \
+             target requires, so it needs at least one",
+            manifest_path.display()
+        );
+        return ExitCode::from(2);
+    }
+
+    // Every seed that declares a `main locus` is an entrypoint, and
+    // every entrypoint must be accounted for. An entrypoint nobody
+    // listed is silently unconstrained — the exact failure this
+    // feature exists to remove — so it is an error, not a skip.
+    let mut seeds = Vec::new();
+    collect_seeds(root, &mut seeds);
+    let entrypoints: Vec<PathBuf> =
+        seeds.into_iter().filter(|s| seed_has_main(s)).collect();
+
+    let mut bound: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
+    for (env, spec) in &envs {
+        for e in &spec.entrypoints {
+            let p = root.join(e);
+            bound.entry(p).or_default().push(env.clone());
+        }
+    }
+
+    let mut failed: Vec<String> = Vec::new();
+    for e in &entrypoints {
+        let canon = e.canonicalize().unwrap_or_else(|_| e.clone());
+        let listed: Vec<&String> = bound
+            .iter()
+            .filter(|(p, _)| {
+                p.canonicalize().map(|c| c == canon).unwrap_or(false)
+            })
+            .flat_map(|(_, v)| v.iter())
+            .collect();
+        if listed.is_empty() {
+            eprintln!(
+                "entrypoint {} is in no environment. Every entrypoint \
+                 must say where it deploys — one that is listed \
+                 nowhere is checked against no claimset at all",
+                e.display()
+            );
+            failed.push(format!("{} (unbound)", e.display()));
+        }
+    }
+
+    for (env, spec) in &envs {
+        for ep in &spec.entrypoints {
+            let target = root.join(ep);
+            if !target.exists() {
+                eprintln!(
+                    "environment `{}` lists {}, which does not exist",
+                    env,
+                    target.display()
+                );
+                failed.push(format!("{} @ {} (missing)", ep, env));
+                continue;
+            }
+            println!("=== {} @ {} ===", target.display(), env);
+            let code = run_check_impl_env(
+                &target,
+                verify,
+                spec.constitution.as_deref(),
+            );
+            if code != 0 {
+                failed.push(format!("{} @ {}", ep, env));
+            }
+        }
+    }
+
+    println!();
+    if failed.is_empty() {
+        let pairs: usize =
+            envs.values().map(|s| s.entrypoints.len()).sum();
+        println!(
+            "ok: {} (entrypoint, environment) pair(s) checked",
+            pairs
+        );
+        return ExitCode::SUCCESS;
+    }
+    eprintln!("{} pair(s) failed:", failed.len());
+    for f in &failed {
+        eprintln!("  {}", f);
+    }
+    ExitCode::from(1)
+}
+
+/// Does this seed declare a `main locus`? Parse-only — an entrypoint
+/// is a structural fact, and a seed that fails to typecheck is still
+/// an entrypoint whose absence from the matrix should be reported.
+fn seed_has_main(dir: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else { return false };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.extension().and_then(|s| s.to_str()) != Some("hl") {
+            continue;
+        }
+        let Ok(src) = fs::read_to_string(&p) else { continue };
+        if let Ok(prog) = hale_syntax::parse_source(&src) {
+            if prog.items.iter().any(|i| {
+                matches!(i, hale_syntax::ast::TopDecl::Locus(l) if l.is_main)
+            }) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// `--workspace`: check EVERY seed under the target, independently.
@@ -2694,6 +2908,29 @@ fn run_check_cli(rest: &[String], verify: bool) -> ExitCode {
         i += 1;
     }
 
+    // GH #409: the (entrypoint x environment) matrix.
+    let matrix = rest.iter().any(|a| a == "--matrix");
+    if matrix {
+        let root = match positionals.len() {
+            0 => std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from(".")),
+            1 => PathBuf::from(positionals[0]),
+            _ => {
+                eprintln!("hale {} --matrix takes at most one root", cmd);
+                return ExitCode::from(2);
+            }
+        };
+        return run_matrix(&root, verify);
+    }
+
+    let env_name = match flag_value_in(rest, "--env") {
+        Ok(v) => v,
+        Err(msg) => {
+            eprintln!("{}", msg);
+            return ExitCode::from(2);
+        }
+    };
+
     let workspace = rest.iter().any(|a| a == "--workspace");
     if workspace {
         // Per-seed artifacts and one shared baseline are
@@ -2768,7 +3005,26 @@ fn run_check_cli(rest: &[String], verify: bool) -> ExitCode {
         }
     }
 
-    ExitCode::from(run_check_impl(&PathBuf::from(positionals[0]), verify))
+    // `--env X` binds the constitution `[environments.X]` requires,
+    // resolved from the nearest `hale.toml` at or above the target.
+    let adopt = match &env_name {
+        None => None,
+        Some(e) => match resolve_env_constitution(
+            &PathBuf::from(positionals[0]),
+            e,
+        ) {
+            Ok(c) => c,
+            Err(msg) => {
+                eprintln!("{}", msg);
+                return ExitCode::from(2);
+            }
+        },
+    };
+    ExitCode::from(run_check_impl_env(
+        &PathBuf::from(positionals[0]),
+        verify,
+        adopt.as_deref(),
+    ))
 }
 
 
@@ -2779,7 +3035,61 @@ fn run_check_cli(rest: &[String], verify: bool) -> ExitCode {
 /// `--workspace` runs this once per seed and has to aggregate the
 /// results — and `ExitCode` is opaque, so a caller cannot ask whether
 /// one succeeded.
+/// Add `adopt <name>;` to a program's main-locus `claims` block,
+/// creating the block if the main has none. Returns whether a main
+/// was found.
+///
+/// A duplicate is not added: an entrypoint that already writes
+/// `adopt Dev;` and is also deployed to an environment requiring
+/// `Dev` adopts it once, not twice.
+fn inject_adopt(prog: &mut hale_syntax::ast::Program, name: &str) -> bool {
+    use hale_syntax::ast::{ClaimsBlock, Ident, LocusMember, TopDecl};
+    let mut found = false;
+    for item in &mut prog.items {
+        let TopDecl::Locus(l) = item else { continue };
+        if !l.is_main {
+            continue;
+        }
+        found = true;
+        let id = Ident { name: name.to_string(), span: l.name.span };
+        if let Some(LocusMember::Claims(cb)) = l
+            .members
+            .iter_mut()
+            .find(|m| matches!(m, LocusMember::Claims(_)))
+        {
+            if !cb.adopts.iter().any(|a| a.name == name) {
+                cb.adopts.push(id);
+            }
+        } else {
+            l.members.push(LocusMember::Claims(ClaimsBlock {
+                entries: Vec::new(),
+                adopts: vec![id],
+                lib_tier: false,
+                span: l.name.span,
+            }));
+        }
+    }
+    found
+}
+
 fn run_check_impl(target: &Path, gate_warnings: bool) -> u8 {
+    run_check_impl_env(target, gate_warnings, None)
+}
+
+/// GH #409: `adopt_env` names a constitution the *deployment target*
+/// requires, from `[environments.<name>]` in `hale.toml`. It is
+/// injected into the main locus's `claims` block exactly as if the
+/// source had written `adopt C;` — same evaluation, same closed
+/// world, same union with whatever the source already adopts.
+///
+/// Binding it here rather than in source is what lets ONE entrypoint
+/// satisfy different claimsets in different environments: it cannot
+/// write two conflicting `adopt` lines, but it can be checked twice.
+fn run_check_impl_env(
+    target: &Path,
+    gate_warnings: bool,
+    adopt_env: Option<&str>,
+) -> u8 {
     // `check` MUST resolve cross-seed imports the same way `build`
     // and `run` do. It used to bundle only the target's own `.hl`
     // files, so an imported seed's bodies were never in the program
@@ -2800,6 +3110,24 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> u8 {
     // path will see. Without this, `check` warns on
     // auto-inferable cross-pool calls while `build` silently
     // applies — same source, divergent answers.
+    if let Some(cname) = adopt_env {
+        let mut injected = false;
+        for prog in programs.values_mut() {
+            if inject_adopt(prog, cname) {
+                injected = true;
+            }
+        }
+        if !injected {
+            eprintln!(
+                "{}: no `main locus` to adopt `{}` into — an \
+                 environment binds a constitution to an ENTRYPOINT, \
+                 and this seed declares none",
+                target.display(),
+                cname
+            );
+            return 2;
+        }
+    }
     for prog in programs.values_mut() {
         // JSON Tier 2: synthesize `__json_parse_<T>` + rewrite
         // `T::from_json` before typecheck, so the generated parser is

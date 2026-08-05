@@ -8,6 +8,40 @@ behavior.
 
 ## Unreleased
 
+### `--env` and the entrypoint x environment matrix (GH #409)
+
+The tooling half of constitutions. `adopt Core;` in source means
+*always, everywhere* — but an entrypoint deployed to two environments
+must satisfy both claimsets, and it cannot write two conflicting
+`adopt` lines. So the environment binding lives in `hale.toml`, where
+the deployment facts already are:
+
+```toml
+[environments.prod]
+constitution = "Prod"
+entrypoints  = ["apps/prober"]
+```
+
+```sh
+hale check apps/prober --env prod    # adopts Prod for this run
+hale check --matrix                  # every (entrypoint, environment) pair
+```
+
+`--env` injects the environment's constitution exactly as if the
+source had written `adopt` — same evaluation, same closed world, union
+with whatever the source already adopts. One entrypoint therefore gets
+one verdict per environment without its source knowing where it will
+be deployed.
+
+`--matrix` checks every pair the manifest declares. **An entrypoint
+listed in no environment is an error, not a skip** — that is the one
+hole composition cannot close by construction, since no single
+compilation can see that a sibling was left out. A seed with no `main
+locus` is not an entrypoint and is not demanded of the manifest; a
+listed path that does not exist, an unknown environment name, and a
+`--matrix` run against a manifest with no `[environments]` are all
+errors rather than quiet successes.
+
 ### Constitutions: one claimset across many entrypoints (GH #409)
 
 `claims { }` is only legal inside `main locus`, and that rule is

@@ -677,6 +677,40 @@ constitutions extending a common base) contributes the shared base
 exactly once, deduped by origin rather than by name, so a real
 two-origin collision still surfaces.
 
+### Binding a constitution to a deployment target
+
+`adopt Core;` in source means *always, everywhere*. But an entrypoint
+deployed to two environments must satisfy both claimsets, and it
+cannot write two conflicting `adopt` lines. So the environment binding
+lives in `hale.toml`, where the deployment facts already are:
+
+```toml
+[environments.dev]
+constitution = "Dev"
+entrypoints  = ["apps/prober", "apps/dashboard"]
+
+[environments.prod]
+constitution = "Prod"
+entrypoints  = ["apps/prober"]
+```
+
+```sh
+hale check apps/prober --env prod    # adopts Prod for this run
+hale check --matrix                  # every (entrypoint, environment) pair
+```
+
+`--env` injects the environment's constitution exactly as if the
+source had written `adopt` — same evaluation, same closed world,
+union with whatever the source already adopts. So one entrypoint gets
+two verdicts, one per environment, without the source knowing where it
+will be deployed.
+
+`--matrix` checks every pair. **An entrypoint listed in no environment
+is an error**, not a skip — that is the one hole composition cannot
+close by construction, since no single compilation can see that a
+sibling was left out. A seed with no `main locus` is not an entrypoint
+and is not demanded of the manifest.
+
 ### Groups resolve over shared vocabulary
 
 A constitution applied to every entrypoint cannot name any one
