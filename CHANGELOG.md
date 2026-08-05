@@ -8,6 +8,39 @@ behavior.
 
 ## Unreleased
 
+### `check` / `verify` argument handling, and claims in the README
+
+The rest of the v0.15.0 claims developer-experience review. The
+critical topology findings shipped in the previous entry; these are
+recommendations 3 and 7.
+
+**Real argument parsing.** `check` took its target from `argv[2]` and
+treated everything else as scenery, so an unknown flag, a stray second
+positional, and `--help` were all ignored while the command still
+reported SUCCESS. A typo'd gate flag meant CI checked nothing and said
+so in green. Now: unknown flags and extra positionals are usage errors
+(exit 2), `--help` prints per-command help instead of being read as a
+path (it used to print `not a file or directory: --help` and exit 0),
+and flags may appear on either side of the target.
+
+**`--dump-topology` takes its destination as `=<path>` only.** Its
+operand is optional, so consuming the following token has no safe
+reading — and once flags became legal before the target, `hale check
+--dump-topology app.hl` OVERWROTE `app.hl` with the artifact. A bare
+`--dump-topology` still writes to stdout. The two `--check-topology*`
+gates take their mandatory operand either way.
+
+**Discoverability.** `hale check --help` documents the topology,
+effects and budget flags with what each one gates; the top-level
+usage points at it. The README gains a claims section — the six
+forms, a worked cross-seed example with its real witness output, the
+group/unknown/library-tier rules, and the artifact commands — since
+the shipped README discussed effects but never mentioned claims.
+
+Recommendations 4, 5, 6 and 8 (secondary provenance for `only edges`
+and `bound`, interface-fanout rendering, `hale claims` inspection
+commands, workspace-level verification) are not in this change.
+
 ### The claims artifact's external contract (downstream handoff)
 
 Four findings from an outside developer-experience review of the

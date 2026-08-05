@@ -110,6 +110,17 @@ fn main() -> ExitCode {
         return run_bench(&rest);
     }
 
+    // `check` / `verify` take flags, so they get real argument
+    // parsing rather than "the target is argv[2] and everything else
+    // is scenery". Devex review of v0.15.0: an unknown flag, a
+    // stray positional, and `--help` were all silently ignored while
+    // the command still reported SUCCESS — the same fail-open that
+    // made the topology gates untrustworthy.
+    if cmd == "check" || cmd == "verify" {
+        let rest: Vec<String> = args.iter().skip(2).cloned().collect();
+        return run_check_cli(&rest, cmd == "verify");
+    }
+
     if args.len() < 3 {
         usage();
         return ExitCode::from(2);
@@ -119,12 +130,6 @@ fn main() -> ExitCode {
     match cmd.as_str() {
         "lex" => run_lex_file(&target),
         "parse" => run_parse_file(&target),
-        "check" => run_check_impl(&target, false),
-        // `verify` is the Layer-2 discipline GATE: identical
-        // analysis surface to `check`, but every finding —
-        // advisory or error — fails the run. No execution
-        // (spec/testing.md's standalone-verify row).
-        "verify" => run_check_impl(&target, true),
         "run" => {
             // `hale run` compiles the program to a temporary binary
             // (the same codegen backend as `hale build`) and executes
@@ -152,6 +157,8 @@ fn usage() {
     eprintln!("    hale lex   <file.hl>          tokenize and print tokens");
     eprintln!("    hale parse <file.hl>          parse and print the AST");
     eprintln!("    hale check <file.hl | dir>    parse + typecheck");
+    eprintln!("        [--dump-topology[=<path>]] [--check-topology[-shape] <path>]");
+    eprintln!("        [--dump-effects-manifest] [--json]   (`--help` for all)");
     eprintln!("    hale verify <file.hl | dir>   check + FAIL on any advisory (discipline gate)");
     eprintln!("    hale run   <file.hl | dir>    compile + run as a native binary");
     eprintln!("    hale build <file.hl | dir>    parse + typecheck + emit native binary");
@@ -2478,6 +2485,152 @@ fn file_of_span(
     best.map(|(_, p)| p.clone())
 }
 
+/// Flags `check` / `verify` accept, and whether each takes a value.
+/// Anything not on this list is a usage error rather than something
+/// quietly ignored.
+///
+/// `--dump-topology` is deliberately absent from the value-taking
+/// set: it takes its destination in the `=<path>` form ONLY, and a
+/// bare `--dump-topology` writes to stdout. Making it consume a
+/// following token would make `hale check --dump-topology app.hl`
+/// ambiguous — is `app.hl` the artifact destination or the target? —
+/// and flags are supposed to be positionable on either side.
+const CHECK_FLAGS: &[(&str, bool)] = &[
+    ("--allow-unowned-subscriber", false),
+    ("--check-effects-manifest", true),
+    ("--check-resource-budget", true),
+    ("--check-topology", true),
+    ("--check-topology-shape", true),
+    ("--dump-alloc-summary", false),
+    ("--dump-effects-manifest", false),
+    ("--dump-resource-budget", false),
+    ("--dump-topology", false),
+    ("--json", false),
+    ("--no-warn-unbounded-alloc", false),
+    // Retired opt-in spelling from when the unbounded-alloc survey
+    // was off by default. It is a no-op now (the survey is on), but
+    // it was accepted for a release and rejecting it would break
+    // pipelines that still pass it. Accepted-because-ignored is
+    // exactly what this list is replacing, so it is written down
+    // rather than left to chance.
+    ("--warn-unbounded-alloc", false),
+    ("--warn-resource-leak", false),
+];
+
+fn check_usage(verify: bool) {
+    let cmd = if verify { "verify" } else { "check" };
+    let what = if verify {
+        "typecheck + analyze; EVERY finding, advisory included, fails \
+         the run"
+    } else {
+        "typecheck + analyze a seed"
+    };
+    println!("hale {} [flags] <file | dir>    {}", cmd, what);
+    println!();
+    println!("A directory is ONE seed: the `.hl` files directly inside");
+    println!("it are checked together, without recursing. Flags may");
+    println!("appear before or after the target.");
+    println!();
+    println!("Claims and topology (spec/verification.md):");
+    println!("  --dump-topology[=<path>]        emit the topology artifact");
+    println!("                                 (JSON; stdout when bare).");
+    println!("                                 Observational: it does not");
+    println!("                                 change the exit status.");
+    println!("  --check-topology <path>         gate on an EXACT artifact");
+    println!("                                 snapshot — law, model and");
+    println!("                                 provenance. Source motion");
+    println!("                                 trips it.");
+    println!("  --check-topology-shape <path>   gate on the model identity");
+    println!("                                 (`shape_hash`) alone. Immune");
+    println!("                                 to comments moving and to");
+    println!("                                 claim renames.");
+    println!();
+    println!("Effects and budgets:");
+    println!("  --dump-effects-manifest         emit the effects manifest");
+    println!("  --check-effects-manifest <path> gate on a manifest baseline");
+    println!("  --dump-resource-budget          emit the resource budget");
+    println!("  --check-resource-budget <path>  gate on a budget baseline");
+    println!("  --dump-alloc-summary            emit the allocation summary");
+    println!();
+    println!("Advisories:");
+    println!("  --warn-resource-leak            enable the resource-leak lint");
+    println!("  --no-warn-unbounded-alloc       silence the unbounded-alloc lint");
+    println!("  --allow-unowned-subscriber      permit a subscriber with no owner");
+    println!("  --json                          machine-readable diagnostics");
+}
+
+/// Parse `check` / `verify` arguments: exactly one positional target,
+/// only known flags, values present where required, `--help`
+/// answered rather than treated as a path.
+fn run_check_cli(rest: &[String], verify: bool) -> ExitCode {
+    let cmd = if verify { "verify" } else { "check" };
+    if rest.iter().any(|a| a == "--help" || a == "-h") {
+        check_usage(verify);
+        return ExitCode::SUCCESS;
+    }
+
+    let mut positionals: Vec<&String> = Vec::new();
+    let mut i = 0;
+    while i < rest.len() {
+        let a = &rest[i];
+        if let Some(name) = a.strip_prefix("--").map(|_| a.as_str()) {
+            // `--flag=value` carries its own value; `--flag value`
+            // consumes the next token so it is never mistaken for
+            // the target.
+            let (base, has_eq) = match name.split_once('=') {
+                Some((b, _)) => (b, true),
+                None => (name, false),
+            };
+            let Some((_, takes_value)) =
+                CHECK_FLAGS.iter().find(|(f, _)| *f == base)
+            else {
+                eprintln!("unknown flag for `hale {}`: {}", cmd, base);
+                eprintln!("Run `hale {} --help` for the flag list.", cmd);
+                return ExitCode::from(2);
+            };
+            if *takes_value && !has_eq {
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        positionals.push(a);
+        i += 1;
+    }
+
+    match positionals.len() {
+        1 => {}
+        0 => {
+            eprintln!("hale {} needs a target (a .hl file or a seed \
+                       directory).", cmd);
+            eprintln!("Run `hale {} --help` for usage.", cmd);
+            return ExitCode::from(2);
+        }
+        _ => {
+            // Silently checking only the first would be the same
+            // fail-open shape as the rest of this review: the
+            // command reports on less than it was handed.
+            eprintln!(
+                "hale {} takes ONE target, got {}: {}",
+                cmd,
+                positionals.len(),
+                positionals
+                    .iter()
+                    .map(|p| p.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+            eprintln!(
+                "A directory is one seed. Check each seed separately."
+            );
+            return ExitCode::from(2);
+        }
+    }
+
+    run_check_impl(&PathBuf::from(positionals[0]), verify)
+}
+
 
 /// Shared core of `hale check` (advisories print, only errors
 /// fail) and `hale verify` (every finding fails — the CI
@@ -2613,7 +2766,8 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
             return match argv.get(i + 1) {
                 Some(v) if !v.starts_with('-') => Ok(Some(v.clone())),
                 _ => Err(format!(
-                    "{} requires a path (got nothing). Use `{} <path>`                      or `{}=<path>`.",
+                    "{} requires a path. Use `{} <path>` or \
+                     `{}=<path>`.",
                     flag, flag, flag
                 )),
             };
@@ -2622,12 +2776,20 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
     };
 
     let dump_topology = argv.iter().any(|a| a == "--dump-topology");
-    let dump_topology_to = match flag_value("--dump-topology") {
-        Ok(v) => v,
-        // A bare `--dump-topology` is legal (stdout); only the
-        // `=`-with-empty-value form is an error here.
-        Err(_) => None,
-    };
+    // `=<path>` ONLY, never "consume the next token". Sharing
+    // `flag_value` here was destructive: it took the following
+    // argument as the destination, so `hale check --dump-topology
+    // app.hl` — a flag order this command now accepts — OVERWROTE
+    // `app.hl` with the artifact. Losing the file you asked it to
+    // inspect is the worst possible reading of an ambiguous
+    // argument, and the ambiguity is unresolvable in general
+    // because the value is optional. A bare `--dump-topology`
+    // writes to stdout.
+    let dump_topology_to = argv
+        .iter()
+        .find_map(|a| a.strip_prefix("--dump-topology="))
+        .filter(|v| !v.is_empty())
+        .map(|v| v.to_string());
     if dump_topology || dump_topology_to.is_some() {
         let artifact = hale_types::topology::dump_topology(&bundle);
         match &dump_topology_to {

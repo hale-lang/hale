@@ -618,13 +618,22 @@ hale check app --check-topology .hale.topology    # exact snapshot gate
 hale check app --check-topology-shape .hale.topology   # model-only gate
 ```
 
-Both spellings work for every flag operand (`--flag value` and
-`--flag=value`); a missing operand is a usage error rather than a
-silent no-op. And `--dump-topology` does **not** change what the
-command means: a program whose claims fail still exits non-zero
-with its witnesses, it just prints the artifact on the way.
+The two gate flags take their operand either way (`--flag value` or
+`--flag=value`), and a missing operand is a usage error rather than a
+silent no-op — as is an unknown flag or a second target.
 
-The artifact shape (schema `1.0`):
+`--dump-topology` is the exception: its destination is the
+`=<path>` form **only**, and a bare `--dump-topology` writes to
+stdout. Its operand is optional, so "take the next token" has no
+safe reading — `hale check --dump-topology app.hl` would be asking
+whether `app.hl` is the destination or the target, and guessing
+wrong overwrites your source.
+
+Dumping does **not** change what the command means: a program whose
+claims fail still exits non-zero with its witnesses, it just prints
+the artifact on the way.
+
+The artifact shape (schema `1.2`):
 
 ```text
 {
