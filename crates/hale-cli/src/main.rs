@@ -158,7 +158,8 @@ fn usage() {
     eprintln!("    hale parse <file.hl>          parse and print the AST");
     eprintln!("    hale check <file.hl | dir>    parse + typecheck");
     eprintln!("        [--dump-topology[=<path>]] [--check-topology[-shape] <path>]");
-    eprintln!("        [--dump-effects-manifest] [--json]   (`--help` for all)");
+    eprintln!("        [--dump-effects-manifest] [--json] [--workspace]");
+    eprintln!("        (`hale check --help` for all)");
     eprintln!("    hale verify <file.hl | dir>   check + FAIL on any advisory (discipline gate)");
     eprintln!("    hale run   <file.hl | dir>    compile + run as a native binary");
     eprintln!("    hale build <file.hl | dir>    parse + typecheck + emit native binary");
@@ -2338,16 +2339,19 @@ fn collect_checkable(
         ImportRenames,
         std::collections::BTreeSet<PathBuf>,
     ),
-    ExitCode,
+    u8,
 > {
     let files = match collect_ap_files(target) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("{}", e);
-            return Err(ExitCode::from(1));
+            return Err(1);
         }
     };
-    let (programs, sources, file_bases) = parse_files(&files)?;
+    // `parse_files` still reports an `ExitCode` (its other two
+    // callers hand one straight back); it only ever fails with 1.
+    let (programs, sources, file_bases) =
+        parse_files(&files).map_err(|_| 1u8)?;
 
     // The files the target itself owns — everything else reached
     // from here arrived through an `import`.
@@ -2368,7 +2372,7 @@ fn collect_checkable(
         Some(m) => m,
         None => {
             eprintln!("no .hl files in {}", target.display());
-            return Err(ExitCode::from(1));
+            return Err(1);
         }
     };
     let workspace_root = find_workspace_root(target);
@@ -2412,7 +2416,7 @@ fn collect_checkable(
             eprintln!("{}:", path.display());
             eprintln!("  {}", d.render(src));
         }
-        return Err(ExitCode::from(1));
+        return Err(1);
     }
 
     let mut program = Program {
@@ -2515,6 +2519,7 @@ const CHECK_FLAGS: &[(&str, bool)] = &[
     // rather than left to chance.
     ("--warn-unbounded-alloc", false),
     ("--warn-resource-leak", false),
+    ("--workspace", false),
 ];
 
 fn check_usage(verify: bool) {
@@ -2530,6 +2535,13 @@ fn check_usage(verify: bool) {
     println!("A directory is ONE seed: the `.hl` files directly inside");
     println!("it are checked together, without recursing. Flags may");
     println!("appear before or after the target.");
+    println!();
+    println!("  --workspace                    check EVERY seed under the");
+    println!("                                 target, each independently.");
+    println!("                                 Skips vendor/, target/ and");
+    println!("                                 dot-dirs. Every seed runs even");
+    println!("                                 if an earlier one fails. It does");
+    println!("                                 NOT connect seeds to each other.");
     println!();
     println!("Claims and topology (spec/verification.md):");
     println!("  --dump-topology[=<path>]        emit the topology artifact");
@@ -2557,6 +2569,89 @@ fn check_usage(verify: bool) {
     println!("  --no-warn-unbounded-alloc       silence the unbounded-alloc lint");
     println!("  --allow-unowned-subscriber      permit a subscriber with no owner");
     println!("  --json                          machine-readable diagnostics");
+}
+
+/// Every SEED under `root`: a directory holding one or more `.hl`
+/// files directly. `check` operates on one seed and does not recurse
+/// — correctly, since a directory is one compilation unit — so a
+/// repository with many seeds needs something to enumerate them.
+///
+/// Skips `vendor` and dot-directories, matching `hale fmt`'s walk,
+/// plus `target`. A seed you do not own is not yours to gate.
+fn collect_seeds(root: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(root) else { return };
+    let mut has_hl = false;
+    let mut subdirs: Vec<PathBuf> = Vec::new();
+    for entry in entries.flatten() {
+        let p = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if p.is_dir() {
+            if name == "vendor" || name == "target" || name.starts_with('.')
+            {
+                continue;
+            }
+            subdirs.push(p);
+        } else if name.ends_with(".hl") {
+            has_hl = true;
+        }
+    }
+    if has_hl {
+        out.push(root.to_path_buf());
+    }
+    subdirs.sort();
+    for d in subdirs {
+        collect_seeds(&d, out);
+    }
+}
+
+/// `--workspace`: check EVERY seed under the target, independently.
+///
+/// It does not connect them. Each seed is its own closed world and
+/// gets its own check; this exists so that no library or main-locus
+/// claim is silently skipped because nobody remembered to point
+/// `check` at that directory. Cross-binary composition is a separate
+/// thing entirely and is not what this does.
+fn run_workspace(root: &Path, verify: bool) -> ExitCode {
+    let mut seeds = Vec::new();
+    collect_seeds(root, &mut seeds);
+    if seeds.is_empty() {
+        eprintln!(
+            "no seeds under {} — a seed is a directory holding `.hl` \
+             files",
+            root.display()
+        );
+        return ExitCode::from(2);
+    }
+
+    let mut failed: Vec<(PathBuf, u8)> = Vec::new();
+    for seed in &seeds {
+        println!("=== {} ===", seed.display());
+        let code = run_check_impl(seed, verify);
+        // Every seed runs. Stopping at the first failure would make
+        // the command report a subset of the truth, and the whole
+        // point is that nothing is silently skipped.
+        if code != 0 {
+            failed.push((seed.clone(), code));
+        }
+    }
+
+    println!();
+    if failed.is_empty() {
+        println!("ok: {} seed(s) checked", seeds.len());
+        return ExitCode::SUCCESS;
+    }
+    eprintln!(
+        "{} of {} seed(s) failed:",
+        failed.len(),
+        seeds.len()
+    );
+    for (p, code) in &failed {
+        eprintln!("  {} (exit {})", p.display(), code);
+    }
+    // The worst code wins, so a usage error is not masked by an
+    // ordinary check failure in another seed.
+    ExitCode::from(failed.iter().map(|(_, c)| *c).max().unwrap_or(1))
 }
 
 /// Parse `check` / `verify` arguments: exactly one positional target,
@@ -2599,6 +2694,51 @@ fn run_check_cli(rest: &[String], verify: bool) -> ExitCode {
         i += 1;
     }
 
+    let workspace = rest.iter().any(|a| a == "--workspace");
+    if workspace {
+        // Per-seed artifacts and one shared baseline are
+        // incompatible by construction: N seeds produce N models, so
+        // a single `--dump-topology` would interleave them on stdout
+        // and a single `--check-topology` would compare N models to
+        // one file. Silently taking the last would be the fail-open
+        // shape this command exists to remove.
+        for f in [
+            "--dump-topology",
+            "--check-topology",
+            "--check-topology-shape",
+            "--dump-effects-manifest",
+            "--check-effects-manifest",
+            "--dump-resource-budget",
+            "--check-resource-budget",
+            "--dump-alloc-summary",
+        ] {
+            if rest.iter().any(|a| a == f || a.starts_with(&format!("{}=", f)))
+            {
+                eprintln!(
+                    "`{}` is per-seed and cannot be combined with \
+                     --workspace — every seed is its own model, so \
+                     there is no single artifact to emit or gate \
+                     against. Run it against one seed.",
+                    f
+                );
+                return ExitCode::from(2);
+            }
+        }
+        let root = match positionals.len() {
+            0 => std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from(".")),
+            1 => PathBuf::from(positionals[0]),
+            _ => {
+                eprintln!(
+                    "hale {} --workspace takes at most one root",
+                    cmd
+                );
+                return ExitCode::from(2);
+            }
+        };
+        return run_workspace(&root, verify);
+    }
+
     match positionals.len() {
         1 => {}
         0 => {
@@ -2628,14 +2768,18 @@ fn run_check_cli(rest: &[String], verify: bool) -> ExitCode {
         }
     }
 
-    run_check_impl(&PathBuf::from(positionals[0]), verify)
+    ExitCode::from(run_check_impl(&PathBuf::from(positionals[0]), verify))
 }
 
 
 /// Shared core of `hale check` (advisories print, only errors
 /// fail) and `hale verify` (every finding fails — the CI
 /// discipline gate; same ~10 ms analysis, no execution).
-fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
+/// Returns the process exit CODE rather than an `ExitCode`, because
+/// `--workspace` runs this once per seed and has to aggregate the
+/// results — and `ExitCode` is opaque, so a caller cannot ask whether
+/// one succeeded.
+fn run_check_impl(target: &Path, gate_warnings: bool) -> u8 {
     // `check` MUST resolve cross-seed imports the same way `build`
     // and `run` do. It used to bundle only the target's own `.hl`
     // files, so an imported seed's bodies were never in the program
@@ -2667,7 +2811,7 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
             for d in &pre_diags {
                 eprintln!("{}", d.render(any_source));
             }
-            return ExitCode::from(1);
+            return 1;
         }
     }
 
@@ -2682,7 +2826,7 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
     // bound-proving yet.
     if std::env::args().any(|a| a == "--dump-alloc-summary") {
         print!("{}", hale_types::dump_alloc_summary(&bundle));
-        return ExitCode::SUCCESS;
+        return 0;
     }
     // GH #18 item 5: dump the per-program resource budget (pinned threads,
     // cooperative pools, bus subjects) and exit.
@@ -2715,7 +2859,7 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
                          hale check <target> --dump-effects-manifest > {}",
                         path
                     );
-                    return ExitCode::from(1);
+                    return 1;
                 }
             }
             Err(_) => {
@@ -2724,13 +2868,13 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
                      hale check <target> --dump-effects-manifest > {}",
                     path, path
                 );
-                return ExitCode::from(1);
+                return 1;
             }
         }
     }
     if std::env::args().any(|a| a == "--dump-resource-budget") {
         print!("{}", hale_types::dump_resource_budget(&bundle));
-        return ExitCode::SUCCESS;
+        return 0;
     }
     // GH #382 phase 2: the topology artifact — the serialized model
     // (sorts, relations) + every named claim's result, with a
@@ -2827,14 +2971,14 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
                 target.display(),
                 d.kind_str()
             );
-            return ExitCode::from(1);
+            return 1;
         }
         let artifact = hale_types::topology::dump_topology(&bundle);
         match &dump_topology_to {
             Some(path) => {
                 if let Err(e) = std::fs::write(path, &artifact) {
                     eprintln!("could not write {}: {}", path, e);
-                    return ExitCode::from(2);
+                    return 2;
                 }
             }
             None => print!("{}", artifact),
@@ -2856,7 +3000,7 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
         Ok(v) => v,
         Err(msg) => {
             eprintln!("{}", msg);
-            return ExitCode::from(2);
+            return 2;
         }
     };
     if let Some(path) = shape_gate {
@@ -2891,7 +3035,7 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
                      --dump-topology > {}",
                     path, path
                 );
-                return ExitCode::from(2);
+                return 2;
             }
             Ok(expected) => match (hash_of(&expected), hash_of(&current)) {
                 (Some(a), Some(b)) if a != b => {
@@ -2904,14 +3048,14 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
                          check <target> --dump-topology > {}",
                         path, a, b, path
                     );
-                    return ExitCode::from(1);
+                    return 1;
                 }
                 (None, _) | (_, None) => {
                     eprintln!(
                         "topology baseline {} has no shape_hash line",
                         path
                     );
-                    return ExitCode::from(2);
+                    return 2;
                 }
                 _ => {}
             },
@@ -2921,7 +3065,7 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
                      it:\n  hale check <target> --dump-topology > {}",
                     path, path
                 );
-                return ExitCode::from(1);
+                return 1;
             }
         }
     }
@@ -2929,7 +3073,7 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
         Ok(v) => v,
         Err(msg) => {
             eprintln!("{}", msg);
-            return ExitCode::from(2);
+            return 2;
         }
     };
     if let Some(path) = check_topology_path {
@@ -2953,7 +3097,7 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
                          hale check <target> --dump-topology > {}",
                         path
                     );
-                    return ExitCode::from(1);
+                    return 1;
                 }
             }
             Err(_) => {
@@ -2962,7 +3106,7 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
                      hale check <target> --dump-topology > {}",
                     path, path
                 );
-                return ExitCode::from(1);
+                return 1;
             }
         }
     }
@@ -2987,14 +3131,14 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
                 Ok(t) => t,
                 Err(e) => {
                     eprintln!("--check-resource-budget: cannot read `{}`: {}", path, e);
-                    return ExitCode::from(1);
+                    return 1;
                 }
             };
             let ct: CeilingToml = match toml::from_str(&text) {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("--check-resource-budget: invalid budget file `{}`: {}", path, e);
-                    return ExitCode::from(1);
+                    return 1;
                 }
             };
             let ceiling = hale_types::resource_budget::ResourceCeiling {
@@ -3006,7 +3150,7 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
             let violations = hale_types::check_resource_ceiling(&bundle, &ceiling);
             if violations.is_empty() {
                 println!("resource budget OK (within `{}`)", path);
-                return ExitCode::SUCCESS;
+                return 0;
             }
             for v in &violations {
                 eprintln!(
@@ -3014,7 +3158,7 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
                     v, path
                 );
             }
-            return ExitCode::from(1);
+            return 1;
         }
     }
     let mut diags = checked;
@@ -3091,10 +3235,10 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
                     diags.len()
                 );
             }
-            return ExitCode::from(1);
+            return 1;
         }
         if diags.iter().any(|d| d.is_error()) {
-            return ExitCode::from(1);
+            return 1;
         }
     }
     if !json_mode {
@@ -3104,7 +3248,7 @@ fn run_check_impl(target: &Path, gate_warnings: bool) -> ExitCode {
             eprintln!("ok: {} file(s) typechecked", programs.len());
         }
     }
-    ExitCode::SUCCESS
+    0
 }
 
 /// One NDJSON diagnostic line for `hale check --json`.
