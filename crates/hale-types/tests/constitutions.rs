@@ -560,3 +560,95 @@ main locus App {
          deduplicated by the digest that claims to be normalized"
     );
 }
+
+/// A `claims` block outside `main locus` is rejected at parse — main
+/// is the closed-world gate, and `adopt` there would name a world
+/// that is not closed. Pinned because the `adopt` form is new and the
+/// check predates it.
+#[test]
+fn a_non_main_locus_may_not_hold_a_claims_block_with_adopt() {
+    let src = program(
+        r#"
+constitution Core { r: count publishers(topic Settled) == 1; }
+locus Q { params { n: Int = 0; } claims { adopt Core; } }
+main locus App {
+    params { b: Billing = Billing { }; r: Research = Research { }; q: Q = Q { }; }
+}
+"#,
+    );
+    let err = parse_source(&src).expect_err("must not parse");
+    assert!(
+        err.iter().any(|d| d.message.contains("only valid inside `main locus`")),
+        "{:?}",
+        err
+    );
+}
+
+/// Adopting the same constitution twice is idempotent, not a
+/// collision — the clauses arrive once, and the root is recorded
+/// once. (A second `adopt` is redundant, not contradictory.)
+#[test]
+fn adopting_the_same_constitution_twice_is_idempotent() {
+    use hale_types::bus_graph::build_bus_graph;
+    use hale_types::claims::claims_report_with_identities;
+
+    let src = program(
+        r#"
+constitution Core { r: count publishers(topic Settled) == 1; }
+main locus App {
+    params { b: Billing = Billing { }; r: Research = Research { }; }
+    claims { adopt Core; adopt Core; }
+}
+"#,
+    );
+    assert!(
+        diags(&src).is_empty(),
+        "a repeated adoption is redundant, not a collision: {:#?}",
+        diags(&src)
+    );
+
+    let prog = parse_source(&src).expect("parse");
+    let mut programs = std::collections::BTreeMap::new();
+    programs.insert("app.hl".to_string(), &prog);
+    let bundle = hale_types::Bundle::new(programs);
+    let (top, _) = hale_types::resolve::build_top_scope(&bundle);
+    let graph = build_bus_graph(&bundle, &top);
+    let progs: Vec<&hale_syntax::ast::Program> =
+        bundle.programs.values().copied().collect();
+    let (_, outcomes, a) =
+        claims_report_with_identities(&progs, &graph, &[]);
+    assert_eq!(
+        a.roots.len(),
+        1,
+        "one root, not two: {:?}",
+        a.roots.iter().map(|i| &i.name).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        outcomes.iter().filter(|o| o.name == "r").count(),
+        1,
+        "and the clause arrives once"
+    );
+}
+
+/// A base that no declaration provides is an error rather than a
+/// silently-empty closure — otherwise a constitution could appear to
+/// carry law it never got.
+#[test]
+fn an_unknown_base_is_an_error() {
+    let src = program(
+        r#"
+constitution Dev extends Missing { d: count publishers(topic Settled) == 1; }
+main locus App {
+    params { b: Billing = Billing { }; r: Research = Research { }; }
+    claims { adopt Dev; }
+}
+"#,
+    );
+    assert!(
+        diags(&src)
+            .iter()
+            .any(|m| m.contains("unknown constitution `Missing`")),
+        "{:#?}",
+        diags(&src)
+    );
+}

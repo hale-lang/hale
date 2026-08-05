@@ -434,6 +434,23 @@ environment contributes any constitution: an environment binds law to
 a deployment target, and a `source_only` environment with no base
 would otherwise check a library and report success.
 
+Combinations that cannot be honoured are rejected rather than
+ignored. `--matrix` runs many evaluations, so a per-evaluation
+artifact flag (`--dump-topology`, the `--check-*` baselines) has no
+single artifact to emit or gate against; and `--env` / `--workspace`
+alongside it would select nothing the matrix does not already
+enumerate. `--env` with `--workspace` is likewise rejected: a
+workspace sweep includes libraries, and an environment binds law to
+an entrypoint.
+
+A constitution required by the manifest has no source `adopt` line,
+so a diagnostic about it names the environment and the manifest
+rather than pointing at a main locus that mentions it nowhere.
+
+A constitution's identity does not depend on the import alias
+through which its seed was reached: the same policy seed imported as
+`pol` in one entrypoint and `plc` in another is one identity.
+
 `--matrix` checks every declared (entrypoint, environment) pair. It
 does not short-circuit; the exit status reflects every pair. An
 entrypoint in no environment is an error, and a seed that fails to

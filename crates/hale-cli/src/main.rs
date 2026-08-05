@@ -2499,6 +2499,20 @@ fn file_of_span(
 /// following token would make `hale check --dump-topology app.hl`
 /// ambiguous — is `app.hl` the artifact destination or the target? —
 /// and flags are supposed to be positionable on either side.
+/// Flags that describe ONE evaluation: an artifact to emit, or a
+/// baseline to gate against. Meaningless when the command runs many
+/// evaluations.
+const PER_SEED_FLAGS: &[&str] = &[
+    "--dump-topology",
+    "--check-topology",
+    "--check-topology-shape",
+    "--dump-effects-manifest",
+    "--check-effects-manifest",
+    "--dump-resource-budget",
+    "--check-resource-budget",
+    "--dump-alloc-summary",
+];
+
 const CHECK_FLAGS: &[(&str, bool)] = &[
     ("--allow-unowned-subscriber", false),
     ("--check-effects-manifest", true),
@@ -2552,7 +2566,9 @@ fn check_usage(verify: bool) {
     println!("  --matrix                       check every (entrypoint, environment)");
     println!("                                 pair the manifest declares. An");
     println!("                                 entrypoint listed in NO environment");
-    println!("                                 is an error, not a skip.");
+    println!("                                 is an error, not a skip. Cannot be");
+    println!("                                 combined with --env, --workspace, or");
+    println!("                                 any per-evaluation artifact flag.");
     println!();
     println!("Claims and topology (spec/verification.md):");
     println!("  --dump-topology[=<path>]        emit the topology artifact");
@@ -3062,9 +3078,50 @@ fn run_check_cli(rest: &[String], verify: bool) -> ExitCode {
         i += 1;
     }
 
+    let env_name = match flag_value_in(rest, "--env") {
+        Ok(v) => v,
+        Err(msg) => {
+            eprintln!("{}", msg);
+            return ExitCode::from(2);
+        }
+    };
+
     // GH #409: the (entrypoint x environment) matrix.
     let matrix = rest.iter().any(|a| a == "--matrix");
     if matrix {
+        // A matrix is N evaluations, so a single artifact on stdout
+        // or a single baseline to diff against is meaningless — two
+        // concatenated artifacts are not valid JSON, and one baseline
+        // compared to N models reports a failure that means nothing.
+        // `--workspace` already rejects these; `--matrix` silently
+        // did the wrong thing.
+        for f in PER_SEED_FLAGS {
+            if rest.iter().any(|a| a == f || a.starts_with(&format!("{}=", f)))
+            {
+                eprintln!(
+                    "`{}` is per-evaluation and cannot be combined \
+                     with --matrix — a matrix is many evaluations, so \
+                     there is no single artifact to emit or gate \
+                     against. Run it against one (entrypoint, \
+                     environment) pair with `--env`.",
+                    f
+                );
+                return ExitCode::from(2);
+            }
+        }
+        // …and the selectors that would silently do nothing.
+        for f in ["--workspace", "--env"] {
+            if rest.iter().any(|a| a == f || a.starts_with(&format!("{}=", f)))
+            {
+                eprintln!(
+                    "`{}` cannot be combined with --matrix: the matrix \
+                     already enumerates every (entrypoint, \
+                     environment) pair the manifest declares",
+                    f
+                );
+                return ExitCode::from(2);
+            }
+        }
         let root = match positionals.len() {
             0 => std::env::current_dir()
                 .unwrap_or_else(|_| PathBuf::from(".")),
@@ -3077,32 +3134,30 @@ fn run_check_cli(rest: &[String], verify: bool) -> ExitCode {
         return run_matrix(&root, verify);
     }
 
-    let env_name = match flag_value_in(rest, "--env") {
-        Ok(v) => v,
-        Err(msg) => {
-            eprintln!("{}", msg);
-            return ExitCode::from(2);
-        }
-    };
-
     let workspace = rest.iter().any(|a| a == "--workspace");
     if workspace {
+        // `--workspace` sweeps every seed, libraries included, and an
+        // environment binds law to an ENTRYPOINT. Accepting the
+        // combination and ignoring it reported "N seed(s) checked"
+        // with no environment law applied — a green run the user
+        // believes was gated.
+        if env_name.is_some() {
+            eprintln!(
+                "`--env` cannot be combined with --workspace: an \
+                 environment binds law to an entrypoint, and a \
+                 workspace sweep checks every seed including \
+                 libraries. Use `--matrix` for every (entrypoint, \
+                 environment) pair, or `--env` against one entrypoint."
+            );
+            return ExitCode::from(2);
+        }
         // Per-seed artifacts and one shared baseline are
         // incompatible by construction: N seeds produce N models, so
         // a single `--dump-topology` would interleave them on stdout
         // and a single `--check-topology` would compare N models to
         // one file. Silently taking the last would be the fail-open
         // shape this command exists to remove.
-        for f in [
-            "--dump-topology",
-            "--check-topology",
-            "--check-topology-shape",
-            "--dump-effects-manifest",
-            "--check-effects-manifest",
-            "--dump-resource-budget",
-            "--check-resource-budget",
-            "--dump-alloc-summary",
-        ] {
+        for f in PER_SEED_FLAGS {
             if rest.iter().any(|a| a == f || a.starts_with(&format!("{}=", f)))
             {
                 eprintln!(
@@ -3254,7 +3309,10 @@ fn run_check_impl_labelled(
     adopt_env: &[String],
     env_label: Option<&str>,
 ) -> u8 {
-    hale_types::claims::set_environment(env_label.map(str::to_string));
+    hale_types::claims::set_env_binding(hale_types::claims::EnvBinding {
+        name: env_label.map(str::to_string),
+        injected: adopt_env.to_vec(),
+    });
     // `check` MUST resolve cross-seed imports the same way `build`
     // and `run` do. It used to bundle only the target's own `.hl`
     // files, so an imported seed's bodies were never in the program

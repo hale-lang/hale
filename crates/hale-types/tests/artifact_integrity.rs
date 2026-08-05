@@ -228,3 +228,55 @@ fn an_unresolvable_edge_is_uncertified_not_violated() {
     );
     assert_ne!(v["verdict"], "clean", "and it still does not pass");
 }
+
+/// GH #409: the `evaluation` section says which deployment a run
+/// certified and under what law. It is inside the digest-covered body
+/// on purpose — an evaluation context editable after the fact would
+/// certify nothing, and it is exactly the section a fleet consumer
+/// would trust to decide that two entrypoints ran the same law.
+#[test]
+fn tampering_with_the_evaluation_section_is_caught() {
+    const ADOPTING: &str = r#"
+        type T { v: Int; }
+        topic Tk { payload: T; subject: "app.t"; }
+        locus Sub {
+            params { got: Int = 0; }
+            bus { subscribe Tk as on_t; }
+            fn on_t(t: T) { self.got = t.v; }
+        }
+        group subs = { Sub };
+        constitution Core {
+            wired: require subscribes(some subs, topic Tk);
+        }
+        main locus App {
+            params { s: Sub = Sub { }; }
+            claims { adopt Core; }
+        }
+        fn main() { App { }; }
+    "#;
+    let a = dump(ADOPTING);
+    assert!(
+        a.contains("\"roots\""),
+        "fixture must carry an evaluation section:\n{}",
+        a
+    );
+
+    // Rewriting a constitution's digest is the tamper that matters:
+    // it is what a consumer compares across entrypoints.
+    let at = a.find("\"digest\": \"").expect("a digest") + 11;
+    let forged = format!("{}dead0000beef0000{}", &a[..at], &a[at + 16..]);
+    assert_ne!(forged, a, "the forgery must change the text");
+    assert_eq!(
+        verify_artifact_digest(&forged),
+        Some(false),
+        "a rewritten constitution digest must fail the body hash — \
+         otherwise two entrypoints could be made to look like they ran \
+         the same law"
+    );
+
+    // …and so must the environment label.
+    if a.contains("\"environment\"") {
+        let t = a.replacen("\"environment\"", "\"environmenX\"", 1);
+        assert_eq!(verify_artifact_digest(&t), Some(false));
+    }
+}
