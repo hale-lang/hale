@@ -8,6 +8,38 @@ behavior.
 
 ## Unreleased
 
+### Fleet claims over the composed model (GH #408 Phase 2)
+
+`forbid_reaches` (with `avoiding`), `only_edges`, `require_subscribes`
+/ `require_publishes`, and instance cardinality — evaluated over the
+fleet model composed in Phase 1, carried in the plan as normalized
+rows rather than source grammar.
+
+The flagship result is an interposition claim catching a route that
+skips its mediator, with a witness that crosses artifacts:
+
+```
+fleet claim `orders_pass_oms` violated — witness:
+  prober-0::Probe::submit  [rogue/main.hl]
+  -(route `bypass`)->
+  gw-0::Gateway::on_order  [gw/main.hl]
+```
+
+Both components are individually legal; only the deployment is wrong.
+The witness names the instance-qualified vertices, the route carrying
+the hop (a route, because there is no cross-process call to name), and
+the source file each vertex lives in — the last of which is exactly
+what Phase 0's source maps were built for.
+
+Fleet cardinality counts instance-qualified **endpoints**, a different
+sort from the application tier's declaration count, so it gets a
+different spelling: a second deployed publisher fails
+`count_publisher_instances` while each component still checks clean on
+its own.
+
+Groups quantify over instances by id or label, and an unknown or
+empty group is an error rather than a vacuously satisfied claim.
+
 ### `hale fleet`: compose artifacts across applications (GH #408 Phase 1)
 
 ```sh

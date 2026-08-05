@@ -572,6 +572,62 @@ Unknown keys in a plan are rejected, for the reason they are rejected
 in the environment manifest: a misspelled field and an omitted one
 look identical to a verifier.
 
+### Fleet claims (GH #408 Phase 2)
+
+Claims over the composed model, carried in the plan as normalized
+rows rather than source grammar — the plan is an IR, so a generator
+can produce one without Hale syntax committing to a deployment
+format.
+
+```json
+"groups": { "strategies": {"labels": ["strategy"]}, "oms": {"instances": ["oms-0"]} },
+"claims": [
+  {"name": "orders_pass_oms",
+   "forbid_reaches": {"from": "strategies", "to": "gateways", "avoiding": "oms"}},
+  {"name": "one_order_authority",
+   "count_publisher_instances": {"subject": "svc.order.request", "eq": 1}},
+  {"name": "gw_receives_orders",
+   "require_subscribes": {"group": "gateways", "subject": "svc.order.request"}}
+]
+```
+
+A fleet group quantifies over **instances**, by id or by label; its
+vertices are every vertex of those instances — the same projection an
+application group makes from a locus to its methods, one altitude up.
+An unknown name or an empty resolution is an error, never an empty
+set.
+
+- **`forbid_reaches`** walks the composed edge set: interior calls,
+  interior bus hops, and explicit routes. `avoiding` masks a group's
+  vertices out, which makes it the interposition form — any surviving
+  path is a bypass.
+- **`only_edges`** grants by wire **subject**, not by transport
+  address. There are no cross-process calls to grant.
+- **`require_subscribes` / `require_publishes`** are structural
+  deployment statements: some instance in the group exposes the
+  endpoint. "Ledger listens for fills" is provable; "every fill is
+  durably booked" is not implied by it.
+- **`count_publisher_instances` / `count_subscriber_instances`**
+  count instance-qualified **endpoints**, which is a different sort
+  from the application tier's declaration count — hence the different
+  spelling. Two components can each be individually legal while the
+  deployment has two publishers.
+
+Endpoints resolve through each component's `topics` table by wire
+subject, never by local name.
+
+A violation renders a **cross-artifact witness**: the instance-
+qualified vertices, the route carrying each hop, and the source file
+each vertex lives in — which is what Phase 0's source maps exist to
+make renderable.
+
+```
+fleet claim `orders_pass_oms` violated — witness:
+  prober-0::Probe::submit  [rogue/main.hl]
+  -(route `bypass`)->
+  gw-0::Gateway::on_order  [gw/main.hl]
+```
+
 ## Structural & design rules
 
 | Check | Catches | Severity | Enforced by |
