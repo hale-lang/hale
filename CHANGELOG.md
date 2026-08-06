@@ -39,11 +39,13 @@ zero-length path, and a tripped step ceiling answered `None` instead
 of refusing. Search *exhaustion* can prove an absence; search
 *abandonment* never can.
 
-Scope, stated precisely: this is BOOLEAN reachability, what `forbid
-reaches` and `only edges` ask. `bound` keeps its own weighted
-traversal (`site_count`), because a quantitative semiring is a
-different algorithm over the same edges — not a duplicate of this
-one. `no_prohibition_evaluator_defines_a_private_bfs` fails the build
+Scope, stated precisely: this centralizes unweighted TRANSITIVE
+reachability, which is what `forbid reaches` asks at both tiers.
+`only edges` stays direct crossing-edge enumeration — a cut-edge
+subset query with no transitive walk — and `bound` keeps
+`site_count`, a weighted traversal, because a quantitative semiring
+is a different algorithm over the same edges rather than a duplicate
+of this one. `no_prohibition_evaluator_defines_a_private_bfs` fails the build
 if a third frontier appears, its companions check that both
 evaluators still call the engine and that the engine holds exactly
 one queue.

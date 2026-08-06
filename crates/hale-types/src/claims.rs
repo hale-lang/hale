@@ -1508,8 +1508,16 @@ fn evaluate_forbid_reaches(
     // which edge and why, because the repair is to make that edge
     // resolvable. The fleet tier walks past and only refuses if it
     // finds no path at all, because there a concrete cross-binary
-    // counterexample is worth more than a refusal. `search` expresses
-    // both: `Visit::Halt` versus recording the hole and continuing.
+    // counterexample is worth more than a refusal. That choice is
+    // `HolePolicy::Halt` versus `HolePolicy::PathWins`.
+    //
+    // NOTE for whoever changes that policy here: this closure reports
+    // `Visit::hole(())` and discards the successors it had already
+    // collected for the vertex, which is invisible under `Halt`
+    // because the engine stops anyway. Switching to `PathWins` needs
+    // the closure to scan the whole vertex and return
+    // `Visit::partial(edges, hole)` first, or every partial vertex
+    // would lose its known edges. The policy flag alone is not enough.
     let out = model_graph::search(
         roots.iter().cloned(),
         |k: &FnKey| {

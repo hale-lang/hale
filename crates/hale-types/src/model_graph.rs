@@ -9,11 +9,17 @@
 //! path to a target and the prohibition reported `holds` — an
 //! absence certified by not looking.
 //!
-//! Both are the same bug: a second derivation of "what reaches what"
-//! that has to remember every rule the first one learned. This type
-//! is that derivation, once. A caller supplies edges and says which
-//! vertices have INCOMPLETE outgoing edge sets; it answers with a
-//! path, a certified absence, or a refusal to certify.
+//! Both are the same bug: a second traversal that has to remember
+//! every rule the first one learned.
+//!
+//! What lives here is that traversal, once — the BFS bookkeeping and
+//! the propagation of incomplete vertices. It is deliberately NOT the
+//! whole derivation: each caller still decides which relations exist,
+//! which contracted stdlib edges to include, which vertices are
+//! incomplete, and what counts as a target. Centralizing mechanism
+//! reduces drift; it does not make a caller's omission of a relation
+//! impossible, and this module should not be read as claiming
+//! otherwise.
 //!
 //! It deliberately knows nothing about instances, routes, claims or
 //! artifacts — a route id rides along as an opaque label on an edge

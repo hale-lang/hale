@@ -10,14 +10,20 @@
 //!
 //! Both prohibition checks now go through `model_graph::search`.
 //!
-//! **Scope, stated precisely.** This is about BOOLEAN reachability,
-//! which is what `forbid reaches` and `only edges` ask. `claims.rs`
-//! still contains `site_count`, a recursive weighted traversal with
-//! its own memoization, cycle handling and step ceiling, because
-//! `bound` computes a quantitative semiring rather than a yes/no
-//! answer. That is a legitimately different algorithm over the same
-//! edges, not a duplicate of this one — but it does mean this file
-//! must not claim the evaluators contain no traversals at all.
+//! **Scope, stated precisely.** This centralizes unweighted
+//! TRANSITIVE reachability, which is what `forbid reaches` asks at
+//! both tiers. Two neighbours are deliberately outside it:
+//!
+//!  * `only edges` enumerates DIRECT crossing edges — a cut-edge
+//!    subset query, with no transitive walk at either tier;
+//!  * `bound` keeps `site_count`, a recursive WEIGHTED traversal with
+//!    its own memoization, cycle handling and step ceiling, because a
+//!    quantitative semiring is a different algorithm over the same
+//!    edges rather than a duplicate of this one.
+//!
+//! So this file must not claim the evaluators contain no traversals
+//! at all. It claims something narrower and checkable: neither
+//! prohibition evaluator stands up its own frontier.
 //!
 //! The checks below are textual and therefore heuristic. They are
 //! worth having anyway: the failure they guard against is someone
@@ -75,34 +81,54 @@ fn both_prohibition_evaluators_call_the_shared_engine() {
         read(CLAIMS).contains("model_graph::search("),
         "`claims.rs` no longer calls the shared search"
     );
+    // Mentioning or constructing a graph is not using it: a private
+    // BFS could be restored while an unrelated `ModelGraph` reference
+    // stayed behind. Pin the CALL.
     assert!(
-        read(FLEET).contains("model_graph::ModelGraph")
-            || read(FLEET).contains("ModelGraph::new"),
-        "`fleet.rs` no longer uses the shared graph"
+        read(FLEET).contains("match graph.reaches("),
+        "`fleet.rs` no longer evaluates prohibitions through \
+         `ModelGraph::reaches`"
     );
+    // Likewise `search(` alone is vacuous here — this module's own
+    // tests call it, so the substring survives `reaches` ceasing to
+    // delegate. Pin the call site inside `reaches`.
     assert!(
-        read(ENGINE).contains("search("),
+        read(ENGINE).contains("let out = search("),
         "`ModelGraph::reaches` no longer delegates to `search`"
     );
 }
 
 /// The engine holds exactly one frontier.
 ///
-/// "At least one" would be satisfied by an engine that had grown a
-/// second walk of its own, which is the same defect one level in.
+/// "At least one queue" would be satisfied by an engine that had
+/// grown a second walk of its own — the same defect one level in. All
+/// three counts are pinned, because a second frontier could otherwise
+/// hide behind `pop_back` or a second `VecDeque` consumed by a
+/// helper.
 #[test]
 fn the_engine_holds_exactly_one_frontier() {
     let src = read(ENGINE);
-    let n = src
-        .lines()
-        .filter(|l| !l.trim().starts_with("//"))
-        .filter(|l| l.contains("pop_front()"))
-        .count();
+    let count = |needle: &str| {
+        src.lines()
+            .filter(|l| !l.trim().starts_with("//"))
+            .filter(|l| l.contains(needle))
+            .count()
+    };
     assert_eq!(
-        n, 1,
-        "expected exactly one queue in the shared engine, found {n} — \
-         either a second traversal appeared, or the first stopped \
-         being written the way the lint above looks for, and that \
-         lint is now vacuous"
+        count("VecDeque::new()"),
+        1,
+        "expected exactly one queue in the shared engine"
+    );
+    assert_eq!(
+        count("pop_front()"),
+        1,
+        "expected exactly one frontier pop — if the queue is now \
+         drained some other way, the sibling lint that greps for \
+         `pop_front` is vacuous and must change with this one"
+    );
+    assert_eq!(
+        count("pop_back()"),
+        0,
+        "a second frontier hiding behind `pop_back`"
     );
 }
