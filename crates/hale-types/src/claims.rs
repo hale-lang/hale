@@ -41,13 +41,14 @@
 //! widen the grant list), which is the review event this surface
 //! exists to create.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::*;
 use hale_syntax::Diag;
 
 use crate::alloc_summary::{AllocSummary, Callee, EffectSiteKind, FnKey};
 use crate::bus_graph::BusGraph;
+use crate::model_graph;
 use crate::verdict::Verdict;
 use crate::callgraph;
 use crate::effects::{
@@ -1496,21 +1497,176 @@ fn evaluate_forbid_reaches(
         }
     }
 
-    let mut parent: BTreeMap<FnKey, (FnKey, Step)> = BTreeMap::new();
-    let mut queue: VecDeque<FnKey> = VecDeque::new();
-    let mut seen: BTreeSet<FnKey> = BTreeSet::new();
-    for r in &roots {
-        if mask_group.map_or(false, |m| m.contains_fn(r)) {
-            continue;
+    // The traversal is `model_graph::search`, shared with the fleet
+    // tier. What stays here is everything that is genuinely this
+    // tier's: what a vertex is, which edges exist, what counts as the
+    // target, and — the part that cannot move — the diagnostic for
+    // each kind of edge the walk cannot follow.
+    //
+    // The two tiers make OPPOSITE choices about an unfollowable edge,
+    // and both are deliberate. Here the walk stops at it and says
+    // which edge and why, because the repair is to make that edge
+    // resolvable. The fleet tier walks past and only refuses if it
+    // finds no path at all, because there a concrete cross-binary
+    // counterexample is worth more than a refusal. That choice is
+    // `HolePolicy::Halt` versus `HolePolicy::PathWins`.
+    //
+    // NOTE for whoever changes that policy here: this closure reports
+    // `Visit::hole(())` and discards the successors it had already
+    // collected for the vertex, which is invisible under `Halt`
+    // because the engine stops anyway. Switching to `PathWins` needs
+    // the closure to scan the whole vertex and return
+    // `Visit::partial(edges, hole)` first, or every partial vertex
+    // would lose its known edges. The policy flag alone is not enough.
+    let out = model_graph::search(
+        roots.iter().cloned(),
+        |k: &FnKey| {
+            let Some(fs) = cx.summary.fns.get(k) else {
+                return model_graph::Visit::edges(Vec::new());
+            };
+            let mut edges: Vec<(FnKey, Step)> = Vec::new();
+            if *via_calls {
+                for edge in &fs.calls {
+                    match &edge.callee {
+                        Callee::Resolved(next) => {
+                            edges.push((
+                                next.clone(),
+                                Step::Call {
+                                    span: edge.span,
+                                    via_interface: edge
+                                        .via_interface
+                                        .clone(),
+                                },
+                            ));
+                        }
+                        Callee::Unresolved(name) => {
+                            // #353: a call through a fn-typed param —
+                            // the target is unknowable from here, so
+                            // the claim cannot be certified. Unknown ⇒
+                            // violation, same as every shipped
+                            // certificate.
+                            if edge.indirect
+                                || fs.fn_params.iter().any(|p| p == name)
+                            {
+                                diags.push(Diag::ty(
+                                    c.name.span,
+                                    format!(
+                                        "claim `{}` cannot be certified: \
+                                         `{}` (reachable from `{}`) calls \
+                                         through a function-typed \
+                                         parameter, whose target is not \
+                                         knowable statically. An \
+                                         unresolvable edge fails closed",
+                                        c.name.name,
+                                        k.display(),
+                                        src_name.name
+                                    ),
+                                ));
+                                return model_graph::Visit::hole(());
+                            }
+                            // The backstop: an untyped-receiver call
+                            // is a method of SOME locus, possibly a
+                            // wrapper reaching the target. Fail closed.
+                            if unresolved_opaque_receiver(edge) {
+                                diags.push(Diag::ty(
+                                    c.name.span,
+                                    format!(
+                                        "claim `{}` cannot be certified: \
+                                         `{}` (reachable from `{}`) calls \
+                                         `{}` on a receiver the compiler \
+                                         cannot type, so the walk cannot \
+                                         follow the edge. An unresolvable \
+                                         edge fails closed — bind the \
+                                         receiver to a typed field or \
+                                         local so the call resolves",
+                                        c.name.name,
+                                        k.display(),
+                                        src_name.name,
+                                        name
+                                    ),
+                                ));
+                                return model_graph::Visit::hole(());
+                            }
+                        }
+                    }
+                }
+            }
+            if *via_bus {
+                for site in &fs.effect_sites {
+                    let EffectSiteKind::Publish(subj) = &site.kind
+                    else {
+                        continue;
+                    };
+                    let Some(subj) = subj else {
+                        // Computed subject: could route anywhere the
+                        // wire reaches. Fail closed.
+                        diags.push(Diag::ty(
+                            c.name.span,
+                            format!(
+                                "claim `{}` cannot be certified: `{}` \
+                                 (reachable from `{}`) publishes to a \
+                                 computed subject, which could route to \
+                                 any subscriber. An unresolvable edge \
+                                 fails closed",
+                                c.name.name,
+                                k.display(),
+                                src_name.name
+                            ),
+                        ));
+                        return model_graph::Visit::hole(());
+                    };
+                    for (sub_locus, sub_handler, sub_span) in
+                        subscribers_of(cx.graph, subj)
+                    {
+                        edges.push((
+                            FnKey::method(sub_locus, sub_handler),
+                            Step::Bus {
+                                subject: subj.clone(),
+                                publish_span: site.span,
+                                sub_span,
+                            },
+                        ));
+                    }
+                }
+            }
+            model_graph::Visit::edges(edges)
+        },
+        // Roots are tested too: a decl in BOTH groups is a
+        // zero-length path — a real boundary confusion `forbid`
+        // should surface, not skip.
+        |k: &FnKey| match &dst_test {
+            DstTest::Group(g) => g.contains_fn(k),
+            DstTest::Effects(mask) => {
+                let direct = direct_effects(&cx.summary, k, &cx.ffi);
+                !direct.is_unclassified() && direct.0 & mask.0 != 0
+            }
+        },
+        |k: &FnKey| mask_group.is_some_and(|m| m.contains_fn(k)),
+        Some(callgraph::MAX_STEPS),
+        // Stop at the first unfollowable edge. The closure has
+        // already said which edge and why, and that diagnostic is
+        // the repair. (The fleet tier chooses `PathWins`; both are
+        // deliberate — see `model_graph::HolePolicy`.)
+        model_graph::HolePolicy::Halt,
+    );
+
+    match out {
+        model_graph::Search::Found { hit, parent } => {
+            render_violation(
+                c,
+                src_name,
+                &dst.display(),
+                &hit,
+                &parent,
+                cx,
+                diags,
+            );
+            Verdict::Violated
         }
-        if seen.insert(r.clone()) {
-            queue.push_back(r.clone());
-        }
-    }
-    let mut steps = 0u32;
-    while let Some(k) = queue.pop_front() {
-        steps += 1;
-        if steps > callgraph::MAX_STEPS {
+        // The closure has already said which edge it could not
+        // follow and why.
+        model_graph::Search::Uncertified { .. } => Verdict::Uncertified,
+        model_graph::Search::Saturated { .. } => {
             diags.push(Diag::ty(
                 c.name.span,
                 format!(
@@ -1520,160 +1676,10 @@ fn evaluate_forbid_reaches(
                     callgraph::MAX_STEPS
                 ),
             ));
-            return Verdict::Violated;
+            Verdict::Violated
         }
-        // Membership hit? Roots included: a decl in BOTH groups is a
-        // zero-length path — a real boundary confusion `forbid`
-        // should surface, not skip.
-        let hit = match &dst_test {
-            DstTest::Group(g) => g.contains_fn(&k),
-            DstTest::Effects(mask) => {
-                let direct = direct_effects(&cx.summary, &k, &cx.ffi);
-                !direct.is_unclassified() && direct.0 & mask.0 != 0
-            }
-        };
-        if hit {
-            render_violation(
-                c,
-                src_name,
-                &dst.display(),
-                &k,
-                &parent,
-                cx,
-                diags,
-            );
-            return Verdict::Violated;
-        }
-        let Some(fs) = cx.summary.fns.get(&k) else { continue };
-        if *via_calls {
-            for edge in &fs.calls {
-                match &edge.callee {
-                    Callee::Resolved(next) => {
-                        if mask_group
-                            .map_or(false, |m| m.contains_fn(next))
-                        {
-                            continue;
-                        }
-                        if seen.insert(next.clone()) {
-                            parent.insert(
-                                next.clone(),
-                                (
-                                    k.clone(),
-                                    Step::Call {
-                                        span: edge.span,
-                                        via_interface: edge
-                                            .via_interface
-                                            .clone(),
-                                    },
-                                ),
-                            );
-                            queue.push_back(next.clone());
-                        }
-                    }
-                    Callee::Unresolved(name) => {
-                        // #353: a call through a fn-typed param —
-                        // the target is unknowable from here, so
-                        // the claim cannot be certified. Unknown ⇒
-                        // violation, same as every shipped
-                        // certificate.
-                        if edge.indirect
-                            || fs.fn_params.iter().any(|p| p == name)
-                        {
-                            diags.push(Diag::ty(
-                                c.name.span,
-                                format!(
-                                    "claim `{}` cannot be certified: \
-                                     `{}` (reachable from `{}`) calls \
-                                     through a function-typed \
-                                     parameter, whose target is not \
-                                     knowable statically. An \
-                                     unresolvable edge fails closed",
-                                    c.name.name,
-                                    k.display(),
-                                    src_name.name
-                                ),
-                            ));
-                            return Verdict::Uncertified;
-                        }
-                        // The backstop: an untyped-receiver call
-                        // is a method of SOME locus, possibly a
-                        // wrapper reaching the target. Fail closed.
-                        if unresolved_opaque_receiver(edge) {
-                            diags.push(Diag::ty(
-                                c.name.span,
-                                format!(
-                                    "claim `{}` cannot be certified: \
-                                     `{}` (reachable from `{}`) calls \
-                                     `{}` on a receiver the compiler \
-                                     cannot type, so the walk cannot \
-                                     follow the edge. An unresolvable \
-                                     edge fails closed — bind the \
-                                     receiver to a typed field or \
-                                     local so the call resolves",
-                                    c.name.name,
-                                    k.display(),
-                                    src_name.name,
-                                    name
-                                ),
-                            ));
-                            return Verdict::Uncertified;
-                        }
-                    }
-                }
-            }
-        }
-        if *via_bus {
-            for site in &fs.effect_sites {
-                let EffectSiteKind::Publish(subj) = &site.kind else {
-                    continue;
-                };
-                let Some(subj) = subj else {
-                    // Computed subject: could route anywhere the
-                    // wire reaches. Fail closed.
-                    diags.push(Diag::ty(
-                        c.name.span,
-                        format!(
-                            "claim `{}` cannot be certified: `{}` \
-                             (reachable from `{}`) publishes to a \
-                             computed subject, which could route to \
-                             any subscriber. An unresolvable edge \
-                             fails closed",
-                            c.name.name,
-                            k.display(),
-                            src_name.name
-                        ),
-                    ));
-                    return Verdict::Uncertified;
-                };
-                for (sub_locus, sub_handler, sub_span) in
-                    subscribers_of(cx.graph, subj)
-                {
-                    let next =
-                        FnKey::method(sub_locus, sub_handler);
-                    if mask_group
-                        .map_or(false, |m| m.contains_fn(&next))
-                    {
-                        continue;
-                    }
-                    if seen.insert(next.clone()) {
-                        parent.insert(
-                            next.clone(),
-                            (
-                                k.clone(),
-                                Step::Bus {
-                                    subject: subj.clone(),
-                                    publish_span: site.span,
-                                    sub_span,
-                                },
-                            ),
-                        );
-                        queue.push_back(next.clone());
-                    }
-                }
-            }
-        }
+        model_graph::Search::NotFound => Verdict::Holds,
     }
-    Verdict::Holds
 }
 
 // ===================== only edges =================================

@@ -8,6 +8,48 @@ behavior.
 
 ## Unreleased
 
+### The application checker moves onto the shared engine (GH #408)
+
+`forbid reaches` had its own breadth-first walk, written before the
+fleet tier existed. Both are now `model_graph::search`, which owns the
+queue, the visited set, the parent tree, root seeding, masking and the
+step ceiling — the bookkeeping that is identical everywhere and easy
+to get subtly wrong. What stays with each tier is what genuinely
+differs: what a vertex is, which edges exist, what counts as the
+target, and the diagnostic for an edge the walk cannot follow.
+
+Behavior is unchanged, and that is checked rather than asserted:
+`hale check` output and topology artifacts — claim verdicts included —
+are byte-identical across all 88 corpus programs and three real
+downstream applications, before and after.
+
+The two tiers keep their opposite policies on an unfollowable edge,
+because both are deliberate. The application checker stops at it and
+names the edge, since the repair is to make that edge resolvable. The
+fleet tier walks past and refuses only if no path is found at all,
+since a concrete cross-binary counterexample is worth more than a
+refusal. `search` expresses both.
+
+Hole propagation moved INTO the engine: a caller reports that a
+vertex's edge set is incomplete and picks a policy, and the engine
+decides the verdict. Forgetting to consult a hole is no longer a
+mistake the API allows. Two fail-opens in the fleet wrapper closed
+with it — source/target overlap answered `None` instead of a
+zero-length path, and a tripped step ceiling answered `None` instead
+of refusing. Search *exhaustion* can prove an absence; search
+*abandonment* never can.
+
+Scope, stated precisely: this centralizes unweighted TRANSITIVE
+reachability, which is what `forbid reaches` asks at both tiers.
+`only edges` stays direct crossing-edge enumeration — a cut-edge
+subset query with no transitive walk — and `bound` keeps
+`site_count`, a weighted traversal, because a quantitative semiring
+is a different algorithm over the same edges rather than a duplicate
+of this one. `no_prohibition_evaluator_defines_a_private_bfs` fails the build
+if a third frontier appears, its companions check that both
+evaluators still call the engine and that the engine holds exactly
+one queue.
+
 ### One reachability engine, shared by both tiers (GH #408)
 
 The fleet tier read the topology artifact and rebuilt a smaller graph

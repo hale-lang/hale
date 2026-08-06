@@ -676,10 +676,12 @@ fn evaluate_claims(
                 continue;
             }
             // An instance in BOTH groups already reaches the
-            // forbidden set by standing still. The BFS cannot see it
-            // (it refuses a destination that is also a source), so
-            // `forbid_reaches(g, g)` reported `holds` while every
-            // path in the fleet ran inside the prohibition.
+            // forbidden set by standing still. The shared engine
+            // tests roots, so it would now return a one-vertex path
+            // on its own — correctness no longer depends on this
+            // check. It stays because a plan-level message naming
+            // both group names is more useful here than a witness
+            // consisting of a single vertex.
             let both: Vec<&str> = src
                 .intersection(&dst)
                 .map(|s| s.as_str())

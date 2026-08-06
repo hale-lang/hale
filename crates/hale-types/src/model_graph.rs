@@ -9,11 +9,17 @@
 //! path to a target and the prohibition reported `holds` — an
 //! absence certified by not looking.
 //!
-//! Both are the same bug: a second derivation of "what reaches what"
-//! that has to remember every rule the first one learned. This type
-//! is that derivation, once. A caller supplies edges and says which
-//! vertices have INCOMPLETE outgoing edge sets; it answers with a
-//! path, a certified absence, or a refusal to certify.
+//! Both are the same bug: a second traversal that has to remember
+//! every rule the first one learned.
+//!
+//! What lives here is that traversal, once — the BFS bookkeeping and
+//! the propagation of incomplete vertices. It is deliberately NOT the
+//! whole derivation: each caller still decides which relations exist,
+//! which contracted stdlib edges to include, which vertices are
+//! incomplete, and what counts as a target. Centralizing mechanism
+//! reduces drift; it does not make a caller's omission of a relation
+//! impossible, and this module should not be read as claiming
+//! otherwise.
 //!
 //! It deliberately knows nothing about instances, routes, claims or
 //! artifacts — a route id rides along as an opaque label on an edge
@@ -22,6 +28,162 @@
 //! when that tier moves onto the shared model.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+/// What a caller knows about one vertex's outgoing edges.
+///
+/// `edges` are the successors it CAN enumerate. `hole` is set when
+/// that list is incomplete — the honest shape, because an incomplete
+/// vertex usually has some known edges too. Reporting a hole is the
+/// caller's only obligation; what happens next is [`HolePolicy`], and
+/// the search guarantees the hole is never simply forgotten.
+pub struct Visit<V, E, H> {
+    pub edges: Vec<(V, E)>,
+    pub hole: Option<H>,
+}
+
+impl<V, E, H> Visit<V, E, H> {
+    /// A fully-known vertex.
+    pub fn edges(edges: Vec<(V, E)>) -> Self {
+        Self { edges, hole: None }
+    }
+    /// A vertex with known edges AND an incomplete edge set.
+    pub fn partial(edges: Vec<(V, E)>, hole: H) -> Self {
+        Self { edges, hole: Some(hole) }
+    }
+    /// A vertex whose edges cannot be enumerated at all.
+    pub fn hole(hole: H) -> Self {
+        Self { edges: Vec::new(), hole: Some(hole) }
+    }
+}
+
+/// What an incomplete vertex means to this caller.
+///
+/// Both tiers of this compiler want a different answer and both are
+/// right, so the choice belongs to the caller — but the consequence
+/// belongs to the engine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HolePolicy {
+    /// Stop at the first hole. The application checker wants this:
+    /// the repair is to make that edge resolvable, and the
+    /// diagnostic names the edge.
+    Halt,
+    /// Keep walking known edges; a concrete counterexample beats a
+    /// refusal, and the hole only decides the answer if no path is
+    /// found. The fleet checker wants this: a cross-binary path is
+    /// worth more than "cannot tell".
+    PathWins,
+}
+
+/// The outcome of one search.
+///
+/// Every variant except `NotFound` carries the parent tree, so a
+/// caller can render the path to wherever the walk stopped — "here is
+/// how the source reaches the edge I could not follow" is far more
+/// useful than naming the vertex alone.
+pub enum Search<V, E, H> {
+    /// The frontier was exhausted, over a graph with no relevant
+    /// holes. This is the ONLY variant that proves an absence.
+    NotFound,
+    /// `hit` is in the target set; `parent` is the tree the caller's
+    /// own witness renderer walks back through. Returning the tree
+    /// rather than a path is what lets both tiers keep the witness
+    /// code they already have.
+    Found { hit: V, parent: BTreeMap<V, (V, E)> },
+    /// A reachable vertex had an incomplete edge set, so no absence
+    /// can be claimed past it.
+    Uncertified { at: V, hole: H, parent: BTreeMap<V, (V, E)> },
+    /// The step ceiling tripped. Distinct from `NotFound` on purpose:
+    /// search EXHAUSTION can prove an absence, search ABANDONMENT
+    /// never can, and collapsing the two is a fail-open.
+    Saturated { parent: BTreeMap<V, (V, E)> },
+}
+
+/// The traversal both tiers share.
+///
+/// It owns exactly the bookkeeping that is easy to get subtly wrong
+/// and identical everywhere — the queue, the visited set, the parent
+/// tree, root seeding, masking, the step ceiling, and the propagation
+/// of incomplete vertices. Everything that differs between an
+/// application and a fleet — what a vertex is, which edges exist,
+/// what counts as the target — stays with the caller.
+///
+/// Three rules are baked in because they are semantics, not
+/// mechanism, and each one was a shipped bug before it lived here:
+///
+///  * **roots are tested.** A vertex in both the source and target
+///    sets is a zero-length path, which is a real boundary confusion
+///    a prohibition should surface rather than skip.
+///  * **masked vertices are neither tested nor traversed**, so "no
+///    path avoids the gate" is the interposition proof.
+///  * **a reachable hole is never dropped.** A caller reports it; the
+///    engine decides the verdict. Forgetting to consult it is not a
+///    mistake this API allows.
+///
+/// `max_steps` is `None` for "walk until exhausted". It is not a
+/// large number: a ceiling that can be reached must be able to say
+/// so, and `u32::MAX` would overflow the counter before tripping.
+pub fn search<V, E, H>(
+    roots: impl IntoIterator<Item = V>,
+    mut successors: impl FnMut(&V) -> Visit<V, E, H>,
+    is_dst: impl Fn(&V) -> bool,
+    is_masked: impl Fn(&V) -> bool,
+    max_steps: Option<u32>,
+    policy: HolePolicy,
+) -> Search<V, E, H>
+where
+    V: Ord + Clone,
+{
+    let mut parent: BTreeMap<V, (V, E)> = BTreeMap::new();
+    let mut seen: BTreeSet<V> = BTreeSet::new();
+    let mut queue: VecDeque<V> = VecDeque::new();
+    // The first hole met under `PathWins`, kept so a fruitless search
+    // can still refuse rather than certify.
+    let mut pending: Option<(V, H)> = None;
+    for r in roots {
+        if is_masked(&r) {
+            continue;
+        }
+        if seen.insert(r.clone()) {
+            queue.push_back(r);
+        }
+    }
+    let mut steps: u32 = 0;
+    while let Some(k) = queue.pop_front() {
+        steps += 1;
+        if max_steps.is_some_and(|m| steps > m) {
+            return Search::Saturated { parent };
+        }
+        if is_dst(&k) {
+            return Search::Found { hit: k, parent };
+        }
+        let Visit { edges, hole } = successors(&k);
+        if let Some(h) = hole {
+            match policy {
+                HolePolicy::Halt => {
+                    return Search::Uncertified { at: k, hole: h, parent }
+                }
+                HolePolicy::PathWins => {
+                    if pending.is_none() {
+                        pending = Some((k.clone(), h));
+                    }
+                }
+            }
+        }
+        for (next, label) in edges {
+            if is_masked(&next) {
+                continue;
+            }
+            if seen.insert(next.clone()) {
+                parent.insert(next.clone(), (k.clone(), label));
+                queue.push_back(next);
+            }
+        }
+    }
+    match pending {
+        Some((at, hole)) => Search::Uncertified { at, hole, parent },
+        None => Search::NotFound,
+    }
+}
 
 /// An edge, with an optional label the witness renderer can name
 /// (the fleet tier puts a route id here; the application tier has
@@ -110,77 +272,62 @@ impl ModelGraph {
         dst: &BTreeSet<String>,
         masked: &BTreeSet<String>,
     ) -> Reach {
-        let mut parent: BTreeMap<&str, (&str, Option<String>)> =
-            BTreeMap::new();
-        let mut seen: BTreeSet<&str> = BTreeSet::new();
-        let mut queue: VecDeque<&str> = VecDeque::new();
-        // Holes seen while walking, kept in deterministic order so a
-        // refusal names the same vertex on every machine.
-        let mut hit: BTreeSet<&str> = BTreeSet::new();
+        // Hole propagation is the engine's job now: this tier just
+        // reports whether a vertex is incomplete and picks the
+        // policy. The application tier picks `Halt` instead — see
+        // `claims.rs`, where stopping at the edge is what makes the
+        // diagnostic actionable.
+        let out = search(
+            src.iter().cloned(),
+            |v: &String| Visit {
+                edges: self
+                    .edges
+                    .get(v)
+                    .into_iter()
+                    .flatten()
+                    .map(|e| (e.to.clone(), e.via.clone()))
+                    .collect(),
+                hole: self.holes.get(v.as_str()).cloned(),
+            },
+            // Roots are tested. A vertex in both sets is a
+            // zero-length path — the source already IS the forbidden
+            // destination — and suppressing that here is what made
+            // `forbid_reaches(g, g)` report a false absence.
+            |v| dst.contains(v),
+            |v| masked.contains(v),
+            None,
+            HolePolicy::PathWins,
+        );
 
-        for v in src {
-            if masked.contains(v) {
-                continue;
-            }
-            if seen.insert(v) {
-                queue.push_back(v);
-                if self.holes.contains_key(v.as_str()) {
-                    hit.insert(v);
+        match out {
+            Search::Found { hit: h, parent } => {
+                // parent maps a node to (predecessor, label of the
+                // edge INTO it), so walking back already yields the
+                // label each hop was entered by.
+                let mut rev: Vec<(String, Option<String>)> =
+                    vec![(h.clone(), None)];
+                let mut cur = h;
+                while let Some((prev, via)) = parent.get(&cur) {
+                    rev.last_mut().expect("non-empty").1 = via.clone();
+                    rev.push((prev.clone(), None));
+                    cur = prev.clone();
                 }
+                rev.reverse();
+                Reach::Path(rev)
             }
-        }
-
-        while let Some(cur) = queue.pop_front() {
-            if dst.contains(cur) && !src.contains(cur) {
-                let mut path = vec![(cur.to_string(), None)];
-                let mut at = cur;
-                while let Some((prev, via)) = parent.get(at) {
-                    path.push((prev.to_string(), via.clone()));
-                    at = prev;
-                }
-                path.reverse();
-                // Each node is paired with the label of its OUTGOING
-                // edge by the walk above; the renderer wants the one
-                // it was entered by, so shift every label forward.
-                let shifted: Vec<(String, Option<String>)> = path
-                    .iter()
-                    .enumerate()
-                    .map(|(i, (n, _))| {
-                        (
-                            n.clone(),
-                            if i == 0 {
-                                None
-                            } else {
-                                path[i - 1].1.clone()
-                            },
-                        )
-                    })
-                    .collect();
-                return Reach::Path(shifted);
+            Search::Uncertified { at, hole, .. } => {
+                Reach::Uncertified(Hole { at, why: hole })
             }
-            for e in self.edges.get(cur).into_iter().flatten() {
-                if masked.contains(&e.to) {
-                    continue;
-                }
-                if seen.insert(&e.to) {
-                    parent.insert(&e.to, (cur, e.via.clone()));
-                    queue.push_back(&e.to);
-                    if self.holes.contains_key(e.to.as_str()) {
-                        hit.insert(&e.to);
-                    }
-                }
+            // Abandonment never proves an absence.
+            Search::Saturated { .. } => {
+                Reach::Uncertified(Hole {
+                    at: String::new(),
+                    why: "the reachability walk hit its step ceiling \
+                          before exhausting the graph"
+                        .to_string(),
+                })
             }
-        }
-
-        // No path. Only a hole the source could actually have walked
-        // to can conceal one — an unrelated unknown elsewhere in the
-        // fleet must not poison every claim.
-        match hit.first() {
-            Some(at) => Reach::Uncertified(Hole {
-                at: (*at).to_string(),
-                why: self.holes[*at].clone(),
-            }),
-            None => Reach::None,
+            Search::NotFound => Reach::None,
         }
     }
 }
@@ -302,6 +449,145 @@ mod tests {
             g.reaches(&set(&["a"]), &set(&["c"]), &set(&["b"])),
             Reach::None
         );
+    }
+
+    // ---- the wrapper's two fixed fail-opens -------------------
+
+    /// A vertex in both the source and target sets already sits in
+    /// the forbidden set without going anywhere. The wrapper used to
+    /// pass `dst.contains(v) && !src.contains(v)`, which disabled the
+    /// engine's root test and answered `None` — the exact false
+    /// absence the engine documents itself as preventing.
+    #[test]
+    fn source_target_overlap_is_a_zero_length_path() {
+        let g = ModelGraph::new();
+        assert_eq!(
+            g.reaches(&set(&["a"]), &set(&["a"]), &BTreeSet::new()),
+            Reach::Path(vec![("a".into(), None)])
+        );
+    }
+
+    /// Search EXHAUSTION can prove an absence. Search ABANDONMENT
+    /// cannot, and the wrapper used to map both to `Reach::None`.
+    #[test]
+    fn abandoning_the_walk_never_certifies_an_absence() {
+        let out: Search<&str, (), String> = search(
+            ["a"],
+            |_| Visit::edges(vec![("b", ()), ("c", ())]),
+            |_| false,
+            |_| false,
+            Some(1),
+            HolePolicy::PathWins,
+        );
+        assert!(
+            matches!(out, Search::Saturated { .. }),
+            "a tripped ceiling is not `NotFound`"
+        );
+    }
+
+    // ---- the generic engine's own contract ---------------------
+
+    #[test]
+    fn a_root_that_is_the_target_is_found_without_expanding() {
+        let mut expanded = false;
+        let out: Search<&str, (), ()> = search(
+            ["a"],
+            |_| {
+                expanded = true;
+                Visit::edges(vec![])
+            },
+            |v| *v == "a",
+            |_| false,
+            None,
+            HolePolicy::Halt,
+        );
+        assert!(matches!(out, Search::Found { .. }));
+        assert!(!expanded, "the target test precedes expansion");
+    }
+
+    #[test]
+    fn a_masked_root_is_neither_tested_nor_traversed() {
+        let out: Search<&str, (), ()> = search(
+            ["a"],
+            |_| Visit::edges(vec![]),
+            |v| *v == "a",
+            |v| *v == "a",
+            None,
+            HolePolicy::Halt,
+        );
+        assert!(matches!(out, Search::NotFound));
+    }
+
+    #[test]
+    fn halt_reports_the_vertex_and_the_reason() {
+        let out: Search<&str, (), &str> = search(
+            ["a"],
+            |_| Visit::hole("indirect"),
+            |_| false,
+            |_| false,
+            None,
+            HolePolicy::Halt,
+        );
+        match out {
+            Search::Uncertified { at, hole, .. } => {
+                assert_eq!(at, "a");
+                assert_eq!(hole, "indirect");
+            }
+            _ => panic!("expected uncertified"),
+        }
+    }
+
+    /// A vertex can have known edges AND an incomplete set. Under
+    /// `PathWins` the known edges are still walked, and the hole only
+    /// decides the answer if nothing is found.
+    #[test]
+    fn a_partial_vertex_still_contributes_its_known_edges() {
+        let out: Search<&str, (), &str> = search(
+            ["a"],
+            |v| match *v {
+                "a" => Visit::partial(vec![("b", ())], "indirect"),
+                _ => Visit::edges(vec![]),
+            },
+            |v| *v == "b",
+            |_| false,
+            None,
+            HolePolicy::PathWins,
+        );
+        assert!(
+            matches!(out, Search::Found { .. }),
+            "the known edge reaches the target, which beats the hole"
+        );
+    }
+
+    #[test]
+    fn several_roots_are_all_seeded() {
+        let out: Search<&str, (), ()> = search(
+            ["a", "b"],
+            |_| Visit::edges(vec![]),
+            |v| *v == "b",
+            |_| false,
+            None,
+            HolePolicy::Halt,
+        );
+        assert!(matches!(out, Search::Found { hit: "b", .. }));
+    }
+
+    /// Breadth-first: the parent tree records the SHORTEST route to
+    /// each vertex, so a witness is the shortest counterexample
+    /// rather than whichever one the walk stumbled into.
+    #[test]
+    fn the_parent_tree_records_the_shortest_route() {
+        let mut g = ModelGraph::new();
+        g.add_edge("a", "mid", Some("long1".into()));
+        g.add_edge("mid", "z", Some("long2".into()));
+        g.add_edge("a", "z", Some("short".into()));
+        match g.reaches(&set(&["a"]), &set(&["z"]), &BTreeSet::new()) {
+            Reach::Path(p) => {
+                assert_eq!(p.len(), 2, "a -> z directly: {p:?}");
+                assert_eq!(p[1].1, Some("short".into()));
+            }
+            other => panic!("expected a path, got {other:?}"),
+        }
     }
 
     #[test]
