@@ -162,6 +162,93 @@ be *pure* — no hidden state — because it runs on transport
 threads. Different bindings on the same topic can carry different
 codecs; the publisher's send site doesn't know which.
 
+## Checking the whole deployment
+
+Each binary checks its own claims in its own closed world. That
+leaves one question none of them can answer: what happens once they
+are wired together? A component that is individually correct can
+still be deployed into an arrangement that isn't — two publishers
+where the law says one, or a path from a strategy to a gateway that
+was supposed to go through risk.
+
+`hale fleet` answers that by composing the **artifacts**, never the
+source:
+
+```sh
+hale check apps/prober --dump-topology=artifacts/prober.json
+hale check apps/oms    --dump-topology=artifacts/oms.json
+hale check apps/gw     --dump-topology=artifacts/gw.json
+hale fleet check prod.plan.json
+```
+
+A plan names deployed **instances** and the routes between them:
+
+```json
+{ "schema": "1.0", "name": "prod",
+  "instances": [
+    {"id": "prober-0", "artifact": "artifacts/prober.json", "labels": ["strategy"]},
+    {"id": "oms-0",    "artifact": "artifacts/oms.json",    "labels": ["oms"]},
+    {"id": "gw-0",     "artifact": "artifacts/gw.json",     "labels": ["gateway"]}],
+  "routes": [
+    {"id": "intent",
+     "publishers":  [{"instance": "prober-0", "topic": "OrderIntent"}],
+     "subscribers": [{"instance": "oms-0",    "topic": "OrderIntent"}]}],
+  "groups": {"strategy": {"labels": ["strategy"]},
+             "gateway":  {"labels": ["gateway"]}},
+  "claims": [
+    {"name": "orders_pass_oms",
+     "forbid_reaches": {"from": "strategy", "to": "gateway",
+                        "avoiding": "oms"}}] }
+```
+
+Why an *instance* rather than an application: `oms` is a program,
+`oms-0` is a process. Cardinality, witnesses, and running two copies
+of one binary all need the distinction.
+
+Why artifacts rather than source: merging the programs would invent
+edges that no deployed route creates (an unbound topic is in-process
+by default), erase routes that exist only in config, and turn
+messaging into ordinary call reachability. Matching wire identities
+establish *compatibility*; only an explicit route creates an edge.
+
+A violation names the path across binaries — each hop, the route
+carrying it, and the file each vertex lives in:
+
+```
+fleet claim `orders_pass_oms` violated — witness:
+  prober-0::Probe::submit  [prober/main.hl]
+  -(route `bypass`)->
+  gw-0::Gateway::on_order  [gw/main.hl]
+```
+
+Declare your deployments in `hale.toml` and check them all at once:
+
+```toml
+[fleets]
+production = "ops/fleet/prod.plan.json"
+staging    = "ops/fleet/staging.plan.json"
+```
+
+### What it does not tell you
+
+The honest boundary matters more here than at any other tier,
+because a green result is easy to over-read.
+
+It certifies **topology** — which routes exist, which instances they
+connect, what each carries. It does not prove a message will
+*arrive*: delivery is a property of the protocol and the peer, not of
+your code, and no amount of static analysis changes that. Runtime
+observation is what measures delivery.
+
+Nor is it a rolling-upgrade proof. A clean old plan and a clean new
+plan say nothing about the arrangement that exists midway between
+them.
+
+Where the model is uncertain it says so rather than guessing. If a
+component reaches a call the compiler cannot resolve, a prohibition
+past that point comes back `uncertified` — not `holds`. An absence
+nobody could see is not an absence.
+
 ## The shape this gives you
 
 A single source tree, decomposed into loci that coordinate over
