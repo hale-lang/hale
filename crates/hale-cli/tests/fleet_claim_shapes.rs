@@ -111,7 +111,8 @@ const INSTANCES: &str = r#"[
 const GROUPS: &str = r#"{
     "strategy": {"labels": ["strategy"]},
     "oms":      {"labels": ["oms"]},
-    "gateway":  {"labels": ["gateway"]}}"#;
+    "gateway":  {"labels": ["gateway"]},
+    "all":      {"labels": ["strategy", "oms", "gateway"]}}"#;
 
 /// Three artifacts built once per test.
 fn fixture(tag: &str) -> PathBuf {
@@ -213,33 +214,135 @@ fn every_bound_form_still_evaluates() {
     let _ = std::fs::remove_dir_all(&r);
 }
 
-/// A claim may name several verbs, and each is evaluated. Order must
-/// not matter — if only the first were checked, a violating second
-/// verb would be silently dropped.
+/// A claim naming several verbs is refused, because only one of them
+/// would ever be judged.
+///
+/// This test replaces one that asserted the opposite — that every
+/// verb is evaluated "whatever the order" — and passed while the bug
+/// was live. Two things were wrong with it. JSON field order cannot
+/// affect anything: serde fills a struct, and precedence is fixed by
+/// the `if/else` chain in the evaluator, so the two "orders" it tried
+/// were the same case twice. And it paired a violating
+/// `require_subscribes` with a holding `count`, where the violating
+/// verb happens to come FIRST in that chain — so the claim failed for
+/// a reason the test was not measuring, and a green result meant
+/// nothing.
+///
+/// The case that mattered is the reverse: an earlier verb that holds
+/// hiding a later one that cannot. Below, `require_subscribes` is
+/// satisfied and `count ... eq: 999` is impossible against a
+/// one-publisher fleet, and the whole claim used to pass.
 #[test]
-fn every_verb_in_a_claim_is_evaluated_whatever_the_order() {
+fn a_claim_naming_several_verbs_is_refused() {
     let r = fixture("multiverb");
-    let holds = r#""count_publisher_instances":
-        {"subject": "svc.order.request", "eq": 1}"#;
-    // gateway subscribes svc.order.request, never svc.order.intent.
-    let violates = r#""require_subscribes":
-        {"group": "gateway", "subject": "svc.order.intent"}"#;
+    let (out, code) = check_with(
+        &r,
+        ROUTES,
+        r#"[{"name": "both",
+             "require_subscribes": {"group": "gateway",
+                                    "subject": "svc.order.request"},
+             "count_publisher_instances": {"subject": "svc.order.request",
+                                           "eq": 999}}]"#,
+    );
+    assert_eq!(
+        code, 1,
+        "an impossible count must not be ignored because an earlier \
+         verb in the same claim holds: {out}"
+    );
+    assert!(
+        out.contains("names 2 verbs"),
+        "the diagnostic should say the claim is ambiguous rather than \
+         silently judging one verb: {out}"
+    );
 
-    for (a, b) in [(holds, violates), (violates, holds)] {
+    // Split into two claims, each with its own name, and the
+    // impossible one is now visible on its own terms.
+    let (out, code) = check_with(
+        &r,
+        ROUTES,
+        r#"[{"name": "fed", "require_subscribes":
+               {"group": "gateway", "subject": "svc.order.request"}},
+            {"name": "impossible", "count_publisher_instances":
+               {"subject": "svc.order.request", "eq": 999}}]"#,
+    );
+    assert_eq!(code, 1, "the impossible count must fail: {out}");
+    assert!(
+        out.contains("impossible"),
+        "the failing claim's own name should be reported: {out}"
+    );
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// A prohibition whose source and target overlap is violated by the
+/// overlap itself: an instance in both groups already sits in the
+/// forbidden set without going anywhere.
+///
+/// The BFS cannot see this — it refuses to accept a destination that
+/// is also a source — so `forbid_reaches(g, g)` reported `holds`
+/// while every path in the fleet ran inside the prohibition. The
+/// application tier calls this a zero-length violation; so does this.
+#[test]
+fn an_overlapping_prohibition_is_violated_not_vacuous() {
+    let r = fixture("overlap");
+    for (from, to) in [("all", "all"), ("all", "oms")] {
         let (out, code) = check_with(
             &r,
             ROUTES,
-            &format!(r#"[{{"name": "both", {a}, {b}}}]"#),
+            &format!(
+                r#"[{{"name": "ovl", "forbid_reaches":
+                     {{"from": "{from}", "to": "{to}"}}}}]"#
+            ),
         );
         assert_eq!(
             code, 1,
-            "a violating verb must be caught in either position: {out}"
+            "`forbid_reaches({from}, {to})` overlaps and must not \
+             hold: {out}"
         );
         assert!(
-            out.contains("subscribes `svc.order.intent`"),
-            "the violated verb should be the one reported: {out}"
+            out.contains("zero-length"),
+            "the witness should name the overlap as the violation: \
+             {out}"
         );
     }
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// `avoiding` may not name an endpoint of its own claim. Masking one
+/// deletes what the claim quantifies over, and an empty domain makes
+/// any prohibition hold.
+#[test]
+fn avoiding_may_not_mask_an_endpoint() {
+    let r = fixture("mask");
+    for group in ["strategy", "gateway"] {
+        let (out, code) = check_with(
+            &r,
+            ROUTES,
+            &format!(
+                r#"[{{"name": "av", "forbid_reaches":
+                     {{"from": "strategy", "to": "gateway",
+                       "avoiding": "{group}"}}}}]"#
+            ),
+        );
+        assert_eq!(
+            code, 1,
+            "masking the `{group}` endpoint must be refused: {out}"
+        );
+        assert!(out.contains("already an endpoint"), "{out}");
+    }
+
+    // The legitimate interposition form — masking the gate in the
+    // middle — still works, so this is not simply always-failing.
+    let (out, code) = check_with(
+        &r,
+        ROUTES,
+        r#"[{"name": "ok", "forbid_reaches":
+             {"from": "strategy", "to": "gateway",
+              "avoiding": "oms"}}]"#,
+    );
+    assert_eq!(
+        code, 0,
+        "every strategy->gateway path goes through oms: {out}"
+    );
     let _ = std::fs::remove_dir_all(&r);
 }
 
@@ -350,12 +453,19 @@ fn a_route_naming_an_undeclared_topic_is_refused() {
 /// The plan may not vouch for behavior the code does not have.
 ///
 /// `prober` imports the topic module, so `t::OrderRequest` IS in its
-/// artifact's topic table and a route may name it — but prober never
-/// publishes it. A positive claim must consult the artifact's actual
-/// endpoints rather than taking the plan's word, or a plan could
-/// satisfy any law by asserting the routes it wishes existed.
+/// artifact's topic table and the old admission check — "does the
+/// instance declare this topic?" — accepted it as a publisher. But
+/// prober never publishes it, so the route had a phantom producer,
+/// and a `require_subscribes` law about the consumer side could hold
+/// with nothing feeding it.
+///
+/// Role validity is now an ADMISSION check: the plan is refused
+/// before any claim is evaluated. That is the right stage — a plan
+/// that misdescribes its components is not a law failure, it is an
+/// invalid model, and the two should not be reported as if a claim
+/// had been judged.
 #[test]
-fn a_positive_claim_trusts_the_artifact_over_the_plan() {
+fn a_route_endpoint_must_hold_the_role_the_plan_gives_it() {
     let r = fixture("planlies");
     let routes = r#"[
         {"id": "bogus", "transport": "unix",
@@ -364,19 +474,40 @@ fn a_positive_claim_trusts_the_artifact_over_the_plan() {
     let (out, code) = check_with(
         &r,
         routes,
-        r#"[{"name": "strategy_publishes",
-             "require_publishes": {"group": "strategy",
-                                   "subject": "svc.order.request"}}]"#,
+        r#"[{"name": "gateway_is_fed",
+             "require_subscribes": {"group": "gateway",
+                                    "subject": "svc.order.request"}}]"#,
     );
     assert_eq!(
         code, 1,
-        "no code in `prober` publishes svc.order.request, so the claim \
-         must fail however the plan routes it: {out}"
+        "nothing in `prober` publishes svc.order.request, so this \
+         route has no producer: {out}"
     );
-    assert!(out.contains("publishes `svc.order.request`"), "{out}");
+    assert!(
+        out.contains("named as a publisher")
+            && out.contains("prober-0"),
+        "the diagnostic should name the route, the instance and the \
+         missing role: {out}"
+    );
 
-    // Control: the group that really does publish it satisfies the
-    // same claim, so the check is not simply always-failing.
+    // The subscriber side is checked the same way: gw-0 does not
+    // subscribe `svc.order.intent`.
+    let (out, code) = check_with(
+        &r,
+        r#"[
+        {"id": "wrongsub", "transport": "unix",
+         "publishers":  [{"instance": "prober-0", "topic": "t::OrderIntent"}],
+         "subscribers": [{"instance": "gw-0",     "topic": "t::OrderIntent"}]}]"#,
+        "[]",
+    );
+    assert_eq!(code, 1, "gw-0 does not subscribe that subject: {out}");
+    assert!(
+        out.contains("named as a subscriber"),
+        "the missing role should be named: {out}"
+    );
+
+    // Control: a route whose both ends really hold their roles is
+    // admitted, so the check is not simply always-failing.
     let (out, code) = check_with(
         &r,
         r#"[

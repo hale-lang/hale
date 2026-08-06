@@ -8,6 +8,37 @@ behavior.
 
 ## Unreleased
 
+### Fleet claims: one verb per claim, real endpoint roles, and no vacuous prohibitions (GH #408)
+
+Three fail-opens, found by an external review of the effects / claims
+/ constitutions / fleet stack and confirmed by reproduction.
+
+**A claim naming several verbs judged only one of them.** Every verb
+on a claim row is an `Option`, and the evaluator is an `if/else`
+chain emitting one row, so a claim pairing a holding
+`require_subscribes` with an impossible `count ... eq: 999` passed —
+and the artifact recorded the whole claim's name as holding. A claim
+is one sentence, as it is in source: naming more than one verb is now
+refused, with the fix being to split it so each half has its own name
+and verdict.
+
+**A route endpoint did not have to hold the role the plan gave it.**
+Admission checked only that the instance *declared* the topic — which
+any component importing the topic module does, published or not. A
+route could therefore name a phantom producer, and a law about the
+consumer side would hold with nothing feeding it. The artifact is now
+the authority: a publisher endpoint must publish, a subscriber
+endpoint must subscribe, and a plan that misdescribes its components
+is refused before any claim is evaluated.
+
+**Overlapping prohibitions held vacuously.** `forbid_reaches(g, g)`
+reported `holds` while every path in the fleet ran inside the
+prohibition, because the search refuses a destination that is also a
+source. An instance in both groups is now a zero-length violation,
+matching the application tier. Likewise `avoiding` may no longer name
+an endpoint of its own claim — masking one deletes the domain being
+quantified over, which makes any prohibition hold.
+
 ### A cardinality claim must name a bound (GH #408)
 
 `count_publisher_instances` / `count_subscriber_instances` with no
