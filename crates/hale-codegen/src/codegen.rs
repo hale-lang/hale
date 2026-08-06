@@ -6793,6 +6793,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let do_bb = self.context.append_basic_block(reclaim, "reclaim.do");
             let ret_bb = self.context.append_basic_block(reclaim, "reclaim.ret");
             self.builder.position_at_end(entry);
+            self.di_begin_function();
             let self_arg = reclaim
                 .get_nth_param(0)
                 .expect("reclaim self_ptr param")
@@ -7000,6 +7001,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let wrap = self.module.add_function(&wname, wty, None);
                 let entry = self.context.append_basic_block(wrap, "entry");
                 self.builder.position_at_end(entry);
+                self.di_begin_function();
                 let self_arg = wrap
                     .get_nth_param(0)
                     .expect("hwrap self")
@@ -7469,6 +7471,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let entry =
                 self.context.append_basic_block(wrapper, "entry");
             self.builder.position_at_end(entry);
+            self.di_begin_function();
             let self_arg = wrapper
                 .get_nth_param(0)
                 .expect("wrapper self_ptr param")
@@ -8344,6 +8347,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let main_fn = self.module.add_function("main", main_ty, None);
         let entry = self.context.append_basic_block(main_fn, "entry");
         self.builder.position_at_end(entry);
+        self.di_begin_function();
         self.current_fn = Some(main_fn);
         self.current_user_fn_ret = None;
         self.current_self = None;
@@ -9627,6 +9631,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
         let saved_block = self.builder.get_insert_block();
+        // Emitted MID-STATEMENT while lowering the prelude: the
+        // caller's live location must not land on this fn's
+        // instructions. Restored with the block below.
+        let saved_di_loc = self.di_current_loc;
+        let saved_di_pos = self.di_current_pos;
 
         let entry_bb = self.context.append_basic_block(f, "entry");
         let have_main_bb = self.context.append_basic_block(f, "have_main");
@@ -9635,6 +9644,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let done_bb = self.context.append_basic_block(f, "done");
 
         self.builder.position_at_end(entry_bb);
+        self.di_begin_function();
         let h = f.get_nth_param(0).expect("handle param").into_int_value();
         let locus_self_fn = self
             .module
@@ -9807,6 +9817,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // Back to the prelude position; register the dispatcher.
         if let Some(bb) = saved_block {
             self.builder.position_at_end(bb);
+        }
+        self.di_current_loc = saved_di_loc;
+        self.di_current_pos = saved_di_pos;
+        match saved_di_loc {
+            Some(loc) => self.builder.set_current_debug_location(loc),
+            None => self.builder.unset_current_debug_location(),
         }
         let set_fn = self
             .module
@@ -12439,6 +12455,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .add_function("_hale_start", void_t.fn_type(&[], false), None);
         let entry = self.context.append_basic_block(start_fn, "entry");
         self.builder.position_at_end(entry);
+        self.di_begin_function();
         let arena_create = self
             .module
             .get_function("lotus_arena_create_labeled")
@@ -12971,15 +12988,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.current_self = None;
         self.loops.clear();
         // Entering a new subprogram: drop the previous function's
-        // debug location. Entry-block allocas emitted before the
-        // body's first statement sets a location would otherwise
-        // inherit it, and LLVM rejects the module — "!dbg attachment
-        // points at wrong subprogram", seen concretely as `%j` in
-        // `matrix_add` carrying `matrix_matmul`'s location. Latent
-        // until something emits an entry alloca that early; the
-        // reset belongs here regardless of what triggers it.
-        self.di_current_loc = None;
-        self.builder.unset_current_debug_location();
+        // debug location (see `di_begin_function`). Seen concretely
+        // as `%j` in `matrix_add` carrying `matrix_matmul`'s
+        // location.
+        self.di_begin_function();
         // Fn-call protocol shave: non-allocating bodies can't publish,
         // so their (empty-frame) scope-exit flushes skip the bus drain.
         let prev_skip_drain = self.current_fn_skip_exit_drain;
@@ -15261,6 +15273,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// DI verifier fix (2026-07-03): synthesized epilogue code
+    /// Begin lowering a new function body: drop the debug location
+    /// left behind by whichever function was emitted before this one.
+    ///
+    /// A function's *prologue* — entry-block allocas for locals,
+    /// deferred-dissolve slots, the method scratch arena, the
+    /// caller-arena snapshot — is emitted before the body's first
+    /// statement calls `di_enter_stmt`, so it inherits whatever
+    /// location is still current. If that location belongs to the
+    /// previously emitted function, LLVM rejects the whole module:
+    /// "!dbg attachment points at wrong subprogram for function".
+    ///
+    /// The reset must run at EVERY function-body entry. It lived
+    /// inline in `lower_user_fn_body` (free fns) while all five
+    /// locus-method entry points went without, so three loci where
+    /// the middle one calls a free-fn factory — `Demo.go` ->
+    /// `Trainer.fit` -> `Model.train_step` — failed to build at all:
+    /// `Demo.go`'s prologue carried `Trainer.fit`'s location. Two
+    /// levels happened to survive because nothing had left a
+    /// location live. `di_entry_reset_is_universal` fails the build
+    /// if a new entry point forgets this call.
+    pub(crate) fn di_begin_function(&mut self) {
+        self.di_current_loc = None;
+        self.di_current_pos = None;
+        self.builder.unset_current_debug_location();
+    }
+
     /// (fn-exit local-locus dissolve cascades) can emit calls with
     /// no !dbg while the enclosing fn carries a DISubprogram — the
     /// verifier rejects the module ("inlinable function call in a
@@ -26427,8 +26465,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             false,
         );
         let tramp_fn = self.module.add_function(&tramp_name, tramp_ty, None);
+        // Emitted MID-STATEMENT while lowering the caller: the
+        // caller's live location must not land on this fn's
+        // instructions, and must come back with the block.
+        let saved_di = (self.di_current_loc, self.di_current_pos);
         let entry = self.context.append_basic_block(tramp_fn, "entry");
         self.builder.position_at_end(entry);
+        self.di_begin_function();
 
         let a_ptr = tramp_fn.get_nth_param(0).unwrap().into_pointer_value();
         let b_ptr = tramp_fn.get_nth_param(1).unwrap().into_pointer_value();
@@ -26580,6 +26623,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // Restore the caller's builder position.
         if let Some(bb) = saved_bb {
             self.builder.position_at_end(bb);
+        }
+        self.di_current_loc = saved_di.0;
+        self.di_current_pos = saved_di.1;
+        match saved_di.0 {
+            Some(loc) => self.builder.set_current_debug_location(loc),
+            None => self.builder.unset_current_debug_location(),
         }
 
         Ok(tramp_fn)

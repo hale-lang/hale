@@ -114,6 +114,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .expect("fallible locus fn declared in pass A2");
         let entry = self.context.append_basic_block(func, "entry");
         self.builder.position_at_end(entry);
+        self.di_begin_function();
         let self_ptr = func
             .get_nth_param(0)
             .expect("self_ptr param")
@@ -343,13 +344,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_unconditional_branch(cleanup_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
-        // CLEANUP: shared scratch-destroy + flush + `ret i1
-        // path`. Order matters: deep-copy already happened
-        // above, so destroying the scratch here only frees
-        // bytes the caller is no longer reading.
+        // CLEANUP: shared flush + scratch-destroy + `ret i1 path`.
+        //
+        // Order matters twice over. Deep-copy already happened
+        // above, so destroying the scratch frees only bytes the
+        // caller is no longer reading. And the flush MUST precede
+        // the destroy: a fresh-factory locus let-bound in this
+        // method's frame is allocated out of the method scratch
+        // (the factory allocates in the caller's published arena,
+        // and a method publishes its own scratch), so its struct
+        // LIVES in the region the destroy reclaims. Dissolving
+        // after the destroy loads the locus's `__arena` field out
+        // of freed — and, via the subregion freelist, recycled —
+        // memory and hands the garbage to `lotus_arena_destroy`.
+        //
+        // This epilogue had the two the wrong way round while every
+        // other one (the non-fallible method epilogues, the second
+        // cleanup below) flushed first, so the bug was reachable
+        // only from a FALLIBLE locus method that let-binds a
+        // factory result: a downstream trainer whose
+        // `fit(...) -> () fallible(E)` preallocated two row buffers
+        // segfaulted in `lotus_arena_destroy` at method exit after
+        // computing entirely correct results.
         self.builder.position_at_end(cleanup_bb);
-        self.close_method_scratch()?;
         self.flush_dissolve_frame()?;
+        self.close_method_scratch()?;
         self.builder
             .build_return(Some(&path_v))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

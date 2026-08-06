@@ -54,6 +54,7 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                     .expect("method declared in pass A2");
                 let entry = self.context.append_basic_block(func, "entry");
                 self.builder.position_at_end(entry);
+                self.di_begin_function();
                 let self_ptr = func
                     .get_nth_param(0)
                     .expect("self_ptr param")
@@ -176,6 +177,7 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
             let ff = *ff;
             let entry = self.context.append_basic_block(ff, "entry");
             self.builder.position_at_end(entry);
+            self.di_begin_function();
             let parent_self = ff
                 .get_nth_param(0)
                 .expect("parent_self param")
@@ -281,6 +283,7 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
             };
             let entry = self.context.append_basic_block(func, "entry");
             self.builder.position_at_end(entry);
+            self.di_begin_function();
             let self_ptr = func
                 .get_nth_param(0)
                 .expect("self_ptr param")
@@ -354,6 +357,7 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
             let entry =
                 self.context.append_basic_block(duration_fn, "entry");
             self.builder.position_at_end(entry);
+            self.di_begin_function();
             let self_ptr = duration_fn
                 .get_nth_param(0)
                 .expect("self_ptr param")
@@ -579,6 +583,7 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
             };
             let entry = self.context.append_basic_block(wrapper_fn, "entry");
             self.builder.position_at_end(entry);
+            self.di_begin_function();
             let self_ptr = wrapper_fn
                 .get_nth_param(0)
                 .expect("self_ptr param")
@@ -655,6 +660,7 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                     .expect("locus fn declared in pass A2");
                 let entry = self.context.append_basic_block(func, "entry");
                 self.builder.position_at_end(entry);
+                self.di_begin_function();
                 let self_ptr = func
                     .get_nth_param(0)
                     .expect("self_ptr param")
@@ -942,6 +948,7 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                     .expect("mode declared in pass A2");
                 let entry = self.context.append_basic_block(func, "entry");
                 self.builder.position_at_end(entry);
+                self.di_begin_function();
                 let self_ptr = func
                     .get_nth_param(0)
                     .expect("self_ptr param")

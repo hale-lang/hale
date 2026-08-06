@@ -8,6 +8,72 @@ behavior.
 
 ## Unreleased
 
+### A cardinality claim must name a bound (GH #408)
+
+`count_publisher_instances` / `count_subscriber_instances` with no
+`eq`, `min` or `max` compared nothing: every bound defaults to true
+when absent, so the claim held against any fleet whatsoever while
+reading like real law in review. A claim naming no *verb* was already
+refused; a verb naming no *bound* is the same emptiness one level
+down and now gets the same answer.
+
+### A multi-hop fleet witness names the route of each hop (GH #408)
+
+Route labels in a witness were shifted the wrong way — each node
+carried its OUTGOING route rather than the one it was entered by. On
+a two-node witness the fallback happened to produce the right answer,
+which is why every existing witness test passed; a three-node witness
+labelled *both* hops with the last route, sending a reader to the
+wrong route entry and, in a real deployment, the wrong config file.
+
+### A fallible method no longer frees the loci it is about to dissolve
+
+A free-fn factory allocates its locus out of the caller's published
+arena, and a method publishes its own per-call scratch subregion. So a
+factory result let-bound inside a method frame has its struct living
+in that scratch — and the binding owns it, so the frame's exit
+dissolves it by loading its `__arena` field and destroying that arena.
+
+The **fallible** method epilogue destroyed the scratch *before*
+running those dissolves, so the dissolve read a locus struct out of
+freed — and, via the subregion freelist, possibly recycled — memory
+and handed whatever it found to `lotus_arena_destroy`. Every other
+epilogue already flushed first; this one alone had the two reversed.
+
+The bug needed all three of: a locus method, declared `fallible`, that
+let-binds a factory result. A downstream handoff hit exactly that
+shape — a trainer whose `fit(...) -> () fallible(E)` preallocated two
+row buffers — and segfaulted at method exit *after* computing entirely
+correct results, which is the worst way for this to present. It is a
+latent use-after-free rather than a reliable crash: at small sizes the
+freed bytes still hold the old contents and the program exits 0, so
+the regression test asserts on the emitted order rather than waiting
+for a segfault.
+
+### Three levels of locus nesting compile again
+
+A function's prologue — entry-block allocas, deferred-dissolve slots,
+the method scratch arena, the caller-arena snapshot — is emitted
+before the body's first statement establishes a debug location, so it
+inherited whatever location the *previously emitted* function left
+live. LLVM rejects that module outright:
+
+```
+!dbg attachment points at wrong subprogram for function
+```
+
+Debug info is always on, so this was a hard build failure with no
+workaround but restructuring the program. It reproduced on three
+levels of locus nesting where the middle one calls a free-fn factory
+(`Demo.go` → `Trainer.fit` → `Model.train_step`); two levels survived
+only because nothing had left a location live across the boundary.
+
+The reset existed on the free-fn path and on none of the twelve other
+function-body entry points. It is now one helper called at every
+entry, and `di_entry_reset_is_universal` fails the build if a new
+entry point forgets it — the gap was invisible for months precisely
+because nothing enforced it.
+
 ### `require_subscribes` needs a route, not just an endpoint (GH #408)
 
 Found by running the fleet checker against a real downstream

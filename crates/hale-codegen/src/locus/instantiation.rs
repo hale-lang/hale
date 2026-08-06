@@ -3245,10 +3245,14 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             let thread_main = self
                 .module
                 .add_function(&thread_main_name, thread_main_ty, None);
+            // Emitted MID-STATEMENT while lowering the caller;
+            // restored with the block below.
+            let saved_di = (self.di_current_loc, self.di_current_pos);
             let entry_bb = self
                 .context
                 .append_basic_block(thread_main, "entry");
             self.builder.position_at_end(entry_bb);
+            self.di_begin_function();
             let thread_self =
                 thread_main.get_nth_param(0).unwrap().into_pointer_value();
             // 2026-05-23: stash this locus's mailbox in
@@ -3419,6 +3423,12 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             // Restore builder to the calling fn so the rest of
             // the instantiation (pthread_create) emits there.
             self.builder.position_at_end(saved_block);
+            self.di_current_loc = saved_di.0;
+            self.di_current_pos = saved_di.1;
+            match saved_di.0 {
+                Some(loc) => self.builder.set_current_debug_location(loc),
+                None => self.builder.unset_current_debug_location(),
+            }
 
             // pthread_t alloca in the enclosing fn frame — hoisted
             // to entry so a locus-instantiation-in-loop pattern
@@ -4539,8 +4549,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let saved_block = self.builder.get_insert_block();
         let prev_fn = self.current_fn.take();
         self.current_fn = Some(dispatch);
+        // Emitted MID-STATEMENT; restored with the block below.
+        let saved_di = (self.di_current_loc, self.di_current_pos);
 
         let entry = self.context.append_basic_block(dispatch, "entry");
+        self.di_begin_function();
         // Deserialize bound-check failure (corrupt payload) → drop the
         // cell (return void). Trusted same-process payload never trips
         // this; it exists only to satisfy the wire deserializer ABI.
@@ -4753,6 +4766,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.current_fn = prev_fn;
         if let Some(bb) = saved_block {
             self.builder.position_at_end(bb);
+        }
+        self.di_current_loc = saved_di.0;
+        self.di_current_pos = saved_di.1;
+        match saved_di.0 {
+            Some(loc) => self.builder.set_current_debug_location(loc),
+            None => self.builder.unset_current_debug_location(),
         }
         Ok(dispatch)
     }
