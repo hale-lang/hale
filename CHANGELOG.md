@@ -8,6 +8,47 @@ behavior.
 
 ## Unreleased
 
+### Signed fleet components & binary attestation (GH #408 Phase 7)
+
+A composition proves a world against artifacts it can read; now a
+signature proves those artifacts are the ones a key-holder meant.
+`hale fleet keygen | sign` produce ES256 keypairs and detached
+sidecars (`<artifact>.sig`, `es256:<hex r‖s>`) over the artifact's
+**exact bytes** — sound because artifacts are byte-reproducible
+(schema 1.8), and necessary because the in-band `artifact_digest`
+is FNV-1a, a tripwire rather than a trust anchor. ES256 because the
+system already speaks it: it is `std::crypto`'s suite, so a Hale
+program — a supervisor, a deploy gate — verifies the same sidecar
+with the language's own stdlib. One algorithm end to end.
+
+Trust is **strict when declared**: `--trust <pub.pem>` on
+`check`/`dump`, or `[fleet_trust] keys = [...]` in the manifest,
+makes an unsigned or unverifiable component a composition error.
+There is no `require = true` knob, for the reason `no_base` exists:
+a trust set that quietly admits unsigned artifacts is law that
+looks bound and binds nothing. Verification runs before the
+integrity digest — provenance before integrity before meaning, each
+check covering the bytes the next one reads. The fleet artifact
+records the admission as unhashed provenance: `sha256` of the
+admitted bytes, `signed_by` the verifying key's identity or `null`
+— a fact, not an omission, so "unsigned admission" and "verified
+under this key" stay distinguishable downstream.
+
+`hale fleet attest <plan>` answers the remaining question — are the
+executables the plan deploys the ones the operator hashed? Plan
+schema 1.1 (1.0 still reads) adds optional `binary` /
+`binary_sha256` rows per instance, and attestation is
+all-or-nothing over them: a missing row is a refusal, not a skip,
+because a partial attestation would report coverage it does not
+have. Attest checks bytes at rest; whether a *running* process is
+still that binary is runtime observation territory (7b), and
+nothing here claims otherwise.
+
+The honest boundary, stated where it can be quoted: signing
+certifies provenance and integrity, never behavior. Out of scope by
+design: compromised builders, malicious compilers, runtime memory
+tampering.
+
 ### The application checker moves onto the shared engine (GH #408)
 
 `forbid reaches` had its own breadth-first walk, written before the

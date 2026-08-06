@@ -530,7 +530,7 @@ claim.
 
 ```json
 {
-  "schema": "1.0", "name": "prod",
+  "schema": "1.1", "name": "prod",
   "instances": [{"id": "oms-0", "artifact": "artifacts/oms.json", "labels": ["oms"]}],
   "routes": [{"id": "request", "transport": "unix",
               "publishers":  [{"instance": "oms-0", "topic": "t::OrderRequest"}],
@@ -694,6 +694,87 @@ fleet claim `orders_pass_oms` violated — witness:
   -(route `bypass`)->
   gw-0::Gateway::on_order  [gw/main.hl]
 ```
+
+### Signed components & attestation (GH #408 Phase 7)
+
+A composition proves a world against artifacts it can read; a
+signature proves those artifacts are the ones a key-holder meant.
+It certifies **provenance and integrity, never behavior** — the
+artifact never claims a message will arrive, and a signature never
+claims the code is good. Out of scope, deliberately: a compromised
+builder, a malicious compiler, runtime memory tampering.
+
+The scheme is **ES256** (ECDSA P-256 over SHA-256), because the
+system already speaks it: it is `std::crypto`'s signature suite,
+OpenSSL-backed in the runtime, PEM keys, raw `r‖s` 64-byte
+signatures. One algorithm end to end means a Hale program — a
+supervisor, a deploy gate — verifies the same sidecar with the
+language's own stdlib.
+
+Signatures cover the artifact's **exact bytes**. That is sound
+because artifacts are byte-reproducible (schema 1.8), and it is
+necessary because the in-band `artifact_digest` is FNV-1a — an
+integrity tripwire, not a trust anchor. Nothing signs a digest.
+The sidecar is `<artifact>.sig`, one line, `es256:<128 hex>`; an
+unknown prefix is a refusal, not a skip.
+
+```sh
+hale fleet keygen ops                      # ops.pem (0600) + ops.pub.pem
+hale fleet sign app.topo.json --key ops.pem
+hale fleet check prod.plan.json --trust ops.pub.pem
+```
+
+**Trust is strict when declared.** Passing `--trust` (repeatable),
+or declaring keys in the manifest, makes an unsigned or
+unverifiable component a composition **error**:
+
+```toml
+[fleet_trust]
+keys = ["keys/ops.pub.pem"]    # SPKI PEM, manifest-relative
+```
+
+There is no `require = true` knob, for the reason `no_base` exists
+in `[claims]`: a trust set that quietly admits unsigned artifacts
+is law that looks bound and binds nothing. An absent section means
+signatures are not checked — the pre-Phase-7 meaning of a
+composition, unchanged. Signature verification runs **before** the
+integrity digest: provenance before integrity before meaning, each
+check covering the bytes the next one reads. The all-fleets form
+(`hale fleet check` with no plan) takes trust from the manifest
+only; `--trust` there is an error, so one flag cannot quietly
+rebind every declared deployment.
+
+The fleet artifact records what admitted each component — unhashed
+provenance, like the rest of the `components` section:
+
+```json
+{"id": "app-0", "artifact": "artifacts/app.json",
+ "sha256": "59ad65d4…", "signed_by": "a88ca61a96ffa055"}
+```
+
+`sha256` is the admitted bytes; `signed_by` is the key's identity
+(first 8 bytes of SHA-256 over the SPKI DER) or `null` when trust
+was not declared — a fact, not an omission, so a reader can tell
+"unsigned admission" from "verified under this key".
+
+**Attestation** answers the remaining question: are the executables
+this plan deploys the ones the operator hashed? Plan schema 1.1
+adds two optional rows per instance, and `hale fleet attest` is
+all-or-nothing over them:
+
+```json
+{"id": "app-0", "artifact": "artifacts/app.json",
+ "binary": "bin/app", "binary_sha256": "de55ee70…"}
+```
+
+A missing row is a refusal, not a skip — a partial attestation
+would report coverage it does not have. `binary_sha256` is
+cryptographic where `artifact_digest` deliberately is not: this
+hash is the thing an operator asserts across a trust boundary.
+Attestation checks bytes at rest at deploy time; whether a
+*running* process is still that binary is runtime territory
+(sent/delivered observation, 7b), and the artifact never claims
+otherwise.
 
 ## Structural & design rules
 

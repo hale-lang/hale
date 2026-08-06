@@ -400,6 +400,46 @@ Beyond the effect assertions above, all opt-in:
 - `@form(lru_cache)` joins `vec` / `hashmap` / `ring_buffer` as a
   cap-bounded collection shape.
 
+## Architecture as law (claims, constitutions, fleets)
+
+A `main locus` may carry a `claims { }` block: named sentences over
+the assembled program graph, checked by `hale check` as ERRORS, zero
+runtime cost. Groups are checked vocabulary (misspelling = error;
+empty group = error unless `may_be_empty`).
+
+```hale
+group workers = { delta::* };
+main locus App {
+    claims {
+        isolated:    forbid reaches(workers, gamma_wing);
+        consumed:    require subscribes(some workers, topic t::Tasks);
+        one_writer:  count publishers(topic t::Tasks) == 1;
+    }
+}
+```
+
+When a claim fails, the compiler returns a WITNESS — the exact path,
+in your spelling. Treat it as the next task: remove the edge, route
+through a gate, or change the law (a categorically different edit).
+Unknown means violation: an unresolvable call on a forbidden path
+refuses certification rather than counting as nothing.
+
+Shared law goes in a `constitution NAME { … }` (top level), adopted
+per entrypoint with `adopt NAME;` inside `claims { }`. Composition
+is union only — a stricter rule is a second named claim; weakening
+is unexpressible. `[environments]` in `hale.toml` binds constitutions
+per deployment target; `hale check --matrix` proves every
+(entrypoint × environment) pair.
+
+Multi-binary law lives one tier up: `hale check <app>
+--dump-topology=<f.json>` emits a byte-reproducible artifact per
+application; a fleet plan (JSON) names deployed INSTANCES and
+explicit routes; `hale fleet check <plan>` composes the artifacts
+and proves cross-binary claims. Only an explicit route creates a
+fleet edge — matching topic declarations alone connect nothing.
+`hale fleet sign/keygen/attest` + `[fleet_trust]` pin the artifacts
+and binaries a deployment admits (strict when declared).
+
 ## Matching
 
 `match` is an expression as well as a statement, so it can produce a

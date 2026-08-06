@@ -229,6 +229,30 @@ production = "ops/fleet/prod.plan.json"
 staging    = "ops/fleet/staging.plan.json"
 ```
 
+### Signing the certificate
+
+A composition proves a world against the artifacts it reads. When
+the artifacts travel — a deploy box that didn't build them, a CI
+stage that didn't run the checks — a signature proves they are the
+ones you meant:
+
+```sh
+hale fleet keygen ops                        # ops.pem + ops.pub.pem
+hale fleet sign artifacts/oms.json --key ops.pem
+hale fleet check prod.plan.json --trust ops.pub.pem
+```
+
+Trust is **strict when declared**: with `--trust` given (or
+`[fleet_trust] keys = [...]` in `hale.toml`), an unsigned component
+is refused, not skipped. The signature is ES256 over the artifact's
+exact bytes — the same suite as `std::crypto`, so a Hale program
+can verify the sidecar itself.
+
+To pin the executables too, give each instance a `binary` and
+`binary_sha256` row and run `hale fleet attest prod.plan.json` —
+all-or-nothing: an instance without the rows fails the attestation
+rather than thinning it.
+
 ### What it does not tell you
 
 The honest boundary matters more here than at any other tier,
