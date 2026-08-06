@@ -1385,7 +1385,6 @@ fn unresolved_opaque_receiver(
 /// the source decision that introduced the edge — the callsite, or
 /// the publish site + subscription decl — so a violation can say
 /// where to edit, not just which names are involved.
-#[derive(Clone)]
 enum Step {
     Call {
         span: hale_syntax::Span,
@@ -1515,7 +1514,7 @@ fn evaluate_forbid_reaches(
         roots.iter().cloned(),
         |k: &FnKey| {
             let Some(fs) = cx.summary.fns.get(k) else {
-                return model_graph::Visit::Edges(Vec::new());
+                return model_graph::Visit::edges(Vec::new());
             };
             let mut edges: Vec<(FnKey, Step)> = Vec::new();
             if *via_calls {
@@ -1555,7 +1554,7 @@ fn evaluate_forbid_reaches(
                                         src_name.name
                                     ),
                                 ));
-                                return model_graph::Visit::Halt;
+                                return model_graph::Visit::hole(());
                             }
                             // The backstop: an untyped-receiver call
                             // is a method of SOME locus, possibly a
@@ -1578,7 +1577,7 @@ fn evaluate_forbid_reaches(
                                         name
                                     ),
                                 ));
-                                return model_graph::Visit::Halt;
+                                return model_graph::Visit::hole(());
                             }
                         }
                     }
@@ -1606,7 +1605,7 @@ fn evaluate_forbid_reaches(
                                 src_name.name
                             ),
                         ));
-                        return model_graph::Visit::Halt;
+                        return model_graph::Visit::hole(());
                     };
                     for (sub_locus, sub_handler, sub_span) in
                         subscribers_of(cx.graph, subj)
@@ -1622,7 +1621,7 @@ fn evaluate_forbid_reaches(
                     }
                 }
             }
-            model_graph::Visit::Edges(edges)
+            model_graph::Visit::edges(edges)
         },
         // Roots are tested too: a decl in BOTH groups is a
         // zero-length path — a real boundary confusion `forbid`
@@ -1635,7 +1634,12 @@ fn evaluate_forbid_reaches(
             }
         },
         |k: &FnKey| mask_group.is_some_and(|m| m.contains_fn(k)),
-        callgraph::MAX_STEPS,
+        Some(callgraph::MAX_STEPS),
+        // Stop at the first unfollowable edge. The closure has
+        // already said which edge and why, and that diagnostic is
+        // the repair. (The fleet tier chooses `PathWins`; both are
+        // deliberate — see `model_graph::HolePolicy`.)
+        model_graph::HolePolicy::Halt,
     );
 
     match out {
@@ -1653,8 +1657,8 @@ fn evaluate_forbid_reaches(
         }
         // The closure has already said which edge it could not
         // follow and why.
-        model_graph::Search::Halted(_) => Verdict::Uncertified,
-        model_graph::Search::Saturated => {
+        model_graph::Search::Uncertified { .. } => Verdict::Uncertified,
+        model_graph::Search::Saturated { .. } => {
             diags.push(Diag::ty(
                 c.name.span,
                 format!(

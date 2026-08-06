@@ -1,70 +1,108 @@
-//! Reachability is derived in exactly one place.
+//! Boolean reachability is derived in one place.
 //!
-//! GH #408. There used to be two walks: the application checker's,
-//! and a second one the fleet tier wrote against the topology
-//! artifact. The second had to remember every rule the first had
-//! learned, and it forgot several — through-stdlib edges, unknown
-//! propagation, the zero-length overlap case, and the label on each
-//! hop of a witness. Every one of those was a fail-open or a
-//! misleading diagnostic, and each was fixed separately before the
-//! shared engine existed.
+//! GH #408. There used to be two unweighted reachability walks: the
+//! application checker's, and a second one the fleet tier wrote
+//! against the topology artifact. The second had to remember every
+//! rule the first had learned, and it forgot several — through-stdlib
+//! edges, unknown propagation, the zero-length overlap case, and the
+//! label on each hop of a witness. Every one was a fail-open or a
+//! misleading diagnostic.
 //!
-//! Both tiers now go through `model_graph::search`, which owns the
-//! queue, the visited set, the parent tree, root seeding, masking and
-//! the step ceiling. A third walk would reopen the same class, so it
-//! fails here rather than in someone's deployment.
+//! Both prohibition checks now go through `model_graph::search`.
 //!
-//! The check is deliberately narrow: `pop_front` is the tell for a
-//! hand-rolled breadth-first queue, and the engine is the only place
-//! that should have one.
+//! **Scope, stated precisely.** This is about BOOLEAN reachability,
+//! which is what `forbid reaches` and `only edges` ask. `claims.rs`
+//! still contains `site_count`, a recursive weighted traversal with
+//! its own memoization, cycle handling and step ceiling, because
+//! `bound` computes a quantitative semiring rather than a yes/no
+//! answer. That is a legitimately different algorithm over the same
+//! edges, not a duplicate of this one — but it does mean this file
+//! must not claim the evaluators contain no traversals at all.
+//!
+//! The checks below are textual and therefore heuristic. They are
+//! worth having anyway: the failure they guard against is someone
+//! writing a fresh queue rather than importing one, and that is
+//! exactly what a grep can see.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-/// The two claim evaluators. Anything else in the tree may walk
-/// however it likes — this is about the two that must agree.
-const EVALUATORS: [&str; 2] =
-    ["src/claims.rs", "../hale-cli/src/fleet.rs"];
+fn read(rel: &str) -> String {
+    let p: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
+    std::fs::read_to_string(&p)
+        .unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+}
 
+const CLAIMS: &str = "src/claims.rs";
+const FLEET: &str = "../hale-cli/src/fleet.rs";
+const ENGINE: &str = "src/model_graph.rs";
+
+/// Neither prohibition evaluator may stand up its own BFS queue.
 #[test]
-fn neither_claim_evaluator_rolls_its_own_search() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+fn no_prohibition_evaluator_defines_a_private_bfs() {
     let mut offenders = Vec::new();
-    for rel in EVALUATORS {
-        let p = root.join(rel);
-        let src = std::fs::read_to_string(&p)
-            .unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
+    for rel in [CLAIMS, FLEET] {
+        let src = read(rel);
         for (i, line) in src.lines().enumerate() {
-            if line.contains("pop_front()") {
-                offenders.push(format!(
-                    "{rel}:{}: {}",
-                    i + 1,
-                    line.trim()
-                ));
+            let l = line.trim();
+            if l.starts_with("//") {
+                continue;
+            }
+            // The tells for a hand-rolled frontier.
+            if l.contains("pop_front()")
+                || l.contains("pop_back()")
+                || l.contains("VecDeque")
+            {
+                offenders.push(format!("{rel}:{}: {l}", i + 1));
             }
         }
     }
     assert!(
         offenders.is_empty(),
-        "a hand-rolled traversal in a claim evaluator.\n\nReachability \
-         belongs to `model_graph::search`, which both tiers share so \
-         that a rule learned in one cannot go missing in the other. \
-         If this genuinely is not a reachability walk, narrow the \
-         check rather than deleting it.\n\n{}\n",
+        "a hand-rolled frontier in a prohibition evaluator.\n\nBoolean \
+         reachability belongs to `model_graph::search`, which both \
+         tiers share so that a rule learned in one cannot go missing \
+         in the other.\n\n{}\n",
         offenders.join("\n")
     );
 }
 
-/// The engine is where the queue lives, so the lint above would be
-/// vacuous if it also covered the engine — and vacuous if `pop_front`
-/// stopped being how the engine is written. Pin both facts.
+/// ...and both must actually call the shared engine, or the check
+/// above is satisfied by an evaluator that simply stopped doing
+/// reachability the supported way.
 #[test]
-fn the_engine_is_the_one_place_that_has_a_queue() {
-    let p = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("src/model_graph.rs");
-    let src = std::fs::read_to_string(&p).expect("read model_graph.rs");
+fn both_prohibition_evaluators_call_the_shared_engine() {
     assert!(
-        src.contains("pop_front()"),
-        "the shared engine no longer contains the pattern the lint \
-         looks for, so that lint now proves nothing — update both"
+        read(CLAIMS).contains("model_graph::search("),
+        "`claims.rs` no longer calls the shared search"
+    );
+    assert!(
+        read(FLEET).contains("model_graph::ModelGraph")
+            || read(FLEET).contains("ModelGraph::new"),
+        "`fleet.rs` no longer uses the shared graph"
+    );
+    assert!(
+        read(ENGINE).contains("search("),
+        "`ModelGraph::reaches` no longer delegates to `search`"
+    );
+}
+
+/// The engine holds exactly one frontier.
+///
+/// "At least one" would be satisfied by an engine that had grown a
+/// second walk of its own, which is the same defect one level in.
+#[test]
+fn the_engine_holds_exactly_one_frontier() {
+    let src = read(ENGINE);
+    let n = src
+        .lines()
+        .filter(|l| !l.trim().starts_with("//"))
+        .filter(|l| l.contains("pop_front()"))
+        .count();
+    assert_eq!(
+        n, 1,
+        "expected exactly one queue in the shared engine, found {n} — \
+         either a second traversal appeared, or the first stopped \
+         being written the way the lint above looks for, and that \
+         lint is now vacuous"
     );
 }

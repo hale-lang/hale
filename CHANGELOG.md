@@ -30,11 +30,23 @@ fleet tier walks past and refuses only if no path is found at all,
 since a concrete cross-binary counterexample is worth more than a
 refusal. `search` expresses both.
 
-`neither_claim_evaluator_rolls_its_own_search` fails the build if a
-third walk appears. Every fleet defect fixed this week — dropped
-through-stdlib edges, ignored unknowns, the zero-length overlap case,
-mislabelled witness hops — was a rule one walk had and the other
-lacked.
+Hole propagation moved INTO the engine: a caller reports that a
+vertex's edge set is incomplete and picks a policy, and the engine
+decides the verdict. Forgetting to consult a hole is no longer a
+mistake the API allows. Two fail-opens in the fleet wrapper closed
+with it — source/target overlap answered `None` instead of a
+zero-length path, and a tripped step ceiling answered `None` instead
+of refusing. Search *exhaustion* can prove an absence; search
+*abandonment* never can.
+
+Scope, stated precisely: this is BOOLEAN reachability, what `forbid
+reaches` and `only edges` ask. `bound` keeps its own weighted
+traversal (`site_count`), because a quantitative semiring is a
+different algorithm over the same edges — not a duplicate of this
+one. `no_prohibition_evaluator_defines_a_private_bfs` fails the build
+if a third frontier appears, its companions check that both
+evaluators still call the engine and that the engine holds exactly
+one queue.
 
 ### One reachability engine, shared by both tiers (GH #408)
 
