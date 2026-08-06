@@ -8,6 +8,54 @@ behavior.
 
 ## Unreleased
 
+### A fallible method no longer frees the loci it is about to dissolve
+
+A free-fn factory allocates its locus out of the caller's published
+arena, and a method publishes its own per-call scratch subregion. So a
+factory result let-bound inside a method frame has its struct living
+in that scratch — and the binding owns it, so the frame's exit
+dissolves it by loading its `__arena` field and destroying that arena.
+
+The **fallible** method epilogue destroyed the scratch *before*
+running those dissolves, so the dissolve read a locus struct out of
+freed — and, via the subregion freelist, possibly recycled — memory
+and handed whatever it found to `lotus_arena_destroy`. Every other
+epilogue already flushed first; this one alone had the two reversed.
+
+The bug needed all three of: a locus method, declared `fallible`, that
+let-binds a factory result. A downstream handoff hit exactly that
+shape — a trainer whose `fit(...) -> () fallible(E)` preallocated two
+row buffers — and segfaulted at method exit *after* computing entirely
+correct results, which is the worst way for this to present. It is a
+latent use-after-free rather than a reliable crash: at small sizes the
+freed bytes still hold the old contents and the program exits 0, so
+the regression test asserts on the emitted order rather than waiting
+for a segfault.
+
+### Three levels of locus nesting compile again
+
+A function's prologue — entry-block allocas, deferred-dissolve slots,
+the method scratch arena, the caller-arena snapshot — is emitted
+before the body's first statement establishes a debug location, so it
+inherited whatever location the *previously emitted* function left
+live. LLVM rejects that module outright:
+
+```
+!dbg attachment points at wrong subprogram for function
+```
+
+Debug info is always on, so this was a hard build failure with no
+workaround but restructuring the program. It reproduced on three
+levels of locus nesting where the middle one calls a free-fn factory
+(`Demo.go` → `Trainer.fit` → `Model.train_step`); two levels survived
+only because nothing had left a location live across the boundary.
+
+The reset existed on the free-fn path and on none of the twelve other
+function-body entry points. It is now one helper called at every
+entry, and `di_entry_reset_is_universal` fails the build if a new
+entry point forgets it — the gap was invisible for months precisely
+because nothing enforced it.
+
 ### `require_subscribes` needs a route, not just an endpoint (GH #408)
 
 Found by running the fleet checker against a real downstream
