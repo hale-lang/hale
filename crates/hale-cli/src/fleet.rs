@@ -230,14 +230,24 @@ pub fn compose(plan_path: &Path) -> Result<String, Vec<String>> {
                 vertices.push(format!("{}::{}", c.id, n));
             }
         }
-        for e in arr(&c.artifact["relations"]["calls"]) {
-            if let (Some(f), Some(t)) =
-                (e["from"].as_str(), e["to"].as_str())
-            {
-                call_edges.push((
-                    format!("{}::{}", c.id, f),
-                    format!("{}::{}", c.id, t),
-                ));
+        // BOTH call relations. `calls_via_stdlib` holds user→user
+        // paths whose interior is stdlib code, contracted to their
+        // user endpoints — the application checker walks the union,
+        // so a fleet that read only `calls` would lose a path the
+        // component's own claims can see. An intermediate service
+        // whose routed handler reaches its routed publisher through
+        // `std::http::Router` is invisible in `calls` alone, and a
+        // prohibition spanning it would report a false absence.
+        for rel in ["calls", "calls_via_stdlib"] {
+            for e in arr(&c.artifact["relations"][rel]) {
+                if let (Some(f), Some(t)) =
+                    (e["from"].as_str(), e["to"].as_str())
+                {
+                    call_edges.push((
+                        format!("{}::{}", c.id, f),
+                        format!("{}::{}", c.id, t),
+                    ));
+                }
             }
         }
         // A local publish→subscribe pair inside one instance is a
@@ -425,6 +435,11 @@ pub fn compose(plan_path: &Path) -> Result<String, Vec<String>> {
     // Uncertainty in a component stays uncertainty in the fleet. It
     // may add paths; it may never delete one and certify an absence.
     let mut unknowns: Vec<String> = Vec::new();
+    // Instance-qualified vertex -> why its out-edges are incomplete.
+    // Serializing these and then evaluating without them is how an
+    // indirect call used to remove the only modeled path to a target
+    // and leave `forbid_reaches` reporting `holds`.
+    let mut holes: Vec<(String, String)> = Vec::new();
     for c in &comps {
         for u in arr(&c.artifact["unknowns"]) {
             unknowns.push(format!(
@@ -432,6 +447,16 @@ pub fn compose(plan_path: &Path) -> Result<String, Vec<String>> {
                 q(&c.id),
                 serde_json::to_string(&u).unwrap_or_else(|_| "null".into())
             ));
+            let Some(f) = u["fn"].as_str() else { continue };
+            for r in arr(&u["reasons"]) {
+                let Some(kind) = r.as_str() else { continue };
+                if hale_types::model_graph::kind_hides_edges(kind) {
+                    holes.push((
+                        format!("{}::{}", c.id, f),
+                        kind.to_string(),
+                    ));
+                }
+            }
         }
     }
 
@@ -442,7 +467,7 @@ pub fn compose(plan_path: &Path) -> Result<String, Vec<String>> {
     }
     let claim_rows = evaluate_claims(
         &plan, &groups, &comps, &by_id, &call_edges, &local_bus,
-        &route_edges, &resolved_routes, &mut errs,
+        &route_edges, &resolved_routes, &holes, &mut errs,
     );
     if !errs.is_empty() {
         return Err(errs);
@@ -514,6 +539,7 @@ fn evaluate_claims(
     local_bus: &[(String, String)],
     routed: &[(String, String, String)],
     resolved_routes: &[(String, String, Vec<String>, Vec<String>)],
+    holes: &[(String, String)],
     errs: &mut Vec<String>,
 ) -> Vec<String> {
     let inst_of = |v: &str| -> String {
@@ -535,14 +561,38 @@ fn evaluate_claims(
     // The composed edge set: interior calls, interior bus hops, and
     // the explicit routes. Nothing else — a route is the ONLY way a
     // vertex in one instance reaches one in another.
-    let mut adj: BTreeMap<&str, Vec<(&str, Option<&str>)>> =
-        BTreeMap::new();
+    let mut graph = hale_types::model_graph::ModelGraph::new();
     for (f, t) in calls.iter().chain(local_bus.iter()) {
-        adj.entry(f).or_default().push((t, None));
+        graph.add_edge(f.as_str(), t.as_str(), None);
     }
     for (f, t, r) in routed {
-        adj.entry(f).or_default().push((t, Some(r)));
+        graph.add_edge(f.as_str(), t.as_str(), Some(r.clone()));
     }
+    // Uncertainty is part of the model, not a footnote beside it.
+    for (v, why) in holes {
+        graph.add_hole(v.as_str(), why.as_str());
+    }
+
+    // Fleet groups name INSTANCES; the graph is over the vertices
+    // those instances contain, which is the same projection the
+    // application tier makes from a locus to its methods.
+    let all_vertices: Vec<String> = comps
+        .iter()
+        .flat_map(|c| {
+            arr(&c.artifact["sorts"]["fns"])
+                .iter()
+                .filter_map(|f| f.as_str())
+                .map(|n| format!("{}::{}", c.id, n))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let expand = |insts: &BTreeSet<String>| -> BTreeSet<String> {
+        all_vertices
+            .iter()
+            .filter(|v| insts.contains(&inst_of(v)))
+            .cloned()
+            .collect()
+    };
 
     let mut rows: Vec<String> = Vec::new();
     for c in &plan.claims {
@@ -647,11 +697,27 @@ fn evaluate_claims(
                     ),
                 )
             } else {
-                match bfs(&adj, &src, &dst, &masked, &inst_of) {
-                    None => ("holds", String::new()),
-                    Some(path) => (
+                use hale_types::model_graph::Reach;
+                match graph.reaches(
+                    &expand(&src),
+                    &expand(&dst),
+                    &expand(&masked),
+                ) {
+                    Reach::None => ("holds", String::new()),
+                    Reach::Path(path) => (
                         "violated",
                         render_witness(&path, comps, by_id),
+                    ),
+                    // An absence nobody could see is not an absence.
+                    Reach::Uncertified(h) => (
+                        "uncertified",
+                        format!(
+                            "cannot certify this absence: `{}` has \
+                             outgoing edges this model cannot see \
+                             ({}), and it is reachable from `{}` — \
+                             the missing edges could lead to `{}`",
+                            h.at, h.why, fr.from, fr.to
+                        ),
                     ),
                 }
             }
@@ -723,89 +789,22 @@ fn evaluate_claims(
             q(result),
             q(&witness)
         ));
-        if result == "violated" {
+        // `uncertified` fails too. A law that could not be checked
+        // has not been satisfied — the distinction from `violated`
+        // is recorded because the REPAIR differs (resolve the
+        // unknown edge vs. fix the program), not because one of them
+        // passes.
+        if result == "violated" || result == "uncertified" {
             errs.push(format!(
-                "fleet claim `{}` violated{}{}",
+                "fleet claim `{}` {}{}{}",
                 c.name,
+                result,
                 if witness.is_empty() { "" } else { " — witness:\n  " },
                 witness
             ));
         }
     }
     rows
-}
-
-/// Shortest path over the composed graph, masking a group out. The
-/// mask is what makes `forbid reaches … avoiding G` the interposition
-/// form: any surviving path is a bypass.
-fn bfs(
-    adj: &BTreeMap<&str, Vec<(&str, Option<&str>)>>,
-    src: &BTreeSet<String>,
-    dst: &BTreeSet<String>,
-    masked: &BTreeSet<String>,
-    inst_of: &dyn Fn(&str) -> String,
-) -> Option<Vec<(String, Option<String>)>> {
-    let mut parent: BTreeMap<String, (String, Option<String>)> =
-        BTreeMap::new();
-    let mut queue: std::collections::VecDeque<String> =
-        std::collections::VecDeque::new();
-    let mut seen: BTreeSet<String> = BTreeSet::new();
-    for (v, _) in adj.iter() {
-        if src.contains(&inst_of(v)) && !masked.contains(&inst_of(v)) {
-            seen.insert((*v).to_string());
-            queue.push_back((*v).to_string());
-        }
-    }
-    while let Some(cur) = queue.pop_front() {
-        if dst.contains(&inst_of(&cur))
-            && !src.contains(&inst_of(&cur))
-        {
-            let mut path = vec![(cur.clone(), None)];
-            let mut at = cur;
-            while let Some((prev, via)) = parent.get(&at) {
-                path.push((prev.clone(), via.clone()));
-                at = prev.clone();
-            }
-            path.reverse();
-            // Reconstruction pairs each node with the route on its
-            // OUTGOING edge (parent[at] carries the route INTO `at`,
-            // and it is pushed alongside the predecessor). The
-            // renderer wants the route INTO each node, so every label
-            // shifts one position forward: node i is entered by the
-            // edge leaving node i-1.
-            //
-            // This read `path[i].1` first — node i's OUTGOING route —
-            // and only fell back to `path[i - 1].1`. On a two-node
-            // path the fallback is always taken (the destination has
-            // no outgoing edge) and the answer came out right, which
-            // is why every single-hop witness looked correct. A
-            // three-node witness labelled BOTH hops with the second
-            // route, sending a reader to the wrong route entry.
-            let mut out: Vec<(String, Option<String>)> = Vec::new();
-            for (i, (n, _)) in path.iter().enumerate() {
-                let via = if i == 0 {
-                    None
-                } else {
-                    path[i - 1].1.clone()
-                };
-                out.push((n.clone(), via));
-            }
-            return Some(out);
-        }
-        for (next, via) in adj.get(cur.as_str()).into_iter().flatten() {
-            if masked.contains(&inst_of(next)) {
-                continue;
-            }
-            if seen.insert((*next).to_string()) {
-                parent.insert(
-                    (*next).to_string(),
-                    (cur.clone(), via.map(str::to_string)),
-                );
-                queue.push_back((*next).to_string());
-            }
-        }
-    }
-    None
 }
 
 /// A witness that crosses artifacts, naming the source file of each
