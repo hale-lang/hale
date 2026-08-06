@@ -23,6 +23,97 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+/// What a caller knows about one vertex's outgoing edges.
+pub enum Visit<V, E> {
+    /// The successors, each with the label to record for the witness.
+    Edges(Vec<(V, E)>),
+    /// This vertex's edges cannot be enumerated, so the search must
+    /// not report an absence past it. The caller has already said why
+    /// (it owns the diagnostic); the search just stops.
+    Halt,
+}
+
+/// The outcome of one search.
+pub enum Search<V, E> {
+    /// The frontier was exhausted without reaching the target.
+    NotFound,
+    /// `hit` is in the target set; `parent` is the tree the caller's
+    /// own witness renderer walks back through. Returning the tree
+    /// rather than a path is what lets both tiers keep the witness
+    /// code they already have.
+    Found { hit: V, parent: BTreeMap<V, (V, E)> },
+    /// The caller refused to enumerate this vertex's edges.
+    Halted(V),
+    /// The step ceiling tripped.
+    Saturated,
+}
+
+/// The traversal both tiers share.
+///
+/// It owns exactly the bookkeeping that is easy to get subtly wrong
+/// and identical everywhere — the queue, the visited set, the parent
+/// tree, the root seeding, the mask, and the step ceiling. Everything
+/// that differs between an application and a fleet — what a vertex
+/// is, which edges exist, what counts as the target, when to refuse —
+/// stays with the caller as a closure.
+///
+/// Two rules are deliberately baked in because they are semantics
+/// rather than mechanism:
+///
+///  * **roots are tested.** A vertex in both the source and target
+///    sets is a zero-length path, which is a real boundary confusion
+///    a prohibition should surface rather than skip. The fleet tier
+///    lacked this rule and reported `forbid_reaches(g, g)` as holding.
+///  * **masked vertices are neither tested nor traversed**, so "no
+///    path avoids the gate" is the interposition proof.
+pub fn search<V, E>(
+    roots: impl IntoIterator<Item = V>,
+    mut successors: impl FnMut(&V) -> Visit<V, E>,
+    is_dst: impl Fn(&V) -> bool,
+    is_masked: impl Fn(&V) -> bool,
+    max_steps: u32,
+) -> Search<V, E>
+where
+    V: Ord + Clone,
+    E: Clone,
+{
+    let mut parent: BTreeMap<V, (V, E)> = BTreeMap::new();
+    let mut seen: BTreeSet<V> = BTreeSet::new();
+    let mut queue: VecDeque<V> = VecDeque::new();
+    for r in roots {
+        if is_masked(&r) {
+            continue;
+        }
+        if seen.insert(r.clone()) {
+            queue.push_back(r);
+        }
+    }
+    let mut steps: u32 = 0;
+    while let Some(k) = queue.pop_front() {
+        steps += 1;
+        if steps > max_steps {
+            return Search::Saturated;
+        }
+        if is_dst(&k) {
+            return Search::Found { hit: k, parent };
+        }
+        let edges = match successors(&k) {
+            Visit::Halt => return Search::Halted(k),
+            Visit::Edges(e) => e,
+        };
+        for (next, label) in edges {
+            if is_masked(&next) {
+                continue;
+            }
+            if seen.insert(next.clone()) {
+                parent.insert(next.clone(), (k.clone(), label));
+                queue.push_back(next);
+            }
+        }
+    }
+    Search::NotFound
+}
+
 /// An edge, with an optional label the witness renderer can name
 /// (the fleet tier puts a route id here; the application tier has
 /// nothing to say and passes `None`).
@@ -110,77 +201,66 @@ impl ModelGraph {
         dst: &BTreeSet<String>,
         masked: &BTreeSet<String>,
     ) -> Reach {
-        let mut parent: BTreeMap<&str, (&str, Option<String>)> =
-            BTreeMap::new();
-        let mut seen: BTreeSet<&str> = BTreeSet::new();
-        let mut queue: VecDeque<&str> = VecDeque::new();
-        // Holes seen while walking, kept in deterministic order so a
+        // Holes seen while walking, in deterministic order so a
         // refusal names the same vertex on every machine.
-        let mut hit: BTreeSet<&str> = BTreeSet::new();
-
-        for v in src {
-            if masked.contains(v) {
-                continue;
-            }
-            if seen.insert(v) {
-                queue.push_back(v);
+        //
+        // This tier walks PAST a hole rather than stopping at it: a
+        // concrete counterexample is more useful than "cannot tell",
+        // so the refusal is only reported if the search finds no path
+        // at all. The application tier makes the opposite choice —
+        // see `claims.rs`, where the diagnostic explains which edge
+        // could not be followed and the walk ends there.
+        let mut hit: BTreeSet<String> = BTreeSet::new();
+        let out = search(
+            src.iter().cloned(),
+            |v: &String| {
                 if self.holes.contains_key(v.as_str()) {
-                    hit.insert(v);
+                    hit.insert(v.clone());
                 }
-            }
-        }
+                Visit::Edges(
+                    self.edges
+                        .get(v)
+                        .into_iter()
+                        .flatten()
+                        .map(|e| (e.to.clone(), e.via.clone()))
+                        .collect(),
+                )
+            },
+            |v| dst.contains(v) && !src.contains(v),
+            |v| masked.contains(v),
+            u32::MAX,
+        );
 
-        while let Some(cur) = queue.pop_front() {
-            if dst.contains(cur) && !src.contains(cur) {
-                let mut path = vec![(cur.to_string(), None)];
-                let mut at = cur;
-                while let Some((prev, via)) = parent.get(at) {
-                    path.push((prev.to_string(), via.clone()));
-                    at = prev;
+        match out {
+            Search::Found { hit: h, parent } => {
+                // parent maps a node to (predecessor, label of the
+                // edge INTO it), so walking back already yields the
+                // label each hop was entered by.
+                let mut rev: Vec<(String, Option<String>)> =
+                    vec![(h.clone(), None)];
+                let mut cur = h;
+                while let Some((prev, via)) = parent.get(&cur) {
+                    rev.last_mut().expect("non-empty").1 = via.clone();
+                    rev.push((prev.clone(), None));
+                    cur = prev.clone();
                 }
-                path.reverse();
-                // Each node is paired with the label of its OUTGOING
-                // edge by the walk above; the renderer wants the one
-                // it was entered by, so shift every label forward.
-                let shifted: Vec<(String, Option<String>)> = path
-                    .iter()
-                    .enumerate()
-                    .map(|(i, (n, _))| {
-                        (
-                            n.clone(),
-                            if i == 0 {
-                                None
-                            } else {
-                                path[i - 1].1.clone()
-                            },
-                        )
-                    })
-                    .collect();
-                return Reach::Path(shifted);
+                rev.reverse();
+                Reach::Path(rev)
             }
-            for e in self.edges.get(cur).into_iter().flatten() {
-                if masked.contains(&e.to) {
-                    continue;
-                }
-                if seen.insert(&e.to) {
-                    parent.insert(&e.to, (cur, e.via.clone()));
-                    queue.push_back(&e.to);
-                    if self.holes.contains_key(e.to.as_str()) {
-                        hit.insert(&e.to);
-                    }
-                }
-            }
-        }
-
-        // No path. Only a hole the source could actually have walked
-        // to can conceal one — an unrelated unknown elsewhere in the
-        // fleet must not poison every claim.
-        match hit.first() {
-            Some(at) => Reach::Uncertified(Hole {
-                at: (*at).to_string(),
-                why: self.holes[*at].clone(),
+            // Only a hole the source could actually have walked to
+            // can conceal a path — an unrelated unknown elsewhere in
+            // the fleet must not poison every claim.
+            Search::NotFound | Search::Saturated => match hit.first() {
+                Some(at) => Reach::Uncertified(Hole {
+                    at: at.clone(),
+                    why: self.holes[at.as_str()].clone(),
+                }),
+                None => Reach::None,
+            },
+            Search::Halted(at) => Reach::Uncertified(Hole {
+                at: at.clone(),
+                why: self.holes.get(&at).cloned().unwrap_or_default(),
             }),
-            None => Reach::None,
         }
     }
 }

@@ -8,6 +8,34 @@ behavior.
 
 ## Unreleased
 
+### The application checker moves onto the shared engine (GH #408)
+
+`forbid reaches` had its own breadth-first walk, written before the
+fleet tier existed. Both are now `model_graph::search`, which owns the
+queue, the visited set, the parent tree, root seeding, masking and the
+step ceiling — the bookkeeping that is identical everywhere and easy
+to get subtly wrong. What stays with each tier is what genuinely
+differs: what a vertex is, which edges exist, what counts as the
+target, and the diagnostic for an edge the walk cannot follow.
+
+Behavior is unchanged, and that is checked rather than asserted:
+`hale check` output and topology artifacts — claim verdicts included —
+are byte-identical across all 88 corpus programs and three real
+downstream applications, before and after.
+
+The two tiers keep their opposite policies on an unfollowable edge,
+because both are deliberate. The application checker stops at it and
+names the edge, since the repair is to make that edge resolvable. The
+fleet tier walks past and refuses only if no path is found at all,
+since a concrete cross-binary counterexample is worth more than a
+refusal. `search` expresses both.
+
+`neither_claim_evaluator_rolls_its_own_search` fails the build if a
+third walk appears. Every fleet defect fixed this week — dropped
+through-stdlib edges, ignored unknowns, the zero-length overlap case,
+mislabelled witness hops — was a rule one walk had and the other
+lacked.
+
 ### One reachability engine, shared by both tiers (GH #408)
 
 The fleet tier read the topology artifact and rebuilt a smaller graph
