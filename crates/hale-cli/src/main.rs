@@ -30,6 +30,7 @@ use hale_lsp as lsp;
 mod fleet;
 mod mcp;
 mod pkg;
+mod sign;
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
@@ -2545,6 +2546,23 @@ fn run_fleet_all() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // GH #408 Phase 7: `[fleet_trust]` binds every declared fleet.
+    // A key that fails to load is a configuration error for the
+    // whole run — skipping it would narrow the trust set silently.
+    let trust_paths = match crate::pkg::read_fleet_trust(&manifest) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{}", e);
+            return ExitCode::from(2);
+        }
+    };
+    let trust = match sign::Trust::load(&trust_paths) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{}", e);
+            return ExitCode::from(2);
+        }
+    };
     if fleets.is_empty() {
         eprintln!(
             "{} declares no `[fleets]`. Add `<name> = \"<plan path>\"` \
@@ -2567,7 +2585,7 @@ fn run_fleet_all() -> ExitCode {
         }
         // Every fleet runs. Stopping at the first failure would report
         // a subset of the deployments as if it were all of them.
-        match fleet::compose(&path) {
+        match fleet::compose(&path, &trust) {
             Ok(artifact) => {
                 let v: serde_json::Value =
                     serde_json::from_str(&artifact).unwrap_or_default();
@@ -2609,7 +2627,94 @@ fn run_fleet_all() -> ExitCode {
 /// own law fails, or endpoints that disagree about a wire contract.
 fn run_fleet(rest: &[String]) -> ExitCode {
     let sub = rest.first().map(String::as_str);
-    let plan = rest.get(1);
+
+    // GH #408 Phase 7: key handling and attestation live under the
+    // same verb as composition — the fleet is where certificates
+    // change hands.
+    match sub {
+        Some("keygen") => {
+            let Some(prefix) = rest.get(1) else {
+                eprintln!("hale fleet keygen <prefix>   write <prefix>.pem + <prefix>.pub.pem");
+                return ExitCode::from(2);
+            };
+            return match sign::keygen(Path::new(prefix)) {
+                Ok(key_id) => {
+                    println!(
+                        "ok: {prefix}.pem (private, 0600) and \
+                         {prefix}.pub.pem — key_id {key_id}"
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("{}", e);
+                    ExitCode::from(1)
+                }
+            };
+        }
+        Some("sign") => {
+            let (file, key) = match (rest.get(1), rest.get(2), rest.get(3)) {
+                (Some(f), Some(flag), Some(k)) if flag == "--key" => (f, k),
+                _ => {
+                    eprintln!("hale fleet sign <file> --key <priv.pem>   write <file>.sig (ES256 over exact bytes)");
+                    return ExitCode::from(2);
+                }
+            };
+            return match sign::sign(Path::new(file), Path::new(key)) {
+                Ok((sig_path, key_id)) => {
+                    println!(
+                        "ok: {} — key_id {}",
+                        sig_path.display(),
+                        key_id
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("{}", e);
+                    ExitCode::from(1)
+                }
+            };
+        }
+        Some("attest") => {
+            let Some(plan) = rest.get(1) else {
+                eprintln!("hale fleet attest <plan.json>   compare each instance's binary to its binary_sha256");
+                return ExitCode::from(2);
+            };
+            return match fleet::attest(Path::new(plan)) {
+                Ok(msg) => {
+                    println!("{}", msg);
+                    ExitCode::SUCCESS
+                }
+                Err(errs) => {
+                    for e in &errs {
+                        eprintln!("{}", e);
+                    }
+                    ExitCode::from(1)
+                }
+            };
+        }
+        _ => {}
+    }
+
+    // `--trust <pub.pem>` (repeatable) on check/dump: strict when
+    // given, exactly like `[fleet_trust]` in the manifest.
+    let mut args: Vec<&String> = Vec::new();
+    let mut trust_paths: Vec<PathBuf> = Vec::new();
+    let mut it = rest.iter();
+    while let Some(a) = it.next() {
+        if a == "--trust" {
+            match it.next() {
+                Some(k) => trust_paths.push(PathBuf::from(k)),
+                None => {
+                    eprintln!("--trust needs a public key path");
+                    return ExitCode::from(2);
+                }
+            }
+        } else {
+            args.push(a);
+        }
+    }
+    let sub = args.first().map(|s| s.as_str());
+    let plan = args.get(1);
     // GH #408 Phase 5: `hale fleet check` with no plan checks EVERY
     // deployment the workspace declares. A repository usually has
     // more than one — production, staging, a reconciliation
@@ -2617,6 +2722,14 @@ fn run_fleet(rest: &[String]) -> ExitCode {
     // is the same partial-coverage problem `--matrix` solves for
     // entrypoints.
     if sub == Some("check") && plan.is_none() {
+        if !trust_paths.is_empty() {
+            eprintln!(
+                "--trust with no plan: the all-fleets form takes its \
+                 trust roots from `[fleet_trust]` in hale.toml, so one \
+                 flag cannot quietly rebind every deployment"
+            );
+            return ExitCode::from(2);
+        }
         return run_fleet_all();
     }
     let (sub, plan) = match (sub, plan) {
@@ -2627,6 +2740,13 @@ fn run_fleet(rest: &[String]) -> ExitCode {
             eprintln!("hale fleet check [plan.json]   compose and check");
             eprintln!("                                (no plan: every fleet in [fleets])");
             eprintln!("hale fleet dump  <plan.json>    write the fleet artifact");
+            eprintln!("hale fleet attest <plan.json>   binaries match the plan's sha256 rows");
+            eprintln!("hale fleet keygen <prefix>      ES256 keypair for signing");
+            eprintln!("hale fleet sign <file> --key K  detached .sig over exact bytes");
+            eprintln!();
+            eprintln!("check/dump take --trust <pub.pem> (repeatable):");
+            eprintln!("with trust roots declared, every component must");
+            eprintln!("verify under one of them.");
             eprintln!();
             eprintln!("A plan names exact application INSTANCES and the");
             eprintln!("routes between them. It composes artifacts, never");
@@ -2636,7 +2756,14 @@ fn run_fleet(rest: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match fleet::compose(Path::new(plan)) {
+    let trust = match sign::Trust::load(&trust_paths) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("{}", e);
+            return ExitCode::from(2);
+        }
+    };
+    match fleet::compose(Path::new(plan), &trust) {
         Ok(artifact) => {
             if sub == "dump" {
                 print!("{}", artifact);

@@ -7,7 +7,7 @@ One primitive, the **locus**, scales from a single function to a fleet of
 services wired over a typed message bus. There's no translation layer
 between the sentence you'd say out loud and the code you write.
 
-**[hale-lang.org](https://hale-lang.org)** — docs, [playground](https://hale-lang.org/playground), packages, roadmap.
+**[hale-lang.org](https://hale-lang.org)** — docs, [playground](https://hale-lang.org/playground), packages, [features](https://hale-lang.org/features).
 
 [![Tests](https://github.com/hale-lang/hale/actions/workflows/tests.yml/badge.svg)](https://github.com/hale-lang/hale/actions/workflows/tests.yml)
 [![Docs](https://github.com/hale-lang/hale/actions/workflows/docs.yml/badge.svg)](https://hale-lang.org/docs)

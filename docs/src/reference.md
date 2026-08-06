@@ -49,3 +49,9 @@ diagnostic's meaning, go there.
 | `hale test` | run `*_test.hl` |
 | `hale fetch` | clone & pin git dependencies |
 | `hale fmt` | canonical formatter |
+| `hale verify` | `check`, but any advisory fails too (the CI gate) |
+| `hale bench` | run `*_bench.hl` (ns/op, allocs/op) |
+| `hale doc` | API reference from `///` comments |
+| `hale fleet` | compose topology artifacts across binaries: `check` / `dump` / `sign` / `attest` / `keygen` |
+| `hale lsp` | the language server, in the compiler binary |
+| `hale mcp` | the MCP server, in the compiler binary |

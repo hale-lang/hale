@@ -32,7 +32,15 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 /// The plan's own schema, independent of the topology artifact's.
-pub const FLEET_PLAN_SCHEMA: &str = "1.0";
+/// 1.1 (GH #408 Phase 7): `binary` / `binary_sha256` on an instance,
+/// for `hale fleet attest`. A 1.0 plan still reads; the artifact
+/// emits 1.1.
+pub const FLEET_PLAN_SCHEMA: &str = "1.1";
+
+/// Plan schemas this build reads. Equality was right when there was
+/// one; a set keeps "your plan is newer than your compiler" a real
+/// refusal without making every older plan one too.
+const READABLE_PLAN_SCHEMAS: [&str; 2] = ["1.0", "1.1"];
 
 /// An exact, finite deployment. Autoscaling ranges and wildcard
 /// discovery are elaborator INPUTS, not sealed-plan contents: a
@@ -141,6 +149,18 @@ pub struct InstanceSpec {
     pub artifact: String,
     #[serde(default)]
     pub labels: Vec<String>,
+    /// GH #408 Phase 7 (`attest`): path to this instance's built
+    /// executable, relative to the plan file. The artifact certifies
+    /// the model; this row is what lets a deployment answer for the
+    /// bytes it actually runs.
+    #[serde(default)]
+    pub binary: Option<String>,
+    /// Expected SHA-256 of `binary`, hex. Cryptographic where the
+    /// in-band `artifact_digest` (FNV, a tripwire) deliberately is
+    /// not: this hash is the thing an operator asserts across a
+    /// trust boundary.
+    #[serde(default)]
+    pub binary_sha256: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -169,6 +189,15 @@ struct Component {
     labels: Vec<String>,
     artifact: serde_json::Value,
     path: PathBuf,
+    /// SHA-256 of the artifact bytes that were ADMITTED — recorded
+    /// in the fleet artifact so an auditor can re-check exactly what
+    /// the composition read, independent of the in-band FNV digest.
+    sha256: String,
+    /// key_id that verified this component's sidecar signature, when
+    /// trust roots were declared. `None` means composition ran
+    /// without trust — recorded rather than omitted, so a reader can
+    /// tell "unsigned admission" from "signed and verified".
+    signed_by: Option<String>,
 }
 
 /// `(wire subject, payload hash)` — the cross-binary join key.
@@ -182,7 +211,10 @@ struct WireId {
     payload_hash: String,
 }
 
-pub fn compose(plan_path: &Path) -> Result<String, Vec<String>> {
+pub fn compose(
+    plan_path: &Path,
+    trust: &crate::sign::Trust,
+) -> Result<String, Vec<String>> {
     let plan = read_plan(plan_path)?;
     let base = plan_path.parent().unwrap_or(Path::new("."));
     let mut errs: Vec<String> = Vec::new();
@@ -200,12 +232,14 @@ pub fn compose(plan_path: &Path) -> Result<String, Vec<String>> {
             ));
             continue;
         }
-        match load_artifact(&base.join(&inst.artifact)) {
-            Ok(v) => comps.push(Component {
+        match load_artifact(&base.join(&inst.artifact), trust) {
+            Ok((v, sha256, signed_by)) => comps.push(Component {
                 id: inst.id.clone(),
                 labels: inst.labels.clone(),
                 artifact: v,
                 path: base.join(&inst.artifact),
+                sha256,
+                signed_by,
             }),
             Err(e) => errs.push(format!("instance `{}`: {}", inst.id, e)),
         }
@@ -1090,10 +1124,21 @@ fn render(
         &comps
             .iter()
             .map(|c| {
+                // Unhashed provenance, like everything else in this
+                // section. `sha256` is what was ADMITTED; `signed_by`
+                // distinguishes "verified under this key" from
+                // "composed without trust roots" — null is a fact
+                // here, not an omission.
                 format!(
-                    "    {{\"id\": {}, \"artifact\": {}}}",
+                    "    {{\"id\": {}, \"artifact\": {}, \"sha256\": {}, \
+                     \"signed_by\": {}}}",
                     q(&c.id),
-                    q(&c.path.display().to_string())
+                    q(&c.path.display().to_string()),
+                    q(&c.sha256),
+                    c.signed_by
+                        .as_ref()
+                        .map(|k| q(k))
+                        .unwrap_or_else(|| "null".into())
                 )
             })
             .collect::<Vec<_>>()
@@ -1103,17 +1148,81 @@ fn render(
     out
 }
 
+/// `hale fleet attest <plan>` — the binary-digest half of Phase 7.
+///
+/// The composition certifies the model; attest answers a different
+/// question: are the executables this plan deploys the ones the
+/// operator hashed? All-or-nothing over the plan's instances — an
+/// attestation that skips an instance it cannot check is a partial
+/// answer wearing a full answer's exit code, so a missing `binary`
+/// or `binary_sha256` row is a refusal, not a skip.
+///
+/// Out of scope, on purpose: whether a RUNNING process still is
+/// that binary. This checks bytes at rest at deploy time; runtime
+/// self-attestation is obs territory (7b).
+pub fn attest(plan_path: &Path) -> Result<String, Vec<String>> {
+    let plan = read_plan(plan_path)?;
+    let base = plan_path.parent().unwrap_or(Path::new("."));
+    let mut errs: Vec<String> = Vec::new();
+    let mut ok: usize = 0;
+    for inst in &plan.instances {
+        let (Some(bin), Some(expect)) =
+            (&inst.binary, &inst.binary_sha256)
+        else {
+            errs.push(format!(
+                "instance `{}` declares no {} — every instance must \
+                 carry `binary` and `binary_sha256` for the plan to be \
+                 attestable; a partial attestation would report \
+                 coverage it does not have",
+                inst.id,
+                match (&inst.binary, &inst.binary_sha256) {
+                    (None, None) => "`binary` / `binary_sha256`",
+                    (None, _) => "`binary`",
+                    _ => "`binary_sha256`",
+                }
+            ));
+            continue;
+        };
+        let path = base.join(bin);
+        match crate::sign::sha256_file(&path) {
+            Err(e) => errs.push(format!("instance `{}`: {}", inst.id, e)),
+            Ok(actual) => {
+                if actual.eq_ignore_ascii_case(expect) {
+                    ok += 1;
+                } else {
+                    errs.push(format!(
+                        "instance `{}`: {} is not the binary the plan \
+                         names — sha256 {} where the plan says {}",
+                        inst.id,
+                        path.display(),
+                        actual,
+                        expect
+                    ));
+                }
+            }
+        }
+    }
+    if errs.is_empty() {
+        Ok(format!(
+            "ok: fleet `{}` attested — {} binary(ies) match the plan",
+            plan.name, ok
+        ))
+    } else {
+        Err(errs)
+    }
+}
+
 fn read_plan(p: &Path) -> Result<FleetPlan, Vec<String>> {
     let src = std::fs::read_to_string(p)
         .map_err(|e| vec![format!("read {}: {}", p.display(), e)])?;
     let plan: FleetPlan = serde_json::from_str(&src)
         .map_err(|e| vec![format!("parse {}: {}", p.display(), e)])?;
-    if plan.schema != FLEET_PLAN_SCHEMA {
+    if !READABLE_PLAN_SCHEMAS.contains(&plan.schema.as_str()) {
         return Err(vec![format!(
             "{}: plan schema `{}`, this build understands `{}`",
             p.display(),
             plan.schema,
-            FLEET_PLAN_SCHEMA
+            READABLE_PLAN_SCHEMAS.join("`, `")
         )]);
     }
     if plan.instances.is_empty() {
@@ -1126,10 +1235,39 @@ fn read_plan(p: &Path) -> Result<FleetPlan, Vec<String>> {
 }
 
 /// Load one component artifact and refuse anything a composition
-/// cannot honestly build on.
-fn load_artifact(p: &Path) -> Result<serde_json::Value, String> {
+/// cannot honestly build on. Returns the parsed artifact, the
+/// SHA-256 of the admitted bytes, and the key_id that signed them
+/// (when trust roots are declared).
+fn load_artifact(
+    p: &Path,
+    trust: &crate::sign::Trust,
+) -> Result<(serde_json::Value, String, Option<String>), String> {
     let src = std::fs::read_to_string(p)
         .map_err(|e| format!("read {}: {}", p.display(), e))?;
+    // Provenance BEFORE integrity BEFORE meaning. The signature is
+    // checked first because it covers the exact bytes everything
+    // after it reads — and because trust roots, once declared, make
+    // an unsigned component inadmissible outright (GH #408 Phase 7):
+    // declaring a trust set and then quietly composing unsigned
+    // artifacts would be the vacuity this system exists to refuse.
+    let signed_by = if trust.is_empty() {
+        None
+    } else {
+        Some(
+            trust
+                .verify(src.as_bytes(), &crate::sign::sidecar(p))
+                .map_err(|e| e.to_string())?,
+        )
+    };
+    let sha256 = {
+        use std::fmt::Write as _;
+        let d = openssl::sha::sha256(src.as_bytes());
+        let mut s = String::with_capacity(64);
+        for b in d {
+            let _ = write!(s, "{:02x}", b);
+        }
+        s
+    };
     // Integrity BEFORE meaning. `shape_hash` is an identity covering
     // the model half only, so it cannot vouch for the `topics` rows a
     // composition joins on; the whole-body digest can.
@@ -1182,7 +1320,7 @@ fn load_artifact(p: &Path) -> Result<serde_json::Value, String> {
             ))
         }
     }
-    Ok(v)
+    Ok((v, sha256, signed_by))
 }
 
 fn wire_id(a: &serde_json::Value, local: &str) -> Option<WireId> {

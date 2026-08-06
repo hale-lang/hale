@@ -86,6 +86,27 @@ pub struct Manifest {
     /// some deployment it might not even appear in.
     #[serde(default)]
     pub fleets: BTreeMap<String, String>,
+    /// GH #408 Phase 7: `[fleet_trust] keys = ["keys/ops.pub.pem"]`
+    /// — public keys (SPKI PEM, paths relative to this manifest)
+    /// that fleet components must be signed under.
+    ///
+    /// Strict when declared: listing trust roots makes an unsigned
+    /// or unverifiable component a composition ERROR. There is no
+    /// `require = true` knob for the same reason `no_base` exists
+    /// in `[claims]` — declaring a trust set and then quietly
+    /// admitting unsigned artifacts would be law that looks bound
+    /// and binds nothing. Absent section = signatures not checked,
+    /// which is the pre-Phase-7 meaning of a composition, unchanged.
+    #[serde(default)]
+    pub fleet_trust: FleetTrust,
+}
+
+/// The `[fleet_trust]` section.
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct FleetTrust {
+    #[serde(default)]
+    pub keys: Vec<String>,
 }
 
 /// The `[claims]` section.
@@ -560,4 +581,21 @@ pub fn read_fleets(
     let m: Manifest = toml::from_str(&src)
         .map_err(|e| format!("parse {}: {}", manifest.display(), e))?;
     Ok(m.fleets)
+}
+
+/// GH #408 Phase 7: the `[fleet_trust]` key paths, resolved
+/// relative to the manifest. Empty when the section is absent —
+/// which means "signatures not checked", not "signatures optional".
+pub fn read_fleet_trust(
+    manifest: &Path,
+) -> Result<Vec<PathBuf>, String> {
+    if !manifest.exists() {
+        return Ok(Vec::new());
+    }
+    let src = fs::read_to_string(manifest)
+        .map_err(|e| format!("read {}: {}", manifest.display(), e))?;
+    let m: Manifest = toml::from_str(&src)
+        .map_err(|e| format!("parse {}: {}", manifest.display(), e))?;
+    let base = manifest.parent().unwrap_or(Path::new("."));
+    Ok(m.fleet_trust.keys.iter().map(|k| base.join(k)).collect())
 }
