@@ -724,7 +724,15 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
             quote(subj),
             loc(*s).0,
             loc(*s).1,
-            e
+            // BOTH endpoints localize. This end was the raw
+            // bundle-global offset while every other provenance
+            // section localized both, so a publish in any source
+            // whose virtual base is nonzero produced a row naming a
+            // file and a span reaching past the end of it — a
+            // file-local start with a bundle-global end, which is not
+            // a coordinate in any single system. A consumer resolving
+            // it lands outside the file it was told to open.
+            loc(*e).1
         ));
     }
     trim_trailing_comma(&mut out);

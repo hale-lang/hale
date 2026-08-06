@@ -100,6 +100,81 @@ fn every_provenance_span_names_a_source_file() {
 /// length of the file it claims to be in, which is exactly what made
 /// them useless to a consumer.
 #[test]
+fn every_provenance_span_is_local_at_both_ends() {
+    let r = workspace("local_all");
+    let out = dump_from(&r, "apps/api");
+    let v: serde_json::Value =
+        serde_json::from_str(&out).expect("artifact parses");
+
+    let lens: Vec<usize> = v["sources"]
+        .as_array()
+        .expect("sources")
+        .iter()
+        .map(|s| {
+            let p = r.join(s["path"].as_str().expect("path"));
+            std::fs::read_to_string(&p).map(|t| t.len()).unwrap_or(0)
+        })
+        .collect();
+    let _ = std::fs::remove_dir_all(&r);
+
+    // (label, source id, start, end) for every provenance row there
+    // is — not just declarations.
+    let mut rows: Vec<(String, usize, usize, usize)> = Vec::new();
+    let mut push = |label: String, row: &serde_json::Value| {
+        rows.push((
+            label,
+            row["source"].as_i64().expect("source id") as usize,
+            row["span"][0].as_u64().expect("start") as usize,
+            row["span"][1].as_u64().expect("end") as usize,
+        ));
+    };
+    for sect in ["calls", "publishes", "subscribes"] {
+        for (i, row) in v["provenance"][sect]
+            .as_array()
+            .unwrap_or(&Vec::new())
+            .iter()
+            .enumerate()
+        {
+            push(format!("{sect}[{i}]"), row);
+        }
+    }
+    for (name, row) in
+        v["provenance"]["decls"].as_object().expect("decls")
+    {
+        push(format!("decl `{name}`"), row);
+    }
+
+    assert!(
+        rows.iter().any(|(l, ..)| l.starts_with("publishes")),
+        "the fixture must contain a publish, or this test cannot see \
+         the section it was written for"
+    );
+    // The publishing locus lives in the LIBRARY, which is not the
+    // first source — so its virtual base is nonzero and a
+    // bundle-global offset is distinguishable from a file-local one.
+    // With the publish in source 0 the two coincide and the bug is
+    // invisible, which is how it survived.
+    assert!(
+        rows.iter()
+            .any(|(l, sid, ..)| l.starts_with("publishes") && *sid != 0),
+        "the publish must come from a source with a nonzero base"
+    );
+
+    for (label, sid, start, end) in &rows {
+        let len = lens[*sid];
+        assert!(
+            *start <= *end && *end <= len,
+            "{label}: span [{start}, {end}] in source {sid}, which is \
+             only {len} bytes. A row that names a file must resolve \
+             INSIDE it at BOTH ends — a file-local start with a \
+             bundle-global end is not a coordinate in any single \
+             system, and a consumer following it lands outside the \
+             file it was told to open"
+        );
+    }
+}
+
+#[test]
 fn spans_are_local_to_their_file() {
     let r = workspace("local");
     let out = dump_from(&r, "apps/api");

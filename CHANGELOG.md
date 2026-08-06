@@ -8,6 +8,27 @@ behavior.
 
 ## Unreleased
 
+### Publish provenance no longer mixes coordinate systems (GH #408)
+
+Schema 1.8 promises file-local spans. Calls, subscriptions and
+declarations localized both endpoints; publishes localized only the
+start and emitted the raw bundle-global end. A publish in any source
+whose virtual base is nonzero therefore produced a row naming a file
+with a span reaching past the end of it — a file-local start with a
+bundle-global end, which is not a coordinate in any single system. A
+consumer resolving it lands outside the file it was told to open.
+
+Concretely, a publishing locus in an imported library serialized as
+`source 1, span [182, 328]` where that file is 319 bytes, while a
+subscription in the *same file* was correct.
+
+`shape_hash` is unaffected — provenance is excluded from it by design
+— and an application whose publishes all sit in its first source is
+byte-identical, which is why the cross-artifact conformance loop never
+surfaced this. The locality test now checks calls, publishes,
+subscribes and declarations rather than declarations alone, and
+asserts both endpoints.
+
 ### Fleet claims: one verb per claim, real endpoint roles, and no vacuous prohibitions (GH #408)
 
 Three fail-opens, found by an external review of the effects / claims
