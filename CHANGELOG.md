@@ -6,7 +6,7 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.16.0 — the law composes, the certificate travels (2026-08-06)
 
 ### Signed fleet components & binary attestation (GH #408 Phase 7)
 
