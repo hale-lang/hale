@@ -283,10 +283,25 @@ pub fn compose(plan_path: &Path) -> Result<String, Vec<String>> {
             ));
             continue;
         }
-        // step 5: every endpoint must agree on the wire identity.
+        // step 5: every endpoint must agree on the wire identity AND
+        // actually hold the role the plan gives it.
+        //
+        // Declaring a topic is not the same as using it: a component
+        // that imports the topic module has every topic in its table
+        // whether or not any of its code publishes or subscribes one.
+        // Checking only the table admits a route with a phantom
+        // producer, and a `require_subscribes` law then holds with
+        // nothing on the other end — the plan vouching for behavior
+        // the code does not have. The artifact is the authority here,
+        // never the plan.
         let mut wire: Option<(WireId, String)> = None;
         let mut bad = false;
-        for ep in r.publishers.iter().chain(r.subscribers.iter()) {
+        let endpoints = r
+            .publishers
+            .iter()
+            .map(|e| (e, true))
+            .chain(r.subscribers.iter().map(|e| (e, false)));
+        for (ep, publishing) in endpoints {
             let Some(c) = by_id.get(ep.instance.as_str()) else {
                 errs.push(format!(
                     "route `{}` names instance `{}`, which the plan \
@@ -302,6 +317,26 @@ pub fn compose(plan_path: &Path) -> Result<String, Vec<String>> {
                         "route `{}`: instance `{}` declares no topic \
                          `{}`",
                         r.id, ep.instance, ep.topic
+                    ));
+                    bad = true;
+                }
+                Some(w) if !has_endpoint(
+                    &c.artifact,
+                    &w.subject,
+                    publishing,
+                ) =>
+                {
+                    errs.push(format!(
+                        "route `{}`: instance `{}` is named as a {} of \
+                         `{}` (subject `{}`), but nothing in that \
+                         component {} it — declaring a topic is not \
+                         using it",
+                        r.id,
+                        ep.instance,
+                        if publishing { "publisher" } else { "subscriber" },
+                        ep.topic,
+                        w.subject,
+                        if publishing { "publishes" } else { "subscribes" },
                     ));
                     bad = true;
                 }
@@ -511,6 +546,49 @@ fn evaluate_claims(
 
     let mut rows: Vec<String> = Vec::new();
     for c in &plan.claims {
+        // A claim is ONE sentence, exactly as it is in source.
+        //
+        // Every verb is an `Option`, so a plan could set several and
+        // the evaluator — an if/else chain producing one row — would
+        // silently judge whichever came first in this file and ignore
+        // the rest. A claim pairing a holding `require_subscribes`
+        // with an impossible `count ... eq: 999` passed. Worse, the
+        // name that survived into the artifact was the whole claim's,
+        // so the record said a sentence held when half of it was
+        // never read.
+        //
+        // Refusing the shape is better than evaluating each verb: one
+        // name must mean one normalized form, or the claim name stops
+        // being the contract of record.
+        let named: Vec<&str> = [
+            ("forbid_reaches", c.forbid_reaches.is_some()),
+            ("require_subscribes", c.require_subscribes.is_some()),
+            ("require_publishes", c.require_publishes.is_some()),
+            (
+                "count_publisher_instances",
+                c.count_publisher_instances.is_some(),
+            ),
+            (
+                "count_subscriber_instances",
+                c.count_subscriber_instances.is_some(),
+            ),
+            ("only_edges", c.only_edges.is_some()),
+        ]
+        .iter()
+        .filter(|(_, set)| *set)
+        .map(|(n, _)| *n)
+        .collect();
+        if named.len() > 1 {
+            errs.push(format!(
+                "claim `{}` names {} verbs ({}) — a claim is one \
+                 sentence; split it into one claim per verb so each \
+                 has its own name and verdict",
+                c.name,
+                named.len(),
+                named.join(", ")
+            ));
+            continue;
+        }
         let (result, witness) = if let Some(fr) = &c.forbid_reaches {
             let (Some(src), Some(dst)) = (
                 group(&fr.from, &c.name, errs),
@@ -525,10 +603,56 @@ fn evaluate_claims(
                 },
                 None => BTreeSet::new(),
             };
-            match bfs(&adj, &src, &dst, &masked, &inst_of) {
-                None => ("holds", String::new()),
-                Some(path) => {
-                    ("violated", render_witness(&path, comps, by_id))
+            // Masking an endpoint deletes the quantification domain,
+            // and an empty domain makes a prohibition hold over
+            // nothing. The application tier rejects this rather than
+            // reporting a green vacuous law; so does this one.
+            let mask_hits: Vec<&str> = masked
+                .iter()
+                .filter(|i| src.contains(*i) || dst.contains(*i))
+                .map(|s| s.as_str())
+                .collect();
+            if !mask_hits.is_empty() {
+                errs.push(format!(
+                    "claim `{}`: `avoiding` group `{}` contains {}, \
+                     which is already an endpoint of this claim — \
+                     masking an endpoint removes what the claim \
+                     quantifies over and would make it hold over \
+                     nothing",
+                    c.name,
+                    fr.avoiding.as_deref().unwrap_or(""),
+                    mask_hits.join(", ")
+                ));
+                continue;
+            }
+            // An instance in BOTH groups already reaches the
+            // forbidden set by standing still. The BFS cannot see it
+            // (it refuses a destination that is also a source), so
+            // `forbid_reaches(g, g)` reported `holds` while every
+            // path in the fleet ran inside the prohibition.
+            let both: Vec<&str> = src
+                .intersection(&dst)
+                .map(|s| s.as_str())
+                .collect();
+            if !both.is_empty() {
+                (
+                    "violated",
+                    format!(
+                        "{} is in both `{}` and `{}` — a zero-length \
+                         path: the source already IS the forbidden \
+                         destination",
+                        both.join(", "),
+                        fr.from,
+                        fr.to
+                    ),
+                )
+            } else {
+                match bfs(&adj, &src, &dst, &masked, &inst_of) {
+                    None => ("holds", String::new()),
+                    Some(path) => (
+                        "violated",
+                        render_witness(&path, comps, by_id),
+                    ),
                 }
             }
         } else if let Some(r) = &c.require_subscribes {
