@@ -8,6 +8,39 @@ behavior.
 
 ## Unreleased
 
+### One reachability engine, shared by both tiers (GH #408)
+
+The fleet tier read the topology artifact and rebuilt a smaller graph
+of its own, and the omissions were not random.
+
+**It dropped `calls_via_stdlib`.** The artifact exports user→user
+paths whose interior is stdlib code, contracted to their user
+endpoints, and the application checker walks the union with `calls`.
+Fleet composition read `calls` alone, so a component whose routed
+handler reaches its routed publisher through `std::http::Router`
+contributed no edges at all — and a prohibition spanning it reported
+a false absence.
+
+**It ignored uncertainty.** Component `unknowns` were copied into the
+fleet artifact and never consulted, so an indirect call could remove
+the only modeled path to a target and `forbid_reaches` answered
+`holds` — an absence certified by not looking. Fleet claims can now
+answer `uncertified`, which fails like `violated` but says the repair
+is to resolve the unknown edge rather than to fix the program.
+
+Both are now one engine (`hale_types::model_graph`) that takes edges
+and holes and answers path / certified-absence / refusal, replacing
+the private graph walk. Uncertainty stays **reachability-sensitive**:
+only a hole the claim's source can actually walk to blocks
+certification, so an unrelated unknown elsewhere in the deployment
+does not poison every law.
+
+One nuance the engine encodes: `uninhabited_interface_call` is
+recorded as an unknown but is *not* fail-closed — in a closed world an
+interface with no conformers has no values, so the site is dead.
+Treating every unknown as a hole would make dead dispatch refuse to
+certify anything downstream of it.
+
 ### Publish provenance no longer mixes coordinate systems (GH #408)
 
 Schema 1.8 promises file-local spans. Calls, subscriptions and
