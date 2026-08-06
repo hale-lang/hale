@@ -8,6 +8,24 @@ behavior.
 
 ## Unreleased
 
+### A cardinality claim must name a bound (GH #408)
+
+`count_publisher_instances` / `count_subscriber_instances` with no
+`eq`, `min` or `max` compared nothing: every bound defaults to true
+when absent, so the claim held against any fleet whatsoever while
+reading like real law in review. A claim naming no *verb* was already
+refused; a verb naming no *bound* is the same emptiness one level
+down and now gets the same answer.
+
+### A multi-hop fleet witness names the route of each hop (GH #408)
+
+Route labels in a witness were shifted the wrong way — each node
+carried its OUTGOING route rather than the one it was entered by. On
+a two-node witness the fallback happened to produce the right answer,
+which is why every existing witness test passed; a three-node witness
+labelled *both* hops with the last route, sending a reader to the
+wrong route entry and, in a real deployment, the wrong config file.
+
 ### A fallible method no longer frees the loci it is about to dissolve
 
 A free-fn factory allocates its locus out of the caller's published

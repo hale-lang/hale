@@ -536,8 +536,14 @@ fn evaluate_claims(
         } else if let Some(r) = &c.require_publishes {
             endpoint_claim(r, groups, comps, resolved_routes, true, &c.name, errs)
         } else if let Some(k) = &c.count_publisher_instances {
+            if !bounded(k, &c.name, errs) {
+                continue;
+            }
             count_claim(k, comps, true)
         } else if let Some(k) = &c.count_subscriber_instances {
+            if !bounded(k, &c.name, errs) {
+                continue;
+            }
             count_claim(k, comps, false)
         } else if let Some(oe) = &c.only_edges {
             let (Some(src), Some(dst)) = (
@@ -637,14 +643,26 @@ fn bfs(
                 at = prev.clone();
             }
             path.reverse();
-            // shift the route labels so each names the hop INTO the
-            // node that follows it
+            // Reconstruction pairs each node with the route on its
+            // OUTGOING edge (parent[at] carries the route INTO `at`,
+            // and it is pushed alongside the predecessor). The
+            // renderer wants the route INTO each node, so every label
+            // shifts one position forward: node i is entered by the
+            // edge leaving node i-1.
+            //
+            // This read `path[i].1` first — node i's OUTGOING route —
+            // and only fell back to `path[i - 1].1`. On a two-node
+            // path the fallback is always taken (the destination has
+            // no outgoing edge) and the answer came out right, which
+            // is why every single-hop witness looked correct. A
+            // three-node witness labelled BOTH hops with the second
+            // route, sending a reader to the wrong route entry.
             let mut out: Vec<(String, Option<String>)> = Vec::new();
             for (i, (n, _)) in path.iter().enumerate() {
                 let via = if i == 0 {
                     None
                 } else {
-                    path[i].1.clone().or_else(|| path[i - 1].1.clone())
+                    path[i - 1].1.clone()
                 };
                 out.push((n.clone(), via));
             }
@@ -781,6 +799,26 @@ fn endpoint_claim(
             ),
         )
     }
+}
+
+/// A cardinality claim must actually bound something.
+///
+/// With `eq`/`min`/`max` all absent every comparison defaults to
+/// true, so the claim held against any fleet whatsoever — a
+/// `count_publisher_instances` naming only a subject read like a
+/// real law and asserted nothing. A claim naming NO verb was already
+/// refused; a verb naming no bound is the same emptiness one level
+/// down, and gets the same answer rather than a silent pass.
+fn bounded(k: &CountSpec, name: &str, errs: &mut Vec<String>) -> bool {
+    if k.eq.is_none() && k.min.is_none() && k.max.is_none() {
+        errs.push(format!(
+            "claim `{}` counts `{}` but names no bound — give it \
+             one of eq, min, max",
+            name, k.subject
+        ));
+        return false;
+    }
+    true
 }
 
 fn count_claim(
