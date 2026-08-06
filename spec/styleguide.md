@@ -852,6 +852,37 @@ certify a path — plus one tier you get for free because your
 | **fmt** (CI gate) | `hale fmt --check` — canonical mechanical form (§2, "Canonical form"); exit 1 lists offenders | gate in CI; `hale fmt` fixes |
 | escape hatches | `@unbounded` (fn or lifecycle hook) acknowledges intentional accumulation; `--allow-unowned-subscriber`; `--no-warn-unbounded-alloc` | |
 
+### Where law lives
+
+The tiers above certify a *function*. Claims certify a *system*, and
+the only real style question is which closed world owns each
+sentence.
+
+- **In the `main locus`** — law about this application. A claim is
+  evaluated in a closed world, so it belongs where the world closes.
+  Name it for the requirement (`orders_pass_risk`), never for the
+  mechanism (`no_call_from_a_to_b`): the name is what a reviewer
+  reads in a diff when someone weakens it.
+- **In a `constitution`** — the same sentence needed by several
+  entrypoints. Authorship moves; evaluation does not. Each adopting
+  main still proves it in its own world, so `adopt Core;` is not a
+  shortcut around closure. Composition is union-only: a stricter rule
+  is a second clause, never a replacement, so a derived constitution
+  can only add law.
+- **In a library's `claims { }`** — obligations about the surface the
+  library exports, re-evaluated in every importer.
+- **In a fleet plan** — law no single binary can state, because it is
+  about the arrangement. `count publishers == 1` inside one program
+  is a different sentence from "one deployed publisher"; write the
+  second where instances exist.
+
+Two habits worth keeping. Declare the vocabulary a claim quantifies
+over — an undeclared group is an error, and a group that is
+legitimately empty says so with `may_be_empty` rather than being
+allowed to hold vacuously. And read `uncertified` as work to do, not
+as a pass: it means the model has a hole where the claim needed to
+look.
+
 Resource budgets (`--dump-resource-budget`,
 `--check-resource-budget <toml>`, `--warn-resource-leak`) gate
 thread / pool / subject / fd counts in CI — see

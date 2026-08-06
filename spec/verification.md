@@ -623,10 +623,18 @@ application group makes from a locus to its methods, one altitude up.
 An unknown name or an empty resolution is an error, never an empty
 set.
 
-- **`forbid_reaches`** walks the composed edge set: interior calls,
-  interior bus hops, and explicit routes. `avoiding` masks a group's
+- **`forbid_reaches`** walks the composed edge set: interior calls
+  **including the through-stdlib contracted edges**
+  (`calls_via_stdlib`), interior bus hops, and explicit routes.
+  Reading only `calls` loses a path the component's own claims can
+  see — a handler reaching its publisher through `std::http::Router`
+  contributes no direct edge at all. `avoiding` masks a group's
   vertices out, which makes it the interposition form — any surviving
-  path is a bypass.
+  path is a bypass, and `avoiding` may not name an endpoint of its
+  own claim, since masking one deletes the domain being quantified
+  over. An instance in **both** the source and target groups is a
+  zero-length violation: the source already is the forbidden
+  destination.
 - **`only_edges`** grants by wire **subject**, not by transport
   address. There are no cross-process calls to grant.
 - **`require_subscribes` / `require_publishes`** are structural
@@ -640,15 +648,45 @@ set.
   count instance-qualified **endpoints**, which is a different sort
   from the application tier's declaration count — hence the different
   spelling. Two components can each be individually legal while the
-  deployment has two publishers.
+  deployment has two publishers. A count must name at least one of
+  `eq`, `min`, `max`: with none of them a claim compares nothing and
+  holds against every fleet while reading like law.
+
+A claim names **exactly one** verb. Several verbs under one name
+would be judged one at a time and recorded under that name as though
+the whole sentence held, so the shape is refused: split it, and each
+half gets its own name and verdict.
+
+Route admission validates **roles**, not just topic identity. A
+publisher endpoint must publish the subject and a subscriber endpoint
+must subscribe it, as its own artifact records — declaring a topic is
+not using it, and any component importing a topic module declares
+every topic in it. Without this a plan could name a producer that
+does not exist and satisfy a law about the consumer side with nothing
+feeding it. A plan that misdescribes its components is an invalid
+model, refused before any claim is evaluated rather than reported as
+a law failure.
+
+**Uncertainty propagates.** A component's `unknowns` are part of the
+composed model, not a footnote beside it. A prohibition whose source
+can reach a vertex with an incomplete outgoing edge set answers
+`uncertified` — that vertex's missing edges could lead to the target,
+so the absence is not proved. `uncertified` fails like `violated`;
+the distinction is recorded because the repair differs (resolve the
+unknown edge, versus fix the program). Two rules keep it usable: a
+concrete counterexample wins over a hole, and only a hole the claim's
+source can actually reach counts, so an unrelated unknown elsewhere
+in the deployment does not poison every law. `uninhabited_interface_call`
+is not such a hole — in a closed world an interface with no
+conformers has no values, so the site is dead rather than unknown.
 
 Endpoints resolve through each component's `topics` table by wire
 subject, never by local name.
 
 A violation renders a **cross-artifact witness**: the instance-
-qualified vertices, the route carrying each hop, and the source file
-each vertex lives in — which is what Phase 0's source maps exist to
-make renderable.
+qualified vertices, the route carrying **each** hop, and the source
+file each vertex lives in — which is what Phase 0's source maps exist
+to make renderable.
 
 ```
 fleet claim `orders_pass_oms` violated — witness:
