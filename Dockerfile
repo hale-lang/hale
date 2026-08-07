@@ -26,6 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       curl ca-certificates build-essential \
       llvm-18-dev libpolly-18-dev libzstd-dev \
       clang-18 libclang-18-dev zlib1g-dev \
+      libssl-dev pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 # Stock Ubuntu rustc can lag the workspace; install the current stable
