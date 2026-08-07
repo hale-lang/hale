@@ -1,0 +1,67 @@
+// The claim forms the README advertises, as a compiled artifact.
+//
+// The README's six-form inventory once listed `bound alloc <= N on
+// paths from G`, which the checker rejects: `bound` counts a
+// user-declared effect class, and the counted built-ins keep their
+// `@budget` spellings. Nothing caught it, because prose is not in a
+// harness — the mdBook gate parses snippets and `hale,fragment` opts
+// out of even that, while this was a *type* error. So the inventory
+// lives here too, where `on_disk_example_corpus_typechecks_clean`
+// fails the build if an advertised form stops holding.
+//
+// Five of the six are expressible in one file. `cover topic in
+// seed(a): subscribed_by(some G)` quantifies over an import alias's
+// declared topics, so it needs a second seed and is covered by the
+// multi-file corpus instead.
+
+effect llm;
+
+@effects(is: { llm })
+fn model_call(p: Int) -> Int { return p; }
+
+type Cmd { n: Int; }
+topic Plan { payload: Cmd; subject: "app.plan"; }
+
+locus Planner {
+    params { n: Int = 0; }
+    bus { publish Plan; }
+    fn kick(n: Int) { Plan <- Cmd { n: n }; }
+    fn budgeted(n: Int) -> Int { return model_call(n); }
+}
+
+locus Worker {
+    params { done: Int = 0; }
+    bus { subscribe Plan as on_plan; }
+    fn on_plan(c: Cmd) { self.done = c.n; }
+}
+
+locus Audit {
+    params { seen: Int = 0; }
+    fn note(n: Int) -> Int { return n; }
+}
+
+group planners = { Planner };
+group workers = { Worker };
+group audit = { Audit };
+
+main locus App {
+    params {
+        p: Planner = Planner { };
+        w: Worker = Worker { };
+        a: Audit = Audit { };
+    }
+    claims {
+        // Absence, narrowed to one relation.
+        isolated: forbid reaches(workers, audit) via { calls };
+        // Existence over the declared bus ends.
+        wired: require subscribes(some workers, topic Plan);
+        // Cardinality.
+        one_writer: count publishers(topic Plan) <= 1;
+        // A reviewable boundary inventory: every direct edge is granted.
+        boundary: only edges planners -> workers { publish Plan; };
+        // Cost, over a user-declared class.
+        one_call: bound llm <= 1 on paths from planners;
+    }
+}
+
+fn main() { App { }; }
