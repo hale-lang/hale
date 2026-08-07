@@ -254,7 +254,9 @@ absence, optionally narrowed `via { calls }` or `via { bus }`;
 publishers(topic T) <= 1` for cardinality; `cover topic in seed(a):
 subscribed_by(some G)` so a new topic can't be quietly orphaned;
 `only edges A -> B { publish T; }` for a reviewable boundary
-inventory; and `bound alloc <= N on paths from G` for cost.
+inventory; and `bound llm <= N on paths from G` for cost. `bound`
+counts a **user-declared** effect class (`effect llm;`) — the
+counted built-ins keep their `@budget` spellings.
 
 Three things make this hold up in practice:
 
@@ -385,10 +387,16 @@ Platform-specific setup (Linux, macOS/Apple Silicon) is in
 
 ## Where the language stands
 
-The language surface has taken **no breaking changes since v0.10.0
-(2026-07-07)** — everything since has been additive (`@hot` / `@budget`
+The **language surface** has taken no breaking changes since v0.10.0
+(2026-07-07) — everything since has been additive (`@hot` / `@budget`
 enforcement, `match` expressions, String routing keys) plus runtime
-fixes. It's pre-1.0 because the frontier below is still moving.
+fixes. The **stdlib** is a narrower promise: v0.11.0 (2026-07-16)
+carried two breaking entries — `Stream.send` / `recv` and their
+`_bytes` forms became `fallible(IoError)`, so every call site must
+address the error, and TCP listeners stopped setting `SO_REUSEPORT`,
+so a second live bind on the same port now fails instead of
+silently splitting connections. It's pre-1.0 because the frontier
+below is still moving.
 
 The proven core is the typed topic bus, `placement` / `bindings` deployment,
 `@form` collections, structural `interface`s, `@ffi` C bindings, and the
