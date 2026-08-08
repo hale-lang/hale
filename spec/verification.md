@@ -196,6 +196,35 @@ The remaining verbs (#382 phases 2–5):
 - **`require subscribes|publishes(some G, topic T)`** — existence
   over the DECLARED bus ends (the `bus { }` blocks — "wired" is a
   declaration property).
+- **`require attributed(all C)`** (GH #436) — every user fn that
+  **directly** performs an operation of built-in class `C` carries at
+  least one **user-declared** effect class. `require attributed(all
+  syscall)` says every place the program touches the OS names a
+  purpose.
+
+  **Orthogonal to interposition, not a weaker form of it.** `forbid
+  reaches(app, effects(syscall)) avoiding gate` constrains WHERE a
+  boundary is crossed and says nothing about what any crossing is
+  FOR; this constrains attribution and says nothing about location.
+  Neither implies the other: all I/O can funnel through one
+  `write(path, bytes)` everyone calls for everything (interposed,
+  unattributed), or forty loci can each touch the OS while every one
+  names its purpose (attributed, un-interposed). A hybrid wants both.
+
+  It also closes a coverage hole `avoiding` necessarily has: that
+  claim is scoped to a group, so a locus outside it is unconstrained
+  and one written next month is uncovered until someone edits the
+  group. This is a universal over the whole closed world.
+
+  **DIRECT, not transitive**, and that is load-bearing: transitively,
+  every caller downstream of one attributed fn inherits the label and
+  passes, which would make the claim nearly vacuous. The attribution
+  point is the site where the boundary is crossed. A built-in in
+  `is:` does not count — it restates what the compiler already
+  infers, and the claim asks for a purpose the author supplied. The
+  class must be a built-in; a user class there would be trivially
+  true while reading like a contract.
+
 - **`require sealed(all G)`** (GH #436) — every locus in `G` is
   declared `@sealed`. A **universal** over the group's members, which
   is why the quantifier is `all` rather than the `some` the other

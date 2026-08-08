@@ -1635,6 +1635,33 @@ impl Parser {
             self.expect(TokenKind::RParen, ")")?;
             return Ok(ClaimForm::RequireSealed { group });
         }
+        // GH #436: `require attributed(all syscall);`
+        if matches!(&pred_tok.kind, TokenKind::Ident(s) if s == "attributed")
+        {
+            self.bump();
+            self.expect(TokenKind::LParen, "(")?;
+            let q = self.peek_token().clone();
+            match &q.kind {
+                TokenKind::Ident(s) if s == "all" => {
+                    self.bump();
+                }
+                other => {
+                    return Err(Diag::parse(
+                        q.span,
+                        format!(
+                            "expected `all` before the effect class in \
+                             `require attributed(all syscall)` — it is a \
+                             universal over every site in the closed \
+                             world. Got {:?}",
+                            other
+                        ),
+                    ));
+                }
+            }
+            let class_name = self.expect_ident("effect class name")?;
+            self.expect(TokenKind::RParen, ")")?;
+            return Ok(ClaimForm::RequireAttributed { class_name });
+        }
         let publishers = match &pred_tok.kind {
             TokenKind::Ident(s) if s == "subscribes" => false,
             TokenKind::Ident(s) if s == "publishes" => true,
@@ -1642,8 +1669,9 @@ impl Parser {
                 return Err(Diag::parse(
                     pred_tok.span,
                     format!(
-                        "expected `subscribes`, `publishes`, or `sealed` \
-                         after `require`, got {:?}",
+                        "expected `subscribes`, `publishes`, \
+                         `sealed`, or `attributed` after `require`, \
+                         got {:?}",
                         other
                     ),
                 ));

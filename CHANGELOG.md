@@ -176,6 +176,42 @@ claimed a constitution could already require sealing across a group,
 which was false — no claim form required an annotation. The same gap
 still applies to `@supervised`.
 
+### `require attributed(all C)` — every boundary crossing names a purpose (GH #436)
+
+```hale
+effect audit;
+
+claims { io_attributed: require attributed(all syscall); }
+```
+
+```text
+claim `io_attributed` violated: a fn performs `syscall` with no declared
+  purpose — classify it (`@effects(is: {...})`) with a user effect class
+  so the operation is attributable: Rogue::sneak
+```
+
+**Orthogonal to interposition, not a weaker form of it.** `forbid
+reaches(app, effects(syscall)) avoiding gate` — which already worked —
+constrains WHERE a boundary is crossed and says nothing about what any
+crossing is FOR. This constrains attribution and says nothing about
+location. Neither implies the other: all I/O can funnel through one
+`write(path, bytes)` that everyone calls for everything (interposed,
+unattributed), or forty loci can each touch the OS while every one
+names its purpose (attributed, un-interposed). A hybrid wants both.
+
+It also closes a coverage hole `avoiding` necessarily has: that claim
+is scoped to a group, so a locus outside it is unconstrained and one
+written next month is uncovered until someone edits the group. This is
+a universal over the whole closed world.
+
+**DIRECT, not transitive**, and that is load-bearing: transitively,
+every caller downstream of one attributed fn would inherit the label
+and pass, making the claim nearly vacuous. The attribution point is
+the site where the boundary is crossed. A built-in in `is:` does not
+count — it restates what the compiler already infers. The class must
+be a built-in; a user class there would be trivially true while
+reading like a contract.
+
 ---
 
 ## v0.16.0 — the law composes, the certificate travels (2026-08-06)

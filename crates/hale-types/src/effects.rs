@@ -84,7 +84,53 @@ pub(crate) fn sealed_loci_of(programs: &[&Program]) -> BTreeSet<String> {
     out
 }
 
-/// Render `root -> hop -> hop [leaf]` for a witness chain.
+/// GH #436: fns declaring `@effects(is: { … })` with a USER class,
+/// for `require attributed(all C)`.
+///
+/// A built-in in `is:` restates what the compiler already infers; the
+/// point of the claim is a purpose the AUTHOR supplied, so only user
+/// classes count as attribution.
+pub(crate) fn fns_carrying_a_user_class(
+    programs: &[&Program],
+) -> BTreeSet<crate::alloc_summary::FnKey> {
+    use crate::alloc_summary::FnKey;
+    let mut out = BTreeSet::new();
+    let carries_user = |fd: &hale_syntax::ast::FnDecl| {
+        fd.effects.iter().any(|a| {
+            matches!(a, hale_syntax::ast::EffectAssert::Carries(cs)
+                if cs.iter().any(|c| {
+                    matches!(c, hale_syntax::ast::EffectClass::User(_))
+                }))
+        })
+    };
+    for p in programs {
+        for item in &p.items {
+            match item {
+                TopDecl::Fn(fd) if carries_user(fd) => {
+                    out.insert(FnKey::free_fn(fd.name.name.clone()));
+                }
+                TopDecl::Locus(l) => {
+                    // `@effects(is: …)` is fn-only (spec/tokens.md), so
+                    // there is no locus-level form to inherit from.
+                    for m in &l.members {
+                        if let hale_syntax::ast::LocusMember::Fn(fd) = m {
+                            if carries_user(fd) {
+                                out.insert(FnKey::method(
+                                    l.name.name.clone(),
+                                    fd.name.name.clone(),
+                                ));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// Render `root -> hop -> hop [leaf]` for a witness chain./// Render `root -> hop -> hop [leaf]` for a witness chain.
 fn chain(root: &FnKey, steps: &[callgraph::WitnessStep]) -> String {
     demangle_stdlib(&callgraph::render_witness(root, steps))
 }
