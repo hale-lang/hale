@@ -56,8 +56,14 @@ pub(crate) fn ffi_names(programs: &[&Program]) -> BTreeSet<String> {
 }
 
 /// GH #436: loci declared `@sealed`, for `require sealed(all G)`.
-/// Includes the Hale-source stdlib, so a group naming
-/// `std::secret::Signer` sees it as sealed.
+///
+/// The stdlib sweep is defensive, not currently reachable: a group
+/// member resolves against user declarations and seed imports, and
+/// `group g = { std::secret::Signer };` is a resolution error today
+/// ("no imported declaration matches this path"). Included so that if
+/// stdlib loci ever become group-nameable, the answer is right rather
+/// than silently `false` — which for a confinement claim would read as
+/// "not sealed" and fail closed, but for the wrong reason.
 pub(crate) fn sealed_loci_of(programs: &[&Program]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     let mut walk = |items: &[TopDecl]| {
