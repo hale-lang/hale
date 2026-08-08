@@ -2478,7 +2478,33 @@ fn evaluate_require_attributed(
         if !cx.model.is_bundle_fn(key) {
             continue;
         }
-        let performs_directly = fs.calls.iter().any(|e| match &e.callee {
+        // GH #436 review 2: the `@ffi` DECLARATION is the boundary,
+        // not its caller. Attributing the caller was unreachable
+        // anyway — an `@ffi` fn is a bundle decl, so `is_bundle_fn`
+        // short-circuited before the FFI test — and it was the wrong
+        // shape besides: the old branch returned true for EVERY mask,
+        // so one foreign call would have read as publish, entropy and
+        // secret_use at once. The declaration is application-owned
+        // and can carry the purpose itself, which keeps ordinary
+        // callers ordinary and attribution direct.
+        let direct_ffi = mask == EffectSet::SYSCALL
+            && key.locus.is_none()
+            && cx.ffi.contains(&key.fn_name);
+        // A fn that DECLARES it carries the class is a direct site by
+        // definition. Without this, `@effects(is: { secret_use }) fn
+        // sign(…)` — the whole shape the secrets architecture rests
+        // on — was invisible to `require attributed(all secret_use)`,
+        // because it calls nothing classified and allocates nothing.
+        // A built-in in `is:` establishes that the operation exists;
+        // it still is not its purpose, so a user class is required.
+        let directly_classified = cx
+            .summary
+            .carries
+            .get(key)
+            .map_or(false, |eff| eff.contains(mask));
+        let performs_directly = direct_ffi
+            || directly_classified
+            || fs.calls.iter().any(|e| match &e.callee {
             Callee::Unresolved(name) => {
                 let segs: Vec<&str> = name.split("::").collect();
                 crate::stdlib_surface::effects_for(&segs)
@@ -2503,10 +2529,6 @@ fn evaluate_require_attributed(
                 if cx.model.is_bundle_fn(callee) {
                     return false;
                 }
-                if callee.locus.is_none() && cx.ffi.contains(&callee.fn_name)
-                {
-                    return true;
-                }
                 crate::frontier::infer_effects(
                     &cx.summary,
                     callee,
@@ -2529,7 +2551,63 @@ fn evaluate_require_attributed(
             });
         }
     }
+    // GH #436 review 2: an unresolved call the callgraph knows is
+    // INDIRECT or opaque may do anything — the general effect engine
+    // already treats it as unclassified for exactly this reason.
+    // Attribution asked only whether the textual name sat in the
+    // stdlib registry, so a callback parameter contributed nothing
+    // and the law reported `holds` over a boundary it could not see.
+    // Same refusal-to-certify posture as the rest of the stack: a fn
+    // that already names a purpose has attributed the potential
+    // crossing; one that does not leaves the claim uncertified.
     if unattributed.is_empty() {
+        let opaque: Vec<String> = cx
+            .summary
+            .fns
+            .iter()
+            .filter(|(key, _)| cx.model.is_bundle_fn(key))
+            .filter(|(key, fs)| {
+                !fn_carries_a_user_class(key, cx)
+                    && fs.calls.iter().any(|e| match &e.callee {
+                        Callee::Unresolved(n) => {
+                            // A frontier path is classified, so it is
+                            // not a hole; anything else unresolved is.
+                            let segs: Vec<&str> = n.split("::").collect();
+                            crate::stdlib_surface::effects_for(&segs)
+                                .is_none()
+                        }
+                        Callee::Resolved(_) => false,
+                    })
+            })
+            .map(|(key, _)| match &key.locus {
+                Some(l) => format!("{}::{}", l, key.fn_name),
+                None => key.fn_name.clone(),
+            })
+            .collect();
+        if !opaque.is_empty() {
+            let mut names = opaque;
+            names.sort();
+            diags.push(Diag::ty(
+                c.name.span,
+                format!(
+                    "claim `{}` uncertified: {} an indirect or opaque \
+                     call whose target this check cannot resolve, and \
+                     names no purpose of its own — so whether a `{}` \
+                     boundary is crossed there is unknown. Classify \
+                     the caller (`@effects(is: {{...}})`) or bind the \
+                     callee so it resolves: {}",
+                    c.name.name,
+                    if names.len() == 1 {
+                        "a fn makes"
+                    } else {
+                        "fns make"
+                    },
+                    class_name.name,
+                    names.join(", ")
+                ),
+            ));
+            return Verdict::Uncertified;
+        }
         return Verdict::Holds;
     }
     unattributed.sort();
