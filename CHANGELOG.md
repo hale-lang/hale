@@ -176,6 +176,36 @@ claimed a constitution could already require sealing across a group,
 which was false — no claim form required an annotation. The same gap
 still applies to `@supervised`.
 
+### `hale check --sealable` — the adoption survey (GH #436)
+
+`@sealed` is opt-in, so "would this collide with real code?" is a
+question about an existing codebase that nobody can answer by reading.
+It is mechanically computable:
+
+```text
+sealability: 4 of 5 loci can be `@sealed` today
+
+  free to seal (nothing outside reads their params):
+    Already
+    App
+    Holder
+    Private
+
+  would break callers:
+    Exposed — 1 external read(s): Exposed.k
+```
+
+The survey **runs the real check** against an all-sealed clone of the
+bundle rather than reimplementing the rule. A hand-written walk would
+drift from `check_sealed_read` the first time either changed, and a
+survey that disagrees with the checker is worse than none — it would
+report a locus as free to seal when it is not.
+
+Measured over the in-tree corpus: **148 of 151 loci across 94 programs
+could be sealed with no changes.** The three that cannot are the same
+shape — a parent reading a child's result field directly rather than
+calling a method — which the no-locus-return rule already discourages.
+
 ### `require attributed(all C)` — every boundary crossing names a purpose (GH #436)
 
 ```hale
