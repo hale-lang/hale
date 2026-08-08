@@ -600,6 +600,8 @@ fn rewrite_claim_topic_refs(
             }
             ClaimForm::ForbidReaches { .. }
             | ClaimForm::Bound { .. }
+            | ClaimForm::RequireSealed { .. }
+            | ClaimForm::RequireAttributed { .. }
             | ClaimForm::Cover { .. } => {}
         }
     }
@@ -799,9 +801,13 @@ impl<'a> Mangler<'a> {
                             );
                         }
                     }
-                    ClaimForm::Cover { group, .. } => {
+                    ClaimForm::RequireSealed { group }
+                    | ClaimForm::Cover { group, .. } => {
                         self.rewrite_ident(&mut group.name);
                     }
+                    // Names an effect CLASS, not a group or topic;
+                    // nothing to rewrite.
+                    ClaimForm::RequireAttributed { .. } => {}
                     ClaimForm::Count { topic, .. } => {
                         if topic.segments.len() == 1 {
                             self.rewrite_ident(

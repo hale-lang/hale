@@ -87,6 +87,161 @@ Worked end to end in
 `crates/hale-codegen/tests/fixtures/examples/secrets-sealed-handler.hl`.
 Spec: `spec/verification.md` § Secrets.
 
+### `std::secret` — key material an application never holds (GH #436)
+
+`Signer` (`sign` / `sign_512` / `verify` / `ready`) and `Credential`
+(`matches` / `ready` / `fingerprint`), both `@sealed`, both taking the
+**name of a source** rather than the bytes:
+
+```hale
+locus Gateway {
+    params {
+        s: std::secret::Signer =
+            std::secret::Signer { env_var: "SIGNING_KEY" };
+    }
+    fn go(m: Bytes) -> Bytes { return self.s.sign(m); }
+}
+```
+
+`self.s.key` from `Gateway` is a compile error naming the methods to
+call instead. The key is read during `birth`, so it exists only inside
+a sealed locus from the moment it enters the program.
+
+`birth` is the **only** writer, including the no-source case. Params
+are constructible by whoever holds the locus, so without that a caller
+could write `Signer { key: b"…" }` and hold the material after all —
+defeating the one thing the module exists to prevent. Passing `key:`
+now yields an empty key and `ready() == false`, which surfaces at
+startup. `Credential.fingerprint()` (first 8 bytes of SHA-256, hex) is
+the publishable handle: safe to log, correlates across processes,
+carries nothing.
+
+Every privileged operation carries the `secret_use` effect class,
+declared by the module and travelling with the import.
+
+**One narrow resolver change made this possible.** A qualified path
+naming a **sealed** Hale-source stdlib locus now resolves to the
+mangled name that source declares, instead of `Ty::Unknown`. `@sealed`
+keys off the receiver's resolved type, so without it a sealed stdlib
+locus had readable params — verified before the fix: `self.signer.key`
+returned real key bytes and `hale check` passed. Only *sealed* stdlib
+loci are injected; every other qualified path still resolves to
+`Ty::Unknown` exactly as before, because resolving them all would
+switch on field-existence and method arity/fallibility checking across
+the whole stdlib surface at once — a genuine improvement, and one that
+can newly reject programs that compile today, so it wants its own
+change and its own measurement.
+
+Also fixed: `rename_targets_exist` matched a bare `locus ` prefix, so
+every *annotated* stdlib declaration was invisible to it and a rename
+row pointing at one read as stale. It now skips leading decorators —
+the gap would equally have hidden a `@form` locus.
+
+### `require sealed(all G)` — confinement as law (GH #436)
+
+A new claim form: every locus in `G` is declared `@sealed`.
+
+```hale
+group vaults = { Signer, TokenStore };
+
+claims { vault_confined: require sealed(all vaults); }
+```
+
+```text
+claim `vault_confined` violated: a locus in `vaults` is not `@sealed`,
+  so its state is readable by anything holding it — TokenStore
+```
+
+A **universal** over the group's members, which is why the quantifier
+is `all` rather than the `some` the other `require` forms take: those
+ask whether an endpoint exists anywhere in the group, this asks whether
+every member holds. `require sealed(some G)` is a parse error rather
+than a form that quietly means the opposite of how it reads. Every
+unsealed member is reported in one diagnostic — a baseline is adopted
+once and the reader wants the whole list, not one name per build.
+
+Without it, sealing is per-locus discipline, and one unsealed member of
+a vault group is the whole hole. It composes through constitutions like
+any other claim, so a security baseline is adopted once:
+
+```hale
+constitution SecretBaseline {
+    vault_confined: require sealed(all vaults);
+    no_plugin_secrets: forbid reaches(plugins, effects(secret_use));
+}
+```
+
+This closes a gap found while writing #437's spec: an early draft
+claimed a constitution could already require sealing across a group,
+which was false — no claim form required an annotation. The same gap
+still applies to `@supervised`.
+
+### `hale check --sealable` — the adoption survey (GH #436)
+
+`@sealed` is opt-in, so "would this collide with real code?" is a
+question about an existing codebase that nobody can answer by reading.
+It is mechanically computable:
+
+```text
+sealability: 4 of 5 loci can be `@sealed` today
+
+  free to seal (nothing outside reads their params):
+    Already
+    App
+    Holder
+    Private
+
+  would break callers:
+    Exposed — 1 external read(s): Exposed.k
+```
+
+The survey **runs the real check** against an all-sealed clone of the
+bundle rather than reimplementing the rule. A hand-written walk would
+drift from `check_sealed_read` the first time either changed, and a
+survey that disagrees with the checker is worse than none — it would
+report a locus as free to seal when it is not.
+
+Measured over the in-tree corpus: **148 of 151 loci across 94 programs
+could be sealed with no changes.** The three that cannot are the same
+shape — a parent reading a child's result field directly rather than
+calling a method — which the no-locus-return rule already discourages.
+
+### `require attributed(all C)` — every boundary crossing names a purpose (GH #436)
+
+```hale
+effect audit;
+
+claims { io_attributed: require attributed(all syscall); }
+```
+
+```text
+claim `io_attributed` violated: a fn performs `syscall` with no declared
+  purpose — classify it (`@effects(is: {...})`) with a user effect class
+  so the operation is attributable: Rogue::sneak
+```
+
+**Orthogonal to interposition, not a weaker form of it.** `forbid
+reaches(app, effects(syscall)) avoiding gate` — which already worked —
+constrains WHERE a boundary is crossed and says nothing about what any
+crossing is FOR. This constrains attribution and says nothing about
+location. Neither implies the other: all I/O can funnel through one
+`write(path, bytes)` that everyone calls for everything (interposed,
+unattributed), or forty loci can each touch the OS while every one
+names its purpose (attributed, un-interposed). A hybrid wants both.
+
+It also closes a coverage hole `avoiding` necessarily has: that claim
+is scoped to a group, so a locus outside it is unconstrained and one
+written next month is uncovered until someone edits the group. This is
+a universal over the whole closed world.
+
+**DIRECT, not transitive**, and that is load-bearing: transitively,
+every caller downstream of one attributed fn would inherit the label
+and pass, making the claim nearly vacuous. The attribution point is
+the site where the boundary is crossed. A built-in in `is:` does not
+count — it restates what the compiler already infers. The class must
+be a built-in; a user class there would be trivially true while
+reading like a contract.
+
 ---
 
 ## v0.16.0 — the law composes, the certificate travels (2026-08-06)

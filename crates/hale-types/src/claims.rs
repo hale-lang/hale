@@ -53,6 +53,7 @@ use crate::verdict::Verdict;
 use crate::callgraph;
 use crate::effects::{
     close, declared_of, defs_of, effect_names_of, ffi_names,
+    fns_carrying_a_user_class, sealed_loci_of,
 };
 use crate::stdlib_surface::{self, EffectSet};
 
@@ -321,6 +322,11 @@ struct Cx<'a> {
     defs: Vec<Option<Vec<EffectClass>>>,
     declared: BTreeSet<u16>,
     effect_names: Vec<String>,
+    /// GH #436: loci declared `@sealed`, for `require sealed(all G)`.
+    sealed: BTreeSet<String>,
+    /// GH #436: fns declaring a USER effect class, for
+    /// `require attributed(all C)`.
+    carries_user_class: BTreeSet<FnKey>,
     /// #392: the normalized model — decl provenance (witness spans,
     /// origin gating), the phase relation (`during`), the seed sort.
     model: crate::model::Model,
@@ -726,10 +732,13 @@ fn claims_report_inner(
                 ClaimForm::OnlyEdges { src, .. } => Some(&src.name),
                 ClaimForm::Bound { from, .. } => Some(&from.name),
                 ClaimForm::Require { group, .. }
+                | ClaimForm::RequireSealed { group }
                 | ClaimForm::Cover { group, .. } => Some(&group.name),
                 ClaimForm::Count { topic, .. } => {
                     topic.segments.first().map(|s| &s.name)
                 }
+                // Names no group: a universal over the whole world.
+                ClaimForm::RequireAttributed { .. } => None,
             }?;
             mangled_to_alias.get(name.as_str()).copied()
         });
@@ -875,6 +884,8 @@ fn claims_report_inner(
         defs: defs_of(programs),
         declared: declared_of(programs),
         effect_names: effect_names_of(programs),
+        sealed: sealed_loci_of(programs),
+        carries_user_class: fns_carrying_a_user_class(programs),
         model: crate::model::Model::derive(programs, import_renames),
     };
 
@@ -894,6 +905,12 @@ fn claims_report_inner(
                 }
                 ClaimForm::Bound { .. } => {
                     evaluate_bound(c, &cx, &mut diags)
+                }
+                ClaimForm::RequireSealed { .. } => {
+                    evaluate_require_sealed(c, &cx, &mut diags)
+                }
+                ClaimForm::RequireAttributed { .. } => {
+                    evaluate_require_attributed(c, &cx, &mut diags)
                 }
                 ClaimForm::Require { .. } => {
                     evaluate_require(c, &cx, &mut diags)
@@ -1130,6 +1147,31 @@ fn validate_claim(c: &ClaimDecl, cx: &Cx, diags: &mut Vec<Diag>) -> bool {
             ok &= check_group(group, diags);
             ok &= check_topic(topic, cx, diags);
         }
+        ClaimForm::RequireSealed { group } => {
+            ok &= check_group(group, diags);
+        }
+        ClaimForm::RequireAttributed { class_name } => {
+            // Built-ins only. A USER class here would ask that every
+            // site carrying it also carries a user class — trivially
+            // true, and it would read as a real contract.
+            if hale_syntax::ast::EffectClass::from_ident(&class_name.name)
+                .is_none()
+            {
+                diags.push(Diag::ty(
+                    class_name.span,
+                    format!(
+                        "claim `{}`: `require attributed` takes a \
+                         BUILT-IN effect class (`syscall`, `block`, \
+                         `publish`, `time`, `entropy`, `env`, `alloc`, \
+                         …) — it asks that every site performing one \
+                         names a user-declared purpose. `{}` is not a \
+                         built-in.",
+                        c.name.name, class_name.name
+                    ),
+                ));
+                ok = false;
+            }
+        }
         ClaimForm::Cover { alias, group } => {
             ok &= check_group(group, diags);
             if !cx.alias_topics.contains_key(&alias.name) {
@@ -1156,6 +1198,12 @@ fn validate_claim(c: &ClaimDecl, cx: &Cx, diags: &mut Vec<Diag>) -> bool {
 /// The normalized sentence, for the artifact.
 fn render_form(f: &ClaimForm) -> String {
     match f {
+        ClaimForm::RequireSealed { group } => {
+            format!("require sealed(all {})", group.name)
+        }
+        ClaimForm::RequireAttributed { class_name } => {
+            format!("require attributed(all {})", class_name.name)
+        }
         ClaimForm::ForbidReaches {
             src,
             dst,
@@ -2290,6 +2338,155 @@ fn evaluate_require(
         ),
     ));
     Verdict::Violated
+}
+
+/// GH #436: `require sealed(all G)` — every locus in the group is
+/// declared `@sealed`.
+///
+/// A universal, so it reports EVERY unsealed member rather than the
+/// first: a security baseline is adopted once and the reader wants
+/// the whole list to fix, not one name per build.
+fn evaluate_require_sealed(
+    c: &ClaimDecl,
+    cx: &Cx,
+    diags: &mut Vec<Diag>,
+) -> Verdict {
+    let ClaimForm::RequireSealed { group } = &c.form else {
+        unreachable!("dispatched on form")
+    };
+    let g = &cx.groups[&group.name];
+    let unsealed: Vec<&str> = g
+        .loci
+        .iter()
+        .filter(|l| !cx.sealed.contains(l.as_str()))
+        .map(|l| l.as_str())
+        .collect();
+    if unsealed.is_empty() {
+        return Verdict::Holds;
+    }
+    diags.push(Diag::ty(
+        c.name.span,
+        format!(
+            "claim `{}` violated: {} in `{}` {} not `@sealed`, so {} \
+             state is readable by anything holding {} — {}",
+            c.name.name,
+            if unsealed.len() == 1 { "a locus" } else { "loci" },
+            group.name,
+            if unsealed.len() == 1 { "is" } else { "are" },
+            if unsealed.len() == 1 { "its" } else { "their" },
+            if unsealed.len() == 1 { "it" } else { "them" },
+            unsealed.join(", ")
+        ),
+    ));
+    Verdict::Violated
+}
+
+/// GH #436: `require attributed(all C)` — every user fn that DIRECTLY
+/// performs an operation of built-in class `C` carries at least one
+/// user-declared effect class.
+///
+/// Orthogonal to interposition. `forbid reaches(app, effects(syscall))
+/// avoiding gate` constrains WHERE a boundary is crossed and is silent
+/// on what any crossing is FOR; this constrains attribution and is
+/// silent on location. Neither implies the other.
+///
+/// DIRECT sites only. Transitively, every caller downstream of one
+/// labelled fn inherits the label and passes, which would make the
+/// check nearly vacuous — the attribution point is the site where the
+/// boundary is actually crossed.
+///
+/// Reports every unattributed site at once: this is adopted as a
+/// baseline, and the reader wants the whole list.
+fn evaluate_require_attributed(
+    c: &ClaimDecl,
+    cx: &Cx,
+    diags: &mut Vec<Diag>,
+) -> Verdict {
+    let ClaimForm::RequireAttributed { class_name } = &c.form else {
+        unreachable!("dispatched on form")
+    };
+    let Some(class) =
+        hale_syntax::ast::EffectClass::from_ident(&class_name.name)
+    else {
+        unreachable!("validated")
+    };
+    use crate::stdlib_surface::EffectSet;
+    let mask = match class {
+        hale_syntax::ast::EffectClass::Syscall => EffectSet::SYSCALL,
+        hale_syntax::ast::EffectClass::Block => EffectSet::BLOCK,
+        hale_syntax::ast::EffectClass::Publish => EffectSet::PUBLISH,
+        hale_syntax::ast::EffectClass::Time => EffectSet::TIME,
+        hale_syntax::ast::EffectClass::Entropy => EffectSet::ENTROPY,
+        hale_syntax::ast::EffectClass::Env => EffectSet::ENV,
+        hale_syntax::ast::EffectClass::Alloc => EffectSet::ALLOC,
+        // `ffi` / `spawn` / `recursion` have no registry mask: they
+        // are structural, not carried by a stdlib row. Nothing has a
+        // direct site to attribute, so the claim holds vacuously —
+        // and a vacuous security claim is worse than none, so it is
+        // rejected at validation instead.
+        _ => return Verdict::Holds,
+    };
+
+    let mut unattributed: Vec<String> = Vec::new();
+    for (key, fs) in &cx.summary.fns {
+        // Only the bundle's own fns. A stdlib body is not the
+        // author's to annotate, and blaming one would be unactionable.
+        if !cx.model.is_bundle_fn(key) {
+            continue;
+        }
+        let performs_directly = fs.calls.iter().any(|e| match &e.callee {
+            Callee::Unresolved(name) => {
+                let segs: Vec<&str> = name.split("::").collect();
+                crate::stdlib_surface::effects_for(&segs)
+                    .map_or(false, |eff| eff.contains(mask))
+            }
+            // A resolved callee is another bundle fn; its own sites
+            // are judged on their own row.
+            Callee::Resolved(_) => false,
+        }) || (mask == EffectSet::PUBLISH
+            && fs.effect_sites.iter().any(|s| {
+                matches!(s.kind, crate::alloc_summary::EffectSiteKind::Publish(_))
+            }));
+        if !performs_directly {
+            continue;
+        }
+        if !fn_carries_a_user_class(key, cx) {
+            unattributed.push(match &key.locus {
+                Some(l) => format!("{}::{}", l, key.fn_name),
+                None => key.fn_name.clone(),
+            });
+        }
+    }
+    if unattributed.is_empty() {
+        return Verdict::Holds;
+    }
+    unattributed.sort();
+    diags.push(Diag::ty(
+        c.name.span,
+        format!(
+            "claim `{}` violated: {} `{}` with no declared purpose — \
+             classify {} (`@effects(is: {{...}})`) with a user effect \
+             class so the operation is attributable: {}",
+            c.name.name,
+            if unattributed.len() == 1 {
+                "a fn performs"
+            } else {
+                "fns perform"
+            },
+            class_name.name,
+            if unattributed.len() == 1 { "it" } else { "them" },
+            unattributed.join(", ")
+        ),
+    ));
+    Verdict::Violated
+}
+
+/// Does this fn declare `@effects(is: { … })` naming a USER class?
+///
+/// A built-in in `is:` restates what the compiler already infers; the
+/// point of the claim is a purpose the author supplied.
+fn fn_carries_a_user_class(key: &FnKey, cx: &Cx) -> bool {
+    cx.carries_user_class.contains(key)
 }
 
 /// `cover topic in seed(a): subscribed_by(some G)` — every topic the

@@ -307,6 +307,65 @@ and performs the one privileged step. The planner never receives the
 key, a handle, or anything that could produce one — so there is nothing
 for it to leak, whatever it does.
 
+**You usually don't have to write the sealed locus.** `std::secret`
+ships one, and it closes the last gap: sealing protects reads, but a
+parent writing `Signer { key: … }` would still have held the key. So
+these take the *name of a source*, never the bytes:
+
+```hale,fragment
+locus Gateway {
+    params {
+        s: std::secret::Signer =
+            std::secret::Signer { env_var: "SIGNING_KEY" };
+    }
+    fn go(m: Bytes) -> Bytes { return self.s.sign(m); }
+}
+```
+
+The key is read during `birth`, so it exists only inside a sealed locus
+from the moment it enters the program — there is no line anywhere in
+your code where you held it. `self.s.key` is a compile error naming the
+methods you can call instead. `std::secret::Credential` is the same for
+a token or password, plus a `fingerprint()` that's safe to log.
+
+Two more claims worth knowing, because they answer different questions
+about the same boundary. **Where** may the program touch the OS?
+
+```hale,fragment
+claims {
+    all_io_is_gated: forbid reaches(app, effects(syscall)) avoiding safe_io;
+}
+```
+
+Every syscall path must pass through the vetted component. And,
+separately, **what is each crossing for?**
+
+```hale,fragment
+effect audit;
+
+claims {
+    io_attributed: require attributed(all syscall);
+}
+```
+
+Every fn that actually touches the OS must name a purpose with a user
+effect class. These are independent: I/O can be perfectly gated and
+still tell you nothing about why any given write happened, or be
+scattered across forty loci while each one says exactly what it's for.
+The second also covers code nobody has written yet — it quantifies over
+the whole program rather than a named group.
+
+If a whole group of loci should be confined, say so once and let the
+compiler watch for the one someone forgets:
+
+```hale,fragment
+group vaults = { Signer, TokenStore };
+
+claims {
+    vault_confined: require sealed(all vaults);
+}
+```
+
 **What this is and isn't.** The secret lives in a locus that owns it,
 your code cannot obtain it, the operations on it are classified, and
 your claims constrain who reaches them. That is confinement, not

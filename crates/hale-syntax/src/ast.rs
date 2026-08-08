@@ -280,6 +280,42 @@ pub enum ClaimForm {
         group: Ident,
         topic: TopicRef,
     },
+    /// GH #436: `require sealed(all G);` — every locus in `G` is
+    /// declared `@sealed`, so its state is readable only from inside
+    /// it.
+    ///
+    /// Sealing is otherwise per-locus discipline, which is exactly
+    /// the thing a security baseline cannot rely on: one unsealed
+    /// member of a vault group is the whole hole. This is the form
+    /// that lets a constitution demand confinement across a group
+    /// rather than hoping every author remembered.
+    ///
+    /// `all`, not `some` — the other `require` forms ask whether an
+    /// endpoint exists anywhere in the group; this one is a universal
+    /// over its members, so the quantifier is spelled differently on
+    /// purpose.
+    RequireSealed { group: Ident },
+    /// GH #436: `require attributed(all syscall);` — every user fn
+    /// that DIRECTLY performs an operation of the named built-in class
+    /// carries at least one user-declared effect class.
+    ///
+    /// Attribution, which is orthogonal to interposition. `forbid
+    /// reaches(app, effects(syscall)) avoiding gate` constrains WHERE
+    /// the boundary is crossed and says nothing about what any given
+    /// crossing is FOR; this says every crossing names a purpose and
+    /// says nothing about where it happens. Neither implies the
+    /// other, and a hybrid architecture wants both.
+    ///
+    /// DIRECT, not transitive, and that is load-bearing: transitively
+    /// every caller downstream of one labelled fn inherits the label
+    /// and passes, which would make the check nearly vacuous. The
+    /// attribution point is the site where the boundary is crossed.
+    ///
+    /// Also a universal over the whole closed world rather than over
+    /// a group, so a locus written next month is covered without
+    /// anyone editing the claim — the coverage hole an `avoiding`
+    /// claim scoped to a group necessarily has.
+    RequireAttributed { class_name: Ident },
     /// `cover topic in seed(a): subscribed_by(some G);` — bounded
     /// universal: every topic declared in the seed imported as `a`
     /// has a subscriber in G. A seed with no topics is a vacuity
@@ -2850,6 +2886,8 @@ pub fn remap_user_effects(items: &mut [TopDecl], map: &[u16]) {
                 ClaimForm::Bound { class: c, .. } => class(c, map),
                 ClaimForm::OnlyEdges { .. }
                 | ClaimForm::Require { .. }
+                | ClaimForm::RequireSealed { .. }
+                | ClaimForm::RequireAttributed { .. }
                 | ClaimForm::Cover { .. }
                 | ClaimForm::Count { .. } => {}
             }

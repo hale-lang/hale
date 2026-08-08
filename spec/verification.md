@@ -196,6 +196,44 @@ The remaining verbs (#382 phases 2–5):
 - **`require subscribes|publishes(some G, topic T)`** — existence
   over the DECLARED bus ends (the `bus { }` blocks — "wired" is a
   declaration property).
+- **`require attributed(all C)`** (GH #436) — every user fn that
+  **directly** performs an operation of built-in class `C` carries at
+  least one **user-declared** effect class. `require attributed(all
+  syscall)` says every place the program touches the OS names a
+  purpose.
+
+  **Orthogonal to interposition, not a weaker form of it.** `forbid
+  reaches(app, effects(syscall)) avoiding gate` constrains WHERE a
+  boundary is crossed and says nothing about what any crossing is
+  FOR; this constrains attribution and says nothing about location.
+  Neither implies the other: all I/O can funnel through one
+  `write(path, bytes)` everyone calls for everything (interposed,
+  unattributed), or forty loci can each touch the OS while every one
+  names its purpose (attributed, un-interposed). A hybrid wants both.
+
+  It also closes a coverage hole `avoiding` necessarily has: that
+  claim is scoped to a group, so a locus outside it is unconstrained
+  and one written next month is uncovered until someone edits the
+  group. This is a universal over the whole closed world.
+
+  **DIRECT, not transitive**, and that is load-bearing: transitively,
+  every caller downstream of one attributed fn inherits the label and
+  passes, which would make the claim nearly vacuous. The attribution
+  point is the site where the boundary is crossed. A built-in in
+  `is:` does not count — it restates what the compiler already
+  infers, and the claim asks for a purpose the author supplied. The
+  class must be a built-in; a user class there would be trivially
+  true while reading like a contract.
+
+- **`require sealed(all G)`** (GH #436) — every locus in `G` is
+  declared `@sealed`. A **universal** over the group's members, which
+  is why the quantifier is `all` rather than the `some` the other
+  `require` forms take: those ask whether an endpoint exists
+  anywhere, this asks whether every member holds. Reports every
+  unsealed member in one diagnostic — a baseline is adopted once and
+  the reader wants the whole list. Without it, sealing is per-locus
+  discipline, and one unsealed member of a vault group is the whole
+  hole.
 - **`cover topic in seed(a): subscribed_by(some G)`** — bounded
   universal: every topic the seed imported as `a` declares has a
   subscriber in G. Every uncovered topic is named. A seed with no
@@ -812,6 +850,16 @@ sealing the initializer would cost ordinary configuration and buy
 nothing. Real secret material should be loaded inside `birth` from a
 vault, environment, or file rather than passed in.
 
+A constitution can then demand confinement rather than trusting that
+every author remembered:
+
+```hale
+constitution SecretBaseline {
+    vault_confined: require sealed(all vaults);
+    no_plugin_secrets: forbid reaches(plugins, effects(secret_use));
+}
+```
+
 **2. One classified operation.** The privileged method carries a user
 effect class, so every path that can touch the secret is visible on
 the call graph — `frontier::infer_effects` propagates it transitively
@@ -835,6 +883,37 @@ A violation names the crossing call:
 claim `no_plugin_secrets` violated: `plugins` reaches
   `effects(secret_use)` — witness: `PluginHost::sneaky` -> `Signer::sign`
 ```
+
+**`std::secret` closes the initialization gap.** Sealing protects the
+read side; a parent writing `Signer { key: … }` still holds what it
+passes. The stdlib loci therefore take the **name of a source**, never
+the bytes:
+
+```hale
+locus Gateway {
+    params {
+        s: std::secret::Signer =
+            std::secret::Signer { env_var: "SIGNING_KEY" };
+    }
+    fn go(m: Bytes) -> Bytes { return self.s.sign(m); }
+}
+```
+
+`self.s.key` from `Gateway` is a compile error. The key is read during
+`birth`, so it exists only inside a sealed locus from the moment it
+enters the program and there is no construction site at which the
+caller held it. `std::secret::Credential` is the same discipline for a
+token or password, with a `fingerprint()` that is safe to log.
+
+This required one narrow resolver change: a qualified path naming a
+**sealed** Hale-source stdlib locus now resolves to the mangled name
+that source declares, instead of `Ty::Unknown`. Sealing keys off the
+receiver's resolved type, so without it a sealed stdlib locus had
+readable params — verified before the fix, `self.signer.key` returned
+real key bytes. Only *sealed* stdlib loci are injected; every other
+qualified path still resolves to `Ty::Unknown` exactly as before,
+because making them all resolve would switch on field-existence and
+method arity checking across the whole stdlib surface at once.
 
 **The recommended shape**, a pattern rather than an enforced contract:
 an ordinary function prepares a request from public data and returns a

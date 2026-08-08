@@ -356,9 +356,29 @@ only_edges_form   = "only" , "edges" , IDENTIFIER , "->" ,
 edge_grant        = ( "publish" | "subscribe" ) , topic_ref , ";" ;
 bound_form        = "bound" , effect_class_ref , "<=" , INT_LIT ,
                     "on" , "paths" , "from" , IDENTIFIER ;
-require_form      = "require" , ( "subscribes" | "publishes" ) ,
+require_form      = require_endpoint | require_sealed
+                  | require_attributed ;
+
+require_endpoint  = "require" , ( "subscribes" | "publishes" ) ,
                     "(" , "some" , IDENTIFIER , "," , "topic" ,
                     topic_ref , ")" ;
+
+(* GH #436: `require sealed(all G)` — every locus in the group is
+   declared `@sealed`. A UNIVERSAL over the group's members, hence
+   `all` rather than the `some` the endpoint forms take: those ask
+   whether an endpoint exists anywhere in the group, this asks
+   whether every member holds. See `spec/verification.md` § Secrets. *)
+require_sealed    = "require" , "sealed" ,
+                    "(" , "all" , IDENTIFIER , ")" ;
+
+(* GH #436: `require attributed(all syscall)` — every user fn that
+   DIRECTLY performs an operation of the named BUILT-IN effect class
+   carries at least one user-declared class. Attribution, orthogonal
+   to the interposition `forbid ... avoiding` gives. The IDENTIFIER
+   must name a built-in class; a user class there is trivially true.
+   See `spec/verification.md`. *)
+require_attributed = "require" , "attributed" ,
+                    "(" , "all" , IDENTIFIER , ")" ;
 cover_form        = "cover" , "topic" , "in" , "seed" , "(" ,
                     IDENTIFIER , ")" , ":" , "subscribed_by" ,
                     "(" , "some" , IDENTIFIER , ")" ;
