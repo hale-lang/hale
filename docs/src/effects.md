@@ -44,7 +44,8 @@ enforces it across everything reachable from it:
 ```
 
 `none: {…}` forbids effect classes — `syscall`, `block`, `time`,
-`entropy`, `env`, `ffi`, `publish`, `spawn`, `recursion`.
+`entropy`, `env`, `ffi`, `publish`, `spawn`, `recursion`,
+`secret_use`.
 `publish: {…}` declares which topics a fn may publish to (exact,
 because Hale's topic set is closed).
 
@@ -222,6 +223,14 @@ upgrades the check to an enforced error.
 | `spawn` | instantiating a locus | `Worker { }` |
 | `recursion` | a cycle in the call graph | a fn that reaches itself |
 | `alloc` | arena allocation — a phase-only class, see `@phase_effects` | `Buf { n: 1 }` |
+| `secret_use` | a privileged operation over confined secret material | `std::secret::Signer.sign` |
+
+`secret_use` is **compiler-owned**: `std::secret`'s privileged methods
+carry it, and you use it without declaring it — in `none:`, `only:`,
+`@phase_effects`, `forbid reaches(G, effects(secret_use))`, and
+`bound secret_use <= N`. Every built-in name is reserved, so
+`effect secret_use;` (or `effect syscall;`) is an error rather than a
+silent no-op. See [Verification](./verification.md#secrets-confine-classify-claim).
 
 Two of those are worth dwelling on, because they are the ones people
 guess wrong.

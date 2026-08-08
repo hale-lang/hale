@@ -182,8 +182,16 @@ External review of the landed work found three release blockers. All
 reproduced; the negative controls in `secrets_fail_opens.rs` were
 written and verified failing first.
 
-**BREAKING: `secret_use` is now a compiler built-in.** `effect
-secret_use;` is an error. User effect classes intern per-`Program`, so
+**BREAKING: every built-in effect name is now reserved.** `effect
+secret_use;` is an error — and so are `effect syscall;`, `effect
+block;`, `effect entropy;` and the rest. Those declarations were
+always silent no-ops (`EffectClass::from_ident` wins at every use
+site), so a program that wrote one believed it had declared a class
+while every claim naming it quietly meant the built-in. The break is
+narrow in practice and broader than "`secret_use` is new", which is
+why it is stated as the general rule.
+
+`secret_use` itself is now a compiler built-in. User effect classes intern per-`Program`, so
 the stdlib-declared class had no identity an application's claims
 could name: `forbid reaches(plugins, effects(secret_use))` silently
 missed `std::secret::Signer.sign` — the law over the recommended
@@ -199,7 +207,11 @@ field-access path, so `self.vault.key = 999` typechecked — for
 
 **`std::secret` fails closed.** `ready()` reported false and nothing
 consulted it, so `sign` returned a valid HMAC under the empty key and
-`verify` accepted the matching forgery. Sharpest case:
+`verify` accepted the matching forgery. Precisely: when the source is
+unavailable, signing returns an **empty result** and verification
+rejects — refusal by sentinel, not a startup failure. Gate startup on
+`ready()`; a structural birth failure may be better later and is not
+needed for the security property. Sharpest case:
 `matches(b"")` against an unloaded credential returned **true** — an
 authentication bypass on any unconfigured deployment.
 `fingerprint` is no longer described as "safe to publish" and now
@@ -230,6 +242,41 @@ diagnostics rendered mangled stdlib names.
 moves `shape_hash`. `require sealed` replays from the artifact;
 `require attributed` is compiler-certified, since the artifact exports
 inferred rather than direct effect sites.
+
+### Effect-system completeness (GH #436 review 2)
+
+Adding a compiler-owned class had two integration seams the first
+test matrix did not cover: the **closed universes**.
+
+`@effects(only: {…})` is the complement of a hardcoded class list and
+`@phase_effects` iterates another, so a class absent from either is
+one those contracts can never forbid. **`only: {}` certified a fn
+reaching `secret_use`**, and `@phase_effects(run: {})` admitted it
+during run — contracts whose entire purpose is rejecting unlisted
+effects were weaker than they read. Both universes now include it.
+
+Three attribution holes closed:
+
+* An **`@ffi` declaration** is now the direct boundary site rather
+  than its caller. The caller-side branch was unreachable (an `@ffi`
+  fn is a bundle decl, so the bundle test short-circuited first) and
+  the wrong shape besides — it returned true for every mask, so one
+  foreign call would have read as `publish`, `entropy` and
+  `secret_use` at once.
+* A fn's **own `@effects(is: {C})`** counts as a direct site. Without
+  it, `@effects(is: { secret_use }) fn sign(…)` — the shape the whole
+  secrets architecture rests on — was invisible, because it calls
+  nothing classified and allocates nothing.
+* An **indirect or opaque call** now leaves the claim `uncertified`
+  unless the caller already names a purpose. Attribution had asked
+  only whether a textual name sat in the stdlib registry, so a
+  callback parameter contributed nothing and the law reported `holds`
+  over a boundary it could not see.
+
+`--strict-secret` also missed **block tails** (`fn f(@secret t) { t }`
+— an implicit return; `block_mentions` promised the tail in its doc
+comment and checked only statements) and `fail` / `violate` payloads
+and `ShmWrite` bodies.
 
 ### `hale check --sealable` — the adoption survey (GH #436)
 

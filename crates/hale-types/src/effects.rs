@@ -236,6 +236,14 @@ fn class_universe(declared: &std::collections::BTreeSet<u16>) -> Vec<EffectClass
         EffectClass::Spawn,
         EffectClass::Recursion,
         EffectClass::Alloc,
+        // GH #436 review 2: a compiler-owned class MUST appear in
+        // every closed universe. `@effects(only: {…})` is the
+        // complement of this list, so an omitted class is one the
+        // contract can never forbid: `only: {}` certified a fn
+        // reaching `secret_use`, making a closed contract weaker than
+        // it reads. Adding a built-in without adding it here is the
+        // integration seam to check.
+        EffectClass::SecretUse,
     ];
     out.extend(declared.iter().map(|i| EffectClass::User(*i)));
     out
@@ -395,6 +403,11 @@ fn phase_effects_diags(
                     EffectClass::Ffi,
                     EffectClass::Publish,
                     EffectClass::Spawn,
+                    // Same reason as `class_universe`: an exact
+                    // phase contract that cannot name a class cannot
+                    // reject it. `@phase_effects(run: {})` admitted
+                    // `secret_use` during run.
+                    EffectClass::SecretUse,
                 ];
                 classes.extend(declared.iter().filter_map(|i| {
                     match defs.get(*i as usize) {
@@ -1106,6 +1119,15 @@ fn check_class(
         EffectClass::Time => (EffectSet::TIME, "a clock read"),
         EffectClass::Entropy => (EffectSet::ENTROPY, "an entropy read"),
         EffectClass::Env => (EffectSet::ENV, "an environment read"),
+        // GH #436 review 2: queries the frontier like any other
+        // masked class. Reaching this arm at all is the point — the
+        // class was absent from `class_universe`, so `only: {}` never
+        // asked about it and this code was unreachable BECAUSE the
+        // contract was blind, not because the class was special.
+        EffectClass::SecretUse => (
+            EffectSet::SECRET_USE,
+            "a privileged operation over confined secret material",
+        ),
         // #345: a user class queries the frontier exactly like a
         // built-in — the bit differs, the machinery does not.
         EffectClass::User(_) => (

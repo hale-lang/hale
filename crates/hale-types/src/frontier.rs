@@ -825,8 +825,44 @@ fn strict_block(
                 strict_block(body, tainted, diags)
             }
             Stmt::Block(blk) => strict_block(blk, tainted, diags),
+            // Payload-bearing escapes: a secret in a failure value or
+            // a closure violation leaves the fn as surely as a return
+            // does. `stmt_mentions` learned these; the emitting walk
+            // had no arm for them, so they were seen and not reported.
+            Stmt::Fail { value, span } => {
+                strict_escape(value, tainted, "a failure payload", *span, diags)
+            }
+            Stmt::Violate { payload: Some(p), span, .. } => strict_escape(
+                p,
+                tainted,
+                "a closure-violation payload",
+                *span,
+                diags,
+            ),
+            Stmt::ShmWrite { body, .. } => {
+                strict_block(body, tainted, diags)
+            }
             _ => {}
         }
+    }
+    strict_tail(b, tainted, diags);
+}
+
+/// A tainted trailing expression leaves the fn exactly like a
+/// `return` does, so it is the same escape.
+fn strict_tail(
+    b: &Block,
+    tainted: &BTreeSet<String>,
+    diags: &mut Vec<Diag>,
+) {
+    if let Some(tail) = &b.tail {
+        strict_escape(
+            tail,
+            tainted,
+            "this fn's trailing return value",
+            b.span,
+            diags,
+        );
     }
 }
 
@@ -899,6 +935,10 @@ fn expr_mentions(e: &Expr, names: &BTreeSet<String>) -> bool {
 /// A block mentions a name if any statement or its tail does.
 fn block_mentions(b: &Block, names: &BTreeSet<String>) -> bool {
     b.stmts.iter().any(|st| stmt_mentions(st, names))
+        // The doc comment promised the tail and the body did not
+        // check it, so an implicit return — `fn f(@secret t) { t }` —
+        // escaped both walks.
+        || b.tail.as_ref().map_or(false, |e| expr_mentions(e, names))
 }
 
 fn stmt_mentions(st: &Stmt, names: &BTreeSet<String>) -> bool {
@@ -928,6 +968,11 @@ fn stmt_mentions(st: &Stmt, names: &BTreeSet<String>) -> bool {
             block_mentions(body, names)
         }
         Stmt::Block(b) => block_mentions(b, names),
+        Stmt::Fail { value, .. } => expr_mentions(value, names),
+        Stmt::Violate { payload, .. } => {
+            payload.as_ref().map_or(false, |e| expr_mentions(e, names))
+        }
+        Stmt::ShmWrite { body, .. } => block_mentions(body, names),
         _ => false,
     }
 }

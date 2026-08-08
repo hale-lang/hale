@@ -469,3 +469,179 @@ fn a_keyword_named_class_parses() {
     ";
     assert!(parse_source(src).is_ok(), "`all publish` must parse");
 }
+
+// ---------------------------------------------------------------
+// Review 2: a compiler-owned class must join every CLOSED universe.
+// ---------------------------------------------------------------
+
+#[test]
+fn only_closed_contract_rejects_a_reachable_secret_use() {
+    // `@effects(only: {…})` is the COMPLEMENT of a hardcoded class
+    // list, so a class missing from that list is one the contract can
+    // never forbid — `only: {}` certified a fn reaching `secret_use`,
+    // making a closed contract weaker than it reads. Adding a
+    // built-in without adding it to both universes is the seam.
+    let src = "
+        locus L {
+            params { key: Int = 7; }
+            @effects(is: { secret_use })
+            fn privileged() -> Int { return self.key; }
+            @effects(only: { })
+            fn supposedly_closed() -> Int { return self.privileged(); }
+        }
+        main locus App { params { l: L = L { }; } }
+        fn main() { App { }; }
+    ";
+    let es = errors(src);
+    assert!(
+        es.iter().any(|m| m.contains("secret_use")),
+        "a closed contract must forbid the class it never listed: {es:?}"
+    );
+}
+
+#[test]
+fn an_exact_phase_contract_rejects_secret_use_during_run() {
+    let src = "
+        @phase_effects(run: { })
+        locus Worker {
+            params { key: Int = 7; }
+            run() { let x = self.vault_op(); }
+            @effects(is: { secret_use })
+            fn vault_op() -> Int { return self.key; }
+        }
+        main locus App { params { w: Worker = Worker { }; } }
+        fn main() { App { }; }
+    ";
+    let es = errors(src);
+    assert!(
+        es.iter().any(|m| m.contains("secret_use")),
+        "an exact phase contract must reject it: {es:?}"
+    );
+}
+
+// ---------------------------------------------------------------
+// Review 2: attribution holes.
+// ---------------------------------------------------------------
+
+#[test]
+fn an_unattributed_ffi_declaration_violates() {
+    // The `@ffi` DECLARATION is the boundary, not its caller. The
+    // caller-side branch was unreachable anyway — an `@ffi` fn is a
+    // bundle decl, so the bundle test short-circuited first — and it
+    // was the wrong shape besides: it returned true for every mask,
+    // so one foreign call would have read as publish, entropy and
+    // secret_use at once.
+    let src = "
+        @ffi(\"c\")
+        fn foreign_write(p: String);
+        locus L {
+            params { n: Int = 0; }
+            fn use_ffi(p: String) { foreign_write(p); }
+        }
+        main locus App {
+            params { l: L = L { }; }
+            claims { io: require attributed(all syscall); }
+        }
+        fn main() { App { }; }
+    ";
+    let es = errors(src);
+    assert!(
+        es.iter().any(|m| m.contains("foreign_write")),
+        "the ffi declaration must be the site blamed: {es:?}"
+    );
+}
+
+#[test]
+fn a_directly_classified_operation_still_needs_a_purpose() {
+    // The shape the whole secrets architecture rests on: a method
+    // that DECLARES `@effects(is: { secret_use })` calls nothing
+    // classified and allocates nothing, so it was invisible to the
+    // attribution evaluator. A built-in in `is:` establishes that the
+    // operation exists; it is not its purpose.
+    let src = "
+        effect signing;
+        @sealed locus CustomSigner {
+            params { key: Int = 7; }
+            @effects(is: { secret_use })
+            fn sign(n: Int) -> Int { return n + self.key; }
+        }
+        main locus App {
+            params { c: CustomSigner = CustomSigner { }; }
+            claims { every_op: require attributed(all secret_use); }
+        }
+        fn main() { App { }; }
+    ";
+    let es = errors(src);
+    assert!(
+        es.iter().any(|m| m.contains("CustomSigner::sign")),
+        "a self-declared secret operation must name a purpose: {es:?}"
+    );
+}
+
+#[test]
+fn an_indirect_call_leaves_attribution_uncertified() {
+    // The general effect engine treats a call through a fn-typed
+    // parameter as may-do-anything. Attribution asked only whether
+    // the textual name sat in the stdlib registry, so a callback
+    // contributed nothing and the law reported `holds` over a
+    // boundary it could not see.
+    let src = "
+        fn invoke(f: fn(Int) -> Int, n: Int) -> Int { return f(n); }
+        fn double(x: Int) -> Int { return x + x; }
+        locus L {
+            params { n: Int = 0; }
+            fn go(k: Int) -> Int { return invoke(double, k); }
+        }
+        main locus App {
+            params { l: L = L { }; }
+            claims { io: require attributed(all syscall); }
+        }
+        fn main() { App { }; }
+    ";
+    let es = errors(src);
+    assert!(
+        es.iter().any(|m| m.contains("uncertified")),
+        "an opaque callee must not be certified past: {es:?}"
+    );
+}
+
+// ---------------------------------------------------------------
+// Review 2: strict-secret block tails and payload statements.
+// ---------------------------------------------------------------
+
+#[test]
+fn strict_sees_a_trailing_return_expression() {
+    // `block_mentions` promised the tail in its doc comment and
+    // checked only statements, so an implicit return escaped both
+    // walks.
+    let src = "
+        locus L {
+            params { n: Int = 0; }
+            fn leak(@secret token: String) -> String { token }
+        }
+        main locus App { params { l: L = L { }; } }
+        fn main() { App { }; }
+    ";
+    let ms = strict(src);
+    assert!(
+        ms.iter().any(|m| m.contains("trailing return")),
+        "an implicit return must not escape: {ms:?}"
+    );
+}
+
+#[test]
+fn strict_sees_a_fail_payload() {
+    let src = "
+        type E { m: String; }
+        locus L {
+            params { n: Int = 0; }
+            fn f(@secret token: String) -> Int fallible(E) {
+                fail E { m: token };
+            }
+        }
+        main locus App { params { l: L = L { }; } }
+        fn main() { App { }; }
+    ";
+    let ms = strict(src);
+    assert!(!ms.is_empty(), "a `fail` payload must be walked: {ms:?}");
+}

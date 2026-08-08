@@ -216,6 +216,23 @@ The remaining verbs (#382 phases 2–5):
   and one written next month is uncovered until someone edits the
   group. This is a universal over the whole closed world.
 
+  A **direct site** is: a classified frontier path call, an `@ffi`
+  declaration (the declaration itself, not its caller — it is the
+  application-owned boundary and can carry the purpose), a resolved
+  callee the author does not own whose effects include the class, a
+  syntactic site (publish, allocation), or the fn's own
+  `@effects(is: {C})`. That last one matters most to the secrets
+  architecture: a method declaring itself a `secret_use` operation
+  calls nothing classified and allocates nothing, so without it the
+  central shape was invisible to the claim. A built-in in `is:`
+  establishes that the operation exists; it is still not its purpose,
+  so a user class is required.
+
+  An **indirect or opaque call** the checker cannot resolve leaves
+  the claim `uncertified` unless the enclosing fn already names a
+  purpose — the same refusal-to-certify posture as the rest of the
+  stack, rather than reporting `holds` over a boundary it cannot see.
+
   **DIRECT, not transitive**, and that is load-bearing: transitively,
   every caller downstream of one attributed fn inherits the label and
   passes, which would make the claim nearly vacuous. The attribution
