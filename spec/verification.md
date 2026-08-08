@@ -219,7 +219,14 @@ The remaining verbs (#382 phases 2–5):
   **DIRECT, not transitive**, and that is load-bearing: transitively,
   every caller downstream of one attributed fn inherits the label and
   passes, which would make the claim nearly vacuous. The attribution
-  point is the site where the boundary is crossed. A built-in in
+  point is the first **application-owned** fn crossing out — a
+  frontier path call, an `@ffi` declaration, or a Hale-source stdlib
+  body whose own effects include the class. An ordinary application
+  callee is judged on its own row instead, which is what keeps this
+  direct. Attaching only to frontier path calls would have made
+  coverage depend on whether an API happens to be a path call or a
+  stdlib locus method — not a stable boundary to hang a security
+  claim on. A built-in in
   `is:` does not count — it restates what the compiler already
   infers, and the claim asks for a purpose the author supplied. The
   class must be a built-in; a user class there would be trivially
@@ -868,9 +875,14 @@ with no further annotation.
 **3. Law.** The domain states who may reach it and how often, using
 claim forms that already exist:
 
-```hale
-effect secret_use;
+`secret_use` is a **compiler built-in** — the stdlib owns the
+mechanism, the compiler owns the class identity, the application
+states the law. Declaring `effect secret_use;` is an error: user
+classes intern per-`Program`, so a stdlib-declared class had no
+identity an application's claims could name, and the law over
+`std::secret` was silently unenforceable and order-dependent.
 
+```hale
 claims {
     no_plugin_secrets: forbid reaches(plugins, effects(secret_use));
     one_op_per_request: bound secret_use <= 1 on paths from handlers;
@@ -923,6 +935,18 @@ any secret capability. Prefer a closed operation enum over a callback
 — a finite vocabulary is reviewable, a function parameter is a
 programmable oracle. Worked end to end in
 `crates/hale-codegen/tests/fixtures/examples/secrets-sealed-handler.hl`.
+
+**In the artifact.** `sealed` is a hashed model row (schema 1.9), so a
+locus gaining or losing `@sealed` moves `shape_hash` — a
+`--check-topology` gate sees it. Confinement is a structural property,
+not merely a claim input, and a seal changing with no topology diff is
+exactly the invisible security change the artifact exists to surface.
+
+`require sealed` replays from that row. `require attributed` does not:
+it turns on DIRECT effect sites, and the artifact exports inferred
+per-fn effect sets rather than the direct/transitive distinction, so
+that form is **compiler-certified** — the artifact carries its verdict
+and not the facts to recompute it.
 
 ### What this guarantees, and what it does not
 
@@ -1400,10 +1424,18 @@ assume the others in a build:
   newly fails programs that compile today, and a lint that grows
   teeth in a point release is a userspace break even when every new
   finding is a real bug. **`hale check --strict-secret`** runs the
-  widened walk: every branch, alias propagation through `let`, and
-  `uncertified` for anything it cannot follow — an unfollowed call, a
-  field store, a return. It is loud, which is the honest signal that
-  one body's reasoning is not a containment proof.
+  widened walk: every branch (including `else`, `else if`, and both
+  block and EXPRESSION `match` arms), alias propagation through `let`
+  and tuple destructuring, and `uncertified` for anything it cannot
+  follow — an unfollowed call, a field store, a return. It is loud,
+  which is the honest signal that one body's reasoning is not a
+  containment proof.
+
+  The expression walk is **exhaustive by construction**: it has no
+  catch-all arm, so adding an `Expr` variant fails the build rather
+  than silently opening a laundering route. Branch taint is shared
+  rather than merged per-branch — imprecise in the over-tainting
+  direction, which is the safe one.
 
   For a guarantee rather than a lint, see § Secrets below.
 - **Inferred effect sets + symbolic cost** (GH #265, 2026-07-29).

@@ -176,6 +176,61 @@ claimed a constitution could already require sealing across a group,
 which was false — no claim form required an annotation. The same gap
 still applies to `@supervised`.
 
+### Confinement and claim fail-opens closed (GH #436 review)
+
+External review of the landed work found three release blockers. All
+reproduced; the negative controls in `secrets_fail_opens.rs` were
+written and verified failing first.
+
+**BREAKING: `secret_use` is now a compiler built-in.** `effect
+secret_use;` is an error. User effect classes intern per-`Program`, so
+the stdlib-declared class had no identity an application's claims
+could name: `forbid reaches(plugins, effects(secret_use))` silently
+missed `std::secret::Signer.sign` — the law over the recommended
+secrets path was unenforceable — and with an application declaring its
+own classes first, the stdlib's bit aliased onto whichever class sat
+at that index. A built-in has one identity by construction. `bound`
+accepts it, being the one counted built-in with no `@budget`
+spelling.
+
+**`@sealed` now stops writes.** It hooked only the expression
+field-access path, so `self.vault.key = 999` typechecked — for
+`std::secret`, outside code could CHOOSE the signing key.
+
+**`std::secret` fails closed.** `ready()` reported false and nothing
+consulted it, so `sign` returned a valid HMAC under the empty key and
+`verify` accepted the matching forgery. Sharpest case:
+`matches(b"")` against an unloaded credential returned **true** — an
+authentication bypass on any unconfigured deployment.
+`fingerprint` is no longer described as "safe to publish" and now
+carries `secret_use`.
+
+`require attributed` now attaches to the first **application-owned**
+fn crossing out, including `@ffi` declarations and Hale-source stdlib
+bodies. It previously ignored every resolved call, so a publish
+through `self.logger.info(m)` was invisible while the same operation
+as a path call was caught — coverage depending on how an API happens
+to be implemented. An ordinary application callee is still judged on
+its own row, which is what keeps attribution direct. `publish` also
+parses as a class name now; it is a built-in class and a reserved
+keyword, and `expect_ident` had rejected the one class most worth
+attributing.
+
+Also: `require attributed` accepted `ffi` / `spawn` / `recursion`,
+which its evaluator answered with unconditional success; it ignored
+direct allocation sites; the sealed/attributed collectors did not
+recurse into modules; `require sealed` held vacuously over a
+locus-free group; `--strict-secret` missed tuples, indexes, block
+tails, `or` substitutes, `fail` payloads, expression `match` arms and
+`LetTuple` (the expression walk is now exhaustive by construction —
+no catch-all arm, so a new `Expr` variant fails the build); and
+diagnostics rendered mangled stdlib names.
+
+**Schema 1.9:** `sealed` joins the hashed model, so sealing a locus
+moves `shape_hash`. `require sealed` replays from the artifact;
+`require attributed` is compiler-certified, since the artifact exports
+inferred rather than direct effect sites.
+
 ### `hale check --sealable` — the adoption survey (GH #436)
 
 `@sealed` is opt-in, so "would this collide with real code?" is a

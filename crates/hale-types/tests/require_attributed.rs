@@ -129,24 +129,34 @@ fn a_builtin_in_is_does_not_count_as_attribution() {
 }
 
 #[test]
-fn the_class_must_be_a_builtin() {
-    // `require attributed(all audit)` would ask that every site
-    // carrying `audit` also carries a user class — trivially true,
-    // while reading like a real contract.
-    let src = "
-        effect audit;
-        locus L { params { n: Int = 0; } fn f() -> Int { return 1; } }
-        main locus App {
-            params { l: L = L { }; }
-            claims { bogus: require attributed(all audit); }
-        }
-        fn main() { App { }; }
-    ";
-    let es = errors(src);
-    assert!(
-        es.iter().any(|m| m.contains("BUILT-IN")),
-        "a user class must be rejected, got {es:?}"
-    );
+fn the_class_must_have_countable_direct_sites() {
+    // Two rejections with one rationale: the claim can only be
+    // evaluated where a DIRECT site exists to attribute.
+    //
+    // A user class (`audit`) would ask that every site carrying it
+    // also carries a user class — trivially true, while reading like
+    // a real contract. `ffi` / `spawn` / `recursion` are structural,
+    // carried by no registry row, so the evaluator answered them with
+    // unconditional success. Validation now uses the same predicate
+    // as evaluation, so neither can be accepted.
+    for class in ["audit", "ffi", "spawn", "recursion"] {
+        let src = format!(
+            "effect audit;
+             locus L {{ params {{ n: Int = 0; }}
+                 fn f() -> Int {{ return 1; }} }}
+             main locus App {{
+                 params {{ l: L = L {{ }}; }}
+                 claims {{ bogus: require attributed(all {class}); }}
+             }}
+             fn main() {{ App {{ }}; }}"
+        );
+        let es = errors(&src);
+        assert!(
+            es.iter().any(|m| m.contains("countable DIRECT sites")),
+            "`{class}` must be rejected with the shared-predicate \
+             message, got {es:?}"
+        );
+    }
 }
 
 #[test]

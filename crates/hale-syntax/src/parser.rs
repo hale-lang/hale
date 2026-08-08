@@ -987,6 +987,27 @@ impl Parser {
                 members = Some(ms);
             }
             self.expect(TokenKind::Semi, ";")?;
+            // GH #436 follow-up: a built-in name may not be
+            // redeclared. `EffectClass::from_ident` wins at every use
+            // site, so the declaration is a silent no-op — the author
+            // writes `effect secret_use;`, believes they declared a
+            // class, and every claim naming it quietly means the
+            // built-in instead. Rejecting is the only reading that
+            // cannot mislead.
+            if EffectClass::from_ident(&name).is_some() {
+                return Err(Diag::parse(
+                    name_tok.span,
+                    format!(
+                        "`{name}` is a BUILT-IN effect class and cannot \
+                         be redeclared — the compiler already owns its \
+                         identity, and a second declaration would be a \
+                         silent no-op. Use it directly \
+                         (`@effects(is: {{ {name} }})`, \
+                         `effects({name})` in a claim), or pick another \
+                         name."
+                    ),
+                ));
+            }
             let idx = self.intern_effect(&name);
             if let Some(ms) = members {
                 self.effect_defs[idx as usize] = Some(ms);
@@ -1658,7 +1679,18 @@ impl Parser {
                     ));
                 }
             }
-            let class_name = self.expect_ident("effect class name")?;
+            // `publish` is a built-in effect class AND a reserved
+            // keyword, so `expect_ident` rejected the one class most
+            // worth attributing. Same shape as the `@budget`
+            // dimension parser, which hit this first.
+            let tok = self.peek_token().clone();
+            let class_name = match &tok.kind {
+                TokenKind::Publish => {
+                    self.bump();
+                    Ident { name: "publish".to_string(), span: tok.span }
+                }
+                _ => self.expect_ident("effect class name")?,
+            };
             self.expect(TokenKind::RParen, ")")?;
             return Ok(ClaimForm::RequireAttributed { class_name });
         }

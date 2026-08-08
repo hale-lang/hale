@@ -181,6 +181,10 @@ impl EffectSet {
     pub const ENTROPY: EffectSet = EffectSet(1 << 4);
     pub const ENV: EffectSet = EffectSet(1 << 5);
     pub const ALLOC: EffectSet = EffectSet(1 << 6);
+    /// GH #436 follow-up: privileged use of confined secret material.
+    /// Bits 7-9 sit below `BUILTIN_BITS`, so this costs no user
+    /// capacity.
+    pub const SECRET_USE: EffectSet = EffectSet(1 << 7);
     /// Not yet classified (#265 step 4 turns the surface; until
     /// then queries must treat this as "may do anything").
     pub const UNCLASSIFIED: EffectSet = EffectSet(u64::MAX);

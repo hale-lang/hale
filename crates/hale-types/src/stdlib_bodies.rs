@@ -82,12 +82,20 @@ pub fn demangle_imports(
     diags: &mut [hale_syntax::Diag],
     import_renames: &[(Vec<String>, String)],
 ) {
-    if import_renames.is_empty() {
-        return;
-    }
+    // GH #436 follow-up: the stdlib table applies unconditionally.
+    // This used to return early when a program had no imports, so a
+    // diagnostic naming a Hale-source stdlib locus rendered its
+    // MANGLED name — `__StdSecretSigner::sign` — a symbol that
+    // appears nowhere in the author's program. Claims witnesses hit
+    // this the moment `secret_use` became findable.
     let mut table: Vec<(&str, String)> = import_renames
         .iter()
         .map(|(segs, mangled)| (mangled.as_str(), segs.join("::")))
+        .chain(
+            hale_stdlib::PATH_RENAMES
+                .iter()
+                .map(|(segs, mangled)| (*mangled, segs.join("::"))),
+        )
         .collect();
     table.sort_by_key(|(m, _)| std::cmp::Reverse(m.len()));
     for d in diags.iter_mut() {

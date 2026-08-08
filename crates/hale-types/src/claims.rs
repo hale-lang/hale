@@ -1127,16 +1127,30 @@ fn validate_claim(c: &ClaimDecl, cx: &Cx, diags: &mut Vec<Diag>) -> bool {
             ..
         } => {
             ok &= check_group(from, diags);
-            if matches!(class, EffectClass::User(_)) {
-                ok &= check_class(class, class_name, *class_span, cx, diags);
+            // `secret_use` is a built-in WITHOUT a `@budget` spelling,
+            // so the rule below does not apply to it: there is no
+            // second way to write the bound, and "at most one
+            // privileged secret operation per request" is exactly the
+            // shape `bound` exists for. The rejection is about
+            // avoiding two spellings of one contract, not about
+            // built-ins as a category.
+            if matches!(class, EffectClass::User(_) | EffectClass::SecretUse)
+            {
+                if matches!(class, EffectClass::User(_)) {
+                    ok &= check_class(
+                        class, class_name, *class_span, cx, diags,
+                    );
+                }
             } else {
                 diags.push(Diag::ty(
                     *class_span,
                     format!(
                         "claim `{}`: `bound` takes a user-declared \
-                         effect class — the counted built-ins keep \
-                         their `@budget` spellings (`publish`, \
-                         `block_points`, `alloc_per_call`)",
+                         effect class (or `secret_use`) — the counted \
+                         built-ins keep their `@budget` spellings \
+                         (`publish`, `block_points`, `alloc_per_call`), \
+                         and a second way to write one contract is \
+                         what this rejects",
                         c.name.name
                     ),
                 ));
@@ -1154,18 +1168,24 @@ fn validate_claim(c: &ClaimDecl, cx: &Cx, diags: &mut Vec<Diag>) -> bool {
             // Built-ins only. A USER class here would ask that every
             // site carrying it also carries a user class — trivially
             // true, and it would read as a real contract.
-            if hale_syntax::ast::EffectClass::from_ident(&class_name.name)
-                .is_none()
-            {
+            // Validation must use the SAME predicate as evaluation.
+            // Accepting a class the evaluator answers with
+            // unconditional `Holds` gives a sentence that reads like a
+            // security baseline and checks nothing — `ffi`, `spawn`
+            // and `recursion` are structural, carried by no registry
+            // row, so no site can be attributed for them.
+            if attributed_mask(&class_name.name).is_none() {
                 diags.push(Diag::ty(
                     class_name.span,
                     format!(
                         "claim `{}`: `require attributed` takes a \
-                         BUILT-IN effect class (`syscall`, `block`, \
-                         `publish`, `time`, `entropy`, `env`, `alloc`, \
-                         …) — it asks that every site performing one \
-                         names a user-declared purpose. `{}` is not a \
-                         built-in.",
+                         built-in class with countable DIRECT sites — \
+                         `syscall`, `block`, `publish`, `time`, \
+                         `entropy`, `env`, `alloc`, `secret_use`. `{}` \
+                         is not one of those: a user class would be \
+                         trivially true, and `ffi` / `spawn` / \
+                         `recursion` are structural properties with no \
+                         site to attribute.",
                         c.name.name, class_name.name
                     ),
                 ));
@@ -2355,6 +2375,23 @@ fn evaluate_require_sealed(
         unreachable!("dispatched on form")
     };
     let g = &cx.groups[&group.name];
+    // A universal over an empty projection is the fail-open this
+    // whole system exists to avoid: a group of free fns has no loci,
+    // so nothing is unsealed, so the claim "holds" while confining
+    // nothing. Same vacuity discipline the other verbs apply.
+    if g.loci.is_empty() {
+        diags.push(Diag::ty(
+            c.name.span,
+            format!(
+                "claim `{}`: group `{}` contains no loci, so \
+                 `require sealed` would quantify over an empty set and \
+                 hold while confining nothing. Sealing is a property of \
+                 loci — name a group of them.",
+                c.name.name, group.name
+            ),
+        ));
+        return Verdict::Invalid;
+    }
     let unsealed: Vec<&str> = g
         .loci
         .iter()
@@ -2381,6 +2418,30 @@ fn evaluate_require_sealed(
     Verdict::Violated
 }
 
+/// The classes `require attributed` can actually check: those carried
+/// by a registry row or a syntactic site, so a DIRECT site exists to
+/// attribute. `ffi` / `spawn` / `recursion` are structural and have
+/// none; a user class would be trivially true.
+///
+/// Validation and evaluation share this so a form the evaluator would
+/// answer with unconditional success can never be accepted.
+fn attributed_mask(
+    name: &str,
+) -> Option<crate::stdlib_surface::EffectSet> {
+    use crate::stdlib_surface::EffectSet;
+    Some(match name {
+        "syscall" => EffectSet::SYSCALL,
+        "block" => EffectSet::BLOCK,
+        "publish" => EffectSet::PUBLISH,
+        "time" => EffectSet::TIME,
+        "entropy" => EffectSet::ENTROPY,
+        "env" => EffectSet::ENV,
+        "alloc" => EffectSet::ALLOC,
+        "secret_use" => EffectSet::SECRET_USE,
+        _ => return None,
+    })
+}
+
 /// GH #436: `require attributed(all C)` — every user fn that DIRECTLY
 /// performs an operation of built-in class `C` carries at least one
 /// user-declared effect class.
@@ -2405,26 +2466,9 @@ fn evaluate_require_attributed(
     let ClaimForm::RequireAttributed { class_name } = &c.form else {
         unreachable!("dispatched on form")
     };
-    let Some(class) =
-        hale_syntax::ast::EffectClass::from_ident(&class_name.name)
-    else {
-        unreachable!("validated")
-    };
     use crate::stdlib_surface::EffectSet;
-    let mask = match class {
-        hale_syntax::ast::EffectClass::Syscall => EffectSet::SYSCALL,
-        hale_syntax::ast::EffectClass::Block => EffectSet::BLOCK,
-        hale_syntax::ast::EffectClass::Publish => EffectSet::PUBLISH,
-        hale_syntax::ast::EffectClass::Time => EffectSet::TIME,
-        hale_syntax::ast::EffectClass::Entropy => EffectSet::ENTROPY,
-        hale_syntax::ast::EffectClass::Env => EffectSet::ENV,
-        hale_syntax::ast::EffectClass::Alloc => EffectSet::ALLOC,
-        // `ffi` / `spawn` / `recursion` have no registry mask: they
-        // are structural, not carried by a stdlib row. Nothing has a
-        // direct site to attribute, so the claim holds vacuously —
-        // and a vacuous security claim is worse than none, so it is
-        // rejected at validation instead.
-        _ => return Verdict::Holds,
+    let Some(mask) = attributed_mask(&class_name.name) else {
+        unreachable!("validated against the same predicate")
     };
 
     let mut unattributed: Vec<String> = Vec::new();
@@ -2440,10 +2484,38 @@ fn evaluate_require_attributed(
                 crate::stdlib_surface::effects_for(&segs)
                     .map_or(false, |eff| eff.contains(mask))
             }
-            // A resolved callee is another bundle fn; its own sites
-            // are judged on their own row.
-            Callee::Resolved(_) => false,
-        }) || (mask == EffectSet::PUBLISH
+            Callee::Resolved(callee) => {
+                // A resolved BUNDLE fn is judged on its own row —
+                // that is what keeps attribution direct rather than
+                // transitive.
+                //
+                // A resolved callee the author does not own is a
+                // different case, and treating it like a bundle fn
+                // was a hole: `@ffi` declarations and Hale-source
+                // stdlib bodies both resolve, so
+                // `self.logger.info(m)` crossed a publish boundary
+                // and nothing owed a purpose, while the same
+                // operation written as a path call did. Attribution
+                // has to attach to the first APPLICATION-OWNED fn
+                // crossing out, or it depends on whether an API
+                // happens to be a frontier path or a Hale-source
+                // wrapper — not a stable boundary.
+                if cx.model.is_bundle_fn(callee) {
+                    return false;
+                }
+                if callee.locus.is_none() && cx.ffi.contains(&callee.fn_name)
+                {
+                    return true;
+                }
+                crate::frontier::infer_effects(
+                    &cx.summary,
+                    callee,
+                    &cx.ffi,
+                )
+                .contains(mask)
+            }
+        }) || (mask == EffectSet::ALLOC && !fs.sites.is_empty())
+            || (mask == EffectSet::PUBLISH
             && fs.effect_sites.iter().any(|s| {
                 matches!(s.kind, crate::alloc_summary::EffectSiteKind::Publish(_))
             }));
