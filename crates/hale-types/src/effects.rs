@@ -55,6 +55,29 @@ pub(crate) fn ffi_names(programs: &[&Program]) -> BTreeSet<String> {
     out
 }
 
+/// GH #436: loci declared `@sealed`, for `require sealed(all G)`.
+/// Includes the Hale-source stdlib, so a group naming
+/// `std::secret::Signer` sees it as sealed.
+pub(crate) fn sealed_loci_of(programs: &[&Program]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let mut walk = |items: &[TopDecl]| {
+        for item in items {
+            if let TopDecl::Locus(l) = item {
+                if l.sealed {
+                    out.insert(l.name.name.clone());
+                }
+            }
+        }
+    };
+    for p in programs {
+        walk(&p.items);
+    }
+    if let Some(sp) = crate::stdlib_bodies::program() {
+        walk(&sp.items);
+    }
+    out
+}
+
 /// Render `root -> hop -> hop [leaf]` for a witness chain.
 fn chain(root: &FnKey, steps: &[callgraph::WitnessStep]) -> String {
     demangle_stdlib(&callgraph::render_witness(root, steps))

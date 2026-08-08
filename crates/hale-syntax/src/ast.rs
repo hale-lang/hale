@@ -280,6 +280,21 @@ pub enum ClaimForm {
         group: Ident,
         topic: TopicRef,
     },
+    /// GH #436: `require sealed(all G);` — every locus in `G` is
+    /// declared `@sealed`, so its state is readable only from inside
+    /// it.
+    ///
+    /// Sealing is otherwise per-locus discipline, which is exactly
+    /// the thing a security baseline cannot rely on: one unsealed
+    /// member of a vault group is the whole hole. This is the form
+    /// that lets a constitution demand confinement across a group
+    /// rather than hoping every author remembered.
+    ///
+    /// `all`, not `some` — the other `require` forms ask whether an
+    /// endpoint exists anywhere in the group; this one is a universal
+    /// over its members, so the quantifier is spelled differently on
+    /// purpose.
+    RequireSealed { group: Ident },
     /// `cover topic in seed(a): subscribed_by(some G);` — bounded
     /// universal: every topic declared in the seed imported as `a`
     /// has a subscriber in G. A seed with no topics is a vacuity
@@ -2850,6 +2865,7 @@ pub fn remap_user_effects(items: &mut [TopDecl], map: &[u16]) {
                 ClaimForm::Bound { class: c, .. } => class(c, map),
                 ClaimForm::OnlyEdges { .. }
                 | ClaimForm::Require { .. }
+                | ClaimForm::RequireSealed { .. }
                 | ClaimForm::Cover { .. }
                 | ClaimForm::Count { .. } => {}
             }

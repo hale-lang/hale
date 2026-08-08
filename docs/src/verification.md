@@ -328,6 +328,17 @@ your code where you held it. `self.s.key` is a compile error naming the
 methods you can call instead. `std::secret::Credential` is the same for
 a token or password, plus a `fingerprint()` that's safe to log.
 
+If a whole group of loci should be confined, say so once and let the
+compiler watch for the one someone forgets:
+
+```hale,fragment
+group vaults = { Signer, TokenStore };
+
+claims {
+    vault_confined: require sealed(all vaults);
+}
+```
+
 **What this is and isn't.** The secret lives in a locus that owns it,
 your code cannot obtain it, the operations on it are classified, and
 your claims constrain who reaches them. That is confinement, not

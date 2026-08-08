@@ -1606,6 +1606,35 @@ impl Parser {
     fn parse_require_form(&mut self) -> Result<ClaimForm, Diag> {
         self.bump(); // `require`
         let pred_tok = self.peek_token().clone();
+        // GH #436: `require sealed(all G);` — a universal over the
+        // group's members rather than an existential over endpoints,
+        // so it parses its own shape.
+        if matches!(&pred_tok.kind, TokenKind::Ident(s) if s == "sealed") {
+            self.bump();
+            self.expect(TokenKind::LParen, "(")?;
+            let q = self.peek_token().clone();
+            match &q.kind {
+                TokenKind::Ident(s) if s == "all" => {
+                    self.bump();
+                }
+                other => {
+                    return Err(Diag::parse(
+                        q.span,
+                        format!(
+                            "expected `all` before the group in `require \
+                             sealed(all G)` — it is a universal over the \
+                             group's members, not an existential over \
+                             endpoints like `require subscribes(some G, \
+                             …)`. Got {:?}",
+                            other
+                        ),
+                    ));
+                }
+            }
+            let group = self.expect_ident("group name")?;
+            self.expect(TokenKind::RParen, ")")?;
+            return Ok(ClaimForm::RequireSealed { group });
+        }
         let publishers = match &pred_tok.kind {
             TokenKind::Ident(s) if s == "subscribes" => false,
             TokenKind::Ident(s) if s == "publishes" => true,
@@ -1613,8 +1642,8 @@ impl Parser {
                 return Err(Diag::parse(
                     pred_tok.span,
                     format!(
-                        "expected `subscribes` or `publishes` after \
-                         `require`, got {:?}",
+                        "expected `subscribes`, `publishes`, or `sealed` \
+                         after `require`, got {:?}",
                         other
                     ),
                 ));

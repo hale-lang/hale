@@ -137,6 +137,45 @@ every *annotated* stdlib declaration was invisible to it and a rename
 row pointing at one read as stale. It now skips leading decorators —
 the gap would equally have hidden a `@form` locus.
 
+### `require sealed(all G)` — confinement as law (GH #436)
+
+A new claim form: every locus in `G` is declared `@sealed`.
+
+```hale
+group vaults = { Signer, TokenStore };
+
+claims { vault_confined: require sealed(all vaults); }
+```
+
+```text
+claim `vault_confined` violated: a locus in `vaults` is not `@sealed`,
+  so its state is readable by anything holding it — TokenStore
+```
+
+A **universal** over the group's members, which is why the quantifier
+is `all` rather than the `some` the other `require` forms take: those
+ask whether an endpoint exists anywhere in the group, this asks whether
+every member holds. `require sealed(some G)` is a parse error rather
+than a form that quietly means the opposite of how it reads. Every
+unsealed member is reported in one diagnostic — a baseline is adopted
+once and the reader wants the whole list, not one name per build.
+
+Without it, sealing is per-locus discipline, and one unsealed member of
+a vault group is the whole hole. It composes through constitutions like
+any other claim, so a security baseline is adopted once:
+
+```hale
+constitution SecretBaseline {
+    vault_confined: require sealed(all vaults);
+    no_plugin_secrets: forbid reaches(plugins, effects(secret_use));
+}
+```
+
+This closes a gap found while writing #437's spec: an early draft
+claimed a constitution could already require sealing across a group,
+which was false — no claim form required an annotation. The same gap
+still applies to `@supervised`.
+
 ---
 
 ## v0.16.0 — the law composes, the certificate travels (2026-08-06)

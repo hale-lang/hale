@@ -600,6 +600,7 @@ fn rewrite_claim_topic_refs(
             }
             ClaimForm::ForbidReaches { .. }
             | ClaimForm::Bound { .. }
+            | ClaimForm::RequireSealed { .. }
             | ClaimForm::Cover { .. } => {}
         }
     }
@@ -799,7 +800,8 @@ impl<'a> Mangler<'a> {
                             );
                         }
                     }
-                    ClaimForm::Cover { group, .. } => {
+                    ClaimForm::RequireSealed { group }
+                    | ClaimForm::Cover { group, .. } => {
                         self.rewrite_ident(&mut group.name);
                     }
                     ClaimForm::Count { topic, .. } => {

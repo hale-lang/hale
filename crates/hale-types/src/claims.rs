@@ -53,6 +53,7 @@ use crate::verdict::Verdict;
 use crate::callgraph;
 use crate::effects::{
     close, declared_of, defs_of, effect_names_of, ffi_names,
+    sealed_loci_of,
 };
 use crate::stdlib_surface::{self, EffectSet};
 
@@ -321,6 +322,8 @@ struct Cx<'a> {
     defs: Vec<Option<Vec<EffectClass>>>,
     declared: BTreeSet<u16>,
     effect_names: Vec<String>,
+    /// GH #436: loci declared `@sealed`, for `require sealed(all G)`.
+    sealed: BTreeSet<String>,
     /// #392: the normalized model — decl provenance (witness spans,
     /// origin gating), the phase relation (`during`), the seed sort.
     model: crate::model::Model,
@@ -726,6 +729,7 @@ fn claims_report_inner(
                 ClaimForm::OnlyEdges { src, .. } => Some(&src.name),
                 ClaimForm::Bound { from, .. } => Some(&from.name),
                 ClaimForm::Require { group, .. }
+                | ClaimForm::RequireSealed { group }
                 | ClaimForm::Cover { group, .. } => Some(&group.name),
                 ClaimForm::Count { topic, .. } => {
                     topic.segments.first().map(|s| &s.name)
@@ -875,6 +879,7 @@ fn claims_report_inner(
         defs: defs_of(programs),
         declared: declared_of(programs),
         effect_names: effect_names_of(programs),
+        sealed: sealed_loci_of(programs),
         model: crate::model::Model::derive(programs, import_renames),
     };
 
@@ -894,6 +899,9 @@ fn claims_report_inner(
                 }
                 ClaimForm::Bound { .. } => {
                     evaluate_bound(c, &cx, &mut diags)
+                }
+                ClaimForm::RequireSealed { .. } => {
+                    evaluate_require_sealed(c, &cx, &mut diags)
                 }
                 ClaimForm::Require { .. } => {
                     evaluate_require(c, &cx, &mut diags)
@@ -1130,6 +1138,9 @@ fn validate_claim(c: &ClaimDecl, cx: &Cx, diags: &mut Vec<Diag>) -> bool {
             ok &= check_group(group, diags);
             ok &= check_topic(topic, cx, diags);
         }
+        ClaimForm::RequireSealed { group } => {
+            ok &= check_group(group, diags);
+        }
         ClaimForm::Cover { alias, group } => {
             ok &= check_group(group, diags);
             if !cx.alias_topics.contains_key(&alias.name) {
@@ -1156,6 +1167,9 @@ fn validate_claim(c: &ClaimDecl, cx: &Cx, diags: &mut Vec<Diag>) -> bool {
 /// The normalized sentence, for the artifact.
 fn render_form(f: &ClaimForm) -> String {
     match f {
+        ClaimForm::RequireSealed { group } => {
+            format!("require sealed(all {})", group.name)
+        }
         ClaimForm::ForbidReaches {
             src,
             dst,
@@ -2287,6 +2301,47 @@ fn evaluate_require(
             group.name,
             if *publishers { "publishes" } else { "subscribes" },
             topic.display()
+        ),
+    ));
+    Verdict::Violated
+}
+
+/// GH #436: `require sealed(all G)` — every locus in the group is
+/// declared `@sealed`.
+///
+/// A universal, so it reports EVERY unsealed member rather than the
+/// first: a security baseline is adopted once and the reader wants
+/// the whole list to fix, not one name per build.
+fn evaluate_require_sealed(
+    c: &ClaimDecl,
+    cx: &Cx,
+    diags: &mut Vec<Diag>,
+) -> Verdict {
+    let ClaimForm::RequireSealed { group } = &c.form else {
+        unreachable!("dispatched on form")
+    };
+    let g = &cx.groups[&group.name];
+    let unsealed: Vec<&str> = g
+        .loci
+        .iter()
+        .filter(|l| !cx.sealed.contains(l.as_str()))
+        .map(|l| l.as_str())
+        .collect();
+    if unsealed.is_empty() {
+        return Verdict::Holds;
+    }
+    diags.push(Diag::ty(
+        c.name.span,
+        format!(
+            "claim `{}` violated: {} in `{}` {} not `@sealed`, so {} \
+             state is readable by anything holding {} — {}",
+            c.name.name,
+            if unsealed.len() == 1 { "a locus" } else { "loci" },
+            group.name,
+            if unsealed.len() == 1 { "is" } else { "are" },
+            if unsealed.len() == 1 { "its" } else { "their" },
+            if unsealed.len() == 1 { "it" } else { "them" },
+            unsealed.join(", ")
         ),
     ));
     Verdict::Violated

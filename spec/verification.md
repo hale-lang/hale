@@ -196,6 +196,15 @@ The remaining verbs (#382 phases 2–5):
 - **`require subscribes|publishes(some G, topic T)`** — existence
   over the DECLARED bus ends (the `bus { }` blocks — "wired" is a
   declaration property).
+- **`require sealed(all G)`** (GH #436) — every locus in `G` is
+  declared `@sealed`. A **universal** over the group's members, which
+  is why the quantifier is `all` rather than the `some` the other
+  `require` forms take: those ask whether an endpoint exists
+  anywhere, this asks whether every member holds. Reports every
+  unsealed member in one diagnostic — a baseline is adopted once and
+  the reader wants the whole list. Without it, sealing is per-locus
+  discipline, and one unsealed member of a vault group is the whole
+  hole.
 - **`cover topic in seed(a): subscribed_by(some G)`** — bounded
   universal: every topic the seed imported as `a` declares has a
   subscriber in G. Every uncovered topic is named. A seed with no
@@ -811,6 +820,16 @@ writing `Signer { key: … }` already holds the value it passes, so
 sealing the initializer would cost ordinary configuration and buy
 nothing. Real secret material should be loaded inside `birth` from a
 vault, environment, or file rather than passed in.
+
+A constitution can then demand confinement rather than trusting that
+every author remembered:
+
+```hale
+constitution SecretBaseline {
+    vault_confined: require sealed(all vaults);
+    no_plugin_secrets: forbid reaches(plugins, effects(secret_use));
+}
+```
 
 **2. One classified operation.** The privileged method carries a user
 effect class, so every path that can touch the secret is visible on
