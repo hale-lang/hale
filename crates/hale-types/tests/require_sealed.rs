@@ -108,6 +108,34 @@ fn the_quantifier_must_be_all() {
 }
 
 #[test]
+fn it_composes_through_a_constitution() {
+    // The whole reason the form exists: a security baseline should be
+    // adopted once, not restated per entrypoint. Claimed in the spec
+    // and the docs, so it is pinned rather than assumed.
+    let src = "
+        @sealed locus V1 { params { k: Int = 1; }
+            fn f() -> Int { return self.k; } }
+        locus V2 { params { k: Int = 2; }
+            fn g() -> Int { return self.k; } }
+        group vaults = { V1, V2 };
+        constitution SecretBaseline {
+            vault_confined: require sealed(all vaults);
+        }
+        main locus App {
+            params { a: V1 = V1 { }; b: V2 = V2 { }; }
+            claims { adopt SecretBaseline; }
+        }
+        fn main() { App { }; }
+    ";
+    let es = errors(src);
+    assert!(
+        es.iter().any(|m| m.contains("vault_confined")
+            && m.contains("V2")),
+        "an adopted constitution must evaluate the form, got {es:?}"
+    );
+}
+
+#[test]
 fn an_unknown_group_is_invalid_not_vacuously_true() {
     // The fail-open shape this whole issue is about: a claim over a
     // group that does not exist must not report `holds`.
