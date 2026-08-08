@@ -357,3 +357,38 @@ fn strict_sees_a_match_arm_expression() {
         "an expression arm must be walked, not skipped: {ms:?}"
     );
 }
+
+// ---------------------------------------------------------------
+// P1: sealing must be visible in the artifact.
+// ---------------------------------------------------------------
+
+#[test]
+fn sealing_a_locus_moves_the_shape_hash() {
+    // A seal changing with no topology diff is precisely the
+    // invisible security change the artifact exists to surface.
+    // Sealing was a claim INPUT that no model row recorded, so
+    // `shape_hash` was byte-identical either way.
+    fn hash_of(src: &str) -> String {
+        let p = parse_source(src).expect("parse");
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(String::new(), &p);
+        let art = hale_types::topology::dump_topology(
+            &hale_types::Bundle::new(m),
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&art).expect("artifact is json");
+        v["shape_hash"].as_str().unwrap().to_string()
+    }
+    let plain = "
+        locus Vault { params { k: Int = 1; }
+            fn f() -> Int { return self.k; } }
+        main locus App { params { v: Vault = Vault { }; } }
+        fn main() { App { }; }
+    ";
+    let sealed = plain.replace("locus Vault", "@sealed locus Vault");
+    assert_ne!(
+        hash_of(plain),
+        hash_of(&sealed),
+        "sealing must change the model identity"
+    );
+}

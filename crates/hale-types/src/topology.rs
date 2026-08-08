@@ -76,6 +76,13 @@ use hale_syntax::ast::*;
 use crate::alloc_summary::{self, Callee, EffectSiteKind, FnKey};
 use crate::symbol::Bundle;
 
+/// 1.9 (GH #436 review): `labels.sealed` in the HASHED half — the
+/// loci whose state is confined. Sealing is a structural
+/// confidentiality property, and without it in the model a locus
+/// could gain or lose `@sealed` with no `shape_hash` diff at all,
+/// which is exactly the invisible security change the artifact
+/// exists to surface. Existing `shape_hash` values change.
+///
 /// The artifact's schema version. Additions are minor versions;
 /// changes are breaking. 1.1 (#392): weights on call edges,
 /// `calls_via_stdlib`, `phases`, `seeds`, `effects` in the hashed
@@ -101,7 +108,7 @@ use crate::symbol::Bundle;
 /// (everything they reach), and gains the `environment` label —
 /// identities now come from the adoption traversal, so a constitution
 /// contributing no clause of its own is no longer invisible.
-pub const TOPOLOGY_SCHEMA: &str = "1.8";
+pub const TOPOLOGY_SCHEMA: &str = "1.9";
 
 /// GH #408 Phase 0: what the rows MEAN, as distinct from their shape.
 ///
@@ -521,6 +528,38 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
         join_str(topics.iter())
     ));
     model.push_str("  },\n");
+    // GH #436 review: sealing is a MODEL fact, not merely a claim
+    // input. A locus gaining or losing `@sealed` changes what the
+    // program structurally confines; if `shape_hash` did not move,
+    // the one diff a reviewer most needs to see would be invisible.
+    let sealed: BTreeSet<String> = {
+        let mut out = BTreeSet::new();
+        fn walk(items: &[TopDecl], out: &mut BTreeSet<String>) {
+            for item in items {
+                match item {
+                    TopDecl::Locus(l) if l.sealed => {
+                        out.insert(l.name.name.clone());
+                    }
+                    TopDecl::Module(m) => walk(&m.items, out),
+                    _ => {}
+                }
+            }
+        }
+        for p in &programs {
+            walk(&p.items, &mut out);
+        }
+        out
+    };
+    // Its own key rather than a row inside `labels`: that map is
+    // fn -> effect classes, and a locus-level structural property is
+    // a different shape. (An earlier draft emitted a second `labels`
+    // object, producing a duplicate JSON key that every parser
+    // silently resolved to the LAST one — the sealed set vanished
+    // while `shape_hash` still moved, which is the worst of both.)
+    model.push_str(&format!(
+        "  \"sealed\": [{}],\n",
+        join_str(sealed.iter().map(|s| name(s)).collect::<Vec<_>>().iter())
+    ));
     model.push_str("  \"relations\": {\n    \"calls\": [\n");
     for ((from, to), meta) in &calls {
         let mut row = format!(

@@ -929,6 +929,18 @@ any secret capability. Prefer a closed operation enum over a callback
 programmable oracle. Worked end to end in
 `crates/hale-codegen/tests/fixtures/examples/secrets-sealed-handler.hl`.
 
+**In the artifact.** `sealed` is a hashed model row (schema 1.9), so a
+locus gaining or losing `@sealed` moves `shape_hash` — a
+`--check-topology` gate sees it. Confinement is a structural property,
+not merely a claim input, and a seal changing with no topology diff is
+exactly the invisible security change the artifact exists to surface.
+
+`require sealed` replays from that row. `require attributed` does not:
+it turns on DIRECT effect sites, and the artifact exports inferred
+per-fn effect sets rather than the direct/transitive distinction, so
+that form is **compiler-certified** — the artifact carries its verdict
+and not the facts to recompute it.
+
 ### What this guarantees, and what it does not
 
 > The secret lives in a locus that owns it, the domain cannot obtain
