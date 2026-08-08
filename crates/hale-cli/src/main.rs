@@ -2826,6 +2826,7 @@ const CHECK_FLAGS: &[(&str, bool)] = &[
     ("--warn-resource-leak", false),
     // GH #436
     ("--strict-secret", false),
+    ("--sealable", false),
     ("--workspace", false),
     // GH #409
     ("--env", true),
@@ -2887,6 +2888,7 @@ fn check_usage(verify: bool) {
     println!("Advisories:");
     println!("  --warn-resource-leak            enable the resource-leak lint");
     println!("  --strict-secret                 fail-closed `@secret` containment check");
+    println!("  --sealable                      report which loci could be `@sealed`");
     println!("  --no-warn-unbounded-alloc       silence the unbounded-alloc lint");
     println!("  --allow-unowned-subscriber      permit a subscriber with no owner");
     println!("  --json                          machine-readable diagnostics");
@@ -4168,6 +4170,15 @@ fn run_check_impl_labelled(
     // `uncertified` for anything it cannot follow — it newly fails
     // programs that compile today, which is why it is a flag and not
     // the default. See spec/verification.md § "Secrets".
+    // GH #436: which loci could be `@sealed` today, and what it would
+    // cost. `@sealed` is opt-in, so adopting it across an existing
+    // codebase is otherwise a question you can only answer by reading.
+    if std::env::args().any(|a| a == "--sealable") {
+        let progs: Vec<&hale_syntax::ast::Program> =
+            bundle.programs.values().copied().collect();
+        let rows = hale_types::sealability::survey(&progs);
+        eprint!("{}", hale_types::sealability::render(&rows));
+    }
     if std::env::args().any(|a| a == "--strict-secret") {
         let progs: Vec<&hale_syntax::ast::Program> =
             bundle.programs.values().copied().collect();
