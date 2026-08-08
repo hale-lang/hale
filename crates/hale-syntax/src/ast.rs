@@ -1963,6 +1963,24 @@ pub enum EffectClass {
     /// alloc_per_call = N)` is its counted form; as a class it is
     /// what `@phase_effects(birth: {alloc}, run: {})` names.
     Alloc,
+    /// GH #436 follow-up: privileged use of confined secret material.
+    ///
+    /// COMPILER-OWNED rather than a stdlib-declared user class, and
+    /// that is the whole point. User classes intern per-`Program`, so
+    /// the stdlib's `effect secret_use;` and an application's were
+    /// different bits: `forbid reaches(plugins, effects(secret_use))`
+    /// silently failed to see `std::secret::Signer.sign`, and with the
+    /// application declaring its own classes first, the stdlib's bit
+    /// aliased onto whatever the application declared at that index.
+    /// The law over the recommended secrets path was unenforceable and
+    /// order-dependent.
+    ///
+    /// A built-in has one identity by construction. It also matches
+    /// the architecture: the stdlib owns the mechanism, the compiler
+    /// classifies the privileged operation, the application states law
+    /// over the class. Applications do not write `effect secret_use;`
+    /// — and may not, since the name now resolves to a built-in.
+    SecretUse,
 }
 
 impl EffectClass {
@@ -1989,6 +2007,7 @@ impl EffectClass {
             "spawn" => EffectClass::Spawn,
             "recursion" => EffectClass::Recursion,
             "alloc" => EffectClass::Alloc,
+            "secret_use" => EffectClass::SecretUse,
             _ => return None,
         })
     }
@@ -2004,6 +2023,7 @@ impl EffectClass {
             EffectClass::Spawn => "spawn",
             EffectClass::Recursion => "recursion",
             EffectClass::Alloc => "alloc",
+            EffectClass::SecretUse => "secret_use",
             // resolved against `Program::effect_names` by the checker
             EffectClass::User(_) => "<user effect>",
         }

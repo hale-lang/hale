@@ -268,8 +268,6 @@ own methods**. Others can still call it — that's the point — they just
 can't read its state:
 
 ```hale,fragment
-effect secret_use;
-
 @sealed locus Signer {
     params { key: Bytes; }
 
@@ -347,6 +345,9 @@ claims {
     io_attributed: require attributed(all syscall);
 }
 ```
+
+(`secret_use` above needs no `effect` declaration — it is a compiler
+built-in, so every program means the same class by it.)
 
 Every fn that actually touches the OS must name a purpose with a user
 effect class. These are independent: I/O can be perfectly gated and

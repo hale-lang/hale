@@ -868,9 +868,14 @@ with no further annotation.
 **3. Law.** The domain states who may reach it and how often, using
 claim forms that already exist:
 
-```hale
-effect secret_use;
+`secret_use` is a **compiler built-in** — the stdlib owns the
+mechanism, the compiler owns the class identity, the application
+states the law. Declaring `effect secret_use;` is an error: user
+classes intern per-`Program`, so a stdlib-declared class had no
+identity an application's claims could name, and the law over
+`std::secret` was silently unenforceable and order-dependent.
 
+```hale
 claims {
     no_plugin_secrets: forbid reaches(plugins, effects(secret_use));
     one_op_per_request: bound secret_use <= 1 on paths from handlers;
@@ -1400,10 +1405,18 @@ assume the others in a build:
   newly fails programs that compile today, and a lint that grows
   teeth in a point release is a userspace break even when every new
   finding is a real bug. **`hale check --strict-secret`** runs the
-  widened walk: every branch, alias propagation through `let`, and
-  `uncertified` for anything it cannot follow — an unfollowed call, a
-  field store, a return. It is loud, which is the honest signal that
-  one body's reasoning is not a containment proof.
+  widened walk: every branch (including `else`, `else if`, and both
+  block and EXPRESSION `match` arms), alias propagation through `let`
+  and tuple destructuring, and `uncertified` for anything it cannot
+  follow — an unfollowed call, a field store, a return. It is loud,
+  which is the honest signal that one body's reasoning is not a
+  containment proof.
+
+  The expression walk is **exhaustive by construction**: it has no
+  catch-all arm, so adding an `Expr` variant fails the build rather
+  than silently opening a laundering route. Branch taint is shared
+  rather than merged per-branch — imprecise in the over-tainting
+  direction, which is the safe one.
 
   For a guarantee rather than a lint, see § Secrets below.
 - **Inferred effect sets + symbolic cost** (GH #265, 2026-07-29).

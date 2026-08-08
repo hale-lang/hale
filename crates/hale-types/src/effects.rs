@@ -65,21 +65,25 @@ pub(crate) fn ffi_names(programs: &[&Program]) -> BTreeSet<String> {
 /// than silently `false` — which for a confinement claim would read as
 /// "not sealed" and fail closed, but for the wrong reason.
 pub(crate) fn sealed_loci_of(programs: &[&Program]) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    let mut walk = |items: &[TopDecl]| {
+    // Recursive: a sealed locus inside a `module` was invisible here,
+    // so `require sealed` reported a violation that is not real.
+    fn walk(items: &[TopDecl], out: &mut BTreeSet<String>) {
         for item in items {
-            if let TopDecl::Locus(l) = item {
-                if l.sealed {
+            match item {
+                TopDecl::Locus(l) if l.sealed => {
                     out.insert(l.name.name.clone());
                 }
+                TopDecl::Module(m) => walk(&m.items, out),
+                _ => {}
             }
         }
-    };
+    }
+    let mut out = BTreeSet::new();
     for p in programs {
-        walk(&p.items);
+        walk(&p.items, &mut out);
     }
     if let Some(sp) = crate::stdlib_bodies::program() {
-        walk(&sp.items);
+        walk(&sp.items, &mut out);
     }
     out
 }
@@ -103,15 +107,22 @@ pub(crate) fn fns_carrying_a_user_class(
                 }))
         })
     };
-    for p in programs {
-        for item in &p.items {
+    // Recursive for the same reason as `sealed_loci_of`: an
+    // attributed method inside a `module` was invisible, so
+    // `require attributed` blamed a fn that had named its purpose.
+    fn walk(
+        items: &[TopDecl],
+        carries_user: &dyn Fn(&hale_syntax::ast::FnDecl) -> bool,
+        out: &mut BTreeSet<FnKey>,
+    ) {
+        for item in items {
             match item {
                 TopDecl::Fn(fd) if carries_user(fd) => {
                     out.insert(FnKey::free_fn(fd.name.name.clone()));
                 }
                 TopDecl::Locus(l) => {
-                    // `@effects(is: …)` is fn-only (spec/tokens.md), so
-                    // there is no locus-level form to inherit from.
+                    // `@effects(is: …)` is fn-only (spec/tokens.md),
+                    // so there is no locus-level form to inherit.
                     for m in &l.members {
                         if let hale_syntax::ast::LocusMember::Fn(fd) = m {
                             if carries_user(fd) {
@@ -123,9 +134,13 @@ pub(crate) fn fns_carrying_a_user_class(
                         }
                     }
                 }
+                TopDecl::Module(m) => walk(&m.items, carries_user, out),
                 _ => {}
             }
         }
+    }
+    for p in programs {
+        walk(&p.items, &carries_user, &mut out);
     }
     out
 }

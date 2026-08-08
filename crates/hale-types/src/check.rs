@@ -5633,6 +5633,19 @@ impl ScopeStack {
     }
 }
 
+/// GH #436 follow-up: which half of confinement a site exercises.
+///
+/// Reads resolve through the expression field-access arm and writes
+/// through LValue traversal — two paths, and the original check only
+/// hooked the first. Naming the distinction keeps the diagnostic
+/// honest ("writes one from outside", not "reads") and makes the
+/// second path impossible to forget again.
+#[derive(Clone, Copy)]
+enum SealedAccess {
+    Read,
+    Write,
+}
+
 impl<'a> Checker<'a> {
     fn check_top_decl(&mut self, decl: &'a TopDecl) {
         match decl {
@@ -9809,6 +9822,19 @@ impl<'a> Checker<'a> {
         for seg in &lv.tail {
             match seg {
                 LValueSeg::Field(f) => {
+                    // GH #436 follow-up: an assignment TARGET resolves
+                    // here, not through the expression field-access
+                    // arm, so sealing was enforced on reads and not on
+                    // writes. Confinement that stops a read and permits
+                    // a write is not confinement — for `std::secret` it
+                    // let outside code CHOOSE the signing key, which is
+                    // worse than reading it.
+                    self.check_sealed_access(
+                        &ty,
+                        f,
+                        f.span,
+                        SealedAccess::Write,
+                    );
                     ty = self.field_ty(&ty, &f.name).unwrap_or(Ty::Unknown);
                 }
                 LValueSeg::Index(idx) => {
@@ -10179,7 +10205,7 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
-    /// GH #436: `@sealed` — a sealed locus's `params` are readable
+    /// GH #436: `@sealed` — a sealed locus's `params` are reachable
     /// only from inside its own methods.
     ///
     /// The rule is about the *reader*, not the receiver syntax: what
@@ -10192,7 +10218,13 @@ impl<'a> Checker<'a> {
     /// Only `params` are sealed. Capacity slots and methods are
     /// untouched — sealing confines state, it does not make a locus
     /// uncallable, which is the entire point.
-    fn check_sealed_read(&mut self, rt: &Ty, name: &Ident, span: Span) {
+    fn check_sealed_access(
+        &mut self,
+        rt: &Ty,
+        name: &Ident,
+        span: Span,
+        access: SealedAccess,
+    ) {
         let Ty::Named(locus_name) = rt else { return };
         let Some(TopSymbol::Locus(li)) = self.top.symbols.get(locus_name)
         else {
@@ -10229,12 +10261,16 @@ impl<'a> Checker<'a> {
         } else {
             format!("call one of its methods instead ({})", callable.join(", "))
         };
+        let (verb, gerund) = match access {
+            SealedAccess::Read => ("readable", "reads"),
+            SealedAccess::Write => ("writable", "writes"),
+        };
         self.diags.push(Diag::ty(
             span,
             format!(
-                "`{shown}` is `@sealed`: its `params` are readable only \
-                 from inside its own methods, and `{shown}.{}` reads one \
-                 from outside — {hint}",
+                "`{shown}` is `@sealed`: its `params` are {verb} only \
+                 from inside its own methods, and `{shown}.{}` {gerund} \
+                 one from outside — {hint}",
                 name.name
             ),
         ));
@@ -11260,7 +11296,12 @@ impl<'a> Checker<'a> {
                     }
                 }
                 let rt = self.check_expr(receiver);
-                self.check_sealed_read(&rt, name, *span);
+                self.check_sealed_access(
+                    &rt,
+                    name,
+                    *span,
+                    SealedAccess::Read,
+                );
                 match self.field_ty(&rt, &name.name) {
                     Some(t) => t,
                     None => {

@@ -170,6 +170,7 @@ pub fn render_effects_named(e: EffectSet, names: &[String]) -> Vec<String> {
         (EffectSet::ENTROPY, "entropy"),
         (EffectSet::ENV, "env"),
         (EffectSet::ALLOC, "alloc"),
+        (EffectSet::SECRET_USE, "secret_use"),
     ] {
         if e.contains(mask) {
             out.push(name.to_string());
@@ -356,6 +357,7 @@ fn class_mask(c: EffectClass) -> EffectSet {
         EffectClass::Entropy => EffectSet::ENTROPY,
         EffectClass::Env => EffectSet::ENV,
         EffectClass::Alloc => EffectSet::ALLOC,
+        EffectClass::SecretUse => EffectSet::SECRET_USE,
         EffectClass::Ffi => EffectSet::SYSCALL,
         EffectClass::Spawn | EffectClass::Recursion => EffectSet::PURE,
         // #345: user classes occupy the bits above the built-ins.
@@ -779,12 +781,43 @@ fn strict_block(
                     }
                 }
             }
+            // A destructuring bind taints every name it introduces.
+            // Position-precise would be better; conservative is the
+            // safe direction and this is the walk that must not miss.
+            Stmt::LetTuple { names, value, span, .. } => {
+                if expr_mentions(value, tainted) {
+                    if matches!(value, Expr::Call { .. }) {
+                        strict_escape(
+                            value,
+                            tainted,
+                            "a call this check does not follow",
+                            *span,
+                            diags,
+                        );
+                    }
+                    for n in names {
+                        tainted.insert(n.name.clone());
+                    }
+                }
+            }
             // The traversal hole: every branch, not just `then`.
             Stmt::If(i) => strict_if(i, tainted, diags),
             Stmt::Match(m) => {
                 for arm in &m.arms {
-                    if let MatchArmBody::Block(blk) = &arm.body {
-                        strict_block(blk, tainted, diags);
+                    match &arm.body {
+                        MatchArmBody::Block(blk) => {
+                            strict_block(blk, tainted, diags)
+                        }
+                        // An EXPRESSION arm was skipped entirely, so
+                        // `match k { 0 -> print(secret), … }` walked
+                        // straight past.
+                        MatchArmBody::Expr(e) => strict_escape(
+                            e,
+                            tainted,
+                            "a `match` arm expression",
+                            m.span,
+                            diags,
+                        ),
                     }
                 }
             }
@@ -810,21 +843,107 @@ fn strict_if(
     }
 }
 
+/// Does this expression mention a tainted name?
+///
+/// EXHAUSTIVE by construction: the `match` has no `_` arm, so adding
+/// an `Expr` variant fails the build here rather than silently
+/// creating a laundering route. The original had a catch-all and
+/// listed six forms, so a tuple, an index, a block tail, an `or`
+/// substitute — anything else — carried a secret straight past both
+/// the lint and the strict walk.
 fn expr_mentions(e: &Expr, names: &BTreeSet<String>) -> bool {
+    let any = |es: &[Expr]| es.iter().any(|x| expr_mentions(x, names));
     match e {
         Expr::Ident(i) => names.contains(&i.name),
         Expr::Binary { left, right, .. } => {
             expr_mentions(left, names) || expr_mentions(right, names)
         }
         Expr::Unary { operand, .. } => expr_mentions(operand, names),
-        Expr::Call { args, .. } => {
-            args.iter().any(|a| expr_mentions(a, names))
+        Expr::Call { callee, args, .. } => {
+            expr_mentions(callee, names) || any(args)
         }
         Expr::Struct { inits, .. } => {
             inits.iter().any(|si| expr_mentions(&si.value, names))
         }
         Expr::Field { receiver, .. } => expr_mentions(receiver, names),
+        Expr::Path2 { receiver, .. } => expr_mentions(receiver, names),
+        Expr::Tuple(items, _) | Expr::Array(items, _) => any(items),
+        Expr::ArrayRepeat { val, .. } => expr_mentions(val, names),
+        Expr::Index { receiver, index, .. } => {
+            expr_mentions(receiver, names) || expr_mentions(index, names)
+        }
+        Expr::Range { lo, hi, .. } => {
+            expr_mentions(lo, names) || expr_mentions(hi, names)
+        }
+        Expr::Approx { left, right, tolerance, .. } => {
+            expr_mentions(left, names)
+                || expr_mentions(right, names)
+                || expr_mentions(tolerance, names)
+        }
+        Expr::If(i) => stmt_mentions(&Stmt::If((**i).clone()), names),
+        Expr::Match(m) => {
+            stmt_mentions(&Stmt::Match((**m).clone()), names)
+        }
+        Expr::Block(b) => block_mentions(b, names),
+        Expr::Or { inner, disposition, .. } => {
+            expr_mentions(inner, names)
+                || disposition_mentions(disposition, names)
+        }
+        Expr::Sum(body, _) | Expr::Prod(body, _) => {
+            expr_mentions(body, names)
+        }
+        Expr::Literal(..) | Expr::KwSelf(_) | Expr::Path(_) => false,
+    }
+}
+
+/// A block mentions a name if any statement or its tail does.
+fn block_mentions(b: &Block, names: &BTreeSet<String>) -> bool {
+    b.stmts.iter().any(|st| stmt_mentions(st, names))
+}
+
+fn stmt_mentions(st: &Stmt, names: &BTreeSet<String>) -> bool {
+    match st {
+        Stmt::Let { value, .. } => expr_mentions(value, names),
+        Stmt::LetTuple { value, .. } => expr_mentions(value, names),
+        Stmt::Assign { value, .. } => expr_mentions(value, names),
+        Stmt::Return(Some(e), _) => expr_mentions(e, names),
+        Stmt::Expr(e) => expr_mentions(e, names),
+        Stmt::Send { value, .. } => expr_mentions(value, names),
+        Stmt::If(i) => {
+            expr_mentions(&i.cond, names)
+                || block_mentions(&i.then_block, names)
+                || match i.else_block.as_deref() {
+                    Some(ElseBranch::Else(b)) => block_mentions(b, names),
+                    Some(ElseBranch::ElseIf(inner)) => {
+                        stmt_mentions(&Stmt::If((*inner).clone()), names)
+                    }
+                    None => false,
+                }
+        }
+        Stmt::Match(m) => m.arms.iter().any(|a| match &a.body {
+            MatchArmBody::Expr(x) => expr_mentions(x, names),
+            MatchArmBody::Block(b) => block_mentions(b, names),
+        }),
+        Stmt::While { body, .. } | Stmt::For { body, .. } => {
+            block_mentions(body, names)
+        }
+        Stmt::Block(b) => block_mentions(b, names),
         _ => false,
+    }
+}
+
+fn disposition_mentions(
+    d: &OrDisposition,
+    names: &BTreeSet<String>,
+) -> bool {
+    // Exhaustive for the same reason as `expr_mentions`.
+    match d {
+        OrDisposition::Substitute(e) => expr_mentions(e, names),
+        // `or fail <payload>` carries a value out of the fn.
+        OrDisposition::Fail(payload, _) => expr_mentions(payload, names),
+        OrDisposition::Raise(_)
+        | OrDisposition::Discard(_)
+        | OrDisposition::Wait(_) => false,
     }
 }
 
