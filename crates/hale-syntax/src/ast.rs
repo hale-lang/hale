@@ -664,6 +664,24 @@ pub struct LocusDecl {
     /// have a failure policy in scope. Supervision coverage as a
     /// checked property.
     pub supervised: bool,
+    /// GH #436: `@sealed locus L { ... }` — this locus's `params` are
+    /// readable only from inside its own methods. Others may still
+    /// CALL it; they may not read its state.
+    ///
+    /// The confinement primitive secrets rest on. Without it a parent
+    /// reads a child's params directly (`self.child.key` typechecks),
+    /// so "the key never leaves the locus that owns it" is a property
+    /// we check rather than one that is true. One word, opt-in, and
+    /// it breaks no existing program — the `@supervised` shape.
+    ///
+    /// Deliberately NOT restricted: param *initialization*. A parent
+    /// writing `Signer { key: … }` must hold what it passes, so a real
+    /// secret should arrive inside `birth` from a vault / env / file
+    /// rather than through a constructor argument. Sealing the
+    /// initializer too would make the annotation unusable for
+    /// ordinary configuration without buying a guarantee — the value
+    /// is already in the parent's hands either way.
+    pub sealed: bool,
     pub members: Vec<LocusMember>,
     pub span: Span,
 }

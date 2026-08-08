@@ -10179,6 +10179,59 @@ impl<'a> Checker<'a> {
         Ok(())
     }
 
+    /// GH #436: `@sealed` — a sealed locus's `params` are readable
+    /// only from inside its own methods.
+    ///
+    /// The rule is about the *reader*, not the receiver syntax: what
+    /// matters is whether the enclosing locus IS the sealed one. A
+    /// parent holding `s: Signer` reads `self.s.key` with receiver
+    /// type `Signer` while `current_locus` is `Gateway`, and that is
+    /// the read this forbids. `self.key` inside `Signer` has the same
+    /// receiver type with `current_locus == Signer`, and is fine.
+    ///
+    /// Only `params` are sealed. Capacity slots and methods are
+    /// untouched — sealing confines state, it does not make a locus
+    /// uncallable, which is the entire point.
+    fn check_sealed_read(&mut self, rt: &Ty, name: &Ident, span: Span) {
+        let Ty::Named(locus_name) = rt else { return };
+        let Some(TopSymbol::Locus(li)) = self.top.symbols.get(locus_name)
+        else {
+            return;
+        };
+        if !li.sealed {
+            return;
+        }
+        // Inside the sealed locus itself: every read is legal.
+        if self.current_locus.map_or(false, |cur| cur.name == li.name) {
+            return;
+        }
+        // Only `params` are confined; a slot or method name reaching
+        // here is not a state read.
+        if !li.params.iter().any(|p| p.name == name.name) {
+            return;
+        }
+        let callable: Vec<&str> =
+            li.methods.iter().map(|m| m.name.as_str()).collect();
+        let hint = if callable.is_empty() {
+            format!(
+                "`{}` declares no methods, so its state is reachable \
+                 only from inside it",
+                li.name
+            )
+        } else {
+            format!("call one of its methods instead ({})", callable.join(", "))
+        };
+        self.diags.push(Diag::ty(
+            span,
+            format!(
+                "`{}` is `@sealed`: its `params` are readable only from \
+                 inside its own methods, and `{}.{}` reads one from \
+                 outside — {}",
+                li.name, li.name, name.name, hint
+            ),
+        ));
+    }
+
     fn field_ty(&self, ty: &Ty, name: &str) -> Option<Ty> {
         match ty {
             // Numeric tuple field access: `t.0`, `t.1`. Parser
@@ -11199,6 +11252,7 @@ impl<'a> Checker<'a> {
                     }
                 }
                 let rt = self.check_expr(receiver);
+                self.check_sealed_read(&rt, name, *span);
                 match self.field_ty(&rt, &name.name) {
                     Some(t) => t,
                     None => {

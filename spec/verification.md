@@ -776,6 +776,97 @@ Attestation checks bytes at rest at deploy time; whether a
 (sent/delivered observation, 7b), and the artifact never claims
 otherwise.
 
+## Secrets — confine, classify, claim (GH #436)
+
+Hale's answer to secrets is not an analysis. It is the ownership
+primitive doing its job, plus one classified operation, plus law.
+
+**1. `@sealed locus L` — confinement.** A sealed locus's `params` are
+readable only from inside its own methods. Others may still CALL it;
+they may not read its state:
+
+```hale
+@sealed locus Signer {
+    params { key: Bytes; }
+    @effects(is: { secret_use })
+    fn sign(m: Bytes) -> Signature { … }
+}
+```
+
+This exists because loci are otherwise **not** field-encapsulated —
+`self.child.key` typechecks from anywhere holding the locus, so
+without sealing "the key never leaves the locus that owns it" is a
+property you check rather than one that is true. The annotation is
+opt-in and breaks no existing program. There is currently **no**
+claim form for requiring an annotation, so a constitution cannot yet
+demand `@sealed` across a group — a `require sealed(all G)` form is
+the obvious follow-up, and the same gap applies to `@supervised`.
+
+Only `params` are confined. Capacity slots and methods are untouched
+— sealing confines state, it does not make a locus uncallable, which
+is the entire point.
+
+Param **initialization** is deliberately not restricted. A parent
+writing `Signer { key: … }` already holds the value it passes, so
+sealing the initializer would cost ordinary configuration and buy
+nothing. Real secret material should be loaded inside `birth` from a
+vault, environment, or file rather than passed in.
+
+**2. One classified operation.** The privileged method carries a user
+effect class, so every path that can touch the secret is visible on
+the call graph — `frontier::infer_effects` propagates it transitively
+with no further annotation.
+
+**3. Law.** The domain states who may reach it and how often, using
+claim forms that already exist:
+
+```hale
+effect secret_use;
+
+claims {
+    no_plugin_secrets: forbid reaches(plugins, effects(secret_use));
+    one_op_per_request: bound secret_use <= 1 on paths from handlers;
+}
+```
+
+A violation names the crossing call:
+
+```text
+claim `no_plugin_secrets` violated: `plugins` reaches
+  `effects(secret_use)` — witness: `PluginHost::sneaky` -> `Signer::sign`
+```
+
+**The recommended shape**, a pattern rather than an enforced contract:
+an ordinary function prepares a request from public data and returns a
+closed plan; the sealed locus interprets the plan and performs the one
+privileged step. The planner never receives the secret, a handle, or
+any secret capability. Prefer a closed operation enum over a callback
+— a finite vocabulary is reviewable, a function parameter is a
+programmable oracle. Worked end to end in
+`crates/hale-codegen/tests/fixtures/examples/secrets-sealed-handler.hl`.
+
+### What this guarantees, and what it does not
+
+> The secret lives in a locus that owns it, the domain cannot obtain
+> it, the only operations on it are classified, and the domain's
+> claims constrain who may reach those operations and how often.
+
+This is **not** information flow and **not** noninterference. Two
+residual assumptions, both deliberate:
+
+1. **The sealed locus's own body is trusted.** Sealing stops others
+   reading the field; it does not stop the owner returning it. Keep
+   that locus small enough to review.
+2. **Primitive classifications are compiler-asserted facts.** That
+   `crypto::hmac` behaves as claimed is a declaration in the stdlib
+   frontier, not a proof — the same trust every effect claim rests on.
+
+Deliberately out of scope, each a separate and stronger theorem:
+derivation tracking (nothing derived from the key influences a public
+output), control dependence (a constant-time compare still lets the
+*verdict* be published), resource uniqueness (nonce counters, DRBG
+state), and zeroization.
+
 ## Structural & design rules
 
 | Check | Catches | Severity | Enforced by |
@@ -1211,15 +1302,31 @@ assume the others in a build:
   by name: a failure there has nowhere to go. The declared ownership
   tree makes this a tree walk; it is the static supervision-coverage
   property the actor world has wanted for decades.
-- **Coarse secret taint — `@secret` params** (GH #265, 2026-07-29).
-  A parameter declared `@secret name: T` must not reach a bus publish
-  or a log / file sink. Deliberately **coarse** — parameter-granular,
-  not value-flow-complete — which the issue asked be assessed rather
-  than deferred to a "v2 horizon"; the choke-pointed sinks make even
-  this catch the mistake that matters (a key or token in a log line
-  or on the wire). Constant-time / full information flow remains out
-  of scope: value-dependent control flow and microarchitecture are a
-  different shape of analysis.
+- **`@secret` params — a LINT, not a certificate** (GH #265, revised
+  by GH #436 2026-08-08). A parameter declared `@secret name: T`
+  reaching a bus publish or a log / file sink in the same fn body is
+  reported as a **warning**. Those are true positives and it keeps
+  reporting them.
+
+  It is not a proof, and #436 stopped it claiming to be one. "Must
+  not reach a sink" is a whole-world property; this is a local walker
+  over one body that follows no calls and tracks no aliases, and the
+  fragment it walks is narrower still — `then` branches but not
+  `else`, no `match`, no `let`, no assignment. Everything outside
+  that fragment vanished from the result rather than surfacing as
+  `uncertified`, which is the fail-open shape the rest of this
+  document exists to avoid.
+
+  The default traversal is deliberately left narrow. Widening it
+  newly fails programs that compile today, and a lint that grows
+  teeth in a point release is a userspace break even when every new
+  finding is a real bug. **`hale check --strict-secret`** runs the
+  widened walk: every branch, alias propagation through `let`, and
+  `uncertified` for anything it cannot follow — an unfollowed call, a
+  field store, a return. It is loud, which is the honest signal that
+  one body's reasoning is not a containment proof.
+
+  For a guarantee rather than a lint, see § Secrets below.
 - **Inferred effect sets + symbolic cost** (GH #265, 2026-07-29).
   `frontier::infer_effects` computes the transitive effect set of ANY
   fn — no declaration required — which is what feeds the causality

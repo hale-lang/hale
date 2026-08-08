@@ -124,6 +124,7 @@ pub fn wrap_main_as_wasm_export(program: &mut Program) -> bool {
         phase_effects: None,
         depends: None,
             supervised: false,
+            sealed: false,
         name: Ident { name: "__Main".to_string(), span: main_span },
         is_main: false,
         export: true,

@@ -6,6 +6,89 @@ behavior.
 
 ---
 
+## Unreleased
+
+### Secrets: confine, classify, claim (GH #436)
+
+**`@sealed locus L`** — a locus's `params` become readable only from
+inside its own methods. Others may still CALL it; they may not read
+its state. This closes the gap the whole secrets story rested on:
+loci are otherwise **not** field-encapsulated, so `self.child.key`
+typechecks from anywhere holding the locus, and "the key never leaves
+its owner" was a property you checked rather than one that was true.
+
+Opt-in, one word, breaks no existing program — the `@supervised`
+shape. (No claim form requires an annotation yet, so a constitution
+cannot demand `@sealed` across a group; that is a follow-up, and the
+same gap applies to `@supervised`.)
+Only `params` are confined; capacity slots and methods are untouched,
+because sealing confines state rather than making a locus uncallable.
+Param **initialization** is deliberately not restricted: a parent
+writing `Signer { key: … }` already holds the value it passes, so
+sealing the initializer would cost ordinary configuration and buy
+nothing. Load real secret material inside `birth`.
+
+The guarantee then needs no new analysis — confine with `@sealed`,
+classify the one privileged method with a user effect class, and state
+the law with claim forms that already exist:
+
+```hale
+effect secret_use;
+
+@sealed locus Signer {
+    params { key: Bytes; }
+    @effects(is: { secret_use })
+    fn sign(m: Bytes) -> Signature { … }
+}
+
+claims {
+    no_plugin_secrets: forbid reaches(plugins, effects(secret_use));
+    one_op_per_request: bound secret_use <= 1 on paths from handlers;
+}
+```
+
+Stated exactly: *the secret lives in a locus that owns it, the domain
+cannot obtain it, the only operations on it are classified, and the
+domain's claims constrain who may reach them and how often.* That is
+confinement, **not** information flow — a value derived from the key
+is not tracked, a constant-time compare still lets the verdict be
+published, and the sealed locus's own body is trusted.
+
+**BEHAVIOR: `@secret` is now a lint (warning), not an error.** It was
+reported as a certificate while being a local identifier walker over a
+*fragment* of one fn body — it walked `then` branches but not `else`,
+and had no notion of aliasing, so moving a publish across a branch or
+renaming through one `let` made the finding disappear rather than
+surface as uncertified. Both of these checked clean:
+
+```hale
+fn leak(@secret token: String, flag: Bool) {
+    if flag { print("nothing"); } else { Out <- Msg { v: token }; }
+}
+fn leak2(@secret token: String) {
+    let alias = token;
+    Out <- Msg { v: alias };
+}
+```
+
+The true positives it *can* see are still reported, as warnings. The
+default traversal is deliberately left narrow: widening a lint in
+place newly fails programs that compile today, which is a userspace
+break even when every new finding is a real bug.
+
+**New: `hale check --strict-secret`** runs the widened, fail-closed
+walk — every branch including `else` / `else if` / `match`, alias
+propagation through `let`, and `uncertified` for anything it cannot
+follow (an unfollowed call, a field store, a return). Opt-in because
+it is loud, which is the honest signal that one body's reasoning is
+not a containment proof.
+
+Worked end to end in
+`crates/hale-codegen/tests/fixtures/examples/secrets-sealed-handler.hl`.
+Spec: `spec/verification.md` § Secrets.
+
+---
+
 ## v0.16.0 — the law composes, the certificate travels (2026-08-06)
 
 ### Signed fleet components & binary attestation (GH #408 Phase 7)

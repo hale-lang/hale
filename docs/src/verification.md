@@ -258,6 +258,68 @@ claim's result under a `shape_hash`, and `--check-topology
 <baseline>` fails CI when the topology or the law changes without
 review.
 
+## Secrets: confine, classify, claim
+
+A signing key is not a problem for a taint checker to solve. It's a
+problem the ownership model already solves, once you close one gap.
+
+`@sealed` on a locus makes its `params` readable **only from inside its
+own methods**. Others can still call it — that's the point — they just
+can't read its state:
+
+```hale,fragment
+effect secret_use;
+
+@sealed locus Signer {
+    params { key: Bytes; }
+
+    @effects(is: { secret_use })
+    fn sign(m: Bytes) -> Signature { … }
+}
+```
+
+Without `@sealed`, `self.signer.key` typechecks from anywhere holding
+the locus, so "the key never leaves its owner" would be something you
+hope for rather than something the compiler knows. With it, the only
+way in is a method call — and that method carries an effect class, so
+every path that can touch the key is visible on the call graph.
+
+Now the law is two ordinary claims:
+
+```hale,fragment
+claims {
+    no_plugin_secrets: forbid reaches(plugins, effects(secret_use));
+    one_op_per_request: bound secret_use <= 1 on paths from handlers;
+}
+```
+
+Wire a `Signer` into a plugin and the build stops with the crossing
+call named:
+
+```text
+claim `no_plugin_secrets` violated: `plugins` reaches
+  `effects(secret_use)` — witness: `PluginHost::sneaky` -> `Signer::sign`
+```
+
+The shape that falls out: an ordinary function prepares a request from
+public data and hands back a plan; the sealed locus interprets the plan
+and performs the one privileged step. The planner never receives the
+key, a handle, or anything that could produce one — so there is nothing
+for it to leak, whatever it does.
+
+**What this is and isn't.** The secret lives in a locus that owns it,
+your code cannot obtain it, the operations on it are classified, and
+your claims constrain who reaches them. That is confinement, not
+information flow: a signature *derived* from the key is not tracked, a
+constant-time compare still lets the verdict be published, and the
+sealed locus's own body is trusted — keep it small enough to read.
+
+`@secret` on a parameter is a **lint**, not a proof. It flags a secret
+reaching a publish or log in the same body, follows no calls, and
+tracks no aliases. `hale check --strict-secret` widens the walk and
+reports `uncertified` wherever it can't follow, which is loud by
+design.
+
 ## Invariants you declare, checked as it runs
 
 The checks above are the compiler's. You can add your own with a

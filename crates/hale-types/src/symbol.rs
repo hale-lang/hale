@@ -176,6 +176,9 @@ pub struct InterfaceMethodInfo {
 #[derive(Debug, Clone)]
 pub struct LocusInfo {
     pub name: String,
+    /// GH #436: declared `@sealed` — its `params` are readable only
+    /// from inside its own methods. Others may still call it.
+    pub sealed: bool,
     /// Phase 2a: perspective contracts this locus `serves` — the
     /// `locus L : serves P, Q` clause names. Empty for non-impl
     /// loci. Consulted by `reperspective` (Phase 2b) to verify the

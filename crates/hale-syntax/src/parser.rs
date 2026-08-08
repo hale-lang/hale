@@ -423,6 +423,8 @@ impl Parser {
         // RFC #330
         let mut depends: Option<DependsSet> = None;
         let mut supervised_locus = false;
+        // GH #436: `@sealed locus` — params readable only from inside.
+        let mut sealed_locus = false;
         let mut leading_span: Option<Span> = None;
         loop {
             if !matches!(self.peek(), TokenKind::At) {
@@ -446,6 +448,9 @@ impl Parser {
             // GH #265: `@supervised locus` — supervision coverage.
             let is_supervised = matches!(&kind_tok,
                 TokenKind::Ident(s) if s == "supervised");
+            // GH #436: `@sealed locus` — state confinement.
+            let is_sealed = matches!(&kind_tok,
+                TokenKind::Ident(s) if s == "sealed");
             let is_unbounded =
                 matches!(&kind_tok, TokenKind::Ident(s) if s == "unbounded");
             let is_budget =
@@ -524,6 +529,16 @@ impl Parser {
                 let at = self.expect(TokenKind::At, "@")?;
                 self.bump();
                 supervised_locus = true;
+                leading_span = Some(match leading_span {
+                    Some(s) => s.merge(at.span),
+                    None => at.span,
+                });
+                continue;
+            }
+            if is_sealed {
+                let at = self.expect(TokenKind::At, "@")?;
+                self.bump();
+                sealed_locus = true;
                 leading_span = Some(match leading_span {
                     Some(s) => s.merge(at.span),
                     None => at.span,
@@ -766,11 +781,12 @@ impl Parser {
             return Err(Diag::parse(
                 self.peek_token().span,
                 "expected `form`, `locality`, `bounded`, `unbounded`, \
-                 `budget`, or `ffi` after `@`",
+                 `budget`, `sealed`, or `ffi` after `@`",
             ));
         }
         if form.is_some() || locality.is_some() || export_locus || bounded_locus
             || phase_effects.is_some() || supervised_locus || depends.is_some()
+            || sealed_locus
         {
             // Verify a `locus` (or contextual `main locus`)
             // follows.
@@ -797,6 +813,7 @@ impl Parser {
             locus.phase_effects = phase_effects;
             locus.depends = depends;
             locus.supervised = supervised_locus;
+            locus.sealed = sealed_locus;
             return Ok(TopDecl::Locus(locus));
         }
         // #382 phase 3: `domain wing = { delta, gamma };` — a
@@ -2953,6 +2970,7 @@ impl Parser {
             phase_effects: None,
             depends: None,
             supervised: false,
+            sealed: false,
             name,
             is_main,
             export: false,

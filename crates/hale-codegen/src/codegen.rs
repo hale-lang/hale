@@ -11139,6 +11139,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             phase_effects: None,
             depends: None,
             supervised: false,
+            sealed: false,
             name: Ident {
                 name: mangled_name.to_string(),
                 span: template.name.span.clone(),

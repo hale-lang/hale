@@ -2824,6 +2824,8 @@ const CHECK_FLAGS: &[(&str, bool)] = &[
     // rather than left to chance.
     ("--warn-unbounded-alloc", false),
     ("--warn-resource-leak", false),
+    // GH #436
+    ("--strict-secret", false),
     ("--workspace", false),
     // GH #409
     ("--env", true),
@@ -2884,6 +2886,7 @@ fn check_usage(verify: bool) {
     println!();
     println!("Advisories:");
     println!("  --warn-resource-leak            enable the resource-leak lint");
+    println!("  --strict-secret                 fail-closed `@secret` containment check");
     println!("  --no-warn-unbounded-alloc       silence the unbounded-alloc lint");
     println!("  --allow-unowned-subscriber      permit a subscriber with no owner");
     println!("  --json                          machine-readable diagnostics");
@@ -4158,6 +4161,17 @@ fn run_check_impl_labelled(
     // GH #18 item 5: opt-in fd-resource-leak warnings.
     if std::env::args().any(|a| a == "--warn-resource-leak") {
         diags.extend(hale_types::resource_leak_warnings(&bundle));
+    }
+    // GH #436: opt-in fail-closed `@secret` containment. The default
+    // `@secret` pass is a LINT (warnings, narrow traversal). This one
+    // walks every branch, propagates aliases, and reports
+    // `uncertified` for anything it cannot follow — it newly fails
+    // programs that compile today, which is why it is a flag and not
+    // the default. See spec/verification.md § "Secrets".
+    if std::env::args().any(|a| a == "--strict-secret") {
+        let progs: Vec<&hale_syntax::ast::Program> =
+            bundle.programs.values().copied().collect();
+        diags.extend(hale_types::frontier::secret_taint_strict(&progs));
     }
     // #8 LSP groundwork (2026-07-02): `hale check --json` emits
     // NDJSON diagnostics on STDOUT (one object per line: file,
