@@ -500,11 +500,32 @@ pub fn supervised_diags(programs: &[&Program]) -> Vec<Diag> {
 
 // ===================== @secret taint =============================
 
-/// Coarse secret taint: a param declared `@secret` must not flow to
-/// a publish or a log/stdout sink within the fn body. Parameter-
-/// granular (not full value-flow), which is the honest reach — but
-/// the choke-pointed sinks make even this catch the real mistake:
-/// a key or token landing in a log line or on the bus.
+/// The `@secret` **lint** (GH #436).
+///
+/// Emits WARNINGS for the leaks it can actually see: a `@secret`
+/// param mentioned in a publish or a log / file sink in the same fn
+/// body. Those are true positives worth reporting and it keeps
+/// reporting them.
+///
+/// It is deliberately NOT a certificate, and #436 stopped it claiming
+/// to be one. "Must not reach a sink" is a whole-world property, and
+/// this is a local walker over one body: it does not follow calls, it
+/// does not track aliases, and the fragment it walks is narrower
+/// still (`then` branches but not `else`, no `match`, no `let`, no
+/// assignment). Everything outside that fragment vanishes from the
+/// result rather than surfacing as `uncertified` — which is the
+/// fail-open shape the rest of the stack exists to avoid.
+///
+/// The traversal is deliberately left narrow here. Widening it would
+/// newly fail programs that compile today, and a lint that grows
+/// teeth in a point release is a userspace break even when every new
+/// finding is a real bug. The widened walk lives in
+/// [`secret_taint_strict`] behind `--strict-secret`.
+///
+/// For a guarantee rather than a lint, confine the secret to a
+/// `@sealed` locus, classify its one operation with an effect class,
+/// and state the law in `claims` — see `spec/verification.md`
+/// § "Secrets".
 pub fn secret_taint_diags(programs: &[&Program]) -> Vec<Diag> {
     let mut diags = Vec::new();
     for p in programs {
@@ -547,12 +568,15 @@ fn check_secret_block(
         match st {
             Stmt::Send { value, span, .. } => {
                 if expr_mentions(value, secrets) {
-                    diags.push(Diag::ty(
+                    diags.push(Diag::warn(
                         *span,
-                        "a `@secret` value reaches a bus publish — the \
-                         payload crosses a process boundary and may be \
-                         observed or logged downstream. Send a derived \
-                         non-secret (an id, a hash) instead."
+                        "lint: a `@secret` value reaches a bus publish — \
+                         the payload crosses a process boundary and may \
+                         be observed or logged downstream. Send a derived \
+                         non-secret (an id, a hash) instead. This lint \
+                         sees one fn body and follows no calls; for a \
+                         checked guarantee, confine the secret to a \
+                         `@sealed` locus and claim over its effect class."
                             .to_string(),
                     ));
                 }
@@ -577,11 +601,15 @@ fn check_secret_block(
                     if is_sink
                         && args.iter().any(|a| expr_mentions(a, secrets))
                     {
-                        diags.push(Diag::ty(
+                        diags.push(Diag::warn(
                             *span,
-                            "a `@secret` value reaches a log / file sink — \
-                             secrets must not be written where they can be \
-                             read back. Log an identifier instead."
+                            "lint: a `@secret` value reaches a log / file \
+                             sink — secrets must not be written where they \
+                             can be read back. Log an identifier instead. \
+                             This lint sees one fn body and follows no \
+                             calls; for a checked guarantee, confine the \
+                             secret to a `@sealed` locus and claim over \
+                             its effect class."
                                 .to_string(),
                         ));
                     }
@@ -593,6 +621,192 @@ fn check_secret_block(
             }
             _ => {}
         }
+    }
+}
+
+/// The `@secret` **strict** pass (GH #436) — `hale check --strict-secret`.
+///
+/// Opt-in, because it newly fails programs that compile today. It is
+/// the same idea as the lint with the two holes closed:
+///
+/// 1. **Every control-flow form is walked**, not just `then` branches
+///    — `else`, `else if`, `match` arms, loops, bare blocks. Moving a
+///    publish from `then` to `else` no longer hides it.
+/// 2. **Aliases propagate.** `let alias = token;` taints `alias`, so
+///    a one-line rename no longer launders.
+///
+/// And, unlike the lint, it **fails closed**. A tainted value that
+/// reaches anything this walker cannot model — a call to a fn whose
+/// body it does not follow, a field store, a return — is reported as
+/// `uncertified` rather than passing silently. That will be loud on
+/// real code, which is the honest signal: this is still one body's
+/// worth of reasoning, and the whole-world guarantee lives in
+/// `@sealed` + effect classes + `claims`, not here.
+pub fn secret_taint_strict(programs: &[&Program]) -> Vec<Diag> {
+    let mut diags = Vec::new();
+    for p in programs {
+        for item in &p.items {
+            let fns: Vec<&FnDecl> = match item {
+                TopDecl::Fn(fd) => vec![fd],
+                TopDecl::Locus(l) => l
+                    .members
+                    .iter()
+                    .filter_map(|m| match m {
+                        LocusMember::Fn(fd) => Some(fd),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => continue,
+            };
+            for fd in fns {
+                let mut tainted: BTreeSet<String> = fd
+                    .params
+                    .iter()
+                    .filter(|pm| pm.secret)
+                    .map(|pm| pm.name.name.clone())
+                    .collect();
+                if tainted.is_empty() {
+                    continue;
+                }
+                strict_block(&fd.body, &mut tainted, &mut diags);
+            }
+        }
+    }
+    diags
+}
+
+fn strict_sink_name(callee: &Expr) -> bool {
+    match callee {
+        Expr::Ident(i) => i.name == "println" || i.name == "print",
+        Expr::Path(p) => p
+            .segments
+            .last()
+            .map(|s| {
+                s.name == "write_bytes"
+                    || s.name == "write_file"
+                    || s.name == "write_line"
+            })
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+/// Report every tainted expression that escapes into something this
+/// walker cannot follow. `what` names the shape for the diagnostic.
+fn strict_escape(
+    e: &Expr,
+    tainted: &BTreeSet<String>,
+    what: &str,
+    span: Span,
+    diags: &mut Vec<Diag>,
+) {
+    if !expr_mentions(e, tainted) {
+        return;
+    }
+    diags.push(Diag::ty(
+        span,
+        format!(
+            "uncertified: a `@secret` value reaches {what}, which this \
+             check does not follow — it cannot certify that the secret \
+             is contained. Confine it to a `@sealed` locus and let a \
+             claim over its effect class carry the guarantee."
+        ),
+    ));
+}
+
+fn strict_block(
+    b: &Block,
+    tainted: &mut BTreeSet<String>,
+    diags: &mut Vec<Diag>,
+) {
+    for st in &b.stmts {
+        match st {
+            Stmt::Send { value, span, .. } => {
+                if expr_mentions(value, tainted) {
+                    diags.push(Diag::ty(
+                        *span,
+                        "a `@secret` value reaches a bus publish — the \
+                         payload crosses a process boundary and may be \
+                         observed or logged downstream. Send a derived \
+                         non-secret (an id, a hash) instead."
+                            .to_string(),
+                    ));
+                }
+            }
+            // The alias hole: `let alias = token;` taints `alias`.
+            Stmt::Let { name, value, span, .. } => {
+                if expr_mentions(value, tainted) {
+                    // A call in the initializer is opaque to us; the
+                    // binding is tainted AND the call is unmodelled.
+                    if matches!(value, Expr::Call { .. }) {
+                        strict_escape(
+                            value, tainted, "a call this check does not \
+                            follow", *span, diags,
+                        );
+                    }
+                    tainted.insert(name.name.clone());
+                }
+            }
+            Stmt::Assign { value, span, .. } => {
+                strict_escape(value, tainted, "a stored location", *span, diags)
+            }
+            Stmt::Return(Some(e), span) => {
+                strict_escape(e, tainted, "this fn's return", *span, diags)
+            }
+            Stmt::Expr(e) => {
+                if let Expr::Call { callee, args, span, .. } = e {
+                    if strict_sink_name(callee) {
+                        if args.iter().any(|a| expr_mentions(a, tainted)) {
+                            diags.push(Diag::ty(
+                                *span,
+                                "a `@secret` value reaches a log / file \
+                                 sink — secrets must not be written where \
+                                 they can be read back. Log an identifier \
+                                 instead."
+                                    .to_string(),
+                            ));
+                        }
+                    } else {
+                        for a in args {
+                            strict_escape(
+                                a,
+                                tainted,
+                                "a call this check does not follow",
+                                *span,
+                                diags,
+                            );
+                        }
+                    }
+                }
+            }
+            // The traversal hole: every branch, not just `then`.
+            Stmt::If(i) => strict_if(i, tainted, diags),
+            Stmt::Match(m) => {
+                for arm in &m.arms {
+                    if let MatchArmBody::Block(blk) = &arm.body {
+                        strict_block(blk, tainted, diags);
+                    }
+                }
+            }
+            Stmt::While { body, .. } | Stmt::For { body, .. } => {
+                strict_block(body, tainted, diags)
+            }
+            Stmt::Block(blk) => strict_block(blk, tainted, diags),
+            _ => {}
+        }
+    }
+}
+
+fn strict_if(
+    i: &IfStmt,
+    tainted: &mut BTreeSet<String>,
+    diags: &mut Vec<Diag>,
+) {
+    strict_block(&i.then_block, tainted, diags);
+    match i.else_block.as_deref() {
+        Some(ElseBranch::Else(b)) => strict_block(b, tainted, diags),
+        Some(ElseBranch::ElseIf(inner)) => strict_if(inner, tainted, diags),
+        None => {}
     }
 }
 

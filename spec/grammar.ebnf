@@ -233,7 +233,18 @@ locus_decorator   = form_annotation
                   | locality_annotation
                   | export_annotation
                   | bounded_annotation
+                  | sealed_annotation
                   ;
+
+(* GH #436: `@sealed` confines a locus's state — its `params` are
+   readable only from inside its own methods. Others may still CALL
+   it; they may not read it. Opt-in. Only
+   `params` are confined (not capacity slots, not methods), and param
+   *initialization* is deliberately unrestricted: the parent already
+   holds what it passes. `sealed` is a contextual word recognized
+   only after `@` in decorator position.
+   See `spec/verification.md` § Secrets. *)
+sealed_annotation = "@" , "sealed" ;
 
 (* GH #18 item 1 (memory-bound proofs): `@bounded` opts a locus into
    the memory-bound proof — its bodies are checked for unbounded

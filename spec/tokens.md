@@ -608,7 +608,8 @@ They attach to the declaration that follows.
 | `@phase_effects(phase: {…}, …)` | locus | per-lifecycle-phase effect contract |
 | `@effects(causes: {…})` | fn | effect classes this fn may cause via bus edges |
 | `@supervised` | locus | every locus in the subtree has a failure policy |
-| `@secret` | fn param | the value must not reach a publish or log/file sink |
+| `@sealed` | locus | this locus's `params` are readable only from inside it |
+| `@secret` | fn param | **lint**: flags a value reaching a publish or log/file sink in the same body |
 | `@effects(publish: {…})` | fn | the allowed publish set |
 | `@effects(depends: {…})` | locus | complete set of subjects that may transitively reach any handler |
 | `@effects(is: {…})` | fn | classify this fn as a source of the named effect classes |

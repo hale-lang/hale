@@ -968,6 +968,7 @@ fn register_locus(
 
     let info = LocusInfo {
         name: decl.name.name.clone(),
+        sealed: decl.sealed,
         serves: decl.serves.iter().map(|s| s.name.clone()).collect(),
         params,
         bus_publishes,
