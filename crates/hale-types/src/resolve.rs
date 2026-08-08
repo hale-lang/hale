@@ -69,6 +69,18 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
             .entry("BusUnmatchedKey".to_string())
             .or_insert(Span::new(0, 0));
     }
+    // GH #436: pre-register the `@sealed` Hale-source stdlib loci, so
+    // a user's `params { s: std::secret::Signer = … }` resolves to
+    // the mangled name that stdlib source declares rather than to
+    // `Ty::Unknown`. This must land BEFORE the register pass below —
+    // that is where user type-exprs resolve.
+    for it in sealed_stdlib_loci() {
+        if let TopDecl::Locus(l) = it {
+            known_names
+                .entry(l.name.name.clone())
+                .or_insert(l.name.span);
+        }
+    }
 
     // Pre-pass: build a name → ResolvedTopic table for every
     // declared topic, including parent chain + wire subject.
@@ -87,6 +99,16 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
     for program in bundle.programs.values() {
         register_top_decls(
             &program.items,
+            &known_names,
+            &topics_resolved,
+            &mut scope,
+            &mut diags,
+        );
+    }
+
+    for it in sealed_stdlib_loci() {
+        register_top_decls(
+            std::slice::from_ref(it),
             &known_names,
             &topics_resolved,
             &mut scope,
@@ -460,6 +482,31 @@ fn finalize_topic_chain(
             }
         }
     }
+}
+
+/// GH #436: the `@sealed` loci declared in the Hale-source stdlib.
+///
+/// Deliberately ONLY the sealed ones. Every multi-segment stdlib path
+/// (`std::io::tcp::Stream`, `std::http::Server`, …) resolves to
+/// `Ty::Unknown` today, and making them all `Named` would switch on
+/// field-existence and method arity/fallibility checking across the
+/// whole stdlib surface at once — a real improvement, and one that can
+/// newly reject programs that compile today. That is its own change
+/// with its own measurement.
+///
+/// Sealing cannot wait for it, because it fails OPEN without it.
+/// `@sealed` keys off the receiver's resolved type, so a sealed stdlib
+/// locus reached through a qualified path had readable params —
+/// verified before this fix: `self.signer.key` returned real key bytes
+/// and `hale check` passed it.
+///
+/// Restricting the injection to sealed loci puts the blast radius at
+/// exactly the types that could not otherwise be protected.
+fn sealed_stdlib_loci() -> impl Iterator<Item = &'static TopDecl> {
+    crate::stdlib_bodies::program()
+        .into_iter()
+        .flat_map(|p| p.items.iter())
+        .filter(|it| matches!(it, TopDecl::Locus(l) if l.sealed))
 }
 
 fn register_top_decls(
@@ -1300,8 +1347,32 @@ pub fn resolve_type_expr(te: &TypeExpr, known: &BTreeMap<String, Span>) -> Ty {
                     Ty::Unknown
                 }
             } else {
-                // qualified path -> external (stdlib, module)
-                Ty::Unknown
+                // GH #436: a qualified path naming a `@sealed`
+                // Hale-source stdlib locus (`std::secret::Signer`)
+                // resolves to the mangled name that source declares
+                // (`__StdSecretSigner`), so the two unify — codegen
+                // already rewrites struct literals through this same
+                // table, and until now only codegen did.
+                //
+                // The `known` guard is what keeps this narrow: only
+                // sealed stdlib loci are registered (see
+                // `resolve_bundle`), so every other qualified path —
+                // builtin namespaces with no Hale source, unsealed
+                // stdlib loci, cross-module paths — still lands on
+                // `Unknown` exactly as before.
+                let segs: Vec<&str> =
+                    path.segments.iter().map(|s| s.name.as_str()).collect();
+                let renamed = hale_stdlib::PATH_RENAMES
+                    .iter()
+                    .find(|(p, _)| *p == segs.as_slice())
+                    .map(|(_, m)| *m);
+                match renamed {
+                    Some(m) if known.contains_key(m) => {
+                        Ty::Named(m.to_string())
+                    }
+                    // qualified path -> external (stdlib, module)
+                    _ => Ty::Unknown,
+                }
             }
         }
         TypeExpr::Projection { class, inner, .. } => {

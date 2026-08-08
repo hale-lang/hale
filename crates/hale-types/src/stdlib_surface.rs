@@ -289,6 +289,8 @@ pub const LOCUS_PATHS: &[&[&str]] = &[
     &["std", "metrics", "MetricMap"],
     &["std", "metrics", "Registry"],
     &["std", "name", "Convention"],
+    &["std", "secret", "Credential"],
+    &["std", "secret", "Signer"],
     &["std", "process", "Child"],
     &["std", "process", "ProcessOutput"],
     &["std", "source", "Walk"],

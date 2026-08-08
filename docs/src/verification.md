@@ -307,6 +307,27 @@ and performs the one privileged step. The planner never receives the
 key, a handle, or anything that could produce one — so there is nothing
 for it to leak, whatever it does.
 
+**You usually don't have to write the sealed locus.** `std::secret`
+ships one, and it closes the last gap: sealing protects reads, but a
+parent writing `Signer { key: … }` would still have held the key. So
+these take the *name of a source*, never the bytes:
+
+```hale,fragment
+locus Gateway {
+    params {
+        s: std::secret::Signer =
+            std::secret::Signer { env_var: "SIGNING_KEY" };
+    }
+    fn go(m: Bytes) -> Bytes { return self.s.sign(m); }
+}
+```
+
+The key is read during `birth`, so it exists only inside a sealed locus
+from the moment it enters the program — there is no line anywhere in
+your code where you held it. `self.s.key` is a compile error naming the
+methods you can call instead. `std::secret::Credential` is the same for
+a token or password, plus a `fingerprint()` that's safe to log.
+
 **What this is and isn't.** The secret lives in a locus that owns it,
 your code cannot obtain it, the operations on it are classified, and
 your claims constrain who reaches them. That is confinement, not

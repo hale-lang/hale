@@ -836,6 +836,37 @@ claim `no_plugin_secrets` violated: `plugins` reaches
   `effects(secret_use)` — witness: `PluginHost::sneaky` -> `Signer::sign`
 ```
 
+**`std::secret` closes the initialization gap.** Sealing protects the
+read side; a parent writing `Signer { key: … }` still holds what it
+passes. The stdlib loci therefore take the **name of a source**, never
+the bytes:
+
+```hale
+locus Gateway {
+    params {
+        s: std::secret::Signer =
+            std::secret::Signer { env_var: "SIGNING_KEY" };
+    }
+    fn go(m: Bytes) -> Bytes { return self.s.sign(m); }
+}
+```
+
+`self.s.key` from `Gateway` is a compile error. The key is read during
+`birth`, so it exists only inside a sealed locus from the moment it
+enters the program and there is no construction site at which the
+caller held it. `std::secret::Credential` is the same discipline for a
+token or password, with a `fingerprint()` that is safe to log.
+
+This required one narrow resolver change: a qualified path naming a
+**sealed** Hale-source stdlib locus now resolves to the mangled name
+that source declares, instead of `Ty::Unknown`. Sealing keys off the
+receiver's resolved type, so without it a sealed stdlib locus had
+readable params — verified before the fix, `self.signer.key` returned
+real key bytes. Only *sealed* stdlib loci are injected; every other
+qualified path still resolves to `Ty::Unknown` exactly as before,
+because making them all resolve would switch on field-existence and
+method arity checking across the whole stdlib surface at once.
+
 **The recommended shape**, a pattern rather than an enforced contract:
 an ordinary function prepares a request from public data and returns a
 closed plan; the sealed locus interprets the plan and performs the one

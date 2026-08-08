@@ -87,6 +87,56 @@ Worked end to end in
 `crates/hale-codegen/tests/fixtures/examples/secrets-sealed-handler.hl`.
 Spec: `spec/verification.md` § Secrets.
 
+### `std::secret` — key material an application never holds (GH #436)
+
+`Signer` (`sign` / `sign_512` / `verify` / `ready`) and `Credential`
+(`matches` / `ready` / `fingerprint`), both `@sealed`, both taking the
+**name of a source** rather than the bytes:
+
+```hale
+locus Gateway {
+    params {
+        s: std::secret::Signer =
+            std::secret::Signer { env_var: "SIGNING_KEY" };
+    }
+    fn go(m: Bytes) -> Bytes { return self.s.sign(m); }
+}
+```
+
+`self.s.key` from `Gateway` is a compile error naming the methods to
+call instead. The key is read during `birth`, so it exists only inside
+a sealed locus from the moment it enters the program.
+
+`birth` is the **only** writer, including the no-source case. Params
+are constructible by whoever holds the locus, so without that a caller
+could write `Signer { key: b"…" }` and hold the material after all —
+defeating the one thing the module exists to prevent. Passing `key:`
+now yields an empty key and `ready() == false`, which surfaces at
+startup. `Credential.fingerprint()` (first 8 bytes of SHA-256, hex) is
+the publishable handle: safe to log, correlates across processes,
+carries nothing.
+
+Every privileged operation carries the `secret_use` effect class,
+declared by the module and travelling with the import.
+
+**One narrow resolver change made this possible.** A qualified path
+naming a **sealed** Hale-source stdlib locus now resolves to the
+mangled name that source declares, instead of `Ty::Unknown`. `@sealed`
+keys off the receiver's resolved type, so without it a sealed stdlib
+locus had readable params — verified before the fix: `self.signer.key`
+returned real key bytes and `hale check` passed. Only *sealed* stdlib
+loci are injected; every other qualified path still resolves to
+`Ty::Unknown` exactly as before, because resolving them all would
+switch on field-existence and method arity/fallibility checking across
+the whole stdlib surface at once — a genuine improvement, and one that
+can newly reject programs that compile today, so it wants its own
+change and its own measurement.
+
+Also fixed: `rename_targets_exist` matched a bare `locus ` prefix, so
+every *annotated* stdlib declaration was invisible to it and a rename
+row pointing at one read as stale. It now skips leading decorators —
+the gap would equally have hidden a `@form` locus.
+
 ---
 
 ## v0.16.0 — the law composes, the certificate travels (2026-08-06)

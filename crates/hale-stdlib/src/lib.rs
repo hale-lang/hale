@@ -63,6 +63,11 @@ pub const AP_SOURCE: &str = concat!(
     "\n",
     include_str!("../hl/text.hl"),
     "\n",
+    // std::secret (GH #436) — sealed key-holding loci. Only path
+    // calls (std::crypto / std::bytes / std::env / std::io::fs /
+    // std::str), which resolve at codegen time, so order is free.
+    include_str!("../hl/secret.hl"),
+    "\n",
     include_str!("../hl/test.hl"),
     "\n",
     include_str!("../hl/log.hl"),
@@ -239,6 +244,9 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "log", "LogEvent"], "__StdLogEvent"),
     (&["std", "log", "Logger"], "__StdLogLogger"),
     (&["std", "log", "StdoutSink"], "__StdLogStdoutSink"),
+    // std::secret (GH #436).
+    (&["std", "secret", "Credential"], "__StdSecretCredential"),
+    (&["std", "secret", "Signer"], "__StdSecretSigner"),
     // std::metrics (promoted from pond/metrics, 2026-07-18).
     (&["std", "metrics", "Counter"], "__StdMetricsCounter"),
     (&["std", "metrics", "Endpoint"], "__StdMetricsEndpoint"),

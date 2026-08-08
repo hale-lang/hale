@@ -214,7 +214,28 @@ fn rename_targets_exist() {
     let declared: BTreeSet<&str> = src
         .lines()
         .filter_map(|l| {
-            let l = l.trim_start();
+            // GH #436: skip leading decorators. A declaration may be
+            // annotated (`@sealed locus X`, `@form(vec) locus Y`), and
+            // matching on a bare `locus ` prefix made every annotated
+            // stdlib decl invisible here — so a rename row pointing at
+            // one read as stale. Caught when `std::secret::Signer`
+            // landed; it would equally have hidden a `@form` locus.
+            let mut l = l.trim_start();
+            while let Some(rest) = l.strip_prefix('@') {
+                let after_name =
+                    rest.trim_start_matches(|c: char| {
+                        c.is_alphanumeric() || c == '_'
+                    });
+                // An arg list, if there is one: `@form(vec, cap = 8)`.
+                let after_args = match after_name.strip_prefix('(') {
+                    Some(args) => match args.find(')') {
+                        Some(i) => &args[i + 1..],
+                        None => break,
+                    },
+                    None => after_name,
+                };
+                l = after_args.trim_start();
+            }
             for kw in ["fn ", "locus ", "type ", "interface ", "perspective "] {
                 if let Some(rest) = l.strip_prefix(kw) {
                     let name: &str = rest

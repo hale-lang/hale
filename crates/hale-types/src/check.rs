@@ -10210,13 +10210,21 @@ impl<'a> Checker<'a> {
         if !li.params.iter().any(|p| p.name == name.name) {
             return;
         }
+        // Render the spelling the author wrote. A stdlib locus is
+        // declared under a mangled name (`__StdSecretSigner`) that
+        // appears nowhere in their program; they wrote
+        // `std::secret::Signer`.
+        let shown = hale_stdlib::PATH_RENAMES
+            .iter()
+            .find(|(_, m)| *m == li.name)
+            .map(|(p, _)| p.join("::"))
+            .unwrap_or_else(|| li.name.clone());
         let callable: Vec<&str> =
             li.methods.iter().map(|m| m.name.as_str()).collect();
         let hint = if callable.is_empty() {
             format!(
-                "`{}` declares no methods, so its state is reachable \
-                 only from inside it",
-                li.name
+                "`{shown}` declares no methods, so its state is \
+                 reachable only from inside it"
             )
         } else {
             format!("call one of its methods instead ({})", callable.join(", "))
@@ -10224,10 +10232,10 @@ impl<'a> Checker<'a> {
         self.diags.push(Diag::ty(
             span,
             format!(
-                "`{}` is `@sealed`: its `params` are readable only from \
-                 inside its own methods, and `{}.{}` reads one from \
-                 outside — {}",
-                li.name, li.name, name.name, hint
+                "`{shown}` is `@sealed`: its `params` are readable only \
+                 from inside its own methods, and `{shown}.{}` reads one \
+                 from outside — {hint}",
+                name.name
             ),
         ));
     }
