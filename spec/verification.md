@@ -219,7 +219,14 @@ The remaining verbs (#382 phases 2–5):
   **DIRECT, not transitive**, and that is load-bearing: transitively,
   every caller downstream of one attributed fn inherits the label and
   passes, which would make the claim nearly vacuous. The attribution
-  point is the site where the boundary is crossed. A built-in in
+  point is the first **application-owned** fn crossing out — a
+  frontier path call, an `@ffi` declaration, or a Hale-source stdlib
+  body whose own effects include the class. An ordinary application
+  callee is judged on its own row instead, which is what keeps this
+  direct. Attaching only to frontier path calls would have made
+  coverage depend on whether an API happens to be a path call or a
+  stdlib locus method — not a stable boundary to hang a security
+  claim on. A built-in in
   `is:` does not count — it restates what the compiler already
   infers, and the claim asks for a purpose the author supplied. The
   class must be a built-in; a user class there would be trivially

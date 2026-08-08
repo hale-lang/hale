@@ -117,4 +117,9 @@ fn the_rendering_leads_with_the_count() {
         "unexpected header: {out}"
     );
     assert!(out.contains("would break callers"), "{out}");
+    assert!(
+        out.contains("external access(es)"),
+        "the survey covers writes as well as reads now that the \
+         sealed rule does — reruns of the real checker track it: {out}"
+    );
 }

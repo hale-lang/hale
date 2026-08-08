@@ -205,6 +205,17 @@ authentication bypass on any unconfigured deployment.
 `fingerprint` is no longer described as "safe to publish" and now
 carries `secret_use`.
 
+`require attributed` now attaches to the first **application-owned**
+fn crossing out, including `@ffi` declarations and Hale-source stdlib
+bodies. It previously ignored every resolved call, so a publish
+through `self.logger.info(m)` was invisible while the same operation
+as a path call was caught — coverage depending on how an API happens
+to be implemented. An ordinary application callee is still judged on
+its own row, which is what keeps attribution direct. `publish` also
+parses as a class name now; it is a built-in class and a reserved
+keyword, and `expect_ident` had rejected the one class most worth
+attributing.
+
 Also: `require attributed` accepted `ffi` / `spawn` / `recursion`,
 which its evaluator answered with unconditional success; it ignored
 direct allocation sites; the sealed/attributed collectors did not

@@ -1679,7 +1679,18 @@ impl Parser {
                     ));
                 }
             }
-            let class_name = self.expect_ident("effect class name")?;
+            // `publish` is a built-in effect class AND a reserved
+            // keyword, so `expect_ident` rejected the one class most
+            // worth attributing. Same shape as the `@budget`
+            // dimension parser, which hit this first.
+            let tok = self.peek_token().clone();
+            let class_name = match &tok.kind {
+                TokenKind::Publish => {
+                    self.bump();
+                    Ident { name: "publish".to_string(), span: tok.span }
+                }
+                _ => self.expect_ident("effect class name")?,
+            };
             self.expect(TokenKind::RParen, ")")?;
             return Ok(ClaimForm::RequireAttributed { class_name });
         }

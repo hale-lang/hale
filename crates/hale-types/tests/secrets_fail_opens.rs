@@ -392,3 +392,80 @@ fn sealing_a_locus_moves_the_shape_hash() {
         "sealing must change the model identity"
     );
 }
+
+// ---------------------------------------------------------------
+// P1: attribution must not depend on how an API happens to be
+// implemented.
+// ---------------------------------------------------------------
+
+#[test]
+fn attribution_crosses_a_resolved_stdlib_boundary() {
+    // The evaluator ignored EVERY resolved call, so a boundary
+    // reached through a Hale-source stdlib body was invisible while
+    // the same operation written as a frontier path call was caught.
+    // Whether an API is a path call or a locus method is not a
+    // stable semantic boundary to hang a security claim on.
+    let src = "
+        locus L {
+            params {
+                lg: std::log::Logger = std::log::Logger { name: \"app\" };
+            }
+            fn via_handle(m: String) { self.lg.info(m); }
+        }
+        main locus App {
+            params { l: L = L { }; }
+            claims { c: require attributed(all publish); }
+        }
+        fn main() { App { }; }
+    ";
+    let es = errors(src);
+    assert!(
+        es.iter().any(|m| m.contains("L::via_handle")),
+        "a publish through a stdlib handle must need attribution: {es:?}"
+    );
+}
+
+#[test]
+fn a_bundle_callee_is_still_judged_on_its_own_row() {
+    // The counterweight: crossing into code the author does NOT own
+    // attributes the caller, but an ordinary application callee is
+    // judged where its own site is. Without this, attribution would
+    // become transitive and nearly vacuous.
+    let src = "
+        effect audit;
+        locus Raw {
+            params { n: Int = 0; }
+            @effects(is: { audit })
+            fn io(s: String) { std::io::fs::write_file(\"/tmp/x\", s); }
+        }
+        locus Wrapper {
+            params { r: Raw = Raw { }; }
+            fn go(s: String) { self.r.io(s); }
+        }
+        main locus App {
+            params { w: Wrapper = Wrapper { }; }
+            claims { c: require attributed(all syscall); }
+        }
+        fn main() { App { }; }
+    ";
+    assert!(
+        errors(src).is_empty(),
+        "a wrapper over an attributed bundle fn owes nothing: {:?}",
+        errors(src)
+    );
+}
+
+#[test]
+fn a_keyword_named_class_parses() {
+    // `publish` is a built-in effect class AND a reserved keyword, so
+    // `expect_ident` rejected the one class most worth attributing.
+    let src = "
+        locus L { params { n: Int = 0; } fn f() -> Int { return 1; } }
+        main locus App {
+            params { l: L = L { }; }
+            claims { c: require attributed(all publish); }
+        }
+        fn main() { App { }; }
+    ";
+    assert!(parse_source(src).is_ok(), "`all publish` must parse");
+}

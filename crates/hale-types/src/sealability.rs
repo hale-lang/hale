@@ -22,8 +22,13 @@ use hale_syntax::ast::{Program, TopDecl};
 /// One locus's verdict.
 pub struct Sealable {
     pub locus: String,
-    /// Sites outside the locus that read its `params`. Empty means
-    /// sealing it today is a no-op.
+    /// Sites outside the locus that read OR write its `params`.
+    /// Empty means sealing it today is a no-op.
+    ///
+    /// Writes joined the set for free when the sealed check learned
+    /// to look at assignment targets — the survey reruns the real
+    /// checker rather than approximating it, so it tracks whatever
+    /// the rule covers.
     pub blockers: Vec<String>,
 }
 
@@ -118,7 +123,9 @@ pub fn render(rows: &[Sealable]) -> String {
         rows.len()
     ));
     if !free.is_empty() {
-        out.push_str("\n  free to seal (nothing outside reads their params):\n");
+        out.push_str(
+            "\n  free to seal (nothing outside touches their params):\n",
+        );
         for r in &free {
             out.push_str(&format!("    {}\n", r.locus));
         }
@@ -127,7 +134,7 @@ pub fn render(rows: &[Sealable]) -> String {
         out.push_str("\n  would break callers:\n");
         for r in &blocked {
             out.push_str(&format!(
-                "    {} — {} external read(s): {}\n",
+                "    {} — {} external access(es): {}\n",
                 r.locus,
                 r.blockers.len(),
                 r.blockers.join(", ")

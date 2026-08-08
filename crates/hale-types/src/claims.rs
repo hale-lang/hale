@@ -2484,9 +2484,36 @@ fn evaluate_require_attributed(
                 crate::stdlib_surface::effects_for(&segs)
                     .map_or(false, |eff| eff.contains(mask))
             }
-            // A resolved callee is another bundle fn; its own sites
-            // are judged on their own row.
-            Callee::Resolved(_) => false,
+            Callee::Resolved(callee) => {
+                // A resolved BUNDLE fn is judged on its own row —
+                // that is what keeps attribution direct rather than
+                // transitive.
+                //
+                // A resolved callee the author does not own is a
+                // different case, and treating it like a bundle fn
+                // was a hole: `@ffi` declarations and Hale-source
+                // stdlib bodies both resolve, so
+                // `self.logger.info(m)` crossed a publish boundary
+                // and nothing owed a purpose, while the same
+                // operation written as a path call did. Attribution
+                // has to attach to the first APPLICATION-OWNED fn
+                // crossing out, or it depends on whether an API
+                // happens to be a frontier path or a Hale-source
+                // wrapper — not a stable boundary.
+                if cx.model.is_bundle_fn(callee) {
+                    return false;
+                }
+                if callee.locus.is_none() && cx.ffi.contains(&callee.fn_name)
+                {
+                    return true;
+                }
+                crate::frontier::infer_effects(
+                    &cx.summary,
+                    callee,
+                    &cx.ffi,
+                )
+                .contains(mask)
+            }
         }) || (mask == EffectSet::ALLOC && !fs.sites.is_empty())
             || (mask == EffectSet::PUBLISH
             && fs.effect_sites.iter().any(|s| {
