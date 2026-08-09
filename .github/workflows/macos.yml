@@ -22,8 +22,20 @@ name: macos
 on:
   push:
     branches: ['**']
+    # A prose change cannot alter what the macOS build produces. This
+    # is a whole-workflow filter rather than the `scope` job
+    # `tests.yml` uses, because there is one job here and nothing to
+    # gate selectively.
+    paths-ignore: &prose
+      - '**.md'
+      - 'docs/**'
+      - 'spec/**'
+      - 'notes/**'
+      - 'agents/**'
+      - 'LICENSE'
   pull_request:
     branches: [main]
+    paths-ignore: *prose
   workflow_dispatch:
 
 concurrency:
