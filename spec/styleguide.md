@@ -342,6 +342,11 @@ Four rules, each load-bearing:
 - **Classify the one privileged method** with `secret_use`, so the
   law can find it.
 
+A sealed locus may not also carry `contract { expose … }`: sealing
+denies every external read, so the expose grants nothing, and the pair
+is rejected rather than left to read as permission. Callers use the
+locus's methods.
+
 Then the application states its own rule with claim forms that
 already exist:
 

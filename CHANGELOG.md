@@ -278,6 +278,30 @@ Three attribution holes closed:
 comment and checked only statements) and `fail` / `violate` payloads
 and `ShmWrite` bodies.
 
+### `@sealed` and `contract { expose … }` are mutually exclusive (GH #436)
+
+Two contradictory claims about the same boundary, and sealing wins. The
+contract consistency check passes — a matching `consume` binds — and
+then every use of the exposed field is rejected, leaving a construct
+that reads as a permission and grants nothing. The pair is now a check
+error at the declaration.
+
+```text
+locus `Greeter` is `@sealed`, so `expose greeting` cannot grant anything:
+sealing denies every read from outside the locus, including one a
+coordinator `consume`s.
+```
+
+`expose` cannot serve as the sealed allowlist without redefining it:
+it is the coordinator/coordinatee surface, so honouring it would grant
+reads to an `accept`ing parent while still denying them to a parent
+holding the same child as a param — one field, public to one kind of
+holder and not the other.
+
+The `consume` side needs no check of its own: a sealed locus cannot
+declare an `expose`, so a coordinator consuming from one lands in the
+existing "does not expose it" arm.
+
 ### `hale check --sealable` — the adoption survey (GH #436)
 
 `@sealed` is opt-in, so "would this collide with real code?" is a

@@ -865,6 +865,18 @@ Only `params` are confined. Capacity slots and methods are untouched
 — sealing confines state, it does not make a locus uncallable, which
 is the entire point.
 
+**`@sealed` and `contract { expose … }` cannot be combined.** They are
+contradictory claims about the same boundary and sealing wins, so an
+`expose` on a sealed locus reads as a permission it cannot grant — the
+contract consistency check passes, a matching `consume` binds, and
+every use of the field is then rejected. The pair is a check error.
+
+`expose` cannot serve as the sealed allowlist without redefining it:
+it is the coordinator/coordinatee surface, so honouring it would grant
+reads to an `accept`ing parent while still denying them to a parent
+holding the same child as a param — one field, public to one kind of
+holder and not the other.
+
 Param **initialization** is deliberately not restricted. A parent
 writing `Signer { key: … }` already holds the value it passes, so
 sealing the initializer would cost ordinary configuration and buy
