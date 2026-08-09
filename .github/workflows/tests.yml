@@ -52,6 +52,61 @@ env:
   LLVM_SYS_180_PREFIX: /usr/lib/llvm-18
 
 jobs:
+  # Which jobs this diff can possibly affect.
+  #
+  # NOT a markdown filter. Prose is genuinely tested here: every
+  # ```hale block under `docs/src` must parse (`docs_snippets`), every
+  # snippet in `spec/styleguide.md` must compile
+  # (`styleguide_snippets`), and `hale-cli/build.rs` embeds `spec/*.md`
+  # into the binary for `hale mcp`. A docs change is a code change to
+  # those, and the partitions below always run.
+  #
+  # What prose cannot reach is the SUBSTRATE: the C runtime the
+  # sanitizers exercise and the hand-transcribed models GenMC checks.
+  # No sentence in a `.md` alters a memory ordering. Those three jobs
+  # are ~20 CI-minutes that a prose-only change spends on nothing.
+  #
+  # Fails SAFE: anything it cannot classify — a new-branch push with no
+  # `before` sha, a diff it cannot compute — runs everything.
+  scope:
+    name: scope
+    runs-on: ubuntu-latest
+    outputs:
+      substrate: ${{ steps.classify.outputs.substrate }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - id: classify
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          elif [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            base="${{ github.event.before }}"
+          fi
+          if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "no usable base — running everything"
+            echo "substrate=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          changed=$(git diff --name-only "$base"...HEAD)
+          echo "changed files:"; echo "$changed"
+          # Paths that cannot reach the runtime, the models, or codegen.
+          prose='^(README|AGENTS|CHANGELOG|CONTRIBUTING|LICENSE|SECURITY)|^(docs|spec|notes|agents)/|\.md$'
+          # Counted, not `grep -q`: an empty match makes grep exit 1,
+          # so the exit code alone cannot distinguish "no code files"
+          # from "grep failed" — and getting that backwards would skip
+          # the substrate jobs on a runtime change.
+          code=$(printf '%s\n' "$changed" | grep -cvE "$prose" || true)
+          echo "non-prose files: ${code:-unknown}"
+          if [ "${code:-1}" -gt 0 ]; then
+            echo "substrate=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prose-only diff — skipping sanitizer + model-checker jobs"
+            echo "substrate=false" >> "$GITHUB_OUTPUT"
+          fi
+
   test:
     name: test ${{ matrix.partition }}/4
     runs-on: ubuntu-latest
@@ -152,6 +207,8 @@ jobs:
   # covers the substrate paths we care about + completes in
   # under a minute.
   tsan:
+    needs: scope
+    if: needs.scope.outputs.substrate == 'true'
     name: tsan (form_hashmap_lockfree)
     runs-on: ubuntu-latest
     steps:
@@ -225,6 +282,8 @@ jobs:
   # normal partitions. The plain exit+deadline arm of corpus_oracle
   # DOES run in those partitions (no extra toolchain needed).
   asan:
+    needs: scope
+    if: needs.scope.outputs.substrate == 'true'
     name: sanitizers (asan corpus + ubsan foreign-ring)
     runs-on: ubuntu-latest
     steps:
@@ -307,6 +366,8 @@ jobs:
   # No Rust/cargo — this job only needs LLVM 18 + cmake to build GenMC
   # and clang to run the models.
   genmc:
+    needs: scope
+    if: needs.scope.outputs.substrate == 'true'
     name: genmc (substrate race-completeness)
     runs-on: ubuntu-latest
     steps:
