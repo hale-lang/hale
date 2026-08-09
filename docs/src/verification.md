@@ -380,6 +380,25 @@ tracks no aliases. `hale check --strict-secret` widens the walk and
 reports `uncertified` wherever it can't follow, which is loud by
 design.
 
+**Adopting `@sealed` on an existing codebase** is a question you don't
+have to answer by reading. `hale check --sealable` tells you:
+
+```text
+sealability: 4 of 5 loci can be `@sealed` today
+
+  free to seal (nothing outside touches their params):
+    Already, App, Holder, Private
+
+  would break callers:
+    Exposed — 1 external access(es): Exposed.k
+```
+
+Empty means sealing that locus is a no-op. On this repo's own corpus,
+148 of 151 loci across 94 programs seal with no changes — and the
+three that don't are the same shape, a parent reading a child's result
+field instead of calling a method, which the no-locus-return rule
+already discourages.
+
 ## Invariants you declare, checked as it runs
 
 The checks above are the compiler's. You can add your own with a

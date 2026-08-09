@@ -299,6 +299,71 @@ Returnable by value; no lifecycle. Types may hold `fn(...)`
 fields. If methods accumulate on a concept, it has flow — it
 wanted to be a locus.
 
+### 2.6b Secret-owning locus — `@sealed`, one classified operation
+
+Key material, a token, anything the rest of the program must never
+hold. The shape is not an analysis; it is the ownership model doing
+its job with one word added.
+
+```hale,fragment
+@sealed locus Signer {
+    params { env_var: String = "SIGNING_KEY"; key: Bytes = b""; }
+
+    birth() { self.key = std::bytes::from_string(std::env::var(self.env_var)); }
+
+    fn ready() -> Bool { return len(self.key) > 0; }
+
+    @effects(is: { secret_use })
+    fn sign(m: Bytes) -> Bytes {
+        if !self.ready() { return b""; }
+        return std::crypto::hmac_sha256(self.key, m);
+    }
+}
+```
+
+Four rules, each carrying its weight:
+
+- **`@sealed`.** Loci are otherwise *not* field-encapsulated —
+  `self.signer.key` typechecks from anywhere holding the locus — so
+  without it "the key never leaves its owner" is something you check
+  rather than something that is true. Sealing covers reads *and*
+  writes; a locus that stops reads and permits writes lets a caller
+  choose the key, which is worse.
+- **Take the NAME of a source, not the bytes.** `env_var:` /
+  `key_file:`, loaded in `birth`. Param initialization is deliberately
+  not restricted — a parent writing `Signer { key: … }` already holds
+  what it passes — so if the material arrives through a constructor
+  argument, some line of the application held it. `birth` should be
+  the only writer, including the no-source case, or a caller can seed
+  it anyway.
+- **Refuse when unavailable.** `ready()` is not enough on its own:
+  every privileged method must consult it, or a misconfigured
+  deployment signs under the empty key and anyone can forge the
+  matching MAC.
+- **Classify the one privileged method** with `secret_use`, so the
+  law can find it.
+
+Then the application states its own rule with claim forms that
+already exist:
+
+```hale,fragment
+claims {
+    no_plugin_secrets: forbid reaches(plugins, effects(secret_use));
+    one_op_per_request: bound secret_use <= 1 on paths from handlers;
+    vault_confined: require sealed(all vaults);
+}
+```
+
+Prefer `std::secret::Signer` / `Credential` to writing your own —
+they are this shape, reviewed once. Write your own when the operation
+is not HMAC or credential comparison, and keep it small enough to
+read: **the sealed locus's own body is trusted**, and that is the
+residual assumption the whole shape rests on.
+
+What this is: confinement. What it is not: information flow. A
+signature *derived* from the key is not tracked, and a
+constant-time compare still lets the verdict be published.
+
 ### 2.7 Error-check fn — value error → structural failure
 
 A locus method that catches a `fallible` call's error and decides
@@ -848,15 +913,26 @@ certify a path — plus one tier you get for free because your
 | **@hot** (opt-in) | all of the above as errors within the fn; `snapshot()`/`finish()` in a loop; whole-struct self-field replace | errors in certified fns |
 | **@budget** (opt-in) | `alloc_per_call = N` counted transitively; `N=0` zero-alloc certificate | build fails on violation |
 | **@effects** (opt-in) | `@effects(none: {syscall, block, time, entropy, env, ffi, publish, spawn, recursion})` / `@effects(publish: {T})`, and the `@no_*` / `@deterministic` sugar — checked transitively; diagnostics carry the call chain to the offending leaf | build fails on violation |
+| **@sealed** (opt-in) | a sealed locus's `params` are reachable only from inside its own methods — reads and writes both. Loci are otherwise not field-encapsulated, so this is the only tier that makes state confinement structural rather than reviewed. `hale check --sealable` reports what taking it would cost | build fails on violation |
 | **placement-implied** (automatic) | a handler on a `cooperative(pool = X) where async_io` locus that reaches a blocking call — the placement *is* the assertion, so no annotation is needed; writing `@no_block` upgrades it to an enforced error | advisory |
 | **fmt** (CI gate) | `hale fmt --check` — canonical mechanical form (§2, "Canonical form"); exit 1 lists offenders | gate in CI; `hale fmt` fixes |
 | escape hatches | `@unbounded` (fn or lifecycle hook) acknowledges intentional accumulation; `--allow-unowned-subscriber`; `--no-warn-unbounded-alloc` | |
+| advisory tools | `hale check --sealable` (which loci could seal today); `hale check --strict-secret` (the fail-closed `@secret` walk — loud by design, because one body's reasoning is not a containment proof) | opt-in reports |
 
 ### Where law lives
 
 The tiers above certify a *function*. Claims certify a *system*, and
 the only real style question is which closed world owns each
 sentence.
+
+Two claim verbs quantify over the whole closed world rather than over
+a path, which makes them the right shape for a baseline a team adopts
+once: `require sealed(all G)` (every locus in the group keeps its
+state to itself) and `require attributed(all C)` (every fn that
+directly performs built-in class `C` names a user-declared purpose).
+Both cover code nobody has written yet, which a group-scoped claim
+does not — that is the reason to prefer them for policy, and to keep
+`forbid reaches` for the specific edges a design forbids.
 
 - **In the `main locus`** — law about this application. A claim is
   evaluated in a closed world, so it belongs where the world closes.

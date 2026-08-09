@@ -93,7 +93,7 @@ summary.)
    name; `params` from argv defaults; `run()` delegates to a
    free helper; `main()` reads argv and statement-instantiates
    the locus.
-2. **Namespace lotus** — empty (or config-only) `params { }`,
+2. **Namespace locus** — empty (or config-only) `params { }`,
    methods only. The language's substitute for "module of
    functions" / "static class". Instantiate once, dispatch
    through it.
@@ -391,8 +391,18 @@ Beyond the effect assertions above, all opt-in:
   lifecycle phase may do. `{}` forbids everything; a phase you don't
   mention is unconstrained. That one line is "no dynamic memory after
   initialization".
-- `@secret name: T` on a **parameter** — the value must not reach a
-  publish or a log/file sink.
+- `@sealed` on a **locus** — its `params` are readable and writable
+  only from inside its own methods. Others may still CALL it; they may
+  not touch its state. Loci are otherwise NOT field-encapsulated
+  (`self.child.key` typechecks), so this is the confinement primitive
+  secrets rest on. Opt-in, breaks nothing. `hale check --sealable`
+  reports which loci could take it today and what it would cost.
+- `@secret name: T` on a **parameter** — a LINT, not a certificate. It
+  flags a secret reaching a publish or log in the same body; it
+  follows no calls and tracks no aliases. `hale check --strict-secret`
+  widens the walk and reports `uncertified` where it cannot follow.
+  For a guarantee, confine with `@sealed` and claim over an effect
+  class instead.
 - `@supervised` on a **locus** — every locus in its subtree must have a
   failure policy in scope.
 - `@unbounded` on a fn or hook — acknowledges an intentional
@@ -423,6 +433,48 @@ in your spelling. Treat it as the next task: remove the edge, route
 through a gate, or change the law (a categorically different edit).
 Unknown means violation: an unresolvable call on a forbidden path
 refuses certification rather than counting as nothing.
+
+Two verbs quantify over the whole closed world rather than a path:
+
+```hale
+claims {
+    confined:   require sealed(all vaults);
+    attributed: require attributed(all syscall);
+}
+```
+
+`require sealed(all G)` — every locus in `G` is `@sealed`, so one
+member nobody sealed is a build error rather than a silent hole.
+`require attributed(all C)` — every fn that DIRECTLY performs
+built-in class `C` carries a user-declared class, so every boundary
+crossing names a purpose. That is orthogonal to
+`forbid reaches(app, effects(syscall)) avoiding gate`, which
+constrains WHERE the crossing happens and says nothing about what it
+is for. Neither implies the other.
+
+**Secrets** are the worked case, and they need no new analysis:
+confine the material to a `@sealed` locus that loads it in `birth`,
+classify the one privileged method, state the law.
+
+```hale
+@sealed locus Signer {
+    params { key: Bytes; }
+    @effects(is: { secret_use })
+    fn sign(m: Bytes) -> Signature { … }
+}
+
+claims {
+    no_plugin_secrets: forbid reaches(plugins, effects(secret_use));
+    one_op_per_request: bound secret_use <= 1 on paths from handlers;
+}
+```
+
+`secret_use` is a compiler built-in — every built-in effect name is
+reserved, so `effect secret_use;` is an error. `std::secret::Signer`
+and `Credential` ship this shape: they take the NAME of a source
+(`env_var:` / `key_file:`), never the bytes, so no line of your code
+ever holds the material. That is CONFINEMENT, not information flow —
+a value derived from the key is not tracked.
 
 Shared law goes in a `constitution NAME { … }` (top level), adopted
 per entrypoint with `adopt NAME;` inside `claims { }`. Composition
