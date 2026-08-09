@@ -36,6 +36,7 @@ pub mod codegen;
 pub(crate) mod form;
 pub(crate) mod locus;
 pub mod mangle;
+pub mod target;
 pub(crate) mod shared;
 pub(crate) mod stdlib;
 pub(crate) mod types;

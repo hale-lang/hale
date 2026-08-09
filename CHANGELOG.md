@@ -8,6 +8,36 @@ behavior.
 
 ## Unreleased
 
+### A target model, and the first step toward Windows (GH #445)
+
+Targets were `Native | Wasm32`, where "native" meant "whatever host
+compiled the compiler", and every platform question — which system
+libraries to link, whether `-Wl,--wrap` exists, what an executable is
+called — was answered by asking Rust's `cfg!(target_os = ...)` about the
+HOST. On a Linux box building for Linux those coincide, so nothing looked
+wrong. They stop coinciding the moment a second target exists, and then
+the conflation is not a refactor away from a bug, it is the bug.
+
+`TargetSpec` is now the model: a canonical triple with a parsed arch, OS
+and ABI, owning its own file conventions and linker facts. `--target`
+accepts canonical triples as well as the `native`/`wasm32` aliases, and
+`hale --list-targets` prints every target with its support tier.
+
+- Eleven host `cfg!(target_os = "macos")` decisions in codegen now ask the
+  target. Ten were linker and runtime-cflag choices; the eleventh gated
+  emitted code — a macOS-hosted build of a Linux artifact would have
+  silently dropped the `async_io` enable call.
+- `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc` parse, describe
+  themselves, and are refused at argument-parsing time with an error that
+  names the issue, rather than failing later inside the linker.
+- `TargetCpu::Baseline` is now `TargetCpu::X86_64V3`. It pins AVX2/BMI2/FMA,
+  which is not a "baseline" anywhere but x86-64. The `--target-cpu baseline`
+  spelling still works, and `x86-64-v3` is accepted too.
+
+No language, syntax, or behavior change on any existing target: Linux,
+macOS and wasm32 build exactly as before.
+
+
 ### Secrets: confine, classify, claim (GH #436)
 
 **`@sealed locus L`** — a locus's `params` become readable only from

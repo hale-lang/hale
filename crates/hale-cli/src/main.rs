@@ -49,6 +49,22 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // Which targets exist, and what the compiler can actually do with
+    // each. Naming a target and building it are different capabilities,
+    // so the listing states the tier rather than implying parity.
+    if cmd == "--list-targets" || cmd == "targets" {
+        let host = hale_codegen::target::TargetSpec::host();
+        for t in hale_codegen::target::TargetSpec::known() {
+            let marker = if t.triple == host.triple {
+                "  (host)"
+            } else {
+                ""
+            };
+            println!("{}{}\n", t.describe(), marker);
+        }
+        return ExitCode::SUCCESS;
+    }
+
     // `fetch` is the one subcommand that doesn't take a target
     // file/dir — it defaults to the current working directory and
     // optionally accepts a repo-root override.
@@ -5017,10 +5033,15 @@ fn run_build(target: &Path) -> ExitCode {
     };
     // WASM plan: a wasm build emits `<stem>.wasm` (a relocatable wasm
     // object at this stage) rather than the extension-less native binary.
-    let output = if options.target == hale_codegen::CompileTarget::Wasm32 {
-        output.with_extension("wasm")
-    } else {
-        output
+    // Output naming is a property of the target, not a special case
+    // spelled at this one call site (GH #445).
+    let output = {
+        let ext = options.target.spec().filenames().executable;
+        if ext.is_empty() {
+            output
+        } else {
+            output.with_extension(ext)
+        }
     };
     // F.32-2 (2026-05-25): operator-facing per-locus working-set
     // report + budget gate.
@@ -5321,17 +5342,29 @@ fn parse_build_options() -> Result<hale_codegen::BuildOptions, String> {
             // relocatable wasm object for the browser/full-stack-web target.
             "--target" => {
                 let v = args.get(i + 1).ok_or_else(|| {
-                    "--target requires a value (native|wasm32)".to_string()
+                    "--target requires a value (native|wasm32|<triple>)".to_string()
                 })?;
-                opts.target = match v.as_str() {
-                    "native" => hale_codegen::CompileTarget::Native,
-                    "wasm32" | "wasm" => hale_codegen::CompileTarget::Wasm32,
-                    other => {
-                        return Err(format!(
-                            "--target: unknown target `{}` (expected native|wasm32)",
-                            other
-                        ));
-                    }
+                // Canonical triples, not just the two aliases. A target
+                // the compiler can NAME is not necessarily one it can
+                // BUILD, so say which of the two this is rather than
+                // failing later inside the linker (GH #445).
+                let spec = hale_codegen::target::TargetSpec::parse(v)
+                    .map_err(|e| format!("--target: {}", e))?;
+                if spec.support()
+                    == hale_codegen::target::TargetSupport::Planned
+                {
+                    return Err(format!(
+                        "--target: `{}` is not buildable yet\n\n{}\n\n\
+                         The target model knows this platform; the codegen \
+                         and runtime for it do not exist yet. Track GH #445.",
+                        spec.triple,
+                        spec.describe(),
+                    ));
+                }
+                opts.target = if spec.is_wasm() {
+                    hale_codegen::CompileTarget::Wasm32
+                } else {
+                    hale_codegen::CompileTarget::Native
                 };
                 i += 2;
             }
@@ -5344,7 +5377,7 @@ fn parse_build_options() -> Result<hale_codegen::BuildOptions, String> {
                 })?;
                 opts.target_cpu = match v.as_str() {
                     "native" => hale_codegen::TargetCpu::Native,
-                    "baseline" => hale_codegen::TargetCpu::Baseline,
+                    "baseline" | "x86-64-v3" => hale_codegen::TargetCpu::X86_64V3,
                     other => {
                         return Err(format!(
                             "--target-cpu: unknown value `{}` (expected native|baseline)",
