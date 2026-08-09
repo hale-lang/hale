@@ -258,6 +258,26 @@ inventory; and `bound llm <= N on paths from G` for cost. `bound`
 counts a **user-declared** effect class (`effect llm;`) — the
 counted built-ins keep their `@budget` spellings.
 
+Two more quantify over the whole closed world rather than a path, so
+code written next month is covered without editing the claim:
+`require sealed(all G)` — every locus in the group keeps its state to
+itself — and `require attributed(all syscall)` — every place the
+program touches the OS names a purpose. That second one is
+independent of routing all I/O through a vetted component
+(`forbid reaches(app, effects(syscall)) avoiding gate`): one
+constrains *where* a boundary is crossed, the other *what for*.
+
+**Secrets** are the worked example, and they need no new machinery.
+`@sealed` on a locus makes its `params` reachable only from inside it
+— loci are otherwise not field-encapsulated, so `self.signer.key`
+typechecks from anywhere holding one. `std::secret::Signer` ships
+that shape and takes the *name* of a source rather than the bytes, so
+no line of your code ever holds the key. Its one privileged method
+carries `secret_use`, and your claims say who may reach it. That is
+confinement, not information flow: a signature derived from the key
+is not tracked, and the docs say so rather than letting a green
+result imply otherwise.
+
 Three things make this hold up in practice:
 
 - **Groups are vocabulary, not patterns.** A misspelt member is an

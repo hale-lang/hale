@@ -447,4 +447,6 @@ End-to-end coverage lives in
 | `hale check --json` | NDJSON diagnostics on stdout, one object per line (`file`/`line`/`col`/`severity`/`kind`/`message`) — editor/LSP consumption. `hale check` runs in ~10 ms on the largest apps. |
 | `HALE_TIME=1` | Per-phase build wall times on stderr (front-end+codegen, llvm-passes, obj-emit, emit+link). |
 | `--no-warn-unbounded-alloc` | Opts a run out of the default-on memory-bound survey (see verification.md). |
+| `hale check --sealable` | GH #436. Reports which loci could take `@sealed` today and what it would cost: per locus, the sites outside it that read or write its `params`. Empty means sealing is a no-op. The survey RERUNS the real check against an all-sealed clone rather than approximating the rule, so it cannot drift from the checker — a survey that disagrees would report a locus free to seal when it is not. |
+| `hale check --strict-secret` | GH #436. The fail-closed `@secret` walk: every branch, alias propagation through `let` and tuple destructuring, and `uncertified` for anything it cannot follow. Opt-in because it is loud; the default `@secret` pass is a lint (see verification.md § Secrets). |
 | `--target-cpu native\|baseline` | Backend CPU tuning (native = host, default; baseline = portable x86-64-v3). |

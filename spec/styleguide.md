@@ -299,6 +299,71 @@ Returnable by value; no lifecycle. Types may hold `fn(...)`
 fields. If methods accumulate on a concept, it has flow — it
 wanted to be a locus.
 
+### 2.6b Secret-owning locus — `@sealed`, one classified operation
+
+Key material, a token, anything the rest of the program must never
+hold. The shape is not an analysis; it is the ownership model doing
+its job with one word added.
+
+```hale,fragment
+@sealed locus Signer {
+    params { env_var: String = "SIGNING_KEY"; key: Bytes = b""; }
+
+    birth() { self.key = std::bytes::from_string(std::env::var(self.env_var)); }
+
+    fn ready() -> Bool { return len(self.key) > 0; }
+
+    @effects(is: { secret_use })
+    fn sign(m: Bytes) -> Bytes {
+        if !self.ready() { return b""; }
+        return std::crypto::hmac_sha256(self.key, m);
+    }
+}
+```
+
+Four rules, each carrying its weight:
+
+- **`@sealed`.** Loci are otherwise *not* field-encapsulated —
+  `self.signer.key` typechecks from anywhere holding the locus — so
+  without it "the key never leaves its owner" is something you check
+  rather than something that is true. Sealing covers reads *and*
+  writes; a locus that stops reads and permits writes lets a caller
+  choose the key, which is worse.
+- **Take the NAME of a source, not the bytes.** `env_var:` /
+  `key_file:`, loaded in `birth`. Param initialization is deliberately
+  not restricted — a parent writing `Signer { key: … }` already holds
+  what it passes — so if the material arrives through a constructor
+  argument, some line of the application held it. `birth` should be
+  the only writer, including the no-source case, or a caller can seed
+  it anyway.
+- **Refuse when unavailable.** `ready()` is not enough on its own:
+  every privileged method must consult it, or a misconfigured
+  deployment signs under the empty key and anyone can forge the
+  matching MAC.
+- **Classify the one privileged method** with `secret_use`, so the
+  law can find it.
+
+Then the application states its own rule with claim forms that
+already exist:
+
+```hale,fragment
+claims {
+    no_plugin_secrets: forbid reaches(plugins, effects(secret_use));
+    one_op_per_request: bound secret_use <= 1 on paths from handlers;
+    vault_confined: require sealed(all vaults);
+}
+```
+
+Prefer `std::secret::Signer` / `Credential` to writing your own —
+they are this shape, reviewed once. Write your own when the operation
+is not HMAC or credential comparison, and keep it small enough to
+read: **the sealed locus's own body is trusted**, and that is the
+residual assumption the whole shape rests on.
+
+What this is: confinement. What it is not: information flow. A
+signature *derived* from the key is not tracked, and a
+constant-time compare still lets the verdict be published.
+
 ### 2.7 Error-check fn — value error → structural failure
 
 A locus method that catches a `fallible` call's error and decides

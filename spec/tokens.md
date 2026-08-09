@@ -623,6 +623,14 @@ forbids every member, and a fn reaching a member carries it. Members
 may be built-ins or other declared classes; a definition cycle is
 rejected.
 
+The built-in classes are `syscall`, `block`, `time`, `entropy`,
+`env`, `ffi`, `publish`, `spawn`, `recursion`, `alloc`, and
+`secret_use` (GH #436 — a privileged operation over confined secret
+material, carried by `std::secret`'s methods). **Every built-in name
+is reserved**: `effect secret_use;` — or `effect syscall;` — is an
+error, because the built-in wins at every use site and the
+declaration would be a silent no-op.
+
 `effect NAME;` is a top-level **declaration**, not an annotation:
 it introduces a user effect class that `is:` / `none:` / `causes:`
 then name like a built-in. `effect` is a **contextual keyword** —
@@ -640,10 +648,15 @@ domain for effect families (`effect knowledge(wing);`), and
 `claims { … }` is a main-locus member holding named bundle-level
 claims (GH #382). The claim verbs are `forbid reaches` (with `via`
 / `during` / `avoiding` modifiers), `only edges` (grant
-enumeration), `bound` (path budgets over user classes), `require`,
-`cover`, and `count`. All introducers — `group`, `claims`,
+enumeration), `bound` (path budgets over user classes, plus the
+built-in `secret_use` — the one counted built-in with no `@budget`
+spelling), `require subscribes|publishes` (existence),
+`require sealed(all G)` and `require attributed(all C)` (GH #436 —
+universals over the closed world rather than over a path), `cover`,
+and `count`. All introducers — `group`, `claims`,
 `domain`, `forbid`, `reaches`, `via`, `may_be_empty`, `edges`,
-`bound`, `require`, `cover`, `count`, `during`, `avoiding`, `seed`
+`bound`, `require`, `sealed`, `attributed`, `all`, `cover`, `count`,
+`during`, `avoiding`, `seed`
 — are **contextual keywords**, recognized in their positions only,
 so existing identifiers with those names are unaffected.
 `@budget(<user class> = N)` bounds calls to declared carriers of
