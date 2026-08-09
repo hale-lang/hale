@@ -395,14 +395,14 @@ Beyond the effect assertions above, all opt-in:
   only from inside its own methods. Others may still CALL it; they may
   not touch its state. Loci are otherwise NOT field-encapsulated
   (`self.child.key` typechecks), so this is the confinement primitive
-  secrets rest on. Opt-in, breaks nothing. `hale check --sealable`
-  reports which loci could take it today and what it would cost.
-- `@secret name: T` on a **parameter** — a LINT, not a certificate. It
-  flags a secret reaching a publish or log in the same body; it
-  follows no calls and tracks no aliases. `hale check --strict-secret`
-  widens the walk and reports `uncertified` where it cannot follow.
-  For a guarantee, confine with `@sealed` and claim over an effect
-  class instead.
+  secrets rest on. Opt-in. `hale check --sealable` reports which loci
+  could take it today and what it would cost.
+- `@secret name: T` on a **parameter** — a LINT. It flags a secret
+  reaching a publish or log in the same body; it follows no calls and
+  tracks no aliases, so it is not a containment proof.
+  `hale check --strict-secret` widens the walk and reports
+  `uncertified` where it cannot follow. For a guarantee, confine with
+  `@sealed` and claim over an effect class.
 - `@supervised` on a **locus** — every locus in its subtree must have a
   failure policy in scope.
 - `@unbounded` on a fn or hook — acknowledges an intentional
@@ -443,12 +443,11 @@ claims {
 }
 ```
 
-`require sealed(all G)` — every locus in `G` is `@sealed`, so one
-member nobody sealed is a build error rather than a silent hole.
-`require attributed(all C)` — every fn that DIRECTLY performs
-built-in class `C` carries a user-declared class, so every boundary
-crossing names a purpose. That is orthogonal to
-`forbid reaches(app, effects(syscall)) avoiding gate`, which
+`require sealed(all G)` — every locus in `G` is `@sealed`, so an
+unsealed member is a build error. `require attributed(all C)` — every
+fn that DIRECTLY performs built-in class `C` carries a user-declared
+class, so every boundary crossing names a purpose. That is orthogonal
+to `forbid reaches(app, effects(syscall)) avoiding gate`, which
 constrains WHERE the crossing happens and says nothing about what it
 is for. Neither implies the other.
 
@@ -469,12 +468,12 @@ claims {
 }
 ```
 
-`secret_use` is a compiler built-in — every built-in effect name is
+`secret_use` is a compiler built-in; every built-in effect name is
 reserved, so `effect secret_use;` is an error. `std::secret::Signer`
 and `Credential` ship this shape: they take the NAME of a source
 (`env_var:` / `key_file:`), never the bytes, so no line of your code
-ever holds the material. That is CONFINEMENT, not information flow —
-a value derived from the key is not tracked.
+holds the material. That is CONFINEMENT, not information flow — a
+value derived from the key is not tracked.
 
 Shared law goes in a `constitution NAME { … }` (top level), adopted
 per entrypoint with `adopt NAME;` inside `claims { }`. Composition

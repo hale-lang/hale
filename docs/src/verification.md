@@ -276,11 +276,10 @@ can't read its state:
 }
 ```
 
-Without `@sealed`, `self.signer.key` typechecks from anywhere holding
-the locus, so "the key never leaves its owner" would be something you
-hope for rather than something the compiler knows. With it, the only
-way in is a method call — and that method carries an effect class, so
-every path that can touch the key is visible on the call graph.
+Loci are not otherwise field-encapsulated: `self.signer.key` typechecks
+from anywhere holding one. `@sealed` makes the only way in a method
+call — and that method carries an effect class, so every path that can
+touch the key is visible on the call graph.
 
 Now the law is two ordinary claims:
 
@@ -306,9 +305,9 @@ key, a handle, or anything that could produce one — so there is nothing
 for it to leak, whatever it does.
 
 **You usually don't have to write the sealed locus.** `std::secret`
-ships one, and it closes the last gap: sealing protects reads, but a
-parent writing `Signer { key: … }` would still have held the key. So
-these take the *name of a source*, never the bytes:
+ships one. Sealing protects reads and writes but not construction — a
+parent writing `Signer { key: … }` holds the key to pass it — so these
+take the *name of a source* instead:
 
 ```hale,fragment
 locus Gateway {
@@ -322,9 +321,9 @@ locus Gateway {
 
 The key is read during `birth`, so it exists only inside a sealed locus
 from the moment it enters the program — there is no line anywhere in
-your code where you held it. `self.s.key` is a compile error naming the
+your code where you hold it. `self.s.key` is a compile error naming the
 methods you can call instead. `std::secret::Credential` is the same for
-a token or password, plus a `fingerprint()` that's safe to log.
+a token or password, plus a `fingerprint()` for logs.
 
 Two more claims worth knowing, because they answer different questions
 about the same boundary. **Where** may the program touch the OS?
@@ -393,11 +392,11 @@ sealability: 4 of 5 loci can be `@sealed` today
     Exposed — 1 external access(es): Exposed.k
 ```
 
-Empty means sealing that locus is a no-op. On this repo's own corpus,
-148 of 151 loci across 94 programs seal with no changes — and the
-three that don't are the same shape, a parent reading a child's result
-field instead of calling a method, which the no-locus-return rule
-already discourages.
+Empty means sealing that locus is a no-op. In practice most loci
+already qualify: across this repo's own corpus, 148 of 151. The ones
+that don't share a shape — a parent reading a child's *result* field
+instead of calling a method, which the no-locus-return rule already
+discourages.
 
 ## Invariants you declare, checked as it runs
 

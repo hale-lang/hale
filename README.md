@@ -267,16 +267,14 @@ independent of routing all I/O through a vetted component
 (`forbid reaches(app, effects(syscall)) avoiding gate`): one
 constrains *where* a boundary is crossed, the other *what for*.
 
-**Secrets** are the worked example, and they need no new machinery.
-`@sealed` on a locus makes its `params` reachable only from inside it
-— loci are otherwise not field-encapsulated, so `self.signer.key`
-typechecks from anywhere holding one. `std::secret::Signer` ships
-that shape and takes the *name* of a source rather than the bytes, so
-no line of your code ever holds the key. Its one privileged method
-carries `secret_use`, and your claims say who may reach it. That is
-confinement, not information flow: a signature derived from the key
-is not tracked, and the docs say so rather than letting a green
-result imply otherwise.
+**Secrets** are the worked example. `@sealed` on a locus makes its
+`params` reachable only from inside it — loci are otherwise not
+field-encapsulated, so `self.signer.key` typechecks from anywhere
+holding one. `std::secret::Signer` ships that shape and takes the
+*name* of a source rather than the bytes, so no line of your code
+holds the key. Its one privileged method carries `secret_use`, and
+your claims say who may reach it. That is confinement, not
+information flow: a signature derived from the key is not tracked.
 
 Three things make this hold up in practice:
 

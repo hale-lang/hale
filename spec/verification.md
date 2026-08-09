@@ -202,36 +202,33 @@ The remaining verbs (#382 phases 2–5):
   syscall)` says every place the program touches the OS names a
   purpose.
 
-  **Orthogonal to interposition, not a weaker form of it.** `forbid
-  reaches(app, effects(syscall)) avoiding gate` constrains WHERE a
-  boundary is crossed and says nothing about what any crossing is
-  FOR; this constrains attribution and says nothing about location.
-  Neither implies the other: all I/O can funnel through one
+  **Orthogonal to interposition.** `forbid reaches(app,
+  effects(syscall)) avoiding gate` constrains WHERE a boundary is
+  crossed and says nothing about what any crossing is FOR; this
+  constrains attribution and says nothing about location. Neither
+  implies the other: all I/O can funnel through one
   `write(path, bytes)` everyone calls for everything (interposed,
   unattributed), or forty loci can each touch the OS while every one
   names its purpose (attributed, un-interposed). A hybrid wants both.
 
-  It also closes a coverage hole `avoiding` necessarily has: that
-  claim is scoped to a group, so a locus outside it is unconstrained
-  and one written next month is uncovered until someone edits the
-  group. This is a universal over the whole closed world.
+  It is a universal over the whole closed world, where `avoiding` is
+  scoped to a group — so a locus outside the group, including one
+  added later, is covered without editing the claim.
 
   A **direct site** is: a classified frontier path call, an `@ffi`
   declaration (the declaration itself, not its caller — it is the
   application-owned boundary and can carry the purpose), a resolved
   callee the author does not own whose effects include the class, a
   syntactic site (publish, allocation), or the fn's own
-  `@effects(is: {C})`. That last one matters most to the secrets
-  architecture: a method declaring itself a `secret_use` operation
-  calls nothing classified and allocates nothing, so without it the
-  central shape was invisible to the claim. A built-in in `is:`
-  establishes that the operation exists; it is still not its purpose,
-  so a user class is required.
+  `@effects(is: {C})`. That last covers a method that declares itself
+  a carrier and calls nothing classified — the shape a privileged
+  operation takes. A built-in in `is:` establishes that the operation
+  exists; it is not its purpose, so a user class is still required.
 
   An **indirect or opaque call** the checker cannot resolve leaves
   the claim `uncertified` unless the enclosing fn already names a
   purpose — the same refusal-to-certify posture as the rest of the
-  stack, rather than reporting `holds` over a boundary it cannot see.
+  stack.
 
   **DIRECT, not transitive**, and that is load-bearing: transitively,
   every caller downstream of one attributed fn inherits the label and
@@ -934,15 +931,12 @@ enters the program and there is no construction site at which the
 caller held it. `std::secret::Credential` is the same discipline for a
 token or password, with a `fingerprint()` that is safe to log.
 
-This required one narrow resolver change: a qualified path naming a
-**sealed** Hale-source stdlib locus now resolves to the mangled name
-that source declares, instead of `Ty::Unknown`. Sealing keys off the
-receiver's resolved type, so without it a sealed stdlib locus had
-readable params — verified before the fix, `self.signer.key` returned
-real key bytes. Only *sealed* stdlib loci are injected; every other
-qualified path still resolves to `Ty::Unknown` exactly as before,
-because making them all resolve would switch on field-existence and
-method arity checking across the whole stdlib surface at once.
+Sealing keys off the receiver's resolved type, so a qualified path
+naming a **sealed** Hale-source stdlib locus resolves to the mangled
+name that source declares. Other qualified paths resolve to
+`Ty::Unknown`: resolving them all would turn on field-existence and
+method arity checking across the whole stdlib surface at once, which
+is a separate change.
 
 **The recommended shape**, a pattern rather than an enforced contract:
 an ordinary function prepares a request from public data and returns a
@@ -954,10 +948,11 @@ programmable oracle. Worked end to end in
 `crates/hale-codegen/tests/fixtures/examples/secrets-sealed-handler.hl`.
 
 **In the artifact.** `sealed` is a hashed model row (schema 1.9), so a
-locus gaining or losing `@sealed` moves `shape_hash` — a
-`--check-topology` gate sees it. Confinement is a structural property,
-not merely a claim input, and a seal changing with no topology diff is
-exactly the invisible security change the artifact exists to surface.
+locus gaining or losing `@sealed` moves `shape_hash` and a
+`--check-topology` gate sees it. Confinement is a structural property
+rather than only a claim input: a seal changing with no topology diff
+would be exactly the invisible security change the artifact exists to
+surface.
 
 `require sealed` replays from that row. `require attributed` does not:
 it turns on DIRECT effect sites, and the artifact exports inferred
@@ -1422,25 +1417,21 @@ assume the others in a build:
   by name: a failure there has nowhere to go. The declared ownership
   tree makes this a tree walk; it is the static supervision-coverage
   property the actor world has wanted for decades.
-- **`@secret` params — a LINT, not a certificate** (GH #265, revised
-  by GH #436 2026-08-08). A parameter declared `@secret name: T`
-  reaching a bus publish or a log / file sink in the same fn body is
-  reported as a **warning**. Those are true positives and it keeps
-  reporting them.
+- **`@secret` params — a LINT, not a certificate**. A parameter
+  declared `@secret name: T` reaching a bus publish or a log / file
+  sink in the same fn body is reported as a **warning**.
 
-  It is not a proof, and #436 stopped it claiming to be one. "Must
-  not reach a sink" is a whole-world property; this is a local walker
-  over one body that follows no calls and tracks no aliases, and the
-  fragment it walks is narrower still — `then` branches but not
-  `else`, no `match`, no `let`, no assignment. Everything outside
-  that fragment vanished from the result rather than surfacing as
-  `uncertified`, which is the fail-open shape the rest of this
-  document exists to avoid.
+  It is not a proof. "Must not reach a sink" is a whole-world
+  property; this is a local walker over one body that follows no
+  calls and tracks no aliases, and the fragment it walks is narrower
+  still — `then` branches but not `else`, no `match`, no `let`, no
+  assignment. Anything outside that fragment is absent from the
+  result rather than surfacing as `uncertified`.
 
-  The default traversal is deliberately left narrow. Widening it
-  newly fails programs that compile today, and a lint that grows
-  teeth in a point release is a userspace break even when every new
-  finding is a real bug. **`hale check --strict-secret`** runs the
+  The default traversal stays narrow deliberately: widening it fails
+  programs that compile today, and a lint that grows teeth in a point
+  release is a userspace break even when every new finding is a real
+  bug. **`hale check --strict-secret`** runs the
   widened walk: every branch (including `else`, `else if`, and both
   block and EXPRESSION `match` arms), alias propagation through `let`
   and tuple destructuring, and `uncertified` for anything it cannot
@@ -1450,9 +1441,8 @@ assume the others in a build:
 
   The expression walk is **exhaustive by construction**: it has no
   catch-all arm, so adding an `Expr` variant fails the build rather
-  than silently opening a laundering route. Branch taint is shared
-  rather than merged per-branch — imprecise in the over-tainting
-  direction, which is the safe one.
+  than opening a laundering route. Branch taint is shared rather than
+  merged per-branch — imprecise in the over-tainting direction.
 
   For a guarantee rather than a lint, see § Secrets below.
 - **Inferred effect sets + symbolic cost** (GH #265, 2026-07-29).
