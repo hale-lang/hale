@@ -913,15 +913,26 @@ certify a path — plus one tier you get for free because your
 | **@hot** (opt-in) | all of the above as errors within the fn; `snapshot()`/`finish()` in a loop; whole-struct self-field replace | errors in certified fns |
 | **@budget** (opt-in) | `alloc_per_call = N` counted transitively; `N=0` zero-alloc certificate | build fails on violation |
 | **@effects** (opt-in) | `@effects(none: {syscall, block, time, entropy, env, ffi, publish, spawn, recursion})` / `@effects(publish: {T})`, and the `@no_*` / `@deterministic` sugar — checked transitively; diagnostics carry the call chain to the offending leaf | build fails on violation |
+| **@sealed** (opt-in) | a sealed locus's `params` are reachable only from inside its own methods — reads and writes both. Loci are otherwise not field-encapsulated, so this is the only tier that makes state confinement structural rather than reviewed. `hale check --sealable` reports what taking it would cost | build fails on violation |
 | **placement-implied** (automatic) | a handler on a `cooperative(pool = X) where async_io` locus that reaches a blocking call — the placement *is* the assertion, so no annotation is needed; writing `@no_block` upgrades it to an enforced error | advisory |
 | **fmt** (CI gate) | `hale fmt --check` — canonical mechanical form (§2, "Canonical form"); exit 1 lists offenders | gate in CI; `hale fmt` fixes |
 | escape hatches | `@unbounded` (fn or lifecycle hook) acknowledges intentional accumulation; `--allow-unowned-subscriber`; `--no-warn-unbounded-alloc` | |
+| advisory tools | `hale check --sealable` (which loci could seal today); `hale check --strict-secret` (the fail-closed `@secret` walk — loud by design, because one body's reasoning is not a containment proof) | opt-in reports |
 
 ### Where law lives
 
 The tiers above certify a *function*. Claims certify a *system*, and
 the only real style question is which closed world owns each
 sentence.
+
+Two claim verbs quantify over the whole closed world rather than over
+a path, which makes them the right shape for a baseline a team adopts
+once: `require sealed(all G)` (every locus in the group keeps its
+state to itself) and `require attributed(all C)` (every fn that
+directly performs built-in class `C` names a user-declared purpose).
+Both cover code nobody has written yet, which a group-scoped claim
+does not — that is the reason to prefer them for policy, and to keep
+`forbid reaches` for the specific edges a design forbids.
 
 - **In the `main locus`** — law about this application. A claim is
   evaluated in a closed world, so it belongs where the world closes.
