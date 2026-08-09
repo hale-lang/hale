@@ -8053,6 +8053,35 @@ impl<'a> Checker<'a> {
     /// compiles, and a parent consuming `value: String` checks
     /// clean against fiction.
     fn check_contract_expose_validity(&mut self, locus: &LocusInfo) {
+        // GH #436: `@sealed` and `expose` are contradictory claims
+        // about the same boundary, and sealing wins — so an `expose`
+        // here reads as a permission it cannot grant. The contract
+        // consistency check passes (a matching `consume` binds fine),
+        // and then every use of the exposed field is rejected.
+        //
+        // `expose` cannot become the sealed allowlist without a
+        // redesign: it is the coordinator/coordinatee surface, so
+        // honouring it would grant reads to an `accept`ing parent and
+        // still deny them to a parent holding the same child as a
+        // param — one field, public to one kind of holder and not the
+        // other. Rejecting the pair is the honest reading until
+        // `expose` means "public param" independent of `accept`.
+        if locus.sealed {
+            if let Some(entry) = locus.contract_expose.first() {
+                self.diags.push(Diag::ty(
+                    entry.span,
+                    format!(
+                        "locus `{}` is `@sealed`, so `expose {}` cannot \
+                         grant anything: sealing denies every read from \
+                         outside the locus, including one a coordinator \
+                         `consume`s. Drop the `@sealed`, or drop the \
+                         contract and let callers use its methods.",
+                        locus.name, entry.name
+                    ),
+                ));
+                return;
+            }
+        }
         for entry in &locus.contract_expose {
             // 1. params field
             if let Some(p) =

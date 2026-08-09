@@ -208,3 +208,91 @@ fn sealing_confines_a_secret_the_bus_would_otherwise_carry() {
         "sealed: publishing the key must be rejected, got {es:?}"
     );
 }
+
+// ---------------------------------------------------------------
+// `@sealed` and `contract { expose … }` are contradictory claims
+// about the same boundary.
+// ---------------------------------------------------------------
+
+#[test]
+fn sealed_plus_expose_is_rejected() {
+    // Sealing wins over an expose, so the pair leaves a contract that
+    // typechecks as coherent — a matching `consume` binds fine — and
+    // is then rejected at every use. A construct that reads as a
+    // permission and grants nothing.
+    let src = "
+        @sealed locus Greeter {
+            params { greeting: String = \"hi\"; }
+            contract { expose greeting: String; }
+            fn hello() -> String { return self.greeting; }
+        }
+        main locus App { params { g: Greeter = Greeter { }; } }
+        fn main() { App { }; }
+    ";
+    let es = errors(src);
+    assert!(
+        es.iter().any(|m| m.contains("cannot grant anything")),
+        "the pair must be rejected at the declaration, got {es:?}"
+    );
+}
+
+#[test]
+fn the_consume_side_needs_no_check_of_its_own() {
+    // Because a sealed locus cannot declare an `expose`, a
+    // coordinator consuming from one falls into the existing
+    // "does not expose it" arm. One check covers both directions.
+    let src = "
+        @sealed locus Greeter {
+            params { greeting: String = \"hi\"; }
+            fn hello() -> String { return self.greeting; }
+        }
+        locus Coord {
+            params { n: Int = 0; }
+            contract { consume greeting: String; }
+            accept(g: Greeter) { self.n = 1; }
+        }
+        main locus App { params { c: Coord = Coord { }; } }
+        fn main() { App { }; }
+    ";
+    let es = errors(src);
+    assert!(
+        es.iter().any(|m| m.contains("does not expose it")),
+        "expected the existing contract arm to catch it, got {es:?}"
+    );
+}
+
+#[test]
+fn a_contract_on_an_unsealed_locus_is_unaffected() {
+    let src = "
+        locus Greeter {
+            params { greeting: String = \"hi\"; }
+            contract { expose greeting: String; }
+            fn hello() -> String { return self.greeting; }
+        }
+        locus Coord {
+            params { n: Int = 0; }
+            contract { consume greeting: String; }
+            accept(g: Greeter) { self.n = len(g.greeting); }
+        }
+        main locus App { params { c: Coord = Coord { }; } }
+        fn main() { App { }; }
+    ";
+    assert!(errors(src).is_empty(), "{:?}", errors(src));
+}
+
+#[test]
+fn a_sealed_locus_without_a_contract_is_unaffected() {
+    let src = "
+        @sealed locus Greeter {
+            params { greeting: String = \"hi\"; }
+            fn hello() -> String { return self.greeting; }
+        }
+        locus Coord {
+            params { n: Int = 0; }
+            accept(g: Greeter) { self.n = len(g.hello()); }
+        }
+        main locus App { params { c: Coord = Coord { }; } }
+        fn main() { App { }; }
+    ";
+    assert!(errors(src).is_empty(), "{:?}", errors(src));
+}
