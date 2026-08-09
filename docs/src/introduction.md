@@ -4,7 +4,7 @@
 runtime — typed message-bus concurrency, data-race-free by
 design.**
 
-*One language. Four altitudes.*
+*Say less. Spell more.*
 
 Most languages pick a level and live there. Python and
 JavaScript sit high — fast to write, far from the metal. Go
