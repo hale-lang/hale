@@ -1,6 +1,6 @@
 # Projects
 
-An Hale project is a directory tree of `.hl` source files plus
+A Hale project is a directory tree of `.hl` source files plus
 anything those files vendor or reference. This document covers
 the on-disk shape: how the directory tree composes into one or
 more compiled binaries, how files within a directory share
@@ -19,7 +19,7 @@ The recursion is in the import graph, not the directory tree.
 The file system is presentation — convenient grouping of bits
 that compose into a logical structure at parse time. Two
 projects with identical import graphs can ship totally
-different on-disk layouts; the lotus shape lives in the code.
+different on-disk layouts; the locus shape lives in the code.
 
 See `spec/decisions.md` F.19 and F.25 for the design
 rationale.
@@ -327,7 +327,7 @@ layers to keep straight:
   resolver does not privilege `lib/`; it walks entry-relative
   then workspace-root for whatever path the importer wrote.
 
-The lotus shape — the recursion tower of a project — lives in
+The locus shape — the recursion tower of a project — lives in
 the **import graph**, not the file tree. Parse-time
 resolution + merging + mangling is where the recursion
 materializes. The filesystem just stores the bits in some
