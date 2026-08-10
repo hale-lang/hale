@@ -1,0 +1,69 @@
+// An intra-locus publish delivered by the direct-call desugar must not
+// accrue its payload, and must deliver it intact.
+//
+// `desugar_intra_locus_topics` rewrites `Topic <- payload` (for a topic
+// used only within a locus tree, no binding) into a direct call to the
+// subscriber's bus handler, sidestepping the bus queue — and with it
+// the queue's per-delivery reclaim. The payload then built into the
+// publisher's method-scratch subregion and was not freed until the
+// publisher's run() returned, so a long-running publish loop accrued one
+// payload per delivery (GH: downstream handoff — ~31 B/cell on a string
+// payload). Codegen now confines each such payload to its own subregion,
+// destroyed once the synchronous handler returns.
+//
+// This test can't measure bytes/cell in-harness, so it pins the two
+// properties a reclaim must not break: delivery still happens, and the
+// payload the handler reads (and STORES, which deep-copies) is intact
+// across the reclaim boundary. The compiled-corpus oracle runs it under
+// ASan, where freeing a still-referenced payload would surface.
+
+type Ping { seq: Int = 0; sym: String = ""; }
+
+topic Tick { payload: Ping; subject: "reclaim.test"; }
+
+locus Sub {
+    params { sum: Int = 0; joined: String = ""; hits: Int = 0; }
+    bus { subscribe Tick as on_tick; }
+    fn on_tick(p: Ping) {
+        self.sum = self.sum + p.seq; // reads an Int field
+        self.joined = self.joined + p.sym; // reads AND stores a String (deep-copy)
+        self.hits = self.hits + 1;
+    }
+    fn hits() -> Int { return self.hits; }
+    fn sum() -> Int { return self.sum; }
+    fn joined() -> String { return self.joined; }
+}
+
+// A locus publisher, so the topic is intra-locus (Pub publishes, its
+// child Sub subscribes) and the direct-call reclaim path is exercised.
+locus Pub {
+    params { sub: Sub = Sub { }; }
+    bus { publish Tick; }
+    fn go() {
+        let mut i = 0;
+        while i < 5 {
+            // Inline slice so the payload's interior String is built
+            // inside the publish — the case that must reclaim fully.
+            Tick <- Ping { seq: i, sym: "ab" };
+            i = i + 1;
+        }
+    }
+    fn hits() -> Int { return self.sub.hits(); }
+    fn sum() -> Int { return self.sub.sum(); }
+    fn joined() -> String { return self.sub.joined(); }
+}
+
+main locus App {
+    params { pub: Pub = Pub { }; }
+}
+
+fn main() {
+    let app = App { };
+    app.pub.go();
+
+    std::test::assert_eq_int(app.pub.hits(), 5, "every intra-locus publish is delivered");
+    std::test::assert_eq_int(app.pub.sum(), 10, "Int payload fields survive the reclaim (0+1+2+3+4)");
+    std::test::assert(
+        app.pub.joined() == "ababababab",
+        "String payload fields survive the reclaim and store correctly");
+}

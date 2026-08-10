@@ -14830,6 +14830,104 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// so a location never attaches to a foreign function's
     /// instructions (LLVM verifier: "!dbg attachment points at
     /// wrong subprogram"). No-op end to end when `di` is None.
+    /// Resolve a self-relative field chain (`self`, `self.child`,
+    /// `self.a.b`) to the locus type at its tip, without emitting IR.
+    /// `None` for any receiver that isn't such a chain of LocusRef
+    /// fields. Used only to recognize the intra-locus-publish desugar's
+    /// direct call to a subscriber handler.
+    fn receiver_locus_name(&self, e: &Expr) -> Option<String> {
+        match e {
+            Expr::KwSelf(_) => {
+                self.current_self.as_ref().map(|cs| cs.locus_name.clone())
+            }
+            Expr::Field { receiver, name, .. } => {
+                let base = self.receiver_locus_name(receiver)?;
+                let info = self.user_loci.get(&base)?;
+                match info.fields.get(&name.name) {
+                    Some((_, CodegenTy::LocusRef(l))) => Some(l.clone()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Is this statement-position call the intra-locus-publish desugar's
+    /// direct handler call (`self.<child>.<handler>(payload)`)? A bus
+    /// subscription handler is not callable from Hale source, so a call
+    /// to one can only be that desugar. The payload is the struct-literal
+    /// argument. Recognizing this lets the caller reclaim the payload the
+    /// bus queue would have — see the call site.
+    fn is_intra_locus_publish_call(
+        &self,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> bool {
+        let Expr::Field { receiver, name, .. } = callee else {
+            return false;
+        };
+        let Some(recv_locus) = self.receiver_locus_name(receiver) else {
+            return false;
+        };
+        let Some(info) = self.user_loci.get(&recv_locus) else {
+            return false;
+        };
+        let is_handler =
+            info.subscriptions.iter().any(|(_, h, _, _)| h == &name.name);
+        is_handler && args.iter().any(|a| matches!(a, Expr::Struct { .. }))
+    }
+
+    /// Lower an intra-locus-publish direct handler call with its payload
+    /// confined to a per-delivery arena subregion. The payload (and any
+    /// interior allocations, e.g. a `String` slice field) build into the
+    /// subregion; the synchronous handler runs; the subregion is then
+    /// destroyed. Safe because the handler has returned and Hale copies
+    /// on every field store, so nothing the handler kept still points
+    /// into the freed region — the same lifetime the bus queue's cell
+    /// reclaim gives a delivered payload.
+    fn lower_reclaimed_publish_call(
+        &mut self,
+        callee: &Expr,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
+        let parent = self.current_arena_ptr()?;
+        let create = self
+            .module
+            .get_function("lotus_arena_create_subregion")
+            .expect("lotus_arena_create_subregion declared");
+        let subregion = self
+            .builder
+            .build_call(create, &[parent.into()], "publish.scratch.create")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("subregion_create returns ptr")
+            .into_pointer_value();
+
+        let saved_override = self.current_arena_override;
+        self.current_arena_override = Some(subregion);
+        let Expr::Field { receiver, name, .. } = callee else {
+            unreachable!("is_intra_locus_publish_call gated on a Field callee");
+        };
+        let call_result = if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
+            self.lower_self_method_call(&name.name, args, scope)
+        } else {
+            self.lower_external_method_call(receiver, &name.name, args, scope)
+        };
+        self.current_arena_override = saved_override;
+        call_result?;
+
+        let destroy = self
+            .module
+            .get_function("lotus_arena_destroy")
+            .expect("lotus_arena_destroy declared");
+        self.builder
+            .build_call(destroy, &[subregion.into()], "publish.scratch.destroy")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(BlockEnd::Open)
+    }
+
     pub(crate) fn lower_stmt(
         &mut self,
         stmt: &Stmt,
@@ -15612,6 +15710,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                     Expr::Path(qn) => {
                         self.lower_path_call(qn, args, scope)?;
+                    }
+                    // An intra-locus publish, direct-called. `desugar_
+                    // intra_locus_topics` rewrites `Topic <- payload`
+                    // for a topic used only within a locus tree into a
+                    // direct call to the subscriber's bus handler,
+                    // sidestepping the bus queue — and with it the
+                    // queue's per-delivery reclaim. The payload then
+                    // builds as an ordinary call argument in the
+                    // method's scratch subregion and is not freed until
+                    // `run()` returns, so a long-running publish loop
+                    // accrues one payload per delivery. Reclaim it: a
+                    // bus handler is not callable from Hale source, so a
+                    // statement-position call to one is unambiguously
+                    // this desugar, and the payload is dead the moment
+                    // the synchronous handler returns.
+                    Expr::Field { .. }
+                        if self.is_intra_locus_publish_call(callee, args) =>
+                    {
+                        return self
+                            .lower_reclaimed_publish_call(callee, args, scope);
                     }
                     Expr::Field { receiver, name, .. }
                         if matches!(receiver.as_ref(), Expr::KwSelf(_)) =>
