@@ -11404,12 +11404,39 @@ impl<'a> Checker<'a> {
                                     _ => {}
                                 }
                             }
-                            let hint = crate::stdlib_surface::nearest_name(
-                                &name.name,
-                                candidates.iter().map(|s| s.as_str()),
-                            )
-                            .map(|s| format!(" — did you mean `{}`?", s))
-                            .unwrap_or_default();
+                            // Element chains desugar (pre-typecheck) to a
+                            // loop that fetches each element through the
+                            // source's `get` / `entry_at`. On a source form
+                            // that has neither — a fixed array or a
+                            // `bounded[T; N]` — the failure surfaces here as
+                            // a bare "no field `get`", with no hint that a
+                            // chain was even involved or which forms a chain
+                            // supports. Name it, so the reader doesn't have
+                            // to bisect the desugar (downstream handoff).
+                            let is_chain_accessor =
+                                name.name == "get" || name.name == "entry_at";
+                            let unsupported_chain_source = is_chain_accessor
+                                && matches!(
+                                    rt,
+                                    Ty::Array(..) | Ty::Bounded(..)
+                                );
+                            let hint = if unsupported_chain_source {
+                                format!(
+                                    " — if this is an element chain \
+                                     (`.filter(…).count()` and the like), \
+                                     `{}` is not a supported source form yet; \
+                                     chains anchor on a `@form(vec)` directly \
+                                     or a `@form(hashmap)` via `.entries`",
+                                    rt.display()
+                                )
+                            } else {
+                                crate::stdlib_surface::nearest_name(
+                                    &name.name,
+                                    candidates.iter().map(|s| s.as_str()),
+                                )
+                                .map(|s| format!(" — did you mean `{}`?", s))
+                                .unwrap_or_default()
+                            };
                             self.diags.push(Diag::ty(
                                 *span,
                                 format!(
