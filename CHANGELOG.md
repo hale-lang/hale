@@ -8,6 +8,21 @@ behavior.
 
 ## Unreleased
 
+### An element chain over an unsupported source names itself
+
+A chain (`.filter(…).count()` and the like) desugars to a loop that
+fetches each element through the source's `get`. A fixed array `[T; N]`
+or a `bounded[T; N]` has no such accessor, so the chain failed with a
+bare `no field \`get\` on \`[Int; 4]\`` — no mention of chains, and no
+pointer to the source forms a chain does support. `hale check` now
+adds, for exactly that shape, that the form is not a supported chain
+source yet and that chains anchor on a `@form(vec)` directly or a
+`@form(hashmap)` via `.entries`. Ordinary field typos keep their
+did-you-mean hint. (Supporting arrays and `bounded` as chain sources,
+and a `Decimal`/`Float` `sum`, is a larger change — chains desugar
+before type-checking, so the source form and element type aren't yet
+known where the accessor and accumulator are chosen.)
+
 ### An intra-locus publish no longer accrues its payload per delivery
 
 The fifth item from the downstream handoff (the four below shipped

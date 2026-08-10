@@ -100,3 +100,60 @@ fn field_typo_gets_did_you_mean() {
         ds
     );
 }
+
+#[test]
+fn chain_over_unsupported_source_names_the_chain() {
+    // An element chain desugars to a loop fetching each element through
+    // the source's `get`. A fixed array / `bounded[T; N]` has no such
+    // accessor, so it failed with a bare "no field `get`" that never
+    // mentioned chains or the supported source forms (downstream
+    // handoff). Both the array and the bounded case now say so.
+    for src in [
+        r#"
+            locus L {
+                params { arr: [Int; 4] = [1, 2, 3, 4]; }
+                fn c() -> Int { return self.arr.filter(it > 2).count(); }
+            }
+            fn main() { }
+        "#,
+        r#"
+            fn take(b: bounded[Int; 8]) -> Int {
+                return b.filter(it > 2).count();
+            }
+            fn main() { }
+        "#,
+    ] {
+        let ds = diags(src);
+        assert!(
+            ds.iter().any(|m| {
+                m.contains("element chain")
+                    && m.contains("@form(vec)")
+                    && m.contains("`.entries`")
+            }),
+            "expected a chain-source diagnostic naming the supported \
+             forms; got: {:?}",
+            ds
+        );
+    }
+}
+
+#[test]
+fn a_real_field_typo_still_gets_did_you_mean_not_the_chain_hint() {
+    // The chain hint must not swallow the ordinary did-you-mean path:
+    // `.get` is the chain accessor, but a plain field typo on a struct
+    // is not a chain and keeps its own hint.
+    let src = r#"
+        type Order { quantity: Int = 0; }
+        fn main() {
+            let o = Order { quantity: 2 };
+            println(o.quantty);
+        }
+    "#;
+    let ds = diags(src);
+    assert!(
+        ds.iter().any(|m| m.contains("did you mean `quantity`")
+            && !m.contains("element chain")),
+        "did-you-mean must be unaffected by the chain hint; got: {:?}",
+        ds
+    );
+}
