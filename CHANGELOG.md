@@ -8,6 +8,30 @@ behavior.
 
 ## Unreleased
 
+### An intra-locus publish no longer accrues its payload per delivery
+
+The fifth item from the downstream handoff (the four below shipped
+first). A `Topic <- payload` for a topic used only within a locus tree,
+with no transport binding, is rewritten by `desugar_intra_locus_topics`
+into a direct call to the subscriber's bus handler — sidestepping the
+bus queue for speed, and with it the queue's per-delivery cell reclaim.
+The payload then built as an ordinary call argument in the publisher's
+method-scratch subregion and was not freed until `run()` returned, so a
+long-running publish loop accrued one payload per delivery (~31 B/cell
+on a string payload; unbounded over a daemon's lifetime).
+
+Codegen now confines each such payload to its own arena subregion,
+destroyed once the synchronous handler returns — the same lifetime the
+bus queue's cell reclaim gives a delivered payload, and safe for the
+same reason (the handler has returned, and Hale copies on every field
+store, so nothing it kept still points into the freed region). A bus
+subscription handler is not callable from Hale source, so a
+statement-position call to one is unambiguously this desugar; the
+reclaim applies to nothing else. Measured: the publish-payload accrual
+goes to zero (a residual reflects only transient `let`s the user's own
+code leaves in scratch, not the delivery). String and Int payloads
+verified intact across the reclaim boundary under ASan.
+
 ### Four fixes from a downstream handoff
 
 A substrate friction report surfaced four defects, fixed here as one
