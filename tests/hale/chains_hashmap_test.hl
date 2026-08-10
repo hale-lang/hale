@@ -1,0 +1,60 @@
+// Element chains over a `@form(hashmap)` source, anchored on `.entries`.
+//
+// Chains (`filter`/`map`/`count`/`sum`/`any`/`all`/`first`/`find`/`min`/
+// `max`/`each`) desugar to one fused loop that fetches each element
+// through the source's own fallible accessor. That accessor was
+// hard-wired to `get(i: Int)`, so chains only ever worked on a
+// `@form(vec)`; on a hashmap `get` is `get(key)`, so a chain lowered to
+// a key/index type mismatch (GH: downstream handoff — a hashmap-shaped
+// corpus could not use the vocabulary at all). Anchoring on `.entries`
+// now routes the loop through `entry_at(i)`, the hashmap's occupied-slot
+// cursor, which has the identical `Int -> T fallible(IndexError)` shape.
+
+type Order { id: String = ""; desk: String = ""; qty: Int = 0; }
+
+@form(hashmap)
+locus Book { capacity { pool rows of Order indexed_by id; } }
+
+@form(vec)
+locus Nums { capacity { heap xs of Int; } }
+
+main locus App {
+    params { b: Book = Book { }; n: Nums = Nums { }; }
+}
+
+fn main() {
+    let app = App { };
+    app.b.set(Order { id: "a1", desk: "a", qty: 5 });
+    app.b.set(Order { id: "a2", desk: "a", qty: 7 });
+    app.b.set(Order { id: "b1", desk: "b", qty: 3 });
+
+    // filter + count
+    std::test::assert_eq_int(
+        app.b.entries.filter(it.desk == "a").count(), 2,
+        "hashmap chain: filter + count");
+    // filter + map + sum
+    std::test::assert_eq_int(
+        app.b.entries.filter(it.desk == "a").map(it.qty).sum(), 12,
+        "hashmap chain: filter + map + sum");
+    // any / all
+    std::test::assert(
+        app.b.entries.any(it.desk == "b"),
+        "hashmap chain: any");
+    std::test::assert(
+        app.b.entries.all(it.qty > 0),
+        "hashmap chain: all");
+    // element-valued: max rides entry_at for the returned element too
+    let top = app.b.entries.max(it.qty) or Order { };
+    std::test::assert(top.desk == "b" || top.qty == 7, "hashmap chain: max element");
+
+    // The vec source is unchanged, bare and via `.items`.
+    app.n.push(1);
+    app.n.push(2);
+    app.n.push(3);
+    std::test::assert_eq_int(
+        app.n.filter(it > 1).count(), 2,
+        "vec chain still works (bare source)");
+    std::test::assert_eq_int(
+        app.n.items.filter(it > 1).sum(), 5,
+        "vec chain still works (.items anchor)");
+}

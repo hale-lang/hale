@@ -1,0 +1,65 @@
+// A locus-valued `mode` projection built by a free-fn FACTORY must
+// survive to the caller. This is the v0.14 regression (GH: downstream
+// handoff): a `mode bulk() -> M { let out = make(...); return out; }`
+// handed the caller a RECLAIMED locus — the factory result was left in
+// the mode's method-scratch subregion, which the epilogue destroys at
+// return. Reads came back empty, and in a two-projection program the
+// OTHER projection's recycled storage showed through the stale handle.
+//
+// Two GH #383 shapes are the controls that already worked, so the fix
+// must not disturb them: a LITERAL-built projection (no factory call),
+// and a free fn returning a factory result. The uncovered cell was
+// exactly mode + factory + return — modes are the one member surface
+// that legitimately returns a locus, so the hole sat on the projection
+// contract's core primitive.
+
+@form(vec)
+locus Mx { capacity { heap cells of Float; } }
+
+fn make_mx(a: Float) -> Mx {
+    let out = Mx { };
+    out.push(a);
+    out.push(a + 1.0);
+    return out;
+}
+
+locus Box {
+    params { n: Int = 3; }
+    // factory-built, returned: the reclaim regression
+    mode bulk() -> Mx {
+        let out = make_mx(1.5);
+        out.push(9.5);
+        return out;
+    }
+    // literal-built, returned: the control that always survived
+    mode harmonic() -> Mx {
+        let out = Mx { };
+        out.push(4.5);
+        return out;
+    }
+}
+
+main locus App {
+    params { b: Box = Box { }; }
+}
+
+fn main() {
+    let app = App { };
+
+    let m = app.b.bulk();
+    let h = app.b.harmonic();
+
+    // The factory-built projection carries its three pushed cells all
+    // the way to the caller — not a reclaimed length-0 handle, and not
+    // harmonic's recycled storage bleeding through.
+    std::test::assert_eq_int(m.len(), 3, "factory-built mode projection survives");
+    std::test::assert(
+        (m.get(0) or 0.0) == 1.5 && (m.get(2) or 0.0) == 9.5,
+        "factory-built mode projection carries its own cells");
+
+    // The literal control is unchanged.
+    std::test::assert_eq_int(h.len(), 1, "literal-built mode projection survives");
+    std::test::assert(
+        (h.get(0) or 0.0) == 4.5,
+        "literal-built mode projection carries its own cell");
+}

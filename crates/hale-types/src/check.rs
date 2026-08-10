@@ -366,6 +366,7 @@ pub fn check_bundle(
             generic_fns,
             generic_types,
             bound_topics: &bound_topics,
+            import_renames: &bundle.import_renames,
         };
         for item in &program.items {
             cx.check_top_decl(item);
@@ -5581,6 +5582,14 @@ struct Checker<'a> {
     /// `or wait` on publishes — the loss window it waits out
     /// only exists for bound topics.
     bound_topics: &'a std::collections::BTreeSet<String>,
+    /// Cross-seed import renames: `["alias", "name"] -> mangled`.
+    /// Lets a qualified locus/struct literal (`mat::Grid { }`) resolve
+    /// to the merged symbol codegen will lower, instead of typing as
+    /// `Ty::Unknown` — which hid every field/method access behind it
+    /// from the checker (a method call that codegen can't lower then
+    /// passed `check` and died at build). Empty for a single-seed
+    /// bundle, so this only ever activates on imported literals.
+    import_renames: &'a [(Vec<String>, String)],
 }
 
 #[derive(Default)]
@@ -12059,6 +12068,35 @@ impl<'a> Checker<'a> {
         if path.segments.len() != 1 {
             for init in inits {
                 let _ = self.check_expr(&init.value);
+            }
+            // Resolve an imported qualified literal (`mat::Grid { }`)
+            // to the merged symbol codegen lowers it to, so field and
+            // method access on the RESULT is checked against the real
+            // definition instead of being waved through as Unknown —
+            // the gap that let `mat::Grid { }.make(x)` (no such method;
+            // `make` is a free fn) pass `check` and die in codegen.
+            //
+            // Only the result TYPE is resolved. The inits are not
+            // re-validated against the imported params, so any literal
+            // `check` accepted before (as Unknown) still typechecks —
+            // this only adds checking downstream of the literal, never
+            // new errors on the literal itself. Empty renames (every
+            // single-seed bundle) fall straight through to Unknown.
+            let key: Vec<String> =
+                path.segments.iter().map(|s| s.name.clone()).collect();
+            if let Some((_, mangled)) =
+                self.import_renames.iter().find(|(p, _)| *p == key)
+            {
+                if matches!(
+                    self.top.lookup(mangled),
+                    Some(
+                        TopSymbol::Locus(_)
+                            | TopSymbol::Type(_)
+                            | TopSymbol::Perspective(_)
+                    )
+                ) {
+                    return Ty::Named(mangled.clone());
+                }
             }
             return Ty::Unknown;
         }

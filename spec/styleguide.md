@@ -883,6 +883,13 @@ loop on the right, so the two have identical cost. Prefer the chain
 because it is shorter to read, and because stages fuse: two `filter`s
 are one pass, where the hand-rolled version invites an intermediate.
 
+A chain runs over a `@form(vec)` source directly (`self.users`), and
+over a `@form(hashmap)` source anchored on `.entries`
+(`self.book.entries.filter(...).count()`) — the same pseudo-field a
+`for e in m.entries` loop iterates, walking the hashmap's occupied
+slots. `.items` is the explicit vec anchor. The element `it` is the
+stored value in both.
+
 Three properties make chains safe on a hot path, and they are worth
 knowing rather than assuming:
 

@@ -1,0 +1,16 @@
+// `mat::Grid { }.make(n)` spells a free fn as a NAMESPACE-LOTUS METHOD.
+// `Grid` has no method `make` (it is a free fn in the same seed), so
+// this must be REJECTED by `hale check` — before the fix the imported
+// literal typed as Unknown, hiding the missing method, and the program
+// passed `check` only to die in codegen ("locus ... has no method
+// make"). The forward spelling is the free fn `mat::make(n)`.
+import "../p3-namespace-method-lib" as mat;
+
+main locus App {
+    run() {
+        let g = mat::Grid { }.make(3);
+        println("n=", g.n);
+    }
+}
+
+fn main() { App { }; }
