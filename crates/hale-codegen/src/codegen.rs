@@ -611,6 +611,25 @@ pub enum CompileTarget {
     Wasm32,
 }
 
+impl CompileTarget {
+    /// The full target identity behind this backend selection.
+    ///
+    /// `Native` means "the host", which is why every platform question
+    /// used to be answerable with `cfg!(target_os = ...)`. Routing those
+    /// questions through a [`TargetSpec`] is behaviour-preserving today
+    /// precisely because of that equivalence — and stops being a lie the
+    /// moment a target that is not the host exists (GH #445).
+    pub fn spec(self) -> crate::target::TargetSpec {
+        match self {
+            CompileTarget::Native => crate::target::TargetSpec::host(),
+            CompileTarget::Wasm32 => crate::target::TargetSpec::parse(
+                "wasm32-unknown-unknown",
+            )
+            .expect("wasm32 is a known triple"),
+        }
+    }
+}
+
 /// Backend CPU tuning for the native target. `Native` tunes to the
 /// host (`-march=native`-equivalent: best perf, NOT portable across
 /// microarchitectures). `Baseline` pins a portable modern x86-64
@@ -620,7 +639,11 @@ pub enum CompileTarget {
 pub enum TargetCpu {
     #[default]
     Native,
-    Baseline,
+    /// x86-64-v3: AVX2 + BMI2 + FMA. Named for what it actually pins —
+    /// "Baseline" quietly implied those extensions were a baseline on
+    /// every platform, which is false the moment the target is aarch64
+    /// or Windows-on-ARM.
+    X86_64V3,
 }
 
 /// Read a `LOTUS_*` boolean build flag from the environment.
@@ -906,6 +929,10 @@ pub fn build_executable_with_options(
     let program = &program_owned;
 
     let is_wasm = options.target == CompileTarget::Wasm32;
+    // Every platform question below asks the TARGET, not the host. These
+    // agree today (Native == host) and the answers are unchanged; the
+    // point is that they stop agreeing safely. See GH #445.
+    let target_spec = options.target.spec();
     if is_wasm {
         // Register the WebAssembly backend (the native path only
         // initializes the host target).
@@ -1161,7 +1188,7 @@ pub fn build_executable_with_options(
                 TargetMachine::get_host_cpu_name().to_string(),
                 TargetMachine::get_host_cpu_features().to_string(),
             ),
-            TargetCpu::Baseline => {
+            TargetCpu::X86_64V3 => {
                 if cfg!(target_arch = "x86_64") {
                     ("x86-64-v3".to_string(), String::new())
                 } else {
@@ -1265,6 +1292,7 @@ pub fn build_executable_with_options(
         builder,
         target_data,
         is_wasm,
+        target: target_spec.clone(),
         wasm_exports: Vec::new(),
         native_exports: Vec::new(),
         current_instantiation_parent: None,
@@ -1805,7 +1833,7 @@ pub fn build_executable_with_options(
         // the --wrap link flags below); the LOTUS_ARENA_LOG_BIG_CHUNKS
         // diagnostic + std::diag::syscall_count are the only features that
         // depend on them — inert on macOS for Phase 1.
-        if !cfg!(target_os = "macos") {
+        if target_spec.supports_wrap_linker_flag() {
             rt_cflags.push("-DLOTUS_ENABLE_WRAP_MALLOC".into());
         }
         // LTO mode: compile the runtime TUs to LLVM bitcode (cache key
@@ -1843,12 +1871,10 @@ pub fn build_executable_with_options(
         // targets the host CPU by default on Darwin; correctness is
         // unaffected, only some hand-tuned vectorization is left on the
         // table.
-        if options.target == CompileTarget::Native
-            && !cfg!(target_os = "macos")
-        {
+        if !target_spec.is_wasm() && !target_spec.is_macos() {
             match options.target_cpu {
                 TargetCpu::Native => rt_cflags.push("-march=native".into()),
-                TargetCpu::Baseline => {
+                TargetCpu::X86_64V3 => {
                     if cfg!(target_arch = "x86_64") {
                         rt_cflags.push("-march=x86-64-v3".into());
                     }
@@ -1859,7 +1885,7 @@ pub fn build_executable_with_options(
     // macOS: point clang at Homebrew's OpenSSL headers so the always-
     // compiled lotus_tls.c TU can find <openssl/ssl.h>. No-op on Linux
     // (OpenSSL is on the default include path; the helper returns None).
-    if cfg!(target_os = "macos") {
+    if target_spec.is_macos() {
         if let Some(prefix) = macos_openssl_prefix() {
             rt_cflags.push(format!("-I{}/include", prefix.display()));
         }
@@ -1936,7 +1962,7 @@ pub fn build_executable_with_options(
         clang.arg("-O2");
         // Non-LTO: prefer lld when installed (see lld_available).
         // The LTO branch above already requires lld.
-        if !cfg!(target_os = "macos") && lld_available() {
+        if !target_spec.is_macos() && lld_available() {
             clang.arg("-fuse-ld=lld");
         }
     }
@@ -1945,7 +1971,7 @@ pub fn build_executable_with_options(
     // would be a hard "library 'rt' not found" at link. Link it on Linux
     // only. (macOS build stays otherwise byte-identical to Linux minus
     // the platform-incompatible flags gated below.)
-    if !cfg!(target_os = "macos") {
+    if target_spec.needs_librt() {
         clang.arg("-lrt");
     }
     clang
@@ -1973,7 +1999,7 @@ pub fn build_executable_with_options(
     // if the archives are missing. Linux keeps the plain
     // dynamic link — distro OpenSSL is a stable system dep.
     let mut linked_static_ssl = false;
-    if cfg!(target_os = "macos") {
+    if target_spec.is_macos() {
         if let Some(prefix) = macos_openssl_prefix() {
             let ssl_a = prefix.join("lib").join("libssl.a");
             let crypto_a = prefix.join("lib").join("libcrypto.a");
@@ -1996,7 +2022,7 @@ pub fn build_executable_with_options(
     // on macOS, but the explicit arg is harmless there and
     // required on older glibc).
     clang.arg("-lz");
-    if !cfg!(target_os = "macos") {
+    if !target_spec.is_macos() {
         clang.arg("-ldl");
     }
     // 2026-05-21: -rdynamic exports the dynamic symbol table so
@@ -2005,7 +2031,7 @@ pub fn build_executable_with_options(
     // diagnostic (glibc-only: the backtrace call sites are __GLIBC__-
     // gated). Linux-only here: macOS's linker spelling differs and the
     // diagnostic is inert on macOS anyway.
-    if !cfg!(target_os = "macos") {
+    if !target_spec.is_macos() {
         clang.arg("-rdynamic");
     }
     // 2026-05-21: linker --wrap intercepts for the libc allocator entry
@@ -2034,7 +2060,7 @@ pub fn build_executable_with_options(
     } else if lotus_asan {
         // Pulls the ASAN + LeakSanitizer runtimes.
         clang.arg("-fsanitize=address");
-    } else if !cfg!(target_os = "macos") {
+    } else if !target_spec.is_macos() {
         // Default build: intercept the libc allocator entry points
         // (the __wrap_* bodies live in the arena object, compiled
         // with LOTUS_ENABLE_WRAP_MALLOC above) for the
@@ -2064,7 +2090,7 @@ pub fn build_executable_with_options(
         // staticlib symbols are actually pulled in. macOS has no
         // separate libdl (dlopen/dlsym are in libSystem), so `-ldl`
         // would be "library 'dl' not found" — link it on Linux only.
-        if !cfg!(target_os = "macos") {
+        if !target_spec.is_macos() {
             clang.arg("-ldl");
         }
         clang.arg("-lm");
@@ -3148,6 +3174,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// WASM plan: true when compiling for wasm32. Gates the wasm-incompatible
     /// `main` startup (transport/pool/thread bring-up) for entry inversion.
     pub(crate) is_wasm: bool,
+    /// The target being emitted for. `is_wasm` above is one bit of this;
+    /// anything else lowering needs to know about the platform asks here
+    /// rather than asking the host through `cfg!` (GH #445).
+    pub(crate) target: crate::target::TargetSpec,
     /// WASM entry-inversion: names of `@export` free fns whose
     /// arena-less wrappers were emitted; passed to `wasm-ld
     /// --export=`. Empty on native builds.
@@ -8529,8 +8559,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // emission too guarantees codegen never references the
                 // async_io C path on a host where it's a -1 stub — a clean
                 // diagnostic instead of a surprising runtime no-op.
+                // async_io is epoll-shaped, so it is Linux-only. This asked
+                // the host, which meant a macOS-hosted build of a Linux
+                // artifact would have silently dropped the enable call.
                 if self.deployment.async_io_pools.contains(name)
-                    && !cfg!(target_os = "macos")
+                    && self.target.is_linux()
                 {
                     self.builder
                         .build_call(
