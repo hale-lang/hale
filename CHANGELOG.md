@@ -8,6 +8,50 @@ behavior.
 
 ## Unreleased
 
+### Four fixes from a downstream handoff
+
+A substrate friction report surfaced four defects, fixed here as one
+batch. (A fifth, a per-delivery memory accrual on same-thread bus
+dispatch, is investigated but not fixed — see the PR for the root cause;
+its reported mechanism did not match the runtime.)
+
+- **A factory-built `mode` projection is no longer reclaimed before the
+  caller reads it.** A `mode bulk() -> M { let out = make(...); return
+  out; }` — where `make` is a free-fn factory — handed the caller a
+  reclaimed locus: the factory result stayed in the mode's method-scratch
+  subregion, which the epilogue destroys at return, so reads came back
+  empty (or showed another projection's recycled storage). A regression
+  shipped in v0.14; a literal-built projection and a free fn returning a
+  factory result were the controls that still worked. A returned binding
+  in a mode body now routes its allocation through the caller arena, as a
+  free fn already does. Modes are the one member surface that legitimately
+  returns a locus, so the hole sat on the projection contract's core.
+
+- **Element chains work over `@form(hashmap)`, anchored on `.entries`.**
+  `m.entries.filter(...).count()` (and the rest of the chain vocabulary)
+  now compiles to the fused loop over a hashmap's occupied-slot cursor.
+  Chains previously anchored only on `@form(vec)`, so a hashmap source
+  lowered to a key/index type mismatch. `.items` is accepted as the
+  explicit vec anchor; a bare vec source is unchanged.
+
+- **`hale check` rejects a namespace-lotus method spelling on an imported
+  locus**, instead of accepting it and dying in codegen. `mat::Grid {
+  }.method(x)` where `method` is a free fn (not a method on `Grid`) passed
+  `check` because an imported qualified-path literal typed as `Ty::Unknown`
+  — hiding field and method access behind it. Imported literals now
+  resolve to their merged type, so the missing method is a typecheck error
+  in the author's spelling. A real imported method still resolves, and
+  imported literal fields are not newly validated (no regression on
+  existing multi-seed code).
+
+- **`std::secret::Signer` takes a `decode` transform.** `Signer { env_var:
+  …, decode: "base64" }` decodes the source before keying, so a venue that
+  issues a base64 secret gets the DECODED key rather than one keyed under
+  the text of the base64 (which produced valid-looking MACs under the
+  wrong key, silently). An unavailable source or an unrecognized transform
+  fails closed — `ready() == false` — never a key that isn't the one the
+  source names.
+
 ### A target model, and the first step toward Windows (GH #445)
 
 Targets were `Native | Wasm32`, where "native" meant "whatever host

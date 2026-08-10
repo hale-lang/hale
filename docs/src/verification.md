@@ -351,6 +351,13 @@ your code where you hold it. `self.s.key` is a compile error naming the
 methods you can call instead. `std::secret::Credential` is the same for
 a token or password, plus a `fingerprint()` for logs.
 
+When the source is encoded — many venues issue an HMAC secret in
+base64 — name the encoding with `decode:` (`Signer { env_var: "…",
+decode: "base64" }`), so the key is the *decoded* bytes rather than the
+text of the base64. Undecodable input, or an unrecognized transform,
+fails closed: an empty key and `ready() == false`, never a key that
+isn't the one the source names.
+
 Two more claims worth knowing, because they answer different questions
 about the same boundary. **Where** may the program touch the OS?
 

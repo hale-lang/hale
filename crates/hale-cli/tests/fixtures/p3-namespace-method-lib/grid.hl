@@ -1,0 +1,9 @@
+// A namespace-lotus: an empty placeholder locus whose "methods" are
+// actually module-level free fns (the m90-extracted factory shape,
+// e.g. pond/math/matrix's `Mat` + `zeros`).
+locus Grid { params { n: Int = 0; } }
+
+fn make(n: Int) -> Grid {
+    let g = Grid { n: n };
+    return g;
+}

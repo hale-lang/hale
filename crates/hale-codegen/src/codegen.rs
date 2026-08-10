@@ -2666,12 +2666,44 @@ fn compute_returned_bindings(
 
     let mut m: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for item in &program.items {
-        if let TopDecl::Fn(f) = item {
-            let mut set = BTreeSet::new();
-            walk(&f.body, &mut set);
-            if !set.is_empty() {
-                m.insert(f.name.name.clone(), set);
+        match item {
+            TopDecl::Fn(f) => {
+                let mut set = BTreeSet::new();
+                walk(&f.body, &mut set);
+                if !set.is_empty() {
+                    m.insert(f.name.name.clone(), set);
+                }
             }
+            // A `mode` is the third shape that legitimately returns a
+            // locus (alongside a free fn) — it IS the locus-valued
+            // projection surface. This pass predated modes and walked
+            // only `TopDecl::Fn`, so a mode returning a factory-built
+            // locus had no returned-bindings entry: the GH #383 dissolve
+            // fired on the binding the caller now owns, handing back a
+            // reclaimed locus (empty reads, or another projection's
+            // recycled storage). Key by `{locus}.{mode}` to match the
+            // LLVM function name `current_fn` reports at the dissolve
+            // decision (see locus/decl.rs — same `{}.{}` convention).
+            TopDecl::Locus(l) => {
+                for member in &l.members {
+                    if let LocusMember::Mode(md) = member {
+                        let mode_name = match md.kind {
+                            ModeKind::Bulk => "bulk",
+                            ModeKind::Harmonic => "harmonic",
+                            ModeKind::Resolution => "resolution",
+                        };
+                        let mut set = BTreeSet::new();
+                        walk(&md.body, &mut set);
+                        if !set.is_empty() {
+                            m.insert(
+                                format!("{}.{}", l.name.name, mode_name),
+                                set,
+                            );
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
     m
@@ -15669,6 +15701,47 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let hint_ty = ascribed
                     .as_ref()
                     .and_then(|asc| self.type_expr_to_codegen_ty(asc).ok());
+                // A returned binding must escape to the caller. In a
+                // method with a scratch subregion (every `mode` body),
+                // allocations default to that scratch, which is
+                // destroyed at method return — so a factory-built locus
+                // bound here and then returned is freed out from under
+                // the caller. That is the P0 mode-projection regression:
+                // `mode bulk() -> M { let out = make_m(); return out; }`
+                // handed back reclaimed storage (empty reads, or another
+                // projection's recycled cells). A LITERAL-built binding
+                // survives because return-position routing already sends
+                // the literal to the caller arena; a factory CALL result
+                // does not, so route THIS binding's RHS through the
+                // caller arena too — exactly how a free fn threads its
+                // `__caller_arena` to the same factory. Gated on the
+                // binding actually being returned (compute_returned_
+                // bindings now sees mode bodies), so ordinary transient
+                // bindings keep using scratch.
+                let saved_override_for_returned = self.current_arena_override;
+                let binding_is_returned = self.current_method_scratch.is_some()
+                    && self
+                        .current_fn
+                        .map(|f| f.get_name().to_string_lossy().to_string())
+                        .and_then(|fname| self.returned_bindings.get(&fname))
+                        .map(|set| set.contains(&name.name))
+                        .unwrap_or(false);
+                if binding_is_returned {
+                    if let Some(slot) = self.current_method_caller_arena {
+                        let ptr_t =
+                            self.context.ptr_type(AddressSpace::default());
+                        let caller_arena = self
+                            .builder
+                            .build_load(
+                                ptr_t,
+                                slot,
+                                "method.caller_arena.for_returned_let",
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                            .into_pointer_value();
+                        self.current_arena_override = Some(caller_arena);
+                    }
+                }
                 // GH #402: the binding decides ownership for its own
                 // RHS (below), so suppress temporary registration for
                 // the top-level call — otherwise the value would be
@@ -15678,6 +15751,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let lower_result =
                     self.lower_expr_into(value_to_lower, scope, hint_ty.as_ref());
                 self.suppress_fresh_temp = prev_sft;
+                self.current_arena_override = saved_override_for_returned;
                 self.defer_next_locus_dissolve = false;
                 let (mut val, mut ty) = lower_result?;
                 // GH #383: a let-bound call to a proven-fresh locus

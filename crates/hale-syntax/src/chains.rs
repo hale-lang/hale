@@ -161,6 +161,15 @@ struct Chain {
     stages: Vec<Stage>,
     terminal: String,
     term_args: Vec<Expr>,
+    /// The fallible element fetch the loop rides. `"get"` for a bare
+    /// source (a `@form(vec)`, whose `get(i: Int)` this loop was built
+    /// around); `"entry_at"` when the source is anchored on `.entries`
+    /// (a `@form(hashmap)`, whose `entry_at(i: Int)` has the identical
+    /// `Int -> T fallible(IndexError)` shape and walks occupied slots).
+    /// Chosen syntactically here — chains desugar before typecheck — so
+    /// an accessor that does not resolve on the real source form fails
+    /// with the ordinary no-method diagnostic at the chain's site.
+    accessor: &'static str,
 }
 
 const TERMINALS: &[&str] = &[
@@ -272,7 +281,25 @@ fn peel(e: &Expr) -> Option<Chain> {
     if !recognized {
         return None;
     }
-    Some(Chain { src: cur.clone(), stages, terminal, term_args })
+
+    // The source form's element cursor. A source anchored on the
+    // `@form` iteration pseudo-fields picks the matching accessor:
+    // `.entries` → a hashmap's `entry_at`, `.items` → a vec's `get`
+    // (also the bare-source default). Anchored, the pseudo-field is
+    // stripped so the accessor is called on the collection itself.
+    // `for e in m.entries` already recognizes these pseudo-fields by
+    // shape in check.rs; this mirrors that so a chain reads the same.
+    let (src, accessor) = match cur {
+        Expr::Field { receiver, name, .. } if name.name == "entries" => {
+            ((**receiver).clone(), "entry_at")
+        }
+        Expr::Field { receiver, name, .. } if name.name == "items" => {
+            ((**receiver).clone(), "get")
+        }
+        other => (other.clone(), "get"),
+    };
+
+    Some(Chain { src, stages, terminal, term_args, accessor })
 }
 
 // ---- `it` substitution --------------------------------------------
@@ -504,11 +531,19 @@ fn if_then(cond: Expr, then: Vec<Stmt>, sp: Span) -> Stmt {
         span: sp,
     })
 }
-fn get_or_break(src: &Expr, idx_var: &str, bind: &str, sp: Span) -> Stmt {
-    // `let <bind> = src.get(i) or { break; };` — the diverging
+fn get_or_break(
+    src: &Expr,
+    idx_var: &str,
+    bind: &str,
+    accessor: &str,
+    sp: Span,
+) -> Stmt {
+    // `let <bind> = src.<accessor>(i) or { break; };` — the diverging
     // fallback is why #353's diverging-`or` fix had to land first:
     // there is no typed default to invent for an arbitrary element
-    // type.
+    // type. `accessor` is `get` for a vec source and `entry_at` for a
+    // hashmap one; both are `Int -> T fallible(IndexError)`, so the
+    // `or { break; }` exit is the same either way.
     Stmt::Let {
         is_mut: false,
         name: id(bind, sp),
@@ -516,7 +551,7 @@ fn get_or_break(src: &Expr, idx_var: &str, bind: &str, sp: Span) -> Stmt {
         value: Expr::Or {
             inner: Box::new(method(
                 src.clone(),
-                "get",
+                accessor,
                 vec![var(idx_var, sp)],
                 sp,
             )),
@@ -605,6 +640,7 @@ fn build_loop(
     src: &Expr,
     uid: usize,
     body: Vec<Stmt>,
+    accessor: &str,
     sp: Span,
 ) -> Vec<Stmt> {
     let i_name = format!("__hale_chain_i{}", uid);
@@ -615,7 +651,7 @@ fn build_loop(
             bin(BinOp::Add, var(&i_name, sp), int(1, sp), sp),
             sp,
         ),
-        get_or_break(src, &i_name, &elem, sp),
+        get_or_break(src, &i_name, &elem, accessor, sp),
     ];
     loop_body.extend(body);
     vec![
@@ -717,7 +753,7 @@ fn lower(mut c: Chain, sp: Span, uid: usize) -> Expr {
     if let Some(i) = init {
         stmts.push(i);
     }
-    stmts.extend(build_loop(&c.src, uid, body, sp));
+    stmts.extend(build_loop(&c.src, uid, body, c.accessor, sp));
     Expr::Block(Block {
         stmts,
         tail: tail.map(Box::new),
@@ -791,7 +827,7 @@ fn lower_indexed(
             ), if_then(
                 bin(BinOp::GtEq, var(idx, sp), int(0, sp), sp),
                 vec![
-                    get_or_break(&c.src, idx, &best_bind, sp),
+                    get_or_break(&c.src, idx, &best_bind, c.accessor, sp),
                     if_then(
                         cmp,
                         vec![assign(idx, var(&i_name, sp), sp)],
@@ -810,9 +846,13 @@ fn lower_indexed(
 
     let body = apply_stages(&c.stages, &elem0, uid, action, sp);
     let mut stmts = vec![let_mut(idx, int(-1, sp), sp)];
-    stmts.extend(build_loop(&c.src, uid, body, sp));
+    stmts.extend(build_loop(&c.src, uid, body, c.accessor, sp));
 
-    let get_tail = method(c.src.clone(), "get", vec![var(idx, sp)], sp);
+    // The element-valued result rides the same accessor the loop did —
+    // `get` for a vec, `entry_at` for a hashmap — so first/find/min/max
+    // return the element from the source form they actually iterated.
+    let get_tail =
+        method(c.src.clone(), c.accessor, vec![var(idx, sp)], sp);
     let tail = match disposition {
         Some(d) => Expr::Or {
             inner: Box::new(get_tail),
