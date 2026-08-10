@@ -1,21 +1,35 @@
 # Hale
 
-**You describe a system — the services, the messages between them, who
-owns what — and that description *is* the program.**
+**Loci all the way down. And all the way up.**
 
-One primitive, the **locus**, scales from a single function to a fleet of
-services wired over a typed message bus. There's no translation layer
-between the sentence you'd say out loud and the code you write.
+A locus is a system: made of smaller systems, serving a larger one. It is
+the unit of Hale's one recursive structural model, and that model holds its
+shape at every scale: a value, a component, a service, an application, a
+fleet of running binaries. When a boundary closes, Hale checks the model it
+can derive and emits evidence that the next scale out composes.
 
-**[hale-lang.org](https://hale-lang.org)** — docs, [playground](https://hale-lang.org/playground), packages, [features](https://hale-lang.org/features).
+(Precisely: one *model*, not one syntactic form. A constitution and a fleet
+plan are not locus declarations — the plan is JSON. What recurs is the
+account of ownership, flow, closure, and law that each of them is a
+projection of.)
+
+Most languages stop at the top of the file. Above that line your
+architecture stops being code and becomes diagrams, deployment YAML, and
+review comments that no compiler ever reads. Hale keeps going: the same
+construct describes a value and a deployment, so one checker walks both.
+
+> *Systems outgrow working memory, so the language should hold the
+> architecture.*
+
+**[hale-lang.org](https://hale-lang.org)**: docs, [playground](https://hale-lang.org/playground), packages, [features](https://hale-lang.org/features).
 
 [![Tests](https://github.com/hale-lang/hale/actions/workflows/tests.yml/badge.svg)](https://github.com/hale-lang/hale/actions/workflows/tests.yml)
 [![Docs](https://github.com/hale-lang/hale/actions/workflows/docs.yml/badge.svg)](https://hale-lang.org/docs)
 [![License](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](./LICENSE)
 [![LLVM](https://img.shields.io/badge/LLVM-18-red.svg)](https://llvm.org/)
 
-You know the feeling: you describe a service out loud — *"a chat room takes
-each message posted to it and relays it out to everyone in the room"* — and
+You know the feeling: you describe a service out loud, *"a chat room takes
+each message posted to it and relays it out to everyone in the room"*, and
 the code you actually write bears no resemblance to the sentence. A
 connection registry. A member list, and a lock around it. A broadcast loop.
 Async plumbing. By the time it works, the idea you started with is buried.
@@ -47,47 +61,70 @@ Every phrase from the description has a home, in the order you thought it:
 - *"a chat room"* → `locus Room`
 - *"each message posted to it"* → `subscribe Posted as on_post`
 - *"in the room"* (only this room's traffic) → `keyed_by room` +
-  `where key == self.name` — the bus itself is the routing table, so a
+  `where key == self.name`, the bus itself is the routing table, so a
   message for `"lobby"` is delivered only to the lobby `Room`, and the
   handler body never filters
 - *"relays it out to everyone"* → `publish Broadcast` / `Broadcast <- m`,
   and the bus fans it out to every subscriber
 
 No connection registry, no member list to lock, no broadcast loop, no
-`async`/`await`, no lifecycle wiring — and no dispatch code either: with
+`async`/`await`, no lifecycle wiring, and no dispatch code either: with
 ten rooms, a posted message costs one delivery, not ten filtered ones.
-You wrote down the idea; the idea is the program. (Rooms here are wired
-at startup; a lobby that mints brand-new rooms at runtime still declares
-them — dynamic subject creation is on the roadmap.)
+You wrote down the idea; the idea is the program.
+
+Topics are declared, and stay declared: a lobby with a thousand rooms is
+one `Posted` topic keyed by room, not a thousand subjects. Dynamism lives
+in the routing key and in payload variants, which is what keeps the graph
+exact enough to certify.
 
 > GitHub can't syntax-highlight Hale yet, so the snippets here render in a
 > single color. For highlighted, runnable Hale, open the
 > [playground](https://play.hale-lang.org/).
 
-## One primitive, at any altitude
+## Six scales, one model
 
-Most languages pick a level and stay there — Python and JavaScript high, Go
-in the middle, Rust and C++ low. Hale is one language you write at any of
-them, moving between levels without changing tools. There's a single
-building block — the **locus** — and the only thing that changes as you go
-down is how much of it you choose to see.
+Going down, a locus contains loci, a service contains a cache contains a
+parser, until you reach primitive operations. Going up, loci compose into
+an application, and `main locus` is simply the outermost one. The recursion
+does not stop at the process boundary: a fleet plan carries instances,
+routes, groups and claims, so it plays the role of a `main locus` one scale
+further out — composing certified artifacts rather than source-level loci.
 
-| Altitude | You write… | Feels like… |
+| Scale | You write… | What the compiler checks there |
 |---|---|---|
-| **The basics** | variables, math, functions, control flow | a clean scripting language |
-| **Everyday programs** | files, JSON, HTTP, loci as objects | Python / Node |
-| **Concurrent services** | a typed bus, lifecycle, supervision | Go / Erlang |
-| **Systems control** | memory layout, lifetime, zero-copy I/O, C bindings | Rust / C++ |
+| **value & behavior** | `type`, `fn` | effect classes, budgets, phase contracts, across the whole call graph |
+| **component** | `locus` | an owned region, a structural lifetime, confinement |
+| **service** | `topic`, `bus`, `placement` | bus topology, causal reach, dependency sets |
+| **application** | `main locus` + `claims` | named law over the assembled graph, answered with a countermodel |
+| **environment** | `constitution` × entrypoint | one authored claimset, proven in every world that adopts it |
+| **fleet** | a plan: instances + routes | law across separately compiled binaries, signed and attested |
 
-A function you wrote at the top still works at the bottom — you've just
-learned to see more of what was always there. The
-[docs](https://hale-lang.org/docs) are organized as exactly this
-descent, so you go only as deep as you need.
+Each closure emits evidence the next one composes, and the direction of
+uncertainty is fixed at every scale: it may add a path, never erase one.
 
-## Deploy the same system anywhere — by editing `main`
+### Scale is not altitude
+
+Hale moves along two independent axes, and it is worth keeping them apart
+because the docs teach one while the table above walks the other:
+
+- **Scale** — how large the composed system is, from function scope out to
+  a fleet. The six rows above.
+- **Altitude** — how much of the machinery you are choosing to control,
+  from everyday code down to explicit systems work. Four steps: a clean
+  scripting language, then Python/Node, then Go/Erlang concurrency, then
+  Rust/C++ control.
+
+They are independent: a single locus participates at every scale while
+being written at whichever altitude the job needs. The
+[docs](https://hale-lang.org/docs) descend the altitudes in order, so you
+go only as deep as you need — and a function you wrote at the top still
+works at the bottom; you've just learned to see more of what was always
+there.
+
+## Deploy the same system anywhere, by editing `main`
 
 The loci describe *what your system is*. A single **`main` locus** describes
-*where it runs and how its messages travel* — and nothing else in the
+*where it runs and how its messages travel*, and nothing else in the
 program mentions a thread or a transport:
 
 ```hale
@@ -119,16 +156,16 @@ main locus App {
 Not one line of `GameRegion`, `SessionWorkers`, or `MetricsServer` changes
 whether `MatchReady` is an in-process queue or a Unix socket, or whether
 `region_us` owns a NUMA node or shares the main thread. You design the
-system once and redeploy it — test, single binary, many hosts — by editing
-`main`.
+system once and redeploy it as a test, a single binary, or many hosts, by
+editing `main`.
 
-This isn't aspirational — the same source runs as a test, one binary, or a
+This isn't aspirational: the same source runs as a test, one binary, or a
 mesh of binaries wired over sockets and shared memory, with the loci
 themselves oblivious to how they're deployed. Only `main` changes.
 
-And you can redeploy a system **while it runs.** A `perspective` is a live,
+You can also redeploy a system **while it runs.** A `perspective` is a live,
 swappable handle to a contract; `reperspective` re-points it at a new
-implementation with a single atomic store — hot code-swap at pointer-flip
+implementation with a single atomic store: hot code-swap at pointer-flip
 cost, no restart, the running state carried across:
 
 ```hale
@@ -136,11 +173,10 @@ reperspective self.router as RouterV2;   // every caller sees V2 on its next cal
 ```
 
 `topology { }` to describe the machine, `placement { }` to map components
-onto its cores and memory, `reperspective` to redeploy them live —
-Kubernetes-shaped, in a single address space, at nanosecond cost.
+onto its cores and memory, `reperspective` to redeploy them live: Kubernetes-shaped, in a single address space, at nanosecond cost.
 
-It all comes from one idea — **you declare intent, and the compiler picks
-the mechanism** — applied on every axis where other languages make you
+It all comes from one idea, **you declare intent and the compiler picks
+the mechanism**, applied on every axis where other languages make you
 hand-pick:
 
 | You write… | …the compiler picks |
@@ -149,32 +185,32 @@ hand-pick:
 | `placement { }` / `topology { }` | a shared pool, a dedicated thread, a pinned core, a NUMA node |
 | `@form(vec / hashmap / ring_buffer / lru_cache)` | a tight, type-specialized container |
 
-The choices easy to get wrong — which lock, which container, which
-transport — stop being choices you make at the call site.
+The choices easy to get wrong (which lock, which container, which
+transport) stop being choices you make at the call site.
 
 ## What you don't write
 
-A lot of the appeal is what *isn't* there to trip over — or to make a
+A lot of the appeal is what *isn't* there to trip over, or to make a
 coding model hallucinate:
 
-- **No `class`, `module`, `package`** — the **locus** is all of them. Apps,
+- **No `class`, `module`, `package`**, the **locus** is all of them. Apps,
   services, caches, handlers, libraries: all loci.
-- **No `Vec<T>` / `Map<K,V>` ceremony** — declare a collection with `@form`
+- **No `Vec<T>` / `Map<K,V>` ceremony**, declare a collection with `@form`
   on a locus and get `push` / `get` / `len` synthesized, type-specialized to
   your element.
-- **No `async` / `await`** — concurrency lives on the typed bus and the locus
+- **No `async` / `await`**, concurrency lives on the typed bus and the locus
   lifecycle. No function-coloring problem, because there are no async
   functions to color.
-- **No GC, and no borrow checker** — the locus hierarchy is explicit, so
+- **No GC, and no borrow checker**: the locus hierarchy is explicit, so
   cleanup is deterministic when a locus dissolves. You never write `free`,
   and you never fight a lifetime annotation.
-- **No exceptions, no `panic` / `assert`** — a call that can fail says so in
+- **No exceptions, no `panic` / `assert`**: a call that can fail says so in
   its type, and you address it right at the call site. Nothing propagates
   invisibly.
 
 ## Say what a function may *do*
 
-A signature tells you the types and nothing else — not whether a function
+A signature tells you the types and nothing else, not whether a function
 touches the filesystem, blocks on a socket, reads the clock, or allocates.
 Hale lets you say so, and holds you to it:
 
@@ -184,8 +220,8 @@ fn price(book: OrderBook, qty: Int) -> Decimal { ... }
 ```
 
 That's a contract, not a hint. The compiler proves it across everything
-reachable — through helpers, through methods called on a handle, into
-imported libraries, into the standard library — and a violation names the
+reachable, through helpers, through methods called on a handle, into
+imported libraries, into the standard library, and a violation names the
 path that gets there, not just the function:
 
 ```
@@ -195,7 +231,7 @@ effect assertion violated: `price` must not reach `syscall`, but reaches
 
 The classes are `syscall`, `block`, `time`, `entropy`, `env`, `ffi`,
 `publish`, `spawn`, `recursion` and `alloc`. They compose into a one-line
-hot-path certificate — nothing that waits, nothing that reaches the kernel,
+hot-path certificate: nothing that waits, nothing that reaches the kernel,
 nothing non-deterministic, no allocation:
 
 ```hale
@@ -205,16 +241,16 @@ fn on_tick(a: Int, b: Int) -> Int { ... }
 ```
 
 It's entirely opt-in: a program with no annotations behaves exactly as
-before. And because the compiler already infers what every function does, it
-will also *report* that — so a handler that quietly starts doing filesystem
+before. Because the compiler already infers what every function does, it
+will also *report* that, so a handler that quietly starts doing filesystem
 I/O is a one-line diff in review, even though nothing annotated changed.
 [Effects & contracts →](https://hale-lang.org/docs/effects)
 
 ## State your architecture as law
 
 Effects bind one function at a time. Architecture is a property of the
-*whole* graph — "billing must never reach research", "exactly one thing
-writes settlements" — and saying that with per-function contracts means
+*whole* graph: "billing must never reach research", "exactly one thing
+writes settlements", and saying that with per-function contracts means
 scattering them across every position and hoping you got them all.
 
 A **claim** is one named sentence about the program graph, declared in
@@ -236,8 +272,7 @@ main locus Org {
 }
 ```
 
-Violate one and you get a minimal countermodel in your own spelling —
-never a mangled symbol, never a rule number:
+Violate one and you get a minimal countermodel in your own spelling: never a mangled symbol, never a rule number:
 
 ```
 claim `tenant_iso` violated: `billing` reaches `research_wing` — witness:
@@ -255,20 +290,20 @@ publishers(topic T) <= 1` for cardinality; `cover topic in seed(a):
 subscribed_by(some G)` so a new topic can't be quietly orphaned;
 `only edges A -> B { publish T; }` for a reviewable boundary
 inventory; and `bound llm <= N on paths from G` for cost. `bound`
-counts a **user-declared** effect class (`effect llm;`) — the
+counts a **user-declared** effect class (`effect llm;`): the
 counted built-ins keep their `@budget` spellings.
 
 Two more quantify over the whole closed world rather than a path, so
 code written next month is covered without editing the claim:
-`require sealed(all G)` — every locus in the group keeps its state to
-itself — and `require attributed(all syscall)` — every place the
+`require sealed(all G)`, every locus in the group keeps its state to
+itself, and `require attributed(all syscall)`, every place the
 program touches the OS names a purpose. That second one is
 independent of routing all I/O through a vetted component
 (`forbid reaches(app, effects(syscall)) avoiding gate`): one
 constrains *where* a boundary is crossed, the other *what for*.
 
 **Secrets** are the worked example. `@sealed` on a locus makes its
-`params` reachable only from inside it — loci are otherwise not
+`params` reachable only from inside it: loci are otherwise not
 field-encapsulated, so `self.signer.key` typechecks from anywhere
 holding one. `std::secret::Signer` ships that shape and takes the
 *name* of a source rather than the bytes, so no line of your code
@@ -280,17 +315,16 @@ Three things make this hold up in practice:
 
 - **Groups are vocabulary, not patterns.** A misspelt member is an
   error with a did-you-mean, and an empty group is a vacuity error
-  unless it says `may_be_empty` — a `forbid` satisfied by an empty
+  unless it says `may_be_empty`: a `forbid` satisfied by an empty
   set is a fail-open wearing formal clothing.
 - **Unknown means violation.** An indirect call the compiler can't
   resolve refuses to certify rather than proving absence it can't see.
 - **Libraries carry their own laws.** A seed states claims about what
-  it can see, and they travel into every application that imports it —
-  so an app that wires a second subscriber onto a library topic breaks
+  it can see, and they travel into every application that imports it,   so an app that wires a second subscriber onto a library topic breaks
   the *library's* `count` claim, attributed to the library's own line.
 
-Claims cost nothing at runtime — they compile to no code. And the graph
-they were evaluated against is exportable, so review and CI can gate on
+Claims cost nothing at runtime, they compile to no code. The graph
+they were evaluated against is also exportable, so review and CI can gate on
 it directly:
 
 ```sh
@@ -301,48 +335,116 @@ hale check . --check-topology-shape topo.json   # fail if the graph moved
 
 [Claims →](https://hale-lang.org/docs/claims)
 
+## The law keeps going past the executable
+
+A claim is evaluated in a closed world, which is why it lives in `main`, but that constrains *evaluation*, not *authorship*. A **constitution** is a
+claimset written once and adopted per entrypoint:
+
+```hale
+constitution Core {
+    tenant_isolation:     forbid reaches(billing, research);
+    one_settlement_writer: count publishers(topic Settled) == 1;
+}
+
+main locus Api {
+    claims { adopt Core; }
+}
+```
+
+One text, N entrypoints, N independent evaluations, authoring is shared,
+proof is not. Composition is **union only**: `extends` may add a clause and
+can never replace one, so weakening isn't rejected, it's unexpressible.
+`[environments]` in `hale.toml` binds a constitution per deployment target,
+and `hale check --matrix` proves every (entrypoint × environment) pair: where an entrypoint listed in *no* environment is an error, not a skip.
+
+One scale further out, a **fleet** is a deployed arrangement of separately
+compiled binaries. Each application emits a byte-reproducible topology
+artifact; a plan names the deployed instances and the routes between them;
+`hale fleet check` composes the artifacts, never merged source, and proves
+law no single binary can state:
+
+```sh
+hale check apps/oms --dump-topology=artifacts/oms.json
+hale fleet check prod.plan.json --trust ops.pub.pem
+```
+
+```text
+fleet claim `orders_pass_oms` violated — witness:
+  prober-0::Probe::submit  [prober/main.hl]
+  -(route `bypass`)->
+  gw-0::Gateway::on_order  [gw/main.hl]
+```
+
+Both components check clean alone; only the deployment is wrong. Matching
+topic declarations connect nothing, **only an explicit route creates a
+fleet edge**, because an unbound topic is in-process by default, and
+merging source would invent edges no deployment has.
+
+Signing carries the certificate the rest of the way. `hale fleet
+keygen | sign | attest` produce ES256 signatures over an artifact's exact
+bytes and pin each instance's binary digest; declaring trust roots is
+strict, so an unsigned component is refused rather than admitted. It
+certifies provenance and integrity, never behavior, but it means the
+fleet that runs is the fleet that was certified.
+
+[Constitutions →](https://hale-lang.org/articles/constitutions-in-hale) ·
+[Fleets →](https://hale-lang.org/articles/fleets-in-hale)
+
 ## Verified where it counts
 
-The substrate you stand on is checked, not hoped. Every concurrent primitive
-in the runtime — the lock-free map, the mailbox, the bus queue, the arena —
-is **model-checked under every legal thread interleaving**
-([GenMC](https://github.com/MPI-SWS/genmc)) on each CI run. Above it, the
-compiler walks your bus topology as a typed graph at build time: orphaned
-topics, re-entrant cycles, unbounded backpressure, and payload
-type-mismatches are caught before the program runs.
+The substrate you stand on is checked, not hoped. The synchronization cores
+of the runtime's concurrent primitives, the lock-free map, the pinned
+mailbox, the bus queue, the arena's subregion lock, are transcribed as C11
+models and **model-checked under every interleaving the memory model
+permits** ([GenMC](https://github.com/MPI-SWS/genmc)) as a standing CI gate.
+Each model ships with a negative control: delete the synchronization and
+GenMC reports the exact bug, which is how you know the check has teeth.
+The models mirror the shipping primitives rather than being compiled from
+them, nothing mechanically checks that the two still agree, and
+[`verification/`](./verification/) is the audit of record — including a
+dated list of the surfaces that have drifted and one model that verifies
+under sequential consistency but not yet under the release-acquire model
+matching the runtime's orderings. Read it before trusting a result.
+
+Above the substrate, the compiler walks your bus topology as a typed graph
+at build time. `hale check` **rejects** payload type-mismatches and
+unconditional intra-locus re-entry; it reports orphaned topics, cross-locus
+cycles, and statically unbounded backpressure as **advisories**. `hale
+verify` promotes every advisory into a failing gate, so a project picks its
+own strictness without the language pretending unsoundness and taste are
+the same finding.
 
 You don't get a "verified" sticker on your whole program. You get a
-foundation whose coordination can't silently race — and because messages are
-copies and loci never reach sideways, programs that are **data-race-free by
+foundation whose coordination can't silently race, and because messages are
+copies and peer loci communicate through declared topics rather than
+referencing one another, programs that are **data-race-free by
 construction**, with no GC and no borrow checker.
 [Verification →](https://hale-lang.org/docs/verification)
 
 ## Built for humans and models
 
-The small surface and the missing footguns aren't only pleasant to read —
-they're what make Hale unusually easy for a coding model to *write*. There
+The small surface and the missing footguns aren't only pleasant to read, they're what make Hale unusually easy for a coding model to *write*. There
 are no async functions to mis-color, no lifetimes to get wrong, no lock to
 pick; the shapes a model tends to hallucinate simply aren't in the language.
 
 You can feel the fit before installing anything: drop this repo's
 [`AGENTS.md`](./AGENTS.md) into your coding assistant and ask it to re-read a
 module from your own codebase **as loci, contracts, and bus topics**. What
-comes back is usually a decomposition that matches your mental model —
-because it's reasoning in the same vocabulary you already use about your
+comes back is usually a decomposition that matches your mental model: because it's reasoning in the same vocabulary you already use about your
 system.
 
 ## Try it
 
-**No install — [write and run Hale in your browser](https://play.hale-lang.org/).**
+**No install, [write and run Hale in your browser](https://play.hale-lang.org/).**
 Your source is compiled to WebAssembly by a compile service written in
-Hale itself, and the result runs fully client-side — the same compiler
+Hale itself, and the result runs fully client-side, the same compiler
 you install locally. Prefer a guided start? The
 [example gallery](https://hale-lang.org/play/) walks curated programs,
 each precompiled from real Hale (the gallery UI is itself a Hale
-`@export locus` — the same `.hl` source runs native or in the browser).
+`@export locus`, the same `.hl` source runs native or in the browser).
 
 **Prebuilt Linux and macOS binaries** are on the
-[releases page](https://github.com/hale-lang/hale/releases) — download,
+[releases page](https://github.com/hale-lang/hale/releases), download,
 extract, put `hale` on your `PATH`. Or build from source:
 
 ```sh
@@ -368,14 +470,15 @@ hale fmt                     # canonical formatter (zero config; --check for CI)
 hale verify                  # check + FAIL on any advisory — the CI discipline gate
 hale doc                     # API reference from /// doc comments (--json for agents)
 hale bench                   # run *_bench.hl benchmarks — ns/op + allocs/op
+hale fleet check             # compose deployed artifacts and prove cross-binary law
 hale lsp                     # stdio Language Server — live diagnostics
 hale mcp                     # stdio MCP server — the same tools for shell-less agent hosts
 ```
 
-Point any LSP-speaking editor (or coding-agent harness — they speak
+Point any LSP-speaking editor (or coding-agent harness, they speak
 LSP natively now) at `hale lsp` and you get the full `hale check`
 surface as you type: type errors, plus the analyses no generic
-tooling has — the unbounded-allocation survey, the hot-path
+tooling has, the unbounded-allocation survey, the hot-path
 allocation lint, placement/starvation warnings. Hover shows a
 symbol's signature *with its contracts*: fallibility
 (`fallible(IoError)`), `@hot` / `@budget` enforcement status,
@@ -383,21 +486,18 @@ a topic's routing key. Completion offers `self.` members with
 signatures, the `std::` surface namespace-by-namespace, and the
 seed's own symbols. Go-to-definition, find-references, document
 outlines, and format-on-save (the same canonical form as
-`hale fmt`) work across the seed. And the custom methods return what agents
-otherwise grep for: `hale/busGraph` (the whole message topology —
-who publishes and subscribes every topic, with placements),
+`hale fmt`) work across the seed. The custom methods return what agents
+otherwise grep for: `hale/busGraph` (the whole message topology: who publishes and subscribes every topic, with placements),
 `hale/placement` (every component's thread/pool assignment), and
 `hale/allocSummary` (the allocation-bound survey's leak sites,
 with positions). The whole program re-checks in ~10 ms
 per keystroke, so there's no indexing step, no warm-up, no
 configuration. (Scripted integrations can use
-`hale check app.hl --json` — one JSON object per diagnostic —
-instead.) Agent hosts without a shell (Claude Desktop, MCP
+`hale check app.hl --json`: one JSON object per diagnostic: instead.) Agent hosts without a shell (Claude Desktop, MCP
 clients) get the same toolchain via `hale mcp`: check/verify/
 build/run/test/bench/fmt/doc as typed tools, the bus-graph/
 placement/enforcement analyses as direct calls, and a spec
-search over the language specification embedded in the binary —
-`claude mcp add hale -- hale mcp` and there is nothing else to
+search over the language specification embedded in the binary: `claude mcp add hale -- hale mcp` and there is nothing else to
 install or keep in sync.
 
 Platform-specific setup (Linux, macOS/Apple Silicon) is in
@@ -406,10 +506,10 @@ Platform-specific setup (Linux, macOS/Apple Silicon) is in
 ## Where the language stands
 
 The **language surface** has taken no breaking changes since v0.10.0
-(2026-07-07) — everything since has been additive (`@hot` / `@budget`
+(2026-07-07): everything since has been additive (`@hot` / `@budget`
 enforcement, `match` expressions, String routing keys) plus runtime
 fixes. The **stdlib** is a narrower promise: v0.11.0 (2026-07-16)
-carried two breaking entries — `Stream.send` / `recv` and their
+carried two breaking entries: `Stream.send` / `recv` and their
 `_bytes` forms became `fallible(IoError)`, so every call site must
 address the error, and TCP listeners stopped setting `SO_REUSEPORT`,
 so a second live bind on the same port now fails instead of
@@ -417,14 +517,15 @@ silently splitting connections. It's pre-1.0 because the frontier
 below is still moving.
 
 The proven core is the typed topic bus, `placement` / `bindings` deployment,
-`@form` collections, structural `interface`s, `@ffi` C bindings, and the
-`fallible(T)` error model — all self-hosted by the native compiler. The
-**frontier**: NUMA-aware `topology` placement with `replicas`, and live
-`reperspective` hot-swap. (`mode` projections and `closure` assertions round
-out the surface; reach for them when your problem calls for them.)
+`@form` collections, structural `interface`s, `@ffi` C bindings, the
+`fallible(T)` error model, and the four tiers of law, effects, claims,
+constitutions, and fleet composition, all self-hosted by the native
+compiler. The **frontier**: NUMA-aware `topology` placement with `replicas`.
+(`mode` projections and `closure` assertions round out the surface; reach
+for them when your problem calls for them.)
 
 **Performance, scoped honestly:** Hale is faster than Go at message
-dispatch, JSON parsing, and `@form` collections — and slower at raw
+dispatch, JSON parsing, and `@form` collections, and slower at raw
 function-call and spawn overhead. From the cross-language snapshot
 (Hale v0.9.0 grid, 2026-06-30, Ryzen 7 9800X3D; the same workload shape
 in each language):
@@ -440,7 +541,7 @@ in each language):
 | `coord_with_churn` (2000 children) | 42.8 µs | 2.4 µs | 18× slower |
 
 \* Not dead code on either side (both xor-accumulate and print the
-result) — but LLVM autovectorizes the reduction to AVX-512 while Go
+result), but LLVM autovectorizes the reduction to AVX-512 while Go
 compiles it scalar, so it measures vectorization on reducible loops,
 not general loop speed.
 
@@ -448,45 +549,45 @@ The split is the design showing through: every locus owns an arena, so
 calls and spawns pay region setup that dispatch and collections
 amortize away. On the roadmap: a cheaper call protocol and spawn path,
 and extending static devirtualization across pipeline hops. The full
-grid — including the losses, plus C and Rust comparators and
-reproduction instructions — lives in
+grid, including the losses, plus C and Rust comparators and
+reproduction instructions, lives in
 [hale-lang/bench](https://github.com/hale-lang/bench).
 
 ## Opinionated by design
 
 There's no permissive escape hatch, and that's the feature. **One form per
-locus** — you compose at the locus level, not inside it. **Failures travel
-only vertically** — a parent decides recovery for its children; nothing fails
+locus**: you compose at the locus level, not inside it. **Failures travel
+only vertically**, a parent decides recovery for its children; nothing fails
 sideways. **An invariant you care about is a `closure` the runtime audits**,
 not a comment you hope someone reads. If your problem decomposes cleanly into
-loci + bus, you move fast. If it doesn't, the language tells you so — early,
+loci + bus, you move fast. If it doesn't, the language tells you so, early,
 at compile time.
 
 ## The names
 
 They mean things, and they fit together:
 
-- **hale** — the language. From the Old English *hāl*: "whole, sound,
+- **hale**, the language. From the Old English *hāl*: "whole, sound,
   uninjured." Same root as *whole*, *heal*, *health*.
-- **lotus** — the runtime substrate. C-runtime symbols are `lotus_*`.
-- **pond** — the contributed library catalog (web, databases, observability,
+- **lotus**, the runtime substrate. C-runtime symbols are `lotus_*`.
+- **pond**: the contributed library catalog (web, databases, observability,
   AI clients), much of it thin `@ffi` bindings to C libraries and `interface`
   seams you swap. *Many lotus grow in a pond.*
-- **heron** — the tree-sitter grammar, now at
+- **heron**, the tree-sitter grammar, now at
   [tree-sitter-hale](https://github.com/hale-lang/tree-sitter-hale);
   editor highlighting drinks from it (the LSP ships in the `hale`
   binary itself).
 
 ## Where to go next
 
-- **[Docs site](https://hale-lang.org/docs)** — the level-by-level
+- **[Docs site](https://hale-lang.org/docs)**, the level-by-level
   tour. Start here.
-- **[`spec/`](./spec/)** — the canonical reference; the compiler enforces
+- **[`spec/`](./spec/)**: the canonical reference; the compiler enforces
   what it describes.
-- **[`AGENTS.md`](./AGENTS.md)** — the load-bearing prompt for coding models
+- **[`AGENTS.md`](./AGENTS.md)**: the load-bearing prompt for coding models
   writing `.hl` (and a tight read for humans).
-- **[Examples](./crates/hale-codegen/tests/fixtures/examples/)** — 83
-  working example programs (88 `.hl` files), compiled and run in CI.
+- **[Examples](./crates/hale-codegen/tests/fixtures/examples/)**: 88
+  working example programs (96 `.hl` files), compiled and run in CI.
 - **[pond](https://github.com/hale-lang/pond)** · contributed libraries.
   **[CONTRIBUTING](./CONTRIBUTING.md)** · how to build + send a change.
   **[Issues](https://github.com/hale-lang/hale/issues)** · questions, ideas,

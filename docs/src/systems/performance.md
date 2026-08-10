@@ -192,7 +192,7 @@ names the call chain that reaches it.
 
 The whole surface — the effect classes, `@budget`'s other dimensions,
 per-lifecycle-phase contracts, and what the compiler infers on its own
-— is taught in **[Effects & contracts](./effects.md)**.
+— is taught in **[Effects & contracts](../effects.md)**.
 
 ## Knobs for when it's not your code
 

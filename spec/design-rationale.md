@@ -35,7 +35,7 @@ clean.
 **Recursive principle.** Loci are the fundamental building
 block at every layer of an Hale program: an app is a locus;
 a library namespace is a locus (empty `params { }`, only
-methods — the namespace-lotus pattern); a long-running
+methods — the namespace-locus pattern); a long-running
 service is a locus; a goroutine-equivalent is a locus; a bus
 subscriber is a locus; an HTTP-handler is a locus; a cache /
 pool / pipeline / queue is a locus. **Inside any locus,

@@ -1,6 +1,9 @@
 (* ===================================================================
-   lotus — formal grammar
+   Hale — formal grammar
    ===================================================================
+   (Titled "lotus" until v0.16. The language is Hale; lotus is the
+   runtime substrate it compiles against, and only C-runtime symbols
+   keep the `lotus_` prefix — see spec/memory.md's naming note.)
    Version: v0.1, 2026-05-08
    Format: EBNF, ISO/IEC 14977 conventions:
      =       definition

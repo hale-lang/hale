@@ -198,6 +198,14 @@ more:
 | **Concurrent** | `topic`s + the bus; workers react instead of being called |
 | **Systems** | `main` chooses placement and transports — the loci untouched |
 
+> **Altitude, not scale.** These four steps are how much machinery you are
+> choosing to control. They are a different axis from the *scales* the
+> [README](https://github.com/hale-lang/hale#six-scales-one-model) walks —
+> value, component, service, application, environment, fleet — which measure
+> how large the composed system is. This tutorial climbed one axis while
+> staying near the bottom of the other, which is why the same `Worker`
+> survived every stage.
+
 That last row is the point: a Hale program is a *design* of loci and topics;
 where and how it runs is a binding you change in one place. From here, the
 [concurrent services](../services/lifecycle.md) chapters go deeper on

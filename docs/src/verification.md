@@ -30,6 +30,32 @@ test reliably triggers — grow-during-drain, compact-then-grow. For a
 language whose whole concurrency story is the bus, trusting the
 substrate is the foundation everything else rests on.
 
+### What the models do not establish
+
+Note the word *transcribed*. Each model is a hand-written rendering of
+one protocol's atomics, not the production C, and **nothing checks the
+two against each other**. A model that still passes proves a property
+of the runtime as it stood when the model was written. Correspondence
+is maintained by hand and is part of the trusted base.
+
+That has consequences worth stating rather than burying:
+
+- Individual atomics and code paths added since a model was written are
+  not in it until someone transcribes them.
+- One model (the hashmap iterator) verifies clean under sequential
+  consistency and reports a use-after-free under GenMC's default
+  release-acquire model — the one that corresponds to the runtime's
+  actual orderings. That is a gap in the model-level justification, not
+  a demonstrated bug in the runtime, and it is open.
+- The CI gate is conditional: a prose-only diff skips the model
+  checker, on the reasoning that no sentence in a `.md` alters a memory
+  ordering.
+
+[`verification/README.md`](https://github.com/hale-lang/hale/blob/main/verification/README.md)
+in the compiler repo is the audit of record, including a dated
+inventory of exactly which surfaces have drifted. It is kept honest
+because it is the document we read before trusting a result.
+
 ## Your programs are data-race-free by design
 
 Above the substrate, the language is shaped so application code can't
@@ -426,6 +452,36 @@ deliberately so: the **coordination** (the bus graph), the **substrate**
 because those are the properties that must hold no matter what executes
 the design — native, wasm, or a future target. Verification that
 survives a change of substrate is the kind worth building on.
+
+Nor does it prove arbitrary application correctness, make a lossy
+transport reliable, or remove the need to choose sensible bounds and a
+recovery policy. It makes those choices visible, checkable, and
+attributable to the architecture that owns them.
+
+### The analysis boundary
+
+Three properties of the analysis are worth stating precisely, because
+each one shapes how a result should be read.
+
+**The checks are sound, not complete.** Every analysis here is a
+conservative over-approximation. When the compiler cannot resolve
+something it treats it as may-do-anything and the contract fails, rather
+than assuming the best and passing. That direction is deliberate, and it
+has a cost worth naming: a rejected program is sometimes a limit of the
+analysis rather than a defect in the code.
+
+**Closed-world reasoning has an edge.** The guarantees derive from a
+closed call graph, a closed topic set, and a classified standard
+library. Influence that leaves that world — through `@ffi`, through a
+transport to another binary, through the operating system — is outside
+what the compiler can follow, and the contracts say so rather than
+pretending otherwise.
+
+**Cost models are source-level bounds.** Effect classes, publish sets,
+and causal sets are checked facts. The quantitative budgets are measured
+against what the compiler can see before the backend has finished
+deciding layout and inlining, so read those numbers as bounds on the
+program you wrote rather than on the instructions that ultimately run.
 
 > The authoritative, exhaustive catalog of every compile-time check is
 > [`spec/verification.md`](https://github.com/hale-lang/hale/blob/main/spec/verification.md).

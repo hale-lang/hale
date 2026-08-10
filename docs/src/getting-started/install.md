@@ -17,7 +17,14 @@ Grab the tarball for your platform from the
 | Platform | Asset |
 |---|---|
 | Linux x86_64 (glibc) | `hale-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux ARM64 (glibc)  | `hale-<version>-aarch64-unknown-linux-gnu.tar.gz` |
 | macOS Apple Silicon  | `hale-<version>-aarch64-apple-darwin.tar.gz` |
+
+The installer picks the right one for you:
+
+```sh
+curl -fsSL https://hale-lang.org/install.sh | sh
+```
 
 ```sh
 tar -xzf hale-<version>-<triple>.tar.gz
@@ -105,9 +112,28 @@ docker compose -f release/docker-compose.yml run --rm build
 
 ## Platform support
 
+Three different questions hide behind "does Hale support X", and they
+have different answers. Keeping them apart:
+
+**1. Where a prebuilt compiler exists** — Linux x86_64, Linux ARM64,
+and macOS on Apple Silicon, per the table above.
+
+**2. Where the compiler can be built from source** — the three above,
+plus Intel macOS. Needs LLVM 18 dev libraries and `clang`; see
+[building from source](#building-from-source).
+
+**3. What a build can emit** — `hale --list-targets` is the
+authority. Native binaries for Linux and macOS; `wasm32` objects for
+the browser; `x86_64-pc-windows-msvc` is named and refused with a
+precise error rather than a link failure.
+
+The rest of this section is about the *host* — where `hale` itself
+runs, and what changes about a program compiled there.
+
 | Platform | Status |
 |---|---|
 | **Linux x86_64** (glibc) | First-class — hosts the compiler and runs compiled programs, all features. |
+| **Linux ARM64** (glibc) | Supported, prebuilt — the release matrix builds it on a native aarch64 runner (AWS Graviton, EKS arm64 nodes, Ampere). Same feature set as x86_64. |
 | **macOS** (Apple Silicon) | Supported — hosts the compiler and targets itself, with two carve-outs. **`async_io` pools** fail at compile time with a clear diagnostic (use a cooperative pool, or build on Linux). **Cross-process `unix(...)` bindings** use a framed byte-stream transport on macOS (Darwin has no `SOCK_SEQPACKET`) — same semantics, message boundaries preserved by a per-message header rather than the kernel; both ends of a socket must be Hale binaries on the same wire format (always true on one host). The prebuilt toolchain currently links Homebrew `llvm@18`'s libunwind and emitted binaries link Homebrew OpenSSL — machines without those Homebrew packages need them installed (`brew install llvm@18 openssl@3`); self-contained binaries are tracked upstream. Intel Macs run the arm64 build via Rosetta 2. |
 | **Windows** | No native support yet — the runtime is POSIX. Use **WSL2** (Ubuntu) and follow the Linux instructions. The compiler now *names* `x86_64-pc-windows-msvc` (`hale --list-targets`) and refuses it with a precise error rather than a link failure; the codegen and runtime work is tracked in [GH #445](https://github.com/hale-lang/hale/issues/445). |
 | **wasm32** | `hale build --target wasm32` for the browser. |

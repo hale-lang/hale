@@ -1,8 +1,7 @@
 # Introduction
 
-**A concurrent systems language with a model-checked, GC-free
-runtime — typed message-bus concurrency, data-race-free by
-design.**
+**A concurrent systems language with a GC-free runtime — typed
+message-bus concurrency, data-race-free by design.**
 
 *Say less. Spell more.*
 
