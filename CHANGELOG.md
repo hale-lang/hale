@@ -8,6 +8,36 @@ behavior.
 
 ## Unreleased
 
+### An intra-subtree publish is no longer invisible to observation
+
+Downstream handoff (P23). `desugar_intra_locus_topics` rewrites a
+`Topic <- payload` whose only subscriber lives inside the publisher's
+own locus subtree into a direct call to the subscriber's bus handler
+— before lowering, so the handoff-5 fix that gave the *codegen*
+direct-dispatch flavors their probes never reached it. Delivery
+worked; observation saw nothing: no `BUS_PUBLISH`, no `BUS_DELIVER`,
+no counters, and no manifest row at all — "declared but never
+published" and "compiled to a direct call" were the same absence,
+which poisons any source-topology-to-manifest join.
+
+The desugared call site (already identified in codegen by the
+payload-reclaim work — a bus handler is not callable from Hale
+source) now emits both probes, branch-gated on `lotus_obs_live` like
+every other flavor: `BUS_PUBLISH` attributing the publisher,
+`BUS_DELIVER` attributing the subscriber, enqueue-time-equivalent
+(the direct call is the delivery). The first probe creates the
+topic's manifest row, so a trafficked intra-tree topic registers and
+counts exactly like its bus-dispatched sibling; a zero-traffic topic
+stays absent on every flavor uniformly, so absence once again means
+"never mentioned at runtime". Pinned by the reporter's controlled
+pair (child-subscriber topic vs sibling-control topic in one binary),
+A/B'd against the pre-fix compiler.
+
+(The report's secondary observation — the sibling subscriber showing
+zero deliveries — is the documented birth-order trap, not this
+defect: the publisher was declared first with a long-running `run()`,
+so the sibling was never born during the burst.)
+
 ### Element chains: the second vocabulary tranche
 
 The remainder of the chain vocabulary recorded open when #380

@@ -1470,7 +1470,17 @@ v0.11.18):
   first probe, always a locus birth), so LLVM hoists the branch
   and an unobserved publish loop is instruction-identical to the
   probe-free lowering. The same per-fn check now also gates the
-  publisher-attribution TLS note.
+  publisher-attribution TLS note. **The AST-level rewrite got the
+  same sentence on 2026-08-11 (downstream handoff P23):** the
+  closed-world intra-locus/tower desugar — one rewrite earlier
+  than these codegen flavors, so the earlier fix never reached it
+  — now emits `BUS_PUBLISH` (publisher-attributed) +
+  `BUS_DELIVER` (subscriber-attributed) at the direct handler
+  call, behind the same per-fn gate. Its first probe registers
+  the topic's manifest row, so an intra-tree subject with traffic
+  is indistinguishable from its bus-dispatched sibling, and
+  manifest absence uniformly means "never mentioned at runtime"
+  on every flavor.
 - **Observer attach no longer needs probe traffic.** The 0→1
   birth replay was driven from inside probes, so a probe-quiet
   process (a main parked in a read loop with pinned raw-fd

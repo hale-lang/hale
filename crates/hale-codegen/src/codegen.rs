@@ -15039,18 +15039,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         callee: &Expr,
         args: &[Expr],
     ) -> bool {
+        self.intra_locus_publish_target(callee, args).is_some()
+    }
+
+    /// The matched subscription behind an intra-locus-publish direct
+    /// call: `(wire_subject, payload_type_name)`. `None` when the call
+    /// is not that desugar. The subject is the same registration-side
+    /// string every other dispatch flavor probes with, so the fused
+    /// manifest row is shared.
+    fn intra_locus_publish_target(
+        &self,
+        callee: &Expr,
+        args: &[Expr],
+    ) -> Option<(String, String)> {
         let Expr::Field { receiver, name, .. } = callee else {
-            return false;
+            return None;
         };
-        let Some(recv_locus) = self.receiver_locus_name(receiver) else {
-            return false;
-        };
-        let Some(info) = self.user_loci.get(&recv_locus) else {
-            return false;
-        };
-        let is_handler =
-            info.subscriptions.iter().any(|(_, h, _, _)| h == &name.name);
-        is_handler && args.iter().any(|a| matches!(a, Expr::Struct { .. }))
+        let recv_locus = self.receiver_locus_name(receiver)?;
+        let info = self.user_loci.get(&recv_locus)?;
+        let (subject, _, payload_ty, _) = info
+            .subscriptions
+            .iter()
+            .find(|(_, h, _, _)| h == &name.name)?;
+        if !args.iter().any(|a| matches!(a, Expr::Struct { .. })) {
+            return None;
+        }
+        Some((subject.clone(), payload_ty.clone()))
     }
 
     /// Lower an intra-locus-publish direct handler call with its payload
@@ -15067,6 +15081,94 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
+        // P23 (iris handoff-11): this rewrite was the last probe-less
+        // dispatch flavor — no BUS_PUBLISH, no BUS_DELIVER, no topic
+        // registration; a subject on this path was invisible to
+        // observation, so "declared but never published" and
+        // "compiled to a direct call" were the same absence. Emit
+        // both probes here, branch-gated on `lotus_obs_live` (same
+        // dormant-cost discipline as every other flavor: an
+        // unobserved publish pays one predictable load+branch). Same
+        // principle handoff-5 P17 settled for the devirtualized
+        // direct flavors, one rewrite earlier in the pipeline. The
+        // deliver probe is enqueue-time-equivalent — the direct call
+        // IS the delivery — and passes the subscriber's self for
+        // attribution; the publish probe passes the publisher's.
+        // The first probe call also creates the topic's manifest row.
+        {
+            let (subject, payload_ty) = self
+                .intra_locus_publish_target(callee, args)
+                .expect("caller gated on is_intra_locus_publish_call");
+            let func = self
+                .builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_parent())
+                .expect("inside a function");
+            let ptr_t = self.context.ptr_type(AddressSpace::default());
+            let i64_t = self.context.i64_type();
+            let obs_live = self.obs_live_check()?;
+            let subj_val = self.global_string(&subject);
+            let payload_size_iv = self
+                .user_types
+                .get(&payload_ty)
+                .and_then(|ti| ti.struct_ty.size_of())
+                .unwrap_or_else(|| i64_t.const_zero());
+            let pub_self: BasicValueEnum = self
+                .current_self
+                .as_ref()
+                .map(|cs| cs.self_ptr.into())
+                .unwrap_or_else(|| ptr_t.const_null().into());
+            // The subscriber's self: `self` for the same-locus case,
+            // the field chain's tip otherwise. Re-lowering the
+            // receiver chain is pure loads.
+            let Expr::Field { receiver, .. } = callee else {
+                unreachable!("gated on a Field callee");
+            };
+            let sub_self: BasicValueEnum =
+                if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
+                    pub_self
+                } else {
+                    let (v, _) = self.lower_expr(receiver, scope)?;
+                    v
+                };
+            let probe_bb = self
+                .context
+                .append_basic_block(func, "publish.direct.obs");
+            let cont_bb = self
+                .context
+                .append_basic_block(func, "publish.direct.obs.cont");
+            self.builder
+                .build_conditional_branch(obs_live, probe_bb, cont_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(probe_bb);
+            let obs_pub_fn = self
+                .module
+                .get_function("lotus_obs_bus_publish")
+                .expect("lotus_obs_bus_publish declared");
+            self.builder
+                .build_call(
+                    obs_pub_fn,
+                    &[subj_val.into(), pub_self.into(), payload_size_iv.into()],
+                    "publish.direct.obs.pub",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let obs_dlv_fn = self
+                .module
+                .get_function("lotus_obs_bus_deliver")
+                .expect("lotus_obs_bus_deliver declared");
+            self.builder
+                .build_call(
+                    obs_dlv_fn,
+                    &[subj_val.into(), sub_self.into(), payload_size_iv.into()],
+                    "publish.direct.obs.dlv",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_unconditional_branch(cont_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(cont_bb);
+        }
+
         let parent = self.current_arena_ptr()?;
         let create = self
             .module

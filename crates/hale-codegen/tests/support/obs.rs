@@ -65,6 +65,22 @@ pub fn snapshot_shm(pid: u32) -> Option<Vec<u8>> {
         .to_vec())
 }
 
+/// Map a live process's obs segment and LEAK the mapping: the
+/// returned slice stays valid after the emitter exits and
+/// shm_unlinks (POSIX keeps the pages while a mapping holds them).
+/// For tests that must read final counters — map while the process
+/// runs, `wait()` it, then read.
+pub fn map_shm(pid: u32) -> Option<&'static [u8]> {
+    let f = std::fs::File::open(format!("/dev/shm/hale-obs-{}", pid))
+        .ok()?;
+    let len = f.metadata().ok()?.len() as usize;
+    let p = unsafe { mmap_raw(&f, len, 0x1) };
+    if p.is_null() {
+        return None;
+    }
+    Some(unsafe { std::slice::from_raw_parts(p as *const u8, len) })
+}
+
 /// Attach as an observer: bump `observer_count` on the control page
 /// so ring emission turns on (requires a writable map).
 pub fn attach_observer(pid: u32) {
