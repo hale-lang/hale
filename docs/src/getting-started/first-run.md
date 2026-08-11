@@ -96,7 +96,10 @@ A few switches worth knowing from day one:
   signatures with their contracts (fallibility, `@hot`/`@budget`
   status, a topic's routing key), completion covers `self.`
   members, the `std::` surface, and your seed's symbols,
-  go-to-definition and references work across the seed, and the custom requests `hale/busGraph`,
+  go-to-definition and references work across the seed —
+  go-to-definition on a `std::` path jumps into the stdlib's own
+  source (materialized read-only from the compiler's embedded copy,
+  so it works even when nothing is installed on disk) — and the custom requests `hale/busGraph`,
   `hale/placement`, and `hale/allocSummary` return the pub/sub
   topology, the thread/pool map, and the allocation survey's leak
   sites. No configuration. Prefer plain JSON?

@@ -832,3 +832,96 @@ fn lsp_duplicate_name_carries_related_information() {
     let _ = lsp.child.wait();
     let _ = std::fs::remove_dir_all(&seed);
 }
+
+/// Downstream handoff (2026-08-11): `textDocument/definition` on a
+/// `std::` path jumps INTO the embedded stdlib source. The rename
+/// table maps the path to the mangled declaration in AP_SOURCE, and
+/// the owning per-domain file is materialized to a versioned
+/// read-only cache — so the location is a plain `file://` URI that
+/// works in every editor, even when the binary was installed with
+/// no stdlib checkout on disk.
+#[test]
+fn lsp_definition_resolves_std_paths_into_materialized_stdlib() {
+    let seed = std::env::temp_dir().join(format!(
+        "hale_lsp_stddef_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&seed);
+    std::fs::create_dir_all(&seed).expect("mkdir");
+    let file = seed.join("main.hl");
+    let uri = format!("file://{}", file.display());
+    let text = "fn main() {\n    let b = std::bytes::BytesBuilder { };\n    b.append_str(\"x\");\n}\n";
+    std::fs::write(&file, text).expect("write seed file");
+
+    let mut lsp = Lsp::start();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "capabilities": {} }
+    }));
+    let _ = lsp.recv();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "initialized", "params": {}
+    }));
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": uri, "languageId": "hale", "version": 1, "text": text
+        }}
+    }));
+    let _ = lsp.recv(); // publishDiagnostics
+
+    // Cursor on `BytesBuilder` (line 1, inside the last segment).
+    let character = text.lines().nth(1).unwrap().find("BytesBuilder").unwrap() + 3;
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 2, "method": "textDocument/definition",
+        "params": {
+            "textDocument": { "uri": uri },
+            "position": { "line": 1, "character": character }
+        }
+    }));
+    let d = lsp.recv();
+    let def_uri = d
+        .pointer("/result/uri")
+        .and_then(|u| u.as_str())
+        .unwrap_or_else(|| panic!("std:: definition resolves: {}", d));
+    assert!(
+        def_uri.ends_with("bytes_builder.hl"),
+        "lands in the owning per-domain file: {}",
+        def_uri
+    );
+    assert!(
+        def_uri.contains("stdlib-"),
+        "materialized under the versioned cache: {}",
+        def_uri
+    );
+
+    // The materialized file exists, is read-only, and the returned
+    // range points at the mangled declaration's name.
+    let def_path = std::path::PathBuf::from(
+        def_uri.strip_prefix("file://").unwrap(),
+    );
+    let content =
+        std::fs::read_to_string(&def_path).expect("materialized file");
+    assert!(
+        std::fs::metadata(&def_path).unwrap().permissions().readonly(),
+        "cache file is read-only"
+    );
+    let line = d.pointer("/result/range/start/line").unwrap().as_u64().unwrap()
+        as usize;
+    assert!(
+        content.lines().nth(line).unwrap().contains("__StdBytesBytesBuilder"),
+        "range points at the declaration: line {} = {:?}",
+        line,
+        content.lines().nth(line)
+    );
+
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 9, "method": "shutdown", "params": {}
+    }));
+    let _ = lsp.recv();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "exit", "params": {}
+    }));
+    let _ = lsp.child.wait();
+    let _ = std::fs::remove_dir_all(&seed);
+}

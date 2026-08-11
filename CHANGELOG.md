@@ -8,6 +8,24 @@ behavior.
 
 ## Unreleased
 
+### `hale lsp`: go-to-definition on `std::` paths
+
+Downstream handoff. `textDocument/definition` on a `std::` path
+(`std::http::Server`, `std::bytes::BytesBuilder`, …) now jumps into
+the stdlib's own source. The rename table maps the user-facing path
+to the mangled declaration in the embedded `AP_SOURCE`; the
+declaration's owning per-domain file (the stdlib is a concatenation
+of `core.hl`, `http.hl`, … — now exported per-file as `AP_FILES`,
+with a test pinning the concatenation layout the span math depends
+on) is materialized into a versioned read-only cache
+(`~/.cache/hale/stdlib-<version>/`), and the location is a plain
+`file://` URI. That answers the handoff's install-story concern —
+an `install.sh` binary has no stdlib checkout — without the
+synthetic-URI schemes rust-analyzer-style setups need client
+support for: a materialized real file works in every editor.
+C-backed path-call primitives (`std::str::*` and friends) have no
+Hale definition and still return nothing.
+
 ### Diagnostics carry secondary locations, and the pre-pass stops eating them
 
 Two defects from a downstream editor-tooling handoff, both worst on

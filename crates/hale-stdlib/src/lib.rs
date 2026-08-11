@@ -162,6 +162,74 @@ pub const AP_SOURCE: &str = concat!(
     include_str!("../hl/term.hl"),
 );
 
+/// The same sources as `AP_SOURCE`, per file. `AP_SOURCE` is the
+/// concatenation of these contents joined by `"\n"` — asserted by
+/// a test, since span math depends on it. Downstream handoff
+/// (2026-08-11): the LSP resolves a `std::` definition to a span
+/// inside `AP_SOURCE`, maps it to its owning file here, and
+/// materializes that file to a read-only cache so an editor can
+/// jump into stdlib source even when nothing exists on disk (an
+/// `install.sh` binary has no stdlib checkout).
+pub const AP_FILES: &[(&str, &str)] = &[
+    ("core.hl", include_str!("../hl/core.hl")),
+    ("io_tcp.hl", include_str!("../hl/io_tcp.hl")),
+    ("io_udp.hl", include_str!("../hl/io_udp.hl")),
+    ("http.hl", include_str!("../hl/http.hl")),
+    ("http_client.hl", include_str!("../hl/http_client.hl")),
+    ("metrics.hl", include_str!("../hl/metrics.hl")),
+    ("text.hl", include_str!("../hl/text.hl")),
+    ("secret.hl", include_str!("../hl/secret.hl")),
+    ("test.hl", include_str!("../hl/test.hl")),
+    ("log.hl", include_str!("../hl/log.hl")),
+    ("ts.hl", include_str!("../hl/ts.hl")),
+    ("lang.hl", include_str!("../hl/lang.hl")),
+    ("iter.hl", include_str!("../hl/iter.hl")),
+    ("tagged.hl", include_str!("../hl/tagged.hl")),
+    ("name.hl", include_str!("../hl/name.hl")),
+    ("json.hl", include_str!("../hl/json.hl")),
+    ("yaml.hl", include_str!("../hl/yaml.hl")),
+    ("cli.hl", include_str!("../hl/cli.hl")),
+    ("source.hl", include_str!("../hl/source.hl")),
+    ("process.hl", include_str!("../hl/process.hl")),
+    ("bus.hl", include_str!("../hl/bus.hl")),
+    ("file.hl", include_str!("../hl/file.hl")),
+    ("bytes_builder.hl", include_str!("../hl/bytes_builder.hl")),
+    ("mirror_ring.hl", include_str!("../hl/mirror_ring.hl")),
+    ("term.hl", include_str!("../hl/term.hl")),
+];
+
+/// Map an `AP_SOURCE` byte offset to `(file_name, file_content,
+/// local_offset)` via the concatenation layout (each file's content
+/// followed by one `"\n"` separator).
+pub fn ap_file_at(offset: usize) -> Option<(&'static str, &'static str, usize)> {
+    let mut base = 0usize;
+    for (name, content) in AP_FILES {
+        let end = base + content.len();
+        if offset < end {
+            return Some((name, content, offset - base));
+        }
+        base = end + 1; // the "\n" joiner
+    }
+    None
+}
+
+#[cfg(test)]
+mod ap_files_layout {
+    use super::*;
+
+    #[test]
+    fn ap_files_concat_is_ap_source() {
+        let joined: Vec<&str> =
+            AP_FILES.iter().map(|(_, c)| *c).collect();
+        assert_eq!(
+            joined.join("\n"),
+            AP_SOURCE,
+            "AP_FILES must mirror AP_SOURCE exactly — span math \
+             depends on the concatenation layout"
+        );
+    }
+}
+
 /// Maps each user-facing stdlib path (locus OR type) to the
 /// mangled name declared in `AP_SOURCE`. The mangled
 /// prefix (`__StdIo...`, `__StdHttp...`) makes collision with

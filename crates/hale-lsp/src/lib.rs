@@ -1727,9 +1727,17 @@ fn definition(
     let offset = lsp_pos_to_offset(&src, line, character);
     let (tokens, idx, word, segs) = token_context(&src, offset)?;
 
-    // std:: paths have no in-seed definition.
+    // std:: paths resolve into the EMBEDDED stdlib source
+    // (downstream handoff, 2026-08-11): the rename table maps the
+    // user-facing path to the mangled name `AP_SOURCE` declares,
+    // and the declaration's file is materialized to a read-only
+    // cache so the location is a plain `file://` URI — no client-
+    // side virtual-document support needed, which matters for the
+    // editors that have none (an `install.sh` binary has no stdlib
+    // checkout on disk). C-backed path-call primitives have no
+    // Hale definition and still return None.
     if segs.first().map(String::as_str) == Some("std") {
-        return None;
+        return stdlib_definition(&segs);
     }
 
     let bundle = analysis.bundle();
@@ -1760,6 +1768,113 @@ fn definition(
 
     let sym = top.lookup(&word)?;
     merged_span_to_location(&analysis, sym.span())
+}
+
+/// The stdlib AST, parsed once per process from the embedded
+/// source. `None` if the embedded stdlib ever fails to parse
+/// (which the build would have caught long before an LSP ran).
+fn stdlib_ast() -> Option<&'static hale_syntax::ast::Program> {
+    use std::sync::OnceLock;
+    static AST: OnceLock<Option<hale_syntax::ast::Program>> =
+        OnceLock::new();
+    AST.get_or_init(|| {
+        hale_syntax::parse_source(hale_stdlib::AP_SOURCE).ok()
+    })
+    .as_ref()
+}
+
+/// The name ident of a top-level stdlib declaration, if it is a
+/// kind the rename table can point at.
+fn top_decl_name(
+    d: &hale_syntax::ast::TopDecl,
+) -> Option<&hale_syntax::ast::Ident> {
+    use hale_syntax::ast::TopDecl as TD;
+    match d {
+        TD::Locus(l) => Some(&l.name),
+        TD::Type(t) => Some(&t.name),
+        TD::Fn(f) => Some(&f.name),
+        TD::Interface(i) => Some(&i.name),
+        TD::Const(c) => Some(&c.name),
+        TD::Topic(t) => Some(&t.name),
+        _ => None,
+    }
+}
+
+/// Materialize one embedded stdlib file into the versioned
+/// read-only cache and return its path. Content-checked, so a
+/// version bump (or a dev build changing the stdlib) refreshes it.
+fn materialize_stdlib_file(
+    name: &str,
+    content: &str,
+) -> Option<PathBuf> {
+    let cache_root = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(|h| PathBuf::from(h).join(".cache"))
+        })?;
+    let dir = cache_root
+        .join("hale")
+        .join(format!("stdlib-{}", env!("CARGO_PKG_VERSION")));
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join(name);
+    let fresh = std::fs::read_to_string(&path)
+        .map_or(true, |existing| existing != content);
+    if fresh {
+        // The file is left read-only as a "this is not yours to
+        // edit" signal, so a refresh must lift that first.
+        let _ = std::fs::remove_file(&path);
+        std::fs::write(&path, content).ok()?;
+        let mut perm =
+            std::fs::metadata(&path).ok()?.permissions();
+        perm.set_readonly(true);
+        let _ = std::fs::set_permissions(&path, perm);
+    }
+    Some(path)
+}
+
+/// `textDocument/definition` for a `std::` path: rename-table
+/// lookup → declaration span in the embedded source → location in
+/// the materialized cache file.
+fn stdlib_definition(segs: &[String]) -> Option<Value> {
+    // Exact path match first; else the longest table entry that
+    // prefixes the cursor's path (`std::http::Server` inside a
+    // longer chain).
+    let matches_entry = |entry: &[&str], exact: bool| {
+        (entry.len() == segs.len()
+            || (!exact && entry.len() < segs.len()))
+            && entry.iter().zip(segs).all(|(a, b)| a == b)
+    };
+    let mangled = hale_stdlib::PATH_RENAMES
+        .iter()
+        .find(|(p, _)| matches_entry(p, true))
+        .or_else(|| {
+            hale_stdlib::PATH_RENAMES
+                .iter()
+                .filter(|(p, _)| matches_entry(p, false))
+                .max_by_key(|(p, _)| p.len())
+        })
+        .map(|(_, m)| *m)?;
+    let ast = stdlib_ast()?;
+    let name_span = ast.items.iter().find_map(|d| {
+        let n = top_decl_name(d)?;
+        (n.name == mangled).then_some(n.span)
+    })?;
+    let (file_name, content, local_start) =
+        hale_stdlib::ap_file_at(name_span.start.as_usize())?;
+    let local_end = (local_start
+        + (name_span.end.as_usize() - name_span.start.as_usize()))
+    .min(content.len());
+    let path = materialize_stdlib_file(file_name, content)?;
+    let (sl, sc) = offset_to_lsp_pos(content, local_start);
+    let (el, ec) = offset_to_lsp_pos(content, local_end);
+    Some(json!({
+        "uri": path_to_uri(&path),
+        "range": {
+            "start": { "line": sl, "character": sc },
+            "end":   { "line": el, "character": ec }
+        }
+    }))
 }
 
 fn references(
