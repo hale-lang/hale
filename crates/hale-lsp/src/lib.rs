@@ -313,11 +313,47 @@ fn path_to_uri(path: &Path) -> String {
 
 /// Re-parse and re-check the SEED containing `changed`, then publish
 /// diagnostics for every .hl file in it (empties clear stale ones).
+/// Is this path inside the materialized stdlib cache
+/// (`<cache>/hale/stdlib-<version>/`)? Those files are read-only
+/// jump targets, not user seeds: analyzed standalone they spray
+/// spurious errors over correct stdlib code (mangled declarations
+/// and path-call primitives only resolve in the merged program),
+/// so the LSP publishes no diagnostics for them.
+fn is_stdlib_cache_path(path: &Path) -> bool {
+    let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let mut comps = canon.components().rev();
+    let _file = comps.next();
+    let (Some(ver_dir), Some(hale_dir)) = (comps.next(), comps.next())
+    else {
+        return false;
+    };
+    hale_dir.as_os_str() == "hale"
+        && ver_dir
+            .as_os_str()
+            .to_string_lossy()
+            .starts_with("stdlib-")
+}
+
 fn check_and_publish(
     writer: &mut impl Write,
     changed: &Path,
     overlays: &BTreeMap<PathBuf, String>,
 ) {
+    // A file inside the stdlib cache gets an EMPTY publish — it is
+    // a definition-jump target, not a seed member, and clearing
+    // (rather than skipping) removes anything a client already
+    // showed for it.
+    if is_stdlib_cache_path(changed) {
+        notify(
+            writer,
+            "textDocument/publishDiagnostics",
+            json!({
+                "uri": path_to_uri(changed),
+                "diagnostics": []
+            }),
+        );
+        return;
+    }
     let seed_dir = changed
         .parent()
         .map(Path::to_path_buf)
