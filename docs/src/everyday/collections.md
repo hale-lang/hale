@@ -200,8 +200,31 @@ let n = readings.filter(it > 10).filter(it < 100).count();
 let total = users.filter(it.active).map(it.age).sum();
 ```
 
-`map` rebinds the element; `sum` adds it up (Int elements — project
-with `map` first). Yes-or-no questions have their own terminals:
+`map` rebinds the element; `sum` adds it up. Bare `sum()` is for Int
+elements; give it a seed and the seed's type drives the accumulator —
+`sum(0.0)` sums Floats, `sum(100)` starts an Int sum at 100.
+
+Position matters too, and there are stages for it:
+
+```hale,fragment
+let podium = scores.take(3).sum();          // stop after three
+let rest = scores.skip(3).sum();            // drop the first three
+let page = items.skip(20).take(10).count(); // pagination in one pass
+```
+
+`take` and `skip` count elements arriving *at their own spot in the
+chain*, so `filter(p).skip(2)` skips the first two matches, not the
+first two elements. When you need the position itself, `enumerate()`
+binds `idx` for everything after it:
+
+```hale,fragment
+let evens = xs.enumerate().filter(idx % 2 == 0).sum();
+xs.filter(it.active).enumerate().each {
+    println(idx, ": ", it.name);   // idx counts the matches
+}
+```
+
+Yes-or-no questions have their own terminals:
 
 ```hale,fragment
 if users.any(it.age < 18) { restrict(); }
@@ -236,6 +259,24 @@ users.filter(it.age >= 18).each {
 The block *is* the loop body — `it` is in scope, `break` and
 `continue` do what they do in any loop, and nothing is captured
 because there is no closure.
+
+The whole-set operations — the ones that need every element before
+they can produce anything — write into a collection *you* own:
+
+```hale,fragment
+let ranked = Scores { };
+scores.filter(it > 0).sort_into(ranked);        // ascending
+scores.sort_into(ranked, harder_first);         // your comparator fn
+recent.take(10).reverse_into(latest_first);
+let by_desk = DeskCounts { };
+orders.group_count_into(by_desk, it.desk);      // tally per key
+```
+
+`sort_into` and `reverse_into` fill a `@form(vec)` and reorder it in
+place; `group_count_into` bumps a per-key Int counter in a
+`@form(hashmap)` (its cell type is the key plus one Int field). The
+chain itself still allocates nothing — the storage is yours, declared
+where you can see it.
 
 This looks like an iterator chain from another language, and it is
 deliberately not one. There is no intermediate collection between the

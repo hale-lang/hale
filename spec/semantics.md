@@ -2245,11 +2245,14 @@ Three properties follow, and they are the contract:
    question.
 
 **Boundary.** Elementwise operations fuse. Whole-set operations
-(`sort`, `reverse`, `group`) cannot — they need every element before
-producing any — so they are terminals that materialize into caller
-storage. Over a stream source (a bus subscription, where the driver is
-delivery rather than a loop) they are rejected outright: "needs an
-end" is a property the compiler can decide.
+(`sort_into`, `reverse_into`, `group_count_into`) cannot — they need
+every element before producing any — so they are terminals that
+materialize into caller storage: the loop fills (or bumps) a target
+the caller owns, and any reordering runs on that target after the
+loop. The chain itself still allocates nothing. Over a stream source
+(a bus subscription, where the driver is delivery rather than a
+loop) they are rejected outright: "needs an end" is a property the
+compiler can decide.
 
 A bare method call with no stage (`v.count()`) is an ordinary form
 method, not a chain, and is left alone. A chain over a non-form
@@ -2263,13 +2266,27 @@ Elementwise **stages** (fuse into the one loop):
 |---|---|
 | `filter(pred)` | drop elements where the `it`-predicate is false |
 | `map(expr)` | rebind the element to the `it`-expression's value |
+| `take(n)` | stop the whole chain once n elements have passed this point (2026-08-11) |
+| `skip(n)` | drop the first n elements that reach this point (2026-08-11) |
+| `enumerate()` | bind `idx` — the 0-based count of elements reaching this stage — in every later stage and the terminal (2026-08-11) |
+
+`take` and `skip` count elements **arriving at their own position**,
+so `filter(p).skip(2)` skips the first two matches, not the first
+two source elements; their limits are evaluated once, before the
+loop. `enumerate` is an explicit opt-in stage rather than an
+always-bound name so a chain never captures a user's own `idx`
+local; written after a `filter`, `idx` counts the filtered stream.
+A `min`/`max` key mentioning `idx` is left unrecognized (the best
+element's key is re-derived from the element at compare time, and
+its enumerate count is not recoverable from it — rejecting beats a
+silently wrong comparison).
 
 **Terminals**:
 
 | terminal | result |
 |---|---|
 | `count()` | Int |
-| `sum()` | Int — v1 requires Int elements (`map` first); the accumulator's typed zero for Float/Decimal/Duration needs literal suffixes that do not exist yet |
+| `sum()` / `sum(seed)` | `sum()` is Int; `sum(seed)` seeds the accumulator and the seed **is** its typed zero — `sum(0.0)` sums Float elements, `sum(100)` starts an Int sum at 100 (2026-08-11) |
 | `into(target)` | pushes each surviving (mapped) element |
 | `any(pred?)` | Bool; **empty selection ⇒ `false`** (vacuous) |
 | `all(pred)` | Bool; **empty selection ⇒ `true`** (vacuous) |
@@ -2277,6 +2294,9 @@ Elementwise **stages** (fuse into the one loop):
 | `find(pred?)` | `find(p)` ≡ `filter(p).first()` |
 | `min(key?)` / `max(key?)` | the **element** with the least/greatest key (`min_by_key` shape; bare form compares elements) — fallible on empty |
 | `each { … }` | run the block per surviving element |
+| `sort_into(target, cmp?)` | push survivors into the caller's vec, then reorder it in place — `sort()` (primitive ordering) or `sort_by(cmp)` with a named comparator (2026-08-11) |
+| `reverse_into(target)` | push survivors, then swap ends inward on the caller's vec (2026-08-11) |
+| `group_count_into(target, key?)` | one hashmap `bump(key)` per survivor — increment-or-init tallying into the caller's `@form(hashmap)`; the bare form keys on the element itself (2026-08-11) |
 
 **Fallible terminals ride the source's own `get`.** `first` / `find`
 / `min` / `max` lower to an index search whose value is
@@ -2313,7 +2333,11 @@ is unbound outside a chain, so no valid ordinary call can look like
 that — or when it is `each` with a block. Bare `xs.sum()` /
 `xs.first()` therefore stay ordinary method calls (stage-less first
 is just `xs.get(0) or …`; a stage-less sum can be written
-`xs.map(it).sum()`).
+`xs.map(it).sum()`). The whole-set terminals (`sort_into` /
+`reverse_into` / `group_count_into`) are recognized stage-less too:
+`xs.sort_into(sorted)` is their natural spelling, and the compound
+`*_into` names belong to this vocabulary — unlike bare `into`, no
+plausible user facade carries them (2026-08-11).
 
 ## Bus subscription dispatch
 
