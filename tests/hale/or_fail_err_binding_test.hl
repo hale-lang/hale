@@ -1,0 +1,26 @@
+// `err` is bound inside an `or fail E { ... }` payload — the same
+// binding the substitute RHS already gets (the inner call's error
+// slot) — so inline error translation works without a per-edge
+// `wrap_x(err)` helper (downstream handoff, 2026-08-11).
+
+type SrcError { kind: String; detail: String; }
+type DstError { kind: String; }
+
+fn src(ok: Bool) -> Int fallible(SrcError) {
+    if !ok { fail SrcError { kind: "boom", detail: "d" }; }
+    return 1;
+}
+
+fn wrapped(ok: Bool) -> Int fallible(DstError) {
+    return src(ok) or fail DstError { kind: err.kind };
+}
+
+fn main() {
+    std::test::assert_eq_int(wrapped(true) or - 1, 1, "ok path passes through");
+
+    // The translated payload carries the SOURCE error's field.
+    let mut seen = "";
+    let v = wrapped(false) or { seen = err.kind; -1 };
+    std::test::assert_eq_int(v, -1, "fail path substitutes");
+    std::test::assert_eq_str(seen, "boom", "err.kind read inside the or-fail payload");
+}

@@ -1,0 +1,65 @@
+// An implicit block-tail return — `fn f(n: Int) -> Int { let d =
+// n * 2; d }` — typechecks as a real return, so codegen must lower
+// it as one (downstream handoff, 2026-08-11: `hale check` accepted
+// the form and `hale build` rejected it with "falls through without
+// returning a value", which is exactly the divergence that lets a
+// checked-green lib fail to ship).
+//
+// Covers the three fn-shaped surfaces that declare return types:
+// free fns, locus methods, and modes — plus a tail behind an early
+// explicit return, and a fallible fn whose ok path is a tail.
+
+fn double(n: Int) -> Int {
+    let d = n * 2;
+    d
+}
+
+fn pick(c: Bool) -> Int {
+    if c { return 1; }
+    let base = 10;
+    base + 5
+}
+
+type E { kind: String; }
+
+fn tail_fallible(ok: Bool) -> Int fallible(E) {
+    if !ok { fail E { kind: "no" }; }
+    let v = 40;
+    v + 2
+}
+
+locus Counter {
+    params { n: Int; }
+    fn doubled() -> Int {
+        let d = self.n * 2;
+        d
+    }
+}
+
+@form(vec)
+locus Mx { capacity { heap cells of Float; } }
+
+locus Box {
+    params { }
+    mode bulk() -> Mx {
+        let out = Mx { };
+        out.push(7.5);
+        out
+    }
+}
+
+fn main() {
+    std::test::assert_eq_int(double(4), 8, "free-fn tail return");
+    std::test::assert_eq_int(pick(true), 1, "explicit return before tail");
+    std::test::assert_eq_int(pick(false), 15, "tail after early-return branch");
+    std::test::assert_eq_int(tail_fallible(true) or - 1, 42, "fallible ok-path tail");
+    std::test::assert_eq_int(tail_fallible(false) or - 1, -1, "fallible fail path unchanged");
+
+    let c = Counter { n: 4 };
+    std::test::assert_eq_int(c.doubled(), 8, "locus method tail return");
+
+    let b = Box { };
+    let m = b.bulk();
+    std::test::assert_eq_int(m.len(), 1, "mode tail return survives");
+    std::test::assert((m.get(0) or 0.0) == 7.5, "mode tail return carries its cell");
+}

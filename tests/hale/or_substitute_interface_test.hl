@@ -1,0 +1,41 @@
+// A `Concrete { }` substitute coerces to an interface-typed
+// success for `@form`-synthesized fallible methods, the same
+// LocusRef→Interface rule a plain fallible call's substitute
+// already gets (downstream handoff, 2026-08-11: `list.get(i) or
+// NoopTool { }` was rejected with "substitute type mismatch"
+// while the plain-call control line compiled).
+
+type E { kind: String; }
+
+interface Tool { fn name() -> String; }
+
+locus NoopTool { params { } fn name() -> String { return "noop"; } }
+locus RealTool { params { } fn name() -> String { return "real"; } }
+
+@form(vec)
+locus ToolList {
+    params { }
+    capacity { heap items of Tool; }
+}
+
+fn pick(ok: Bool) -> Tool fallible(E) {
+    if !ok { fail E { kind: "no" }; }
+    return RealTool { };
+}
+
+fn main() {
+    // Control: plain fallible call.
+    let a: Tool = pick(false) or NoopTool { };
+    std::test::assert_eq_str(a.name(), "noop", "plain-call substitute coerces");
+
+    let list = ToolList { };
+    list.push(RealTool { });
+
+    // Out-of-range: the substitute is selected and coerces.
+    let b: Tool = list.get(5) or NoopTool { };
+    std::test::assert_eq_str(b.name(), "noop", "form-vec get substitute coerces");
+
+    // In-range: the stored element flows through unchanged.
+    let c: Tool = list.get(0) or NoopTool { };
+    std::test::assert_eq_str(c.name(), "real", "form-vec get hit path unchanged");
+}

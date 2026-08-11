@@ -786,7 +786,28 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                     self.builder.position_at_end(body_bb);
                 }
 
-                let end = self.lower_block(&fd.body, &mut scope)?;
+                // Downstream handoff: an implicit block-tail return
+                // typechecks as a real return — lower it as one
+                // (same treatment as free-fn bodies in codegen.rs).
+                let end = if ret_ty.is_some() && fd.body.tail.is_some() {
+                    let mut stmts_end = BlockEnd::Open;
+                    for stmt in &fd.body.stmts {
+                        match self.lower_stmt(stmt, &mut scope)? {
+                            BlockEnd::Open => continue,
+                            BlockEnd::Terminated => {
+                                stmts_end = BlockEnd::Terminated;
+                                break;
+                            }
+                        }
+                    }
+                    match stmts_end {
+                        BlockEnd::Open => self
+                            .lower_return(fd.body.tail.as_deref(), &scope)?,
+                        BlockEnd::Terminated => BlockEnd::Terminated,
+                    }
+                } else {
+                    self.lower_block(&fd.body, &mut scope)?
+                };
                 if end == BlockEnd::Open {
                     // m42: if this user fn is a registered bus
                     // handler AND the locus has tick closures,
@@ -1002,7 +1023,27 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
                     scope.locals.insert(p.name.name.clone(), (alloca, lt));
                 }
 
-                let end = self.lower_block(&md.body, &mut scope)?;
+                // Downstream handoff: implicit block-tail return —
+                // same treatment as fn members above.
+                let end = if ret_ty.is_some() && md.body.tail.is_some() {
+                    let mut stmts_end = BlockEnd::Open;
+                    for stmt in &md.body.stmts {
+                        match self.lower_stmt(stmt, &mut scope)? {
+                            BlockEnd::Open => continue,
+                            BlockEnd::Terminated => {
+                                stmts_end = BlockEnd::Terminated;
+                                break;
+                            }
+                        }
+                    }
+                    match stmts_end {
+                        BlockEnd::Open => self
+                            .lower_return(md.body.tail.as_deref(), &scope)?,
+                        BlockEnd::Terminated => BlockEnd::Terminated,
+                    }
+                } else {
+                    self.lower_block(&md.body, &mut scope)?
+                };
                 if end == BlockEnd::Open {
                     self.flush_dissolve_frame()?;
                     match ret_ty {

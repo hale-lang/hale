@@ -963,6 +963,13 @@ pub fn build_executable_with_options(
         stdlib_bus_tainted_namespaces(&stdlib_program);
     let mut merged = program.clone();
     merged.items.extend(stdlib_program.items);
+    // Downstream handoff: `-> ()` is a no-op unit annotation. The
+    // fallible decl paths already recognized the empty tuple as
+    // Unit, but non-fallible methods and every call-site MethodSig
+    // consumer hit the 0-element-tuple reject. Normalize ONCE on
+    // the merged AST so `-> ()` and "no return type" are the same
+    // program everywhere downstream.
+    normalize_unit_return_annotations(&mut merged.items);
 
     // `program_has_offthread` — THE single source of truth for "does
     // any thread cross the bus boundary in this program". It drives
@@ -1368,6 +1375,7 @@ pub fn build_executable_with_options(
         vtables: BTreeMap::new(),
         fresh_locus_factories: compute_fresh_locus_factories(&merged, import_renames),
         returned_bindings: compute_returned_bindings(&merged),
+        assign_moved_bindings: compute_assign_moved_bindings(&merged),
         suppress_fresh_temp: false,
         in_fresh_temp_hook: false,
         current_fn_skip_exit_drain: false,
@@ -2709,6 +2717,144 @@ fn compute_returned_bindings(
     m
 }
 
+/// `-> ()` is spelled unit: rewrite an empty-tuple return
+/// annotation to "no return type" on every fn-shaped declaration,
+/// so downstream signature consumers never see a 0-element tuple.
+fn normalize_unit_return_annotations(items: &mut [TopDecl]) {
+    fn norm(ret: &mut Option<TypeExpr>) {
+        if matches!(ret, Some(TypeExpr::Tuple(parts, _)) if parts.is_empty())
+        {
+            *ret = None;
+        }
+    }
+    for item in items {
+        match item {
+            TopDecl::Fn(f) => norm(&mut f.ret),
+            TopDecl::Interface(i) => {
+                for m in &mut i.methods {
+                    norm(&mut m.ret);
+                }
+            }
+            TopDecl::Locus(l) => {
+                for member in &mut l.members {
+                    match member {
+                        LocusMember::Fn(f) => norm(&mut f.ret),
+                        LocusMember::Mode(md) => norm(&mut md.ret),
+                        LocusMember::Lifecycle(lc) => norm(&mut lc.ret),
+                        _ => {}
+                    }
+                }
+            }
+            TopDecl::Module(m) => {
+                normalize_unit_return_annotations(&mut m.items)
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Bindings that participate in a plain `=` between locals
+/// (`a = nx;`, `a = make(...);`) — downstream handoff, free-fn
+/// locus rebinding. An assignment MOVES a value between bindings
+/// without the binding-scoped ownership rule seeing it: the
+/// moved-from binding's scope-exit dissolve would fire on a value
+/// the target (and possibly the caller) still holds, and the
+/// target's own dissolve can fire on a value another binding
+/// registered. Any name on either side of a bare-local `=` is
+/// therefore disqualified from frame-scoped reclamation.
+///
+/// Conservative by construction, same stance as
+/// `compute_returned_bindings`: membership only suppresses a
+/// dissolve — the old leak, never a double-free.
+fn compute_assign_moved_bindings(
+    program: &Program,
+) -> std::collections::BTreeMap<String, std::collections::BTreeSet<String>> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn walk(b: &Block, out: &mut BTreeSet<String>) {
+        for s in &b.stmts {
+            match s {
+                Stmt::Assign { target, op, value, .. } => {
+                    if matches!(op, AssignOp::Eq) && target.tail.is_empty() {
+                        out.insert(target.head.name.clone());
+                        if let Expr::Ident(i) = value {
+                            out.insert(i.name.clone());
+                        }
+                    }
+                }
+                Stmt::While { body, .. } | Stmt::For { body, .. } => {
+                    walk(body, out)
+                }
+                Stmt::If(i) => {
+                    walk(&i.then_block, out);
+                    let mut cur = i.else_block.as_deref();
+                    while let Some(eb) = cur {
+                        match eb {
+                            ElseBranch::Else(bb) => {
+                                walk(bb, out);
+                                cur = None;
+                            }
+                            ElseBranch::ElseIf(ei) => {
+                                walk(&ei.then_block, out);
+                                cur = ei.else_block.as_deref();
+                            }
+                        }
+                    }
+                }
+                Stmt::Match(m) => {
+                    for arm in &m.arms {
+                        if let MatchArmBody::Block(bb) = &arm.body {
+                            walk(bb, out);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let mut m: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut record = |key: String, body: &Block| {
+        let mut set = BTreeSet::new();
+        walk(body, &mut set);
+        if !set.is_empty() {
+            m.insert(key, set);
+        }
+    };
+    for item in &program.items {
+        match item {
+            TopDecl::Fn(f) => record(f.name.name.clone(), &f.body),
+            // Locus frames use the `{locus}.{member}` LLVM name
+            // convention (locus/decl.rs) — key the same way so the
+            // `current_fn` lookup at the dissolve decision matches.
+            TopDecl::Locus(l) => {
+                for member in &l.members {
+                    match member {
+                        LocusMember::Fn(f) => record(
+                            format!("{}.{}", l.name.name, f.name.name),
+                            &f.body,
+                        ),
+                        LocusMember::Mode(md) => {
+                            let mode_name = match md.kind {
+                                ModeKind::Bulk => "bulk",
+                                ModeKind::Harmonic => "harmonic",
+                                ModeKind::Resolution => "resolution",
+                            };
+                            record(
+                                format!("{}.{}", l.name.name, mode_name),
+                                &md.body,
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    m
+}
+
 fn compute_fresh_locus_factories(
     program: &Program,
     import_renames: &[(Vec<String>, String)],
@@ -3834,6 +3980,12 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// of those transfers to the caller, so this frame must not
     /// dissolve them. See `compute_returned_bindings`.
     pub(crate) returned_bindings:
+        std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+    /// Downstream handoff (free-fn locus rebinding): fn name -> the
+    /// local bindings that appear on either side of a bare-local
+    /// `=`. A moved value has two names; frame-scoped reclamation
+    /// must not fire on either. See `compute_assign_moved_bindings`.
+    pub(crate) assign_moved_bindings:
         std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
     /// GH #402: set while lowering an expression whose fresh-factory
     /// result already has an owner decided by the caller — a `let`'s
@@ -13259,7 +13411,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             scope.locals.insert(p.name.name.clone(), (alloca, lt));
         }
 
-        let end = self.lower_block(&f.body, &mut scope)?;
+        // Downstream handoff: an implicit block-tail return —
+        // `fn f(n: Int) -> Int { let d = n * 2; d }` — typechecks
+        // as a real return (the checker follows the tail), so
+        // lower it as one instead of discarding the value in
+        // stmt-context and then rejecting the fall-through.
+        let end = if sig.ret.is_some() && f.body.tail.is_some() {
+            let mut stmts_end = BlockEnd::Open;
+            for stmt in &f.body.stmts {
+                match self.lower_stmt(stmt, &mut scope)? {
+                    BlockEnd::Open => continue,
+                    BlockEnd::Terminated => {
+                        stmts_end = BlockEnd::Terminated;
+                        break;
+                    }
+                }
+            }
+            match stmts_end {
+                BlockEnd::Open => {
+                    self.lower_return(f.body.tail.as_deref(), &scope)?
+                }
+                BlockEnd::Terminated => BlockEnd::Terminated,
+            }
+        } else {
+            self.lower_block(&f.body, &mut scope)?
+        };
         if end == BlockEnd::Open {
             match &sig.ret {
                 None => {
@@ -15906,7 +16082,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             })
                             .map(|set| set.contains(&name.name))
                             .unwrap_or(false);
-                        if is_fresh && !is_my_returned_binding {
+                        // Downstream handoff (free-fn locus
+                        // rebinding): a binding that participates in
+                        // a bare-local `=` can hold a value another
+                        // binding also names (or hand its own value
+                        // to one), so its scope-exit dissolve may
+                        // fire on a value that is still live — or
+                        // already dissolved — through the other
+                        // name. Leak it instead.
+                        let is_assign_moved = self
+                            .current_fn
+                            .map(|f| f.get_name().to_string_lossy().to_string())
+                            .and_then(|fname| {
+                                self.assign_moved_bindings.get(&fname).cloned()
+                            })
+                            .map(|set| set.contains(&name.name))
+                            .unwrap_or(false);
+                        if is_fresh && !is_my_returned_binding && !is_assign_moved {
                             fresh_dissolve_of = Some(lname.clone());
                         }
                     }
@@ -15975,6 +16167,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // LLVM's "!dbg attachment points at wrong subprogram".
                 if let Some(lname) = fresh_dissolve_of {
                     if !self.deferred_dissolves.is_empty() {
+                        // The flush at fn exit is unconditional, but
+                        // this `let` may sit inside a loop body or
+                        // branch an early `fail`/`return` path never
+                        // reaches — downstream handoff: an empty-
+                        // model guard `fail` before the layer loop
+                        // dissolved the loop bindings' uninitialized
+                        // allocas.
+                        self.null_init_entry_ptr_slot(alloca)?;
                         self.deferred_dissolves
                             .last_mut()
                             .expect("checked non-empty")
@@ -16481,7 +16681,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     );
                 };
 
-                let (rhs, rhs_ty) = self.lower_expr(value, scope)?;
+                // Downstream handoff (free-fn locus rebinding): an
+                // `=` into a locus-typed slot decides the RHS
+                // factory call's owner — the slot — exactly like a
+                // `let`'s direct RHS. Without the suppression the
+                // GH #402 hook registers the result as a temporary
+                // THIS frame owns and reclaims it at exit while the
+                // binding (and then the caller) still holds it.
+                let assign_owns_locus_rhs = matches!(op, AssignOp::Eq)
+                    && matches!(slot_ty, CodegenTy::LocusRef(_));
+                let prev_sft = self.suppress_fresh_temp;
+                if assign_owns_locus_rhs {
+                    self.suppress_fresh_temp = true;
+                }
+                let lower_result = self.lower_expr(value, scope);
+                self.suppress_fresh_temp = prev_sft;
+                let (rhs, rhs_ty) = lower_result?;
                 let new_val = if matches!(op, AssignOp::Eq) {
                     if rhs_ty != slot_ty {
                         return Err(CodegenError::Unsupported(format!(
@@ -19899,7 +20114,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(BlockEnd::Terminated)
     }
 
-    fn lower_return(
+    pub(crate) fn lower_return(
         &mut self,
         expr: Option<&Expr>,
         scope: &Scope<'ctx>,
@@ -20387,6 +20602,82 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(slot)
     }
 
+    /// Null-init an EXISTING entry-block ptr slot that is about to
+    /// become a deferred-dissolve entry: the store goes right
+    /// after the slot's alloca, so any path that bypasses the
+    /// slot's real initializing store (an early `fail`, a branch
+    /// not taken, a zero-iteration loop) reads NULL — the flush's
+    /// "instantiation bypassed" sentinel — instead of stack
+    /// garbage the teardown would then dissolve.
+    fn null_init_entry_ptr_slot(
+        &mut self,
+        slot: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let saved = self.builder.get_insert_block();
+        let alloca_instr = slot
+            .as_instruction()
+            .expect("dissolve slot is an alloca instruction");
+        if let Some(next) = alloca_instr.get_next_instruction() {
+            self.builder.position_before(&next);
+        } else {
+            let bb = alloca_instr
+                .get_parent()
+                .expect("alloca lives in a block");
+            self.builder.position_at_end(bb);
+        }
+        self.builder
+            .build_store(slot, ptr_t.const_null())
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        if let Some(bb) = saved {
+            self.builder.position_at_end(bb);
+        }
+        if let Some(loc) = self.di_current_loc {
+            self.builder.set_current_debug_location(loc);
+        }
+        Ok(())
+    }
+
+    /// `alloca_in_entry` variant for deferred-dissolve slots whose
+    /// initializing store may sit on a branch: the slot must read
+    /// as NULL — "instantiation bypassed", the flush's skip
+    /// sentinel — on any path that never executes the store, not
+    /// as stack garbage the teardown would then dissolve.
+    fn alloca_ptr_null_in_entry(
+        &mut self,
+        name: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let func = self.current_fn.ok_or_else(|| {
+            CodegenError::Unsupported(
+                "entry alloca outside a function".to_string(),
+            )
+        })?;
+        let entry_bb = func
+            .get_first_basic_block()
+            .expect("fn has an entry block");
+        let saved = self.builder.get_insert_block();
+        if let Some(first_instr) = entry_bb.get_first_instruction() {
+            self.builder.position_before(&first_instr);
+        } else {
+            self.builder.position_at_end(entry_bb);
+        }
+        let slot = self
+            .builder
+            .build_alloca(ptr_t, name)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(slot, ptr_t.const_null())
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        if let Some(bb) = saved {
+            self.builder.position_at_end(bb);
+        }
+        if let Some(loc) = self.di_current_loc {
+            self.builder.set_current_debug_location(loc);
+        }
+        Ok(slot)
+    }
+
     pub(crate) fn lower_expr(
         &mut self,
         e: &Expr,
@@ -20427,10 +20718,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         && !self.deferred_dissolves.is_empty()
                         && val.is_pointer_value()
                     {
-                        let ptr_t =
-                            self.context.ptr_type(AddressSpace::default());
-                        let slot = self.alloca_in_entry(
-                            ptr_t.into(),
+                        // NULL-inited: this expression may sit on a
+                        // branch, and the flush at fn exit is
+                        // unconditional — a bypassed store must
+                        // read as "nothing to dissolve", not stack
+                        // garbage.
+                        let slot = self.alloca_ptr_null_in_entry(
                             &format!("{}.fresh_temp", lname),
                         )?;
                         self.builder

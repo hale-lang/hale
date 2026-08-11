@@ -8,6 +8,76 @@ behavior.
 
 ## Unreleased
 
+### Free-fn locus rebinding no longer reclaims live memory
+
+**Critical regression, shipped in v0.16.0** (the GH #402
+temporary-reclaim pass) and reported by a downstream handoff with a
+full discriminator matrix. A free fn that rebinds a locus-typed
+`let mut` binding — `let mut a = make(n); if c { a = make(n); }
+return a;` — reclaimed the value while the binding (and then the
+caller) still held it. Returned: the caller received a locus whose
+`capacity` heap buffer was gone (params intact, every `get` failing —
+silently wrong answers). Not returned: double-free, SIGTRAP at frame
+exit. The trigger was **static**: a rebinding inside `if false { }`
+was enough, because the temporary's dissolve slot was alloca'd in the
+entry block but stored only where the expression ran, so a bypassed
+store left stack garbage for the exit flush to dissolve. The
+downstream shape was a neural forward pass — training converged
+byte-identically and every prediction then read zero.
+
+Three rules close it:
+
+- An `=` into a locus-typed slot decides the RHS factory call's
+  owner (the slot), the same way a `let` RHS and a `return`
+  expression already did — no frame-temporary registration.
+- A binding on either side of a bare-local `=` (`a = nx;`) is
+  disqualified from frame-scoped reclamation: a moved value has two
+  names, and a dissolve through either can fire on a value the other
+  still holds. Conservative by construction — the old leak, never a
+  double-free.
+- Deferred-dissolve slots are NULL-initialized at entry, so any path
+  that bypasses the initializing store (a branch not taken, an early
+  `fail`, a zero-iteration loop) reads the flush's
+  "instantiation-bypassed" sentinel instead of stack garbage. This
+  also closes a second latent shape the fix exposed: an early `fail`
+  before a loop whose body `let`-binds factory results dissolved the
+  loop bindings' uninitialized allocas (a guard `fail` on an empty
+  model, in the downstream reproducer).
+
+### Five surface fixes from a downstream compiler-bugs pass
+
+The same handoff's non-regression items, each unchanged since at
+least v0.13.0:
+
+- **An implicit block-tail return lowers.** `fn double(n: Int) -> Int
+  { let d = n * 2; d }` typechecked and then failed codegen with
+  "falls through without returning a value" — the check/build
+  divergence class that lets a checked-green library fail to ship.
+  The tail of a fn-shaped body (free fn, locus method, mode) with a
+  declared return type now lowers as a real `return`.
+- **`hale check` resolves sibling-file declarations in a seed.** A
+  `topic` declared in one file and subscribed from a sibling file of
+  the same seed built and ran, but `check` reported "unknown topic":
+  the no-import multi-file path kept one program per file, and the
+  sync-inference pre-pass resolved each file alone. A multi-file seed
+  now merges before checking, exactly like the import-bearing path.
+- **`err` is bound in `or fail E { … }` payloads.** Inline error
+  translation — `src() or fail DstError { kind: err.kind }` — works
+  without a per-edge `wrap_x(err)` helper; the payload sees the same
+  `err` binding a substitute RHS gets.
+- **`-> ()` is a no-op unit annotation everywhere.** A non-fallible
+  locus method with an explicit unit return type hit "tuple type must
+  have at least 2 elements; got 0" while the fallible spelling was
+  accepted. The empty-tuple return annotation is now normalized to
+  "no return type" once, on the merged AST, for every fn-shaped
+  declaration.
+- **`or <substitute>` coerces LocusRef→Interface for `@form`
+  methods.** `list.get(i) or NoopTool { }` on a `heap items of Tool`
+  vec was rejected with a substitute type mismatch while the same
+  substitute on a plain fallible call compiled; the substitute now
+  gets the same fat-pointer coercion as argument-position and
+  let-ascription sites.
+
 ### An element chain over an unsupported source names itself
 
 A chain (`.filter(…).count()` and the like) desugars to a loop that
