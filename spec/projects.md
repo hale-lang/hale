@@ -370,7 +370,13 @@ files *without* threading the path-rename table, so cross-seed
 `alias::Name` references — and a topic decl referenced from a
 sibling file — failed under `run` though they worked under
 `build`. That gap is closed; the two commands no longer diverge on
-imports.)
+imports. `hale check` had the last surviving divergence: a
+multi-file seed with no imports was kept as per-file programs, and
+a pre-pass resolved each file alone — so a `topic` declared in one
+file and subscribed from a sibling reported "unknown topic" under
+`check` while `build` and `run` resolved it. Closed 2026-08-11: a
+multi-file seed merges before checking, exactly like the
+import-bearing path.)
 
 ## Git-based dependency fetching (`hale fetch`)
 

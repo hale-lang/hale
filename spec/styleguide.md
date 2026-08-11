@@ -867,6 +867,9 @@ self.users.filter(it.active).into(self.actives);
 let total = self.users.map(it.age).sum();
 let oldest = self.users.max(it.age) or raise;
 self.users.filter(it.active).each { self.greet(it); }
+let page = self.users.skip(20).take(10).count();
+self.users.filter(it.active).sort_into(self.ranked, older_first);
+self.orders.group_count_into(self.by_desk, it.desk);
 
 // not this
 let mut i = 0;
@@ -902,10 +905,14 @@ knowing rather than assuming:
 - **No lambdas.** `it` is bound by the rewrite; the predicate is
   syntax, not a value. Nothing captures, so nothing escapes.
 
-Whole-set operations (`sort`, and later `reverse` / `group`) cannot
-fuse — they need every element before producing any — so they
-materialize into caller storage. That cost is visible in the budget,
-which is the point.
+Whole-set operations (`sort_into`, `reverse_into`,
+`group_count_into`) cannot fuse — they need every element before
+producing any — so they materialize into caller storage: the chain
+fills (or bumps) a collection you declared, then reorders it in
+place. That cost is visible in the budget, which is the point.
+Positional selection (`take(n)` / `skip(n)`) and the element's
+ordinal (`enumerate()`, binding `idx`) DO fuse — they are counters
+on the one loop, not materializations.
 
 ---
 
@@ -1094,10 +1101,10 @@ One is soundness-adjacent and worth knowing cold.
 - **`@form` cell types can't be loci or qualified paths** — keep
   cell structs in-seed (C7).
 - **Lifecycle bodies reject `return`** — factor short-circuit
-  logic into a free helper. Related paper cuts: `-> ()` on a
-  non-fallible method fails codegen (omit the return type);
-  empty `if` bodies parse-fail (add a comment or invert the
-  condition).
+  logic into a free helper. Related paper cut: empty `if`
+  bodies parse-fail (add a comment or invert the condition).
+  (`-> ()` on a non-fallible method was a paper cut here until
+  2026-08-11; it is now a no-op unit annotation everywhere.)
 - **No char-level `s[i]`** — use `s[i..i+1]` slices,
   `std::str::index_of`, or the UTF-8 accessors
   `std::str::cp_at` / `cp_size` / `cp_count` when you need code

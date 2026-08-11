@@ -31,18 +31,25 @@
 //! machinery in either, and a chain over a non-form receiver fails
 //! with the ordinary "no method `len`" diagnostic.
 //!
-//! ## Vocabulary (2026-08-04 tranche; v1 was filter/count/into)
+//! ## Vocabulary (2026-08-04 tranche + 2026-08-11 tranche;
+//! v1 was filter/count/into)
 //!
 //! Elementwise stages — fuse into the one loop:
 //!   - `filter(pred)`  — `it`-predicate, drops non-matching elements
 //!   - `map(expr)`     — `it`-expression, rebinds the element
+//!   - `take(n)`       — stop the chain after n elements pass here
+//!   - `skip(n)`       — drop the first n elements reaching here
+//!   - `enumerate()`   — binds `idx` (0-based count of elements
+//!                       reaching this stage) in later stages and
+//!                       the terminal; explicit opt-in so a user's
+//!                       own `idx` local is never captured silently
 //!
 //! Terminals:
 //!   - `count()`            → Int
 //!   - `into(target)`       → pushes surviving (mapped) elements
-//!   - `sum()`              → Int (v1: Int elements only — the
-//!                            accumulator's typed zero needs literal
-//!                            suffixes for Float/Decimal/Duration)
+//!   - `sum()` / `sum(seed)` → `sum()` is Int; `sum(seed)` seeds the
+//!                            accumulator, and the seed IS its typed
+//!                            zero — `sum(0.0)` for Float elements
 //!   - `any(pred?)`         → Bool; empty ⇒ false (vacuous)
 //!   - `all(pred)`          → Bool; empty ⇒ true  (vacuous)
 //!   - `first()`            → element, FALLIBLE on empty (IndexError,
@@ -54,6 +61,22 @@
 //!                            on empty like `first`
 //!   - `each { ... }`       → side-effectful visitation; the block is
 //!                            the fused loop body with `it` bound
+//!   - `sort_into(target, cmp?)` → push survivors, then reorder the
+//!                            caller storage in place (`sort()` /
+//!                            `sort_by(cmp)`) — the whole-set ops
+//!                            materialize into CALLER storage, so
+//!                            the chain itself still allocates
+//!                            nothing
+//!   - `reverse_into(target)` → push survivors, then swap ends
+//!                            inward on the caller storage
+//!   - `group_count_into(target, key?)` → one hashmap `bump(key)`
+//!                            per survivor (increment-or-init); the
+//!                            bare form keys on the element itself
+//!
+//! A min/max KEY mentioning `idx` is left unrecognized: the best
+//! element's key is re-derived from `src.get(idx)` at compare time,
+//! and its enumerate count is not recoverable from the element —
+//! rejecting beats silently comparing with the wrong counter.
 //!
 //! Recognition is deliberately conservative so user-declared facade
 //! methods never get hijacked:
@@ -65,7 +88,11 @@
 //!     this — or when it is `each` with a block argument (no user
 //!     surface takes a block).
 //!   Bare `xs.sum()` / `xs.first()` therefore stay ordinary method
-//!   calls (`first` stage-less is just `xs.get(0) or …`).
+//!   calls (`first` stage-less is just `xs.get(0) or …`). The
+//!   whole-set terminals (`sort_into` / `reverse_into` /
+//!   `group_count_into`) are the exception: recognized stage-less
+//!   too — their compound names are this vocabulary's own, so
+//!   `xs.sort_into(sorted)` works as written.
 //!
 //! The element-valued fallible terminals (`first`/`find`/`min`/`max`)
 //! reuse the source's OWN fallible `get`: the loop finds an index,
@@ -152,6 +179,20 @@ fn if_stmt(i: &mut IfStmt, n: &mut usize) {
 enum Stage {
     Filter(Expr),
     Map(Expr),
+    /// 2026-08-11 tranche. `take(n)`: stop the whole chain once n
+    /// elements have passed this point; `skip(n)`: drop the first n
+    /// that reach it. Both count elements ARRIVING at their own
+    /// stage position, so `filter(p).skip(2)` skips the first two
+    /// matches, not the first two source elements. Their counters
+    /// are pre-loop inits (see `apply_stages`).
+    Take(Expr),
+    Skip(Expr),
+    /// `enumerate()`: binds `idx` — the 0-based count of elements
+    /// reaching this stage — in every LATER stage expression and in
+    /// the terminal. An explicit opt-in stage (not an always-bound
+    /// name) so a user's own `idx` local is never captured by a
+    /// chain that didn't ask.
+    Enumerate,
 }
 
 /// A chain's shape: the source receiver, the accumulated stages, and
@@ -174,31 +215,97 @@ struct Chain {
 
 const TERMINALS: &[&str] = &[
     "count", "into", "sum", "any", "all", "first", "find", "min", "max",
-    "each",
+    "each", "sort_into", "reverse_into", "group_count_into",
 ];
 
-/// Does this expression tree mention the identifier `it`? Used for
+/// Does this expression tree mention the identifier `name`? Used for
 /// the stage-less recognition gate: `it` is unbound outside a chain,
 /// so an argument that mentions it cannot be a valid ordinary call.
 /// Conservative direction: an unrecognized Expr variant returns
 /// false, which merely leaves the call as an ordinary method call —
 /// and if it truly used `it`, typecheck rejects the unbound name.
-fn mentions_it(e: &Expr) -> bool {
+fn mentions_ident(e: &Expr, name: &str) -> bool {
+    fn block_mentions(b: &Block, name: &str) -> bool {
+        b.stmts.iter().any(|s| match s {
+            Stmt::Let { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::Fail { value, .. } => mentions_ident(value, name),
+            Stmt::Expr(e) | Stmt::Return(Some(e), _) => {
+                mentions_ident(e, name)
+            }
+            Stmt::If(i) => if_mentions(i, name),
+            Stmt::While { cond, body, .. } => {
+                mentions_ident(cond, name) || block_mentions(body, name)
+            }
+            _ => false,
+        }) || b.tail.as_ref().map_or(false, |t| mentions_ident(t, name))
+    }
+    fn if_mentions(i: &IfStmt, name: &str) -> bool {
+        mentions_ident(&i.cond, name)
+            || block_mentions(&i.then_block, name)
+            || i.else_block.as_ref().map_or(false, |e| match e.as_ref() {
+                ElseBranch::Else(b) => block_mentions(b, name),
+                ElseBranch::ElseIf(ei) => if_mentions(ei, name),
+            })
+    }
     match e {
-        Expr::Ident(i) => i.name == "it",
-        Expr::Field { receiver, .. } => mentions_it(receiver),
+        Expr::Ident(i) => i.name == name,
+        Expr::Field { receiver, .. } => mentions_ident(receiver, name),
         Expr::Call { callee, args, .. } => {
-            mentions_it(callee) || args.iter().any(mentions_it)
+            mentions_ident(callee, name)
+                || args.iter().any(|a| mentions_ident(a, name))
         }
         Expr::Binary { left, right, .. } => {
-            mentions_it(left) || mentions_it(right)
+            mentions_ident(left, name) || mentions_ident(right, name)
         }
-        Expr::Unary { operand, .. } => mentions_it(operand),
+        Expr::Unary { operand, .. } => mentions_ident(operand, name),
         Expr::Index { receiver, index, .. } => {
-            mentions_it(receiver) || mentions_it(index)
+            mentions_ident(receiver, name) || mentions_ident(index, name)
+        }
+        // A conditional key — `group_count_into(t, if it % 2 == 0 {
+        // "even" } else { "odd" })` — must count as an it-mention for
+        // the stage-less recognition gate, same reach as the subst
+        // walker (which already descends these).
+        Expr::If(i) => if_mentions(i, name),
+        Expr::Match(m) => {
+            mentions_ident(&m.scrutinee, name)
+                || m.arms.iter().any(|arm| {
+                    arm.guard
+                        .as_ref()
+                        .map_or(false, |g| mentions_ident(g, name))
+                        || match &arm.body {
+                            MatchArmBody::Expr(e) => {
+                                mentions_ident(e, name)
+                            }
+                            MatchArmBody::Block(b) => {
+                                block_mentions(b, name)
+                            }
+                        }
+                })
+        }
+        Expr::Block(b) => block_mentions(b, name),
+        Expr::Struct { inits, .. } => {
+            inits.iter().any(|i| mentions_ident(&i.value, name))
+        }
+        Expr::Tuple(parts, _) | Expr::Array(parts, _) => {
+            parts.iter().any(|p| mentions_ident(p, name))
+        }
+        Expr::Or { inner, disposition, .. } => {
+            mentions_ident(inner, name)
+                || match disposition {
+                    OrDisposition::Substitute(e)
+                    | OrDisposition::Fail(e, _) => {
+                        mentions_ident(e, name)
+                    }
+                    _ => false,
+                }
         }
         _ => false,
     }
+}
+
+fn mentions_it(e: &Expr) -> bool {
+    mentions_ident(e, "it")
 }
 
 /// Peel `src.filter(p).map(f).<terminal>(…)` into its parts. `None`
@@ -227,6 +334,9 @@ fn peel(e: &Expr) -> Option<Chain> {
         let stage = match name.name.as_str() {
             "filter" if args.len() == 1 => Stage::Filter(args[0].clone()),
             "map" if args.len() == 1 => Stage::Map(args[0].clone()),
+            "take" if args.len() == 1 => Stage::Take(args[0].clone()),
+            "skip" if args.len() == 1 => Stage::Skip(args[0].clone()),
+            "enumerate" if args.is_empty() => Stage::Enumerate,
             _ => break,
         };
         stages.push(stage);
@@ -241,11 +351,20 @@ fn peel(e: &Expr) -> Option<Chain> {
     // methods keep resolving; a genuine mistake gets the ordinary
     // no-method / arity diagnostic).
     let shape_ok = match terminal.as_str() {
-        "count" | "sum" | "first" => term_args.is_empty(),
-        "into" => term_args.len() == 1,
+        "count" | "first" => term_args.is_empty(),
+        // `sum()` = Int accumulator; `sum(seed)` = the seed IS the
+        // accumulator's typed zero (`sum(0.0)` for Float elements).
+        "sum" => term_args.len() <= 1,
+        "into" | "reverse_into" => term_args.len() == 1,
         "any" | "find" => term_args.len() <= 1,
         "all" => term_args.len() == 1,
         "min" | "max" => term_args.len() <= 1,
+        // `sort_into(target)` rides the vec's own `sort()`;
+        // `sort_into(target, cmp)` rides `sort_by(cmp)`.
+        "sort_into" => (1..=2).contains(&term_args.len()),
+        // `group_count_into(target, key?)` rides the hashmap's
+        // `bump`; bare form uses the element itself as the key.
+        "group_count_into" => (1..=2).contains(&term_args.len()),
         "each" => {
             term_args.len() == 1
                 && matches!(term_args[0], Expr::Block(_))
@@ -262,6 +381,19 @@ fn peel(e: &Expr) -> Option<Chain> {
     {
         return None;
     }
+    // A min/max KEY that mentions `idx` cannot lower: the best
+    // element's key is re-derived from `src.get(idx)` at compare
+    // time, and its enumerate count is not recoverable from the
+    // element. Left unrecognized (ordinary diagnostics), never
+    // silently miscompared.
+    if matches!(terminal.as_str(), "min" | "max")
+        && stages.iter().any(|s| matches!(s, Stage::Enumerate))
+        && term_args
+            .first()
+            .map_or(false, |a| mentions_ident(a, "idx"))
+    {
+        return None;
+    }
 
     // Recognition gate.
     let recognized = if !stages.is_empty() {
@@ -273,6 +405,12 @@ fn peel(e: &Expr) -> Option<Chain> {
             "any" | "all" | "find" | "min" | "max" => {
                 term_args.first().map_or(false, mentions_it)
             }
+            // The whole-set terminals are recognized even stage-less:
+            // `xs.sort_into(sorted)` is their natural spelling, and
+            // the compound `*_into` names are this vocabulary's own —
+            // unlike bare `into`, no plausible user facade carries
+            // them. Same reasoning as `each`'s block argument.
+            "sort_into" | "reverse_into" | "group_count_into" => true,
             // No user surface takes a block argument.
             "each" => true,
             _ => false,
@@ -312,94 +450,115 @@ fn peel(e: &Expr) -> Option<Chain> {
 // untouched, which fails CLOSED: the unbound name is a typecheck
 // error at the chain's site, never a silently wrong binding.
 
-fn subst_expr(e: &mut Expr, to: &str) {
+fn subst_expr(e: &mut Expr, from: &str, to: &str) {
     match e {
-        Expr::Ident(i) if i.name == "it" => {
+        Expr::Ident(i) if i.name == from => {
             i.name = to.to_string();
         }
-        Expr::Field { receiver, .. } => subst_expr(receiver, to),
+        Expr::Field { receiver, .. } => subst_expr(receiver, from, to),
         Expr::Call { callee, args, .. } => {
-            subst_expr(callee, to);
+            subst_expr(callee, from, to);
             for a in args {
-                subst_expr(a, to);
+                subst_expr(a, from, to);
             }
         }
         Expr::Binary { left, right, .. } => {
-            subst_expr(left, to);
-            subst_expr(right, to);
+            subst_expr(left, from, to);
+            subst_expr(right, from, to);
         }
-        Expr::Unary { operand, .. } => subst_expr(operand, to),
+        Expr::Unary { operand, .. } => subst_expr(operand, from, to),
         Expr::Index { receiver, index, .. } => {
-            subst_expr(receiver, to);
-            subst_expr(index, to);
+            subst_expr(receiver, from, to);
+            subst_expr(index, from, to);
         }
-        Expr::Path2 { receiver, .. } => subst_expr(receiver, to),
-        Expr::Block(b) => subst_block(b, to),
+        Expr::Path2 { receiver, .. } => subst_expr(receiver, from, to),
+        Expr::Block(b) => subst_block(b, from, to),
+        // A conditional projection — `map(if it > 0 { "pos" } else
+        // { "neg" })` — is an if-EXPRESSION; descend so its arms see
+        // the element.
+        Expr::If(i) => subst_if(i, from, to),
+        Expr::Match(m) => {
+            subst_expr(&mut m.scrutinee, from, to);
+            for arm in &mut m.arms {
+                if let Some(g) = &mut arm.guard {
+                    subst_expr(g, from, to);
+                }
+                match &mut arm.body {
+                    MatchArmBody::Expr(e) => subst_expr(e, from, to),
+                    MatchArmBody::Block(b) => subst_block(b, from, to),
+                }
+            }
+        }
+        Expr::Tuple(parts, _) => {
+            for p in parts {
+                subst_expr(p, from, to);
+            }
+        }
         Expr::Or { inner, disposition, .. } => {
-            subst_expr(inner, to);
+            subst_expr(inner, from, to);
             match disposition {
-                OrDisposition::Substitute(e) => subst_expr(e, to),
-                OrDisposition::Fail(e, _) => subst_expr(e, to),
+                OrDisposition::Substitute(e) => subst_expr(e, from, to),
+                OrDisposition::Fail(e, _) => subst_expr(e, from, to),
                 _ => {}
             }
         }
         Expr::Struct { inits, .. } => {
             for init in inits {
-                subst_expr(&mut init.value, to);
+                subst_expr(&mut init.value, from, to);
             }
         }
         Expr::Array(parts, _) => {
             for p in parts {
-                subst_expr(p, to);
+                subst_expr(p, from, to);
             }
         }
         _ => {}
     }
 }
 
-fn subst_block(b: &mut Block, to: &str) {
+fn subst_block(b: &mut Block, from: &str, to: &str) {
     for s in &mut b.stmts {
-        subst_stmt(s, to);
+        subst_stmt(s, from, to);
     }
     if let Some(t) = &mut b.tail {
-        subst_expr(t, to);
+        subst_expr(t, from, to);
     }
 }
 
-fn subst_stmt(s: &mut Stmt, to: &str) {
+fn subst_stmt(s: &mut Stmt, from: &str, to: &str) {
     match s {
-        Stmt::Let { value, .. } => subst_expr(value, to),
+        Stmt::Let { value, .. } => subst_expr(value, from, to),
         Stmt::Assign { value, target, .. } => {
-            subst_expr(value, to);
+            subst_expr(value, from, to);
             // `it` cannot be assigned (it names an element copy the
             // loop rebinds) — but an index expression in the lvalue
             // tail may mention it. Leave the head; heads named `it`
             // become the unbound-name error, fail closed.
             let _ = target;
         }
-        Stmt::Expr(e) => subst_expr(e, to),
+        Stmt::Expr(e) => subst_expr(e, from, to),
         Stmt::While { cond, body, .. } => {
-            subst_expr(cond, to);
-            subst_block(body, to);
+            subst_expr(cond, from, to);
+            subst_block(body, from, to);
         }
-        Stmt::If(i) => subst_if(i, to),
-        Stmt::Return(Some(e), _) => subst_expr(e, to),
-        Stmt::Fail { value, .. } => subst_expr(value, to),
+        Stmt::If(i) => subst_if(i, from, to),
+        Stmt::Return(Some(e), _) => subst_expr(e, from, to),
+        Stmt::Fail { value, .. } => subst_expr(value, from, to),
         Stmt::Send { subject, value, .. } => {
-            subst_expr(subject, to);
-            subst_expr(value, to);
+            subst_expr(subject, from, to);
+            subst_expr(value, from, to);
         }
         _ => {}
     }
 }
 
-fn subst_if(i: &mut IfStmt, to: &str) {
-    subst_expr(&mut i.cond, to);
-    subst_block(&mut i.then_block, to);
+fn subst_if(i: &mut IfStmt, from: &str, to: &str) {
+    subst_expr(&mut i.cond, from, to);
+    subst_block(&mut i.then_block, from, to);
     if let Some(e) = &mut i.else_block {
         match e.as_mut() {
-            ElseBranch::Else(b) => subst_block(b, to),
-            ElseBranch::ElseIf(e) => subst_if(e, to),
+            ElseBranch::Else(b) => subst_block(b, from, to),
+            ElseBranch::ElseIf(e) => subst_if(e, from, to),
         }
     }
 }
@@ -569,6 +728,8 @@ fn get_or_break(
 }
 
 /// Wrap `action` in the chain's stages, innermost-out. Returns the
+/// pre-loop init statements the stages need (take/skip/enumerate
+/// counters — their state lives across iterations) and the
 /// statements forming the per-element body, and binds the running
 /// element name: stage k's expressions see the element as `elem`,
 /// and a `map` rebinds it to a fresh local for the stages after it.
@@ -578,41 +739,108 @@ fn apply_stages(
     uid: usize,
     mut action: Vec<Stmt>,
     sp: Span,
-) -> Vec<Stmt> {
+) -> (Vec<Stmt>, Vec<Stmt>) {
     // Compute the element name seen AFTER each stage prefix.
     let mut names: Vec<String> = vec![elem0.to_string()];
     let mut mapn = 0usize;
     for s in stages {
         match s {
-            Stage::Filter(_) => {
-                names.push(names.last().unwrap().clone());
-            }
             Stage::Map(_) => {
                 mapn += 1;
                 names.push(format!("__hale_m{}_{}", uid, mapn));
             }
+            // The positional stages read and pass on the same element.
+            Stage::Filter(_)
+            | Stage::Take(_)
+            | Stage::Skip(_)
+            | Stage::Enumerate => {
+                names.push(names.last().unwrap().clone());
+            }
         }
     }
     // Innermost-out: wrap the action with each stage, last first.
+    let mut inits: Vec<Stmt> = Vec::new();
     for (k, s) in stages.iter().enumerate().rev() {
         let seen = names[k].clone(); // element name THIS stage reads
         match s {
             Stage::Filter(p) => {
                 let mut p = p.clone();
-                subst_expr(&mut p, &seen);
+                subst_expr(&mut p, "it", &seen);
                 action = vec![if_then(p, action, sp)];
             }
             Stage::Map(f) => {
                 let mut f = f.clone();
-                subst_expr(&mut f, &seen);
+                subst_expr(&mut f, "it", &seen);
                 let bound = names[k + 1].clone();
                 let mut stmts = vec![let_val(&bound, f, sp)];
                 stmts.extend(action);
                 action = stmts;
             }
+            // `take(n)`: break the whole loop once n elements have
+            // passed this point. Saturation ends the chain — no
+            // later element could contribute anything. The limit is
+            // evaluated ONCE, before the loop.
+            Stage::Take(nexpr) => {
+                let lim = format!("__hale_tk{}_{}", uid, k);
+                let ctr = format!("__hale_tkc{}_{}", uid, k);
+                inits.push(let_val(&lim, nexpr.clone(), sp));
+                inits.push(let_mut(&ctr, int(0, sp), sp));
+                let mut stmts = vec![
+                    if_then(
+                        bin(BinOp::GtEq, var(&ctr, sp), var(&lim, sp), sp),
+                        vec![Stmt::Break(sp)],
+                        sp,
+                    ),
+                    assign(
+                        &ctr,
+                        bin(BinOp::Add, var(&ctr, sp), int(1, sp), sp),
+                        sp,
+                    ),
+                ];
+                stmts.extend(action);
+                action = stmts;
+            }
+            // `skip(n)`: count every element reaching this point and
+            // run the rest only from the (n+1)-th on.
+            Stage::Skip(nexpr) => {
+                let lim = format!("__hale_sk{}_{}", uid, k);
+                let ctr = format!("__hale_skc{}_{}", uid, k);
+                inits.push(let_val(&lim, nexpr.clone(), sp));
+                inits.push(let_mut(&ctr, int(0, sp), sp));
+                let mut stmts = vec![assign(
+                    &ctr,
+                    bin(BinOp::Add, var(&ctr, sp), int(1, sp), sp),
+                    sp,
+                )];
+                stmts.push(if_then(
+                    bin(BinOp::Gt, var(&ctr, sp), var(&lim, sp), sp),
+                    action,
+                    sp,
+                ));
+                action = stmts;
+            }
+            // `enumerate()`: bind `idx` in everything AFTER this
+            // stage. Wrapping runs innermost-out, so a later
+            // enumerate has already substituted its own scope's
+            // `idx` by the time an earlier one wraps — shadowing
+            // falls out of the ordering.
+            Stage::Enumerate => {
+                let ctr = format!("__hale_en{}_{}", uid, k);
+                inits.push(let_mut(&ctr, int(-1, sp), sp));
+                for a in &mut action {
+                    subst_stmt(a, "idx", &ctr);
+                }
+                let mut stmts = vec![assign(
+                    &ctr,
+                    bin(BinOp::Add, var(&ctr, sp), int(1, sp), sp),
+                    sp,
+                )];
+                stmts.extend(action);
+                action = stmts;
+            }
         }
     }
-    action
+    (inits, action)
 }
 
 /// The element name the TERMINAL sees (after all stages).
@@ -678,8 +906,16 @@ fn lower(mut c: Chain, sp: Span, uid: usize) -> Expr {
 
     let fin = final_elem(&c.stages, &elem0, uid);
 
-    // The innermost per-element action + (init, tail) for the block.
-    let (action, init, tail): (Vec<Stmt>, Option<Stmt>, Option<Expr>) =
+    // The innermost per-element action + (init, tail, post) for the
+    // block. `post` runs after the loop — the whole-set terminals
+    // (sort_into / reverse_into) do their reordering there, on the
+    // caller storage the loop filled.
+    let (action, init, tail, post): (
+        Vec<Stmt>,
+        Option<Stmt>,
+        Option<Expr>,
+        Vec<Stmt>,
+    ) =
         match c.terminal.as_str() {
             "count" => (
                 vec![assign(
@@ -689,25 +925,38 @@ fn lower(mut c: Chain, sp: Span, uid: usize) -> Expr {
                 )],
                 Some(let_mut(acc, int(0, sp), sp)),
                 Some(var(acc, sp)),
+                Vec::new(),
             ),
-            // v1: Int elements only — see module docs.
+            // `sum()` = Int accumulator zero; `sum(seed)` = the seed
+            // is the accumulator's initial value AND its typed zero
+            // (`sum(0.0)` for Float elements) — evaluated once,
+            // before the loop, so chains stay pre-typecheck-safe.
             "sum" => (
                 vec![assign(
                     acc,
                     bin(BinOp::Add, var(acc, sp), var(&fin, sp), sp),
                     sp,
                 )],
-                Some(let_mut(acc, int(0, sp), sp)),
+                Some(let_mut(
+                    acc,
+                    c.term_args
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| int(0, sp)),
+                    sp,
+                )),
                 Some(var(acc, sp)),
+                Vec::new(),
             ),
             "any" => (
                 vec![assign(acc, boolean(true, sp), sp), Stmt::Break(sp)],
                 Some(let_mut(acc, boolean(false, sp), sp)),
                 Some(var(acc, sp)),
+                Vec::new(),
             ),
             "all" => {
                 let mut p = c.term_args[0].clone();
-                subst_expr(&mut p, &fin);
+                subst_expr(&mut p, "it", &fin);
                 (
                     vec![if_then(
                         not(p, sp),
@@ -719,18 +968,153 @@ fn lower(mut c: Chain, sp: Span, uid: usize) -> Expr {
                     )],
                     Some(let_mut(acc, boolean(true, sp), sp)),
                     Some(var(acc, sp)),
+                    Vec::new(),
                 )
             }
             "each" => {
                 let Expr::Block(mut b) = c.term_args.remove(0) else {
                     unreachable!("peel gated each on a block arg");
                 };
-                subst_block(&mut b, &fin);
+                subst_block(&mut b, "it", &fin);
                 let mut stmts = b.stmts;
                 if let Some(t) = b.tail {
                     stmts.push(Stmt::Expr(*t));
                 }
-                (stmts, None, None)
+                (stmts, None, None, Vec::new())
+            }
+            // `sort_into(target, cmp?)`: push each surviving element,
+            // then reorder the caller storage in place — the vec's
+            // own `sort()` (primitive ordering) or `sort_by(cmp)`.
+            "sort_into" => {
+                let target = c.term_args[0].clone();
+                let post = match c.term_args.get(1) {
+                    Some(cmp) => vec![Stmt::Expr(method(
+                        target.clone(),
+                        "sort_by",
+                        vec![cmp.clone()],
+                        sp,
+                    ))],
+                    None => vec![Stmt::Expr(method(
+                        target.clone(),
+                        "sort",
+                        Vec::new(),
+                        sp,
+                    ))],
+                };
+                (
+                    vec![Stmt::Expr(method(
+                        target,
+                        "push",
+                        vec![var(&fin, sp)],
+                        sp,
+                    ))],
+                    None,
+                    None,
+                    post,
+                )
+            }
+            // `reverse_into(target)`: push, then swap ends inward.
+            // The `get` misses cannot fire (both indices are in
+            // bounds by construction) and `set`'s error channel is
+            // discarded for the same reason.
+            "reverse_into" => {
+                let target = c.term_args[0].clone();
+                let l = format!("__hale_rl{}", uid);
+                let r = format!("__hale_rr{}", uid);
+                let a = format!("__hale_ra{}", uid);
+                let b = format!("__hale_rb{}", uid);
+                let or_discard = |inner: Expr| {
+                    Stmt::Expr(Expr::Or {
+                        inner: Box::new(inner),
+                        disposition: OrDisposition::Discard(sp),
+                        span: sp,
+                    })
+                };
+                let swap_body = vec![
+                    get_or_break(&target, &l, &a, "get", sp),
+                    get_or_break(&target, &r, &b, "get", sp),
+                    or_discard(method(
+                        target.clone(),
+                        "set",
+                        vec![var(&l, sp), var(&b, sp)],
+                        sp,
+                    )),
+                    or_discard(method(
+                        target.clone(),
+                        "set",
+                        vec![var(&r, sp), var(&a, sp)],
+                        sp,
+                    )),
+                    assign(
+                        &l,
+                        bin(BinOp::Add, var(&l, sp), int(1, sp), sp),
+                        sp,
+                    ),
+                    assign(
+                        &r,
+                        bin(BinOp::Sub, var(&r, sp), int(1, sp), sp),
+                        sp,
+                    ),
+                ];
+                let post = vec![
+                    let_mut(&l, int(0, sp), sp),
+                    let_mut(
+                        &r,
+                        bin(
+                            BinOp::Sub,
+                            method(target.clone(), "len", Vec::new(), sp),
+                            int(1, sp),
+                            sp,
+                        ),
+                        sp,
+                    ),
+                    Stmt::While {
+                        cond: bin(BinOp::Lt, var(&l, sp), var(&r, sp), sp),
+                        body: Block {
+                            stmts: swap_body,
+                            tail: None,
+                            span: sp,
+                        },
+                        span: sp,
+                    },
+                ];
+                (
+                    vec![Stmt::Expr(method(
+                        target,
+                        "push",
+                        vec![var(&fin, sp)],
+                        sp,
+                    ))],
+                    None,
+                    None,
+                    post,
+                )
+            }
+            // `group_count_into(target, key?)`: one `bump` per
+            // surviving element — the hashmap's increment-or-init
+            // counter primitive. Bare form keys on the element
+            // itself.
+            "group_count_into" => {
+                let target = c.term_args[0].clone();
+                let key = match c.term_args.get(1) {
+                    Some(k) => {
+                        let mut k = k.clone();
+                        subst_expr(&mut k, "it", &fin);
+                        k
+                    }
+                    None => var(&fin, sp),
+                };
+                (
+                    vec![Stmt::Expr(method(
+                        target,
+                        "bump",
+                        vec![key],
+                        sp,
+                    ))],
+                    None,
+                    None,
+                    Vec::new(),
+                )
             }
             // `into(target)` pushes the (mapped) element.
             _ => (
@@ -745,15 +1129,19 @@ fn lower(mut c: Chain, sp: Span, uid: usize) -> Expr {
                 ))],
                 None,
                 None,
+                Vec::new(),
             ),
         };
 
-    let body = apply_stages(&c.stages, &elem0, uid, action, sp);
+    let (stage_inits, body) =
+        apply_stages(&c.stages, &elem0, uid, action, sp);
     let mut stmts = Vec::new();
     if let Some(i) = init {
         stmts.push(i);
     }
+    stmts.extend(stage_inits);
     stmts.extend(build_loop(&c.src, uid, body, c.accessor, sp));
+    stmts.extend(post);
     Expr::Block(Block {
         stmts,
         tail: tail.map(Box::new),
@@ -801,7 +1189,7 @@ fn lower_indexed(
                         // Key expression over the candidate.
                         let kname = format!("__hale_k{}", uid);
                         let mut ke = k.clone();
-                        subst_expr(&mut ke, &kname);
+                        subst_expr(&mut ke, "it", &kname);
                         Expr::Block(Block {
                             stmts: vec![let_val(&kname, e, sp)],
                             tail: Some(Box::new(ke)),
@@ -844,8 +1232,10 @@ fn lower_indexed(
     // idx stays) — one redundant compare per seed keeps the shape to
     // two ifs with no else machinery.
 
-    let body = apply_stages(&c.stages, &elem0, uid, action, sp);
+    let (stage_inits, body) =
+        apply_stages(&c.stages, &elem0, uid, action, sp);
     let mut stmts = vec![let_mut(idx, int(-1, sp), sp)];
+    stmts.extend(stage_inits);
     stmts.extend(build_loop(&c.src, uid, body, c.accessor, sp));
 
     // The element-valued result rides the same accessor the loop did —

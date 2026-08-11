@@ -8,6 +8,59 @@ behavior.
 
 ## Unreleased
 
+### Element chains: the second vocabulary tranche
+
+The remainder of the chain vocabulary recorded open when #380
+shipped, minus stream sources (still future work). Everything fuses
+into the same single loop — or, for the whole-set terminals,
+materializes into caller storage — so the zero-allocation contract is
+unchanged.
+
+New **stages**:
+
+- `take(n)` / `skip(n)` — positional selection. Both count elements
+  arriving at their own position in the chain, so
+  `filter(p).skip(2)` skips the first two *matches*; the two orders
+  of `skip`/`take` are different chains and both are pinned by
+  tests. Limits are evaluated once, before the loop.
+- `enumerate()` — binds `idx`, the 0-based count of elements
+  reaching the stage, in every later stage and the terminal. An
+  explicit opt-in stage rather than an always-bound name, so a
+  chain never captures a user's own `idx` local; a second
+  `enumerate` shadows the first for everything after it. A
+  `min`/`max` key mentioning `idx` is rejected rather than silently
+  miscompared (the best element's count is not recoverable from the
+  element at compare time).
+
+New **terminals**:
+
+- `sum(seed)` — the seed is the accumulator's starting value *and*
+  its typed zero, so `sum(0.0)` sums Float elements and `sum(100)`
+  starts an Int sum at 100. Closes the "Int elements only" gap
+  without literal suffixes, and stays pre-typecheck-safe.
+- `sort_into(target, cmp?)` / `reverse_into(target)` — push the
+  survivors into a caller-owned `@form(vec)`, then reorder it in
+  place (the vec's own `sort()`/`sort_by(cmp)`, or an end-swap
+  loop). The spec's boundary paragraph already said whole-set
+  operations are "terminals that materialize into caller storage";
+  now they exist.
+- `group_count_into(target, key?)` — one hashmap `bump(key)` per
+  survivor (increment-or-init tallying); the bare form keys on the
+  element itself. Accumulates across chains, since `bump` does.
+
+The whole-set terminals are recognized even stage-less
+(`xs.sort_into(sorted)`) — their compound names belong to the
+vocabulary, unlike bare `into`. The recognition gate's it-mention
+walker also learned to see through if/match/block expressions, so a
+conditional key (`group_count_into(t, if it % 2 == 0 { "even" }
+else { "odd" })`) counts as the it-mention it is.
+
+Coverage is pairwise over the interaction classes — every new stage
+against every terminal family, both orders of the order-sensitive
+pairs, `idx` reach into each-blocks and keys, hashmap `.entries`
+sources, counter re-init on re-execution, and the facade-safety
+negatives.
+
 ### Free-fn locus rebinding no longer reclaims live memory
 
 **Critical regression, shipped in v0.16.0** (the GH #402
