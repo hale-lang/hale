@@ -29,8 +29,11 @@ See `spec/decisions.md` F.26 for the rationale.
 
 The manifest lives at the project root — the same directory
 that hosts the top-level `.hl` sources and (after `hale
-fetch`) the `vendor/` directory. It is a TOML file with one
-required section, `[deps]`:
+fetch`) the `vendor/` directory. `hale init [dir]` writes this
+skeleton (plus a hello-world seed, a first `tests/*_test.hl`,
+and a `.gitignore`; strictly non-destructive — existing files
+are kept, only missing ones are filled in; 2026-08-11). It is a
+TOML file with one required section, `[deps]`:
 
 ```toml
 [deps]
