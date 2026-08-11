@@ -8,6 +8,19 @@ behavior.
 
 ## Unreleased
 
+### `std::http::Router.add_fn` — a route can be a bare function
+
+Requested ergonomics: registering a route no longer requires
+declaring a `RouteHandler` locus when there is no state to hold —
+`router.add_fn("GET", "/hello/:name", greet)` takes a plain
+`fn(Context) -> Response`. The fn pointer is stored in the route
+entry itself rather than behind an adapter locus (an adapter
+instantiated inside the register method would dissolve at method
+exit, out from under the entry), so fn routes and locus routes share
+one list and one first-match-wins precedence order, and captures,
+query params, middleware, and the 404 default all behave
+identically. `add` remains the stateful form.
+
 ### A subscriber handler's parameter type is checked against the payload
 
 **Soundness fix**, from a downstream handoff. The spec has always

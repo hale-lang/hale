@@ -699,14 +699,28 @@ interface __StdHttpMiddleware {
     fn after(ctx: std::http::Context, resp: std::http::Response) -> std::http::Response;
 }
 
+// Sentinel for entries registered through `add` (locus handler):
+// stored in the fn slot, never called — `is_fn` gates the branch.
+fn __http_fn_unset(ctx: std::http::Context) -> std::http::Response {
+    return std::http::Response { status: 500, body: "unset fn route" };
+}
+
 // One registered route. `method` stored uppercased; `pattern`
 // as-written; `handler` is the F.20 fat-pointer interface value
-// coerced from the concrete locus at the literal-init site.
+// coerced from the concrete locus at the literal-init site. A
+// route registered with `add_fn` stores a bare fn pointer in
+// `handler_fn` instead (`is_fn` discriminates) — a fn needs no
+// storage locus, so there is nothing whose lifetime could dangle
+// (an adapter locus instantiated inside the register method
+// would dissolve at method exit, out from under the entry). The
+// unused slot holds the sentinel / the router's own not_found.
 /// One registered route (internal storage shape for Router).
 type __StdHttpRouteEntry {
     method: String;
     pattern: String;
     handler: std::http::RouteHandler;
+    handler_fn: fn (std::http::Context) -> std::http::Response;
+    is_fn: Bool;
 }
 
 // Route + middleware storage ("one form per locus" — each vec
@@ -943,7 +957,16 @@ fn __http_run_chain(
         let e = entries.get(j) or raise;
         if e.method == cur.req.method {
             if __http_match_pattern_into(e.pattern, path_only, cur.params) {
-                resp = e.handler.handle(cur);
+                if e.is_fn {
+                    // Hoisted under a __-prefixed name: the stdlib
+                    // merges with user code, and a bare `f(cur)`
+                    // would resolve a user's top-level `fn f` over
+                    // the local fn-pointer.
+                    let __route_fn = e.handler_fn;
+                    resp = __route_fn(cur);
+                } else {
+                    resp = e.handler.handle(cur);
+                }
                 break;
             }
         }
@@ -981,7 +1004,30 @@ locus __StdHttpRouter {
         self.entries.push(__StdHttpRouteEntry {
             method: std::str::upper(method),
             pattern: pattern,
-            handler: h
+            handler: h,
+            handler_fn: __http_fn_unset,
+            is_fn: false
+        });
+    }
+
+    // Register a bare fn as a route — no handler locus needed:
+    // `router.add_fn("GET", "/hello/:name", greet)` where
+    // `fn greet(ctx: std::http::Context) -> std::http::Response`.
+    // Same matching and precedence as `add` (one list, first
+    // match wins in registration order). The interface slot is
+    // filled with the router's own `not_found` instance purely as
+    // ballast — `is_fn` routes dispatch through the fn pointer.
+    fn add_fn(
+        method: String,
+        pattern: String,
+        f: fn (std::http::Context) -> std::http::Response
+    ) {
+        self.entries.push(__StdHttpRouteEntry {
+            method: std::str::upper(method),
+            pattern: pattern,
+            handler: self.not_found,
+            handler_fn: f,
+            is_fn: true
         });
     }
 
