@@ -16,7 +16,7 @@ fn wrapped(ok: Bool) -> Int fallible(DstError) {
 }
 
 fn main() {
-    std::test::assert_eq_int(wrapped(true) or -1, 1, "ok path passes through");
+    std::test::assert_eq_int(wrapped(true) or - 1, 1, "ok path passes through");
 
     // The translated payload carries the SOURCE error's field.
     let mut seen = "";

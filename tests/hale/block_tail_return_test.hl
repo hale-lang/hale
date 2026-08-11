@@ -52,8 +52,8 @@ fn main() {
     std::test::assert_eq_int(double(4), 8, "free-fn tail return");
     std::test::assert_eq_int(pick(true), 1, "explicit return before tail");
     std::test::assert_eq_int(pick(false), 15, "tail after early-return branch");
-    std::test::assert_eq_int(tail_fallible(true) or -1, 42, "fallible ok-path tail");
-    std::test::assert_eq_int(tail_fallible(false) or -1, -1, "fallible fail path unchanged");
+    std::test::assert_eq_int(tail_fallible(true) or - 1, 42, "fallible ok-path tail");
+    std::test::assert_eq_int(tail_fallible(false) or - 1, -1, "fallible fail path unchanged");
 
     let c = Counter { n: 4 };
     std::test::assert_eq_int(c.doubled(), 8, "locus method tail return");
