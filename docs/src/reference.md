@@ -43,6 +43,7 @@ diagnostic's meaning, go there.
 
 | Command | Does |
 |---|---|
+| `hale init [dir]` | bootstrap a project: `hale.toml`, a hello-world seed, a first test, `.gitignore` — non-destructive, fills in only what's missing |
 | `hale run <file/dir>` | compile + run (fast feedback) |
 | `hale build <file/dir>` | compile to a native binary |
 | `hale check` | parse + typecheck only |

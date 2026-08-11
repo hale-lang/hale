@@ -46,6 +46,20 @@ resolve inside the merged program, not as standalone seeds. The LSP
 now recognizes stdlib-cache paths and publishes an empty diagnostic
 set for them (clearing, not skipping, so anything a client already
 showed is removed).
+### `hale init` bootstraps a project
+
+There was no way to scaffold a project — `hale.toml` was hand-written
+from the spec. `hale init [dir]` (default: the current directory) now
+writes the canonical minimal shape: a `[deps]`-only `hale.toml`
+skeleton with the entry syntax in a comment, a hello-world `main.hl`,
+a first `tests/main_test.hl` (in a subdirectory, per the seed model —
+a test file carries its own `fn main`, so beside `main.hl` it would
+collide; it imports the parent seed, the established convention), and
+a `.gitignore` covering the build artifact and `vendor/`. The
+scaffold is fmt-canonical from birth and passes `run`, `test`, and
+`verify` out of the box — all asserted by test. Strictly
+non-destructive: existing files are kept and reported, so `init` is
+also safe for filling gaps in a partially-scaffolded directory.
 
 ### `hale lsp`: go-to-definition on `std::` paths
 
