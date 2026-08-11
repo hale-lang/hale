@@ -105,6 +105,7 @@ version = "0.16.0"
 name = "hale-lsp"
 version = "0.16.0"
 dependencies = [
+ "hale-stdlib",
  "hale-syntax",
  "hale-types",
  "serde_json",

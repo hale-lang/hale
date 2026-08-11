@@ -7,6 +7,15 @@ pub struct Diag {
     pub kind: DiagKind,
     pub span: Span,
     pub message: String,
+    /// Secondary locations (downstream handoff, 2026-08-11): a
+    /// diagnostic whose story spans two places — "duplicate name"
+    /// pointing at the PREVIOUS declaration — carries the other
+    /// span as data instead of `{:?}`-formatting it into the
+    /// message. The renderers (which have the sources and the
+    /// file-base table) turn each entry into `path:line:col`; the
+    /// LSP maps them to `DiagnosticRelatedInformation`, which
+    /// clients render as a clickable second location.
+    pub related: Vec<(Span, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -47,6 +56,7 @@ impl Diag {
             kind: DiagKind::Lex,
             span,
             message: msg.into(),
+            related: Vec::new(),
         }
     }
 
@@ -55,6 +65,7 @@ impl Diag {
             kind: DiagKind::Parse,
             span,
             message: msg.into(),
+            related: Vec::new(),
         }
     }
 
@@ -63,6 +74,7 @@ impl Diag {
             kind: DiagKind::Codegen,
             span,
             message: msg.into(),
+            related: Vec::new(),
         }
     }
 
@@ -71,6 +83,7 @@ impl Diag {
             kind: DiagKind::Type,
             span,
             message: msg.into(),
+            related: Vec::new(),
         }
     }
 
@@ -81,13 +94,30 @@ impl Diag {
             kind: DiagKind::Warn,
             span,
             message: msg.into(),
+            related: Vec::new(),
         }
     }
 
-    /// Offset this diagnostic's span by `delta` bytes (see
-    /// `Span::shifted` / `parse_source_at`).
+    /// Attach a secondary location (see the `related` field doc).
+    pub fn with_related(
+        mut self,
+        span: Span,
+        label: impl Into<String>,
+    ) -> Self {
+        self.related.push((span, label.into()));
+        self
+    }
+
+    /// Offset this diagnostic's spans by `delta` bytes (see
+    /// `Span::shifted` / `parse_source_at`). Related spans move
+    /// with the primary — a diagnostic shifts between coordinate
+    /// spaces whole. (Cross-FILE related spans should be resolved
+    /// from the un-shifted diagnostic instead; see the LSP.)
     pub fn shifted(mut self, delta: u32) -> Self {
         self.span = self.span.shifted(delta);
+        for (rspan, _) in &mut self.related {
+            *rspan = rspan.shifted(delta);
+        }
         self
     }
 
@@ -111,14 +141,22 @@ impl Diag {
 
     pub fn render(&self, source: &str) -> String {
         let (line, col) = self.span.line_col(source);
-        format!(
+        let mut out = format!(
             "{}:{}: {}: {}{}",
             line,
             col,
             self.kind_str(),
             self.message,
             Self::context_snippet(self.span, source, line, col)
-        )
+        );
+        // Related notes, resolved against the same single source.
+        // Multi-file callers use the CLI's file-base-aware helper,
+        // which renders these with a path instead.
+        for (rspan, label) in &self.related {
+            let (rl, rc) = rspan.line_col(source);
+            out.push_str(&format!("\n    note: {} at {}:{}", label, rl, rc));
+        }
+        out
     }
 
     /// Render as `path:line:col: kind: message`, un-shifting the span by

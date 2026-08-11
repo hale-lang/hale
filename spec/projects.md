@@ -450,7 +450,7 @@ End-to-end coverage lives in
 | Surface | Effect |
 |---|---|
 | `hale build --dev` / `HALE_DEV=1` | Latency mode: LLVM O1 pipeline + Less machine codegen instead of the O3/`target-cpu=native` release default. For edit-build-run loops. |
-| `hale check --json` | NDJSON diagnostics on stdout, one object per line (`file`/`line`/`col`/`severity`/`kind`/`message`) — editor/LSP consumption. `hale check` runs in ~10 ms on the largest apps. |
+| `hale check --json` | NDJSON diagnostics on stdout, one object per line (`file`/`line`/`col`/`severity`/`kind`/`message`, plus `related`: an array of `{file, line, col, note}` secondary locations, present only when a diagnostic has them — e.g. a duplicate name's previous declaration; 2026-08-11) — editor/LSP consumption. `hale check` runs in ~10 ms on the largest apps. |
 | `HALE_TIME=1` | Per-phase build wall times on stderr (front-end+codegen, llvm-passes, obj-emit, emit+link). |
 | `--no-warn-unbounded-alloc` | Opts a run out of the default-on memory-bound survey (see verification.md). |
 | `hale check --sealable` | Reports which loci could take `@sealed` and what it would cost: per locus, the sites outside it that read or write its `params`. Empty means sealing is a no-op. The survey reruns the real check against an all-sealed clone rather than approximating the rule, so it cannot disagree with the checker. |
