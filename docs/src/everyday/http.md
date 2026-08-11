@@ -60,7 +60,21 @@ them — because the `Api` locus is alive for the whole run.
 ## Routing
 
 When the `if` ladder in a handler grows past a few routes, hand
-the routing to `std::http::Router`: register patterns, get path
+the routing to `std::http::Router`. The lightest registration is
+a bare function — no handler locus needed:
+
+```hale,fragment
+fn greet(ctx: std::http::Context) -> std::http::Response {
+    let who = std::http::path_param(ctx.params, "name");
+    return std::http::Response { status: 200, body: "hi " + who };
+}
+
+router.add_fn("GET", "/hello/:name", greet);
+```
+
+A locus handler (`add`) buys you state — counters, a database
+child, config params — and both forms share one list and one
+first-match-wins precedence order. Register patterns, get path
 captures and query params extracted, and mount the router as the
 server's handler —
 

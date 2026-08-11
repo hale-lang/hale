@@ -169,3 +169,51 @@ fn router_serves_through_server_over_tcp() {
     let _ = child.wait();
     let _ = std::fs::remove_file(&bin);
 }
+
+/// Downstream request (2026-08-11): a route can be a bare fn —
+/// `router.add_fn("GET", "/x", handler_fn)` — no handler locus.
+/// The fn pointer lives in the route entry itself (an adapter
+/// locus instantiated inside the register method would dissolve at
+/// method exit, out from under the entry), so fn routes and locus
+/// routes share one list and one precedence order.
+#[test]
+fn add_fn_registers_bare_fn_routes() {
+    let src = r#"
+        fn greet(ctx: std::http::Context) -> std::http::Response {
+            let name = std::http::path_param(ctx.params, "name");
+            return std::http::Response { status: 200, body: "hi " + name };
+        }
+        fn ping(ctx: std::http::Context) -> std::http::Response {
+            return std::http::Response { status: 200, body: "pong" };
+        }
+        locus Classic {
+            fn handle(ctx: std::http::Context) -> std::http::Response {
+                return std::http::Response { status: 200, body: "classic" };
+            }
+        }
+        fn req(path: String) -> std::http::Request {
+            return std::http::Request {
+                method: "GET", path: path, version: "HTTP/1.1",
+                headers: "", body: "", conn_fd: -1
+            };
+        }
+        fn main() {
+            let router = std::http::Router { };
+            router.add_fn("GET", "/hello/:name", greet);
+            router.add_fn("GET", "/ping", ping);
+            router.add("GET", "/classic", Classic { });
+
+            let r1 = router.dispatch(req("/hello/ada"));
+            println("r1=", to_string(r1.status), " ", r1.body);
+            println("r2=", router.dispatch(req("/ping")).body);
+            println("r3=", router.dispatch(req("/classic")).body);
+            println("r4=", to_string(router.dispatch(req("/nope")).status));
+        }
+    "#;
+    let (out, st) = build_and_run("add_fn", src);
+    assert!(st.success(), "non-zero: {:?}\n{}", st, out);
+    assert!(out.contains("r1=200 hi ada"), "fn route with capture: {}", out);
+    assert!(out.contains("r2=pong"), "plain fn route: {}", out);
+    assert!(out.contains("r3=classic"), "locus routes coexist: {}", out);
+    assert!(out.contains("r4=404"), "404 default intact: {}", out);
+}
