@@ -760,3 +760,75 @@ fn lsp_v5_formatting_symbols_enforcement() {
     let _ = lsp.child.wait();
     let _ = std::fs::remove_dir_all(&seed);
 }
+
+/// Downstream handoff (2026-08-11): a diagnostic with a secondary
+/// location — duplicate top-level name pointing at the previous
+/// declaration — publishes `relatedInformation`, which clients
+/// render as a clickable second location. Before, the previous
+/// declaration reached editors as a Debug-formatted `Span { .. }`
+/// inside the message text.
+#[test]
+fn lsp_duplicate_name_carries_related_information() {
+    let seed = std::env::temp_dir().join(format!(
+        "hale_lsp_related_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&seed);
+    std::fs::create_dir_all(&seed).expect("mkdir");
+    let file = seed.join("main.hl");
+    let uri = format!("file://{}", file.display());
+    let dup = "type Widget { n: Int; }\ntype Widget { m: Int; }\n\nfn main() { println(\"x\"); }\n";
+    std::fs::write(&file, dup).expect("write seed file");
+
+    let mut lsp = Lsp::start();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "capabilities": {} }
+    }));
+    let _ = lsp.recv();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "initialized", "params": {}
+    }));
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": uri, "languageId": "hale", "version": 1, "text": dup
+        }}
+    }));
+    let open = lsp.recv();
+    let diags =
+        open.pointer("/params/diagnostics").unwrap().as_array().unwrap();
+    let dup_diag = diags
+        .iter()
+        .find(|d| {
+            d["message"]
+                .as_str()
+                .map_or(false, |m| m.contains("duplicate top-level"))
+        })
+        .unwrap_or_else(|| panic!("duplicate diagnostic published: {}", open));
+    assert!(
+        !dup_diag["message"].as_str().unwrap().contains("Span {"),
+        "no Debug span in the editor payload: {}",
+        dup_diag
+    );
+    // The primary points at line 2 (0-based 1); the related entry
+    // points at line 1 (0-based 0) with a clickable location.
+    assert_eq!(dup_diag["range"]["start"]["line"], 1, "{}", dup_diag);
+    let rel = &dup_diag["relatedInformation"][0];
+    assert_eq!(
+        rel["location"]["range"]["start"]["line"], 0,
+        "related points at the previous declaration: {}",
+        dup_diag
+    );
+    assert_eq!(rel["message"], "previous declaration", "{}", dup_diag);
+
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 9, "method": "shutdown", "params": {}
+    }));
+    let _ = lsp.recv();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "exit", "params": {}
+    }));
+    let _ = lsp.child.wait();
+    let _ = std::fs::remove_dir_all(&seed);
+}

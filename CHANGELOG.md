@@ -8,6 +8,40 @@ behavior.
 
 ## Unreleased
 
+### Diagnostics carry secondary locations, and the pre-pass stops eating them
+
+Two defects from a downstream editor-tooling handoff, both worst on
+the duplicate-top-level-name error — the easiest error to hit under
+the per-directory seed model (a second file with its own `fn main()`).
+
+**Structured related spans.** The duplicate-name diagnostic rendered
+the previous declaration by `{:?}`-formatting a `Span` into the
+message (`… at Span { start: Pos(5), end: Pos(11) }`) — visible in
+every editor via the LSP. `Diag` now carries
+`related: Vec<(Span, String)>`; the site that raises the error has no
+source text, so the renderers — which have the sources and the
+file-base table — resolve each entry: the text renderer emits
+`note: previous declaration at path:line:col` (cross-file correct),
+`--json` adds a `related` array (absent when empty, so existing
+consumers see an unchanged shape), and `hale lsp` publishes
+`DiagnosticRelatedInformation`, which clients render as a clickable
+second location. The two other `{:?}`-span leaks found by the sweep
+(duplicate topic binding, duplicate capacity slot) got the same
+treatment, and the fn/const duplicate path — which had no previous
+location at all — now recovers it from the symbol table.
+
+**Pre-pass diagnostics route through normal reporting.** Resolver
+diagnostics raised inside the `apply_sync_inference` pre-pass were
+printed through a bare `render()` and an early bail: no filename,
+`--json` silently ignored (empty stdout with exit 1 — a CI gate saw a
+failed build with zero explaining diagnostics), the wrong stream, and
+multi-file positions resolved against the alphabetically-first file's
+text (coordinates in neither file). The pre-pass now discards its
+return value and lets `check_bundle` re-raise through the normal
+path — exactly what `hale lsp` always did, which is why the LSP
+attributed the same diagnostic correctly while the CLI did not. The
+`run`/`build` twins of the bail are gone too (they double-reported).
+
 ### An intra-subtree publish is no longer invisible to observation
 
 Downstream handoff (P23). `desugar_intra_locus_topics` rewrites a

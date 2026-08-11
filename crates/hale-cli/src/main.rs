@@ -2284,6 +2284,25 @@ fn parse_with_imports(
 /// `file_bases`, so the output reads `path:line:col` against that file's
 /// own source instead of an arbitrary file. Falls back to the entry
 /// source if the span isn't in any known file range.
+/// Resolve a merged-bundle span to `(path, line, col)` via the
+/// file-base table. Shared by the text and JSON renderers for both
+/// primary and related spans.
+fn locate_span(
+    span: hale_syntax::Span,
+    file_bases: &[(u32, PathBuf, u32)],
+    sources: &BTreeMap<PathBuf, String>,
+) -> Option<(String, usize, usize)> {
+    let off = span.start.as_usize() as u32;
+    for (base, path, len) in file_bases {
+        if off >= *base && off < base.saturating_add(*len) {
+            let src = sources.get(path)?;
+            let (l, c) = span.shifted(base.wrapping_neg()).line_col(src);
+            return Some((path.display().to_string(), l, c));
+        }
+    }
+    None
+}
+
 fn render_located(
     d: &hale_syntax::Diag,
     file_bases: &[(u32, PathBuf, u32)],
@@ -2293,7 +2312,22 @@ fn render_located(
     for (base, path, len) in file_bases {
         if off >= *base && off < base.saturating_add(*len) {
             if let Some(src) = sources.get(path) {
-                return d.render_located(&path.display().to_string(), src, *base);
+                let mut out =
+                    d.render_located(&path.display().to_string(), src, *base);
+                // Secondary locations, each resolved through the
+                // file table — a related span may live in a
+                // DIFFERENT file than the primary.
+                for (rspan, label) in &d.related {
+                    if let Some((rf, rl, rc)) =
+                        locate_span(*rspan, file_bases, sources)
+                    {
+                        out.push_str(&format!(
+                            "\n    note: {} at {}:{}:{}",
+                            label, rf, rl, rc
+                        ));
+                    }
+                }
+                return out;
             }
         }
     }
@@ -3696,14 +3730,16 @@ fn run_check_impl_labelled(
         // `T::from_json` before typecheck, so the generated parser is
         // checked and callers must address its `fallible(JsonError)`.
         hale_syntax::json_gen::generate_json_parsers(prog);
-        let pre_diags = hale_types::apply_sync_inference(prog);
-        if !pre_diags.is_empty() {
-            let any_source = sources.values().next().map(|s| s.as_str()).unwrap_or("");
-            for d in &pre_diags {
-                eprintln!("{}", d.render(any_source));
-            }
-            return 1;
-        }
+        // Downstream handoff (2026-08-11): the pre-pass's resolver
+        // diagnostics are DISCARDED, not printed-and-bailed. They
+        // are re-raised by `check_bundle` below through the normal
+        // reporting path — which honours `--json`, names the file,
+        // and resolves multi-file spans; the bare `render` bail here
+        // did none of those (empty NDJSON on a duplicate `main`, a
+        // position from the wrong file). `hale lsp` has always done
+        // exactly this — it is why the LSP attributed the same
+        // diagnostic correctly while the CLI did not.
+        let _ = hale_types::apply_sync_inference(prog);
     }
 
     let bundle_programs: BTreeMap<String, &Program> = programs
@@ -4300,14 +4336,41 @@ fn render_diag_json(
         }
     }
     let severity = if d.is_error() { "error" } else { "warning" };
+    // Secondary locations ride along as a `related` array (absent
+    // when empty, so existing consumers see an unchanged shape).
+    let related = if d.related.is_empty() {
+        String::new()
+    } else {
+        let entries: Vec<String> = d
+            .related
+            .iter()
+            .filter_map(|(rspan, label)| {
+                let (rf, rl, rc) =
+                    locate_span(*rspan, file_bases, sources)?;
+                Some(format!(
+                    "{{\"file\":\"{}\",\"line\":{},\"col\":{},\"note\":\"{}\"}}",
+                    esc(&rf),
+                    rl,
+                    rc,
+                    esc(label)
+                ))
+            })
+            .collect();
+        if entries.is_empty() {
+            String::new()
+        } else {
+            format!(",\"related\":[{}]", entries.join(","))
+        }
+    };
     format!(
-        "{{\"file\":\"{}\",\"line\":{},\"col\":{},\"severity\":\"{}\",\"kind\":\"{}\",\"message\":\"{}\"}}",
+        "{{\"file\":\"{}\",\"line\":{},\"col\":{},\"severity\":\"{}\",\"kind\":\"{}\",\"message\":\"{}\"{}}}",
         esc(&file),
         line,
         col,
         severity,
         esc(d.kind_str()),
-        esc(&d.message)
+        esc(&d.message),
+        related
     )
 }
 
@@ -4781,13 +4844,10 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
     // agree.
     hale_codegen::mangle::apply_qualified_path_renames(&mut program, &renames);
     hale_syntax::json_gen::generate_json_parsers(&mut program);
-    let pre_diags = hale_types::apply_sync_inference(&mut program);
-    if !pre_diags.is_empty() {
-        for d in &pre_diags {
-            eprintln!("{}", render_located(d, &file_bases, &path_sources));
-        }
-        return ExitCode::from(1);
-    }
+    // Pre-pass diags are re-raised by `check_bundle_opts` below
+    // through the normal rendering — bailing here double-reported
+    // (see the `check` site for the full story).
+    let _ = hale_types::apply_sync_inference(&mut program);
 
     let bundle_programs: BTreeMap<String, &Program> =
         std::iter::once((target.display().to_string(), &program)).collect();
@@ -4999,13 +5059,10 @@ fn run_build(target: &Path) -> ExitCode {
     }
 
     hale_syntax::json_gen::generate_json_parsers(&mut program);
-    let pre_diags = hale_types::apply_sync_inference(&mut program);
-    if !pre_diags.is_empty() {
-        for d in &pre_diags {
-            eprintln!("{}", render_located(d, &file_bases, &sources));
-        }
-        return ExitCode::from(1);
-    }
+    // Pre-pass diags are re-raised by `check_bundle_opts` below
+    // through the normal rendering — bailing here double-reported
+    // (see the `check` site for the full story).
+    let _ = hale_types::apply_sync_inference(&mut program);
 
     // Typecheck before lowering. Render diagnostics against the
     // entry-file's source — diagnostic spans currently point into

@@ -408,10 +408,32 @@ fn check_and_publish(
                 if off >= *base && off < base.saturating_add(*len) {
                     if let Some(src) = sources.get(path) {
                         let local = d.clone().shifted(base.wrapping_neg());
+                        let mut v = diag_to_lsp(&local, src);
+                        // Related spans (downstream handoff,
+                        // 2026-08-11) resolve from the UN-shifted
+                        // diagnostic — each may live in a different
+                        // file than the primary — and publish as
+                        // `relatedInformation`, which clients render
+                        // as a clickable second location.
+                        let rel: Vec<Value> = d
+                            .related
+                            .iter()
+                            .filter_map(|(rspan, label)| {
+                                related_to_lsp(
+                                    *rspan,
+                                    label,
+                                    &file_bases,
+                                    &sources,
+                                )
+                            })
+                            .collect();
+                        if !rel.is_empty() {
+                            v["relatedInformation"] = json!(rel);
+                        }
                         per_file
                             .entry(path.clone())
                             .or_default()
-                            .push(diag_to_lsp(&local, src));
+                            .push(v);
                     }
                     break;
                 }
@@ -453,6 +475,35 @@ fn overlay_or_disk(
         }
     }
     std::fs::read_to_string(path).ok()
+}
+
+/// A merged-coordinate related span → LSP `DiagnosticRelatedInformation`,
+/// resolved to its own file through the file-base table.
+fn related_to_lsp(
+    rspan: hale_syntax::Span,
+    label: &str,
+    file_bases: &[(u32, PathBuf, u32)],
+    sources: &BTreeMap<PathBuf, String>,
+) -> Option<Value> {
+    let off = rspan.start.as_usize() as u32;
+    let (base, path, _) = file_bases
+        .iter()
+        .find(|(base, _, len)| off >= *base && off < base.saturating_add(*len))?;
+    let src = sources.get(path)?;
+    let local = rspan.shifted(base.wrapping_neg());
+    let (sl, sc) = offset_to_lsp_pos(src, local.start.as_usize());
+    let (el, ec) = offset_to_lsp_pos(src, local.end.as_usize());
+    let (el, ec) = if (el, ec) <= (sl, sc) { (sl, sc + 1) } else { (el, ec) };
+    Some(json!({
+        "location": {
+            "uri": path_to_uri(path),
+            "range": {
+                "start": { "line": sl, "character": sc },
+                "end":   { "line": el, "character": ec }
+            }
+        },
+        "message": label
+    }))
 }
 
 /// A file-local Diag → LSP diagnostic object with UTF-16 positions.

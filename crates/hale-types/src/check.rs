@@ -4217,14 +4217,16 @@ fn check_main_and_bindings(
                             }
                             // Duplicate topic across all bindings
                             if let Some(prev) = bound.get(&entry.topic.name) {
-                                diags.push(Diag::ty(
-                                    entry.topic.span,
-                                    format!(
-                                        "topic `{}` already bound (previous \
-                                         binding at {:?})",
-                                        entry.topic.name, prev
-                                    ),
-                                ));
+                                diags.push(
+                                    Diag::ty(
+                                        entry.topic.span,
+                                        format!(
+                                            "topic `{}` already bound",
+                                            entry.topic.name
+                                        ),
+                                    )
+                                    .with_related(*prev, "previous binding"),
+                                );
                             } else {
                                 bound.insert(entry.topic.name.clone(), entry.topic.span);
                             }
@@ -8551,14 +8553,16 @@ impl<'a> Checker<'a> {
                         slot.name.name.clone(),
                         slot.name.span,
                     ) {
-                        self.diags.push(Diag::ty(
-                            slot.name.span,
-                            format!(
-                                "duplicate capacity slot name `{}` \
-                                 (first declared at {:?})",
-                                slot.name.name, prev
-                            ),
-                        ));
+                        self.diags.push(
+                            Diag::ty(
+                                slot.name.span,
+                                format!(
+                                    "duplicate capacity slot name `{}`",
+                                    slot.name.name
+                                ),
+                            )
+                            .with_related(prev, "first declared here"),
+                        );
                     }
                     let elem_ty = resolve_type_expr(&slot.elem_ty, self.known);
                     let kind_word = match slot.kind {

@@ -296,13 +296,20 @@ fn insert_name(
     diags: &mut Vec<Diag>,
 ) {
     if let Some(prev) = known.get(&ident.name) {
-        diags.push(Diag::ty(
-            ident.span,
-            format!(
-                "duplicate top-level name `{}` (previous declaration at {:?})",
-                ident.name, prev
-            ),
-        ));
+        // Downstream handoff (2026-08-11): the previous declaration
+        // rides as a RELATED span, not a `{:?}`-formatted Span in
+        // the message — this fn has no source text, but the
+        // renderers (and the LSP's relatedInformation) do.
+        diags.push(
+            Diag::ty(
+                ident.span,
+                format!(
+                    "duplicate top-level name `{}`",
+                    ident.name
+                ),
+            )
+            .with_related(*prev, "previous declaration"),
+        );
         return;
     }
     known.insert(ident.name.clone(), ident.span);
@@ -1252,14 +1259,17 @@ fn register_symbol(
     span: Span,
     diags: &mut Vec<Diag>,
 ) {
-    if scope.symbols.contains_key(name) {
+    if let Some(prev) = scope.symbols.get(name) {
         // Duplicate already reported by collect_type_names for
         // type-like names; fns/consts get caught here.
         if let TopSymbol::Fn(_) | TopSymbol::Const(_) = &sym {
-            diags.push(Diag::ty(
-                span,
-                format!("duplicate top-level name `{}`", name),
-            ));
+            diags.push(
+                Diag::ty(
+                    span,
+                    format!("duplicate top-level name `{}`", name),
+                )
+                .with_related(prev.span(), "previous declaration"),
+            );
         }
         return;
     }
