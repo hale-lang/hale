@@ -695,6 +695,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     if diverged {
                         None
                     } else {
+                        // Downstream handoff: a `Concrete { }`
+                        // substitute for an interface-typed success
+                        // coerces to the fat pointer — the same
+                        // LocusRef→Interface rule arg-position and
+                        // let-ascription sites already apply. The
+                        // `@form`-synthesized fallible methods (e.g.
+                        // vec `get`) reach this comparison with the
+                        // uncoerced LocusRef, so coerce before it.
+                        let (sub_v, sub_ty) = if let (
+                            Some(v),
+                            Some(CodegenTy::LocusRef(l)),
+                            Some(CodegenTy::Interface(iface)),
+                        ) =
+                            (&sub_v, &sub_ty, &call.success_ty)
+                        {
+                            let fat = self.coerce_to_interface(
+                                v.into_pointer_value(),
+                                l,
+                                iface,
+                            )?;
+                            (Some(fat.into()), call.success_ty.clone())
+                        } else {
+                            (sub_v, sub_ty)
+                        };
                         if sub_ty != call.success_ty {
                             return Err(CodegenError::Unsupported(format!(
                                 "`or` substitute type mismatch: expected \
@@ -1932,7 +1956,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     pub(crate) fn lower_or_fail(
         &mut self,
         payload: &Expr,
-        _call: &FallibleCallResult<'ctx>,
+        call: &FallibleCallResult<'ctx>,
         scope: &Scope<'ctx>,
     ) -> Result<(), CodegenError> {
         let enclosing = self.current_user_fn_fallible.clone().ok_or_else(|| {
@@ -1942,6 +1966,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                  `or <fallback>` to substitute a value)".into(),
             )
         })?;
+
+        // Downstream handoff: `err` is bound in the payload the
+        // same way the substitute RHS binds it — the inner call's
+        // out_err_slot — so an inline translation
+        // `src() or fail DstError { kind: err.kind }` reads the
+        // incoming payload without a per-edge `wrap_x(err)` helper.
+        let mut fail_scope = Scope {
+            locals: scope.locals.clone(),
+        };
+        fail_scope.locals.insert(
+            "err".to_string(),
+            (call.out_err_slot, call.payload_ty.clone()),
+        );
+        let scope = &fail_scope;
 
         // m67-style rewrite: bare-name struct literals in fail
         // position resolve against the declared payload type,

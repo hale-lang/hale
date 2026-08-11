@@ -61,7 +61,12 @@ some_unit_call()       or discard;            // ignore (unit result only)
   share one recovery policy.
 - **`or fail <payload>`** — fail with a *new* error of your own
   type, instead of forwarding the inner one. Use it so a library
-  doesn't leak a stdlib error type through its own surface.
+  doesn't leak a stdlib error type through its own surface. The
+  payload sees `err` bound to the inner error, so a translation
+  can carry fields across:
+  ```hale,fragment
+  let n = std::str::parse_int(s) or fail AppErr { msg: err.kind };
+  ```
 - **`or discard`** — throw the error away. Only allowed when the
   successful result is `()` (nothing to substitute). The compiler
   rejects `or discard` on a value-bearing call and suggests

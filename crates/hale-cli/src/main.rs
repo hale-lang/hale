@@ -2385,9 +2385,15 @@ fn collect_checkable(
     let own: std::collections::BTreeSet<PathBuf> =
         files.iter().filter_map(|f| f.canonicalize().ok()).collect();
 
-    // Nothing imported: the old behaviour, exactly.
+    // A single file with no imports: the old behaviour, exactly.
+    // A MULTI-file seed merges below even without imports —
+    // downstream handoff: the per-file programs sent each file
+    // through `apply_sync_inference`'s single-program resolver
+    // pass alone, so a `topic` declared in one file and
+    // subscribed from a sibling reported "unknown topic" under
+    // `check` while `build` (which merges the seed) resolved it.
     let has_imports = programs.values().any(|p| !p.imports.is_empty());
-    if !has_imports {
+    if !has_imports && programs.len() <= 1 {
         return Ok((programs, sources, file_bases, Vec::new(), own));
     }
 
@@ -4240,10 +4246,13 @@ fn run_check_impl_labelled(
         }
     }
     if !json_mode {
+        // Count the target's own files, not `programs` entries — a
+        // multi-file seed merges into one program before checking.
+        let n_files = own_files.len().max(programs.len());
         if gate_warnings {
-            eprintln!("verified: {} file(s), 0 findings", programs.len());
+            eprintln!("verified: {} file(s), 0 findings", n_files);
         } else {
-            eprintln!("ok: {} file(s) typechecked", programs.len());
+            eprintln!("ok: {} file(s) typechecked", n_files);
         }
     }
     0

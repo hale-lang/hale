@@ -1,0 +1,22 @@
+// `-> ()` is a no-op unit annotation everywhere a return type may
+// be written (downstream handoff, 2026-08-11: a NON-fallible locus
+// method with `-> ()` hit "tuple type must have at least 2
+// elements; got 0" while the fallible spelling was accepted).
+
+type E { kind: String; }
+
+locus Counter {
+    params { n: Int; }
+    fn bump() -> () { self.n = self.n + 1; }
+    fn bump_f() -> () fallible(E) { self.n = self.n + 1; }
+}
+
+fn free_unit(c: Counter) -> () { c.bump(); }
+
+fn main() {
+    let c = Counter { n: 0 };
+    c.bump();
+    c.bump_f() or discard;
+    free_unit(c);
+    std::test::assert_eq_int(c.n, 3, "all three unit-annotated surfaces ran");
+}

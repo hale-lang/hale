@@ -55,10 +55,18 @@ conversion. Phase 2c. See F.23 in
 A `{ ... }` block whose last item is an expression *without*
 a trailing `;` carries that expression as its **value**. In
 expression position (let-RHS, fn-call argument, if-arm body)
-the value is consumed; in statement position (function body,
-loop body, `Stmt::If` / `Stmt::Match` block) the trailing
-expression is evaluated for side effects and the value is
-discarded — semantically equivalent to having added the `;`.
+the value is consumed; in statement position (loop body,
+`Stmt::If` / `Stmt::Match` block) the trailing expression is
+evaluated for side effects and the value is discarded —
+semantically equivalent to having added the `;`.
+
+A **fn-shaped body** (free fn, locus method, mode) with a
+declared return type treats its trailing expression as an
+implicit `return`: `fn double(n: Int) -> Int { let d = n * 2;
+d }` returns `d` (2026-08-11 — previously the typechecker
+accepted this form and codegen rejected it as a fall-through).
+A body with *no* declared return type keeps statement-position
+semantics: the tail is evaluated for side effects.
 
 `if cond { ... } else { ... }` is dual-position:
 
@@ -2975,7 +2983,11 @@ non-error value, that value is the expression's value
   instead of forwarding the inner call's payload verbatim.
   Lets a caller translate one error shape into another
   inline (`std::str::parse_int(s) or fail AppErr { msg: "bad
-  number" }`) rather than bouncing through a helper fn. Same
+  number" }`) rather than bouncing through a helper fn. The
+  payload expression sees `err` bound to the inner call's
+  error value, exactly as a substitute RHS does (2026-08-11),
+  so a field-carrying translation is written inline:
+  `src() or fail DstError { kind: err.kind }`. Same
   divergence rule: chain value type collapses to the inner
   success type. Typechecker rejects outside a fallible fn
   body with a hint to use `or raise` or `or <fallback>`.
