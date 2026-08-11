@@ -925,3 +925,67 @@ fn lsp_definition_resolves_std_paths_into_materialized_stdlib() {
     let _ = lsp.child.wait();
     let _ = std::fs::remove_dir_all(&seed);
 }
+
+/// A file inside the materialized stdlib cache
+/// (`…/hale/stdlib-<version>/…`) is a definition-jump target, not
+/// a seed: analyzed standalone it would spray spurious errors over
+/// correct stdlib code (mangled declarations and path-call
+/// primitives only resolve in the merged program). The LSP
+/// publishes an EMPTY diagnostic set for such files.
+#[test]
+fn lsp_stdlib_cache_files_get_no_diagnostics() {
+    let dir = std::env::temp_dir()
+        .join(format!("hale_lsp_cachedq_{}", std::process::id()))
+        .join("hale")
+        .join("stdlib-0.0.0-test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let file = dir.join("core.hl");
+    // Standalone-invalid content of the kind real stdlib files
+    // carry (path-call primitive references, mangled names).
+    let text = "fn __StdProbe(n: Int) -> Int {\n    return std::__nonexistent::path(n);\n}\n";
+    std::fs::write(&file, text).expect("write");
+    let uri = format!("file://{}", file.display());
+
+    let mut lsp = Lsp::start();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "capabilities": {} }
+    }));
+    let _ = lsp.recv();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "initialized", "params": {}
+    }));
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": uri, "languageId": "hale", "version": 1, "text": text
+        }}
+    }));
+    let open = lsp.recv();
+    assert_eq!(
+        open.get("method").and_then(|m| m.as_str()),
+        Some("textDocument/publishDiagnostics"),
+        "{}",
+        open
+    );
+    assert_eq!(
+        open.pointer("/params/diagnostics")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .len(),
+        0,
+        "stdlib cache files publish empty diagnostics: {}",
+        open
+    );
+
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 9, "method": "shutdown", "params": {}
+    }));
+    let _ = lsp.recv();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "exit", "params": {}
+    }));
+    let _ = lsp.child.wait();
+}

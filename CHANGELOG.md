@@ -8,6 +8,45 @@ behavior.
 
 ## Unreleased
 
+### A subscriber handler's parameter type is checked against the payload
+
+**Soundness fix**, from a downstream handoff. The spec has always
+said a subscriber's handler signature must match the topic's payload
+exactly (semantics § type-check rules, rule 1) — but nothing enforced
+it. Any parameter type was accepted, and the published value was
+reinterpreted field-by-field at the handler: a `String` field read
+through an `Int` parameter printed the string's **heap pointer** —
+a live, ASLR-moving address obtained from safe code, with `check`
+and `verify` both green. Sharper still, the string-subject `of type`
+conflict diagnostic already modelled this exact hazard and its
+advice steered users toward the unchecked `topic` construct.
+
+The subscribe-validation loop now compares the handler's parameter
+against the subject's payload for **both** subject forms (declared
+topics and string subjects with `of type` — the latter was only
+checked cross-site, not at the handler boundary), enforces
+one-parameter arity, accepts `Drain<T>` batch handlers by their
+element type, and leaves `Unknown` payloads (cross-seed topics,
+stdlib paths) permissive. The natural mistake that led to the report
+— annotating the parameter with the **topic** name
+(`fn on_hello(msg: Hello)`) — gets its own message naming the
+payload type to use; it previously survived to codegen and died as
+`unknown type name`, mangled and ungreppable across a seed boundary.
+Reported at the parameter's own span: the caret is on the thing to
+change. Verified against the full downstream corpus (pond, native
+suites) with zero false positives.
+
+### `hale lsp` follow-ups: stdlib-cache files stay diagnostic-free
+
+The materialized stdlib cache from the go-to-definition feature had
+a sharp edge (same handoff, reported live): jumping into
+`~/.cache/hale/stdlib-<version>/` and opening the file sprayed
+spurious errors over correct stdlib code — the per-domain files only
+resolve inside the merged program, not as standalone seeds. The LSP
+now recognizes stdlib-cache paths and publishes an empty diagnostic
+set for them (clearing, not skipping, so anything a client already
+showed is removed).
+
 ### `hale lsp`: go-to-definition on `std::` paths
 
 Downstream handoff. `textDocument/definition` on a `std::` path

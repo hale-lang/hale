@@ -6584,6 +6584,118 @@ impl<'a> Checker<'a> {
                         ),
                     ));
                 }
+                // Downstream handoff (2026-08-11), SOUNDNESS: the
+                // handler's parameter type was never compared
+                // against the subject's payload — any type was
+                // accepted, and the published value reinterpreted
+                // field-by-field at the handler (a String field
+                // read through an Int parameter surfaced its heap
+                // pointer, from safe code, with both gates green).
+                // The string-subject `of type` conflict check
+                // already models this hazard cross-site; this is
+                // the same comparison at the handler boundary,
+                // covering BOTH subject forms. `Ty::Unknown` on
+                // either side stays permissive — cross-seed topics,
+                // stdlib paths, and `Drain<T>` batch handlers all
+                // resolve Unknown here by design.
+                if !matches!(sub.payload, Ty::Unknown) {
+                    match handler_fn.params.as_slice() {
+                        [p] => {
+                            // A `Drain<T>` batch handler receives the
+                            // same payload per element — compare T.
+                            let (payload_te, is_drain) = match &p.ty {
+                                TypeExpr::Named {
+                                    path, generic_args, ..
+                                } if path.segments.len() == 1
+                                    && path.segments[0].name == "Drain"
+                                    && generic_args.len() == 1 =>
+                                {
+                                    (&generic_args[0], true)
+                                }
+                                other => (other, false),
+                            };
+                            let got = crate::resolve::resolve_type_expr(
+                                payload_te, self.known,
+                            );
+                            let got_display = if is_drain {
+                                format!("Drain<{}>", got.display())
+                            } else {
+                                got.display()
+                            };
+                            if matches!(got, Ty::Unknown) {
+                                // The mistake that led here: the
+                                // TOPIC name used as the parameter
+                                // type (`subscribe Hello as on_h` +
+                                // `fn on_h(msg: Hello)`). Un-checked
+                                // it survived to codegen as an
+                                // `unknown type name` — mangled and
+                                // ungreppable across a seed boundary.
+                                if let TypeExpr::Named {
+                                    path,
+                                    generic_args,
+                                    ..
+                                } = payload_te
+                                {
+                                    if generic_args.is_empty()
+                                        && path.segments.len() == 1
+                                        && matches!(
+                                            self.top.lookup(
+                                                &path.segments[0].name
+                                            ),
+                                            Some(TopSymbol::Topic(_))
+                                        )
+                                    {
+                                        self.diags.push(Diag::ty(
+                                            p.ty.span(),
+                                            format!(
+                                                "bus subscribe `{}` handler \
+                                                 `{}`: `{}` is the topic, \
+                                                 not a type — the handler \
+                                                 receives the topic's \
+                                                 payload; declare the \
+                                                 parameter as `{}`",
+                                                sub.subject,
+                                                sub.handler,
+                                                path.segments[0].name,
+                                                sub.payload.display(),
+                                            ),
+                                        ));
+                                    }
+                                }
+                            } else if got != sub.payload {
+                                self.diags.push(Diag::ty(
+                                    p.ty.span(),
+                                    format!(
+                                        "bus subscribe `{}` handler `{}` \
+                                         takes `{}`, but the subject \
+                                         carries payload `{}` — the \
+                                         mismatch would reinterpret the \
+                                         payload's bytes as the wrong \
+                                         type at runtime",
+                                        sub.subject,
+                                        sub.handler,
+                                        got_display,
+                                        sub.payload.display(),
+                                    ),
+                                ));
+                            }
+                        }
+                        params => {
+                            self.diags.push(Diag::ty(
+                                handler_fn.name.span,
+                                format!(
+                                    "bus subscribe `{}` handler `{}` must \
+                                     take exactly one parameter (the \
+                                     payload `{}`), but takes {}",
+                                    sub.subject,
+                                    sub.handler,
+                                    sub.payload.display(),
+                                    params.len(),
+                                ),
+                            ));
+                        }
+                    }
+                }
             }
         }
 

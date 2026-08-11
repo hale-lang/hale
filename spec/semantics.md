@@ -911,6 +911,17 @@ Type-check rules:
 
 1. Every subscriber's handler signature must match `Topic.payload`
    exactly — a static error cites both sites if they diverge.
+   (Enforced 2026-08-11 — downstream handoff; this rule was
+   written but never implemented, and the reinterpreted payload
+   surfaced a String field's heap pointer through an Int
+   parameter from safe code. The check covers both subject forms
+   — declared topics and string subjects with `of type` — plus
+   arity, accepts `Drain<T>` batch handlers by their element
+   type, and names the topic-as-parameter-type mistake
+   (`fn on_h(msg: Hello)` where `Hello` is the topic)
+   specifically. Payloads that resolve `Unknown` — cross-seed
+   topics, stdlib paths — stay permissive by the milestone-2
+   rule.)
 2. The send-expression's type at a topic-ref `<-` site must match
    `Topic.payload`.
 3. The `of type T` clause is forbidden on topic-ref subscribe /

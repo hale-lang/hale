@@ -143,3 +143,51 @@ fn ordinary_json_shape_is_unchanged() {
     assert!(v["file"].as_str().unwrap().ends_with("a.hl"));
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// Downstream handoff (2026-08-11), soundness follow-through: the
+/// handler/payload mismatch must refuse to BUILD, not just fail
+/// `check` — before the fix it built and printed a live heap
+/// address from safe code.
+#[test]
+fn payload_mismatch_refuses_to_build() {
+    let d = seed_dir("buspay");
+    std::fs::write(
+        d.join("main.hl"),
+        r#"
+        type Greeting { text: String = "hello"; n: Int = 42; }
+        type Other { a: Int = 0; b: Int = 0; }
+        topic Hello { payload: Greeting; subject: "hello"; }
+        locus Pub {
+            bus { publish Hello; }
+            birth() { Hello <- Greeting { text: "P", n: 7 }; }
+        }
+        locus Sub {
+            bus { subscribe Hello as on_hello; }
+            fn on_hello(msg: Other) { println("a=", msg.a); }
+        }
+        fn main() { Sub { }; Pub { }; }
+        "#,
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .arg("build")
+        .arg(&d)
+        .output()
+        .expect("run hale build");
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out.status.success(),
+        "the reinterpreting program must not build: {}",
+        all
+    );
+    assert!(
+        all.contains("carries payload `Greeting`"),
+        "the refusal names the mismatch: {}",
+        all
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
