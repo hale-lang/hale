@@ -1989,7 +1989,7 @@ fn references(
 fn placement_spec_str(e: &hale_syntax::ast::PlacementEntry) -> String {
     use hale_syntax::ast::PlacementSpec;
     let mut out = match &e.spec {
-        PlacementSpec::Cooperative { pool } => match pool {
+        PlacementSpec::Cooperative { pool, .. } => match pool {
             Some(p) => format!("cooperative(pool = {})", p.name),
             None => "cooperative(pool = main)".to_string(),
         },

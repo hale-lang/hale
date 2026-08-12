@@ -517,7 +517,7 @@ mod tests {
                             if let LocusMember::Placement(pb) = m {
                                 for entry in &pb.entries {
                                     let pool = match &entry.spec {
-                                        hale_syntax::ast::PlacementSpec::Cooperative { pool } => {
+                                        hale_syntax::ast::PlacementSpec::Cooperative { pool, .. } => {
                                             let name = pool
                                                 .as_ref()
                                                 .map(|p| p.name.clone())

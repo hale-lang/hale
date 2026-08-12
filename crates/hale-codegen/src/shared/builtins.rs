@@ -1638,6 +1638,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // F.31 Phase 4: cooperative-pool worker surface.
         // declare ptr  @lotus_coop_pool_register(ptr name)
         // declare ptr  @lotus_coop_pool_lookup(ptr name)
+        // Pool affinity (2026-08-12): stash a core set on a pool
+        // before its worker spawns.
+        // declare void @lotus_coop_pool_set_affinity(ptr pool, ptr cores, i32 count)
+        self.module.add_function(
+            "lotus_coop_pool_set_affinity",
+            self.context.void_type().fn_type(
+                &[ptr_t.into(), ptr_t.into(), self.context.i32_type().into()],
+                false,
+            ),
+            None,
+        );
         // declare void @lotus_coop_pool_start_all()
         // declare void @lotus_coop_pool_shutdown_all()
         // declare void @lotus_coop_pool_destroy_all()

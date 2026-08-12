@@ -3858,43 +3858,93 @@ impl Parser {
         self.bump();
         match head.as_str() {
             "cooperative" => {
-                let pool = if matches!(self.peek(), TokenKind::LParen) {
+                // `cooperative` takes a comma-separated attribute
+                // list: an optional `pool = NAME` and (2026-08-12)
+                // at most one affinity (`core`/`cores`/`node`/`l3`)
+                // binding the pool's worker THREAD to a core set —
+                // the same forms `pinned(...)` takes. Bare
+                // `cooperative` is pool `main`, no mask.
+                let mut pool: Option<Ident> = None;
+                let mut affinity = PinAffinity::Any;
+                let mut affinity_set = false;
+                if matches!(self.peek(), TokenKind::LParen) {
                     self.bump();
-                    let kw_tok = self.peek_token().clone();
-                    let kw = match &kw_tok.kind {
-                        TokenKind::Ident(s) => s.clone(),
-                        other => {
-                            return Err(Diag::parse(
-                                kw_tok.span,
-                                format!(
-                                    "expected `pool` inside `cooperative(...)`, got {:?}",
-                                    other
-                                ),
-                            ));
-                        }
-                    };
-                    if kw != "pool" {
-                        return Err(Diag::parse(
-                            kw_tok.span,
-                            format!(
-                                "unknown cooperative attribute `{}`; only `pool` \
-                                 is recognized",
-                                kw
-                            ),
-                        ));
-                    }
-                    self.bump();
-                    self.expect(TokenKind::Eq, "expected `=` after `pool`")?;
-                    let name = self.expect_ident("pool name")?;
-                    // Topology Phase 1c: `replicas` is pinned-only —
-                    // K cooperative loci on one pool share a single
-                    // thread (not parallel), so `cooperative(...,
-                    // replicas = K)` is rejected with guidance.
-                    if matches!(self.peek(), TokenKind::Comma) {
-                        if let TokenKind::Ident(s) = self.peek_at(1) {
-                            if s == "replicas" {
+                    loop {
+                        let kw_tok = self.peek_token().clone();
+                        let kw = match &kw_tok.kind {
+                            TokenKind::Ident(s) => s.clone(),
+                            other => {
                                 return Err(Diag::parse(
-                                    self.peek_token().span,
+                                    kw_tok.span,
+                                    format!(
+                                        "expected `pool`, `core`, `cores`, \
+                                         `node`, or `l3` inside \
+                                         `cooperative(...)`, got {:?}",
+                                        other
+                                    ),
+                                ));
+                            }
+                        };
+                        match kw.as_str() {
+                            "pool" => {
+                                if pool.is_some() {
+                                    return Err(Diag::parse(
+                                        kw_tok.span,
+                                        "`cooperative(...)` already has a \
+                                         `pool`"
+                                            .to_string(),
+                                    ));
+                                }
+                                self.bump();
+                                self.expect(
+                                    TokenKind::Eq,
+                                    "expected `=` after `pool`",
+                                )?;
+                                pool = Some(self.expect_ident("pool name")?);
+                            }
+                            "core" | "cores" | "node" | "l3" => {
+                                if affinity_set {
+                                    return Err(Diag::parse(
+                                        kw_tok.span,
+                                        format!(
+                                            "`cooperative(...)` already has \
+                                             an affinity; `{}` is a second \
+                                             one (use just one of core / \
+                                             cores / node / l3)",
+                                            kw
+                                        ),
+                                    ));
+                                }
+                                self.bump();
+                                self.expect(
+                                    TokenKind::Eq,
+                                    "expected `=` after affinity attribute",
+                                )?;
+                                affinity = match kw.as_str() {
+                                    "core" => PinAffinity::Cores(
+                                        CoreSpec::Single(
+                                            self.parse_core_index()?,
+                                        ),
+                                    ),
+                                    "cores" => PinAffinity::Cores(
+                                        self.parse_core_set()?,
+                                    ),
+                                    "node" => PinAffinity::Node(
+                                        self.parse_core_index()?,
+                                    ),
+                                    // "l3"
+                                    _ => PinAffinity::L3(
+                                        self.expect_ident("l3 domain name")?,
+                                    ),
+                                };
+                                affinity_set = true;
+                            }
+                            // Topology Phase 1c: `replicas` is pinned-only —
+                            // K cooperative loci on one pool share a single
+                            // thread (not parallel).
+                            "replicas" => {
+                                return Err(Diag::parse(
+                                    kw_tok.span,
                                     "`replicas` is only valid on a `pinned` \
                                      placement — K cooperative loci on one \
                                      pool would share a single thread, not \
@@ -3904,17 +3954,32 @@ impl Parser {
                                         .to_string(),
                                 ));
                             }
+                            _ => {
+                                return Err(Diag::parse(
+                                    kw_tok.span,
+                                    format!(
+                                        "unknown cooperative attribute `{}`; \
+                                         expected `pool`, or an affinity \
+                                         (`core` / `cores` / `node` / `l3`)",
+                                        kw
+                                    ),
+                                ));
+                            }
                         }
+                        if self.eat(&TokenKind::Comma) {
+                            if matches!(self.peek(), TokenKind::RParen) {
+                                break;
+                            }
+                            continue;
+                        }
+                        break;
                     }
                     self.expect(
                         TokenKind::RParen,
-                        "expected `)` after cooperative(pool = X)",
+                        "expected `)` after cooperative(...)",
                     )?;
-                    Some(name)
-                } else {
-                    None
-                };
-                Ok(PlacementSpec::Cooperative { pool })
+                }
+                Ok(PlacementSpec::Cooperative { pool, affinity })
             }
             "pinned" => {
                 // `pinned` takes a comma-separated attribute list:
@@ -4726,9 +4791,24 @@ impl Parser {
                         self.peek(),
                         TokenKind::Ident(s) if s == "_"
                     );
+                    // `replica` — contextual keyword in exactly this
+                    // position (2026-08-12): the instance's replica
+                    // index. Only when it stands ALONE (next token
+                    // ends the clause), so `key == replica_count`
+                    // or a const named replica in a larger
+                    // expression still parse as expressions.
+                    let is_replica = matches!(
+                        self.peek(),
+                        TokenKind::Ident(s) if s == "replica"
+                    ) && matches!(self.peek_at(1), TokenKind::Semi);
                     let filter = if is_underscore {
                         self.bump();
                         KeyFilter::Unmatched {
+                            span: where_tok.span,
+                        }
+                    } else if is_replica {
+                        self.bump();
+                        KeyFilter::Replica {
                             span: where_tok.span,
                         }
                     } else {
@@ -9334,7 +9414,7 @@ main locus App {
         let prog = parse_str(src).expect("parse failed");
         let pb = placement_block_of(&prog);
         match &pb.entries[0].spec {
-            PlacementSpec::Cooperative { pool: None } => {}
+            PlacementSpec::Cooperative { pool: None, .. } => {}
             other => panic!(
                 "expected Cooperative{{ pool: None }}, got {:?}", other
             ),
@@ -9354,7 +9434,7 @@ main locus App {
         let prog = parse_str(src).expect("parse failed");
         let pb = placement_block_of(&prog);
         match &pb.entries[0].spec {
-            PlacementSpec::Cooperative { pool: Some(p) } => {
+            PlacementSpec::Cooperative { pool: Some(p), .. } => {
                 assert_eq!(p.name, "io");
             }
             other => panic!(
@@ -9625,7 +9705,7 @@ fn main() { Sub { my_id: 1 }; }
         }).expect("subscribe");
         match sub.as_ref().expect("key_filter") {
             KeyFilter::Specific { .. } => { /* ok */ }
-            KeyFilter::Unmatched { .. } => panic!("expected Specific"),
+            other => panic!("expected Specific, got {:?}", other),
         }
     }
 

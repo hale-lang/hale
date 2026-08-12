@@ -540,7 +540,7 @@ fn placement_implied_diags(
                         if !is_async {
                             continue;
                         }
-                        let PlacementSpec::Cooperative { pool } = &e.spec
+                        let PlacementSpec::Cooperative { pool, .. } = &e.spec
                         else {
                             continue;
                         };

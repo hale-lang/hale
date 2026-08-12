@@ -143,7 +143,10 @@ real services; full treatment in `docs/src/services/patterns.md`):
   that entity's traffic — never filter in the handler. The answer
   to "N dynamic keyed children with lifecycle"; the bus *is* the
   keyed routing table, so you never need a map of loci. Declare
-  `release(c)` so children reclaim.
+  `release(c)` so children reclaim. For a FIXED worker fleet
+  (parallelism, not per-entity state) use the replica variant
+  instead: `pinned(..., replicas = K)` + `subscribe T as h where
+  key == replica` — K shards, one subscribe line, K spelled once.
 - **Demand-driven discovery** — a subscription triggers the
   `accept()`; topology grows from the data, zero hardcoded children.
 - **Hot-path counters/gauges** — locus methods returning locus

@@ -1732,6 +1732,23 @@ handler's self pointer. v0.1 restricts EXPR to:
 3. A `self.<field>` path read, where `<field>` is a `params`-block
    field of the subscribing locus (for a String-keyed topic, a
    `String` field — e.g. `where key == self.name`)
+4. The bare word `replica` (2026-08-12, contextual — only this
+   exact RHS position): the subscribing INSTANCE's 0-based replica
+   index. Each instance of a `pinned(..., replicas = K)` fan-out
+   registers its own index, so K replicas shard an Int-keyed topic
+   with one subscribe line and K spelled once, in the placement
+   entry; a non-replicated instance is replica 0. Requires an
+   Int-family key (String keys rejected — the index is a number).
+   This is the bridge between the placement scale axis and the
+   delivery axis, built so that placement itself stays
+   semantics-free: the filter is still written on the
+   subscription; the placement only decides how many indices
+   exist.
+
+A `where key == …` filter of any shape requires a KEYED topic
+(2026-08-12): an unkeyed publish never runs the key match, so a
+filtered subscriber would silently receive nothing — previously
+accepted without a word, now a type error.
 
 Higher-shape expressions (`self.a + self.b`, method calls in the
 filter, cross-locus reads) are reserved for later. The
@@ -2139,6 +2156,19 @@ main locus App {
     the target node) and are non-addressable (no `field[i]` surface;
     they are bus-subscribing or run-loop workers). All K are joined
     and dissolved at parent teardown. (Topology Phase 1c, 2026-07-05.)
+    Replicas compose with KEYED DELIVERY via `where key == replica`
+    (2026-08-12) — see the routing-key filter rules.
+16. **Pool affinity (2026-08-12).** `cooperative(pool = X,
+    core/cores/node/l3 = …)` binds pool X's worker THREAD to the
+    core set — the same affinity forms `pinned` takes, resolved
+    against `topology { }`, same best-effort contract. The pool has
+    one worker, so entries naming one pool must agree: a second
+    entry may name the pool bare (it inherits) but a different
+    affinity is a type error citing both entries. Affinity without
+    a named pool (or on pool `main`) is rejected — the main pool is
+    the program's main thread, whose affinity belongs to the
+    operator. Thread affinity only; pool workers own no arena to
+    node-bind (handler scratch lives in each locus's own arena).
 
 ### Single-threaded-method invariant
 

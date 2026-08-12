@@ -778,7 +778,11 @@ Cooperative subscribers can be partitioned across N pools
 (N OS threads, each running its own
 `lotus_coop_pool_worker` drain loop against its own per-pool
 ring buffer); cross-pool bus dispatch reuses the m28b
-condvar+memcpy machinery. The single-threaded-method invariant
+condvar+memcpy machinery. A pool's worker thread can take the
+same affinity forms as `pinned` — `cooperative(pool = X,
+core/cores/node/l3 = …)`, applied right after the worker spawns
+(2026-08-12; entries naming one pool must agree, and the main
+pool takes none). The single-threaded-method invariant
 — a locus's methods may be invoked only from its pool's thread
 or via the bus — ships as a typecheck rule (Phase 5).
 

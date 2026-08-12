@@ -178,4 +178,9 @@ Throughout this guide we write `hale run` / `hale build` as if
 `hale` is on your path. From a source checkout without it
 installed, prefix with `cargo run -p hale-cli --bin hale --`.
 
+Starting a project rather than a scratch file? `hale init my-app`
+scaffolds the canonical minimal shape — `hale.toml`, a hello-world
+seed, a first test — ready for `hale run` / `hale test` / `hale
+verify` out of the box.
+
 Next: [Your first run](./first-run.md).

@@ -3211,6 +3211,28 @@ Per-registration `dropped_full` counting rides the entry.
 
 ---
 
+### F.38 Placement is semantics-free; delivery selection belongs to subscriptions
+
+Tested by a real ask (2026-08-12, a webserver tutorial): "partitioned
+placement" was expected to mean partitioned delivery, and it does not
+— bus pubsub is broadcast, and no placement axis may change WHO
+receives a message. The line held, and the resolution is the pattern
+for future asks of this shape: **bridge the axes on the subscription
+side.** `where key == replica` gives a `pinned(..., replicas = K)`
+fan-out sharded delivery with the filter still written on the
+subscription — placement only decides how many indices exist, so
+moving or scaling placement entries still never changes semantics.
+The same ruling closed the matrix's other gap the ergonomic way:
+pool affinity (`cooperative(pool = X, cores = …)`) is placement
+changing WHERE a pool's worker runs, never WHAT it receives.
+
+Named non-goals recorded with it: a `delivery: one_of`
+competing-consumers mode (real work-queue semantics — ordering and
+backpressure questions, its own design conversation), and
+`cooperative(..., replicas = K)` (K loci on one pool share one
+thread; parallelism is more single-threaded units, never a
+multi-worker pool).
+
 ## Deferred & future work
 
 Forward-looking items lifted from the spec files. These are design

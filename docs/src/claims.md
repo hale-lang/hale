@@ -876,11 +876,11 @@ reports as *unverifiable* rather than as valid — a consumer may
 choose to accept it, but must never read "nothing to check" as
 "checked and intact".
 
-The artifact shape (schema `1.7`):
+The artifact shape (schema `1.10`):
 
 ```text
 {
-  "schema": "1.7",
+  "schema": "1.10",
   "shape_hash": "<fnv1a-64 over the model half>",
   "sorts":     { "loci": […], "fns": […], "topics": […] },
   "relations": {
@@ -895,12 +895,16 @@ The artifact shape (schema `1.7`):
   "phases":    { "<fn>": {"phase", "kind": "hook"|"method"} },
   "seeds":     { "<alias>": [member decls] },
   "effects":   { "<fn>": [derived effect classes] },
+  "supervision": [ {"locus", "child", "err", "ops": […],
+                  "retry_bound"?} ],
   "unknowns":  [ {"fn": …, "reasons": ["indirect_call" |
                   "untyped_receiver_call:<callee>" |
                   "uninhabited_interface_call:<iface>.<callee>" |
                   "computed_publish"]} ],
   "provenance": { "calls": [+span], "publishes": [+span],
-                  "subscribes": [+span], "decls": {name: span} },
+                  "subscribes": [+span],
+                  "decls": {name: span, topics included},
+                  "supervision": [+span] },
   "topics":    [ {"name", "subject", "shape", "payload_hash"} ],
   "claims":    [ {"name", "form", "result": <verdict>, "source"?} ],
   "lowered":   [ {"subject", "form", "result": <verdict>} ],

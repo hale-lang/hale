@@ -720,7 +720,7 @@ fn collect_placements(bundle: &Bundle<'_>) -> BTreeMap<String, Placement> {
                                     continue;
                                 };
                                 let placement = match &e.spec {
-                                    PlacementSpec::Cooperative { pool } => {
+                                    PlacementSpec::Cooperative { pool, .. } => {
                                         match pool {
                                             Some(p) if p.name != "main" => {
                                                 Placement::CrossPool(

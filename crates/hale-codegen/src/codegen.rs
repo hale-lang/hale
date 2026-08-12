@@ -1387,6 +1387,8 @@ pub fn build_executable_with_options(
         returned_bindings: compute_returned_bindings(&merged),
         assign_moved_bindings: compute_assign_moved_bindings(&merged),
         model_hash: options.model_hash,
+        replica_index_for_next_locus_instantiation: None,
+        current_instantiation_replica_index: 0,
         suppress_fresh_temp: false,
         in_fresh_temp_hook: false,
         current_fn_skip_exit_drain: false,
@@ -4007,6 +4009,16 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// P26: the build-time model identity to stamp into the obs
     /// segment header (None = harness build, header reads 0).
     pub(crate) model_hash: Option<u64>,
+    /// Replica keys (2026-08-12): the replica index the NEXT locus
+    /// instantiation carries — set by the Phase-1c fan-out loop for
+    /// replicas 1..K, absent (= replica 0) everywhere else. Consumed
+    /// at `lower_locus_instantiation` entry like the placement
+    /// override.
+    pub(crate) replica_index_for_next_locus_instantiation: Option<u64>,
+    /// The CURRENT instantiation's replica index, live while its
+    /// params/subscriptions lower — what a `where key == replica`
+    /// filter registers as the subscription key.
+    pub(crate) current_instantiation_replica_index: u64,
     pub(crate) suppress_fresh_temp: bool,
     /// GH #402: re-entry guard for the fresh-temp hook, cleared
     /// immediately on entry so nested calls still get their own.
@@ -8771,6 +8783,46 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         )
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
+                // Pool affinity (2026-08-12): stash the resolved
+                // core set on the pool BEFORE start_all spawns its
+                // worker — the spawn applies it right after
+                // pthread_create, same best-effort contract as
+                // pinned affinity.
+                if let Some(cores) =
+                    self.deployment.coop_pool_affinity.get(name).cloned()
+                {
+                    let i32_t = self.context.i32_type();
+                    let vals: Vec<_> = cores
+                        .iter()
+                        .map(|c| i32_t.const_int(*c as u64, true))
+                        .collect();
+                    let arr = i32_t.const_array(&vals);
+                    let g = self.module.add_global(
+                        arr.get_type(),
+                        None,
+                        &format!("coop_pool.{}.cores", name),
+                    );
+                    g.set_initializer(&arr);
+                    g.set_constant(true);
+                    g.set_linkage(inkwell::module::Linkage::Internal);
+                    let set_fn = self
+                        .module
+                        .get_function("lotus_coop_pool_set_affinity")
+                        .expect("lotus_coop_pool_set_affinity declared");
+                    self.builder
+                        .build_call(
+                            set_fn,
+                            &[
+                                pool_ptr_val.into(),
+                                g.as_pointer_value().into(),
+                                i32_t
+                                    .const_int(cores.len() as u64, false)
+                                    .into(),
+                            ],
+                            &format!("coop_pool.set_affinity.{}", name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
             }
             let start_all_fn = self
                 .module
@@ -9381,7 +9433,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 ScheduleClass::Pinned(cores)
                             }
                         }
-                        PlacementSpec::Cooperative { pool } => {
+                        PlacementSpec::Cooperative { pool, affinity } => {
                             // F.31 Phase 4: capture the pool name
                             // when present. `None` means default
                             // pool "main" (no entry needed; the
@@ -9393,6 +9445,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                         entry.field.name.clone(),
                                         name.name.clone(),
                                     );
+                                    // Pool affinity (2026-08-12):
+                                    // resolve like pinned and record
+                                    // per pool (typecheck already
+                                    // rejected conflicting entries;
+                                    // first resolution wins here).
+                                    if let Some(spec) =
+                                        Self::resolve_pin_affinity(
+                                            affinity,
+                                            topology,
+                                        )
+                                    {
+                                        let cores: Vec<i64> =
+                                            spec.expand();
+                                        if !cores.is_empty() {
+                                            self.deployment
+                                                .coop_pool_affinity
+                                                .entry(name.name.clone())
+                                                .or_insert(cores);
+                                        }
+                                    }
                                     // Phase 4b: track the locus
                                     // type so a __coop_pool_run
                                     // wrapper gets synthesized for
@@ -9433,7 +9505,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         matches!(c.kind, PlacementConstraint::AsyncIo)
                     });
                     if has_async_io {
-                        if let PlacementSpec::Cooperative { pool: Some(name) } =
+                        if let PlacementSpec::Cooperative { pool: Some(name), .. } =
                             &entry.spec
                         {
                             if name.name != "main" {

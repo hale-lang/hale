@@ -72,7 +72,11 @@ main locus App {
 ```
 
 - `cooperative(pool = X)` puts the locus on pool `X`'s thread.
-  The runtime spawns one OS worker per pool name it sees.
+  The runtime spawns one OS worker per pool name it sees. A pool
+  can take the same affinity forms as `pinned` —
+  `cooperative(pool = io, cores = 0..=1)` binds the pool's worker
+  thread to those cores (declare it on one entry; others naming
+  the pool inherit it).
 - `pinned` / `pinned(core = N)` gives the locus its own thread,
   optionally pinned to a CPU core.
 - `pinned(cores = 4..8)` (or `4..=7`, or `{4, 5, 6, 7}`) pins
@@ -177,9 +181,28 @@ with the topology targets — `pinned(node = 0, replicas = 4)` fans
 4 workers across node 0's cores, each with its arena on node 0.
 
 The replicas are **workers, not handles**: there's no
-`workers[i]` to call. They pull work — typically by subscribing a
-bus topic (all K register, so the topic fans out to every
-replica) or by running their own loop. `replicas` is pinned-only;
+`workers[i]` to call. They pull work — by subscribing a bus topic
+or running their own loop. A plain subscription registers all K,
+so the topic *broadcasts* to every replica. To **shard** instead,
+key the topic and subscribe with the replica's own index:
+
+```hale,fragment
+type Conn { fd: Int; shard: Int; }
+topic NewConn { payload: Conn; keyed_by shard; }
+
+locus Worker {
+    bus { subscribe NewConn as on_conn where key == replica; }
+    fn on_conn(c: Conn) { /* only shard == my index arrives */ }
+}
+// placement { workers: pinned(cores = 4..12, replicas = 8); }
+// listener publishes: NewConn <- Conn { fd: fd, shard: fd % 8 };
+```
+
+`replica` is the instance's 0-based index (a non-replicated
+instance is replica 0), so K lives in exactly one place — the
+placement entry — and each connection lands on one worker. This
+is the webserver fan-out shape: a pinned listener accepting,
+K workers each owning their shard. `replicas` is pinned-only;
 `cooperative(..., replicas = K)` is rejected (K loci on one pool
 would share a thread, which isn't parallel).
 

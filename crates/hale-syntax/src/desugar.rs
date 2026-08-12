@@ -1003,7 +1003,7 @@ fn collect_off_owner_thread_fields(
                         if let LocusMember::Placement(pb) = member {
                             for e in &pb.entries {
                                 let off_thread = match &e.spec {
-                                    PlacementSpec::Cooperative { pool } => pool
+                                    PlacementSpec::Cooperative { pool, .. } => pool
                                         .as_ref()
                                         .is_some_and(|p| p.name != "main"),
                                     PlacementSpec::Pinned { .. } => true,
