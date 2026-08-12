@@ -392,6 +392,10 @@ pub fn check_bundle(
     // not a direct method call. See spec/types.md
     // § "Single-threaded-method invariant (F.31)".
     check_placement_single_thread(bundle, top, &mut diags);
+    // Pool affinity (2026-08-12): `cooperative(pool = X, cores/…)`
+    // entries naming one pool must agree, and affinity on the main
+    // pool has no thread to bind.
+    check_pool_affinity(bundle, &mut diags);
     // #334 / #333: F.31 above reasons per field DECLARATION, so it
     // cannot see one instance aliased into two towers.
     check_instance_aliasing(bundle, &mut diags);
@@ -2198,7 +2202,7 @@ fn check_cooperative_pool_blocking(
             let mut errored_pools: BTreeSet<String> = BTreeSet::new();
 
             for entry in pb.map(|pb| pb.entries.as_slice()).unwrap_or(&[]) {
-                let PlacementSpec::Cooperative { pool } = &entry.spec else {
+                let PlacementSpec::Cooperative { pool, .. } = &entry.spec else {
                     continue;
                 };
                 // `where async_io` parks blocking I/O — not a stall.
@@ -2354,7 +2358,7 @@ fn check_cooperative_pool_blocking(
                     });
                     let pool_name: String = match entry.map(|e| (&e.spec, e)) {
                         Some((PlacementSpec::Pinned { .. }, _)) => continue,
-                        Some((PlacementSpec::Cooperative { pool }, e)) => {
+                        Some((PlacementSpec::Cooperative { pool, .. }, e)) => {
                             // `where async_io` run-cells are parkable
                             // coros — co-scheduled runs interleave at
                             // park points, so no starvation claim.
@@ -2524,7 +2528,7 @@ fn check_cooperative_pool_blocking(
                         // elsewhere; `where async_io` parks.
                         let inline_on_main = match entry.map(|e| (&e.spec, e)) {
                             Some((PlacementSpec::Pinned { .. }, _)) => false,
-                            Some((PlacementSpec::Cooperative { pool }, e)) => {
+                            Some((PlacementSpec::Cooperative { pool, .. }, e)) => {
                                 !e.constraints.iter().any(|c| {
                                     matches!(c.kind, PlacementConstraint::AsyncIo)
                                 }) && pool
@@ -2855,6 +2859,82 @@ pub fn compute_pool_of_locus_type(
     pool_of_locus_type
 }
 
+/// Pool affinity (2026-08-12): validity of `cooperative(pool = X,
+/// core/cores/node/l3 = ...)` placement entries.
+///
+/// * Affinity with no pool (or pool `main`) is rejected — the main
+///   pool is the program's main thread; binding it belongs to the
+///   operator (taskset), not a placement entry.
+/// * Two entries naming ONE pool with two different affinities is a
+///   contradiction: the pool has one worker thread. An entry that
+///   names the pool without an affinity is compatible with any.
+fn check_pool_affinity(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
+    for program in bundle.programs.values() {
+        for item in &program.items {
+            let TopDecl::Locus(l) = item else { continue };
+            if !l.is_main {
+                continue;
+            }
+            let mut declared: BTreeMap<String, (PinAffinity, Span)> =
+                BTreeMap::new();
+            for m in &l.members {
+                let LocusMember::Placement(pb) = m else { continue };
+                for entry in &pb.entries {
+                    let PlacementSpec::Cooperative { pool, affinity } =
+                        &entry.spec
+                    else {
+                        continue;
+                    };
+                    if matches!(affinity, PinAffinity::Any) {
+                        continue;
+                    }
+                    let pool_name = match pool {
+                        Some(p) if p.name != "main" => p.name.clone(),
+                        _ => {
+                            diags.push(Diag::ty(
+                                entry.span,
+                                "cooperative affinity needs a named pool \
+                                 (`cooperative(pool = X, cores = ...)`) — \
+                                 the main pool is the program's main \
+                                 thread, whose affinity belongs to the \
+                                 operator, not a placement entry",
+                            ));
+                            continue;
+                        }
+                    };
+                    match declared.get(&pool_name) {
+                        None => {
+                            declared.insert(
+                                pool_name,
+                                (affinity.clone(), entry.span),
+                            );
+                        }
+                        Some((prev, _)) if prev == affinity => {}
+                        Some((_, prev_span)) => {
+                            diags.push(
+                                Diag::ty(
+                                    entry.span,
+                                    format!(
+                                        "pool `{}` is given two different \
+                                         affinities — a pool has ONE worker \
+                                         thread; declare the affinity on \
+                                         one entry (the others inherit it)",
+                                        pool_name
+                                    ),
+                                )
+                                .with_related(
+                                    *prev_span,
+                                    "first affinity declared here",
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn check_placement_single_thread(
     bundle: &Bundle<'_>,
     top: &TopScope,
@@ -2959,7 +3039,7 @@ fn placement_spec_to_pool(
 ) -> PoolId {
     use hale_syntax::ast::PlacementSpec;
     match spec {
-        PlacementSpec::Cooperative { pool } => {
+        PlacementSpec::Cooperative { pool, .. } => {
             let name = pool
                 .as_ref()
                 .map(|p| p.name.clone())
@@ -4066,6 +4146,44 @@ fn check_phase3_fallback_subscribers(
         BTreeMap::new();
     let mut by_wire: BTreeMap<String, (Option<UnmatchedPolicy>, Span)> =
         BTreeMap::new();
+    // Filter validity (2026-08-12): (is_keyed, key_is_string) per
+    // topic, for the `where key ==` rules below. The String
+    // question resolves the payload struct's keyed_by field type
+    // directly against the bundle's type decls.
+    let mut key_shape_by_name: BTreeMap<String, (bool, bool)> =
+        BTreeMap::new();
+    let mut key_shape_by_wire: BTreeMap<String, (bool, bool)> =
+        BTreeMap::new();
+    let field_is_string = |payload: &TypeExpr, field: &str| -> bool {
+        let TypeExpr::Named { path, .. } = payload else {
+            return false;
+        };
+        if path.segments.len() != 1 {
+            return false;
+        }
+        let tname = &path.segments[0].name;
+        for program in bundle.programs.values() {
+            for item in &program.items {
+                if let TopDecl::Type(td) = item {
+                    if &td.name.name == tname {
+                        if let TypeDeclBody::Struct(fields) = &td.body {
+                            return fields.iter().any(|f| {
+                                f.name.name == field
+                                    && matches!(
+                                        &f.ty,
+                                        TypeExpr::Primitive(
+                                            PrimType::String,
+                                            _,
+                                        )
+                                    )
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        false
+    };
     for program in bundle.programs.values() {
         for item in &program.items {
             if let TopDecl::Topic(t) = item {
@@ -4073,10 +4191,19 @@ fn check_phase3_fallback_subscribers(
                     t.name.name.clone(),
                     (t.on_unmatched, t.span),
                 );
+                let key_shape = match &t.keyed_by {
+                    Some(f) => {
+                        (true, field_is_string(&t.payload, &f.name))
+                    }
+                    None => (false, false),
+                };
+                key_shape_by_name
+                    .insert(t.name.name.clone(), key_shape);
                 let wire = t
                     .subject
                     .clone()
                     .unwrap_or_else(|| t.name.name.clone());
+                key_shape_by_wire.insert(wire.clone(), key_shape);
                 by_wire.insert(wire, (t.on_unmatched, t.span));
             }
         }
@@ -4102,6 +4229,53 @@ fn check_phase3_fallback_subscribers(
                         continue;
                     };
                     let Some(kf) = key_filter else { continue };
+                    // 2026-08-12: every `where key ==` filter needs a
+                    // KEYED topic — an unkeyed publish never runs the
+                    // key match, so a filtered subscriber would
+                    // silently receive nothing, forever (previously
+                    // accepted without a word). Cross-seed / string
+                    // subjects that resolve to no declared topic stay
+                    // permissive, matching the rest of this pass.
+                    {
+                        let shape = match subject {
+                            BusSubject::Topic(i) => {
+                                key_shape_by_name.get(&i.name).copied()
+                            }
+                            BusSubject::Literal { subject: sname, .. } => {
+                                key_shape_by_wire.get(sname).copied()
+                            }
+                            BusSubject::QualifiedTopic(_) => None,
+                        };
+                        if let Some((is_keyed, key_is_string)) = shape {
+                            if !is_keyed {
+                                diags.push(Diag::ty(
+                                    kf.span(),
+                                    format!(
+                                        "`where key == …` requires a keyed topic, and `{}` \
+                                         declares no `keyed_by` — an unkeyed publish never \
+                                         runs the key match, so this subscriber would \
+                                         silently receive nothing",
+                                        subject.canonical()
+                                    ),
+                                ));
+                                continue;
+                            }
+                            if key_is_string
+                                && matches!(kf, KeyFilter::Replica { .. })
+                            {
+                                diags.push(Diag::ty(
+                                    kf.span(),
+                                    format!(
+                                        "`where key == replica` needs an Int-family key; \
+                                         topic `{}` is keyed by a String field — shard on \
+                                         an Int field to fan out across replicas",
+                                        subject.canonical()
+                                    ),
+                                ));
+                                continue;
+                            }
+                        }
+                    }
                     let is_catchall = matches!(kf, KeyFilter::Unmatched { .. });
                     if !is_catchall {
                         continue;
@@ -7105,7 +7279,7 @@ impl<'a> Checker<'a> {
                                     ),
                                 ));
                             }
-                            PlacementSpec::Cooperative { pool } => {
+                            PlacementSpec::Cooperative { pool, .. } => {
                                 let pool_name = pool
                                     .as_ref()
                                     .map(|i| i.name.as_str())
@@ -7144,7 +7318,7 @@ impl<'a> Checker<'a> {
             BTreeMap::new();
         for entry in &pb.entries {
             let pool_name = match &entry.spec {
-                PlacementSpec::Cooperative { pool: Some(name) } => {
+                PlacementSpec::Cooperative { pool: Some(name), .. } => {
                     name.name.clone()
                 }
                 _ => continue,

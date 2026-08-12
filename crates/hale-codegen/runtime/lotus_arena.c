@@ -7319,6 +7319,12 @@ typedef struct lotus_coop_pool {
     lotus_coro_t     *free_head;
     int               free_count;
 #endif
+    /* Pool affinity (2026-08-12): a core set stashed by codegen
+     * before start_all spawns the worker; applied right after
+     * pthread_create with the same best-effort contract as pinned
+     * affinity. count == 0 means no mask (today's behavior). */
+    int32_t           aff_cores[64];
+    int32_t           aff_count;
 } lotus_coop_pool_t;
 
 /* F.35 Slice 1: per-coro stack size. 64 KiB is the same default the
@@ -7359,6 +7365,22 @@ lotus_coop_pool_t *lotus_coop_pool_lookup(const char *name) {
  * resolve to it). Pool "main" is a no-op: it returns NULL since
  * its work runs inline on the main thread's existing
  * cooperative queue. */
+/* Forward decl: defined with the other affinity helpers below. */
+void lotus_set_core_affinity_set(unsigned long tid,
+                                 const int32_t *cores,
+                                 int32_t count);
+
+/* Pool affinity (2026-08-12). Copies up to 64 cores; called from
+ * the codegen prelude between register and start_all. */
+void lotus_coop_pool_set_affinity(lotus_coop_pool_t *p,
+                                  const int32_t *cores,
+                                  int32_t count) {
+    if (!p || !cores || count <= 0) return;
+    if (count > 64) count = 64;
+    memcpy(p->aff_cores, cores, (size_t)count * sizeof(int32_t));
+    p->aff_count = count;
+}
+
 lotus_coop_pool_t *lotus_coop_pool_register(const char *name) {
     if (!name) return NULL;
     if (strcmp(name, "main") == 0) return NULL;
@@ -7389,6 +7411,7 @@ lotus_coop_pool_t *lotus_coop_pool_register(const char *name) {
         free(p);
         return NULL;
     }
+    p->aff_count = 0;
     atomic_store_explicit(&p->parked, 0, memory_order_relaxed);
     atomic_store_explicit(&p->producers_waiting, 0, memory_order_relaxed);
     atomic_store_explicit(&p->shutdown, 0, memory_order_relaxed);
@@ -8241,6 +8264,12 @@ void lotus_coop_pool_start_all(void) {
         if (pthread_create(&p->worker, NULL,
                            lotus_coop_pool_worker, p) == 0) {
             p->worker_started = 1;
+            /* Pool affinity (2026-08-12): bind the worker thread to
+             * the stashed core set, best-effort. */
+            if (p->aff_count > 0) {
+                lotus_set_core_affinity_set(
+                    (unsigned long)p->worker, p->aff_cores, p->aff_count);
+            }
         }
     }
 }

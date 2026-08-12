@@ -199,7 +199,7 @@ fn collect_locus(l: &LocusDecl, b: &mut ResourceBudget) {
                 for entry in &pb.entries {
                     match &entry.spec {
                         PlacementSpec::Pinned { .. } => b.pinned_threads += 1,
-                        PlacementSpec::Cooperative { pool } => {
+                        PlacementSpec::Cooperative { pool, .. } => {
                             let name = pool
                                 .as_ref()
                                 .map(|p| p.name.clone())

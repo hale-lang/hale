@@ -52,6 +52,36 @@ batch:
   the observer attached after steady state — counts correctly on
   current HEAD (40/40, five runs), and is now a permanent pin
   beside the four earlier flavors.
+### Placement pairings: replica-sharded delivery and pool affinity
+
+Two compositions the placement matrix was missing, found writing a
+webserver tutorial: partitioned *placement* never meant partitioned
+*delivery* (bus pubsub is broadcast; delivery selection lives on the
+subscription — deliberately, so placement stays semantics-free), but
+the two axes had no bridge, and cooperative pools took no affinity
+at all.
+
+- **`where key == replica`** — each instance of a
+  `pinned(..., replicas = K)` fan-out registers its 0-based replica
+  index as its subscription key, so K replicas shard an Int-keyed
+  topic with one subscribe line and K spelled once, in the placement
+  entry. A non-replicated instance is replica 0. Placement stays
+  semantics-free: the filter is written on the subscription; the
+  placement only decides how many indices exist. The webserver
+  shape becomes: listener publishes `Conn { fd, shard: fd % K }`,
+  workers subscribe `where key == replica`. Requires an Int-family
+  key; `replica` is contextual (only that exact RHS position).
+- **Every `where key == …` filter now requires a keyed topic.**
+  Closes a silent pre-existing trap: a Specific filter on an
+  unkeyed topic registered a key match no publish would ever run —
+  the subscriber received nothing, forever, with `check` green.
+- **Pool affinity** — `cooperative(pool = X, core/cores/node/l3 =
+  …)` binds pool X's worker thread to the core set, the same forms
+  and topology-name resolution `pinned` has, kernel-verified by
+  test. One pool has one worker: entries naming a pool must agree
+  (a bare entry inherits; a *different* affinity is a type error
+  citing both entries), and affinity on the main pool is rejected
+  (that thread belongs to the operator).
 
 ### `std::http::Router.add_fn` — a route can be a bare function
 

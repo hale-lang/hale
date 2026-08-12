@@ -1157,7 +1157,16 @@ pub enum PlacementSpec {
     /// on the same pool. `None` means pool `main` (the program's
     /// main OS thread) — equivalent to writing
     /// `cooperative(pool = main)`.
-    Cooperative { pool: Option<Ident> },
+    Cooperative {
+        pool: Option<Ident>,
+        /// Pool affinity (2026-08-12): `cooperative(pool = X,
+        /// cores = …)` binds pool X's worker THREAD to the core
+        /// set (same forms as pinned: core / cores / node / l3,
+        /// resolved against `topology { }`). Declared per entry;
+        /// entries naming one pool must agree (typecheck).
+        /// `PinAffinity::Any` = no mask, today's behavior.
+        affinity: PinAffinity,
+    },
     /// `pinned` and its affinity variants. The locus owns its
     /// own OS thread; the [`PinAffinity`] says which logical CPUs
     /// the runtime asks the OS to keep it on (`pthread_setaffinity_np`).
@@ -1694,12 +1703,23 @@ pub enum KeyFilter {
     /// `where key == _`. Catch-unmatched subscriber. Only legal
     /// when the topic declares `on_unmatched: fallback`.
     Unmatched { span: Span },
+    /// `where key == replica` (2026-08-12): the subscribing
+    /// instance's replica index — 0-based for a
+    /// `pinned(..., replicas = K)` fan-out, and 0 for any
+    /// non-replicated instance. The bridge between the placement
+    /// scale axis and the delivery axis: K replicas shard an
+    /// Int-keyed topic with one subscribe line, N spelled once in
+    /// the placement entry. `replica` is contextual — only this
+    /// exact RHS position; requires an Int-family key.
+    Replica { span: Span },
 }
 
 impl KeyFilter {
     pub fn span(&self) -> Span {
         match self {
-            KeyFilter::Specific { span, .. } | KeyFilter::Unmatched { span } => *span,
+            KeyFilter::Specific { span, .. }
+            | KeyFilter::Unmatched { span }
+            | KeyFilter::Replica { span } => *span,
         }
     }
 }

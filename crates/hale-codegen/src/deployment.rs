@@ -50,6 +50,12 @@ pub struct DeploymentPlan {
     /// `cooperative(pool = X)` entries. Drives pool registration in
     /// the prelude and the per-field pool override at instantiation.
     pub main_cooperative_pools: BTreeMap<String, String>,
+    /// Pool affinity (2026-08-12): pool name -> the resolved core
+    /// set its worker thread binds to (`cooperative(pool = X,
+    /// cores/node/l3 = …)`). Resolved against `topology { }` in
+    /// the placement pre-pass; conflicting declarations across
+    /// entries were rejected at typecheck.
+    pub coop_pool_affinity: BTreeMap<String, Vec<i64>>,
     /// Pool names declared `where async_io` (green-I/O scheduling).
     pub async_io_pools: BTreeSet<String>,
     /// Locus TYPE names placed on a named cooperative pool —

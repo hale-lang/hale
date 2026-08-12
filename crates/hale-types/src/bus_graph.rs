@@ -547,7 +547,7 @@ pub(crate) fn collect_subscriber_placements(bundle: &Bundle<'_>) -> BTreeMap<Str
                                     continue;
                                 };
                                 let placement = match &e.spec {
-                                    PlacementSpec::Cooperative { pool } => match pool {
+                                    PlacementSpec::Cooperative { pool, .. } => match pool {
                                         Some(p) if p.name != "main" => {
                                             Placement::CrossPool(p.name.clone())
                                         }
@@ -599,7 +599,7 @@ pub fn has_offthread_placement(bundle: &Bundle<'_>) -> bool {
                         if let LocusMember::Placement(pb) = member {
                             for e in &pb.entries {
                                 match &e.spec {
-                                    PlacementSpec::Cooperative { pool } => {
+                                    PlacementSpec::Cooperative { pool, .. } => {
                                         if let Some(p) = pool {
                                             if p.name != "main" {
                                                 return true;

@@ -102,6 +102,19 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         let numa_node_override = std::mem::take(
             &mut self.numa_node_for_next_locus_instantiation,
         );
+        // Replica keys (2026-08-12): consume the replica-index
+        // override for THIS instantiation and expose it to the
+        // subscription-registration loop below (a `where key ==
+        // replica` filter registers the index as the key). Taken
+        // like the placement override so nested instantiations
+        // read their own (absent = replica 0).
+        let replica_index_override = std::mem::take(
+            &mut self.replica_index_for_next_locus_instantiation,
+        );
+        let prev_replica_index = std::mem::replace(
+            &mut self.current_instantiation_replica_index,
+            replica_index_override.unwrap_or(0),
+        );
         // F.31 Phase 4: consume the parallel pool-name override
         // before any recursion happens (a nested instantiation
         // in this locus's params-init loop would otherwise
@@ -195,6 +208,7 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             // Restore the cooperative-pool context we swapped in above
             // (the normal path restores it at fn exit; we early-return).
             self.current_cooperative_pool = prev_current_coop_pool;
+            self.current_instantiation_replica_index = prev_replica_index;
             return self.emit_crosspool_bubble_spawn(
                 locus_name,
                 &info,
@@ -1968,6 +1982,12 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                             ScheduleClass::Pinned(core.map(CoreSpec::Single)),
                         );
                         self.numa_node_for_next_locus_instantiation = node;
+                        // Replica keys: replica i's subscriptions
+                        // register i as their `where key == replica`
+                        // key. Replica 0 takes the normal path below
+                        // with the default index 0.
+                        self.replica_index_for_next_locus_instantiation =
+                            Some(i as u64);
                         let prev_flag = self.instantiating_for_parent_field;
                         self.instantiating_for_parent_field = true;
                         // The extra replica's self_ptr isn't stored in a
@@ -3557,6 +3577,7 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
 
             // F.31 Phase 4: pinned-branch restore mirror.
             self.current_cooperative_pool = prev_current_coop_pool;
+            self.current_instantiation_replica_index = prev_replica_index;
             return Ok(self_ptr);
         }
 
@@ -4139,6 +4160,7 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         // prev_current_coop_pool; we restore it here so
         // nesting works correctly.
         self.current_cooperative_pool = prev_current_coop_pool;
+        self.current_instantiation_replica_index = prev_replica_index;
         Ok(self_ptr)
     }
 

@@ -102,6 +102,24 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                     i64_t.const_zero(),
                 ))
             }
+            Some(KeyFilter::Replica { .. }) => {
+                // Replica keys (2026-08-12): register THIS
+                // instance's replica index as the key — the
+                // Phase-1c fan-out threads it through
+                // `current_instantiation_replica_index`; a
+                // non-replicated instance is replica 0. Delivery
+                // stays a subscription property (placement remains
+                // semantics-free): the placement entry only decides
+                // how many indices exist.
+                let _ = self_ptr;
+                let _ = subject;
+                let idx = self.current_instantiation_replica_index;
+                Ok(LoweredKeyFilter::Scalar(
+                    1,
+                    i64_t.const_int(idx, false),
+                    i64_t.const_zero(),
+                ))
+            }
             Some(KeyFilter::Specific { expr, .. }) => {
                 // Lower the EXPR. `lower_expr` reads `self.X`
                 // through `self.current_self` (set by the caller —
