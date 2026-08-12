@@ -1173,6 +1173,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .fn_type(&[ptr_t.into(), ptr_t.into()], false),
             None,
         );
+        // P26 (iris handoff-12): the build-time model identity,
+        // stamped in the prelude for the segment header.
+        // declare void @lotus_obs_model_hash_set(i64 hash)
+        self.module.add_function(
+            "lotus_obs_model_hash_set",
+            self.context
+                .void_type()
+                .fn_type(&[i64_t2.into()], false),
+            None,
+        );
         self.module.add_function(
             "lotus_obs_locus_dissolve",
             self.context

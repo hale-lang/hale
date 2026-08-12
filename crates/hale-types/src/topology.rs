@@ -76,6 +76,14 @@ use hale_syntax::ast::*;
 use crate::alloc_summary::{self, Callee, EffectSiteKind, FnKey};
 use crate::symbol::Bundle;
 
+/// 1.10 (downstream handoff P25, 2026-08-12): `supervision` in the
+/// HASHED half — one row per `on_failure` handler (supervising
+/// locus, supervised child + error types, the recovery ops the body
+/// invokes, a literal retry bound when written), plus spanned
+/// `provenance.supervision` rows. Existing `shape_hash` values
+/// change. The observer's live RESTART/SUPERV_TRANS/DISSOLVE stream
+/// finally has declared policy to anchor to.
+///
 /// 1.9 (GH #436 review): `labels.sealed` in the HASHED half — the
 /// loci whose state is confined. Sealing is a structural
 /// confidentiality property, and without it in the model a locus
@@ -108,7 +116,7 @@ use crate::symbol::Bundle;
 /// (everything they reach), and gains the `environment` label —
 /// identities now come from the adoption traversal, so a constitution
 /// contributing no clause of its own is no longer invisible.
-pub const TOPOLOGY_SCHEMA: &str = "1.9";
+pub const TOPOLOGY_SCHEMA: &str = "1.10";
 
 /// GH #408 Phase 0: what the rows MEAN, as distinct from their shape.
 ///
@@ -123,6 +131,25 @@ pub const TOPOLOGY_SCHEMA: &str = "1.9";
 /// shape does not. A consumer that does not recognise the value must
 /// refuse rather than assume equivalence.
 pub const MODEL_SEMANTICS: u32 = 1;
+
+/// The model identity alone (downstream handoff P26, 2026-08-12):
+/// the same `shape_hash` `dump_topology` stamps, for embedding in
+/// the built binary's observation segment. Extracted from the full
+/// serialization rather than recomputed, so the two can never
+/// drift — the cost (one artifact render at build time) is the
+/// same analysis stack `hale check` runs in ~10 ms on the largest
+/// apps.
+pub fn model_shape_hash(bundle: &Bundle<'_>) -> u64 {
+    let art = dump_topology(bundle);
+    art.lines()
+        .find_map(|l| {
+            l.trim()
+                .strip_prefix("\"shape_hash\": \"")?
+                .strip_suffix("\",")
+        })
+        .and_then(|h| u64::from_str_radix(h, 16).ok())
+        .unwrap_or(0)
+}
 
 /// Serialize the bundle's model + claim results as the topology
 /// artifact (JSON).
@@ -388,6 +415,37 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
             ),
         );
     }
+    // Downstream handoff P24 (2026-08-12): topic DECLARATIONS are
+    // spanned decls too. `provenance.publishes` / `.subscribes`
+    // carry the sites, but the `topic Orders { … }` line — the one
+    // a developer looks at when asking "is this topic live?" — had
+    // no entry, so an editor lens could anchor on every use and
+    // not on the declaration. Every name in `sorts.topics` now has
+    // a `provenance.decls` row.
+    {
+        fn walk_topics<'a>(
+            items: &'a [TopDecl],
+            out: &mut Vec<&'a TopicDecl>,
+        ) {
+            for item in items {
+                match item {
+                    TopDecl::Topic(t) => out.push(t),
+                    TopDecl::Module(m) => walk_topics(&m.items, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut topic_decls = Vec::new();
+        for p in &programs {
+            walk_topics(&p.items, &mut topic_decls);
+        }
+        for t in topic_decls {
+            decl_spans.entry(name(&t.name.name)).or_insert((
+                t.name.span.start.as_usize() as u32,
+                t.name.span.end.as_usize() as u32,
+            ));
+        }
+    }
 
     // ---- groups (the claim vocabulary, as declared) ----
     let mut group_rows: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -409,6 +467,138 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
             name(&g.name.name),
             g.members.iter().map(|m| name(&m.display())).collect(),
         );
+    }
+
+    // ---- supervision (downstream handoff P25, 2026-08-12) ----
+    //
+    // `on_failure` had NO representation: not a decl, not a
+    // relation, no section — while RESTART / SUPERV_TRANS /
+    // LOCUS_DISSOLVE are the richest live signal an observer has,
+    // with nothing in the model to anchor to ("declared retry cap
+    // 3, observed 3 in 40s" was structurally impossible). One row
+    // per on_failure handler: the supervising locus, the
+    // supervised child + error types, the recovery ops its body
+    // invokes, and a literal retry bound when one is written
+    // (`restart(c) for N`). HASHED — a policy change is a
+    // topology change. Spans ride in provenance.supervision.
+    struct SupRow {
+        locus: String,
+        child: String,
+        err: String,
+        ops: Vec<String>,
+        retry: Option<i64>,
+        span: (u32, u32),
+    }
+    let mut sup_rows: Vec<SupRow> = Vec::new();
+    {
+        fn te_name(t: &TypeExpr) -> String {
+            match t {
+                TypeExpr::Named { path, .. } => path
+                    .segments
+                    .iter()
+                    .map(|s| s.name.clone())
+                    .collect::<Vec<_>>()
+                    .join("::"),
+                _ => "?".to_string(),
+            }
+        }
+        fn walk_ops(
+            b: &Block,
+            ops: &mut Vec<String>,
+            retry: &mut Option<i64>,
+        ) {
+            for st in &b.stmts {
+                match st {
+                    Stmt::Recovery { op, modifier, .. } => {
+                        let n = match op {
+                            RecoveryOp::Restart => "restart",
+                            RecoveryOp::RestartInPlace => {
+                                "restart_in_place"
+                            }
+                            RecoveryOp::Quarantine => "quarantine",
+                            RecoveryOp::Reorganize => "reorganize",
+                            RecoveryOp::Bubble => "bubble",
+                        };
+                        if !ops.iter().any(|o| o == n) {
+                            ops.push(n.to_string());
+                        }
+                        if let Some(RecoveryModifier::For(
+                            Expr::Literal(Literal::Int(k), _),
+                        )) = modifier
+                        {
+                            *retry = Some(*k);
+                        }
+                    }
+                    Stmt::If(i) => {
+                        walk_ops(&i.then_block, ops, retry);
+                        let mut cur = i.else_block.as_deref();
+                        while let Some(eb) = cur {
+                            match eb {
+                                ElseBranch::Else(bb) => {
+                                    walk_ops(bb, ops, retry);
+                                    cur = None;
+                                }
+                                ElseBranch::ElseIf(ei) => {
+                                    walk_ops(&ei.then_block, ops, retry);
+                                    cur = ei.else_block.as_deref();
+                                }
+                            }
+                        }
+                    }
+                    Stmt::While { body, .. }
+                    | Stmt::For { body, .. } => walk_ops(body, ops, retry),
+                    Stmt::Block(bb) => walk_ops(bb, ops, retry),
+                    _ => {}
+                }
+            }
+        }
+        fn walk_loci<'a>(
+            items: &'a [TopDecl],
+            out: &mut Vec<&'a LocusDecl>,
+        ) {
+            for item in items {
+                match item {
+                    TopDecl::Locus(l) => out.push(l),
+                    TopDecl::Module(m) => walk_loci(&m.items, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut loci = Vec::new();
+        for p in &programs {
+            walk_loci(&p.items, &mut loci);
+        }
+        for l in loci {
+            for member in &l.members {
+                if let LocusMember::Failure(fd) = member {
+                    let mut ops = Vec::new();
+                    let mut retry = None;
+                    walk_ops(&fd.body, &mut ops, &mut retry);
+                    sup_rows.push(SupRow {
+                        locus: name(&l.name.name),
+                        child: fd
+                            .params
+                            .first()
+                            .map(|p| name(&te_name(&p.ty)))
+                            .unwrap_or_else(|| "?".to_string()),
+                        err: fd
+                            .params
+                            .get(1)
+                            .map(|p| name(&te_name(&p.ty)))
+                            .unwrap_or_else(|| "?".to_string()),
+                        ops,
+                        retry,
+                        span: (
+                            fd.span.start.as_usize() as u32,
+                            fd.span.end.as_usize() as u32,
+                        ),
+                    });
+                }
+            }
+        }
+        sup_rows.sort_by(|a, b| {
+            (&a.locus, &a.child).cmp(&(&b.locus, &b.child))
+        });
     }
 
     // ---- labels: declared effect carriers (`is:` tags) ----
@@ -672,7 +862,23 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
         ));
     }
     trim_trailing_comma(&mut model);
-    model.push_str("  },\n  \"unknowns\": [\n");
+    model.push_str("  },\n  \"supervision\": [\n");
+    for r in &sup_rows {
+        let retry = r
+            .retry
+            .map(|n| format!(", \"retry_bound\": {}", n))
+            .unwrap_or_default();
+        model.push_str(&format!(
+            "    {{\"locus\": {}, \"child\": {}, \"err\": {}, \"ops\": [{}]{}}},\n",
+            quote(&r.locus),
+            quote(&r.child),
+            quote(&r.err),
+            join_str(r.ops.iter()),
+            retry
+        ));
+    }
+    trim_trailing_comma(&mut model);
+    model.push_str("  ],\n  \"unknowns\": [\n");
     for (f, reasons) in &unknowns {
         let rs = reasons
             .iter()
@@ -800,7 +1006,19 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
         ));
     }
     trim_trailing_comma(&mut out);
-    out.push_str("    }\n  }");
+    out.push_str("    },\n    \"supervision\": [\n");
+    for r in &sup_rows {
+        out.push_str(&format!(
+            "      {{\"locus\": {}, \"child\": {}, \"source\": {}, \"span\": [{}, {}]}},\n",
+            quote(&r.locus),
+            quote(&r.child),
+            loc(r.span.0).0,
+            loc(r.span.0).1,
+            loc(r.span.1).1
+        ));
+    }
+    trim_trailing_comma(&mut out);
+    out.push_str("    ]\n  }");
     // #399: the per-topic OBSERVATION identity — the join between
     // this artifact and a recording. The runtime manifest fuses
     // topics on (name, shape_hash) where shape_hash =

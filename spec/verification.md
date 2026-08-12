@@ -294,7 +294,7 @@ earlier in the same file as the family. Companion:
 class along any path, with the same loop/indirect unboundedness
 rules as every per-call dimension.
 
-**The topology artifact** (#382 phase 2; schema 1.8):
+**The topology artifact** (#382 phase 2; schema 1.10):
 `hale check <t> --dump-topology` emits the serialized model —
 sorts (loci, fns, topics), relations (calls with **weights**: loop
 nesting, unbounded-loop membership, interface-dispatch tags;
@@ -304,7 +304,14 @@ bodies, collapsed to their endpoints with a conservative loop
 flag, so reachability over the artifact matches reachability as
 evaluated), the declared **groups**, the effect **labels**
 (declared carriers), the **phase relation**, the **seed sort**,
-the compiler-**derived** per-fn effect sets, and the **unknowns**
+the compiler-**derived** per-fn effect sets, the **supervision**
+relation (schema 1.10, downstream handoff — one row per
+`on_failure` handler: supervising locus, supervised child + error
+types, the recovery ops the body invokes, and a literal retry
+bound when one is written; a policy change moves `shape_hash`,
+and `provenance.supervision` carries the spans, so the observer's
+live RESTART/SUPERV_TRANS stream finally has declared policy to
+anchor to), and the **unknowns**
 (fns with indirect calls, untyped-receiver calls, dead
 uninhabited-interface dispatch, or computed publish subjects), all
 in author spelling — plus every named claim's normalized form and

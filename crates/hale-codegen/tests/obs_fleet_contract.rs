@@ -1055,3 +1055,194 @@ fn remote_only_publish_counts() {
         "P20: remote-only keyed publishes must bump CT_PUBLISHED"
     );
 }
+
+/// iris handoff-12 P20, the exact missing conjunction: an
+/// `accept()`-SPAWNED publisher's publishes being COUNTED on a
+/// remote-only PLAIN (unkeyed) topic, with the observer attaching
+/// after steady state. The four earlier flavors pinned static
+/// publishers and a keyed subject, and the fleet-contract
+/// accept()-spawned case asserted attribution on a keyed LOCAL
+/// topic — this is the field shape from the July report.
+#[test]
+fn accept_spawned_remote_only_plain_publishes_count() {
+    const SRC: &str = r#"
+        type Out { v: Int; }
+        type Keep { n: Int; }
+        topic Sig { payload: Out; subject: "sig.plain"; }
+        locus KeepAlive {
+            bus { subscribe "keep" as on_k of type Keep; }
+            fn on_k(k: Keep) { }
+        }
+        locus Worker {
+            params { id: Int = 0; }
+            bus { publish Sig; }
+            run() {
+                let mut i = 0;
+                while i < 20 {
+                    Sig <- Out { v: i };
+                    std::time::sleep(10ms);
+                    i = i + 1;
+                }
+            }
+        }
+        locus Coord {
+            accept(w: Worker) { }
+            run() {
+                Worker { id: 1 };
+                Worker { id: 2 };
+            }
+        }
+        fn main() {
+            KeepAlive { };
+            Coord { };
+            std::time::sleep(900ms);
+        }
+    "#;
+    let bin = compile("acceptro", SRC);
+    let dir = std::env::temp_dir()
+        .join(format!("hale_obsaro_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let cfg = dir.join("bus.conf");
+    std::fs::write(&cfg, "sig.plain = udp://127.0.0.1:57851:connect\n")
+        .unwrap();
+    let mut child = Command::new(&bin)
+        .env("LOTUS_BUS_CONFIG", &cfg)
+        .env("LOTUS_OBS", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn");
+    let pid = child.id();
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(25));
+        if std::path::Path::new(&format!("/dev/shm/hale-obs-{}", pid))
+            .exists()
+        {
+            break;
+        }
+    }
+    // Attach AFTER the spawned workers are well into publishing —
+    // the field shape's third axis. Counters are the
+    // enabled-but-unobserved contract and must include pre-attach
+    // publishes.
+    std::thread::sleep(Duration::from_millis(450));
+    attach_observer(pid);
+    std::thread::sleep(Duration::from_millis(400));
+    let seg = snapshot_shm(pid);
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_file(&bin);
+    let _ = std::fs::remove_dir_all(&dir);
+    let seg = seg.expect("segment");
+    let (published, _, _) =
+        topic_counters(&seg, b"sig.plain").expect("remote-only plain topic");
+    assert_eq!(
+        published, 40,
+        "P20 conjunction: accept()-spawned publishes on a \
+         remote-only plain topic must bump CT_PUBLISHED"
+    );
+}
+
+/// iris handoff-12 P22 — the per-binding backpressure cells.
+/// PROTOCOL §6 reserved queue_depth (3, gauge), send_block_ns (4)
+/// and retries (5) since v0; no path wrote them. Acceptance shape:
+/// a deliberately overloaded consumer (accepts, never reads) shows
+/// the binding's depth climbing and send-block time accruing AHEAD
+/// of any loss — the signal M2 exists to get ahead of.
+#[test]
+fn overloaded_consumer_shows_depth_and_block_time() {
+    const SRC: &str = r#"
+        type Blob { data: String; }
+        type Keep { n: Int; }
+        topic Out { payload: Blob; subject: "bp.out"; }
+        locus KeepAlive {
+            bus { subscribe "keep" as on_k of type Keep; }
+            fn on_k(k: Keep) { }
+        }
+        locus Pub {
+            bus { publish Out; }
+            run() {
+                std::time::sleep(200ms);
+                let mut chunk = "x";
+                let mut i = 0;
+                while i < 12 { chunk = chunk + chunk; i = i + 1; }
+                let mut j = 0;
+                while j < 400 {
+                    Out <- Blob { data: chunk };
+                    j = j + 1;
+                }
+            }
+        }
+        fn main() {
+            KeepAlive { };
+            Pub { };
+            std::time::sleep(3000ms);
+        }
+    "#;
+    let bin = compile("backpressure", SRC);
+    let dir = std::env::temp_dir()
+        .join(format!("hale_obsbp_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sock = dir.join("bp.sock");
+
+    // The overloaded consumer: accepts the connection and never
+    // reads a byte, so the sender's kernel queue fills.
+    let listener =
+        std::os::unix::net::UnixListener::bind(&sock).expect("bind");
+    let stall = std::thread::spawn(move || {
+        if let Ok((conn, _)) = listener.accept() {
+            std::thread::sleep(Duration::from_millis(2500));
+            drop(conn);
+        }
+    });
+
+    let cfg = dir.join("bus.conf");
+    std::fs::write(
+        &cfg,
+        format!("bp.out = unix://{} : connect\n", sock.display()),
+    )
+    .unwrap();
+    let mut child = Command::new(&bin)
+        .env("LOTUS_BUS_CONFIG", &cfg)
+        .env("LOTUS_OBS", "1")
+        .env("LOTUS_UNIX_STREAM", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn");
+    let pid = child.id();
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(25));
+        if std::path::Path::new(&format!("/dev/shm/hale-obs-{}", pid))
+            .exists()
+        {
+            break;
+        }
+    }
+    attach_observer(pid);
+    // Sample mid-flood, while the publisher is wedged against the
+    // full socket queue.
+    std::thread::sleep(Duration::from_millis(900));
+    let seg = snapshot_shm(pid);
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = stall.join();
+    let _ = std::fs::remove_file(&bin);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let seg = seg.expect("segment");
+    let cells = obs::binding_cells(&seg, b"bp.out")
+        .expect("binding line for bp.out");
+    let (sent, depth, block_ns) = (cells[0], cells[3], cells[4]);
+    assert!(sent > 0, "some sends landed before the stall: {:?}", cells);
+    assert!(
+        depth > 0,
+        "queue_depth gauge climbs while the consumer stalls: {:?}",
+        cells
+    );
+    assert!(
+        block_ns > 0,
+        "send_block_ns accrues in the send path: {:?}",
+        cells
+    );
+}

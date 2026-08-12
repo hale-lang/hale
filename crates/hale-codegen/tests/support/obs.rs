@@ -189,3 +189,38 @@ pub fn obs_bus_locus(w1: u64) -> u32 {
 pub fn net_origin_seq(w1: u64) -> (u32, u64) {
     ((w1 & 0xFFFF) as u32, (w1 >> 16) & 0xFFFF_FFFF_FFFF)
 }
+
+/// All 8 counter cells of a BINDING line (manifest kind 2) by
+/// subject. PROTOCOL §6: sent, delivered, bytes, queue_depth
+/// (gauge), send_block_ns, retries, seq_high_water, spare.
+pub fn binding_cells(seg: &[u8], subject: &[u8]) -> Option<[u64; 8]> {
+    let manifest_off = read_u64(seg, 0x40) as usize;
+    let entry_count = read_u32(seg, manifest_off) as usize;
+    let pool_off = read_u32(seg, manifest_off + 8) as usize;
+    let entries = manifest_off + 16;
+    let counters_off = read_u64(seg, 0x58) as usize;
+    let mut line = 0usize;
+    for i in 0..entry_count {
+        let e = entries + i * 32;
+        let kind = seg[e + 28];
+        if kind == 0 || kind == 2 {
+            line += 1;
+            if kind == 2 {
+                let name_off = read_u32(seg, e + 20) as usize;
+                let name_len = seg[e + 24] as usize
+                    | ((seg[e + 25] as usize) << 8);
+                let name = &seg[manifest_off + pool_off + name_off
+                    ..manifest_off + pool_off + name_off + name_len];
+                if name == subject {
+                    let cline = counters_off + line * 64;
+                    let mut out = [0u64; 8];
+                    for (c, slot) in out.iter_mut().enumerate() {
+                        *slot = read_u64(seg, cline + c * 8);
+                    }
+                    return Some(out);
+                }
+            }
+        }
+    }
+    None
+}

@@ -92,6 +92,12 @@ typedef struct {
            counters_off, counters_len, rings_off;
   _Atomic uint64_t flags;
   _Atomic uint64_t manifest_gen;
+  /* iris handoff-12 P26 (proto 0.2): the topology model's
+   * shape_hash, stamped at segment creation from the value codegen
+   * embedded at build time. 0 = unstamped (harness builds).
+   * Complementary to the per-topic payload shape_hash rows: model
+   * identity deliberately excludes payload field shape. */
+  uint64_t model_hash;
 } obs_hdr_t;
 
 typedef struct { _Atomic uint32_t observer_count, sample_n; } obs_ctrl_t;
@@ -113,6 +119,11 @@ void lotus_spsc_note_drop(void *desc);
 
 /* 0 = unchecked, 1 = disabled, 2 = enabled. */
 static _Atomic int g_obs_state = 0;
+
+/* P26: build-time model identity, set by the codegen prelude before
+ * any probe can lazily create the segment. */
+static uint64_t g_obs_model_hash = 0;
+void lotus_obs_model_hash_set(uint64_t h) { g_obs_model_hash = h; }
 
 /* iris handoff-2 P10: publisher attribution. Codegen notes the
  * publishing locus's self in this TLS right before lowering a
@@ -386,7 +397,7 @@ static int obs_create(int64_t rings, int64_t slots) {
   memset(MODE, 2 /* PACKED */, OBS_ENTRY_CAP);
   memset(g_cnt_line_for, -1, sizeof g_cnt_line_for);
 
-  *H = (obs_hdr_t){ .magic = OBS_MAGIC, .proto_major = 0, .proto_minor = 1,
+  *H = (obs_hdr_t){ .magic = OBS_MAGIC, .proto_major = 0, .proto_minor = 2,
     .header_len = sizeof(obs_hdr_t), .total_len = g_seg_len,
     .pid = (uint32_t)getpid(), .ring_count = (uint32_t)rings,
     .ring_slots = (uint32_t)slots, .ts_shift = 4,
@@ -394,7 +405,7 @@ static int obs_create(int64_t rings, int64_t slots) {
     .control_off = control_off, .manifest_off = manifest_off,
     .manifest_len = manifest_len, .modemask_off = modemask_off,
     .counters_off = counters_off, .counters_len = counters_len,
-    .rings_off = rings_off };
+    .rings_off = rings_off, .model_hash = g_obs_model_hash };
   for (int64_t i = 0; i < rings; i++)
     RD[i] = (obs_rdesc_t){
         .data_off = rings_off + rings_hdr + (uint64_t)i * ring_bytes,
@@ -551,6 +562,29 @@ static void obs_count(int kind, int64_t id, int cell, uint64_t delta) {
   if (line > 0)
     atomic_fetch_add_explicit(&CNT[line].c[cell], delta,
                               memory_order_relaxed);
+}
+
+/* iris handoff-12 P22 — the per-binding backpressure cells
+ * (PROTOCOL §6: 3 = queue_depth gauge, 4 = send_block_ns,
+ * 5 = retries) were reserved since v0 and written by no path. The
+ * arena's transport code measures them (fd occupancy and send
+ * timing live there) and writes through these two: counters-tier,
+ * relaxed, no observer gate — exactly the enabled-but-unobserved
+ * contract cells 0-2 already keep. */
+void lotus_obs_binding_cell_add(int64_t binding_id, int64_t cell,
+                                uint64_t delta) {
+  if (!obs_on() || cell < 0 || cell > 7) return;
+  obs_count(MK_BINDING, binding_id, (int)cell, delta);
+}
+
+void lotus_obs_binding_cell_gauge(int64_t binding_id, int64_t cell,
+                                  uint64_t value) {
+  if (!obs_on() || cell < 0 || cell > 7) return;
+  if (binding_id < 0 || binding_id >= OBS_ENTRY_CAP) return;
+  int line = g_cnt_line_for[MK_BINDING][binding_id];
+  if (line > 0)
+    atomic_store_explicit(&CNT[line].c[cell], value,
+                          memory_order_relaxed);
 }
 
 /* ---- record emission (per-thread ring, EPOCH-anchored) -------- */
