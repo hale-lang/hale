@@ -350,6 +350,38 @@ observation records.
 | `bench_iter(n, f)` | not shipped |
 | `hale test` CLI runner | shipped — discovery→compile→run→report driver over `*_test.hl` (`-run`, `--json`) |
 
+## Determinism
+
+**Single-pool execution is deterministic.** A program whose loci
+all run on the main cooperative scheduler — no `placement`
+pinning, no additional pools — produces the same publishes and
+the same deliveries in the same order on every run, given the
+same inputs. This is a guarantee, not an observation: one pool
+is one consumer thread by construction (`spec/runtime.md`
+§ Scheduler — the same invariant dispatch devirtualization rests
+on), handlers run to completion, and the main-thread bus queue
+drains FIFO, so there is no scheduling freedom for an order to
+vary within.
+
+"Given the same inputs" is load-bearing: time, entropy,
+environment, FFI returns, and socket reads are inputs, and a
+program that consumes them may compute differently even though
+its scheduling cannot reorder. Whether a body reaches those
+inputs is a compile-time question — `@deterministic`
+(`spec/verification.md` § Effect assertions) asserts it, and
+`frontier::infer_effects` answers it without any annotation.
+
+Pinned: `crates/hale-codegen/tests/replay_determinism.rs`
+compares the complete ordered `BUS_PUBLISH`/`BUS_DELIVER` record
+sequence of a multi-locus cascade across repeated runs. A
+divergence there is a runtime bug, never a flaky test.
+
+Multi-pool programs get no ordering guarantee across pools
+today: each pool's single consumer thread has a well-defined
+per-consumer delivery order, but the interleaving between pools
+is OS scheduling. Recording that per-consumer order (and
+replaying it) is the record/replay track — GH #296.
+
 ## Property-based testing
 
 Reserved as a future extension. The language's strong
@@ -378,11 +410,13 @@ Actions annotations, etc.) are downstream conversions.
    neither attributes nor magic-name conventions yet. Decision
    pending; probably an attribute (`@bench fn ...`) added to
    the grammar in v0.2.
-2. **Determinism.** For benchmarks, the runtime should be
-   isolatable (no GC pauses to confound; we don't have GC, so
-   that's free). Does the runtime need deterministic
-   scheduling for benchmark consistency? Probably yes for some
-   benchmark classes; opt-in.
+2. **Determinism.** ~~Does the runtime need deterministic
+   scheduling for benchmark consistency?~~ Resolved for the
+   single-pool case: it already has it, by construction — see
+   § Determinism above. Deterministic *re-execution* of
+   multi-pool programs is the record/replay track (GH #296);
+   forcing deterministic scheduling in production is an explicit
+   non-goal there.
 3. **External-language toolchain access.** `hale bench
    -compare` needs `go`, `rustc`, `erlc`, etc. on PATH.
    Documenting this clearly is dev-experience work.

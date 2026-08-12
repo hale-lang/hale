@@ -64,10 +64,17 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
         Ok((value, CodegenTy::Int))
     }
 
-    /// Lower `time::monotonic()` to `clock_gettime(CLOCK_MONOTONIC,
-    /// &ts)` followed by `ts.tv_sec * 1_000_000_000 + ts.tv_nsec`.
+    /// Lower `time::monotonic()` to `lotus_time_monotonic_ns()`.
     /// Result is a `Duration` (i64 nanoseconds since an
     /// unspecified reference).
+    ///
+    /// GH #296 Phase 3: this used to inline
+    /// `clock_gettime(CLOCK_MONOTONIC)` IR directly — no symbol,
+    /// so nothing a recording journal or a replay could interpose
+    /// on. Two of the three TIME-classified reads were invisible
+    /// to record/replay while `now()` (already a named primitive)
+    /// was covered. Same rationale that made `now` a symbol; the
+    /// call costs the same as the libc call it replaces.
     fn lower_time_monotonic(
         &mut self,
         args: &[Expr],
@@ -78,50 +85,18 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
                 args.len()
             )));
         }
-        let i32_t = self.context.i32_type();
-        let i64_t = self.context.i64_type();
-        let ts_t = self.timespec_type();
-
-        let ts = self.alloca_in_entry(ts_t.into(), "ts")?;
-        let cgt = self
+        let mono = self
             .module
-            .get_function("clock_gettime")
-            .expect("clock_gettime declared");
-        // CLOCK_MONOTONIC = 1 on Linux.
-        let clock_id = i32_t.const_int(1, false);
-        self.builder
-            .build_call(cgt, &[clock_id.into(), ts.into()], "cgt.ret")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        // Ignore the return value best-effort; CLOCK_MONOTONIC
-        // shouldn't fail. tv_sec * 1e9 + tv_nsec.
-        let sec_ptr = self
-            .builder
-            .build_struct_gep(ts_t, ts, 0, "ts.sec.ptr")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let nsec_ptr = self
-            .builder
-            .build_struct_gep(ts_t, ts, 1, "ts.nsec.ptr")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let sec = self
-            .builder
-            .build_load(i64_t, sec_ptr, "ts.sec")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .into_int_value();
-        let nsec = self
-            .builder
-            .build_load(i64_t, nsec_ptr, "ts.nsec")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .into_int_value();
-        let billion = i64_t.const_int(1_000_000_000, false);
-        let sec_ns = self
-            .builder
-            .build_int_mul(sec, billion, "sec.ns")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            .get_function("lotus_time_monotonic_ns")
+            .expect("lotus_time_monotonic_ns declared");
         let total = self
             .builder
-            .build_int_add(sec_ns, nsec, "now.ns")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((total.into(), CodegenTy::Duration))
+            .build_call(mono, &[], "now.ns")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_time_monotonic_ns returns i64");
+        Ok((total, CodegenTy::Duration))
     }
 
     /// C7 (pond follow-up): lower `std::time::now() -> Int` to a

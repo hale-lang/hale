@@ -3275,6 +3275,23 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             self.di_begin_function();
             let thread_self =
                 thread_main.get_nth_param(0).unwrap().into_pointer_value();
+            // GH #296: stamp this thread's stable consumer identity
+            // (64 + obs instance id) for record/replay attribution.
+            // Thread start is cold; the callee no-ops when obs is
+            // off, so no gate is needed here.
+            {
+                let note_fn = self
+                    .module
+                    .get_function("lotus_obs_note_consumer_locus")
+                    .expect("lotus_obs_note_consumer_locus declared");
+                self.builder
+                    .build_call(
+                        note_fn,
+                        &[thread_self.into()],
+                        "obs.note_consumer",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
             // 2026-05-23: stash this locus's mailbox in
             // TLS so time::sleep / yield inside birth() and run()
             // can drain it without going through the post-run

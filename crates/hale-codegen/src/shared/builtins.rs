@@ -1183,6 +1183,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .fn_type(&[i64_t2.into()], false),
             None,
         );
+        // GH #296: stable consumer identity for a pinned locus's
+        // thread, called once from the __pinned_main prologue
+        // (cold path; no-ops when observation is off).
+        // declare void @lotus_obs_note_consumer_locus(ptr self)
+        self.module.add_function(
+            "lotus_obs_note_consumer_locus",
+            self.context
+                .void_type()
+                .fn_type(&[ptr_t.into()], false),
+            None,
+        );
         self.module.add_function(
             "lotus_obs_locus_dissolve",
             self.context
@@ -3237,6 +3248,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module.add_function(
             "lotus_time_now_seconds",
             time_now_seconds_ty,
+            None,
+        );
+        // GH #296 Phase 3: monotonic reads route through a named
+        // primitive so record/replay can interpose (they used to
+        // be inline clock_gettime IR — uninterposable).
+        // declare i64 @lotus_time_monotonic_ns()
+        self.module.add_function(
+            "lotus_time_monotonic_ns",
+            i64_t.fn_type(&[], false),
             None,
         );
         // declare ptr @lotus_time_from_unix(i64 n)

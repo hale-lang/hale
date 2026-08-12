@@ -8,6 +8,88 @@ behavior.
 
 ## Unreleased
 
+### Record & replay, phases 2–4: `hale replay` (GH #296)
+
+Building on the phase-0/1 recording below, the rest of the RFC's
+core promise ships: **re-run a recorded execution and get the same
+deliveries in the same order, with the same inputs.**
+
+- **`hale replay <recording> <program.hl>`** — compiles through the
+  same pipeline as `hale run`, admits the recording by
+  `model_hash` (a recording from a different model is rejected,
+  never misreplayed; a truncated recording is refused), then
+  re-executes under `LOTUS_REPLAY`. `--diff` records the replay and
+  reports the first per-consumer divergence; `--at N` stops
+  (SIGSTOP) at the Nth consume so a debugger can attach.
+- **Delivery identity + payload capture** (format v0.2, tagged
+  entries): every queued delivery carries a deterministic
+  `pub_id` (stable consumer id + per-publisher-thread seq — a
+  re-executed run re-derives the same ids with no global
+  coordination); payload bytes are captured once per queued
+  publish, external wire ingress flagged. Synchronous direct
+  dispatch captures nothing by design: a closed-world same-thread
+  call cannot carry external input.
+- **The input journal**: `std::time::now`, `std::time::monotonic`
+  / `monotonic_ns` (now a named runtime primitive —
+  they lowered as inline `clock_gettime` IR nothing could
+  interpose), `std::rand::next_int`, `std::os::getrandom`, and the
+  `std::env` surface are journaled per consumer under recording
+  and served back under replay. A read past the recorded history
+  falls back live and is counted — **replay degrades, never
+  refuses** — with a divergence summary at exit.
+- **Recorded-order enforcement**: each consumer (cooperative pool
+  worker, pinned mailbox, main queue) re-consumes its queued
+  deliveries in the recorded order, holding early arrivals in a
+  per-consumer buffer with a bounded (1s) degrade path, so two
+  racing pinned publishers replay in exactly the interleaving that
+  was recorded — pinned end-to-end by a CLI test that replays a
+  40+40-delivery race twice. `where async_io` pools refuse replay
+  loudly (their coro interleaving is a later milestone).
+- Remaining, explicitly staged: ingress injection + fleet replay
+  (Phase 5, needs `LOTUS_OBS_WIRE` fleet identity), and
+  replay-under-a-different-plan (Phase 6, blocked on #262's plan
+  admission).
+
+### Record & replay, phases 0–1: the determinism guarantee, and a recording that never drops (GH #296)
+
+- **Single-pool determinism is now a stated guarantee**, not an
+  implementation accident. A program whose loci all run on the main
+  cooperative scheduler produces the same publishes and deliveries
+  in the same order on every run, given the same inputs — one pool
+  is one consumer thread by construction, so there is no scheduling
+  freedom for an order to vary within. Written into
+  `spec/testing.md` § Determinism (both former "determinism mode"
+  open questions resolved against it), pinned by
+  `replay_determinism.rs`, which compares the complete ordered
+  BUS_PUBLISH/BUS_DELIVER stream across repeated runs. A divergence
+  there is a runtime bug, never a flaky test.
+- **`LOTUS_OBS_RECORD=<path>` — lossless recording mode.** The
+  observation plane's sampler disposition (overwrite-oldest,
+  count the drops) becomes a flight recorder's: an in-process
+  drain appends every ring record to the file, a producer whose
+  ring is full **blocks** against the drain cursor instead of
+  overwriting, a thread that cannot get a ring **fails the run**
+  (recording defaults to the 64-ring maximum first), and a write
+  failure fails the run rather than truncating silently. Never
+  drop, by construction. Implies `LOTUS_OBS=1` and counts as an
+  attached observer, so a recording needs no external consumer.
+  Wholly opt-in: unset, the lowering is instruction-identical to
+  the unobserved build, per the established gate discipline.
+- **`BUS_CONSUME` (ekind 8, recording mode only): the per-consumer
+  delivery order.** BUS_DELIVER is enqueue-time and lands on the
+  publisher's ring — it cannot say in what order a consumer ran
+  its handlers. Under recording, every dequeue-driven handler
+  invoke stamps a consume record on the consuming thread
+  (subscriber locus + the thread's gapless count); its ring
+  position is the order a replay will serve back. Synchronous
+  direct dispatch deliberately emits none — its deliver record is
+  its consumption point. Never emitted outside recording, so
+  existing consumers never meet an unknown ekind.
+- The recording file format is **pre-stable** (v0.2 as shipped:
+  tagged header + ring records + payload/journal blobs +
+  clean-finalize trailer); the fully self-describing artifact
+  shape may still evolve with the remaining GH #296 phases.
+
 ### Observability: supervision in the model, backpressure on the wire, identity in the segment
 
 Five items from a downstream observability handoff, resolved as one

@@ -252,6 +252,43 @@ understands the header. (A non-framed unicast transport carries
 no seq and falls back to a local delivery count even with the
 wire enabled.)
 
+**Recording a run.** `LOTUS_OBS_RECORD=<path>` turns the sampler
+into a flight recorder: every observation record is drained to
+`<path>`, and the disposition flips from "drop rather than stall"
+to "stall rather than drop" — a full ring blocks its producer
+until the drain catches up, and a run that *couldn't* record
+everything fails loudly instead of producing a silently
+incomplete file. It implies `LOTUS_OBS=1` and needs no observer
+attached. The recording captures each consumer's actual handler
+order, every queued publish's payload, and a journal of the
+nondeterministic reads (`std::time`, `std::rand`,
+`std::os::getrandom`, `std::env`). Recording changes your
+program's timing by design; don't leave it on in production. The
+file format is pre-stable (GH #296).
+
+**Replaying one.**
+
+```sh
+LOTUS_OBS_RECORD=run.halerec hale run app.hl   # record
+hale replay run.halerec app.hl                 # re-execute it
+hale replay run.halerec app.hl --diff          # + report first divergence
+hale replay run.halerec app.hl --at 4120       # SIGSTOP at consume #4120
+```
+
+`hale replay` re-runs the same program (it recompiles and checks
+the recording's `model_hash` against it — a recording from a
+different model is rejected, and a truncated one refused), serving
+journaled inputs back and re-consuming each consumer's deliveries
+in the recorded order — two racing pinned publishers replay in
+exactly the interleaving that was recorded. Replay *degrades*
+rather than refuses: a read or delivery past the recorded history
+falls back live and is counted, and the divergence summary prints
+at exit. Not yet replayable: `where async_io` pools (refused
+loudly) and live external ingress — socket/adapter input
+re-executes against the real world in this version. Single-pool
+runs are deterministic by construction even without replay; see
+the [testing chapter](../everyday/testing.md).
+
 ## Debugging with the native toolchain
 
 Hale binaries carry full DWARF by default (zero runtime cost):

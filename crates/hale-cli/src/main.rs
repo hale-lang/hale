@@ -30,6 +30,7 @@ use hale_lsp as lsp;
 mod fleet;
 mod mcp;
 mod pkg;
+mod replay;
 mod sign;
 
 fn main() -> ExitCode {
@@ -106,6 +107,13 @@ fn main() -> ExitCode {
     if cmd == "test" {
         let rest: Vec<String> = args.iter().skip(2).cloned().collect();
         return run_test(&rest);
+    }
+
+    // `replay` takes a recording and a program (its own arg shape,
+    // so it parses `rest` itself like `test` does). GH #296.
+    if cmd == "replay" {
+        let rest: Vec<String> = args.iter().skip(2).cloned().collect();
+        return run_replay(&rest);
     }
 
     // `lsp` speaks stdio and takes no target — the seed to check is
@@ -205,6 +213,8 @@ fn usage() {
     eprintln!("    hale verify <file.hl | dir>   check + FAIL on any advisory (discipline gate)");
     eprintln!("    hale run   <file.hl | dir>    compile + run as a native binary");
     eprintln!("    hale build <file.hl | dir>    parse + typecheck + emit native binary");
+    eprintln!("    hale replay <rec> <file.hl>   re-run a LOTUS_OBS_RECORD recording");
+    eprintln!("        [--diff: report first divergence] [--at N: SIGSTOP at Nth consume]");
     eprintln!("    hale test  [file | dir]       compile + run *_test.hl (default: cwd)");
     eprintln!("        [-run <substr>] [--json]");
     eprintln!("    hale bench [file | dir]       run *_bench.hl bench_* fns (default: cwd)");
@@ -4828,6 +4838,229 @@ fn run_test(args: &[String]) -> ExitCode {
     } else {
         ExitCode::from(1)
     }
+}
+
+/// `hale replay <recording> <program.hl> [--diff] [--at N]` —
+/// GH #296. Re-runs a recorded execution: the same binary (model
+/// identity checked against the recording header), with the
+/// runtime serving journaled inputs (time/entropy/env) and
+/// enforcing each consumer's recorded delivery order. `--diff`
+/// records the replay and reports the first divergence; `--at N`
+/// stops the program (SIGSTOP) at the Nth consume so a debugger
+/// can attach.
+fn run_replay(args: &[String]) -> ExitCode {
+    let mut rec_arg: Option<PathBuf> = None;
+    let mut prog: Option<PathBuf> = None;
+    let mut diff = false;
+    let mut at: Option<u64> = None;
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--diff" {
+            diff = true;
+            i += 1;
+        } else if a == "--at" {
+            match args.get(i + 1).and_then(|v| v.parse::<u64>().ok()) {
+                Some(n) if n > 0 => {
+                    at = Some(n);
+                    i += 2;
+                }
+                _ => {
+                    eprintln!("hale replay: --at requires a positive count");
+                    return ExitCode::from(2);
+                }
+            }
+        } else if a.starts_with('-') {
+            eprintln!("hale replay: unknown flag `{}`", a);
+            return ExitCode::from(2);
+        } else if rec_arg.is_none() {
+            rec_arg = Some(PathBuf::from(a));
+            i += 1;
+        } else if prog.is_none() {
+            prog = Some(PathBuf::from(a));
+            i += 1;
+        } else {
+            eprintln!("hale replay: unexpected extra argument `{}`", a);
+            return ExitCode::from(2);
+        }
+    }
+    let (rec_path, prog) = match (rec_arg, prog) {
+        (Some(r), Some(p)) => (r, p),
+        _ => {
+            eprintln!(
+                "usage: hale replay <recording> <program.hl> \
+                 [--diff] [--at N]"
+            );
+            return ExitCode::from(2);
+        }
+    };
+
+    let rec = match replay::parse(&rec_path) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("hale replay: {}", e);
+            return ExitCode::from(1);
+        }
+    };
+    if !rec.clean {
+        eprintln!(
+            "hale replay: `{}` has no clean-finalize trailer — the \
+             recording is truncated and a partial history replays \
+             as a silent divergence; re-record",
+            rec_path.display()
+        );
+        return ExitCode::from(1);
+    }
+
+    if !prog.is_file() {
+        eprintln!(
+            "hale replay: `{}` is not a file (directory seeds are \
+             not replayable yet)",
+            prog.display()
+        );
+        return ExitCode::from(1);
+    }
+    // Same compile pipeline as `hale run` (parse → check → model
+    // hash), so a recording is admitted against exactly what runs.
+    let (program, renames, sources, file_bases, _ctx) =
+        match parse_with_imports(&prog) {
+            Ok(x) => x,
+            Err(errors) => {
+                for (path, d, src) in &errors {
+                    eprintln!("{}:", path.display());
+                    eprintln!("  {}", d.render(src));
+                }
+                return ExitCode::from(1);
+            }
+        };
+    let mut bundle_programs: BTreeMap<String, &Program> = BTreeMap::new();
+    bundle_programs.insert(prog.display().to_string(), &program);
+    let mut bundle = hale_types::Bundle::new(bundle_programs);
+    bundle.import_renames = renames.clone();
+    let diags = hale_types::check_bundle_opts(&bundle, false);
+    if !diags.is_empty() {
+        for d in &diags {
+            eprintln!("{}", render_located(d, &file_bases, &sources));
+        }
+        if diags.iter().any(|d| d.is_error()) {
+            return ExitCode::from(1);
+        }
+    }
+    let model_hash = hale_types::topology::model_shape_hash(&bundle);
+
+    // Admission (#262's shape): a recording that no longer matches
+    // the model is rejected, never silently misreplayed. 0 =
+    // unstamped (harness recording) — allowed with a warning.
+    if rec.model_hash != 0 && rec.model_hash != model_hash {
+        eprintln!(
+            "hale replay: `{}` was recorded from a different model \
+             (recorded shape_hash {:016x}, this program is {:016x}) \
+             — refusing to misreplay; re-record against this \
+             program",
+            rec_path.display(),
+            rec.model_hash,
+            model_hash
+        );
+        return ExitCode::from(1);
+    }
+    if rec.model_hash == 0 {
+        eprintln!(
+            "hale replay: recording carries no model identity \
+             (unstamped build) — admission check skipped"
+        );
+    }
+
+    let rec_abs = rec_path
+        .canonicalize()
+        .unwrap_or_else(|_| rec_path.clone());
+
+    let mut bin = std::env::temp_dir();
+    let mut h = DefaultHasher::new();
+    h.write_usize(program.items.len());
+    h.write_u32(std::process::id());
+    bin.push(format!("hale_replay_{:016x}", h.finish()));
+    let options = hale_codegen::BuildOptions {
+        model_hash: Some(model_hash),
+        ..Default::default()
+    };
+    if let Err(e) = hale_codegen::build_executable_with_options(
+        &program, &bin, &renames, &options,
+    ) {
+        eprintln!("build error: {:?}", e);
+        return ExitCode::from(1);
+    }
+
+    let verify_path = if diff {
+        let mut v = std::env::temp_dir();
+        v.push(format!(
+            "hale_replay_verify_{}_{:016x}.halerec",
+            std::process::id(),
+            model_hash
+        ));
+        let _ = std::fs::remove_file(&v);
+        Some(v)
+    } else {
+        None
+    };
+
+    let mut cmd = std::process::Command::new(&bin);
+    cmd.env("LOTUS_REPLAY", &rec_abs);
+    if let Some(n) = at {
+        cmd.env("LOTUS_REPLAY_AT", n.to_string());
+    }
+    if let Some(v) = &verify_path {
+        cmd.env("LOTUS_OBS_RECORD", v);
+    }
+    let status = cmd.status();
+    let _ = std::fs::remove_file(&bin);
+    let code = match status {
+        Ok(s) => s.code().unwrap_or(1).clamp(0, 255) as u8,
+        Err(e) => {
+            eprintln!("could not execute compiled program: {}", e);
+            if let Some(v) = &verify_path {
+                let _ = std::fs::remove_file(v);
+            }
+            return ExitCode::from(1);
+        }
+    };
+
+    if let Some(v) = &verify_path {
+        let result = match replay::parse(v) {
+            Ok(vr) => match replay::diff(&rec, &vr) {
+                None => {
+                    let consumes: usize = rec
+                        .consume_streams
+                        .iter()
+                        .map(|(_, s)| s.len())
+                        .sum();
+                    println!(
+                        "replay matches the recording: {} consumes \
+                         across {} consumers, payloads identical \
+                         ({} ring records, {} journal reads)",
+                        consumes,
+                        rec.consume_streams.len(),
+                        rec.ring_records,
+                        rec.journal_entries
+                    );
+                    ExitCode::from(code)
+                }
+                Some(msg) => {
+                    eprintln!("replay DIVERGED: {}", msg);
+                    ExitCode::from(1)
+                }
+            },
+            Err(e) => {
+                eprintln!(
+                    "hale replay: verification recording unreadable: {}",
+                    e
+                );
+                ExitCode::from(1)
+            }
+        };
+        let _ = std::fs::remove_file(v);
+        return result;
+    }
+    ExitCode::from(code)
 }
 
 fn run_program(target: &Path, user_args: &[String]) -> ExitCode {

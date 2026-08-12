@@ -1556,6 +1556,118 @@ v0.11.20):
   with the P15 negative marking. Per-subscriber BUS_DELIVER and
   the topic registration are unchanged.
 
+### Lossless recording mode (GH #296 Phase 1)
+
+`LOTUS_OBS_RECORD=<path>` opts a run into **recording**: the
+observation plane stops being a sampler and becomes a flight
+recorder. Implies `LOTUS_OBS=1`; the recording counts as an
+attached observer, so ring emission is on from the first probe
+with nothing mmapping the segment. Opt-in on the same terms as
+everything else here — unset, the lowering and the wire are
+byte-for-byte the unobserved build (the flag resolves in the same
+constructor as `lotus_obs_live` and gates behind it everywhere).
+
+Three deltas from observer mode, all in the service of one rule —
+**a recording never drops** (a dropped record is a replay that
+diverges silently):
+
+- **Overwrite-oldest becomes block-the-producer.** An in-process
+  drain thread appends every ring record to `<path>` and
+  publishes per-ring cursors; a producer whose ring is full
+  against the cursor waits (50µs naps) instead of clobbering the
+  oldest slot. Recording-on hot cost while the ring has room is
+  one relaxed load + compare per record. A live observer prefers
+  losing records to stalling the program; a recorder makes the
+  opposite trade, and the stall is the contract.
+- **A thread that cannot get a ring fails the run** (exit 70,
+  diagnostic names `LOTUS_OBS_RINGS`) instead of going silently
+  dark forever (the `-2` disposition observer mode keeps).
+  Recording defaults `LOTUS_OBS_RINGS` to the 64 maximum, so this
+  means more than 64 emitting threads. Block or fail — never drop.
+- **A drain-side write failure fails the run** (exit 74) rather
+  than truncating silently. The file ends with a trailer written
+  at teardown after a final full sweep; a reader that does not
+  find the trailer holds a truncated recording and must say so.
+
+**`BUS_CONSUME` (ekind 8, recording mode only).** `BUS_DELIVER`
+is enqueue-time by design and lands on the *publisher's* ring —
+correct for fanout accounting, structurally unable to say in what
+order a consumer actually ran its handlers. Under recording, every
+dequeue-driven handler invoke (main-queue drain, coop-pool drain,
+pinned mailbox drain, async coro start) stamps a consume record on
+the *consuming* thread right before the handler runs:
+`w1 = locus:20 (subscriber) | pub_id:44` (the delivery's identity —
+see Phase 2 below). Its ring position is the per-consumer delivery
+order — the thing a replay serves back. Pairing rule: per queue,
+the k-th consume is the k-th queued delivery (one consumer thread
+per queue, FIFO). The synchronous direct-dispatch flavors
+deliberately emit no consume record: their handler runs at the
+`BUS_DELIVER` position on the same ring, which *is* the
+consumption point. Never emitted under plain `LOTUS_OBS=1`, so
+pre-addendum consumers never see an unknown ekind.
+
+**Delivery identity (Phase 2).** Every queued delivery carries a
+deterministic `pub_id = consumer_id:8 | per-publisher-thread
+seq:36`, re-derivable by a re-executed run without global
+coordination (a publisher thread re-derives its own ids in its
+own order). Consumer ids are stable across runs, unlike pthread
+ids: main = 1, cooperative pool workers = 16 + registration
+index, pinned locus threads = 64 + obs instance id; each ring's
+first record under recording is `EK_CONSUMER` (12) naming its
+claimant. Payload bytes are captured once per queued publish
+(flagged when they arrived as external wire ingress — the
+redispatch mark); the synchronous direct-dispatch flavors
+deliberately capture nothing, since a closed-world same-thread
+call cannot carry external input and re-execution re-derives its
+payloads. `BUS_ENQ` (9) records each queued target at enqueue;
+`BUS_CONSUME` carries `locus:20 | pub_id:44`.
+
+**Input journal (Phase 3).** Under recording, every user-facing
+nondeterministic read is journaled per (consumer, kind):
+`std::time::now`, `std::time::monotonic[_ns]` (now a named
+primitive, `lotus_time_monotonic_ns` — it used to be inline
+`clock_gettime` IR that nothing could interpose),
+`std::rand::next_int` (per call — the global RNG's mutex makes
+seed-replay unsound across threads), `std::os::getrandom`, and
+the `std::env` surface. Internal runtime clocks and config
+`getenv`s are deliberately not journaled.
+
+**File format v0.2 (PRE-STABLE).** 64-byte header (magic
+`HALEREC0`, version, pid, ring geometry, epoch anchors,
+`model_hash`), tagged entries — tag 0: 24-byte ring record; tag
+1: payload blob; tag 2: journal blob (32-byte header + bytes
+padded to 8) — and a 16-byte trailer (`HALEEND0` + entry count)
+whose presence marks a clean finalize.
+
+**Replay (`hale replay <recording> <program.hl>`).**
+`LOTUS_REPLAY=<path>` re-executes against a recording: journaled
+reads are served back per consumer in recorded order; a read past
+the recorded history falls back live and is counted — **replay
+degrades, never refuses** (RFC Q6) — with a divergence summary on
+stderr at exit. Each consumer's queued deliveries are re-consumed
+in the RECORDED order (Phase 4): dequeued cells that arrive ahead
+of their recorded turn are held per-consumer and released in
+order, with a bounded hold (1s) after which the oldest held cell
+is released and the miss counted, so a genuinely divergent replay
+reports rather than deadlocks. `where async_io` pools refuse
+replay loudly (their coro interleaving is a later milestone).
+The CLI compiles the program through the same pipeline as
+`hale run`, then admits the recording by `model_hash` — a
+recording made from a different model is rejected, never
+misreplayed; a truncated recording (no trailer) is refused.
+`--diff` records the replay and reports the first per-consumer
+divergence (consume streams, then payload bytes); `--at N` stops
+the process (SIGSTOP) at the Nth consume for debugger attach.
+Replay implies observation (identity rides the obs machinery).
+
+Two honest limits, stated rather than implied: the recorded
+interleaving is reproduced per consumer, not globally — cross-
+consumer wall-clock alignment is not a replay property; and
+external ingress (sockets, adapters) re-executes LIVE in v1 —
+captured ingress payloads exist in the recording (flagged), but
+injection is the fleet-replay milestone (Phase 5, with #262's
+plan admission for Phase 6's replay-under-a-different-plan).
+
 ### Time
 
 - **Monotonic + wall-clock.** `time::now()` and
@@ -2177,8 +2289,11 @@ Erlang.
   supports module-level hot reload. Lotus's perspective
   hot-reload is more granular and addresses most of the use
   case; full code hot-reload may not be needed.
-- **Determinism mode for tests.** Discussed in `testing.md`;
-  runtime needs to support deterministic scheduling when
-  requested. The cooperative scheduler makes this easier than
-  M:N would have — single-scheduler test mode is fully
-  deterministic by construction.
+- **Determinism mode for tests.** Resolved for the single-pool
+  case: no mode is needed, because single-pool execution is
+  deterministic by construction, and that is now a stated,
+  pinned guarantee rather than an accident — see
+  `spec/testing.md` § Determinism. What remains open is
+  deterministic *re-execution* of multi-pool programs, which is
+  the record/replay track (GH #296) — reproducing a recorded
+  per-consumer order, never constraining live scheduling.

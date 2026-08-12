@@ -224,3 +224,130 @@ pub fn binding_cells(seg: &[u8], subject: &[u8]) -> Option<[u64; 8]> {
     }
     None
 }
+
+/* ---- GH #296 recording file (format v0.2, PRE-STABLE) ---------- */
+
+/// One drained ring record: (ring index, w0, w1).
+pub type RecEntry = (u32, u64, u64);
+
+/// A captured publish payload.
+pub struct RecPayload {
+    pub topic_id: u32,
+    pub pub_id: u64,
+    /// bit 0 = external ingress (wire re-dispatch)
+    pub flags: u64,
+    pub bytes: Vec<u8>,
+}
+
+/// A journaled input read.
+pub struct RecJournal {
+    pub jkind: u32,
+    pub consumer: u64,
+    pub seq: u64,
+    pub bytes: Vec<u8>,
+}
+
+pub struct Recording {
+    pub ring_count: u32,
+    pub ring_slots: u32,
+    pub model_hash: u64,
+    pub entries: Vec<RecEntry>,
+    pub payloads: Vec<RecPayload>,
+    pub journal: Vec<RecJournal>,
+    /// Trailer present — the run finalized cleanly. A recording
+    /// without it is truncated and must be treated as such.
+    pub clean: bool,
+    pub trailer_count: u64,
+}
+
+pub const REC_MAGIC: u64 = 0x30434552454C4148; // "HALEREC0"
+pub const REC_END: u64 = 0x30444E45454C4148; // "HALEEND0"
+
+/// Parse a LOTUS_OBS_RECORD file (v0.2): 64B header, then tagged
+/// entries — tag 0 ring record (24B), tag 1 payload blob, tag 2
+/// journal blob (both 32B header + padded bytes) — then a 16B
+/// trailer counting every entry.
+pub fn read_recording(path: &std::path::Path) -> Option<Recording> {
+    let buf = std::fs::read(path).ok()?;
+    if buf.len() < 64 || read_u64(&buf, 0) != REC_MAGIC {
+        return None;
+    }
+    let header_len = read_u32(&buf, 12) as usize;
+    let ring_count = read_u32(&buf, 20);
+    let ring_slots = read_u32(&buf, 24);
+    let model_hash = read_u64(&buf, 48);
+    let mut end = buf.len();
+    let mut clean = false;
+    let mut trailer_count = 0u64;
+    if end >= header_len + 16 && read_u64(&buf, end - 16) == REC_END {
+        trailer_count = read_u64(&buf, end - 8);
+        clean = true;
+        end -= 16;
+    }
+    let mut entries = Vec::new();
+    let mut payloads = Vec::new();
+    let mut journal = Vec::new();
+    let mut off = header_len;
+    while off + 8 <= end {
+        let tag = read_u32(&buf, off);
+        let a = read_u32(&buf, off + 4);
+        match tag {
+            0 => {
+                if off + 24 > end {
+                    break;
+                }
+                entries.push((
+                    a,
+                    read_u64(&buf, off + 8),
+                    read_u64(&buf, off + 16),
+                ));
+                off += 24;
+            }
+            1 | 2 => {
+                if off + 32 > end {
+                    break;
+                }
+                let b = read_u64(&buf, off + 8);
+                let c = read_u64(&buf, off + 16);
+                let size = read_u64(&buf, off + 24) as usize;
+                let padded = (size + 7) & !7;
+                if off + 32 + padded > end {
+                    break;
+                }
+                let bytes = buf[off + 32..off + 32 + size].to_vec();
+                if tag == 1 {
+                    payloads.push(RecPayload {
+                        topic_id: a,
+                        pub_id: b,
+                        flags: c,
+                        bytes,
+                    });
+                } else {
+                    journal.push(RecJournal {
+                        jkind: a,
+                        consumer: b,
+                        seq: c,
+                        bytes,
+                    });
+                }
+                off += 32 + padded;
+            }
+            _ => break, // unknown tag: stop rather than misparse
+        }
+    }
+    Some(Recording {
+        ring_count,
+        ring_slots,
+        model_hash,
+        entries,
+        payloads,
+        journal,
+        clean,
+        trailer_count,
+    })
+}
+
+/// Decode an entry's w0 into (id, ekind).
+pub fn rec_id_ekind(w0: u64) -> (u32, u32) {
+    ((w0 & 0xFFFFF) as u32, ((w0 >> 20) & 0x1F) as u32)
+}
