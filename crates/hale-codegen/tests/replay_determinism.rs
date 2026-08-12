@@ -133,7 +133,10 @@ fn topic_names(seg: &[u8]) -> std::collections::HashMap<u32, String> {
         if seg[e + 28] != 0 {
             continue; // not a topic row
         }
-        let id = read_u32(seg, e);
+        // obs_me_t: shape_hash u64, aux_b u64, THEN id at +16
+        // (review: reading offset 0 took the low bits of
+        // shape_hash and every lookup fell back to <unknown-N>).
+        let id = read_u32(seg, e + 16);
         let name_off = read_u32(seg, e + 20) as usize;
         let name_len =
             seg[e + 24] as usize | ((seg[e + 25] as usize) << 8);

@@ -275,17 +275,23 @@ hale replay run.halerec app.hl --diff          # + report first divergence
 hale replay run.halerec app.hl --at 4120       # SIGSTOP at consume #4120
 ```
 
-`hale replay` re-runs the same program (it recompiles and checks
-the recording's `model_hash` against it — a recording from a
-different model is rejected, and a truncated one refused), serving
+`hale replay` re-runs the same program (it recompiles and admits
+the recording by **executable identity** — compiler version +
+source bytes — with the model's `shape_hash` as a secondary check;
+a mismatched, unstamped, or truncated recording is refused),
+serving
 journaled inputs back and re-consuming each consumer's deliveries
 in the recorded order — two racing pinned publishers replay in
 exactly the interleaving that was recorded. Replay *degrades*
 rather than refuses: a read or delivery past the recorded history
-falls back live and is counted, and the divergence summary prints
-at exit. Not yet replayable: `where async_io` pools (refused
-loudly) and live external ingress — socket/adapter input
-re-executes against the real world in this version. Single-pool
+falls back live and is counted, the divergence summary prints at
+exit, and any divergence fails `--diff`. **Replay is refused by
+default for programs whose effects reach `syscall`/`ffi`** — a
+re-execution repeats real side effects (sends, writes, spawns), so
+that requires an explicit `--allow-live-effects`. Not yet
+replayable: `where async_io` pools (refused loudly) and live
+external ingress — socket/adapter input re-executes against the
+real world in this version. Single-pool
 runs are deterministic by construction even without replay; see
 the [testing chapter](../everyday/testing.md).
 

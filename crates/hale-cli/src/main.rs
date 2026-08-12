@@ -4510,6 +4510,7 @@ fn compile_and_exec(
     renames: &[(Vec<String>, String)],
     user_args: &[String],
     model_hash: u64,
+    exec_digest: u64,
 ) -> ExitCode {
     let mut bin = std::env::temp_dir();
     let mut h = DefaultHasher::new();
@@ -4518,6 +4519,7 @@ fn compile_and_exec(
     bin.push(format!("hale_run_{:016x}", h.finish()));
     let options = hale_codegen::BuildOptions {
         model_hash: Some(model_hash),
+        exec_digest: Some(exec_digest),
         ..Default::default()
     };
     if let Err(e) = hale_codegen::build_executable_with_options(
@@ -4537,6 +4539,30 @@ fn compile_and_exec(
             ExitCode::from(1)
         }
     }
+}
+
+/// GH #296: executable identity — fnv1a64 over the compiler
+/// version and every source file's name + content (BTreeMap order,
+/// so deterministic). Structural shape_hash says "same model";
+/// this says "same build inputs". It does not cover the LLVM/libc
+/// toolchain outside this binary — recorded in the review as the
+/// staged residue.
+fn exec_digest(sources: &BTreeMap<PathBuf, String>) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    let mut eat = |bytes: &[u8]| {
+        for b in bytes {
+            h ^= *b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+    };
+    eat(env!("CARGO_PKG_VERSION").as_bytes());
+    for (path, src) in sources {
+        if let Some(name) = path.file_name() {
+            eat(name.to_string_lossy().as_bytes());
+        }
+        eat(src.as_bytes());
+    }
+    if h == 0 { 1 } else { h }
 }
 
 /// Escape a string for embedding in a JSON string literal.
@@ -4852,21 +4878,42 @@ fn run_replay(args: &[String]) -> ExitCode {
     let mut rec_arg: Option<PathBuf> = None;
     let mut prog: Option<PathBuf> = None;
     let mut diff = false;
-    let mut at: Option<u64> = None;
+    let mut at: Option<String> = None;
+    let mut allow_live_effects = false;
+    let mut allow_unverified = false;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
         if a == "--diff" {
             diff = true;
             i += 1;
+        } else if a == "--allow-live-effects" {
+            allow_live_effects = true;
+            i += 1;
+        } else if a == "--allow-unverified-model" {
+            allow_unverified = true;
+            i += 1;
         } else if a == "--at" {
-            match args.get(i + 1).and_then(|v| v.parse::<u64>().ok()) {
-                Some(n) if n > 0 => {
-                    at = Some(n);
+            // N (process-wide consume ordinal — only meaningful
+            // for a single consumer) or consumer:N (stable across
+            // multi-consumer runs).
+            match args.get(i + 1) {
+                Some(v)
+                    if v.parse::<u64>().map(|n| n > 0).unwrap_or(false)
+                        || v.split_once(':').is_some_and(|(c, n)| {
+                            c.parse::<u64>().is_ok()
+                                && n.parse::<u64>()
+                                    .map(|n| n > 0)
+                                    .unwrap_or(false)
+                        }) =>
+                {
+                    at = Some(v.clone());
                     i += 2;
                 }
                 _ => {
-                    eprintln!("hale replay: --at requires a positive count");
+                    eprintln!(
+                        "hale replay: --at takes N or consumer:N                          (positive)"
+                    );
                     return ExitCode::from(2);
                 }
             }
@@ -4947,10 +4994,27 @@ fn run_replay(args: &[String]) -> ExitCode {
         }
     }
     let model_hash = hale_types::topology::model_shape_hash(&bundle);
+    let digest = exec_digest(&sources);
 
-    // Admission (#262's shape): a recording that no longer matches
-    // the model is rejected, never silently misreplayed. 0 =
-    // unstamped (harness recording) — allowed with a warning.
+    // Admission, strongest check first (review finding 2):
+    // exec_digest is build-input identity (compiler version +
+    // source bytes); shape_hash alone is only structural
+    // compatibility and admits behaviorally different bodies.
+    if rec.exec_digest != 0 && rec.exec_digest != digest {
+        eprintln!(
+            "hale replay: `{}` was recorded from different build \
+             inputs (recorded exec digest {:016x}, this compile is \
+             {:016x}) — a structurally compatible model is not the \
+             same executable; re-record, or accept behavioral \
+             divergence explicitly with --allow-unverified-model",
+            rec_path.display(),
+            rec.exec_digest,
+            digest
+        );
+        if !allow_unverified {
+            return ExitCode::from(1);
+        }
+    }
     if rec.model_hash != 0 && rec.model_hash != model_hash {
         eprintln!(
             "hale replay: `{}` was recorded from a different model \
@@ -4963,11 +5027,47 @@ fn run_replay(args: &[String]) -> ExitCode {
         );
         return ExitCode::from(1);
     }
-    if rec.model_hash == 0 {
+    if (rec.exec_digest == 0 || rec.model_hash == 0) && !allow_unverified {
         eprintln!(
-            "hale replay: recording carries no model identity \
-             (unstamped build) — admission check skipped"
+            "hale replay: `{}` carries no execution identity \
+             (unstamped build) — exact replay cannot be admitted. \
+             Pass --allow-unverified-model to proceed anyway",
+            rec_path.display()
         );
+        return ExitCode::from(1);
+    }
+
+    // Safe by default (review finding 3): re-execution repeats the
+    // program's real side effects. Until per-primitive replay
+    // classes exist, the gate is the coarse effect frontier: any
+    // reachable syscall/ffi beyond the journaled read set requires
+    // an explicit, alarming opt-in. (Yes, that flags a lone
+    // `sleep` too — the class granularity is the current limit,
+    // and over-refusing is the safe direction.)
+    if !allow_live_effects {
+        let manifest = hale_types::dump_effects_manifest(&bundle);
+        let mut residue = std::collections::BTreeSet::new();
+        for part in manifest.split("does={").skip(1) {
+            if let Some(inner) = part.split('}').next() {
+                for class in inner.split(',') {
+                    let class = class.trim();
+                    if class == "syscall" || class == "ffi" {
+                        residue.insert(class.to_string());
+                    }
+                }
+            }
+        }
+        if !residue.is_empty() {
+            eprintln!(
+                "hale replay: this program's effect frontier \
+                 reaches {{{}}} — re-executing it repeats real \
+                 side effects (sends, writes, spawns) against the \
+                 live world. Refusing by default; pass \
+                 --allow-live-effects if you accept that",
+                residue.into_iter().collect::<Vec<_>>().join(", ")
+            );
+            return ExitCode::from(1);
+        }
     }
 
     let rec_abs = rec_path
@@ -4981,6 +5081,7 @@ fn run_replay(args: &[String]) -> ExitCode {
     bin.push(format!("hale_replay_{:016x}", h.finish()));
     let options = hale_codegen::BuildOptions {
         model_hash: Some(model_hash),
+        exec_digest: Some(digest),
         ..Default::default()
     };
     if let Err(e) = hale_codegen::build_executable_with_options(
@@ -5003,10 +5104,26 @@ fn run_replay(args: &[String]) -> ExitCode {
         None
     };
 
+    let mut status_path = std::env::temp_dir();
+    status_path.push(format!(
+        "hale_replay_status_{}_{:016x}",
+        std::process::id(),
+        model_hash
+    ));
+    let _ = std::fs::remove_file(&status_path);
     let mut cmd = std::process::Command::new(&bin);
     cmd.env("LOTUS_REPLAY", &rec_abs);
-    if let Some(n) = at {
-        cmd.env("LOTUS_REPLAY_AT", n.to_string());
+    cmd.env("LOTUS_REPLAY_STATUS", &status_path);
+    if let Some(spec) = &at {
+        match spec.split_once(':') {
+            Some((c, n)) => {
+                cmd.env("LOTUS_REPLAY_AT_CONSUMER", c);
+                cmd.env("LOTUS_REPLAY_AT", n);
+            }
+            None => {
+                cmd.env("LOTUS_REPLAY_AT", spec);
+            }
+        }
     }
     if let Some(v) = &verify_path {
         cmd.env("LOTUS_OBS_RECORD", v);
@@ -5024,7 +5141,37 @@ fn run_replay(args: &[String]) -> ExitCode {
         }
     };
 
+    // The runtime's machine-readable verdict (review finding 6:
+    // success must come from the verdict, not from the absence of
+    // one comparator mismatch).
+    let runtime_divergences: u64 = std::fs::read_to_string(&status_path)
+        .ok()
+        .map(|body| {
+            body.lines()
+                .filter_map(|l| l.split_once('='))
+                .filter(|(k, _)| *k != "consumes")
+                .filter_map(|(_, v)| v.trim().parse::<u64>().ok())
+                .sum()
+        })
+        .unwrap_or_else(|| {
+            eprintln!(
+                "hale replay: no runtime verdict was written — \
+                 treating as divergent"
+            );
+            1
+        });
+    let _ = std::fs::remove_file(&status_path);
+
     if let Some(v) = &verify_path {
+        if runtime_divergences > 0 {
+            eprintln!(
+                "replay DIVERGED: {} runtime divergences (see the \
+                 summary above)",
+                runtime_divergences
+            );
+            let _ = std::fs::remove_file(v);
+            return ExitCode::from(1);
+        }
         let result = match replay::parse(v) {
             Ok(vr) => match replay::diff(&rec, &vr) {
                 None => {
@@ -5040,7 +5187,7 @@ fn run_replay(args: &[String]) -> ExitCode {
                         consumes,
                         rec.consume_streams.len(),
                         rec.ring_records,
-                        rec.journal_entries
+                        rec.journal.len()
                     );
                     ExitCode::from(code)
                 }
@@ -5110,7 +5257,10 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
         // P26: stamp the model identity of the bundle just checked.
         let model_hash =
             hale_types::topology::model_shape_hash(&bundle);
-        return compile_and_exec(&program, &renames, user_args, model_hash);
+        let digest = exec_digest(&sources);
+        return compile_and_exec(
+            &program, &renames, user_args, model_hash, digest,
+        );
     }
 
     let files = match collect_ap_files(target) {
@@ -5231,7 +5381,8 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
     }
     // P26: stamp the model identity of the bundle just checked.
     let model_hash = hale_types::topology::model_shape_hash(&bundle);
-    compile_and_exec(&program, &renames, user_args, model_hash)
+    let digest = exec_digest(&path_sources);
+    compile_and_exec(&program, &renames, user_args, model_hash, digest)
 }
 
 fn run_build(target: &Path) -> ExitCode {

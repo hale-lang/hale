@@ -132,6 +132,7 @@ fn journaled_inputs_replay_without_divergence() {
         .arg("replay")
         .arg(&rec)
         .arg(&prog)
+        .arg("--allow-live-effects")
         .arg("--diff")
         .output()
         .expect("hale replay");
@@ -172,6 +173,7 @@ fn racing_publishers_replay_in_the_recorded_interleaving() {
             .arg("replay")
             .arg(&rec)
             .arg(&prog)
+            .arg("--allow-live-effects")
             .arg("--diff")
             .output()
             .expect("hale replay");
@@ -210,12 +212,15 @@ fn admission_rejects_model_mismatch_and_truncation() {
         .arg("replay")
         .arg(&rec)
         .arg(&prog2)
+        .arg("--allow-live-effects")
         .output()
         .expect("hale replay");
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
+    // The exec-digest check fires first: changed source = changed
+    // build inputs, which is the stronger rejection.
     assert!(
-        stderr.contains("recorded from a different model"),
+        stderr.contains("different build inputs"),
         "wrong rejection:\n{}",
         stderr
     );
@@ -228,6 +233,7 @@ fn admission_rejects_model_mismatch_and_truncation() {
         .arg("replay")
         .arg(&trunc)
         .arg(&prog)
+        .arg("--allow-live-effects")
         .output()
         .expect("hale replay");
     assert!(!out.status.success());
@@ -236,6 +242,26 @@ fn admission_rejects_model_mismatch_and_truncation() {
         stderr.contains("truncated"),
         "wrong refusal:\n{}",
         stderr
+    );
+
+    // The review's sharper case: bytes removed from the MIDDLE with
+    // the original trailer intact. Trailer magic at EOF alone would
+    // call this clean; exact-end + entry-count validation must not.
+    let corrupt = dir.join("corrupt.halerec");
+    let mut mangled = bytes.clone();
+    let cut = mangled.len() / 2;
+    mangled.drain(cut..cut + 48);
+    std::fs::write(&corrupt, &mangled).unwrap();
+    let out = hale()
+        .arg("replay")
+        .arg(&corrupt)
+        .arg(&prog)
+        .arg("--allow-live-effects")
+        .output()
+        .expect("hale replay");
+    assert!(
+        !out.status.success(),
+        "an internally corrupted recording was admitted"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

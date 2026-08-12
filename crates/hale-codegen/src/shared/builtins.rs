@@ -1183,6 +1183,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .fn_type(&[i64_t2.into()], false),
             None,
         );
+        // GH #296: executable identity for recording headers.
+        // declare void @lotus_obs_exec_digest_set(i64 digest)
+        self.module.add_function(
+            "lotus_obs_exec_digest_set",
+            self.context
+                .void_type()
+                .fn_type(&[i64_t2.into()], false),
+            None,
+        );
         // GH #296: stable consumer identity for a pinned locus's
         // thread, called once from the __pinned_main prologue
         // (cold path; no-ops when observation is off).

@@ -7,8 +7,8 @@
 //!      oldest; every record published before teardown reaches the
 //!      file, verified by exact counts under wrap pressure
 //!      (LOTUS_OBS_SLOTS far below the record volume).
-//!   2. **Per-consumer order.** Queued deliveries get an
-//!      `EK_BUS_CONSUME` (8) record on the consuming thread at
+//!   2. **Per-consumer order.** Queued deliveries get a consume
+//!      record (private recorder namespace) on the consuming thread at
 //!      handler invoke — the order replay reconstructs. Enqueue-time
 //!      BUS_DELIVER can't give it (it lands on the publisher's
 //!      ring).
@@ -35,7 +35,17 @@ use obs::{obs_bus_locus, rec_id_ekind};
 
 const EK_BUS_PUBLISH: u32 = 1;
 const EK_BUS_DELIVER: u32 = 2;
-const EK_BUS_CONSUME: u32 = 8;
+/// Recorder events ride PRIVATE rings (high bit set on the file
+/// entry's ring field) in their own namespace — never iris ekinds.
+const REC_EV_CONSUME: u32 = 2;
+const PRIV_RING: u32 = 0x8000_0000;
+
+fn is_consume(ring: u32, w0: u64) -> bool {
+    ring & PRIV_RING != 0 && ((w0 >> 20) & 0x1F) as u32 == REC_EV_CONSUME
+}
+fn is_public_bus(ring: u32, w0: u64, want: u32) -> bool {
+    ring & PRIV_RING == 0 && ((w0 >> 20) & 0x1F) as u32 == want
+}
 
 fn build(name: &str, src: &str) -> PathBuf {
     let program = hale_syntax::parse_source(src).expect("parse");
@@ -183,6 +193,12 @@ fn recording_is_lossless_under_wrap_pressure() {
         "trailer count disagrees with the entries on disk"
     );
     assert_eq!(r.ring_slots, 64);
+    // Every capture here is an in-process struct (raw flag, bit 1),
+    // none ingress.
+    assert!(
+        r.payloads.iter().all(|p| p.flags & 2 != 0 && p.flags & 1 == 0),
+        "struct captures must carry the raw-ABI flag"
+    );
     // Phase 2: one payload blob per QUEUED publish (the 32 seeds —
     // App's publishes route through the arena fanout). Fan's 64
     // derived publishes take the synchronous intra-tree desugar,
@@ -190,20 +206,17 @@ fn recording_is_lossless_under_wrap_pressure() {
     // same-thread call cannot carry external input, and replay
     // re-derives its payloads by re-execution. None marked ingress.
     assert_eq!(r.payloads.len(), 32, "queued-publish payloads lost");
-    assert!(
-        r.payloads.iter().all(|p| p.flags & 1 == 0),
-        "internal publish marked as external ingress"
-    );
+
 
     let publishes = r
         .entries
         .iter()
-        .filter(|(_, w0, _)| rec_id_ekind(*w0).1 == EK_BUS_PUBLISH)
+        .filter(|(ring, w0, _)| is_public_bus(*ring, *w0, EK_BUS_PUBLISH))
         .count();
     let delivers = r
         .entries
         .iter()
-        .filter(|(_, w0, _)| rec_id_ekind(*w0).1 == EK_BUS_DELIVER)
+        .filter(|(ring, w0, _)| is_public_bus(*ring, *w0, EK_BUS_DELIVER))
         .count();
     assert_eq!(publishes, CASCADE_PUBLISH, "publish records lost");
     assert_eq!(delivers, CASCADE_DELIVER, "deliver records lost");
@@ -224,7 +237,7 @@ fn queued_deliveries_get_consume_records_in_consumer_order() {
     let consumes: Vec<_> = r
         .entries
         .iter()
-        .filter(|(_, w0, _)| rec_id_ekind(*w0).1 == EK_BUS_CONSUME)
+        .filter(|(ring, w0, _)| is_consume(*ring, *w0))
         .collect();
     assert_eq!(
         consumes.len(),
@@ -246,7 +259,7 @@ fn queued_deliveries_get_consume_records_in_consumer_order() {
         );
         let pub_id = *w1 & 0xFFF_FFFF_FFFF;
         assert_ne!(pub_id, 0, "queued delivery lost its identity");
-        let seq = pub_id & 0xF_FFFF_FFFF; // low 36 = per-thread seq
+        let seq = pub_id & 0xFFFF_FFFF; // low 32 = per-thread seq
         assert_eq!(
             seq,
             last_seq + 1,
@@ -265,7 +278,7 @@ fn queued_deliveries_get_consume_records_in_consumer_order() {
     let delivers = r
         .entries
         .iter()
-        .filter(|(_, w0, _)| rec_id_ekind(*w0).1 == EK_BUS_DELIVER)
+        .filter(|(ring, w0, _)| is_public_bus(*ring, *w0, EK_BUS_DELIVER))
         .count();
     assert_eq!(delivers, 50, "deliver records lost");
 
@@ -291,13 +304,14 @@ fn two_recordings_of_a_single_pool_program_are_identical() {
             .expect("parse recording")
             .entries
             .iter()
-            .filter_map(|(_, w0, w1)| {
+            .filter_map(|(ring, w0, w1)| {
                 let (id, ekind) = rec_id_ekind(*w0);
-                if ekind == EK_BUS_PUBLISH
-                    || ekind == EK_BUS_DELIVER
-                    || ekind == EK_BUS_CONSUME
+                if is_public_bus(*ring, *w0, EK_BUS_PUBLISH)
+                    || is_public_bus(*ring, *w0, EK_BUS_DELIVER)
                 {
                     Some((id, ekind, *w1))
+                } else if is_consume(*ring, *w0) {
+                    Some((id, 100 + ekind, *w1))
                 } else {
                     None
                 }
@@ -312,7 +326,7 @@ fn two_recordings_of_a_single_pool_program_are_identical() {
     // which the a == b below holds it to).
     let consumes = a
         .iter()
-        .filter(|(_, ekind, _)| *ekind == EK_BUS_CONSUME)
+        .filter(|(_, ekind, _)| *ekind == 100 + REC_EV_CONSUME)
         .count();
     assert_eq!(
         a.len(),
@@ -353,10 +367,13 @@ fn plain_observation_never_emits_consume_records() {
     let seg = obs::map_shm(pid).expect("map segment");
     let out = child.wait_with_output().expect("wait");
     assert!(out.status.success());
-    let consumes = obs::records(seg, EK_BUS_CONSUME);
+    // ekind 8 in the PUBLIC segment is iris SUPERV_TRANS; the
+    // recorder must never emit anything of its own there (its
+    // events live on private rings that exist only in the file).
+    let stray = obs::records(seg, 8);
     assert!(
-        consumes.is_empty(),
-        "consume records leaked into a non-recording stream"
+        stray.is_empty(),
+        "recorder bookkeeping leaked into the public protocol stream"
     );
     // ...while the deliveries themselves demonstrably happened
     // (the vacuity guard for the assertion above).

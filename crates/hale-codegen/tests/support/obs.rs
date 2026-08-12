@@ -277,11 +277,11 @@ pub fn read_recording(path: &std::path::Path) -> Option<Recording> {
     let ring_slots = read_u32(&buf, 24);
     let model_hash = read_u64(&buf, 48);
     let mut end = buf.len();
-    let mut clean = false;
+    let mut has_trailer = false;
     let mut trailer_count = 0u64;
     if end >= header_len + 16 && read_u64(&buf, end - 16) == REC_END {
         trailer_count = read_u64(&buf, end - 8);
-        clean = true;
+        has_trailer = true;
         end -= 16;
     }
     let mut entries = Vec::new();
@@ -335,6 +335,12 @@ pub fn read_recording(path: &std::path::Path) -> Option<Recording> {
             _ => break, // unknown tag: stop rather than misparse
         }
     }
+    // Clean = the ENTIRE artifact validated: exact end at the
+    // trailer, trailer count matching parsed entries.
+    let clean = has_trailer
+        && off == end
+        && trailer_count
+            == (entries.len() + payloads.len() + journal.len()) as u64;
     Some(Recording {
         ring_count,
         ring_slots,

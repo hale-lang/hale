@@ -10,9 +10,30 @@ behavior.
 
 ### Record & replay, phases 2–4: `hale replay` (GH #296)
 
-Building on the phase-0/1 recording below, the rest of the RFC's
-core promise ships: **re-run a recorded execution and get the same
-deliveries in the same order, with the same inputs.**
+Building on the phase-0/1 recording below: **re-run a recorded
+execution and get the same schedule and the same journaled inputs,
+with an explicit, checked coverage boundary.** (Scoped per review:
+external ingress and non-journaled I/O re-execute live and are
+gated — see the safety flag below.)
+
+Hardened by a full review round before merge: recorder events
+moved off iris protocol ekinds onto process-private rings; replay
+admission is by executable identity (`exec_digest` = compiler
+version + source bytes), not just structural `shape_hash`, and
+unstamped recordings are refused without `--allow-unverified-model`;
+replay is **safe by default** — a program whose effect frontier
+reaches `syscall`/`ffi` is refused without `--allow-live-effects`;
+capture failure, write failure, and finalize failure all fail the
+run (never a silent gap); a recording is clean only if the entire
+artifact validates (exact trailer position + entry count); the
+journal carries per-call argument identity (a changed env name or
+rand bound is a named divergence, not a substituted value);
+`--diff` is bidirectional and fails on ANY runtime divergence via
+a machine-readable verdict; payload topic identity is a stable
+subject hash (manifest ids are registration-order and race);
+raw-struct payload captures are flagged as ABI snapshots and
+compared by size (canonical recording codecs staged); `--at
+consumer:N` is the stable multi-consumer debugger coordinate.
 
 - **`hale replay <recording> <program.hl>`** — compiles through the
   same pipeline as `hale run`, admits the recording by

@@ -1589,41 +1589,55 @@ diverges silently):
   at teardown after a final full sweep; a reader that does not
   find the trailer holds a truncated recording and must say so.
 
-**`BUS_CONSUME` (ekind 8, recording mode only).** `BUS_DELIVER`
+**Consume records (private recorder namespace).** `BUS_DELIVER`
 is enqueue-time by design and lands on the *publisher's* ring —
 correct for fanout accounting, structurally unable to say in what
 order a consumer actually ran its handlers. Under recording, every
 dequeue-driven handler invoke (main-queue drain, coop-pool drain,
 pinned mailbox drain, async coro start) stamps a consume record on
 the *consuming* thread right before the handler runs:
-`w1 = locus:20 (subscriber) | pub_id:44` (the delivery's identity —
-see Phase 2 below). Its ring position is the per-consumer delivery
-order — the thing a replay serves back. Pairing rule: per queue,
-the k-th consume is the k-th queued delivery (one consumer thread
-per queue, FIFO). The synchronous direct-dispatch flavors
-deliberately emit no consume record: their handler runs at the
-`BUS_DELIVER` position on the same ring, which *is* the
-consumption point. Never emitted under plain `LOTUS_OBS=1`, so
-pre-addendum consumers never see an unknown ekind.
+`w1 = locus:20 (subscriber) | pub_id:44`. Its ring position is the
+per-consumer delivery order — the thing a replay serves back.
+Pairing rule: per queue, the k-th consume is the k-th queued
+delivery. The synchronous direct-dispatch flavors deliberately emit
+no consume record: their handler runs at the `BUS_DELIVER`
+position, which *is* the consumption point.
+
+Recorder events (`CONSUMER`/`CONSUME`/`ENQ`/`JOURNAL`) live on
+**process-private per-thread rings** in their own event namespace,
+never in the public observation segment: iris protocol ekinds
+8/9/11/12 mean SUPERV_TRANS/PLACEMENT/BINDING_UP/BINDING_DOWN, and
+an observer attaching to a recording process must never decode
+recorder bookkeeping as lifecycle transitions. In the recording
+file, private-ring entries carry the high bit in their ring field,
+so the two namespaces can never be confused.
 
 **Delivery identity (Phase 2).** Every queued delivery carries a
-deterministic `pub_id = consumer_id:8 | per-publisher-thread
-seq:36`, re-derivable by a re-executed run without global
-coordination (a publisher thread re-derives its own ids in its
-own order). Consumer ids are stable across runs, unlike pthread
+deterministic `pub_id = consumer_id:12 | per-publisher-thread
+seq:32`, re-derivable by a re-executed run without global
+coordination. Consumer ids are stable across runs, unlike pthread
 ids: main = 1, cooperative pool workers = 16 + registration
-index, pinned locus threads = 64 + obs instance id; each ring's
-first record under recording is `EK_CONSUMER` (12) naming its
-claimant. Payload bytes are captured once per queued publish
-(flagged when they arrived as external wire ingress — the
-redispatch mark); the synchronous direct-dispatch flavors
-deliberately capture nothing, since a closed-world same-thread
-call cannot carry external input and re-execution re-derives its
-payloads. `BUS_ENQ` (9) records each queued target at enqueue;
-`BUS_CONSUME` carries `locus:20 | pub_id:44`.
+index, pinned locus threads = 64 + obs instance id; threads with
+no stable identity (ingress readers) get run-unique anonymous
+ids, never a shared fallback. Payload bytes are captured once per
+queued publish under a **stable subject hash** (manifest topic
+ids are registration-order and racing publishers register in
+either order). Flags: bit 0 = external wire ingress; bit 1 = raw
+in-process struct bytes — an ABI snapshot (String/Bytes fields
+are pointers, padding is uninitialized) that consumers must
+compare by size only; canonical per-topic recording codecs are
+the staged fix. Wire captures are canonical bytes, unflagged.
+The synchronous direct-dispatch flavors deliberately capture
+nothing: a closed-world same-thread call cannot carry external
+input, and re-execution re-derives its payloads.
 
 **Input journal (Phase 3).** Under recording, every user-facing
-nondeterministic read is journaled per (consumer, kind):
+nondeterministic read is journaled per consumer as ONE unified
+stream carrying the read's kind AND an argument hash — replay
+refuses to serve an entry whose kind or arguments differ from the
+caller's, so a changed env name, rand bound, or read length is
+the first *named* divergence, never a silently substituted
+plausible value. The interposed set:
 `std::time::now`, `std::time::monotonic[_ns]` (now a named
 primitive, `lotus_time_monotonic_ns` — it used to be inline
 `clock_gettime` IR that nothing could interpose),
@@ -1639,12 +1653,25 @@ the `std::env` surface. Internal runtime clocks and config
 padded to 8) — and a 16-byte trailer (`HALEEND0` + entry count)
 whose presence marks a clean finalize.
 
-**Replay (`hale replay <recording> <program.hl>`).**
-`LOTUS_REPLAY=<path>` re-executes against a recording: journaled
-reads are served back per consumer in recorded order; a read past
-the recorded history falls back live and is counted — **replay
-degrades, never refuses** (RFC Q6) — with a divergence summary on
-stderr at exit. Each consumer's queued deliveries are re-consumed
+**Replay (`hale replay <recording> <program.hl>`).** Admission,
+strongest check first: the recording's `exec_digest` (compiler
+version + every source byte, stamped at build) must match the
+recompiled program exactly — `shape_hash` alone is structural
+compatibility and admits behaviorally different bodies, so it is
+the secondary check only. An unstamped recording is refused
+without `--allow-unverified-model`. **Safe by default:** replay
+re-executes real side effects, so a program whose effect frontier
+reaches `syscall`/`ffi` beyond the journaled read set is refused
+without an explicit `--allow-live-effects` (coarse by the class
+granularity — over-refusal is the safe direction; per-primitive
+replay classes are the staged refinement). `LOTUS_REPLAY=<path>`
+then serves journaled reads back per consumer in recorded order;
+a read past (or mismatching) the recorded history falls back live
+and is counted — **replay degrades, never refuses** (RFC Q6) —
+with a divergence summary at exit and a machine-readable verdict
+(`LOTUS_REPLAY_STATUS`) the CLI consumes: journal misses, order
+holds, unconsumed journal entries, and unconsumed deliveries all
+count, and any of them fails `--diff`. Each consumer's queued deliveries are re-consumed
 in the RECORDED order (Phase 4): dequeued cells that arrive ahead
 of their recorded turn are held per-consumer and released in
 order, with a bounded hold (1s) after which the oldest held cell
@@ -1655,10 +1682,15 @@ The CLI compiles the program through the same pipeline as
 `hale run`, then admits the recording by `model_hash` — a
 recording made from a different model is rejected, never
 misreplayed; a truncated recording (no trailer) is refused.
-`--diff` records the replay and reports the first per-consumer
-divergence (consume streams, then payload bytes); `--at N` stops
-the process (SIGSTOP) at the Nth consume for debugger attach.
-Replay implies observation (identity rides the obs machinery).
+`--diff` records the replay and compares bidirectionally: consume
+streams per consumer, payloads both ways (topic + flags + bytes;
+raw-struct payloads by size), and the journal streams — plus the
+runtime verdict above. `--at N` stops (SIGSTOP) at the Nth consume
+process-wide (meaningful for one consumer); `--at consumer:N` is
+the stable multi-consumer form. A recording is admitted only when
+the ENTIRE artifact validates: exact parse to the trailer and a
+matching entry count, not trailer magic at EOF alone. Replay
+implies observation (identity rides the obs machinery).
 
 Two honest limits, stated rather than implied: the recorded
 interleaving is reproduced per consumer, not globally — cross-
