@@ -208,7 +208,13 @@ reaches only the `Feed` instances that subscribed with
   `String` key yourself.)
 - **`where key == EXPR`** on a subscribe filters that subscriber.
   `EXPR` can be a literal, a `const`, or `self.<field>` — the
-  common case, one instance per shard.
+  common case, one instance per shard. It can also be the bare
+  word **`replica`**: the instance's 0-based replica index, so a
+  `pinned(..., replicas = K)` fan-out shards an Int-keyed topic
+  with one subscribe line (see the concurrency chapter's
+  fan-out pattern). A filter of any shape requires a *keyed*
+  topic — on an unkeyed one it would silently match nothing, and
+  the checker now says so.
 - The key is **captured by value when the locus is constructed.**
   Reassigning `self.symbol_id` later does *not* re-route the
   subscription; to change shards, dissolve the locus and

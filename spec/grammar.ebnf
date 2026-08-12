@@ -531,11 +531,18 @@ placement_block   = "placement" , "{" , { placement_entry } , "}" ;
 placement_entry   = IDENTIFIER , ":" , placement_spec ,
                     [ "where" , placement_constraint ,
                       { "," , placement_constraint } ] , ";" ;
-placement_spec    = "cooperative" , [ "(" , "pool" , "=" , IDENTIFIER , ")" ]
+placement_spec    = "cooperative" , [ "(" , coop_attr ,
+                                 { "," , coop_attr } , [ "," ] , ")" ]
                   | "pinned" , [ "(" , pin_attr , { "," , pin_attr } ,
                                  [ "," ] , ")" ] ;
-(* At most one affinity attr and at most one `replicas` per
-   `pinned(...)`; enforced by the parser, not the grammar. *)
+(* At most one affinity attr per spec, at most one `pool`, and at
+   most one `replicas` per `pinned(...)`; enforced by the parser,
+   not the grammar. Pool affinity (2026-08-12): `cooperative`
+   takes the same affinity forms as `pinned` — it binds the
+   POOL's worker thread; entries naming one pool must agree
+   (typecheck) and `replicas` stays pinned-only. *)
+coop_attr         = "pool" , "=" , IDENTIFIER
+                  | pin_affinity ;
 pin_attr          = pin_affinity
                   | "replicas" , "=" , INT_LIT ;
 pin_affinity      = "core"  , "=" , INT_LIT
@@ -645,12 +652,18 @@ bus_publish       = "publish" , bus_subject ,
    - a const identifier resolving to such a literal
    - `self.<field>` — captured at locus instantiation
    - the sentinel `_`, only legal when the topic declared
-     `on_unmatched: fallback` (catch-unmatched subscriber).
+     `on_unmatched: fallback` (catch-unmatched subscriber)
+   - the bare word `replica` (2026-08-12, contextual in exactly
+     this position): the subscribing instance's 0-based replica
+     index — K `pinned(replicas = K)` instances shard an
+     Int-keyed topic with one subscribe line. A filter of any
+     shape now REQUIRES a keyed topic (typecheck).
    Bare-Int and through-enum key types are both accepted; the
    bus stores the underlying integer tag. See `spec/semantics.md`
    § "Phase 3: routing keys". *)
 key_filter        = "where" , "key" , "==" , key_filter_rhs ;
 key_filter_rhs    = "_"
+                  | "replica"
                   | expr ;
 
 

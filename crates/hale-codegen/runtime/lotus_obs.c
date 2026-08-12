@@ -1,7 +1,7 @@
 /*
  * Hale native observation emission — iris handoff P4 (2026-07-27).
  *
- * Implements the iris observation protocol (PROTOCOL.md v0.1 on
+ * Implements the iris observation protocol (PROTOCOL.md v0.2 on
  * the iris-observer `observer` branch) as a runtime capability:
  * with `LOTUS_OBS=1` in the environment, the process publishes a
  * `/hale-obs-<pid>` shm segment + registration file, and the
