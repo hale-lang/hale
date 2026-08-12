@@ -4499,15 +4499,20 @@ fn compile_and_exec(
     program: &Program,
     renames: &[(Vec<String>, String)],
     user_args: &[String],
+    model_hash: u64,
 ) -> ExitCode {
     let mut bin = std::env::temp_dir();
     let mut h = DefaultHasher::new();
     h.write_usize(program.items.len());
     h.write_u32(std::process::id());
     bin.push(format!("hale_run_{:016x}", h.finish()));
-    if let Err(e) =
-        hale_codegen::build_executable_with_imports(program, &bin, renames)
-    {
+    let options = hale_codegen::BuildOptions {
+        model_hash: Some(model_hash),
+        ..Default::default()
+    };
+    if let Err(e) = hale_codegen::build_executable_with_options(
+        program, &bin, renames, &options,
+    ) {
         eprintln!("build error: {:?}", e);
         return ExitCode::from(1);
     }
@@ -4869,7 +4874,10 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
                 return ExitCode::from(1);
             }
         }
-        return compile_and_exec(&program, &renames, user_args);
+        // P26: stamp the model identity of the bundle just checked.
+        let model_hash =
+            hale_types::topology::model_shape_hash(&bundle);
+        return compile_and_exec(&program, &renames, user_args, model_hash);
     }
 
     let files = match collect_ap_files(target) {
@@ -4988,7 +4996,9 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     }
-    compile_and_exec(&program, &renames, user_args)
+    // P26: stamp the model identity of the bundle just checked.
+    let model_hash = hale_types::topology::model_shape_hash(&bundle);
+    compile_and_exec(&program, &renames, user_args, model_hash)
 }
 
 fn run_build(target: &Path) -> ExitCode {
@@ -5214,6 +5224,10 @@ fn run_build(target: &Path) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // P26: stamp the model identity of the bundle just checked into
+    // the binary, for the observation segment header.
+    options.model_hash =
+        Some(hale_types::topology::model_shape_hash(&bundle));
     // WASM plan: a wasm build emits `<stem>.wasm` (a relocatable wasm
     // object at this stage) rather than the extension-less native binary.
     // Output naming is a property of the target, not a special case

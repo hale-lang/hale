@@ -70,6 +70,9 @@
 #include <errno.h>
 #include <termios.h>
 #include <sys/ioctl.h>
+#ifdef __linux__
+#include <linux/sockios.h>
+#endif
 #include <time.h>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -6185,6 +6188,38 @@ int lotus_obs_active(void) __attribute__((weak));
  * so the published counter isn't inflated by deliveries. */
 void lotus_obs_begin_redispatch(void) __attribute__((weak));
 void lotus_obs_end_redispatch(void) __attribute__((weak));
+/* iris handoff-12 P22: the per-binding backpressure cells
+ * (PROTOCOL §6: 3 queue_depth gauge, 4 send_block_ns, 5 retries).
+ * Measured here (fd occupancy + send timing live in this TU),
+ * written in the obs TU. Counters tier, same as cells 0-2. */
+void lotus_obs_binding_cell_add(int64_t binding_id, int64_t cell,
+                                uint64_t delta)
+    __attribute__((weak));
+void lotus_obs_binding_cell_gauge(int64_t binding_id, int64_t cell,
+                                  uint64_t value)
+    __attribute__((weak));
+
+/* Monotonic ns for send-path timing (P22 cell 4). */
+static uint64_t lotus_bus_mono_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+/* P22 cell 3: bytes sitting unsent in the kernel's socket send
+ * queue — the first thing that climbs when a consumer falls
+ * behind, well before anything drops. Sampled at send time as a
+ * last-write-wins gauge; 0 where the platform has no SIOCOUTQ. */
+static uint64_t lotus_bus_sendq_depth(int fd) {
+#ifdef SIOCOUTQ
+    int pending = 0;
+    if (fd >= 0 && ioctl(fd, SIOCOUTQ, &pending) == 0 && pending > 0)
+        return (uint64_t)pending;
+#else
+    (void)fd;
+#endif
+    return 0;
+}
 /* iris handoff-8 P21: adapter-ingest NET_DELIVER (binding dedupe +
  * counters + record live in the obs TU). */
 void lotus_obs_adapter_net_deliver(const char *subject, uint64_t origin,
@@ -14601,6 +14636,11 @@ int64_t lotus_bus_transport_reconnect(int64_t handle) {
     if (!e->transport) return -1;
     e->lost = 0;
     LOTUS_CTR_BUMP(e->ctr_reconnects);
+    /* P22 cell 5: transport-level retries, monotonic. */
+    if (lotus_obs_binding_cell_add && lotus_obs_live
+        && e->obs_binding_id > 0) {
+        lotus_obs_binding_cell_add(e->obs_binding_id, 5, 1);
+    }
     /* iris P4: RESTART record for the reconnected binding. */
     if (lotus_obs_restart) {
         lotus_obs_restart(e->subject);
@@ -14869,6 +14909,10 @@ void lotus_bus_remote_fanout(const char *subject,
              * SENDER's per-subject counter) — carried on the wire
              * and echoed by the reader so send/deliver pair on
              * (origin, seq). */
+            uint64_t udp_obs_t0 =
+                (lotus_obs_binding_cell_add && lotus_obs_live)
+                    ? lotus_bus_mono_ns()
+                    : 0;
             uint64_t useq = LOTUS_CTR_BUMP(e->ctr_msgs_sent);
             /* P16: header only when the operator opted the fleet into
              * the wire change; LOTUS_OBS alone leaves the wire pristine. */
@@ -14916,6 +14960,14 @@ void lotus_bus_remote_fanout(const char *subject,
                               (struct sockaddr *)&e->udp_dest,
                               sizeof(e->udp_dest));
             }
+            if (udp_obs_t0 && e->obs_binding_id > 0) {
+                lotus_obs_binding_cell_add(
+                    e->obs_binding_id, 4,
+                    lotus_bus_mono_ns() - udp_obs_t0);
+                lotus_obs_binding_cell_gauge(
+                    e->obs_binding_id, 3,
+                    lotus_bus_sendq_depth(e->udp_fd));
+            }
             if (sent < 0) {
                 LOTUS_CTR_BUMP(e->ctr_send_failures);
                 lotus_bus_udp_log_sendto_error(e->subject, errno);
@@ -14956,7 +15008,20 @@ void lotus_bus_remote_fanout(const char *subject,
             LOTUS_CTR_BUMP(e->ctr_dropped_lost);
             continue;
         }
+        /* P22: time the send path. Only when observation is live --
+         * two clock reads against a syscall-bearing path. */
+        uint64_t obs_t0 = (lotus_obs_binding_cell_add && lotus_obs_live)
+                              ? lotus_bus_mono_ns()
+                              : 0;
         if (lotus_transport_send(e->transport, payload, payload_size) == 0) {
+            if (obs_t0 && e->obs_binding_id > 0) {
+                lotus_obs_binding_cell_add(
+                    e->obs_binding_id, 4,
+                    lotus_bus_mono_ns() - obs_t0);
+                lotus_obs_binding_cell_gauge(
+                    e->obs_binding_id, 3,
+                    lotus_bus_sendq_depth(e->transport->conn_fd));
+            }
             uint64_t sent_seq = LOTUS_CTR_BUMP(e->ctr_msgs_sent);
             LOTUS_CTR_ADD(e->ctr_bytes_sent, payload_size);
             /* iris P4: NET_SEND with the per-binding monotonic seq.
@@ -14981,6 +15046,11 @@ void lotus_bus_remote_fanout(const char *subject,
                 }
             }
         } else {
+            if (obs_t0 && e->obs_binding_id > 0) {
+                lotus_obs_binding_cell_add(
+                    e->obs_binding_id, 4,
+                    lotus_bus_mono_ns() - obs_t0);
+            }
             LOTUS_CTR_BUMP(e->ctr_send_failures);
             if (e->locus_served) {
                 /* Connection-class failure on a locus-owned

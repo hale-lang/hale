@@ -1362,8 +1362,19 @@ zero_copy binding produces.
 
 With `LOTUS_OBS=1` the runtime publishes an iris-protocol
 observation segment (`/hale-obs-<pid>` + registration file per
-PROTOCOL v0.1 — the contract lives in the iris-observer repo;
-layouts mirrored from its reference implementation) and the
+PROTOCOL v0.2 — the contract lives in the iris-observer repo;
+layouts mirrored from its reference implementation. 0.2, 2026-08-12
+downstream handoff: the header gains `model_hash` at `0x80` — the
+topology artifact's `shape_hash`, stamped by the CLI from the same
+bundle it typechecks, so a consumer can establish the RUNNING
+binary was built from the model it joins against; 0 = unstamped
+harness build. And the per-binding backpressure cells reserved
+since v0 are now written: `queue_depth` (cell 3, a last-write-wins
+gauge of the kernel send-queue occupancy sampled at send time),
+`send_block_ns` (cell 4, accumulated transport-send duration), and
+`retries` (cell 5, reconnects) — counters-tier, so a consumer
+falling behind shows as depth climbing and block time accruing
+BEFORE anything drops) and the
 runtime's own choke points emit records: `BUS_PUBLISH` /
 `BUS_DELIVER` at every dispatch flavor (dynamic, static-devirt,
 cross-thread wire; deliver is enqueue-time at v0),

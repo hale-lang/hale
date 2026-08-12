@@ -8,6 +8,51 @@ behavior.
 
 ## Unreleased
 
+### Observability: supervision in the model, backpressure on the wire, identity in the segment
+
+Five items from a downstream observability handoff, resolved as one
+batch:
+
+- **Supervision is in the topology artifact** (schema 1.10, hashed —
+  existing `shape_hash` values change). `on_failure` had no
+  representation at all, while `RESTART`/`SUPERV_TRANS`/`DISSOLVE`
+  are the richest live signal an observer has — every restart was
+  visible with no declared policy to belong to. One `supervision`
+  row per handler: supervising locus, supervised child + error
+  types, the recovery ops the body invokes, and a literal retry
+  bound when written (`restart(c) for 3`); spans ride in
+  `provenance.supervision`. A policy change now moves the model
+  identity, and "declared retry cap 3, observed 3 in 40 s" is an
+  annotation a consumer can actually draw.
+- **The per-binding backpressure cells are written.** PROTOCOL §6
+  reserved `queue_depth` / `send_block_ns` / `retries` (cells 3–5)
+  since v0; no path wrote them, so a saturated edge was
+  indistinguishable from a healthy one until something dropped.
+  Now: cell 3 is a last-write-wins gauge of kernel send-queue
+  occupancy sampled at send time, cell 4 accumulates transport-send
+  duration (a stalled consumer makes it explode), cell 5 counts
+  reconnects — counters-tier, measured only under `LOTUS_OBS`.
+  Pinned by an overloaded-consumer test: depth climbs and block
+  time accrues ahead of any loss.
+- **The observation segment carries the model identity** (proto
+  0.2): a `model_hash` u64 at header offset `0x80` — the topology
+  artifact's `shape_hash`, computed by the CLI from the same bundle
+  it typechecks and stamped in the codegen prelude. A consumer
+  joining a live manifest against a source-derived artifact can now
+  establish the running binary was built from the model it compares
+  against; a comment-only rebuild keeps the value, a model change
+  moves it. Harness builds read 0.
+- **Topic declarations carry provenance spans**: every name in
+  `sorts.topics` now has a `provenance.decls` entry, so an editor
+  lens can anchor on the `topic` line a developer actually looks
+  at, not only on the publish/subscribe sites.
+- **The spawned-publisher counting claim closes as stale**: the
+  exact missing conjunction from the field report — an
+  `accept()`-spawned publisher on a remote-only *plain* topic with
+  the observer attached after steady state — counts correctly on
+  current HEAD (40/40, five runs), and is now a permanent pin
+  beside the four earlier flavors.
+
 ### `std::http::Router.add_fn` — a route can be a bare function
 
 Requested ergonomics: registering a route no longer requires

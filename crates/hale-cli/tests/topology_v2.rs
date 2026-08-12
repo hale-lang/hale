@@ -266,3 +266,126 @@ fn main() { A { }; }
         "a payload field edit must NOT change the model shape_hash"
     );
 }
+
+/// Downstream handoff P24 (2026-08-12) — topic DECLARATIONS are
+/// spanned decls. The publish/subscribe SITES were covered; the
+/// `topic Orders { … }` line itself — where a developer looks when
+/// asking "is this topic live?" — had no `provenance.decls` entry,
+/// so an editor lens could anchor everywhere except the
+/// declaration. Acceptance: every name in `sorts.topics` appears
+/// in `provenance.decls`.
+#[test]
+fn topic_declarations_carry_provenance_spans() {
+    let src = r#"
+type Order { id: Int; }
+type Fill { id: Int; }
+topic Orders { payload: Order; }
+topic Fills { payload: Fill; }
+locus A {
+    bus { publish Orders; subscribe Fills as on_fill; }
+    fn on_fill(f: Fill) { }
+    fn go(n: Int) { Orders <- Order { id: n }; }
+}
+fn main() { A { }; }
+"#;
+    let art = dump(src, "topic_decl_spans");
+    let v: serde_json::Value =
+        serde_json::from_str(&art).expect("artifact parses");
+    let topics: Vec<String> = v["sorts"]["topics"]
+        .as_array()
+        .expect("sorts.topics")
+        .iter()
+        .map(|t| t.as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        topics.contains(&"Orders".to_string())
+            && topics.contains(&"Fills".to_string()),
+        "fixture topics present: {:?}",
+        topics
+    );
+    let decls = v["provenance"]["decls"]
+        .as_object()
+        .expect("provenance.decls");
+    for t in &topics {
+        let d = decls.get(t).unwrap_or_else(|| {
+            panic!("topic `{}` missing from provenance.decls", t)
+        });
+        assert!(
+            d["source"].as_i64().unwrap_or(-1) >= 0,
+            "topic `{}` span resolves to a source: {}",
+            t,
+            d
+        );
+        let span = d["span"].as_array().expect("span array");
+        assert!(
+            span[1].as_u64() > span[0].as_u64(),
+            "topic `{}` has a non-empty span: {}",
+            t,
+            d
+        );
+    }
+}
+
+/// Downstream handoff P25 (2026-08-12) — supervision is in the
+/// model. `on_failure` had NO representation while
+/// RESTART/SUPERV_TRANS/DISSOLVE are the richest live signal an
+/// observer has: every restart was visible and no declared policy
+/// existed for it to belong to. Acceptance: the artifact names the
+/// supervising locus, the supervised child type, and a source
+/// span; the hashed row carries the recovery ops and a literal
+/// retry bound; and a policy change moves `shape_hash` (a
+/// supervision change IS a topology change).
+#[test]
+fn supervision_lands_in_the_model_with_spans() {
+    let base = r#"
+locus Worker {
+    params { n: Int = 0; }
+    run() { }
+}
+locus App {
+    accept(c: Worker) { }
+    on_failure(c: Worker, err: ClosureViolation) {
+        restart(c) for 3;
+    }
+    run() { Worker { }; }
+}
+fn main() { App { }; }
+"#;
+    let art = dump(base, "supervision");
+    let v: serde_json::Value =
+        serde_json::from_str(&art).expect("artifact parses");
+
+    // Hashed model row: locus, child, err, ops, retry bound.
+    let sup = v["supervision"].as_array().expect("supervision section");
+    assert_eq!(sup.len(), 1, "one on_failure handler: {}", art);
+    let row = &sup[0];
+    assert_eq!(row["locus"], "App");
+    assert_eq!(row["child"], "Worker");
+    assert_eq!(row["err"], "ClosureViolation");
+    assert_eq!(row["ops"][0], "restart");
+    assert_eq!(row["retry_bound"], 3, "literal retry cap: {}", row);
+
+    // Spanned provenance row, addressable in a source.
+    let prov = v["provenance"]["supervision"]
+        .as_array()
+        .expect("provenance.supervision");
+    assert_eq!(prov[0]["locus"], "App");
+    assert_eq!(prov[0]["child"], "Worker");
+    assert!(
+        prov[0]["source"].as_i64().unwrap_or(-1) >= 0,
+        "span resolves to a source: {}",
+        prov[0]
+    );
+    let span = prov[0]["span"].as_array().expect("span");
+    assert!(span[1].as_u64() > span[0].as_u64());
+
+    // A policy change is a topology change: swapping the op moves
+    // shape_hash.
+    let absorbed = base.replace("restart(c) for 3;", "bubble(err);");
+    let art2 = dump(&absorbed, "supervision2");
+    assert_ne!(
+        shape_hash(&art),
+        shape_hash(&art2),
+        "a supervision policy change must move the model identity"
+    );
+}

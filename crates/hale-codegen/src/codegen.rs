@@ -577,6 +577,16 @@ pub struct BuildOptions {
     /// harness callers (tests) leave it None and get no Hale-side
     /// DWARF (the runtime C always carries -g regardless).
     pub debug: Option<DebugSources>,
+    /// Downstream handoff P26 (2026-08-12): the topology model's
+    /// identity (`shape_hash`), stamped into the observation
+    /// segment header at creation so a consumer joining a live
+    /// manifest against a source-derived artifact can establish
+    /// the RUNNING binary was built from the model it compares
+    /// against — a fact about the process, not a guess from file
+    /// digests. The CLI computes it from the same bundle it
+    /// typechecks; harness callers leave it None and the header
+    /// field reads 0 (unstamped).
+    pub model_hash: Option<u64>,
 }
 
 /// The per-build source table for DWARF emission: each entry is one
@@ -1376,6 +1386,7 @@ pub fn build_executable_with_options(
         fresh_locus_factories: compute_fresh_locus_factories(&merged, import_renames),
         returned_bindings: compute_returned_bindings(&merged),
         assign_moved_bindings: compute_assign_moved_bindings(&merged),
+        model_hash: options.model_hash,
         suppress_fresh_temp: false,
         in_fresh_temp_hook: false,
         current_fn_skip_exit_drain: false,
@@ -3993,6 +4004,9 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// (the CALLER owns it). Temporary registration is suppressed
     /// there; everywhere else a fresh-factory call produces a value
     /// nothing names, and this frame owns it.
+    /// P26: the build-time model identity to stamp into the obs
+    /// segment header (None = harness build, header reads 0).
+    pub(crate) model_hash: Option<u64>,
     pub(crate) suppress_fresh_temp: bool,
     /// GH #402: re-entry guard for the fresh-temp hook, cleared
     /// immediately on entry so nested calls still get their own.
@@ -8847,6 +8861,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             CodegenError::LlvmEmit(e.to_string())
                         })?;
                 }
+            }
+            // P26 (iris handoff-12): stamp the topology model's
+            // identity for the observation segment header. Runs in
+            // the prelude, so the value is in place before any
+            // probe lazily creates the segment. Harness builds
+            // (None) skip the call and the header reads 0.
+            if let Some(h) = self.model_hash {
+                let set_fn = self
+                    .module
+                    .get_function("lotus_obs_model_hash_set")
+                    .expect("lotus_obs_model_hash_set declared");
+                let i64_t = self.context.i64_type();
+                self.builder
+                    .build_call(
+                        set_fn,
+                        &[i64_t.const_int(h, false).into()],
+                        "obs.model_hash",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
         }
         if !self.is_wasm {
