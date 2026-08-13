@@ -1784,6 +1784,15 @@ pub fn effect_manifest_with_inference(
                     walk_infer(&md.items, &inner, add);
                 }
                 TopDecl::Locus(l) => {
+                    // Round 4, finding 2: the summary KEY must be
+                    // qualified like the display name — an
+                    // unqualified key let `inner::Worker::run` find
+                    // an unrelated top-level `Worker::run`'s summary
+                    // and inherit its (possibly pure) effects. The
+                    // qualified key misses until the summarizer
+                    // descends into modules, which fails closed as
+                    // `unclassified`.
+                    let locus_key = format!("{}{}", prefix, l.name.name);
                     for m in &l.members {
                         match m {
                             LocusMember::Fn(fd) => add(
@@ -1792,7 +1801,7 @@ pub fn effect_manifest_with_inference(
                                     prefix, l.name.name, fd.name.name
                                 ),
                                 FnKey::method(
-                                    l.name.name.clone(),
+                                    locus_key.clone(),
                                     fd.name.name.clone(),
                                 ),
                             in_module,
@@ -1815,7 +1824,7 @@ pub fn effect_manifest_with_inference(
                                         prefix, l.name.name, phase
                                     ),
                                     FnKey::method(
-                                        l.name.name.clone(),
+                                        locus_key.clone(),
                                         phase.to_string(),
                                     ),
                                     in_module,

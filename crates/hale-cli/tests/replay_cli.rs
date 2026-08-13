@@ -598,3 +598,165 @@ fn main() { wired::App { }; }
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Round 4, finding 1's canary: a probe-free program must still
+/// produce a recording — and REPLACE whatever sat at the path. Lazy
+/// creation let `fn main() { let x = 1 + 1; }` exit successfully
+/// with no file, while a stale artifact at the path silently
+/// impersonated the requested run.
+#[test]
+fn probe_free_run_replaces_the_artifact_at_the_path() {
+    let dir = workdir("probefree");
+    let prog = dir.join("quiet.hl");
+    std::fs::write(&prog, "fn main() { let x = 1 + 1; }\n").unwrap();
+    let rec = dir.join("run.halerec");
+    std::fs::write(&rec, b"SENTINEL: not a recording").unwrap();
+
+    let out = hale()
+        .arg("run")
+        .arg(&prog)
+        .env("LOTUS_OBS_RECORD", &rec)
+        .output()
+        .expect("record quiet program");
+    assert!(
+        out.status.success(),
+        "quiet run failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let bytes = std::fs::read(&rec).unwrap();
+    assert!(
+        !bytes.starts_with(b"SENTINEL"),
+        "the stale artifact at the path was left impersonating \
+         this run"
+    );
+    // It must parse as a CLEAN current recording with zero
+    // semantic events and a real execution identity.
+    let r = crate::parse_rec(&rec);
+    assert!(r.0, "probe-free recording is not clean");
+    assert_eq!(r.1, 0, "a probe-free run recorded semantic events");
+    assert!(r.2, "probe-free recording carries no exec identity");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Minimal v0.3 reader for the canary above: (clean, semantic ring
+/// records, exec_digest nonzero). Semantic = any ring record other
+/// than the private CONSUMER identity stamp.
+fn parse_rec(p: &Path) -> (bool, usize, bool) {
+    let b = std::fs::read(p).unwrap();
+    let u64at = |o: usize| {
+        u64::from_le_bytes(b[o..o + 8].try_into().unwrap())
+    };
+    let u32at = |o: usize| {
+        u32::from_le_bytes(b[o..o + 4].try_into().unwrap())
+    };
+    if b.len() < 112 || u64at(0) != 0x30434552454C4148 {
+        return (false, usize::MAX, false);
+    }
+    let exec_nonzero = (0..4).any(|i| u64at(56 + i * 8) != 0);
+    let mut end = b.len();
+    let has_trailer = u64at(end - 16) == 0x30444E45454C4148;
+    let trailer_count = if has_trailer { u64at(end - 8) } else { 0 };
+    if has_trailer {
+        end -= 16;
+    }
+    let mut off = 96usize;
+    let mut total = 0u64;
+    let mut semantic = 0usize;
+    while off + 8 <= end {
+        let tag = u32at(off);
+        total += 1;
+        if tag == 0 {
+            if end - off < 24 {
+                return (false, semantic, exec_nonzero);
+            }
+            let w0 = u64at(off + 8);
+            let ekind = ((w0 >> 20) & 0x1F) as u32;
+            let ring = u32at(off + 4);
+            if !(ring & 0x8000_0000 != 0 && ekind == 1) {
+                semantic += 1;
+            }
+            off += 24;
+        } else if (1..=3).contains(&tag) {
+            if end - off < 32 {
+                return (false, semantic, exec_nonzero);
+            }
+            let size = u64at(off + 24) as usize;
+            let padded = (size + 7) & !7;
+            if padded > end - off - 32 {
+                return (false, semantic, exec_nonzero);
+            }
+            off += 32 + padded;
+        } else {
+            return (false, semantic, exec_nonzero);
+        }
+    }
+    (
+        has_trailer && off == end && trailer_count == total,
+        semantic,
+        exec_nonzero,
+    )
+}
+
+/// Round 4, finding 2's canary, reshaped by a checker fact: the
+/// literal same-name collision CANNOT typecheck — module-scoped
+/// names share the flat top-level namespace ("duplicate top-level
+/// name `Worker`"), so the aliasing shape is unreachable through
+/// any checked path (and `hale replay` checks before admitting).
+/// The qualified summary key stays as defense-in-depth for any
+/// future namespace relaxation and for unchecked callers of the
+/// manifest API. What IS reachable — a module LOCUS whose
+/// lifecycle body carries a live effect — must fail closed as
+/// `unclassified` under its qualified key and be refused.
+#[test]
+fn module_locus_lifecycle_fails_closed_under_qualified_key() {
+    let dir = workdir("modalias");
+    let plain = dir.join("plain.hl");
+    std::fs::write(&plain, JOURNALED).unwrap();
+    let rec = record(&dir, &plain);
+
+    let prog = dir.join("alias.hl");
+    std::fs::write(
+        &prog,
+        r#"
+module inner {
+    locus Worker {
+        params { n: Int = 0; }
+        run() {
+            let result = std::process::run("true") or raise;
+        }
+    }
+}
+type Tick { n: Int = 0; }
+locus Sink {
+    params { seen: Int = 0; }
+    bus { subscribe "a.t" as on_t of type Tick; }
+    fn on_t(t: Tick) { self.seen = self.seen + 1; }
+}
+main locus App {
+    params { s: Sink = Sink { }; w: Worker = Worker { }; }
+    bus { publish "a.t" of type Tick; }
+    run() { "a.t" <- Tick { n: 1 }; }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let out = hale()
+        .arg("replay")
+        .arg(&rec)
+        .arg(&prog)
+        .output()
+        .expect("hale replay");
+    assert!(
+        !out.status.success(),
+        "a module locus aliased a pure top-level locus and passed \
+         the gate"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("live world") && stderr.contains("unclassified"),
+        "wrong refusal:\n{}",
+        stderr
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

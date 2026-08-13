@@ -1372,6 +1372,18 @@ __attribute__((constructor)) static void obs_live_ctor(void) {
       _exit(64);
     }
   }
+  /* Round 4, finding 1: recording must initialize EAGERLY. Lazy
+   * creation waited for the first probe, so a probe-free program
+   * exited successfully with NO recording — and a stale artifact
+   * already at the path silently impersonated the run that was
+   * just requested. obs_on() under recording creates the file
+   * (replacing anything at the path), spawns the drain, and
+   * registers the finalizer — or fails the run. Identity stamps
+   * arrive later from the prelude; finalize-time restamping
+   * already covers that ordering. */
+  if (lotus_obs_recording || lotus_replay_active) {
+    (void)obs_on();
+  }
 }
 
 /* Enable check + lazy init. Fast path after first call: one
