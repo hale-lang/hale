@@ -421,6 +421,8 @@ static _Atomic int g_rec_ring_next = 0;
 static __thread int t_rec_ring = -2; /* -2 = unassigned */
 static _Atomic uint64_t g_rec_priv_cursor[64];
 
+static void obs_rec_claim(void);
+
 static obs_rec_blob_t *_Atomic g_rec_blob_head = NULL;
 static _Atomic uint64_t g_rec_blob_bytes = 0;
 #define OBS_REC_BLOB_BUDGET (64ull << 20)
@@ -1477,6 +1479,16 @@ static void obs_emit_raw(uint64_t w0, uint64_t w1) {
     }
     t_ring = r;
     RD[r].tag_b = (uint32_t)(uintptr_t)pthread_self();
+    /* v0.3: file-side map public ring → stable consumer id, so the
+     * comparator can align PUBLIC streams across runs (ring claim
+     * order races). Never touches the segment. Field contract
+     * (matches both Rust readers): a = ring, b = subtype,
+     * c = consumer. */
+    if (lotus_obs_recording) {
+      obs_rec_claim();
+      obs_rec_blob_push(OBS_REC_TAG_META, (uint32_t)r,
+                        OBS_REC_META_PUBRING, t_consumer_id, NULL, 0);
+    }
   }
   /* GH #296 recording disposition: overwrite-oldest becomes
    * block-the-producer. The ring is effectively a bounded SPSC
@@ -1785,8 +1797,10 @@ static obs_topic_slot_t *obs_topic_slot(const char *subject,
          * the comparator can align PUBLIC bus streams across runs
          * (manifest ids are registration order, which races). */
         if (lotus_obs_recording) {
-          obs_rec_blob_push(OBS_REC_TAG_META, OBS_REC_META_TOPIC,
-                            (uint64_t)id, 0,
+          /* a = topic id, b = subtype, c = 0 (field contract as at
+           * the pubring push). */
+          obs_rec_blob_push(OBS_REC_TAG_META, (uint32_t)id,
+                            OBS_REC_META_TOPIC, 0,
                             subject, strlen(subject) + 1);
         }
       }
