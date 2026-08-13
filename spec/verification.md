@@ -1293,7 +1293,13 @@ assume the others in a build:
   annotations cannot: a handler that quietly starts doing filesystem
   I/O shows up as `+ Api::emit … does={syscall,publish,alloc}` in
   review even though no annotation changed. Regenerate deliberately
-  with the dump flag when the change is intended.
+  with the dump flag when the change is intended. Rows recurse
+  through `module` declarations (GH #296 review: a module-contained
+  fn absent from the rows was invisible to both this gate and
+  `hale replay`'s safety admission); an inline-module fn the
+  callgraph summarizer cannot yet resolve renders `does={unclassified}`
+  — fail-closed, and scoped to modules so non-module manifests are
+  unchanged.
 - **Corpus-wide conformance** (GH #265 step 7). Beyond the per-test
   runtime oracle, a sweep over the whole in-tree `.hl` corpus asserts
   three properties everywhere real code lives: no reachable stdlib

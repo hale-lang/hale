@@ -1595,8 +1595,9 @@ correct for fanout accounting, structurally unable to say in what
 order a consumer actually ran its handlers. Under recording, every
 dequeue-driven handler invoke (main-queue drain, coop-pool drain,
 pinned mailbox drain, async coro start) stamps a consume record on
-the *consuming* thread right before the handler runs:
-`w1 = locus:20 (subscriber) | pub_id:44`. Its ring position is the
+the *consuming* thread right before the handler runs, carrying the
+delivery identity: the target locus in the record's id field and
+the full 64-bit `msg_id` in `w1`. Its ring position is the
 per-consumer delivery order — the thing a replay serves back.
 Pairing rule: per queue, the k-th consume is the k-th queued
 delivery. The synchronous direct-dispatch flavors deliberately emit

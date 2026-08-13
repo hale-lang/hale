@@ -269,31 +269,16 @@ file format is pre-stable (GH #296).
 **Replaying one.**
 
 ```sh
-LOTUS_OBS_RECORD=run.halerec hale run app.hl   # record
-hale replay run.halerec app.hl                 # re-execute it
-hale replay run.halerec app.hl --diff          # + report first divergence
-hale replay run.halerec app.hl --at 4120       # SIGSTOP at consume #4120
+hale replay run.halerec app.hl            # re-execute it
+hale replay run.halerec app.hl --diff     # + compare, fail on any divergence
+hale replay run.halerec app.hl --at 65:12 # SIGSTOP at consumer 65's 12th consume
 ```
 
-`hale replay` re-runs the same program (it recompiles and admits
-the recording by **executable identity** — compiler version +
-source bytes — with the model's `shape_hash` as a secondary check;
-a mismatched, unstamped, or truncated recording is refused),
-serving
-journaled inputs back and re-consuming each consumer's deliveries
-in the recorded order — two racing pinned publishers replay in
-exactly the interleaving that was recorded. Replay *degrades*
-rather than refuses: a read or delivery past the recorded history
-falls back live and is counted, the divergence summary prints at
-exit, and any divergence fails `--diff`. **Replay is refused by
-default for programs whose effects reach `syscall`/`ffi`** — a
-re-execution repeats real side effects (sends, writes, spawns), so
-that requires an explicit `--allow-live-effects`. Not yet
-replayable: `where async_io` pools (refused loudly) and live
-external ingress — socket/adapter input re-executes against the
-real world in this version. Single-pool
-runs are deterministic by construction even without replay; see
-the [testing chapter](../everyday/testing.md).
+The full story — admission by executable identity, the
+safe-by-default effect gate (`--allow-live-effects`), env-value
+redaction (`LOTUS_OBS_RECORD_ENV`), the coverage boundary, and
+what the comparator actually compares — has its own chapter:
+[Record & replay](./replay.md).
 
 ## Debugging with the native toolchain
 

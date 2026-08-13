@@ -58,6 +58,7 @@
 - [Binding C](./systems/binding-c.md)
 - [WebAssembly & the browser](./systems/webassembly.md)
 - [Operations & debugging](./systems/operations.md)
+- [Record & replay](./systems/replay.md)
 - [Modes](./systems/modes.md)
 
 ---
