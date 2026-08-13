@@ -163,8 +163,10 @@ void lotus_obs_model_hash_set(uint64_t h) { g_obs_model_hash = h; }
 /* GH #296 review finding 2: shape_hash is structural compatibility,
  * not executable identity. The CLI stamps a digest of the compiler
  * version + every source byte; exact replay admits on THIS. */
-static uint64_t g_obs_exec_digest = 0;
-void lotus_obs_exec_digest_set(uint64_t h) { g_obs_exec_digest = h; }
+static uint64_t g_obs_exec_digest[4] = {0, 0, 0, 0};
+void lotus_obs_exec_digest_set(uint64_t part, uint64_t v) {
+  if (part < 4) g_obs_exec_digest[part] = v;
+}
 
 /* iris handoff-2 P10: publisher attribution. Codegen notes the
  * publishing locus's self in this TLS right before lowering a
@@ -310,6 +312,13 @@ static __thread uint32_t t_since_epoch = 0;
  * order preserved; cross-ring interleaving meaningless), then a
  * 16-byte trailer whose presence marks a clean finalize. */
 int lotus_obs_recording = 0; /* read (weak) from lotus_arena.c */
+/* Review round 2, finding 8: env VALUES are redacted from the
+ * journal by default — names, existence, and lengths are recorded;
+ * the value itself is withheld unless LOTUS_OBS_RECORD_ENV=full.
+ * A withheld read replays as a NAMED divergence (live fallback),
+ * never as a silently substituted value, and the artifact header
+ * says which policy produced it. */
+static int g_rec_env_full = 0;
 /* Defined (with its story) next to obs_gate; obs_create pre-arms
  * it under recording. Tentative declaration so it's visible here. */
 static _Atomic uint32_t g_last_observed;
@@ -339,22 +348,37 @@ static __thread uint64_t t_consume_seq = 0;
  *   tag 2 (journal): u32 tag, u32 jkind, u64 consumer_id,
  *                    u64 seq, u64 size, size bytes padded to 8
  *
- * Identity. pub_id = consumer_id:8 << 36 | per-thread publish
- * seq:36 — deterministic across runs (a re-executed publisher
+ * Identity. msg_id = consumer_id:16 << 48 | per-thread publish
+ * seq:48 — deterministic across runs (a re-executed publisher
  * thread re-derives the same ids in the same order), which is what
  * lets a replay match a re-executed delivery to its recorded
- * consume without any global coordination. 0 = unidentified
- * (structural cells: run starts, cross-pool creates — matched by
- * per-queue count, not id).
+ * consume without any global coordination. 48-bit seqs do not
+ * wrap in any realistic recording (~8,900 years at 1M msg/s), and
+ * range guards below FAIL LOUDLY rather than letting components
+ * overlap. 0 = unidentified (structural cells: run starts,
+ * cross-pool creates — matched by per-queue count, not id).
  *
  * Consumer identity. Stable across runs, unlike pthread ids:
  * main = 1, cooperative pool workers = 16 + registration index,
- * pinned locus threads = 64 + obs instance id, recording drain and
- * heartbeat never claim one. Stamped as each ring's first record
- * (EK_CONSUMER) and carried in journal entries. */
+ * pinned locus threads = 64 + obs instance id (guarded: an id
+ * reaching the anonymous floor fails the recording), anonymous
+ * (ingress) threads = 60000 + claim order — a range DISJOINT from
+ * every stable class by construction. The drain and heartbeat
+ * never claim one. Carried in each private ring's first record
+ * and in journal entries. */
+#define OBS_REC_ANON_BASE 60000u
+#define OBS_REC_CONSUMER_MAX 0xFFFFu
 #define OBS_REC_TAG_RING 0u
 #define OBS_REC_TAG_PAYLOAD 1u
 #define OBS_REC_TAG_JOURNAL 2u
+/* v0.3: run-stable identity maps for the comparator — a = subtype
+ * (1 = topic id→subject name, 2 = public ring→consumer id),
+ * b/cfield = ids, bytes = name (subtype 1). Manifest topic ids and
+ * public ring indices are per-run registration/claim order, so the
+ * file must carry its own maps for cross-run comparison. */
+#define OBS_REC_TAG_META 3u
+#define OBS_REC_META_TOPIC 1u
+#define OBS_REC_META_PUBRING 2u
 
 /* journal kinds — one per interposed runtime read */
 #define JK_TIME_NOW 1u
@@ -407,6 +431,15 @@ static void obs_rec_blob_push(uint32_t tag, uint32_t a, uint64_t b,
   /* Reserve BEFORE allocating (concurrent producers cannot
    * overshoot the budget), back off while over. */
   uint64_t need = sizeof(obs_rec_blob_t) + size;
+  if (size > OBS_REC_BLOB_BUDGET / 2 || need < size) {
+    fprintf(stderr,
+            "hale: LOTUS_OBS_RECORD capture of %llu bytes exceeds "
+            "the recorder's budget — failing the run rather than "
+            "hanging on an unsatisfiable reservation\n",
+            (unsigned long long)size);
+    fflush(NULL);
+    _exit(74);
+  }
   for (;;) {
     uint64_t prev = atomic_fetch_add_explicit(
         &g_rec_blob_bytes, need, memory_order_relaxed);
@@ -442,13 +475,18 @@ static void obs_rec_blob_push(uint32_t tag, uint32_t a, uint64_t b,
 typedef struct {
   uint64_t magic;
   uint16_t maj, min;
-  uint32_t header_len; /* 64 */
+  uint32_t header_len; /* 96 */
   uint32_t pid, ring_count, ring_slots, ts_shift;
   uint64_t started_mono_ns, started_wall_ns;
   uint64_t model_hash;
-  uint64_t exec_digest; /* compiler ver + source bytes; 0 = unstamped */
+  /* Framed SHA-256 build-manifest digest (full 32 bytes — review
+   * round 2, finding 2): toolchain source hash + compiler version
+   * + build options + framed source paths/lengths/contents. All
+   * zero = unstamped. Env-value redaction state rides flags. */
+  uint64_t exec_digest[4];
+  uint64_t flags; /* bit 0 = env values redacted */
 } obs_rec_hdr_t;
-_Static_assert(sizeof(obs_rec_hdr_t) == 64, "recording header is 64B");
+_Static_assert(sizeof(obs_rec_hdr_t) == 96, "recording header is 96B");
 
 typedef struct {
   uint32_t tag; /* OBS_REC_TAG_RING */
@@ -488,8 +526,16 @@ static uint64_t g_replay_at_consumer = 0; /* 0 = process-wide count */
 #define RP_MAX_CONSUMERS 96
 #define RP_MAX_JK 9
 
-typedef struct { const uint8_t *p; uint64_t size;
-                 uint32_t jkind, arghash; } rp_blob_ref_t;
+typedef struct {
+  const uint8_t *args;   /* framed invocation arguments */
+  uint64_t args_len;
+  const uint8_t *p;      /* result bytes */
+  uint64_t size;
+  uint32_t jkind;
+  uint32_t withheld;     /* value redacted at record time */
+} rp_blob_ref_t;
+typedef struct { uint32_t locus; uint64_t msg; } rp_consume_t;
+static uint32_t obs_inst_id_of(void *self);
 typedef struct {
   rp_blob_ref_t *items;
   uint32_t len, cap, cursor;
@@ -501,7 +547,7 @@ typedef struct {
    * cross-kind reordering or a changed argument is the FIRST
    * named divergence instead of a plausible wrong value. */
   rp_queue_t journal;
-  uint64_t *consume;               /* recorded pub_id order */
+  rp_consume_t *consume;           /* recorded delivery order */
   uint32_t consume_len, consume_cap, consume_cursor;
 } rp_consumer_t;
 static rp_consumer_t g_rp_consumers[RP_MAX_CONSUMERS];
@@ -534,38 +580,41 @@ static rp_consumer_t *rp_consumer(uint64_t cid) {
   return NULL;
 }
 
-static void rp_queue_push(rp_queue_t *q, const uint8_t *p, uint64_t n,
-                          uint32_t jkind, uint32_t arghash) {
+static void rp_queue_push(rp_queue_t *q, rp_blob_ref_t e) {
   if (q->len == q->cap) {
     q->cap = q->cap ? q->cap * 2 : 16;
-    q->items = realloc(q->items, q->cap * sizeof(rp_blob_ref_t));
+    rp_blob_ref_t *g = realloc(q->items,
+                               q->cap * sizeof(rp_blob_ref_t));
+    if (!g) {
+      fprintf(stderr, "hale: LOTUS_REPLAY out of memory\n");
+      _exit(66);
+    }
+    q->items = g;
   }
-  q->items[q->len].p = p;
-  q->items[q->len].size = n;
-  q->items[q->len].jkind = jkind;
-  q->items[q->len].arghash = arghash;
-  q->len++;
+  q->items[q->len++] = e;
 }
 
 static uint64_t rp_ring_consumer[64]; /* ring idx → consumer id */
 
+static void rp_fail(const char *why) {
+  fprintf(stderr, "hale: LOTUS_REPLAY `%s`: %s\n", g_replay_path, why);
+  fflush(NULL);
+  _exit(66);
+}
+
 static void rp_load(void) {
-  FILE *f = fopen(g_replay_path, "rb");
-  if (!f) {
-    fprintf(stderr, "hale: LOTUS_REPLAY could not open `%s`: %s\n",
-            g_replay_path, strerror(errno));
-    _exit(66);
+  /* One open + fstat + mmap — no reopen window (review round 2,
+   * finding 4: the fopen-then-open pair was its own TOCTOU). The
+   * mapping is MAP_PRIVATE; later file mutation cannot change the
+   * validated bytes this process serves. */
+  int fd = open(g_replay_path, O_RDONLY | O_NOFOLLOW);
+  if (fd < 0) rp_fail(strerror(errno));
+  struct stat st;
+  if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 112) {
+    close(fd);
+    rp_fail("not a recording (too small or not a regular file)");
   }
-  fseek(f, 0, SEEK_END);
-  long fl = ftell(f);
-  fclose(f);
-  int fd = open(g_replay_path, O_RDONLY);
-  if (fd < 0 || fl < 80) {
-    fprintf(stderr, "hale: LOTUS_REPLAY `%s` is not a recording\n",
-            g_replay_path);
-    _exit(66);
-  }
-  g_rp_len = (size_t)fl;
+  g_rp_len = (size_t)st.st_size;
   g_rp_base = mmap(NULL, g_rp_len, PROT_READ, MAP_PRIVATE, fd, 0);
   close(fd);
   if (g_rp_base == MAP_FAILED) {
@@ -574,82 +623,117 @@ static void rp_load(void) {
     _exit(66);
   }
   const obs_rec_hdr_t *h = (const obs_rec_hdr_t *)g_rp_base;
-  if (h->magic != OBS_REC_MAGIC || h->maj != 0 || h->min < 2) {
-    fprintf(stderr,
-            "hale: LOTUS_REPLAY `%s`: not a v0.2+ recording "
-            "(magic/version mismatch)\n",
-            g_replay_path);
-    _exit(66);
+  if (h->magic != OBS_REC_MAGIC || h->maj != 0 || h->min < 3) {
+    rp_fail("not a v0.3+ recording (magic/version mismatch)");
+  }
+  if (h->header_len != sizeof(obs_rec_hdr_t)) {
+    rp_fail("unexpected header length");
   }
   size_t end = g_rp_len;
-  if (end >= 16 &&
+  uint64_t trailer_count = 0;
+  if (end >= sizeof(obs_rec_hdr_t) + 16 &&
       *(const uint64_t *)(g_rp_base + end - 16) == OBS_REC_END) {
+    trailer_count = *(const uint64_t *)(g_rp_base + end - 8);
     end -= 16;
   } else {
-    fprintf(stderr,
-            "hale: LOTUS_REPLAY `%s`: no clean-finalize trailer — "
-            "the recording is truncated; refusing to replay a "
-            "partial history (re-record, or accept divergence by "
-            "trimming the file yourself)\n",
-            g_replay_path);
-    _exit(66);
+    rp_fail("no clean-finalize trailer — the recording is "
+            "truncated; refusing to replay a partial history");
   }
+  uint64_t parsed = 0;
   memset(rp_ring_consumer, 0, sizeof rp_ring_consumer);
   size_t off = h->header_len;
   while (off + 8 <= end) {
     uint32_t tag = *(const uint32_t *)(g_rp_base + off);
     uint32_t a = *(const uint32_t *)(g_rp_base + off + 4);
+    parsed++;
     if (tag == OBS_REC_TAG_RING) {
-      if (off + 24 > end) break;
+      if (end - off < 24) rp_fail("truncated ring record");
       uint64_t w0 = *(const uint64_t *)(g_rp_base + off + 8);
       uint64_t w1 = *(const uint64_t *)(g_rp_base + off + 16);
       uint32_t ekind = (uint32_t)((w0 >> 20) & 0x1F);
       if (a & OBS_REC_PRIV_RING) {
         uint32_t pr = a & ~OBS_REC_PRIV_RING;
-        if (pr < 64) {
-          if (ekind == REC_EV_CONSUMER) {
-            rp_ring_consumer[pr] = w1;
-          } else if (ekind == REC_EV_CONSUME) {
-            rp_consumer_t *c =
-                rp_consumer_create(rp_ring_consumer[pr]);
-            if (c) {
-              if (c->consume_len == c->consume_cap) {
-                c->consume_cap =
-                    c->consume_cap ? c->consume_cap * 2 : 64;
-                c->consume = realloc(
-                    c->consume, c->consume_cap * sizeof(uint64_t));
-              }
-              c->consume[c->consume_len++] = w1 & 0xFFFFFFFFFFFULL;
+        if (pr >= 64) rp_fail("private ring index out of range");
+        if (ekind == REC_EV_CONSUMER) {
+          rp_ring_consumer[pr] = w1;
+        } else if (ekind == REC_EV_CONSUME) {
+          rp_consumer_t *c =
+              rp_consumer_create(rp_ring_consumer[pr]);
+          if (c) {
+            if (c->consume_len == c->consume_cap) {
+              c->consume_cap =
+                  c->consume_cap ? c->consume_cap * 2 : 64;
+              rp_consume_t *g = realloc(
+                  c->consume,
+                  c->consume_cap * sizeof(rp_consume_t));
+              if (!g) rp_fail("out of memory");
+              c->consume = g;
             }
+            c->consume[c->consume_len].locus =
+                (uint32_t)(w0 & 0xFFFFFu);
+            c->consume[c->consume_len].msg = w1;
+            c->consume_len++;
           }
         }
       } /* public-ring records: standard iris protocol, no
          * recorder meaning — nothing to index for replay */
       off += 24;
-    } else if (tag == OBS_REC_TAG_PAYLOAD || tag == OBS_REC_TAG_JOURNAL) {
-      if (off + 32 > end) break;
+    } else if (tag == OBS_REC_TAG_PAYLOAD || tag == OBS_REC_TAG_JOURNAL
+               || tag == OBS_REC_TAG_META) {
+      if (end - off < 32) rp_fail("truncated blob header");
       uint64_t b = *(const uint64_t *)(g_rp_base + off + 8);
       uint64_t cfield = *(const uint64_t *)(g_rp_base + off + 16);
       uint64_t size = *(const uint64_t *)(g_rp_base + off + 24);
       const uint8_t *bytes = g_rp_base + off + 32;
+      if (size > end - off - 32) rp_fail("blob length out of range");
       uint64_t padded = (size + 7) & ~7ull;
-      if (off + 32 + padded > end) break;
+      if (padded < size || padded > end - off - 32) {
+        rp_fail("blob padding out of range");
+      }
       if (tag == OBS_REC_TAG_JOURNAL) {
-        /* a = jkind, b = consumer, cfield = seq (order = file order
-         * per consumer, which the drain preserved) */
-        (void)cfield;
-        if (a < RP_MAX_JK) {
-          rp_consumer_t *c = rp_consumer_create(b);
-          /* cfield = arghash:32 (high) | per-thread seq:32 */
-          if (c) rp_queue_push(&c->journal, bytes, size, a,
-                               (uint32_t)(cfield >> 32));
+        /* a = jkind; b = consumer; cfield bit 63 = value withheld
+         * (redaction); bytes = [u32 args_len][args][result]. */
+        if (a >= RP_MAX_JK) rp_fail("journal kind out of range");
+        if (size < 4) rp_fail("journal entry too small");
+        uint32_t args_len;
+        memcpy(&args_len, bytes, 4);
+        if ((uint64_t)args_len + 4 > size) {
+          rp_fail("journal argument frame out of range");
         }
-      } else {
+        rp_blob_ref_t e;
+        e.args = bytes + 4;
+        e.args_len = args_len;
+        e.p = bytes + 4 + args_len;
+        e.size = size - 4 - args_len;
+        e.jkind = a;
+        e.withheld = (cfield >> 63) & 1;
+        /* per-kind result shape (review round 2, finding 4) */
+        if (!e.withheld) {
+          switch (a) {
+            case JK_TIME_NOW: case JK_TIME_MONO_NS:
+            case JK_RAND_NEXT_INT: case JK_ENV_VAR_EXISTS:
+            case JK_ENV_ARGS_COUNT:
+              if (e.size != 8) rp_fail("journal i64 wrong size");
+              break;
+            case JK_ENV_VAR: case JK_ENV_ARG:
+              if (e.size == 0 || e.p[e.size - 1] != 0) {
+                rp_fail("journal string not NUL-terminated");
+              }
+              break;
+            default: break;
+          }
+        }
+        rp_consumer_t *c = rp_consumer_create(b);
+        if (c) rp_queue_push(&c->journal, e);
+      } else if (tag == OBS_REC_TAG_PAYLOAD) {
         if (g_rp_payload_len == g_rp_payload_cap) {
           g_rp_payload_cap =
               g_rp_payload_cap ? g_rp_payload_cap * 2 : 64;
-          g_rp_payloads = realloc(
-              g_rp_payloads, g_rp_payload_cap * sizeof(rp_payload_t));
+          rp_payload_t *g = realloc(
+              g_rp_payloads,
+              g_rp_payload_cap * sizeof(rp_payload_t));
+          if (!g) rp_fail("out of memory");
+          g_rp_payloads = g;
         }
         rp_payload_t *pl = &g_rp_payloads[g_rp_payload_len++];
         pl->pub_id = b;
@@ -657,24 +741,30 @@ static void rp_load(void) {
         pl->flags = (uint32_t)cfield;
         pl->bytes.p = bytes;
         pl->bytes.size = size;
-      }
+        pl->bytes.args = NULL;
+        pl->bytes.args_len = 0;
+        pl->bytes.jkind = 0;
+        pl->bytes.withheld = 0;
+      } /* META entries carry no replay state; validated + skipped */
       off += 32 + padded;
     } else {
-      fprintf(stderr,
-              "hale: LOTUS_REPLAY `%s`: unknown entry tag %u at "
-              "offset %zu — recording from a newer hale?\n",
-              g_replay_path, tag, off);
-      _exit(66);
+      rp_fail("unknown entry tag — recording from a newer hale?");
     }
+  }
+  if (off != end) rp_fail("entries do not end at the trailer");
+  if (parsed != trailer_count) {
+    rp_fail("trailer count disagrees with parsed entries");
   }
 }
 
 /* The next recorded input for this consumer, iff it matches the
- * caller's kind + argument identity + (when nonzero) size. A
- * mismatch is a named divergence and the entry is NOT consumed —
- * the first wrong read surfaces instead of cascading plausible
- * wrong values (review finding 7). */
-static const rp_blob_ref_t *rp_serve(uint32_t jkind, uint32_t arghash,
+ * caller's kind AND its EXACT encoded arguments (memcmp — hashes
+ * were collision-prone: value|1 folded adjacent integers; review
+ * round 2, finding 3) and, when nonzero, the result size. Any
+ * mismatch — including a withheld (redacted) value — is a named
+ * divergence, and a mismatched entry is NOT consumed. */
+static const rp_blob_ref_t *rp_serve(uint32_t jkind, const void *args,
+                                     uint64_t args_len,
                                      uint64_t want_size) {
   if (!lotus_replay_active || jkind >= RP_MAX_JK) return NULL;
   rp_consumer_t *c = rp_consumer(t_consumer_id);
@@ -690,28 +780,38 @@ static const rp_blob_ref_t *rp_serve(uint32_t jkind, uint32_t arghash,
     return NULL;
   }
   const rp_blob_ref_t *e = &q->items[q->cursor];
-  if (e->jkind != jkind || e->arghash != arghash ||
-      (want_size && e->size != want_size)) {
+  if (e->jkind != jkind || e->args_len != args_len ||
+      (args_len && memcmp(e->args, args, args_len) != 0) ||
+      e->withheld || (want_size && e->size != want_size)) {
     atomic_fetch_add_explicit(&g_rp_divergences[jkind], 1,
                               memory_order_relaxed);
+    if (!e->withheld) return NULL;
+    /* A withheld value still ADVANCES the stream (its identity
+     * matched the recording's shape; only the value is absent) so
+     * subsequent reads stay aligned. */
+    if (e->jkind == jkind && e->args_len == args_len &&
+        (!args_len || memcmp(e->args, args, args_len) == 0)) {
+      q->cursor++;
+    }
     return NULL;
   }
   q->cursor++;
   return e;
 }
 
-int lotus_replay_serve_i64(uint32_t jkind, uint32_t arghash,
-                           int64_t *out) {
-  const rp_blob_ref_t *e = rp_serve(jkind, arghash, 8);
+int lotus_replay_serve_i64(uint32_t jkind, const void *args,
+                           uint64_t args_len, int64_t *out) {
+  const rp_blob_ref_t *e = rp_serve(jkind, args, args_len, 8);
   if (!e) return 0;
   memcpy(out, e->p, 8);
   return 1;
 }
 
-const void *lotus_replay_serve_blob(uint32_t jkind, uint32_t arghash,
+const void *lotus_replay_serve_blob(uint32_t jkind, const void *args,
+                                    uint64_t args_len,
                                     uint64_t want_size,
                                     uint64_t *out_n) {
-  const rp_blob_ref_t *e = rp_serve(jkind, arghash, want_size);
+  const rp_blob_ref_t *e = rp_serve(jkind, args, args_len, want_size);
   if (!e) return NULL;
   *out_n = e->size;
   return e->p;
@@ -721,12 +821,21 @@ const void *lotus_replay_serve_blob(uint32_t jkind, uint32_t arghash,
  * Returns 1 with *out = pub_id (0 = a structural cell) when the
  * recorded stream has one left; 0 = stream exhausted (no
  * constraint — consume freely). */
-int lotus_replay_expected_consume(uint64_t *out) {
+int lotus_replay_expected_consume(uint64_t *out_msg,
+                                  uint32_t *out_locus) {
   if (!lotus_replay_active) return 0;
   rp_consumer_t *c = rp_consumer(t_consumer_id);
   if (!c || c->consume_cursor >= c->consume_len) return 0;
-  *out = c->consume[c->consume_cursor];
+  *out_msg = c->consume[c->consume_cursor].msg;
+  *out_locus = c->consume[c->consume_cursor].locus;
   return 1;
+}
+
+/* Subscriber instance id for the enforcement gate (delivery
+ * identity = target locus + message id). */
+uint64_t lotus_obs_pub_inst_id(void *self) {
+  if (!self || !obs_on()) return 0;
+  return obs_inst_id_of(self);
 }
 
 /* Called at every dequeue-driven handler invoke under replay:
@@ -865,6 +974,24 @@ void lotus_obs_teardown(void) {
     pthread_join(g_rec_thread, NULL);
     g_rec_thread_started = 0;
     if (g_rec_file) {
+      /* Re-stamp the identity fields at finalize: the header is
+       * first written at segment creation, which the FIRST PROBE
+       * triggers — and a prelude registration (a topic binding)
+       * can probe before the model/exec stamps run, snapshotting
+       * zeros. Finalize-time values are the authoritative ones. */
+      uint64_t ident[6] = { g_obs_model_hash,
+                            g_obs_exec_digest[0], g_obs_exec_digest[1],
+                            g_obs_exec_digest[2], g_obs_exec_digest[3],
+                            g_rec_env_full ? 0u : 1u };
+      if (fseek(g_rec_file, 48, SEEK_SET) != 0 ||
+          fwrite(ident, sizeof ident, 1, g_rec_file) != 1 ||
+          fseek(g_rec_file, 0, SEEK_END) != 0) {
+        g_rec_file = NULL;
+        fprintf(stderr,
+                "hale: LOTUS_OBS_RECORD identity re-stamp failed\n");
+        fflush(NULL);
+        _exit(74);
+      }
       uint64_t trailer[2] = { OBS_REC_END, g_rec_written };
       if (fwrite(trailer, sizeof trailer, 1, g_rec_file) != 1 ||
           fflush(g_rec_file) != 0 || fclose(g_rec_file) != 0) {
@@ -1092,13 +1219,15 @@ static int obs_create(int64_t rings, int64_t slots) {
       _exit(74);
     }
     setvbuf(g_rec_file, NULL, _IOFBF, 1 << 20);
-    obs_rec_hdr_t rh = { .magic = OBS_REC_MAGIC, .maj = 0, .min = 2,
+    obs_rec_hdr_t rh = { .magic = OBS_REC_MAGIC, .maj = 0, .min = 3,
       .header_len = sizeof(obs_rec_hdr_t), .pid = (uint32_t)getpid(),
       .ring_count = (uint32_t)rings, .ring_slots = (uint32_t)slots,
       .ts_shift = 4, .started_mono_ns = H->started_mono_ns,
       .started_wall_ns = H->started_wall_ns,
       .model_hash = g_obs_model_hash,
-      .exec_digest = g_obs_exec_digest };
+      .exec_digest = { g_obs_exec_digest[0], g_obs_exec_digest[1],
+                       g_obs_exec_digest[2], g_obs_exec_digest[3] },
+      .flags = g_rec_env_full ? 0 : 1 };
     if (fwrite(&rh, sizeof rh, 1, g_rec_file) != 1) {
       fprintf(stderr, "hale: LOTUS_OBS_RECORD header write failed\n");
       fflush(NULL);
@@ -1187,6 +1316,8 @@ __attribute__((constructor)) static void obs_live_ctor(void) {
     lotus_obs_live = 1;
     atexit(rp_report);
   }
+  const char *envmode = getenv("LOTUS_OBS_RECORD_ENV");
+  if (envmode && strcmp(envmode, "full") == 0) g_rec_env_full = 1;
   const char *rec = getenv("LOTUS_OBS_RECORD");
   if (rec && rec[0]) {
     size_t n = strlen(rec);
@@ -1375,6 +1506,7 @@ static void obs_emit_raw(uint64_t w0, uint64_t w1) {
  * lossless (blocks against the drain cursor), never the public
  * segment. Recording mode only. */
 static void obs_rec_emit(uint32_t ev, uint64_t w1);
+static void obs_rec_emit2(uint32_t ev, uint32_t id20, uint64_t w1);
 
 /* Claim this thread's private ring (assigning a unique anonymous
  * consumer id if the thread has none). Split from the emit so an
@@ -1403,14 +1535,39 @@ static void obs_rec_claim(void) {
     /* A thread with no stable identity (ingress readers) gets a
      * unique anonymous id — unique within the run, NOT stable
      * across runs (their consume streams replay by count only;
-     * fleet identity is Phase 5). Never a shared fallback. */
-    if (t_consumer_id == 0) t_consumer_id = 2048u + (uint64_t)r;
+     * fleet identity is Phase 5). Never a shared fallback, and the
+     * range starts at OBS_REC_ANON_BASE so it cannot overlap the
+     * pinned range (guarded at note_consumer_locus). */
+    if (t_consumer_id == 0)
+      t_consumer_id = OBS_REC_ANON_BASE + (uint64_t)r;
     g_rec_rings[r].consumer = t_consumer_id;
     atomic_store_explicit(&g_rec_rings[r].head, 0,
                           memory_order_relaxed);
     t_rec_ring = r;
     obs_rec_emit(REC_EV_CONSUMER, g_rec_rings[r].consumer);
   }
+}
+
+static void obs_rec_emit2(uint32_t ev, uint32_t id20, uint64_t w1) {
+  if (!lotus_obs_recording) return;
+  obs_rec_claim();
+  if (t_rec_ring < 0) return;
+  obs_rec_ring_t *rr2 = &g_rec_rings[t_rec_ring];
+  uint64_t h2 = atomic_load_explicit(&rr2->head, memory_order_relaxed);
+  while (h2 - atomic_load_explicit(
+             &g_rec_priv_cursor[t_rec_ring], memory_order_acquire)
+         >= (uint64_t)H->ring_slots) {
+    if (atomic_load_explicit(&g_rec_stop, memory_order_relaxed))
+      return;
+    struct timespec ts = {0, 50 * 1000};
+    nanosleep(&ts, NULL);
+  }
+  uint64_t *slot2 =
+      rr2->slots + (h2 & ((uint64_t)H->ring_slots - 1)) * 2;
+  slot2[0] = ((uint64_t)(id20 & 0xFFFFFu))
+      | (((uint64_t)ev & 0x1Fu) << 20);
+  slot2[1] = w1;
+  atomic_store_explicit(&rr2->head, h2 + 1, memory_order_release);
 }
 
 static void obs_rec_emit(uint32_t ev, uint64_t w1) {
@@ -1624,6 +1781,14 @@ static obs_topic_slot_t *obs_topic_slot(const char *subject,
         slot = &g_topics[n];
         atomic_store_explicit(&g_topic_count, n + 1,
                               memory_order_release);
+        /* v0.3: file-side map manifest topic id → subject name, so
+         * the comparator can align PUBLIC bus streams across runs
+         * (manifest ids are registration order, which races). */
+        if (lotus_obs_recording) {
+          obs_rec_blob_push(OBS_REC_TAG_META, OBS_REC_META_TOPIC,
+                            (uint64_t)id, 0,
+                            subject, strlen(subject) + 1);
+        }
       }
     }
   }
@@ -1721,16 +1886,30 @@ void lotus_obs_record_consume(void *subscriber_self, uint64_t pub_id) {
   (void)obs_gate();
   (void)t_consume_seq; /* order = ring position since v0.2 */
   uint32_t locus = subscriber_self ? obs_inst_id_of(subscriber_self) : 0;
-  obs_rec_emit(REC_EV_CONSUME,
-               (((uint64_t)locus & 0xFFFFFu) << 44)
-                   | (pub_id & 0xFFFFFFFFFFFULL));
+  /* Target locus rides w0's 20-bit id field; w1 is the FULL 64-bit
+   * message id. (locus, msg_id) is the delivery identity — two
+   * subscribers of one publish on one consumer are distinguishable
+   * (review round 2, finding 5). */
+  obs_rec_emit2(REC_EV_CONSUME, locus, pub_id);
 }
 
 void lotus_obs_note_consumer_locus(void *self) {
   if (!lotus_obs_live || !self) return;
   if (!obs_on()) return;
   uint32_t id = obs_inst_id_of(self);
-  if (id) t_consumer_id = 64 + (uint64_t)id;
+  if (!id) return;
+  uint64_t cid = 64 + (uint64_t)id;
+  if ((lotus_obs_recording || lotus_replay_active) &&
+      cid >= OBS_REC_ANON_BASE) {
+    fprintf(stderr,
+            "hale: recording/replay supports pinned consumer ids "
+            "below %u (got %llu) — this run cannot be identified "
+            "faithfully\n",
+            OBS_REC_ANON_BASE, (unsigned long long)cid);
+    fflush(NULL);
+    _exit(70);
+  }
+  t_consumer_id = cid;
 }
 
 /* GH #296 Phase 2: capture a publish's payload once, on the
@@ -1751,11 +1930,20 @@ uint64_t lotus_obs_record_publish_payload(const char *subject,
   int ingress = g_obs_tls_redispatch; /* peek only */
   if (t_consumer_id == 0) obs_rec_claim(); /* unique anon id */
   uint64_t cid = t_consumer_id;
-  /* cid:12 | seq:32 (44 bits total — fits BUS_CONSUME/ENQ w1's
-   * pub field). 12 bits cover main/pool/pinned/anonymous id
-   * ranges without truncation (review finding 8). */
-  uint64_t pub_id = ((cid & 0xFFFu) << 32)
-      | (++t_pub_seq & 0xFFFFFFFFULL);
+  /* msg_id = consumer:16 | seq:48, full width — recorder records
+   * are a private format, so nothing forces identity into 44 bits
+   * (review round 2, finding 7). The guards fail loudly instead of
+   * wrapping or overlapping. */
+  if (cid > OBS_REC_CONSUMER_MAX || t_pub_seq >= 0xFFFFFFFFFFFFULL) {
+    fprintf(stderr,
+            "hale: recording identity out of range (consumer %llu, "
+            "seq %llu) — refusing to record ambiguously\n",
+            (unsigned long long)cid,
+            (unsigned long long)t_pub_seq);
+    fflush(NULL);
+    _exit(70);
+  }
+  uint64_t pub_id = (cid << 48) | (++t_pub_seq & 0xFFFFFFFFFFFFULL);
   /* Under replay the identity is re-derived (same threads, same
    * per-thread order → same ids) so dequeues can be matched to the
    * recorded consume order; nothing is written anywhere. */
@@ -1770,15 +1958,22 @@ uint64_t lotus_obs_record_publish_payload(const char *subject,
     topic *= 16777619u;
   }
   /* flags: bit 0 = external ingress (wire re-dispatch); bit 1 =
-   * raw in-process struct bytes — an ABI snapshot (pointers for
-   * String/Bytes fields, padding, ASLR-dependent), NOT a portable
-   * encoding. Consumers must not byte-compare or decode flagged
-   * payloads; canonical per-topic recording codecs are the staged
-   * fix (review finding 9). Wire captures are canonical bytes and
-   * carry no flag. */
-  uint64_t flags = (ingress ? 1u : 0u) | (raw_struct ? 2u : 0u);
-  obs_rec_blob_push(OBS_REC_TAG_PAYLOAD, topic, pub_id, flags,
-                    payload, size);
+   * raw in-process struct — for which the artifact stores METADATA
+   * ONLY (declared size in flags bits 32..63, zero bytes): an ABI
+   * snapshot would carry heap pointers, uninitialized padding, and
+   * potentially secret-derived bytes while being unusable for
+   * comparison anyway (review round 2, finding 8). Canonical
+   * per-topic recording codecs are the staged fix. Wire captures
+   * are canonical bytes, stored verbatim, unflagged. */
+  if (raw_struct) {
+    uint64_t flags = 2u | (ingress ? 1u : 0u) | (size << 32);
+    obs_rec_blob_push(OBS_REC_TAG_PAYLOAD, topic, pub_id, flags,
+                      NULL, 0);
+  } else {
+    uint64_t flags = ingress ? 1u : 0u;
+    obs_rec_blob_push(OBS_REC_TAG_PAYLOAD, topic, pub_id, flags,
+                      payload, size);
+  }
   return pub_id;
 }
 
@@ -1789,30 +1984,52 @@ void lotus_obs_record_enqueue(uint64_t pub_id, void *subscriber_self) {
   if (!lotus_obs_recording || !pub_id) return;
   if (!obs_on()) return;
   uint32_t locus = subscriber_self ? obs_inst_id_of(subscriber_self) : 0;
-  obs_rec_emit(REC_EV_ENQ,
-               (((uint64_t)locus & 0xFFFFFu) << 44)
-                   | (pub_id & 0xFFFFFFFFFFFULL));
+  obs_rec_emit2(REC_EV_ENQ, locus, pub_id);
 }
 
 /* GH #296 Phase 3: journal a nondeterministic input read. The
  * value blob rides the capture list keyed (jkind, consumer, seq);
  * the ring record is the interleaving marker. */
-void lotus_obs_journal_bytes(uint32_t jkind, uint32_t arghash,
-                             const void *p, uint64_t n) {
+void lotus_obs_journal_bytes(uint32_t jkind, const void *args,
+                             uint64_t args_len, const void *p,
+                             uint64_t n) {
   if (!lotus_obs_recording) return;
   if (!obs_on()) return;
   if (t_consumer_id == 0) obs_rec_claim();
   uint64_t cid = t_consumer_id;
-  uint64_t seq = ((uint64_t)arghash << 32)
-      | (++t_journal_seq & 0xFFFFFFFFULL);
-  obs_rec_blob_push(OBS_REC_TAG_JOURNAL, jkind, cid, seq, p, n);
+  uint64_t seq = ++t_journal_seq;
+  /* Env VALUES are withheld under the default policy — the entry
+   * keeps the call's exact identity (kind + args) and the value's
+   * length, so replay reports a NAMED withheld divergence instead
+   * of substituting anything. */
+  int withhold = !g_rec_env_full &&
+      (jkind == JK_ENV_VAR || jkind == JK_ENV_ARG);
+  if (args_len > 0xFFFFFFFFull) return;
+  uint32_t al = (uint32_t)args_len;
+  uint64_t body_len = 4ull + al + (withhold ? 0 : n);
+  uint8_t small[256];
+  uint8_t *buf = body_len <= sizeof small ? small : malloc(body_len);
+  if (!buf) {
+    fprintf(stderr,
+            "hale: LOTUS_OBS_RECORD journal allocation failed\n");
+    fflush(NULL);
+    _exit(74);
+  }
+  memcpy(buf, &al, 4);
+  if (al) memcpy(buf + 4, args, al);
+  if (!withhold && n) memcpy(buf + 4 + al, p, n);
+  uint64_t cfield = (seq & 0x7FFFFFFFFFFFFFFFull)
+      | (withhold ? (1ull << 63) : 0);
+  obs_rec_blob_push(OBS_REC_TAG_JOURNAL, jkind, cid, cfield, buf,
+                    body_len);
+  if (buf != small) free(buf);
   obs_rec_emit(REC_EV_JOURNAL,
                ((uint64_t)jkind << 56) | (seq & 0xFFFFFFFFFFFFFFULL));
 }
 
-void lotus_obs_journal_i64(uint32_t jkind, uint32_t arghash,
-                           int64_t v) {
-  lotus_obs_journal_bytes(jkind, arghash, &v, 8);
+void lotus_obs_journal_i64(uint32_t jkind, const void *args,
+                           uint64_t args_len, int64_t v) {
+  lotus_obs_journal_bytes(jkind, args, args_len, &v, 8);
 }
 
 /* binding_obs_id: cached on the remote entry by the caller (the

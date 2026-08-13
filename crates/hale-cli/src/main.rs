@@ -214,7 +214,9 @@ fn usage() {
     eprintln!("    hale run   <file.hl | dir>    compile + run as a native binary");
     eprintln!("    hale build <file.hl | dir>    parse + typecheck + emit native binary");
     eprintln!("    hale replay <rec> <file.hl>   re-run a LOTUS_OBS_RECORD recording");
-    eprintln!("        [--diff: report first divergence] [--at N: SIGSTOP at Nth consume]");
+    eprintln!("        [--diff: report first divergence, fail on any]");
+    eprintln!("        [--at <n> | --at <consumer-id>:<ordinal>: SIGSTOP at that consume]");
+    eprintln!("        [--allow-live-effects] [--allow-unverified-model]");
     eprintln!("    hale test  [file | dir]       compile + run *_test.hl (default: cwd)");
     eprintln!("        [-run <substr>] [--json]");
     eprintln!("    hale bench [file | dir]       run *_bench.hl bench_* fns (default: cwd)");
@@ -4510,7 +4512,7 @@ fn compile_and_exec(
     renames: &[(Vec<String>, String)],
     user_args: &[String],
     model_hash: u64,
-    exec_digest: u64,
+    exec_digest: [u64; 4],
 ) -> ExitCode {
     let mut bin = std::env::temp_dir();
     let mut h = DefaultHasher::new();
@@ -4541,28 +4543,50 @@ fn compile_and_exec(
     }
 }
 
-/// GH #296: executable identity — fnv1a64 over the compiler
-/// version and every source file's name + content (BTreeMap order,
-/// so deterministic). Structural shape_hash says "same model";
-/// this says "same build inputs". It does not cover the LLVM/libc
-/// toolchain outside this binary — recorded in the review as the
-/// staged residue.
-fn exec_digest(sources: &BTreeMap<PathBuf, String>) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
-    let mut eat = |bytes: &[u8]| {
-        for b in bytes {
-            h ^= *b as u64;
-            h = h.wrapping_mul(0x100000001b3);
-        }
+/// GH #296: build-manifest identity — a FRAMED SHA-256 over the
+/// build inputs this binary can see:
+///
+///   - the toolchain source hash (`HALE_CODEGEN_SRC_HASH`, computed
+///     by build.rs over the codegen + runtime + stdlib sources this
+///     CLI was linked against — so two different compiler/runtime
+///     commits under one version differ);
+///   - the CLI crate version;
+///   - the build options that alter emitted code;
+///   - every source file's FULL normalized path, byte length, and
+///     contents, each length-framed (no concatenation ambiguity).
+///
+/// Structural `shape_hash` says "same model"; this says "same build
+/// inputs". Residue it cannot see: the LLVM/libc toolchain outside
+/// this binary and the linker environment — a post-link binary
+/// digest is the staged stronger form.
+fn exec_digest(sources: &BTreeMap<PathBuf, String>) -> [u64; 4] {
+    let mut buf: Vec<u8> = Vec::new();
+    let frame = |b: &[u8], buf: &mut Vec<u8>| {
+        buf.extend_from_slice(&(b.len() as u64).to_le_bytes());
+        buf.extend_from_slice(b);
     };
-    eat(env!("CARGO_PKG_VERSION").as_bytes());
+    frame(env!("HALE_CODEGEN_SRC_HASH").as_bytes(), &mut buf);
+    frame(env!("CARGO_PKG_VERSION").as_bytes(), &mut buf);
+    frame(b"target=native;profile=release", &mut buf);
+    buf.extend_from_slice(&(sources.len() as u64).to_le_bytes());
     for (path, src) in sources {
-        if let Some(name) = path.file_name() {
-            eat(name.to_string_lossy().as_bytes());
-        }
-        eat(src.as_bytes());
+        let full = path
+            .canonicalize()
+            .unwrap_or_else(|_| path.clone())
+            .display()
+            .to_string();
+        frame(full.as_bytes(), &mut buf);
+        frame(src.as_bytes(), &mut buf);
     }
-    if h == 0 { 1 } else { h }
+    let d = openssl::sha::sha256(&buf);
+    let mut out = [0u64; 4];
+    for (i, part) in out.iter_mut().enumerate() {
+        *part = u64::from_le_bytes(d[i * 8..i * 8 + 8].try_into().unwrap());
+    }
+    if out == [0; 4] {
+        out[0] = 1;
+    }
+    out
 }
 
 /// Escape a string for embedding in a JSON string literal.
@@ -4936,7 +4960,8 @@ fn run_replay(args: &[String]) -> ExitCode {
         _ => {
             eprintln!(
                 "usage: hale replay <recording> <program.hl> \
-                 [--diff] [--at N]"
+                 [--diff] [--at <n> | --at <consumer-id>:<ordinal>] \
+                 [--allow-live-effects] [--allow-unverified-model]"
             );
             return ExitCode::from(2);
         }
@@ -4997,19 +5022,19 @@ fn run_replay(args: &[String]) -> ExitCode {
     let digest = exec_digest(&sources);
 
     // Admission, strongest check first (review finding 2):
-    // exec_digest is build-input identity (compiler version +
-    // source bytes); shape_hash alone is only structural
-    // compatibility and admits behaviorally different bodies.
-    if rec.exec_digest != 0 && rec.exec_digest != digest {
+    // exec_digest is framed-SHA-256 build-input identity;
+    // shape_hash alone is only structural compatibility and admits
+    // behaviorally different bodies.
+    if rec.exec_digest != [0; 4] && rec.exec_digest != digest {
         eprintln!(
             "hale replay: `{}` was recorded from different build \
-             inputs (recorded exec digest {:016x}, this compile is \
-             {:016x}) — a structurally compatible model is not the \
-             same executable; re-record, or accept behavioral \
+             inputs (recorded exec digest {:016x}…, this compile \
+             is {:016x}…) — a structurally compatible model is not \
+             the same executable; re-record, or accept behavioral \
              divergence explicitly with --allow-unverified-model",
             rec_path.display(),
-            rec.exec_digest,
-            digest
+            rec.exec_digest[0],
+            digest[0]
         );
         if !allow_unverified {
             return ExitCode::from(1);
@@ -5027,7 +5052,9 @@ fn run_replay(args: &[String]) -> ExitCode {
         );
         return ExitCode::from(1);
     }
-    if (rec.exec_digest == 0 || rec.model_hash == 0) && !allow_unverified {
+    if (rec.exec_digest == [0; 4] || rec.model_hash == 0)
+        && !allow_unverified
+    {
         eprintln!(
             "hale replay: `{}` carries no execution identity \
              (unstamped build) — exact replay cannot be admitted. \
@@ -5037,39 +5064,74 @@ fn run_replay(args: &[String]) -> ExitCode {
         return ExitCode::from(1);
     }
 
-    // Safe by default (review finding 3): re-execution repeats the
-    // program's real side effects. Until per-primitive replay
-    // classes exist, the gate is the coarse effect frontier: any
-    // reachable syscall/ffi beyond the journaled read set requires
-    // an explicit, alarming opt-in. (Yes, that flags a lone
-    // `sleep` too — the class granularity is the current limit,
-    // and over-refusing is the safe direction.)
+    // Safe by default (review finding 3, both rounds): re-execution
+    // repeats the program's real side effects. The gate consumes
+    // the TYPED inferred rows, and it must fail CLOSED on the two
+    // paths the first version failed open on: `unclassified`
+    // ("may do anything") and a `publish` whose subject is bound to
+    // an external transport (the send is generated deployment
+    // machinery, invisible in user-level effects). Coarse by class
+    // granularity — over-refusing is the safe direction;
+    // per-primitive replay classes are the staged refinement.
     if !allow_live_effects {
-        let manifest = hale_types::dump_effects_manifest(&bundle);
+        let programs: Vec<&Program> =
+            bundle.programs.values().copied().collect();
+        let rows =
+            hale_types::effects::effect_manifest_with_inference(&programs);
         let mut residue = std::collections::BTreeSet::new();
-        for part in manifest.split("does={").skip(1) {
-            if let Some(inner) = part.split('}').next() {
-                for class in inner.split(',') {
-                    let class = class.trim();
-                    if class == "syscall" || class == "ffi" {
-                        residue.insert(class.to_string());
+        for row in &rows {
+            for class in &row.inferred {
+                if class == "syscall"
+                    || class == "ffi"
+                    || class == "unclassified"
+                {
+                    residue.insert(class.clone());
+                }
+            }
+        }
+        // External transport bindings: any `bindings { }` block
+        // makes publishes (and listener startup) touch the real
+        // world during re-execution.
+        let mut has_bindings = false;
+        for prog in bundle.programs.values() {
+            for item in &prog.items {
+                if let hale_syntax::ast::TopDecl::Locus(l) = item {
+                    if l.members.iter().any(|m| {
+                        matches!(
+                            m,
+                            hale_syntax::ast::LocusMember::Bindings(_)
+                        )
+                    }) {
+                        has_bindings = true;
                     }
                 }
             }
         }
+        if has_bindings {
+            residue.insert("external-bindings".to_string());
+        }
         if !residue.is_empty() {
             eprintln!(
-                "hale replay: this program's effect frontier \
-                 reaches {{{}}} — re-executing it repeats real \
-                 side effects (sends, writes, spawns) against the \
-                 live world. Refusing by default; pass \
-                 --allow-live-effects if you accept that",
+                "hale replay: this program can reach the live world \
+                 during re-execution ({{{}}}) — publishes to bound \
+                 topics send real traffic, unclassified calls may \
+                 do anything, and syscall/ffi writes repeat. \
+                 Refusing by default; pass --allow-live-effects if \
+                 you accept that",
                 residue.into_iter().collect::<Vec<_>>().join(", ")
             );
             return ExitCode::from(1);
         }
     }
 
+    if rec.env_redacted {
+        eprintln!(
+            "hale replay: this recording withholds env VALUES \
+             (default policy; record with LOTUS_OBS_RECORD_ENV=full \
+             to include them) — env reads will replay as named \
+             withheld divergences"
+        );
+    }
     let rec_abs = rec_path
         .canonicalize()
         .unwrap_or_else(|_| rec_path.clone());
@@ -5111,6 +5173,16 @@ fn run_replay(args: &[String]) -> ExitCode {
         model_hash
     ));
     let _ = std::fs::remove_file(&status_path);
+    // Pre-create 0600 so the child's fopen("w") inherits restrictive
+    // permissions rather than racing a predictable /tmp name.
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&status_path);
+    }
     let mut cmd = std::process::Command::new(&bin);
     cmd.env("LOTUS_REPLAY", &rec_abs);
     cmd.env("LOTUS_REPLAY_STATUS", &status_path);
@@ -5127,6 +5199,12 @@ fn run_replay(args: &[String]) -> ExitCode {
     }
     if let Some(v) = &verify_path {
         cmd.env("LOTUS_OBS_RECORD", v);
+        // The verification recording must apply the SAME env policy
+        // the original did, or a full-env recording diffs against a
+        // redacted one and reports a spurious withheld divergence.
+        if !rec.env_redacted {
+            cmd.env("LOTUS_OBS_RECORD_ENV", "full");
+        }
     }
     let status = cmd.status();
     let _ = std::fs::remove_file(&bin);
@@ -5182,7 +5260,8 @@ fn run_replay(args: &[String]) -> ExitCode {
                         .sum();
                     println!(
                         "replay matches the recording: {} consumes \
-                         across {} consumers, payloads identical \
+                         across {} consumers; canonical payloads \
+                         identical, raw ABI payload sizes matched \
                          ({} ring records, {} journal reads)",
                         consumes,
                         rec.consume_streams.len(),

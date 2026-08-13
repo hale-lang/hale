@@ -587,11 +587,13 @@ pub struct BuildOptions {
     /// typechecks; harness callers leave it None and the header
     /// field reads 0 (unstamped).
     pub model_hash: Option<u64>,
-    /// GH #296: executable identity (compiler version + source
-    /// bytes) for recording-header stamping; `hale replay` admits
-    /// exact builds on this, with shape_hash as the structural
-    /// compatibility check only.
-    pub exec_digest: Option<u64>,
+    /// GH #296: build-manifest identity for recording-header
+    /// stamping — a framed SHA-256 (4×u64) over the toolchain
+    /// source hash, compiler version, build options, and every
+    /// source path + length + contents. `hale replay` admits exact
+    /// builds on this; shape_hash is the structural compatibility
+    /// check only.
+    pub exec_digest: Option<[u64; 4]>,
 }
 
 /// The per-build source table for DWARF emission: each entry is one
@@ -4015,7 +4017,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// P26: the build-time model identity to stamp into the obs
     /// segment header (None = harness build, header reads 0).
     pub(crate) model_hash: Option<u64>,
-    pub(crate) exec_digest: Option<u64>,
+    pub(crate) exec_digest: Option<[u64; 4]>,
     /// Replica keys (2026-08-12): the replica index the NEXT locus
     /// instantiation carries — set by the Phase-1c fan-out loop for
     /// replicas 1..K, absent (= replica 0) everywhere else. Consumed
@@ -8932,13 +8934,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .get_function("lotus_obs_exec_digest_set")
                     .expect("lotus_obs_exec_digest_set declared");
                 let i64_t = self.context.i64_type();
-                self.builder
-                    .build_call(
-                        set_fn,
-                        &[i64_t.const_int(d, false).into()],
-                        "obs.exec_digest",
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                for (i, part) in d.iter().enumerate() {
+                    self.builder
+                        .build_call(
+                            set_fn,
+                            &[
+                                i64_t.const_int(i as u64, false).into(),
+                                i64_t.const_int(*part, false).into(),
+                            ],
+                            "obs.exec_digest",
+                        )
+                        .map_err(|e| {
+                            CodegenError::LlvmEmit(e.to_string())
+                        })?;
+                }
             }
             if let Some(h) = self.model_hash {
                 let set_fn = self

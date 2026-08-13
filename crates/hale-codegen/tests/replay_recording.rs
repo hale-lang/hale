@@ -31,7 +31,7 @@ mod harness;
 
 #[path = "support/obs.rs"]
 mod obs;
-use obs::{obs_bus_locus, rec_id_ekind};
+use obs::rec_id_ekind;
 
 const EK_BUS_PUBLISH: u32 = 1;
 const EK_BUS_DELIVER: u32 = 2;
@@ -189,15 +189,20 @@ fn recording_is_lossless_under_wrap_pressure() {
     assert!(r.clean, "no trailer — the recording did not finalize");
     assert_eq!(
         r.trailer_count,
-        (r.entries.len() + r.payloads.len() + r.journal.len()) as u64,
+        (r.entries.len() + r.payloads.len() + r.journal.len()
+            + r.meta_entries) as u64,
         "trailer count disagrees with the entries on disk"
     );
     assert_eq!(r.ring_slots, 64);
-    // Every capture here is an in-process struct (raw flag, bit 1),
-    // none ingress.
+    // Every capture here is an in-process struct: raw flag set, no
+    // ingress, and METADATA ONLY on disk — an ABI snapshot would
+    // carry heap pointers and padding (review round 2, finding 8).
     assert!(
-        r.payloads.iter().all(|p| p.flags & 2 != 0 && p.flags & 1 == 0),
-        "struct captures must carry the raw-ABI flag"
+        r.payloads.iter().all(|p| p.flags & 2 != 0
+            && p.flags & 1 == 0
+            && p.bytes.is_empty()
+            && p.raw_size > 0),
+        "raw struct captures must be metadata-only"
     );
     // Phase 2: one payload blob per QUEUED publish (the 32 seeds —
     // App's publishes route through the arena fanout). Fan's 64
@@ -246,20 +251,19 @@ fn queued_deliveries_get_consume_records_in_consumer_order() {
          stamp exactly one consume record"
     );
 
-    // All on one ring (the single consumer thread), carrying the
-    // publisher's deterministic pub_ids in gapless per-publisher
-    // order — that sequence IS the per-consumer delivery order
-    // replay serves back.
+    // All on one ring (the single consumer thread), carrying full
+    // 64-bit message ids (consumer:16 | seq:48) in gapless
+    // per-publisher order, with the TARGET locus in w0's id field —
+    // the (locus, msg_id) pair is the delivery identity.
     let ring0 = consumes[0].0;
     let mut last_seq = 0u64;
-    for (ring, _, w1) in consumes.iter() {
+    for (ring, w0, w1) in consumes.iter() {
         assert_eq!(
             *ring, ring0,
             "consume records spread across rings — not one consumer"
         );
-        let pub_id = *w1 & 0xFFF_FFFF_FFFF;
-        assert_ne!(pub_id, 0, "queued delivery lost its identity");
-        let seq = pub_id & 0xFFFF_FFFF; // low 32 = per-thread seq
+        assert_ne!(*w1, 0, "queued delivery lost its identity");
+        let seq = *w1 & 0xFFFF_FFFF_FFFF; // low 48 = per-thread seq
         assert_eq!(
             seq,
             last_seq + 1,
@@ -268,9 +272,9 @@ fn queued_deliveries_get_consume_records_in_consumer_order() {
         );
         last_seq = seq;
         assert_ne!(
-            obs_bus_locus(*w1),
+            (*w0 & 0xFFFFF) as u32,
             0,
-            "consume record lost its subscriber attribution"
+            "consume record lost its target-locus identity"
         );
     }
 

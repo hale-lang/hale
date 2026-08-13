@@ -1183,13 +1183,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .fn_type(&[i64_t2.into()], false),
             None,
         );
-        // GH #296: executable identity for recording headers.
-        // declare void @lotus_obs_exec_digest_set(i64 digest)
+        // GH #296: build-manifest identity for recording headers,
+        // stamped as four u64 parts of a framed SHA-256.
+        // declare void @lotus_obs_exec_digest_set(i64 part, i64 v)
         self.module.add_function(
             "lotus_obs_exec_digest_set",
             self.context
                 .void_type()
-                .fn_type(&[i64_t2.into()], false),
+                .fn_type(&[i64_t2.into(), i64_t2.into()], false),
             None,
         );
         // GH #296: stable consumer identity for a pinned locus's

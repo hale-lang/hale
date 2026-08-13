@@ -1633,11 +1633,15 @@ input, and re-execution re-derives its payloads.
 
 **Input journal (Phase 3).** Under recording, every user-facing
 nondeterministic read is journaled per consumer as ONE unified
-stream carrying the read's kind AND an argument hash — replay
-refuses to serve an entry whose kind or arguments differ from the
-caller's, so a changed env name, rand bound, or read length is
-the first *named* divergence, never a silently substituted
-plausible value. The interposed set:
+stream carrying the read's kind and its **exact encoded
+arguments** (length-framed; replay memcmps them — hashes proved
+collision-prone), so a changed env name, arg index, rand bound,
+or read length is the first *named* divergence, never a silently
+substituted value. **Env values are withheld by default**: names,
+existence, and lengths are recorded; the value itself requires
+`LOTUS_OBS_RECORD_ENV=full`, the artifact header says which
+policy applied, and a withheld read replays as a named withheld
+divergence. The interposed set:
 `std::time::now`, `std::time::monotonic[_ns]` (now a named
 primitive, `lotus_time_monotonic_ns` — it used to be inline
 `clock_gettime` IR that nothing could interpose),
@@ -1646,25 +1650,41 @@ seed-replay unsound across threads), `std::os::getrandom`, and
 the `std::env` surface. Internal runtime clocks and config
 `getenv`s are deliberately not journaled.
 
-**File format v0.2 (PRE-STABLE).** 64-byte header (magic
+**File format v0.3 (PRE-STABLE).** 96-byte header (magic
 `HALEREC0`, version, pid, ring geometry, epoch anchors,
-`model_hash`), tagged entries — tag 0: 24-byte ring record; tag
-1: payload blob; tag 2: journal blob (32-byte header + bytes
-padded to 8) — and a 16-byte trailer (`HALEEND0` + entry count)
-whose presence marks a clean finalize.
+`model_hash`, a 32-byte framed-SHA-256 `exec_digest`, and policy
+flags), tagged entries — tag 0: 24-byte ring record; tags 1/2/3:
+payload / journal / meta blobs (32-byte header + bytes padded to
+8; meta carries the run-stable topic and public-ring identity
+maps) — and a 16-byte trailer (`HALEEND0` + entry count). A
+recording is *clean* only when the ENTIRE artifact validates:
+exact parse to the trailer position and a matching entry count,
+enforced by the CLI reader and independently by the runtime
+loader (one open + fstat + private mmap, checked arithmetic,
+per-kind value shapes) — trailer magic at EOF alone proves
+nothing. Identity fields are re-stamped at finalize (a prelude
+binding registration can probe — creating the header — before
+the stamps run).
 
 **Replay (`hale replay <recording> <program.hl>`).** Admission,
-strongest check first: the recording's `exec_digest` (compiler
-version + every source byte, stamped at build) must match the
-recompiled program exactly — `shape_hash` alone is structural
-compatibility and admits behaviorally different bodies, so it is
-the secondary check only. An unstamped recording is refused
-without `--allow-unverified-model`. **Safe by default:** replay
-re-executes real side effects, so a program whose effect frontier
-reaches `syscall`/`ffi` beyond the journaled read set is refused
-without an explicit `--allow-live-effects` (coarse by the class
-granularity — over-refusal is the safe direction; per-primitive
-replay classes are the staged refinement). `LOTUS_REPLAY=<path>`
+strongest check first: the recording's `exec_digest` — a framed
+SHA-256 over the toolchain source hash (compiler + runtime +
+stdlib implementation, via the stale-CLI build hash), the CLI
+version, build options, and every source file's full path,
+length, and contents — must match the recompiled program exactly;
+`shape_hash` is structural compatibility only, the secondary
+check. An unstamped recording is refused without
+`--allow-unverified-model`. Stated residue: the digest cannot see
+the LLVM/libc toolchain outside the hale binary; a post-link
+binary digest is the staged stronger form. **Safe by default:**
+replay re-executes real side effects, so the typed effect rows
+gate admission and fail CLOSED on `syscall`, `ffi`,
+`unclassified` ("may do anything"), and any transport-bound
+`bindings` block (the user-level effect of a bound publish is
+`publish`; the send is generated deployment machinery) — all
+refused without an explicit `--allow-live-effects` (coarse by
+class granularity — over-refusal is the safe direction;
+per-primitive replay classes are the staged refinement). `LOTUS_REPLAY=<path>`
 then serves journaled reads back per consumer in recorded order;
 a read past (or mismatching) the recorded history falls back live
 and is counted — **replay degrades, never refuses** (RFC Q6) —
@@ -1678,19 +1698,20 @@ order, with a bounded hold (1s) after which the oldest held cell
 is released and the miss counted, so a genuinely divergent replay
 reports rather than deadlocks. `where async_io` pools refuse
 replay loudly (their coro interleaving is a later milestone).
-The CLI compiles the program through the same pipeline as
-`hale run`, then admits the recording by `model_hash` — a
-recording made from a different model is rejected, never
-misreplayed; a truncated recording (no trailer) is refused.
-`--diff` records the replay and compares bidirectionally: consume
-streams per consumer, payloads both ways (topic + flags + bytes;
-raw-struct payloads by size), and the journal streams — plus the
-runtime verdict above. `--at N` stops (SIGSTOP) at the Nth consume
-process-wide (meaningful for one consumer); `--at consumer:N` is
-the stable multi-consumer form. A recording is admitted only when
-the ENTIRE artifact validates: exact parse to the trailer and a
-matching entry count, not trailer magic at EOF alone. Replay
-implies observation (identity rides the obs machinery).
+`--diff` records the replay (under the original's env policy) and
+compares bidirectionally: per-consumer queued consume streams
+(target locus + msg_id), per-consumer PUBLIC bus streams aligned
+by subject and stable consumer id via the meta maps — which is
+what makes synchronous direct dispatch visible — payloads both
+ways (topic, flags, bytes; raw metadata by declared size), and
+per-consumer journal streams (kind, exact args, withheld state,
+value; grouped per consumer because the drain interleaves
+concurrent threads' entries in incidental order). Any runtime
+divergence fails `--diff` through the verdict. `--at <n>` stops
+(SIGSTOP) at the nth consume process-wide (meaningful for one
+consumer); `--at <consumer-id>:<ordinal>` is the stable
+multi-consumer form. Replay implies observation (identity rides
+the obs machinery).
 
 Two honest limits, stated rather than implied: the recorded
 interleaving is reproduced per consumer, not globally — cross-

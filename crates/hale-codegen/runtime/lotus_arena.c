@@ -6193,29 +6193,18 @@ uint64_t lotus_obs_record_publish_payload(const char *subject,
 void lotus_obs_record_enqueue(uint64_t pub_id, void *subscriber_self)
     __attribute__((weak));
 void lotus_obs_note_consumer(uint64_t id) __attribute__((weak));
-void lotus_obs_journal_i64(uint32_t jkind, uint32_t arghash, int64_t v)
+void lotus_obs_journal_i64(uint32_t jkind, const void *args,
+                           uint64_t args_len, int64_t v)
     __attribute__((weak));
-void lotus_obs_journal_bytes(uint32_t jkind, uint32_t arghash,
-                             const void *p, uint64_t n)
+void lotus_obs_journal_bytes(uint32_t jkind, const void *args,
+                             uint64_t args_len, const void *p,
+                             uint64_t n)
     __attribute__((weak));
-
-/* Journal call identity: a 32-bit hash of the invocation's
- * arguments rides every entry, and replay refuses to serve an
- * entry whose kind or arguments differ from the caller's — a
- * changed env name, rand bound, or read length is the FIRST
- * named divergence, never a silently substituted value. */
-static inline uint32_t lotus_jhash_str(const char *sarg) {
-    uint32_t h = 2166136261u;
-    for (const char *q = sarg; q && *q; q++) {
-        h ^= (uint8_t)*q;
-        h *= 16777619u;
-    }
-    return h ? h : 1u;
-}
-static inline uint32_t lotus_jhash_i64(int64_t v) {
-    uint64_t x = (uint64_t)v;
-    return (uint32_t)(x ^ (x >> 32)) | 1u;
-}
+/* Journal call identity is the EXACT encoded argument bytes —
+ * replay memcmps them, so a changed env name, arg index, rand
+ * bound, or read length is the first NAMED divergence, never a
+ * silently substituted value (review round 2: the 32-bit hashes
+ * this replaces folded adjacent integers — hash(0) == hash(1)). */
 /* GH #296 Phase 3: replay serving (LOTUS_REPLAY). serve_* return 1
  * and fill out when the journal has this thread's next value for
  * jkind; 0 = journal exhausted or absent → the caller falls back
@@ -6223,13 +6212,16 @@ static inline uint32_t lotus_jhash_i64(int64_t v) {
  * (replay degrades, never refuses). serve_str returns a pointer
  * into the loaded recording (stable for process life) or NULL. */
 extern int lotus_replay_active __attribute__((weak));
-int lotus_replay_serve_i64(uint32_t jkind, uint32_t arghash,
-                           int64_t *out)
+int lotus_replay_serve_i64(uint32_t jkind, const void *args,
+                           uint64_t args_len, int64_t *out)
     __attribute__((weak));
-int lotus_replay_expected_consume(uint64_t *out)
+int lotus_replay_expected_consume(uint64_t *out_msg,
+                                  uint32_t *out_locus)
     __attribute__((weak));
+uint64_t lotus_obs_pub_inst_id(void *self) __attribute__((weak));
 void lotus_replay_note_consume(void) __attribute__((weak));
-const void *lotus_replay_serve_blob(uint32_t jkind, uint32_t arghash,
+const void *lotus_replay_serve_blob(uint32_t jkind, const void *args,
+                                    uint64_t args_len,
                                     uint64_t want_size,
                                     uint64_t *out_n)
     __attribute__((weak));
@@ -6321,9 +6313,14 @@ static void lotus_rp_pending_push(const lotus_bus_cell_t *cell) {
     if (t_rp_pending_len == 1) t_rp_hold_since = lotus_rp_now_ns();
 }
 
-static int lotus_rp_pending_take(uint64_t want, lotus_bus_cell_t *out) {
+static int lotus_rp_pending_take(uint64_t want_msg, uint32_t want_locus,
+                                 lotus_bus_cell_t *out) {
     for (size_t i = 0; i < t_rp_pending_len; i++) {
-        if (t_rp_pending[i].rec_pub_id == want) {
+        if (t_rp_pending[i].rec_pub_id == want_msg &&
+            (uint32_t)(lotus_obs_pub_inst_id
+                           ? lotus_obs_pub_inst_id(
+                                 t_rp_pending[i].self_ptr)
+                           : 0) == want_locus) {
             *out = t_rp_pending[i];
             memmove(&t_rp_pending[i], &t_rp_pending[i + 1],
                     (t_rp_pending_len - i - 1) * sizeof(lotus_bus_cell_t));
@@ -6334,18 +6331,25 @@ static int lotus_rp_pending_take(uint64_t want, lotus_bus_cell_t *out) {
     return 0;
 }
 
-/* Gate a just-dequeued cell against the recorded order.
- * Returns 1 = dispatch *cell now (possibly swapped for a held one),
- * 0 = cell was parked; dequeue more (or wait). */
+/* Gate a just-dequeued cell against the recorded order. The
+ * delivery identity is (target locus, msg_id) — two subscribers of
+ * one publish on one consumer are distinguishable (review round 2,
+ * finding 5). Returns 1 = dispatch *cell now (possibly swapped for
+ * a held one), 0 = cell was parked; dequeue more (or wait). */
 static int lotus_replay_gate_cell(lotus_bus_cell_t *cell) {
-    uint64_t exp;
+    uint64_t exp_msg;
+    uint32_t exp_locus;
     if (!lotus_replay_expected_consume ||
-        !lotus_replay_expected_consume(&exp)) {
+        !lotus_replay_expected_consume(&exp_msg, &exp_locus)) {
         return 1; /* recorded stream exhausted — no constraint */
     }
-    if (cell->rec_pub_id == exp) return 1;
+    uint32_t cell_locus = (uint32_t)(
+        lotus_obs_pub_inst_id ? lotus_obs_pub_inst_id(cell->self_ptr)
+                              : 0);
+    if (cell->rec_pub_id == exp_msg && cell_locus == exp_locus)
+        return 1;
     lotus_rp_pending_push(cell);
-    if (lotus_rp_pending_take(exp, cell)) return 1;
+    if (lotus_rp_pending_take(exp_msg, exp_locus, cell)) return 1;
     return 0;
 }
 
@@ -6354,10 +6358,11 @@ static int lotus_replay_gate_cell(lotus_bus_cell_t *cell) {
  * oldest held cell into *out (returns 1). */
 static int lotus_replay_gate_idle(lotus_bus_cell_t *out) {
     if (t_rp_pending_len == 0) return 0;
-    uint64_t exp;
+    uint64_t exp_msg;
+    uint32_t exp_locus;
     if (lotus_replay_expected_consume &&
-        lotus_replay_expected_consume(&exp) &&
-        lotus_rp_pending_take(exp, out)) {
+        lotus_replay_expected_consume(&exp_msg, &exp_locus) &&
+        lotus_rp_pending_take(exp_msg, exp_locus, out)) {
         return 1;
     }
     if (lotus_rp_now_ns() - t_rp_hold_since < LOTUS_REPLAY_HOLD_NS) {
@@ -13651,27 +13656,30 @@ void lotus_io_init(void) {
 int lotus_env_args_count(void) {
     if (lotus_replay_on()) {
         int64_t v;
-        if (lotus_replay_serve_i64(LOTUS_JK_ENV_ARGS_COUNT, 1u, &v)) {
+        if (lotus_replay_serve_i64(LOTUS_JK_ENV_ARGS_COUNT, NULL, 0,
+                                   &v)) {
             if (lotus_journal_on())
-                lotus_obs_journal_i64(LOTUS_JK_ENV_ARGS_COUNT, 1u, v);
+                lotus_obs_journal_i64(LOTUS_JK_ENV_ARGS_COUNT, NULL,
+                                      0, v);
             return (int)v;
         }
     }
     if (lotus_journal_on())
-        lotus_obs_journal_i64(LOTUS_JK_ENV_ARGS_COUNT, 1u,
+        lotus_obs_journal_i64(LOTUS_JK_ENV_ARGS_COUNT, NULL, 0,
                               (int64_t)g_argc);
     return g_argc;
 }
 
 const char *lotus_env_arg(int i) {
+    int64_t arg_ix = (int64_t)i;
     if (lotus_replay_on()) {
         uint64_t n = 0;
         const void *v = lotus_replay_serve_blob(
-            LOTUS_JK_ENV_ARG, lotus_jhash_i64(i), 0, &n);
+            LOTUS_JK_ENV_ARG, &arg_ix, 8, 0, &n);
         if (v && n > 0) {
             if (lotus_journal_on())
-                lotus_obs_journal_bytes(LOTUS_JK_ENV_ARG,
-                                        lotus_jhash_i64(i), v, n);
+                lotus_obs_journal_bytes(LOTUS_JK_ENV_ARG, &arg_ix, 8,
+                                        v, n);
             return (const char *)v; /* NUL included */
         }
     }
@@ -13679,7 +13687,7 @@ const char *lotus_env_arg(int i) {
         ? g_empty_str
         : g_argv[i];
     if (lotus_journal_on())
-        lotus_obs_journal_bytes(LOTUS_JK_ENV_ARG, lotus_jhash_i64(i),
+        lotus_obs_journal_bytes(LOTUS_JK_ENV_ARG, &arg_ix, 8,
                                 r, strlen(r) + 1);
     return r;
 }
@@ -13689,20 +13697,19 @@ const char *lotus_env_var(const char *name) {
     if (lotus_replay_on()) {
         uint64_t n = 0;
         const void *v = lotus_replay_serve_blob(
-            LOTUS_JK_ENV_VAR, lotus_jhash_str(name), 0, &n);
+            LOTUS_JK_ENV_VAR, name, strlen(name) + 1, 0, &n);
         if (v && n > 0) {
             if (lotus_journal_on())
-                lotus_obs_journal_bytes(LOTUS_JK_ENV_VAR,
-                                        lotus_jhash_str(name), v, n);
+                lotus_obs_journal_bytes(LOTUS_JK_ENV_VAR, name,
+                                        strlen(name) + 1, v, n);
             return (const char *)v; /* NUL included */
         }
     }
     const char *v = getenv(name);
     const char *r = v ? v : g_empty_str;
     if (lotus_journal_on())
-        lotus_obs_journal_bytes(LOTUS_JK_ENV_VAR,
-                                lotus_jhash_str(name), r,
-                                strlen(r) + 1);
+        lotus_obs_journal_bytes(LOTUS_JK_ENV_VAR, name,
+                                strlen(name) + 1, r, strlen(r) + 1);
     return r;
 }
 
@@ -13710,18 +13717,18 @@ int lotus_env_var_exists(const char *name) {
     if (!name) return 0;
     if (lotus_replay_on()) {
         int64_t v;
-        if (lotus_replay_serve_i64(LOTUS_JK_ENV_VAR_EXISTS,
-                                   lotus_jhash_str(name), &v)) {
+        if (lotus_replay_serve_i64(LOTUS_JK_ENV_VAR_EXISTS, name,
+                                   strlen(name) + 1, &v)) {
             if (lotus_journal_on())
-                lotus_obs_journal_i64(LOTUS_JK_ENV_VAR_EXISTS,
-                                      lotus_jhash_str(name), v);
+                lotus_obs_journal_i64(LOTUS_JK_ENV_VAR_EXISTS, name,
+                                      strlen(name) + 1, v);
             return (int)v;
         }
     }
     int r = getenv(name) != NULL ? 1 : 0;
     if (lotus_journal_on())
-        lotus_obs_journal_i64(LOTUS_JK_ENV_VAR_EXISTS,
-                              lotus_jhash_str(name), (int64_t)r);
+        lotus_obs_journal_i64(LOTUS_JK_ENV_VAR_EXISTS, name,
+                              strlen(name) + 1, (int64_t)r);
     return r;
 }
 
@@ -16521,16 +16528,14 @@ void *lotus_os_getrandom(int64_t n) {
     if (lotus_replay_on()) {
         uint64_t jn = 0;
         const void *jv = lotus_replay_serve_blob(
-            LOTUS_JK_OS_GETRANDOM, lotus_jhash_i64(n), (uint64_t)n,
-            &jn);
+            LOTUS_JK_OS_GETRANDOM, &n, 8, (uint64_t)n, &jn);
         if (jv && jn == (uint64_t)n) {
             void *jblob = lotus_caller_or_global_bytes_create(n);
             if (jblob) {
                 memcpy(lotus_bytes_data(jblob), jv, (size_t)n);
                 if (lotus_journal_on())
                     lotus_obs_journal_bytes(LOTUS_JK_OS_GETRANDOM,
-                                            lotus_jhash_i64(n), jv,
-                                            jn);
+                                            &n, 8, jv, jn);
                 return jblob;
             }
         }
@@ -16570,9 +16575,8 @@ void *lotus_os_getrandom(int64_t n) {
     }
     if (left == 0) {
         if (lotus_journal_on())
-            lotus_obs_journal_bytes(LOTUS_JK_OS_GETRANDOM,
-                                    lotus_jhash_i64(n), body,
-                                    (uint64_t)n);
+            lotus_obs_journal_bytes(LOTUS_JK_OS_GETRANDOM, &n, 8,
+                                    body, (uint64_t)n);
         return blob;
     }
 #endif
@@ -16599,8 +16603,7 @@ void *lotus_os_getrandom(int64_t n) {
     }
     close(fd);
     if (lotus_journal_on())
-        lotus_obs_journal_bytes(LOTUS_JK_OS_GETRANDOM,
-                                lotus_jhash_i64(n), body,
+        lotus_obs_journal_bytes(LOTUS_JK_OS_GETRANDOM, &n, 8, body,
                                 (uint64_t)n);
     return blob;
 }
@@ -18727,11 +18730,11 @@ int64_t lotus_rand_next_int(int64_t max) {
     if (max <= 0) return 0;
     if (lotus_replay_on()) {
         int64_t v;
-        if (lotus_replay_serve_i64(LOTUS_JK_RAND_NEXT_INT,
-                                   lotus_jhash_i64(max), &v)) {
+        if (lotus_replay_serve_i64(LOTUS_JK_RAND_NEXT_INT, &max, 8,
+                                   &v)) {
             if (lotus_journal_on())
-                lotus_obs_journal_i64(LOTUS_JK_RAND_NEXT_INT,
-                                      lotus_jhash_i64(max), v);
+                lotus_obs_journal_i64(LOTUS_JK_RAND_NEXT_INT, &max,
+                                      8, v);
             return v;
         }
     }
@@ -18755,8 +18758,7 @@ int64_t lotus_rand_next_int(int64_t max) {
     pthread_mutex_unlock(&g_rand_mutex);
     int64_t r = (int64_t)(mixed % (uint64_t)max);
     if (lotus_journal_on())
-        lotus_obs_journal_i64(LOTUS_JK_RAND_NEXT_INT,
-                              lotus_jhash_i64(max), r);
+        lotus_obs_journal_i64(LOTUS_JK_RAND_NEXT_INT, &max, 8, r);
     return r;
 }
 
@@ -18771,9 +18773,9 @@ int64_t lotus_rand_next_int(int64_t max) {
 int64_t lotus_time_now_seconds(void) {
     if (lotus_replay_on()) {
         int64_t v;
-        if (lotus_replay_serve_i64(LOTUS_JK_TIME_NOW, 1u, &v)) {
+        if (lotus_replay_serve_i64(LOTUS_JK_TIME_NOW, NULL, 0, &v)) {
             if (lotus_journal_on())
-                lotus_obs_journal_i64(LOTUS_JK_TIME_NOW, 1u, v);
+                lotus_obs_journal_i64(LOTUS_JK_TIME_NOW, NULL, 0, v);
             return v;
         }
     }
@@ -18781,7 +18783,7 @@ int64_t lotus_time_now_seconds(void) {
     clock_gettime(CLOCK_REALTIME, &ts);
     int64_t r = (int64_t)ts.tv_sec;
     if (lotus_journal_on())
-        lotus_obs_journal_i64(LOTUS_JK_TIME_NOW, 1u, r);
+        lotus_obs_journal_i64(LOTUS_JK_TIME_NOW, NULL, 0, r);
     return r;
 }
 
@@ -18793,9 +18795,11 @@ int64_t lotus_time_now_seconds(void) {
 int64_t lotus_time_monotonic_ns(void) {
     if (lotus_replay_on()) {
         int64_t v;
-        if (lotus_replay_serve_i64(LOTUS_JK_TIME_MONO_NS, 1u, &v)) {
+        if (lotus_replay_serve_i64(LOTUS_JK_TIME_MONO_NS, NULL, 0,
+                                   &v)) {
             if (lotus_journal_on())
-                lotus_obs_journal_i64(LOTUS_JK_TIME_MONO_NS, 1u, v);
+                lotus_obs_journal_i64(LOTUS_JK_TIME_MONO_NS, NULL, 0,
+                                      v);
             return v;
         }
     }
@@ -18803,7 +18807,7 @@ int64_t lotus_time_monotonic_ns(void) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     int64_t r = (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
     if (lotus_journal_on())
-        lotus_obs_journal_i64(LOTUS_JK_TIME_MONO_NS, 1u, r);
+        lotus_obs_journal_i64(LOTUS_JK_TIME_MONO_NS, NULL, 0, r);
     return r;
 }
 

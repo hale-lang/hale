@@ -16,7 +16,28 @@ with an explicit, checked coverage boundary.** (Scoped per review:
 external ingress and non-journaled I/O re-execute live and are
 gated — see the safety flag below.)
 
-Hardened by a full review round before merge: recorder events
+Hardened by two full review rounds before merge. Round 2 (the
+identity/admission/trust round): the safety gate consumes TYPED
+effect rows and fails closed on `unclassified` and on
+transport-bound `bindings` (a bound publish sends real traffic
+that user-level effects cannot show); `exec_digest` is a framed
+SHA-256 over the toolchain source hash + version + options + full
+source paths/lengths/contents (32 bytes in the header, stamped in
+four parts, re-stamped at finalize); journal entries carry their
+EXACT encoded arguments (replay memcmps them — the 32-bit hashes
+they replace folded adjacent integers); env VALUES are withheld
+from recordings by default (`LOTUS_OBS_RECORD_ENV=full` opts in;
+withheld reads replay as named divergences); raw in-process
+payloads store metadata only (no pointer/padding bytes on disk);
+`msg_id` is full-width (consumer:16|seq:48, loudly guarded) and
+the delivery identity includes the target locus; the runtime
+loader independently validates the whole artifact (one open +
+fstat + private mmap, checked arithmetic, exact trailer position
+and count, per-kind value shapes); `--diff` compares per-consumer
+PUBLIC bus streams via file-side identity maps (direct dispatch
+is visible) and groups journal comparison per consumer.
+
+Round 1: recorder events
 moved off iris protocol ekinds onto process-private rings; replay
 admission is by executable identity (`exec_digest` = compiler
 version + source bytes), not just structural `shape_hash`, and

@@ -96,7 +96,11 @@ locus PubA {
     bus { publish "race.a" of type A; }
     run() {
         let mut i = 0;
-        while i < 40 { "race.a" <- A { n: i }; i = i + 1; }
+        while i < 40 {
+            let r = std::rand::next_int(1000);
+            "race.a" <- A { n: r };
+            i = i + 1;
+        }
     }
 }
 
@@ -104,7 +108,11 @@ locus PubB {
     bus { publish "race.b" of type B; }
     run() {
         let mut i = 0;
-        while i < 40 { "race.b" <- B { n: i }; i = i + 1; }
+        while i < 40 {
+            let r = std::rand::next_int(1000);
+            "race.b" <- B { n: r };
+            i = i + 1;
+        }
     }
 }
 
@@ -262,6 +270,154 @@ fn admission_rejects_model_mismatch_and_truncation() {
     assert!(
         !out.status.success(),
         "an internally corrupted recording was admitted"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Review round 2, finding 1's canary: an otherwise deterministic
+/// program that publishes to a transport-BOUND topic (a unix
+/// socket here; same class as udp) must be
+/// refused by default — the user-level effect is `publish`, but
+/// re-executing it sends real datagrams.
+const UDP_BOUND: &str = r#"
+type Tick { n: Int = 0; }
+topic Wire { payload: Tick; subject: "wire.tick"; }
+
+main locus App {
+    bus { publish Wire; }
+    bindings { Wire: unix("/tmp/hale_replay_canary.sock", role: listen); }
+    run() {
+        let mut i = 0;
+        while i < 5 { Wire <- Tick { n: i }; i = i + 1; }
+        std::time::sleep(300ms);
+    }
+}
+
+fn main() { App { }; }
+"#;
+
+#[test]
+fn externally_bound_publish_is_refused_by_default() {
+    let dir = workdir("udpbound");
+    let prog = dir.join("wire.hl");
+    std::fs::write(&prog, UDP_BOUND).unwrap();
+    let rec = record(&dir, &prog);
+
+    let out = hale()
+        .arg("replay")
+        .arg(&rec)
+        .arg(&prog)
+        .output()
+        .expect("hale replay");
+    assert!(
+        !out.status.success(),
+        "a transport-bound program replayed without the safety flag"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("live world") && stderr.contains("--allow-live-effects"),
+        "wrong refusal:\n{}",
+        stderr
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Review round 2, finding 8: env VALUES are withheld by default.
+/// The recording must say so, a replayed env read must surface as a
+/// named divergence (never a substituted value), and opting in with
+/// LOTUS_OBS_RECORD_ENV=full must restore exact replay.
+#[test]
+fn env_values_redact_by_default_and_opt_in_restores_replay() {
+    let dir = workdir("envredact");
+    let prog = dir.join("env.hl");
+    std::fs::write(
+        &prog,
+        r#"
+type Tick { n: Int = 0; }
+locus Sink {
+    params { seen: Int = 0; }
+    bus { subscribe "e.t" as on_t of type Tick; }
+    fn on_t(t: Tick) { self.seen = self.seen + 1; }
+}
+locus Pub {
+    bus { publish "e.t" of type Tick; }
+    run() {
+        let v = std::env::var("HALE_REPLAY_TEST_ENV");
+        let n = len(v);
+        "e.t" <- Tick { n: n };
+    }
+}
+main locus App {
+    params { s: Sink = Sink { }; p: Pub = Pub { }; }
+    placement { p: pinned(core = 0); }
+    run() { std::time::sleep(600ms); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+
+    // Default policy: value withheld → replay diverges, namedly.
+    let rec = dir.join("redacted.halerec");
+    let out = hale()
+        .arg("run")
+        .arg(&prog)
+        .env("LOTUS_OBS_RECORD", &rec)
+        .env("HALE_REPLAY_TEST_ENV", "hunter2-not-in-artifact")
+        .output()
+        .expect("record");
+    assert!(out.status.success());
+    let raw = std::fs::read(&rec).unwrap();
+    assert!(
+        !raw.windows(7).any(|w| w == b"hunter2"),
+        "redacted recording contains the env value"
+    );
+    let out = hale()
+        .arg("replay")
+        .arg(&rec)
+        .arg(&prog)
+        .arg("--allow-live-effects")
+        .arg("--diff")
+        .env("HALE_REPLAY_TEST_ENV", "hunter2-not-in-artifact")
+        .output()
+        .expect("replay");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "a redacted recording must not claim an exact match:\n{}",
+        stderr
+    );
+    assert!(
+        stderr.contains("withholds env VALUES") || stderr.contains("divergence"),
+        "redaction must be named:\n{}",
+        stderr
+    );
+
+    // Opt-in: full values → exact replay.
+    let rec2 = dir.join("full.halerec");
+    let out = hale()
+        .arg("run")
+        .arg(&prog)
+        .env("LOTUS_OBS_RECORD", &rec2)
+        .env("LOTUS_OBS_RECORD_ENV", "full")
+        .env("HALE_REPLAY_TEST_ENV", "hunter2-not-in-artifact")
+        .output()
+        .expect("record full");
+    assert!(out.status.success());
+    let out = hale()
+        .arg("replay")
+        .arg(&rec2)
+        .arg(&prog)
+        .arg("--allow-live-effects")
+        .arg("--diff")
+        .output()
+        .expect("replay full");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("replay matches"),
+        "full-env recording must replay exactly:\n{}\n{}",
+        stdout,
+        String::from_utf8_lossy(&out.stderr)
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
