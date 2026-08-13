@@ -1205,6 +1205,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .fn_type(&[i64_t2.into(), i64_t2.into()], false),
             None,
         );
+        // GH #296 round 5: eager observation-plane init, called from
+        // the prelude AFTER the identity setters (segment creation
+        // snapshots them into the shared header). No-ops unless
+        // recording/replay is active.
+        // declare void @lotus_obs_eager_init()
+        self.module.add_function(
+            "lotus_obs_eager_init",
+            self.context.void_type().fn_type(&[], false),
+            None,
+        );
         // GH #296: stable consumer identity for a pinned locus's
         // thread, called once from the __pinned_main prologue
         // (cold path; no-ops when observation is off).

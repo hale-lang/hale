@@ -8963,6 +8963,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
+            // GH #296 round 5: eager recording/replay init, AFTER
+            // the identity setters — segment creation snapshots
+            // them into the shared header, and a constructor-driven
+            // init published a live segment with model_hash 0 for
+            // its whole life. Still before any user code or probe,
+            // so probe-free programs record. No-op when neither
+            // LOTUS_OBS_RECORD nor LOTUS_REPLAY is set.
+            {
+                let eager_fn = self
+                    .module
+                    .get_function("lotus_obs_eager_init")
+                    .expect("lotus_obs_eager_init declared");
+                self.builder
+                    .build_call(eager_fn, &[], "obs.eager_init")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
         }
         if !self.is_wasm {
             let load_cfg_fn = self

@@ -1372,15 +1372,21 @@ __attribute__((constructor)) static void obs_live_ctor(void) {
       _exit(64);
     }
   }
-  /* Round 4, finding 1: recording must initialize EAGERLY. Lazy
-   * creation waited for the first probe, so a probe-free program
-   * exited successfully with NO recording — and a stale artifact
-   * already at the path silently impersonated the run that was
-   * just requested. obs_on() under recording creates the file
-   * (replacing anything at the path), spawns the drain, and
-   * registers the finalizer — or fails the run. Identity stamps
-   * arrive later from the prelude; finalize-time restamping
-   * already covers that ordering. */
+}
+
+/* Round 4/5: recording must initialize EAGERLY (a probe-free
+ * program must still produce a recording, replacing anything at
+ * the path) — but NOT from the C constructor: segment creation
+ * snapshots the model identity into the shared header, and at
+ * constructor time the prelude has not stamped it yet, so a
+ * ctor-driven init published a live segment claiming to be
+ * unstamped for its whole life (round 5 — regressing the
+ * obs_model_hash contract iris reads). The generated prelude calls
+ * this immediately AFTER the identity setters: still before any
+ * user code or probe, so probe-free programs are covered and the
+ * segment is born with its immutable header complete. The .halerec
+ * artifact additionally re-stamps at finalize. */
+void lotus_obs_eager_init(void) {
   if (lotus_obs_recording || lotus_replay_active) {
     (void)obs_on();
   }
