@@ -80,6 +80,7 @@ dependencies = [
  "hale-lsp",
  "hale-syntax",
  "hale-types",
+ "libc",
  "openssl",
  "serde",
  "serde_json",
