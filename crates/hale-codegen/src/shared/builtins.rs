@@ -1131,13 +1131,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // iris handoff-5 P17: the baked direct-dispatch loop emits
         // the publish/deliver probes itself (the one flavor with no
         // C dispatch fn to host them).
-        // declare void @lotus_obs_bus_publish(ptr subject, ptr self, i64 bytes)
-        // declare void @lotus_obs_bus_deliver(ptr subject, ptr self, i64 bytes)
+        // declare i64 @lotus_obs_bus_publish(ptr subject, ptr self, i64 bytes)
+        //   — returns the assigned seq + 1 (a TOKEN; 0 = nothing
+        //     recorded), which every deliver probe for this publish
+        //     must receive so deliveries name their exact publish
+        //     (GH #296 review round 3: the reload-high-water
+        //     approximation misattributed racing same-subject
+        //     deliveries).
+        // declare void @lotus_obs_bus_deliver(ptr subject, ptr self,
+        //                                     i64 bytes, i64 seq_token)
         {
             let i64_t = self.context.i64_type();
             self.module.add_function(
                 "lotus_obs_bus_publish",
-                self.context.void_type().fn_type(
+                i64_t.fn_type(
                     &[ptr_t.into(), ptr_t.into(), i64_t.into()],
                     false,
                 ),
@@ -1146,7 +1153,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.module.add_function(
                 "lotus_obs_bus_deliver",
                 self.context.void_type().fn_type(
-                    &[ptr_t.into(), ptr_t.into(), i64_t.into()],
+                    &[
+                        ptr_t.into(),
+                        ptr_t.into(),
+                        i64_t.into(),
+                        i64_t.into(),
+                    ],
                     false,
                 ),
                 None,

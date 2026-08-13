@@ -421,3 +421,180 @@ fn main() { App { }; }
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Round 3, finding 3's canaries: (a) two pinned publishers racing
+/// on ONE subject — the old deliver probe reloaded the topic's
+/// high-water mark and attributed both racing deliveries to the
+/// later publish; (b) a handler that republishes to the SAME
+/// subject before the outer fanout's remaining delivers, which
+/// clobbers any TLS-based seq handoff (the token is a local).
+const SAME_SUBJECT: &str = r#"
+type T { n: Int = 0; }
+
+locus Sink {
+    params { seen: Int = 0; }
+    bus {
+        subscribe "one.subj" as on_t of type T;
+        publish "one.subj" of type T;
+    }
+    fn on_t(t: T) {
+        self.seen = self.seen + 1;
+        if t.n == 777 { "one.subj" <- T { n: 1000 }; }
+    }
+}
+
+locus PubA {
+    bus { publish "one.subj" of type T; }
+    run() {
+        let mut i = 0;
+        while i < 30 { "one.subj" <- T { n: i }; i = i + 1; }
+        "one.subj" <- T { n: 777 };
+    }
+}
+
+locus PubB {
+    bus { publish "one.subj" of type T; }
+    run() {
+        let mut i = 0;
+        while i < 30 { "one.subj" <- T { n: 100 + i }; i = i + 1; }
+    }
+}
+
+main locus App {
+    params {
+        s: Sink = Sink { };
+        a: PubA = PubA { };
+        b: PubB = PubB { };
+    }
+    placement { a: pinned(core = 0); b: pinned(core = 1); }
+    run() { std::time::sleep(900ms); }
+}
+
+fn main() { App { }; }
+"#;
+
+#[test]
+fn same_subject_race_and_nested_republish_replay_exactly() {
+    let dir = workdir("samesubj");
+    let prog = dir.join("one.hl");
+    std::fs::write(&prog, SAME_SUBJECT).unwrap();
+    let rec = record(&dir, &prog);
+
+    for round in 0..2 {
+        let out = hale()
+            .arg("replay")
+            .arg(&rec)
+            .arg(&prog)
+            .arg("--allow-live-effects")
+            .arg("--diff")
+            .output()
+            .expect("hale replay");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success() && stdout.contains("replay matches"),
+            "round {}: same-subject replay diverged:\n{}\n{}",
+            round,
+            stdout,
+            stderr
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 3, finding 2's negative controls: modules nest top
+/// declarations, and both admission walkers (effect rows, binding
+/// scan) must recurse into them — a module-contained live effect
+/// or transport binding failing open was the review's exact case.
+#[test]
+fn module_contained_effects_and_bindings_are_refused() {
+    let dir = workdir("modgate");
+    // Inline-module fns don't lower through codegen yet, so these
+    // programs never RUN — which is fine: the safety gate fires
+    // before the build, and it is deliberately ordered before
+    // identity admission so a program-inherent refusal is never
+    // masked by a recording mismatch. Any valid recording arms the
+    // test.
+    let plain = dir.join("plain.hl");
+    std::fs::write(&plain, JOURNALED).unwrap();
+    let rec = record(&dir, &plain);
+
+    // (a) module-contained fn with a live effect (subprocess run).
+    let prog_fx = dir.join("modfx.hl");
+    std::fs::write(
+        &prog_fx,
+        r#"
+module inner {
+    fn danger() {
+        let out = std::process::run("true") or raise;
+        let c = out.code;
+    }
+}
+type Tick { n: Int = 0; }
+locus Sink {
+    params { seen: Int = 0; }
+    bus { subscribe "m.t" as on_t of type Tick; }
+    fn on_t(t: Tick) { self.seen = self.seen + 1; }
+}
+main locus App {
+    params { s: Sink = Sink { }; }
+    bus { publish "m.t" of type Tick; }
+    run() {
+        inner::danger();
+        "m.t" <- Tick { n: 1 };
+    }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let out = hale()
+        .arg("replay")
+        .arg(&rec)
+        .arg(&prog_fx)
+        .output()
+        .expect("hale replay");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("live world"),
+        "module-contained effect passed the gate:\n{}",
+        stderr
+    );
+
+    // (b) module-contained transport binding.
+    let prog_b = dir.join("modbind.hl");
+    std::fs::write(
+        &prog_b,
+        r#"
+module wired {
+    type Tick { n: Int = 0; }
+    topic Wire { payload: Tick; subject: "m.wire"; }
+    main locus App {
+        bus { publish Wire; }
+        bindings { Wire: unix("/tmp/hale_replay_modcanary.sock", role: listen); }
+        run() { Wire <- Tick { n: 1 }; std::time::sleep(200ms); }
+    }
+}
+fn main() { wired::App { }; }
+"#,
+    )
+    .unwrap();
+    // The module-main shape may not even record (main-in-module is
+    // its own question) — the load-bearing assertion is the GATE:
+    // admission must see the binding regardless of a recording.
+    let out = hale()
+        .arg("replay")
+        .arg(&rec)
+        .arg(&prog_b)
+        .output()
+        .expect("hale replay");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("live world"),
+        "module-contained binding passed the gate:\n{}",
+        stderr
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

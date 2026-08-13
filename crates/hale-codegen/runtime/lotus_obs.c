@@ -556,6 +556,14 @@ static rp_consumer_t g_rp_consumers[RP_MAX_CONSUMERS];
 static int g_rp_consumer_count = 0;
 static _Atomic uint64_t g_rp_divergences[RP_MAX_JK];
 static _Atomic uint64_t g_rp_consume_count = 0;
+/* Round 3 follow-up: deliveries past the recorded stream's end (or
+ * on a consumer the recording never saw) are counted, not silently
+ * unconstrained — plain `hale replay` reports them even without
+ * --diff. Structural cells (pub_id 0) stay uncounted. */
+static _Atomic uint64_t g_rp_unexpected = 0;
+void lotus_replay_note_unexpected(void) {
+  atomic_fetch_add_explicit(&g_rp_unexpected, 1, memory_order_relaxed);
+}
 typedef struct { uint64_t pub_id; uint32_t topic; uint32_t flags;
                  rp_blob_ref_t bytes; } rp_payload_t;
 static rp_payload_t *g_rp_payloads = NULL;
@@ -605,11 +613,20 @@ static void rp_fail(const char *why) {
 }
 
 static void rp_load(void) {
-  /* One open + fstat + mmap — no reopen window (review round 2,
-   * finding 4: the fopen-then-open pair was its own TOCTOU). The
-   * mapping is MAP_PRIVATE; later file mutation cannot change the
-   * validated bytes this process serves. */
-  int fd = open(g_replay_path, O_RDONLY | O_NOFOLLOW);
+  /* Round 3: the validated artifact must be an IMMUTABLE snapshot.
+   * MAP_PRIVATE does not provide that (whether later file writes
+   * appear through a private mapping is unspecified), so the bytes
+   * are READ once into anonymous memory and every served pointer
+   * aliases that copy — post-validation file mutation is
+   * structurally irrelevant. The fd itself comes from the CLI when
+   * available (LOTUS_REPLAY_FD, inherited): the object the CLI
+   * validated and admitted is the object this process reads, with
+   * no path re-resolution window. Direct LOTUS_REPLAY invocation
+   * (no fd) opens once with O_NOFOLLOW and revalidates fully. */
+  int fd = -1;
+  const char *fdenv = getenv("LOTUS_REPLAY_FD");
+  if (fdenv && fdenv[0]) fd = atoi(fdenv);
+  if (fd < 0) fd = open(g_replay_path, O_RDONLY | O_NOFOLLOW);
   if (fd < 0) rp_fail(strerror(errno));
   struct stat st;
   if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 112) {
@@ -617,13 +634,27 @@ static void rp_load(void) {
     rp_fail("not a recording (too small or not a regular file)");
   }
   g_rp_len = (size_t)st.st_size;
-  g_rp_base = mmap(NULL, g_rp_len, PROT_READ, MAP_PRIVATE, fd, 0);
-  close(fd);
-  if (g_rp_base == MAP_FAILED) {
-    fprintf(stderr, "hale: LOTUS_REPLAY mmap failed: %s\n",
-            strerror(errno));
-    _exit(66);
+  uint8_t *snap = malloc(g_rp_len);
+  if (!snap) {
+    close(fd);
+    rp_fail("out of memory loading the recording");
   }
+  size_t got = 0;
+  if (lseek(fd, 0, SEEK_SET) != 0) {
+    close(fd);
+    rp_fail("recording fd is not seekable");
+  }
+  while (got < g_rp_len) {
+    ssize_t r = read(fd, snap + got, g_rp_len - got);
+    if (r < 0 && errno == EINTR) continue;
+    if (r <= 0) {
+      close(fd);
+      rp_fail("short read loading the recording");
+    }
+    got += (size_t)r;
+  }
+  close(fd);
+  g_rp_base = snap;
   const obs_rec_hdr_t *h = (const obs_rec_hdr_t *)g_rp_base;
   if (h->magic != OBS_REC_MAGIC || h->maj != 0 || h->min < 3) {
     rp_fail("not a v0.3+ recording (magic/version mismatch)");
@@ -888,6 +919,8 @@ static void rp_report(void) {
   uint64_t order_div = lotus_replay_order_divergences
       ? lotus_replay_order_divergences()
       : 0;
+  uint64_t unexpected =
+      atomic_load_explicit(&g_rp_unexpected, memory_order_relaxed);
   const char *status_path = getenv("LOTUS_REPLAY_STATUS");
   if (status_path && status_path[0]) {
     FILE *sf = fopen(status_path, "w");
@@ -898,10 +931,11 @@ static void rp_report(void) {
       fprintf(sf,
               "journal_divergences=%llu\norder_divergences=%llu\n"
               "unconsumed_journal=%llu\nunconsumed_deliveries=%llu\n"
-              "consumes=%llu\n",
+              "unexpected_deliveries=%llu\nconsumes=%llu\n",
               (unsigned long long)jd, (unsigned long long)order_div,
               (unsigned long long)unconsumed_journal,
               (unsigned long long)unconsumed_deliveries,
+              (unsigned long long)unexpected,
               (unsigned long long)atomic_load(&g_rp_consume_count));
       fclose(sf);
     }
@@ -911,7 +945,7 @@ static void rp_report(void) {
     "os.getrandom", "env.var", "env.var_exists", "env.arg",
     "env.args_count" };
   uint64_t total = order_div + unconsumed_journal
-      + unconsumed_deliveries;
+      + unconsumed_deliveries + unexpected;
   for (int i = 0; i < RP_MAX_JK; i++)
     total += atomic_load(&g_rp_divergences[i]);
   if (total == 0) {
@@ -939,6 +973,9 @@ static void rp_report(void) {
   if (unconsumed_deliveries)
     fprintf(stderr, "  %-22s %llu\n", "unconsumed-deliveries",
             (unsigned long long)unconsumed_deliveries);
+  if (unexpected)
+    fprintf(stderr, "  %-22s %llu\n", "unexpected-deliveries",
+            (unsigned long long)unexpected);
 }
 
 /* Pinned-locus threads: identity = 64 + the locus's obs instance
@@ -1822,9 +1859,19 @@ static uint32_t obs_inst_id_of(void *self) {
 
 /* ---- public probes (called from lotus_arena.c + codegen) ------- */
 
-void lotus_obs_bus_publish(const char *subject, void *publisher_self,
-                           uint64_t payload_bytes) {
-  if (!obs_on() || !subject) return;
+/* Returns a sequence TOKEN: the assigned per-topic seq + 1, or 0
+ * when nothing was recorded (obs off, redispatch, unregistered
+ * topic). Fanout passes the token to every lotus_obs_bus_deliver
+ * for this publish, so a deliver record names the EXACT publish it
+ * belongs to — the old reload-high-water-minus-one attributed both
+ * of two racing same-subject deliveries to the later publish
+ * (review round 3, finding 3). A local/SSA token also survives a
+ * nested same-subject publish inside a handler, which any
+ * TLS-based handoff would not. */
+uint64_t lotus_obs_bus_publish(const char *subject,
+                               void *publisher_self,
+                               uint64_t payload_bytes) {
+  if (!obs_on() || !subject) return 0;
   /* iris handoff-4 P15: consume the redispatch mark FIRST. An inbound
    * wire message re-dispatched by the reader thread is a delivery, not
    * a publish (it's covered by NET_DELIVER + per-subscriber
@@ -1838,9 +1885,9 @@ void lotus_obs_bus_publish(const char *subject, void *publisher_self,
   g_obs_tls_redispatch = 0;
   void *pub = publisher_self ? publisher_self : g_obs_tls_publisher;
   g_obs_tls_publisher = NULL;
-  if (redispatch) return; /* inbound re-dispatch — not a publish */
+  if (redispatch) return 0; /* inbound re-dispatch — not a publish */
   obs_topic_slot_t *t = obs_topic_slot(subject, 0);
-  if (!t) return;
+  if (!t) return 0;
   uint64_t seq =
       atomic_fetch_add_explicit(&t->seq, 1, memory_order_relaxed);
   /* Counters are the dormant-mode contract (P4: enabled-but-unobserved
@@ -1848,9 +1895,9 @@ void lotus_obs_bus_publish(const char *subject, void *publisher_self,
    * of attribution. */
   obs_count(MK_TOPIC, t->id, 0, 1);              /* published */
   obs_count(MK_TOPIC, t->id, 2, payload_bytes);  /* bytes */
-  if (!obs_gate()) return;
+  if (!obs_gate()) return seq + 1;
   uint8_t mode = MODE[t->id & (OBS_ENTRY_CAP - 1)];
-  if (mode < 2) return; /* OFF / COUNTERS */
+  if (mode < 2) return seq + 1; /* OFF / COUNTERS */
   uint32_t locus = pub ? obs_inst_id_of(pub) : 0; /* best-effort */
   /* iris handoff-7: w1 = locus:20 (HIGH bits 44..63) | seq:44
    * (low) — PROTOCOL §8 / iris emitter/protocol.h `obs_bus_w1`.
@@ -1863,15 +1910,27 @@ void lotus_obs_bus_publish(const char *subject, void *publisher_self,
            obs_size_class(payload_bytes),
            (((uint64_t)locus & 0xFFFFFu) << 44)
                | (seq & 0xFFFFFFFFFFFULL));
+  return seq + 1;
 }
 
 void lotus_obs_bus_deliver(const char *subject, void *subscriber_self,
-                           uint64_t payload_bytes) {
+                           uint64_t payload_bytes, uint64_t seq_token) {
   if (!obs_on() || !subject) return;
   obs_topic_slot_t *t = obs_topic_slot(subject, 0);
   if (!t) return;
-  uint64_t seq =
-      atomic_load_explicit(&t->seq, memory_order_relaxed);
+  /* seq_token = the OWNING publish's seq + 1, from that publish's
+   * probe return. 0 (no publish probe fired — dormant publish,
+   * inbound redispatch) falls back to the old approximate
+   * high-water read, which is only reachable when no exact pairing
+   * exists to get wrong. */
+  uint64_t seq;
+  if (seq_token) {
+    seq = seq_token - 1;
+  } else {
+    uint64_t hw =
+        atomic_load_explicit(&t->seq, memory_order_relaxed);
+    seq = hw ? hw - 1 : 0;
+  }
   obs_count(MK_TOPIC, t->id, 1, 1); /* delivered */
   if (!obs_gate()) return;
   uint8_t mode = MODE[t->id & (OBS_ENTRY_CAP - 1)];
@@ -1881,7 +1940,7 @@ void lotus_obs_bus_deliver(const char *subject, void *subscriber_self,
   obs_emit(EK_BUS_DELIVER, (uint32_t)t->id,
            obs_size_class(payload_bytes),
            (((uint64_t)locus & 0xFFFFFu) << 44)
-               | ((seq ? seq - 1 : 0) & 0xFFFFFFFFFFFULL));
+               | (seq & 0xFFFFFFFFFFFULL));
 }
 
 /* GH #296 Phase 1: the consumption event. Emitted by the arena's
@@ -2020,7 +2079,11 @@ void lotus_obs_journal_bytes(uint32_t jkind, const void *args,
       (jkind == JK_ENV_VAR || jkind == JK_ENV_ARG);
   if (args_len > 0xFFFFFFFFull) return;
   uint32_t al = (uint32_t)args_len;
-  uint64_t body_len = 4ull + al + (withhold ? 0 : n);
+  /* A withheld value still records its LENGTH (8-byte LE in the
+   * result slot) so the artifact can truthfully report coverage —
+   * a missing value and a 4KiB withheld credential are different
+   * facts (round 3 follow-up). */
+  uint64_t body_len = 4ull + al + (withhold ? 8 : n);
   uint8_t small[256];
   uint8_t *buf = body_len <= sizeof small ? small : malloc(body_len);
   if (!buf) {
@@ -2031,7 +2094,12 @@ void lotus_obs_journal_bytes(uint32_t jkind, const void *args,
   }
   memcpy(buf, &al, 4);
   if (al) memcpy(buf + 4, args, al);
-  if (!withhold && n) memcpy(buf + 4 + al, p, n);
+  if (withhold) {
+    uint64_t vlen = n;
+    memcpy(buf + 4 + al, &vlen, 8);
+  } else if (n) {
+    memcpy(buf + 4 + al, p, n);
+  }
   uint64_t cfield = (seq & 0x7FFFFFFFFFFFFFFFull)
       | (withhold ? (1ull << 63) : 0);
   obs_rec_blob_push(OBS_REC_TAG_JOURNAL, jkind, cid, cfield, buf,

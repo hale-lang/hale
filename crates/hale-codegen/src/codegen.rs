@@ -15280,13 +15280,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .module
                 .get_function("lotus_obs_bus_publish")
                 .expect("lotus_obs_bus_publish declared");
-            self.builder
+            let obs_tok = self
+                .builder
                 .build_call(
                     obs_pub_fn,
                     &[subj_val.into(), pub_self.into(), payload_size_iv.into()],
                     "publish.direct.obs.pub",
                 )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("lotus_obs_bus_publish returns a seq token");
             let obs_dlv_fn = self
                 .module
                 .get_function("lotus_obs_bus_deliver")
@@ -15294,7 +15298,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.builder
                 .build_call(
                     obs_dlv_fn,
-                    &[subj_val.into(), sub_self.into(), payload_size_iv.into()],
+                    &[
+                        subj_val.into(),
+                        sub_self.into(),
+                        payload_size_iv.into(),
+                        obs_tok.into(),
+                    ],
                     "publish.direct.obs.dlv",
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

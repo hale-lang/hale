@@ -6220,6 +6220,7 @@ int lotus_replay_expected_consume(uint64_t *out_msg,
     __attribute__((weak));
 uint64_t lotus_obs_pub_inst_id(void *self) __attribute__((weak));
 void lotus_replay_note_consume(void) __attribute__((weak));
+void lotus_replay_note_unexpected(void) __attribute__((weak));
 const void *lotus_replay_serve_blob(uint32_t jkind, const void *args,
                                     uint64_t args_len,
                                     uint64_t want_size,
@@ -6244,11 +6245,12 @@ static inline int lotus_journal_on(void) {
 static inline int lotus_replay_on(void) {
     return lotus_replay_serve_i64 && lotus_replay_active;
 }
-void lotus_obs_bus_publish(const char *subject, void *publisher_self,
-                           uint64_t payload_bytes)
+uint64_t lotus_obs_bus_publish(const char *subject,
+                               void *publisher_self,
+                               uint64_t payload_bytes)
     __attribute__((weak));
 void lotus_obs_bus_deliver(const char *subject, void *subscriber_self,
-                           uint64_t payload_bytes)
+                           uint64_t payload_bytes, uint64_t seq_token)
     __attribute__((weak));
 int64_t lotus_obs_binding_register(const char *subject,
                                    int64_t transport_kind)
@@ -6305,9 +6307,17 @@ static int64_t lotus_rp_now_ns(void) {
 
 static void lotus_rp_pending_push(const lotus_bus_cell_t *cell) {
     if (t_rp_pending_len == t_rp_pending_cap) {
-        t_rp_pending_cap = t_rp_pending_cap ? t_rp_pending_cap * 2 : 16;
-        t_rp_pending = realloc(
-            t_rp_pending, t_rp_pending_cap * sizeof(lotus_bus_cell_t));
+        size_t ncap = t_rp_pending_cap ? t_rp_pending_cap * 2 : 16;
+        lotus_bus_cell_t *g = realloc(
+            t_rp_pending, ncap * sizeof(lotus_bus_cell_t));
+        if (!g) {
+            fprintf(stderr,
+                    "hale replay: hold-buffer allocation failed\n");
+            fflush(NULL);
+            _exit(65);
+        }
+        t_rp_pending = g;
+        t_rp_pending_cap = ncap;
     }
     t_rp_pending[t_rp_pending_len++] = *cell;
     if (t_rp_pending_len == 1) t_rp_hold_since = lotus_rp_now_ns();
@@ -6341,7 +6351,15 @@ static int lotus_replay_gate_cell(lotus_bus_cell_t *cell) {
     uint32_t exp_locus;
     if (!lotus_replay_expected_consume ||
         !lotus_replay_expected_consume(&exp_msg, &exp_locus)) {
-        return 1; /* recorded stream exhausted — no constraint */
+        /* Recorded stream exhausted (or consumer unknown to the
+         * recording): dispatch freely, but an IDENTIFIED delivery
+         * here is history the recording does not contain — count
+         * it (round 3 follow-up: silence here let plain replay
+         * under-report). Structural cells stay uncounted. */
+        if (cell->rec_pub_id && lotus_replay_note_unexpected) {
+            lotus_replay_note_unexpected();
+        }
+        return 1;
     }
     uint32_t cell_locus = (uint32_t)(
         lotus_obs_pub_inst_id ? lotus_obs_pub_inst_id(cell->self_ptr)
@@ -9385,8 +9403,9 @@ void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
         rec_pub = lotus_obs_record_publish_payload(
             subject, payload, (uint64_t)payload_size, 1);
     }
+    uint64_t obs_tok = 0;
     if (lotus_obs_bus_publish && lotus_obs_live) {
-        lotus_obs_bus_publish(subject, NULL, (uint64_t)payload_size);
+        obs_tok = lotus_obs_bus_publish(subject, NULL, (uint64_t)payload_size);
     }
     size_t delivered = 0;
     for (size_t i = 0; i < g_bus_count; i++) {
@@ -9407,7 +9426,7 @@ void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
             e, queue, payload, payload_size, rec_pub);
         if (lotus_obs_bus_deliver && lotus_obs_live) {
             lotus_obs_bus_deliver(subject, e->self_ptr,
-                                  (uint64_t)payload_size);
+                                  (uint64_t)payload_size, obs_tok);
         }
     }
     if (delivered == 0 && lotus_bus_log_drop_enabled()) {
@@ -9508,8 +9527,9 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
         rec_pub = lotus_obs_record_publish_payload(
             subject, payload, (uint64_t)payload_size, 1);
     }
+    uint64_t obs_tok = 0;
     if (lotus_obs_bus_publish && lotus_obs_live) {
-        lotus_obs_bus_publish(subject, NULL, (uint64_t)payload_size);
+        obs_tok = lotus_obs_bus_publish(subject, NULL, (uint64_t)payload_size);
     }
     int matched_specific = 0;
     size_t specific_subs_on_subject = 0;
@@ -9539,7 +9559,7 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
          * flavor had none, so keyed deliveries never counted). */
         if (lotus_obs_bus_deliver && lotus_obs_live) {
             lotus_obs_bus_deliver(subject, e->self_ptr,
-                                  (uint64_t)payload_size);
+                                  (uint64_t)payload_size, obs_tok);
         }
     }
     /* Phase 3 v0.2 hook: when no specific-key match fired AND
@@ -9557,7 +9577,7 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
                                        rec_pub);
             if (lotus_obs_bus_deliver && lotus_obs_live) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
-                                      (uint64_t)payload_size);
+                                      (uint64_t)payload_size, obs_tok);
             }
         }
         if (lotus_bus_log_unmatched_enabled()) {
@@ -15634,8 +15654,9 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
         rec_pub = lotus_obs_record_publish_payload(
             subject, wire_bytes, (uint64_t)wire_size, 0);
     }
+    uint64_t obs_tok = 0;
     if (lotus_obs_bus_publish && lotus_obs_live) {
-        lotus_obs_bus_publish(subject, NULL, (uint64_t)wire_size);
+        obs_tok = lotus_obs_bus_publish(subject, NULL, (uint64_t)wire_size);
     }
     char *struct_buf = g_tls_bus_struct_buf;   /* off the coro stack */
     lotus_arena_t *prev_tls = lotus_current_caller_arena;
@@ -15666,7 +15687,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
             g_bus_pending_wire_deser = NULL;
             if (lotus_obs_bus_deliver && lotus_obs_live) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
-                                      (uint64_t)wire_size);
+                                      (uint64_t)wire_size, obs_tok);
             }
             continue;
         }
@@ -15702,7 +15723,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
         /* iris handoff-4 P15: BUS_DELIVER per matched keyed target. */
         if (lotus_obs_bus_deliver && lotus_obs_live) {
             lotus_obs_bus_deliver(subject, e->self_ptr,
-                                  (uint64_t)wire_size);
+                                  (uint64_t)wire_size, obs_tok);
         }
     }
     if (!matched_specific) {
@@ -15721,7 +15742,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
                 g_bus_pending_wire_deser = NULL;
                 if (lotus_obs_bus_deliver && lotus_obs_live) {
                     lotus_obs_bus_deliver(subject, e->self_ptr,
-                                          (uint64_t)wire_size);
+                                          (uint64_t)wire_size, obs_tok);
                 }
                 continue;
             }
@@ -15751,7 +15772,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
             }
             if (lotus_obs_bus_deliver && lotus_obs_live) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
-                                      (uint64_t)wire_size);
+                                      (uint64_t)wire_size, obs_tok);
             }
         }
         if (lotus_bus_log_unmatched_enabled()) {
@@ -15780,8 +15801,9 @@ void lotus_bus_dispatch_wire(const char *subject,
         rec_pub = lotus_obs_record_publish_payload(
             subject, wire_bytes, (uint64_t)wire_size, 0);
     }
+    uint64_t obs_tok = 0;
     if (lotus_obs_bus_publish && lotus_obs_live) {
-        lotus_obs_bus_publish(subject, NULL, (uint64_t)wire_size);
+        obs_tok = lotus_obs_bus_publish(subject, NULL, (uint64_t)wire_size);
     }
     /* Phase-3 Task 9 (2026-05-20): per-subscriber arena routing.
      * Previously this deserialize-once-then-fanout shape parked
@@ -15843,7 +15865,7 @@ void lotus_bus_dispatch_wire(const char *subject,
              * keyed sibling gained the probe in handoff-4). */
             if (lotus_obs_bus_deliver && lotus_obs_live) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
-                                      (uint64_t)wire_size);
+                                      (uint64_t)wire_size, obs_tok);
             }
             delivered++;
             continue;
@@ -15873,7 +15895,7 @@ void lotus_bus_dispatch_wire(const char *subject,
              * cross-thread branch above). */
             if (lotus_obs_bus_deliver && lotus_obs_live) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
-                                      (uint64_t)wire_size);
+                                      (uint64_t)wire_size, obs_tok);
             }
             delivered++;
         } else if (lotus_bus_log_drop_enabled()) {
@@ -15943,8 +15965,9 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                 subject, struct_payload, (uint64_t)struct_size, 1);
         }
         /* iris P4 (mirrors the dynamic path). */
+        uint64_t obs_tok = 0;
         if (lotus_obs_bus_publish && lotus_obs_live) {
-            lotus_obs_bus_publish(subject, NULL, (uint64_t)struct_size);
+            obs_tok = lotus_obs_bus_publish(subject, NULL, (uint64_t)struct_size);
         }
         if (b) {
             for (size_t k = 0; k < b->count; k++) {
@@ -15953,7 +15976,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                 if (e->key_filter_kind != 0) continue;
                 if (lotus_obs_bus_deliver && lotus_obs_live) {
                     lotus_obs_bus_deliver(subject, e->self_ptr,
-                                          (uint64_t)struct_size);
+                                          (uint64_t)struct_size, obs_tok);
                 }
                 /* R4 exception: the build #3 no-pinned fast path
                  * takes the no-acquire-load _st enqueue; everything
@@ -16020,8 +16043,9 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
         rec_pub = lotus_obs_record_publish_payload(
             subject, struct_payload, (uint64_t)struct_size, 1);
     }
+    uint64_t obs_tok = 0;
     if (lotus_obs_bus_publish && lotus_obs_live) {
-        lotus_obs_bus_publish(subject, NULL, (uint64_t)struct_size);
+        obs_tok = lotus_obs_bus_publish(subject, NULL, (uint64_t)struct_size);
     }
 
     /* Non-flat: serialize once, then deserialize into each subscriber's
@@ -16098,7 +16122,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
              * gap. Both halves of the same omission. */
             if (lotus_obs_bus_deliver && lotus_obs_live) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
-                                      (uint64_t)struct_size);
+                                      (uint64_t)struct_size, obs_tok);
             }
             /* Bug 3: cross-thread target — post WIRE bytes +
              * deserialize fn; the owner materializes at drain. */
@@ -16194,8 +16218,9 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
      * subject on this path was invisible to observation (no topic
      * registration, no counters, no BUS records). Publish once,
      * deliver per matched target, exactly as the other flavors. */
+    uint64_t obs_tok = 0;
     if (lotus_obs_bus_publish && lotus_obs_live) {
-        lotus_obs_bus_publish(subject, NULL, size);
+        obs_tok = lotus_obs_bus_publish(subject, NULL, size);
     }
     if (b) {
         for (size_t k = 0; k < b->count; k++) {
@@ -16218,7 +16243,7 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
                 ((lotus_handler_fn)e->handler)(e->self_ptr, (void *)payload);
             }
             if (lotus_obs_bus_deliver && lotus_obs_live) {
-                lotus_obs_bus_deliver(subject, e->self_ptr, size);
+                lotus_obs_bus_deliver(subject, e->self_ptr, size, obs_tok);
             }
             delivered++;
         }

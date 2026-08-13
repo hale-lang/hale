@@ -4559,23 +4559,40 @@ fn compile_and_exec(
 /// inputs". Residue it cannot see: the LLVM/libc toolchain outside
 /// this binary and the linker environment — a post-link binary
 /// digest is the staged stronger form.
-fn exec_digest(sources: &BTreeMap<PathBuf, String>) -> [u64; 4] {
+fn exec_digest(
+    sources: &BTreeMap<PathBuf, String>,
+    entry: &Path,
+    options_fp: &str,
+) -> [u64; 4] {
     let mut buf: Vec<u8> = Vec::new();
     let frame = |b: &[u8], buf: &mut Vec<u8>| {
         buf.extend_from_slice(&(b.len() as u64).to_le_bytes());
         buf.extend_from_slice(b);
     };
-    frame(env!("HALE_CODEGEN_SRC_HASH").as_bytes(), &mut buf);
+    // Round 3: the toolchain half is the FULL workspace-source
+    // SHA-256 (parser, analyses, codegen, every runtime TU incl.
+    // lotus_obs.c, stdlib seeds, the replay CLI) + rustc version +
+    // git commit — computed by build.rs. The old 64-bit stale-CLI
+    // hash covered three files and missed the record/replay
+    // implementation entirely.
+    frame(env!("HALE_TOOLCHAIN_SHA256").as_bytes(), &mut buf);
     frame(env!("CARGO_PKG_VERSION").as_bytes(), &mut buf);
-    frame(b"target=native;profile=release", &mut buf);
+    frame(options_fp.as_bytes(), &mut buf);
     buf.extend_from_slice(&(sources.len() as u64).to_le_bytes());
+    // Logical (entry-relative) source ids: identical trees checked
+    // out under different roots are the same build inputs.
+    let base = entry.parent().map(Path::to_path_buf);
     for (path, src) in sources {
-        let full = path
-            .canonicalize()
-            .unwrap_or_else(|_| path.clone())
-            .display()
-            .to_string();
-        frame(full.as_bytes(), &mut buf);
+        let logical = base
+            .as_deref()
+            .and_then(|b| path.strip_prefix(b).ok())
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| {
+                path.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            });
+        frame(logical.as_bytes(), &mut buf);
         frame(src.as_bytes(), &mut buf);
     }
     let d = openssl::sha::sha256(&buf);
@@ -5019,7 +5036,85 @@ fn run_replay(args: &[String]) -> ExitCode {
         }
     }
     let model_hash = hale_types::topology::model_shape_hash(&bundle);
-    let digest = exec_digest(&sources);
+    let base_options = hale_codegen::BuildOptions::default();
+    let options_fp = format!(
+        "target={:?};cpu={:?};dev={};debug={}",
+        base_options.target,
+        base_options.target_cpu,
+        base_options.dev_profile,
+        base_options.debug.is_some()
+    );
+    let digest = exec_digest(&sources, &prog, &options_fp);
+
+    // Ordered BEFORE identity admission: this refusal is inherent
+    // to the PROGRAM, so it must not be masked by a
+    // recording-mismatch message (and module-gate canaries can
+    // assert it with any recording).
+    // Safe by default (review finding 3, both rounds): re-execution
+    // repeats the program's real side effects. The gate consumes
+    // the TYPED inferred rows, and it must fail CLOSED on the two
+    // paths the first version failed open on: `unclassified`
+    // ("may do anything") and a `publish` whose subject is bound to
+    // an external transport (the send is generated deployment
+    // machinery, invisible in user-level effects). Coarse by class
+    // granularity — over-refusing is the safe direction;
+    // per-primitive replay classes are the staged refinement.
+    if !allow_live_effects {
+        let programs: Vec<&Program> =
+            bundle.programs.values().copied().collect();
+        let rows =
+            hale_types::effects::effect_manifest_with_inference(&programs);
+        let mut residue = std::collections::BTreeSet::new();
+        for row in &rows {
+            for class in &row.inferred {
+                if class == "syscall"
+                    || class == "ffi"
+                    || class == "unclassified"
+                {
+                    residue.insert(class.clone());
+                }
+            }
+        }
+        // External transport bindings: any `bindings { }` block
+        // makes publishes (and listener startup) touch the real
+        // world during re-execution.
+        // Modules nest top declarations arbitrarily deep (round 3,
+        // finding 2) — walk them, or a module-contained binding
+        // fails open.
+        fn scan_bindings(items: &[hale_syntax::ast::TopDecl]) -> bool {
+            items.iter().any(|item| match item {
+                hale_syntax::ast::TopDecl::Locus(l) => {
+                    l.members.iter().any(|m| {
+                        matches!(
+                            m,
+                            hale_syntax::ast::LocusMember::Bindings(_)
+                        )
+                    })
+                }
+                hale_syntax::ast::TopDecl::Module(md) => {
+                    scan_bindings(&md.items)
+                }
+                _ => false,
+            })
+        }
+        let has_bindings =
+            bundle.programs.values().any(|p| scan_bindings(&p.items));
+        if has_bindings {
+            residue.insert("external-bindings".to_string());
+        }
+        if !residue.is_empty() {
+            eprintln!(
+                "hale replay: this program can reach the live world \
+                 during re-execution ({{{}}}) — publishes to bound \
+                 topics send real traffic, unclassified calls may \
+                 do anything, and syscall/ffi writes repeat. \
+                 Refusing by default; pass --allow-live-effects if \
+                 you accept that",
+                residue.into_iter().collect::<Vec<_>>().join(", ")
+            );
+            return ExitCode::from(1);
+        }
+    }
 
     // Admission, strongest check first (review finding 2):
     // exec_digest is framed-SHA-256 build-input identity;
@@ -5062,66 +5157,6 @@ fn run_replay(args: &[String]) -> ExitCode {
             rec_path.display()
         );
         return ExitCode::from(1);
-    }
-
-    // Safe by default (review finding 3, both rounds): re-execution
-    // repeats the program's real side effects. The gate consumes
-    // the TYPED inferred rows, and it must fail CLOSED on the two
-    // paths the first version failed open on: `unclassified`
-    // ("may do anything") and a `publish` whose subject is bound to
-    // an external transport (the send is generated deployment
-    // machinery, invisible in user-level effects). Coarse by class
-    // granularity — over-refusing is the safe direction;
-    // per-primitive replay classes are the staged refinement.
-    if !allow_live_effects {
-        let programs: Vec<&Program> =
-            bundle.programs.values().copied().collect();
-        let rows =
-            hale_types::effects::effect_manifest_with_inference(&programs);
-        let mut residue = std::collections::BTreeSet::new();
-        for row in &rows {
-            for class in &row.inferred {
-                if class == "syscall"
-                    || class == "ffi"
-                    || class == "unclassified"
-                {
-                    residue.insert(class.clone());
-                }
-            }
-        }
-        // External transport bindings: any `bindings { }` block
-        // makes publishes (and listener startup) touch the real
-        // world during re-execution.
-        let mut has_bindings = false;
-        for prog in bundle.programs.values() {
-            for item in &prog.items {
-                if let hale_syntax::ast::TopDecl::Locus(l) = item {
-                    if l.members.iter().any(|m| {
-                        matches!(
-                            m,
-                            hale_syntax::ast::LocusMember::Bindings(_)
-                        )
-                    }) {
-                        has_bindings = true;
-                    }
-                }
-            }
-        }
-        if has_bindings {
-            residue.insert("external-bindings".to_string());
-        }
-        if !residue.is_empty() {
-            eprintln!(
-                "hale replay: this program can reach the live world \
-                 during re-execution ({{{}}}) — publishes to bound \
-                 topics send real traffic, unclassified calls may \
-                 do anything, and syscall/ffi writes repeat. \
-                 Refusing by default; pass --allow-live-effects if \
-                 you accept that",
-                residue.into_iter().collect::<Vec<_>>().join(", ")
-            );
-            return ExitCode::from(1);
-        }
     }
 
     if rec.env_redacted {
@@ -5186,6 +5221,44 @@ fn run_replay(args: &[String]) -> ExitCode {
     let mut cmd = std::process::Command::new(&bin);
     cmd.env("LOTUS_REPLAY", &rec_abs);
     cmd.env("LOTUS_REPLAY_STATUS", &status_path);
+    // Round 3 (artifact trust): the CHILD reads the same file
+    // OBJECT the CLI validated — the fd is inherited (dup2'd to a
+    // fixed number post-fork), so there is no path re-resolution
+    // window between the two validations. The runtime still
+    // revalidates fully and snapshots the bytes into anonymous
+    // memory before serving.
+    {
+        use std::os::unix::io::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        match std::fs::File::open(&rec_abs) {
+            Ok(f) => {
+                let raw = f.as_raw_fd();
+                const REPLAY_FD: i32 = 973;
+                cmd.env("LOTUS_REPLAY_FD", REPLAY_FD.to_string());
+                unsafe {
+                    cmd.pre_exec(move || {
+                        if libc::dup2(raw, REPLAY_FD) < 0 {
+                            return Err(
+                                std::io::Error::last_os_error(),
+                            );
+                        }
+                        Ok(())
+                    });
+                }
+                // Keep the File alive across spawn.
+                std::mem::forget(f);
+            }
+            Err(e) => {
+                eprintln!(
+                    "hale replay: could not reopen `{}` for the \
+                     child: {}",
+                    rec_abs.display(),
+                    e
+                );
+                return ExitCode::from(1);
+            }
+        }
+    }
     if let Some(spec) = &at {
         match spec.split_once(':') {
             Some((c, n)) => {
@@ -5336,7 +5409,15 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
         // P26: stamp the model identity of the bundle just checked.
         let model_hash =
             hale_types::topology::model_shape_hash(&bundle);
-        let digest = exec_digest(&sources);
+        let base_options = hale_codegen::BuildOptions::default();
+        let options_fp = format!(
+            "target={:?};cpu={:?};dev={};debug={}",
+            base_options.target,
+            base_options.target_cpu,
+            base_options.dev_profile,
+            base_options.debug.is_some()
+        );
+        let digest = exec_digest(&sources, target, &options_fp);
         return compile_and_exec(
             &program, &renames, user_args, model_hash, digest,
         );
@@ -5460,7 +5541,15 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
     }
     // P26: stamp the model identity of the bundle just checked.
     let model_hash = hale_types::topology::model_shape_hash(&bundle);
-    let digest = exec_digest(&path_sources);
+    let base_options = hale_codegen::BuildOptions::default();
+    let options_fp = format!(
+        "target={:?};cpu={:?};dev={};debug={}",
+        base_options.target,
+        base_options.target_cpu,
+        base_options.dev_profile,
+        base_options.debug.is_some()
+    );
+    let digest = exec_digest(&path_sources, target, &options_fp);
     compile_and_exec(&program, &renames, user_args, model_hash, digest)
 }
 

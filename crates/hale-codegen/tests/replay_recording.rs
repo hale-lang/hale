@@ -298,49 +298,64 @@ fn two_recordings_of_a_single_pool_program_are_identical() {
     run_recorded(&bin, &rec_a, &[]);
     run_recorded(&bin, &rec_b, &[]);
 
-    // Compare the bus-event sequences (publish/deliver/consume),
-    // stripped of timestamps. All bus records of a single-pool
-    // program sit on the main thread's ring, and the drain
-    // preserves per-ring order, so the filtered file order is the
-    // execution order.
-    let strip = |p: &PathBuf| -> Vec<(u32, u32, u64)> {
-        obs::read_recording(p)
-            .expect("parse recording")
-            .entries
-            .iter()
-            .filter_map(|(ring, w0, w1)| {
-                let (id, ekind) = rec_id_ekind(*w0);
-                if is_public_bus(*ring, *w0, EK_BUS_PUBLISH)
-                    || is_public_bus(*ring, *w0, EK_BUS_DELIVER)
-                {
-                    Some((id, ekind, *w1))
-                } else if is_consume(*ring, *w0) {
-                    Some((id, 100 + ekind, *w1))
-                } else {
-                    None
-                }
-            })
-            .collect()
+    // Round 3, finding 4: the drain preserves order WITHIN each
+    // ring, not between the public and private rings — their
+    // relative file positions depend on where the asynchronous
+    // drain divided its sweeps. Compare the streams the artifact
+    // actually orders, independently: the public bus stream (one
+    // ring in a single-pool program) and the private consume
+    // stream. A unified semantic order, if ever wanted, must be a
+    // recorded ordinal, not inferred drain interleaving.
+    struct Streams {
+        public_bus: Vec<(u32, u32, u64)>,
+        consume: Vec<(u64, u64)>,
+    }
+    let strip = |p: &PathBuf| -> Streams {
+        let r = obs::read_recording(p).expect("parse recording");
+        Streams {
+            public_bus: r
+                .entries
+                .iter()
+                .filter_map(|(ring, w0, w1)| {
+                    let (id, ekind) = rec_id_ekind(*w0);
+                    if is_public_bus(*ring, *w0, EK_BUS_PUBLISH)
+                        || is_public_bus(*ring, *w0, EK_BUS_DELIVER)
+                    {
+                        Some((id, ekind, *w1))
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+            consume: r
+                .entries
+                .iter()
+                .filter_map(|(ring, w0, w1)| {
+                    if is_consume(*ring, *w0) {
+                        Some((*w0 & 0xFFFFF, *w1))
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+        }
     };
     let a = strip(&rec_a);
     let b = strip(&rec_b);
-    // Every publish and delivery, plus one consume per QUEUED
-    // delivery (how many are queued vs synchronous-direct is the
-    // dispatch planner's business — but it must be deterministic,
-    // which the a == b below holds it to).
-    let consumes = a
-        .iter()
-        .filter(|(_, ekind, _)| *ekind == 100 + REC_EV_CONSUME)
-        .count();
     assert_eq!(
-        a.len(),
-        CASCADE_PUBLISH + CASCADE_DELIVER + consumes,
+        a.public_bus.len(),
+        CASCADE_PUBLISH + CASCADE_DELIVER,
         "recording incomplete"
     );
     assert_eq!(
-        a, b,
-        "two recordings of a single-pool program diverged — \
-         spec/testing.md § Determinism is violated"
+        a.public_bus, b.public_bus,
+        "two recordings of a single-pool program diverged on the \
+         public bus stream — spec/testing.md § Determinism is \
+         violated"
+    );
+    assert_eq!(
+        a.consume, b.consume,
+        "two recordings diverged on the consume stream"
     );
 
     let _ = std::fs::remove_file(&bin);
