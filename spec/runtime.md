@@ -1556,6 +1556,172 @@ v0.11.20):
   with the P15 negative marking. Per-subscriber BUS_DELIVER and
   the topic registration are unchanged.
 
+### Lossless recording mode (GH #296 Phase 1)
+
+`LOTUS_OBS_RECORD=<path>` opts a run into **recording**: the
+observation plane stops being a sampler and becomes a flight
+recorder. Implies `LOTUS_OBS=1`; the recording counts as an
+attached observer, so ring emission is on from the first probe
+with nothing mmapping the segment. Opt-in on the same terms as
+everything else here — unset, the lowering and the wire are
+byte-for-byte the unobserved build (the flag resolves in the same
+constructor as `lotus_obs_live` and gates behind it everywhere).
+
+Three deltas from observer mode, all in the service of one rule —
+**a recording never drops** (a dropped record is a replay that
+diverges silently):
+
+- **Overwrite-oldest becomes block-the-producer.** An in-process
+  drain thread appends every ring record to `<path>` and
+  publishes per-ring cursors; a producer whose ring is full
+  against the cursor waits (50µs naps) instead of clobbering the
+  oldest slot. Recording-on hot cost while the ring has room is
+  one relaxed load + compare per record. A live observer prefers
+  losing records to stalling the program; a recorder makes the
+  opposite trade, and the stall is the contract.
+- **A thread that cannot get a ring fails the run** (exit 70,
+  diagnostic names `LOTUS_OBS_RINGS`) instead of going silently
+  dark forever (the `-2` disposition observer mode keeps).
+  Recording defaults `LOTUS_OBS_RINGS` to the 64 maximum, so this
+  means more than 64 emitting threads. Block or fail — never drop.
+- **A drain-side write failure fails the run** (exit 74) rather
+  than truncating silently. The file ends with a trailer written
+  at teardown after a final full sweep; a reader that does not
+  find the trailer holds a truncated recording and must say so.
+
+**Consume records (private recorder namespace).** `BUS_DELIVER`
+is enqueue-time by design and lands on the *publisher's* ring —
+correct for fanout accounting, structurally unable to say in what
+order a consumer actually ran its handlers. Under recording, every
+dequeue-driven handler invoke (main-queue drain, coop-pool drain,
+pinned mailbox drain, async coro start) stamps a consume record on
+the *consuming* thread right before the handler runs, carrying the
+delivery identity: the target locus in the record's id field and
+the full 64-bit `msg_id` in `w1`. Its ring position is the
+per-consumer delivery order — the thing a replay serves back.
+Pairing rule: per queue, the k-th consume is the k-th queued
+delivery. The synchronous direct-dispatch flavors deliberately emit
+no consume record: their handler runs at the `BUS_DELIVER`
+position, which *is* the consumption point.
+
+Recorder events (`CONSUMER`/`CONSUME`/`ENQ`/`JOURNAL`) live on
+**process-private per-thread rings** in their own event namespace,
+never in the public observation segment: iris protocol ekinds
+8/9/11/12 mean SUPERV_TRANS/PLACEMENT/BINDING_UP/BINDING_DOWN, and
+an observer attaching to a recording process must never decode
+recorder bookkeeping as lifecycle transitions. In the recording
+file, private-ring entries carry the high bit in their ring field,
+so the two namespaces can never be confused.
+
+**Delivery identity (Phase 2).** Every queued delivery carries a
+deterministic `pub_id = consumer_id:12 | per-publisher-thread
+seq:32`, re-derivable by a re-executed run without global
+coordination. Consumer ids are stable across runs, unlike pthread
+ids: main = 1, cooperative pool workers = 16 + registration
+index, pinned locus threads = 64 + obs instance id; threads with
+no stable identity (ingress readers) get run-unique anonymous
+ids, never a shared fallback. Payload bytes are captured once per
+queued publish under a **stable subject hash** (manifest topic
+ids are registration-order and racing publishers register in
+either order). Flags: bit 0 = external wire ingress; bit 1 = raw
+in-process struct bytes — an ABI snapshot (String/Bytes fields
+are pointers, padding is uninitialized) that consumers must
+compare by size only; canonical per-topic recording codecs are
+the staged fix. Wire captures are canonical bytes, unflagged.
+The synchronous direct-dispatch flavors deliberately capture
+nothing: a closed-world same-thread call cannot carry external
+input, and re-execution re-derives its payloads.
+
+**Input journal (Phase 3).** Under recording, every user-facing
+nondeterministic read is journaled per consumer as ONE unified
+stream carrying the read's kind and its **exact encoded
+arguments** (length-framed; replay memcmps them — hashes proved
+collision-prone), so a changed env name, arg index, rand bound,
+or read length is the first *named* divergence, never a silently
+substituted value. **Env values are withheld by default**: names,
+existence, and lengths are recorded; the value itself requires
+`LOTUS_OBS_RECORD_ENV=full`, the artifact header says which
+policy applied, and a withheld read replays as a named withheld
+divergence. The interposed set:
+`std::time::now`, `std::time::monotonic[_ns]` (now a named
+primitive, `lotus_time_monotonic_ns` — it used to be inline
+`clock_gettime` IR that nothing could interpose),
+`std::rand::next_int` (per call — the global RNG's mutex makes
+seed-replay unsound across threads), `std::os::getrandom`, and
+the `std::env` surface. Internal runtime clocks and config
+`getenv`s are deliberately not journaled.
+
+**File format v0.3 (PRE-STABLE).** 96-byte header (magic
+`HALEREC0`, version, pid, ring geometry, epoch anchors,
+`model_hash`, a 32-byte framed-SHA-256 `exec_digest`, and policy
+flags), tagged entries — tag 0: 24-byte ring record; tags 1/2/3:
+payload / journal / meta blobs (32-byte header + bytes padded to
+8; meta carries the run-stable topic and public-ring identity
+maps) — and a 16-byte trailer (`HALEEND0` + entry count). A
+recording is *clean* only when the ENTIRE artifact validates:
+exact parse to the trailer position and a matching entry count,
+enforced by the CLI reader and independently by the runtime
+loader (one open + fstat + private mmap, checked arithmetic,
+per-kind value shapes) — trailer magic at EOF alone proves
+nothing. Identity fields are re-stamped at finalize (a prelude
+binding registration can probe — creating the header — before
+the stamps run).
+
+**Replay (`hale replay <recording> <program.hl>`).** Admission,
+strongest check first: the recording's `exec_digest` — a framed
+SHA-256 over the toolchain source hash (compiler + runtime +
+stdlib implementation, via the stale-CLI build hash), the CLI
+version, build options, and every source file's full path,
+length, and contents — must match the recompiled program exactly;
+`shape_hash` is structural compatibility only, the secondary
+check. An unstamped recording is refused without
+`--allow-unverified-model`. Stated residue: the digest cannot see
+the LLVM/libc toolchain outside the hale binary; a post-link
+binary digest is the staged stronger form. **Safe by default:**
+replay re-executes real side effects, so the typed effect rows
+gate admission and fail CLOSED on `syscall`, `ffi`,
+`unclassified` ("may do anything"), and any transport-bound
+`bindings` block (the user-level effect of a bound publish is
+`publish`; the send is generated deployment machinery) — all
+refused without an explicit `--allow-live-effects` (coarse by
+class granularity — over-refusal is the safe direction;
+per-primitive replay classes are the staged refinement). `LOTUS_REPLAY=<path>`
+then serves journaled reads back per consumer in recorded order;
+a read past (or mismatching) the recorded history falls back live
+and is counted — **replay degrades, never refuses** (RFC Q6) —
+with a divergence summary at exit and a machine-readable verdict
+(`LOTUS_REPLAY_STATUS`) the CLI consumes: journal misses, order
+holds, unconsumed journal entries, and unconsumed deliveries all
+count, and any of them fails `--diff`. Each consumer's queued deliveries are re-consumed
+in the RECORDED order (Phase 4): dequeued cells that arrive ahead
+of their recorded turn are held per-consumer and released in
+order, with a bounded hold (1s) after which the oldest held cell
+is released and the miss counted, so a genuinely divergent replay
+reports rather than deadlocks. `where async_io` pools refuse
+replay loudly (their coro interleaving is a later milestone).
+`--diff` records the replay (under the original's env policy) and
+compares bidirectionally: per-consumer queued consume streams
+(target locus + msg_id), per-consumer PUBLIC bus streams aligned
+by subject and stable consumer id via the meta maps — which is
+what makes synchronous direct dispatch visible — payloads both
+ways (topic, flags, bytes; raw metadata by declared size), and
+per-consumer journal streams (kind, exact args, withheld state,
+value; grouped per consumer because the drain interleaves
+concurrent threads' entries in incidental order). Any runtime
+divergence fails `--diff` through the verdict. `--at <n>` stops
+(SIGSTOP) at the nth consume process-wide (meaningful for one
+consumer); `--at <consumer-id>:<ordinal>` is the stable
+multi-consumer form. Replay implies observation (identity rides
+the obs machinery).
+
+Two honest limits, stated rather than implied: the recorded
+interleaving is reproduced per consumer, not globally — cross-
+consumer wall-clock alignment is not a replay property; and
+external ingress (sockets, adapters) re-executes LIVE in v1 —
+captured ingress payloads exist in the recording (flagged), but
+injection is the fleet-replay milestone (Phase 5, with #262's
+plan admission for Phase 6's replay-under-a-different-plan).
+
 ### Time
 
 - **Monotonic + wall-clock.** `time::now()` and
@@ -2177,8 +2343,11 @@ Erlang.
   supports module-level hot reload. Lotus's perspective
   hot-reload is more granular and addresses most of the use
   case; full code hot-reload may not be needed.
-- **Determinism mode for tests.** Discussed in `testing.md`;
-  runtime needs to support deterministic scheduling when
-  requested. The cooperative scheduler makes this easier than
-  M:N would have — single-scheduler test mode is fully
-  deterministic by construction.
+- **Determinism mode for tests.** Resolved for the single-pool
+  case: no mode is needed, because single-pool execution is
+  deterministic by construction, and that is now a stated,
+  pinned guarantee rather than an accident — see
+  `spec/testing.md` § Determinism. What remains open is
+  deterministic *re-execution* of multi-pool programs, which is
+  the record/replay track (GH #296) — reproducing a recorded
+  per-consumer order, never constraining live scheduling.

@@ -1663,23 +1663,46 @@ pub fn effect_manifest(programs: &[&Program]) -> Vec<EffectManifestRow> {
             inferred: Vec::new(),
         });
     };
-    for p in programs {
-        for item in &p.items {
+    // GH #296 review round 3: modules nest top declarations
+    // arbitrarily deep, and a module-contained fn or locus whose
+    // effects never reached a manifest row was invisible to both
+    // the committed-baseline diff and `hale replay`'s safety
+    // admission — the same fail-open shape twice.
+    fn walk_items(
+        items: &[TopDecl],
+        prefix: &str,
+        push: &mut dyn FnMut(String, &hale_syntax::ast::FnDecl),
+    ) {
+        for item in items {
             match item {
-                TopDecl::Fn(fd) => push(fd.name.name.clone(), fd),
+                TopDecl::Fn(fd) => push(
+                    format!("{}{}", prefix, fd.name.name),
+                    fd,
+                ),
                 TopDecl::Locus(l) => {
                     for m in &l.members {
                         if let LocusMember::Fn(fd) = m {
                             push(
-                                format!("{}::{}", l.name.name, fd.name.name),
+                                format!(
+                                    "{}{}::{}",
+                                    prefix, l.name.name, fd.name.name
+                                ),
                                 fd,
                             );
                         }
                     }
                 }
+                TopDecl::Module(md) => {
+                    let inner =
+                        format!("{}{}::", prefix, md.name.name);
+                    walk_items(&md.items, &inner, push);
+                }
                 _ => {}
             }
         }
+    }
+    for p in programs {
+        walk_items(&p.items, "", &mut push);
     }
     rows.sort_by(|a, b| a.func.cmp(&b.func));
     rows
@@ -1700,11 +1723,22 @@ pub fn effect_manifest_with_inference(
         .map(|r| (r.func.clone(), r))
         .collect();
     let mut rows: Vec<EffectManifestRow> = Vec::new();
-    let mut add = |name: String, key: FnKey| {
-        let inferred = crate::frontier::render_effects_named(
-            crate::frontier::infer_effects(&summary, &key, &ffi),
-            &names,
-        );
+    let mut add = |name: String, key: FnKey, in_module: bool| {
+        // Round 3 (GH #296): the callgraph summarizer does not yet
+        // descend into inline modules, and a missing summary key
+        // infers PURE — which turned a module-contained subprocess
+        // call invisible. Inside a module, an unresolvable key is
+        // rendered `unclassified` ("may do anything"): fail closed,
+        // and scoped so non-module rows are untouched.
+        let inferred = if in_module && !summary.fns.contains_key(&key)
+        {
+            vec!["unclassified".to_string()]
+        } else {
+            crate::frontier::render_effects_named(
+                crate::frontier::infer_effects(&summary, &key, &ffi),
+                &names,
+            )
+        };
         let mut row = declared.get(&name).cloned().unwrap_or(
             EffectManifestRow {
                 func: name.clone(),
@@ -1727,22 +1761,50 @@ pub fn effect_manifest_with_inference(
         }
         rows.push(row);
     };
-    for p in programs {
-        for item in &p.items {
+    // Round 3 (GH #296): recurse through modules — a
+    // module-contained fn or lifecycle body absent from these rows
+    // was invisible to both the baseline diff and replay's safety
+    // admission. A module fn whose summary key misses resolves to
+    // `unclassified`, which is the fail-closed answer.
+    fn walk_infer(
+        items: &[TopDecl],
+        prefix: &str,
+        add: &mut dyn FnMut(String, FnKey, bool),
+    ) {
+        let in_module = !prefix.is_empty();
+        for item in items {
             match item {
                 TopDecl::Fn(fd) => {
-                    let n = fd.name.name.clone();
-                    add(n.clone(), FnKey::free_fn(n));
+                    let n = format!("{}{}", prefix, fd.name.name);
+                    add(n.clone(), FnKey::free_fn(n), in_module);
+                }
+                TopDecl::Module(md) => {
+                    let inner =
+                        format!("{}{}::", prefix, md.name.name);
+                    walk_infer(&md.items, &inner, add);
                 }
                 TopDecl::Locus(l) => {
+                    // Round 4, finding 2: the summary KEY must be
+                    // qualified like the display name — an
+                    // unqualified key let `inner::Worker::run` find
+                    // an unrelated top-level `Worker::run`'s summary
+                    // and inherit its (possibly pure) effects. The
+                    // qualified key misses until the summarizer
+                    // descends into modules, which fails closed as
+                    // `unclassified`.
+                    let locus_key = format!("{}{}", prefix, l.name.name);
                     for m in &l.members {
                         match m {
                             LocusMember::Fn(fd) => add(
-                                format!("{}::{}", l.name.name, fd.name.name),
+                                format!(
+                                    "{}{}::{}",
+                                    prefix, l.name.name, fd.name.name
+                                ),
                                 FnKey::method(
-                                    l.name.name.clone(),
+                                    locus_key.clone(),
                                     fd.name.name.clone(),
                                 ),
+                            in_module,
                             ),
                             // Lifecycle hooks belong in the
                             // fingerprint too. Leaving them out made
@@ -1757,11 +1819,15 @@ pub fn effect_manifest_with_inference(
                             LocusMember::Lifecycle(lc) => {
                                 let phase = lifecycle_name(lc.kind);
                                 add(
-                                    format!("{}::{}", l.name.name, phase),
+                                    format!(
+                                        "{}{}::{}",
+                                        prefix, l.name.name, phase
+                                    ),
                                     FnKey::method(
-                                        l.name.name.clone(),
+                                        locus_key.clone(),
                                         phase.to_string(),
                                     ),
+                                    in_module,
                                 )
                             }
                             _ => {}
@@ -1771,6 +1837,9 @@ pub fn effect_manifest_with_inference(
                 _ => {}
             }
         }
+    }
+    for p in programs {
+        walk_infer(&p.items, "", &mut add);
     }
     rows.sort_by(|a, b| a.func.cmp(&b.func));
     rows

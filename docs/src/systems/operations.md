@@ -252,6 +252,34 @@ understands the header. (A non-framed unicast transport carries
 no seq and falls back to a local delivery count even with the
 wire enabled.)
 
+**Recording a run.** `LOTUS_OBS_RECORD=<path>` turns the sampler
+into a flight recorder: every observation record is drained to
+`<path>`, and the disposition flips from "drop rather than stall"
+to "stall rather than drop" — a full ring blocks its producer
+until the drain catches up, and a run that *couldn't* record
+everything fails loudly instead of producing a silently
+incomplete file. It implies `LOTUS_OBS=1` and needs no observer
+attached. The recording captures each consumer's actual handler
+order, every queued publish's payload, and a journal of the
+nondeterministic reads (`std::time`, `std::rand`,
+`std::os::getrandom`, `std::env`). Recording changes your
+program's timing by design; don't leave it on in production. The
+file format is pre-stable (GH #296).
+
+**Replaying one.**
+
+```sh
+hale replay run.halerec app.hl            # re-execute it
+hale replay run.halerec app.hl --diff     # + compare, fail on any divergence
+hale replay run.halerec app.hl --at 65:12 # SIGSTOP at consumer 65's 12th consume
+```
+
+The full story — admission by executable identity, the
+safe-by-default effect gate (`--allow-live-effects`), env-value
+redaction (`LOTUS_OBS_RECORD_ENV`), the coverage boundary, and
+what the comparator actually compares — has its own chapter:
+[Record & replay](./replay.md).
+
 ## Debugging with the native toolchain
 
 Hale binaries carry full DWARF by default (zero runtime cost):

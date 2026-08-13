@@ -587,6 +587,13 @@ pub struct BuildOptions {
     /// typechecks; harness callers leave it None and the header
     /// field reads 0 (unstamped).
     pub model_hash: Option<u64>,
+    /// GH #296: build-manifest identity for recording-header
+    /// stamping — a framed SHA-256 (4×u64) over the toolchain
+    /// source hash, compiler version, build options, and every
+    /// source path + length + contents. `hale replay` admits exact
+    /// builds on this; shape_hash is the structural compatibility
+    /// check only.
+    pub exec_digest: Option<[u64; 4]>,
 }
 
 /// The per-build source table for DWARF emission: each entry is one
@@ -1387,6 +1394,7 @@ pub fn build_executable_with_options(
         returned_bindings: compute_returned_bindings(&merged),
         assign_moved_bindings: compute_assign_moved_bindings(&merged),
         model_hash: options.model_hash,
+            exec_digest: options.exec_digest,
         replica_index_for_next_locus_instantiation: None,
         current_instantiation_replica_index: 0,
         suppress_fresh_temp: false,
@@ -4009,6 +4017,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// P26: the build-time model identity to stamp into the obs
     /// segment header (None = harness build, header reads 0).
     pub(crate) model_hash: Option<u64>,
+    pub(crate) exec_digest: Option<[u64; 4]>,
     /// Replica keys (2026-08-12): the replica index the NEXT locus
     /// instantiation carries — set by the Phase-1c fan-out loop for
     /// replicas 1..K, absent (= replica 0) everywhere else. Consumed
@@ -8919,6 +8928,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // the prelude, so the value is in place before any
             // probe lazily creates the segment. Harness builds
             // (None) skip the call and the header reads 0.
+            if let Some(d) = self.exec_digest {
+                let set_fn = self
+                    .module
+                    .get_function("lotus_obs_exec_digest_set")
+                    .expect("lotus_obs_exec_digest_set declared");
+                let i64_t = self.context.i64_type();
+                for (i, part) in d.iter().enumerate() {
+                    self.builder
+                        .build_call(
+                            set_fn,
+                            &[
+                                i64_t.const_int(i as u64, false).into(),
+                                i64_t.const_int(*part, false).into(),
+                            ],
+                            "obs.exec_digest",
+                        )
+                        .map_err(|e| {
+                            CodegenError::LlvmEmit(e.to_string())
+                        })?;
+                }
+            }
             if let Some(h) = self.model_hash {
                 let set_fn = self
                     .module
@@ -8931,6 +8961,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         &[i64_t.const_int(h, false).into()],
                         "obs.model_hash",
                     )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            // GH #296 round 5: eager recording/replay init, AFTER
+            // the identity setters — segment creation snapshots
+            // them into the shared header, and a constructor-driven
+            // init published a live segment with model_hash 0 for
+            // its whole life. Still before any user code or probe,
+            // so probe-free programs record. No-op when neither
+            // LOTUS_OBS_RECORD nor LOTUS_REPLAY is set.
+            {
+                let eager_fn = self
+                    .module
+                    .get_function("lotus_obs_eager_init")
+                    .expect("lotus_obs_eager_init declared");
+                self.builder
+                    .build_call(eager_fn, &[], "obs.eager_init")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
         }
@@ -15250,13 +15296,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .module
                 .get_function("lotus_obs_bus_publish")
                 .expect("lotus_obs_bus_publish declared");
-            self.builder
+            let obs_tok = self
+                .builder
                 .build_call(
                     obs_pub_fn,
                     &[subj_val.into(), pub_self.into(), payload_size_iv.into()],
                     "publish.direct.obs.pub",
                 )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("lotus_obs_bus_publish returns a seq token");
             let obs_dlv_fn = self
                 .module
                 .get_function("lotus_obs_bus_deliver")
@@ -15264,7 +15314,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.builder
                 .build_call(
                     obs_dlv_fn,
-                    &[subj_val.into(), sub_self.into(), payload_size_iv.into()],
+                    &[
+                        subj_val.into(),
+                        sub_self.into(),
+                        payload_size_iv.into(),
+                        obs_tok.into(),
+                    ],
                     "publish.direct.obs.dlv",
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

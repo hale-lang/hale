@@ -1245,6 +1245,20 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                     // target, enqueue-time-equivalent (the direct
                     // call IS the delivery).
                     let obs_live = self.obs_live_check()?;
+                    // Round 3: the publish's seq token flows to every
+                    // deliver probe through a stack slot (the probes
+                    // live in separate conditional blocks; mem2reg
+                    // promotes it).
+                    let obs_tok_slot = self.alloca_in_entry(
+                        self.context.i64_type().into(),
+                        "bus.direct.obs.tok",
+                    )?;
+                    self.builder
+                        .build_store(
+                            obs_tok_slot,
+                            self.context.i64_type().const_zero(),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     {
                         let ptr_t =
                             self.context.ptr_type(AddressSpace::default());
@@ -1266,12 +1280,14 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                             .module
                             .get_function("lotus_obs_bus_publish")
                             .expect("lotus_obs_bus_publish declared");
+
                         let pub_self: inkwell::values::BasicValueEnum = self
                             .current_self
                             .as_ref()
                             .map(|cs| cs.self_ptr.into())
                             .unwrap_or_else(|| ptr_t.const_null().into());
-                        self.builder
+                        let obs_tok = self
+                            .builder
                             .build_call(
                                 obs_pub_fn,
                                 &[
@@ -1281,6 +1297,12 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                                 ],
                                 "bus.direct.obs.pub.call",
                             )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                            .try_as_basic_value()
+                            .left()
+                            .expect("publish probe returns a token");
+                        self.builder
+                            .build_store(obs_tok_slot, obs_tok)
                             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                         self.builder
                             .build_unconditional_branch(pub_cont_bb)
@@ -1387,6 +1409,14 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                             .module
                             .get_function("lotus_obs_bus_deliver")
                             .expect("lotus_obs_bus_deliver declared");
+                        let tok_loaded = self
+                            .builder
+                            .build_load(
+                                self.context.i64_type(),
+                                obs_tok_slot,
+                                "bus.direct.obs.tok.load",
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                         self.builder
                             .build_call(
                                 obs_dlv_fn,
@@ -1394,6 +1424,7 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                                     subj_val.into(),
                                     sp.into(),
                                     payload_size_iv.into(),
+                                    tok_loaded.into(),
                                 ],
                                 "bus.direct.obs.dlv.call",
                             )

@@ -8,6 +8,130 @@ behavior.
 
 ## Unreleased
 
+### Record & replay, phases 2–4: `hale replay` (GH #296)
+
+Building on the phase-0/1 recording below: **re-run a recorded
+execution and get the same schedule and the same journaled inputs,
+with an explicit, checked coverage boundary.** (Scoped per review:
+external ingress and non-journaled I/O re-execute live and are
+gated — see the safety flag below.)
+
+Hardened by two full review rounds before merge. Round 2 (the
+identity/admission/trust round): the safety gate consumes TYPED
+effect rows and fails closed on `unclassified` and on
+transport-bound `bindings` (a bound publish sends real traffic
+that user-level effects cannot show); `exec_digest` is a framed
+SHA-256 over the toolchain source hash + version + options + full
+source paths/lengths/contents (32 bytes in the header, stamped in
+four parts, re-stamped at finalize); journal entries carry their
+EXACT encoded arguments (replay memcmps them — the 32-bit hashes
+they replace folded adjacent integers); env VALUES are withheld
+from recordings by default (`LOTUS_OBS_RECORD_ENV=full` opts in;
+withheld reads replay as named divergences); raw in-process
+payloads store metadata only (no pointer/padding bytes on disk);
+`msg_id` is full-width (consumer:16|seq:48, loudly guarded) and
+the delivery identity includes the target locus; the runtime
+loader independently validates the whole artifact (one open +
+fstat + private mmap, checked arithmetic, exact trailer position
+and count, per-kind value shapes); `--diff` compares per-consumer
+PUBLIC bus streams via file-side identity maps (direct dispatch
+is visible) and groups journal comparison per consumer.
+
+Round 1: recorder events
+moved off iris protocol ekinds onto process-private rings; replay
+admission is by executable identity (`exec_digest` = compiler
+version + source bytes), not just structural `shape_hash`, and
+unstamped recordings are refused without `--allow-unverified-model`;
+replay is **safe by default** — a program whose effect frontier
+reaches `syscall`/`ffi` is refused without `--allow-live-effects`;
+capture failure, write failure, and finalize failure all fail the
+run (never a silent gap); a recording is clean only if the entire
+artifact validates (exact trailer position + entry count); the
+journal carries per-call argument identity (a changed env name or
+rand bound is a named divergence, not a substituted value);
+`--diff` is bidirectional and fails on ANY runtime divergence via
+a machine-readable verdict; payload topic identity is a stable
+subject hash (manifest ids are registration-order and race);
+raw-struct payload captures are flagged as ABI snapshots and
+compared by size (canonical recording codecs staged); `--at
+consumer:N` is the stable multi-consumer debugger coordinate.
+
+- **`hale replay <recording> <program.hl>`** — compiles through the
+  same pipeline as `hale run`, admits the recording by
+  `model_hash` (a recording from a different model is rejected,
+  never misreplayed; a truncated recording is refused), then
+  re-executes under `LOTUS_REPLAY`. `--diff` records the replay and
+  reports the first per-consumer divergence; `--at N` stops
+  (SIGSTOP) at the Nth consume so a debugger can attach.
+- **Delivery identity + payload capture** (format v0.2, tagged
+  entries): every queued delivery carries a deterministic
+  `pub_id` (stable consumer id + per-publisher-thread seq — a
+  re-executed run re-derives the same ids with no global
+  coordination); payload bytes are captured once per queued
+  publish, external wire ingress flagged. Synchronous direct
+  dispatch captures nothing by design: a closed-world same-thread
+  call cannot carry external input.
+- **The input journal**: `std::time::now`, `std::time::monotonic`
+  / `monotonic_ns` (now a named runtime primitive —
+  they lowered as inline `clock_gettime` IR nothing could
+  interpose), `std::rand::next_int`, `std::os::getrandom`, and the
+  `std::env` surface are journaled per consumer under recording
+  and served back under replay. A read past the recorded history
+  falls back live and is counted — **replay degrades, never
+  refuses** — with a divergence summary at exit.
+- **Recorded-order enforcement**: each consumer (cooperative pool
+  worker, pinned mailbox, main queue) re-consumes its queued
+  deliveries in the recorded order, holding early arrivals in a
+  per-consumer buffer with a bounded (1s) degrade path, so two
+  racing pinned publishers replay in exactly the interleaving that
+  was recorded — pinned end-to-end by a CLI test that replays a
+  40+40-delivery race twice. `where async_io` pools refuse replay
+  loudly (their coro interleaving is a later milestone).
+- Remaining, explicitly staged: ingress injection + fleet replay
+  (Phase 5, needs `LOTUS_OBS_WIRE` fleet identity), and
+  replay-under-a-different-plan (Phase 6, blocked on #262's plan
+  admission).
+
+### Record & replay, phases 0–1: the determinism guarantee, and a recording that never drops (GH #296)
+
+- **Single-pool determinism is now a stated guarantee**, not an
+  implementation accident. A program whose loci all run on the main
+  cooperative scheduler produces the same publishes and deliveries
+  in the same order on every run, given the same inputs — one pool
+  is one consumer thread by construction, so there is no scheduling
+  freedom for an order to vary within. Written into
+  `spec/testing.md` § Determinism (both former "determinism mode"
+  open questions resolved against it), pinned by
+  `replay_determinism.rs`, which compares the complete ordered
+  BUS_PUBLISH/BUS_DELIVER stream across repeated runs. A divergence
+  there is a runtime bug, never a flaky test.
+- **`LOTUS_OBS_RECORD=<path>` — lossless recording mode.** The
+  observation plane's sampler disposition (overwrite-oldest,
+  count the drops) becomes a flight recorder's: an in-process
+  drain appends every ring record to the file, a producer whose
+  ring is full **blocks** against the drain cursor instead of
+  overwriting, a thread that cannot get a ring **fails the run**
+  (recording defaults to the 64-ring maximum first), and a write
+  failure fails the run rather than truncating silently. Never
+  drop, by construction. Implies `LOTUS_OBS=1` and counts as an
+  attached observer, so a recording needs no external consumer.
+  Wholly opt-in: unset, the lowering is instruction-identical to
+  the unobserved build, per the established gate discipline.
+- **`BUS_CONSUME` (ekind 8, recording mode only): the per-consumer
+  delivery order.** BUS_DELIVER is enqueue-time and lands on the
+  publisher's ring — it cannot say in what order a consumer ran
+  its handlers. Under recording, every dequeue-driven handler
+  invoke stamps a consume record on the consuming thread
+  (subscriber locus + the thread's gapless count); its ring
+  position is the order a replay will serve back. Synchronous
+  direct dispatch deliberately emits none — its deliver record is
+  its consumption point. Never emitted outside recording, so
+  existing consumers never meet an unknown ekind.
+- The recording file format is **pre-stable** (v0.2 as shipped:
+  tagged header + ring records + payload/journal blobs +
+  clean-finalize trailer); the fully self-describing artifact
+  shape may still evolve with the remaining GH #296 phases.
+
 ### Observability: supervision in the model, backpressure on the wire, identity in the segment
 
 Five items from a downstream observability handoff, resolved as one

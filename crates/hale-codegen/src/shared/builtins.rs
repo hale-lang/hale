@@ -1131,13 +1131,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // iris handoff-5 P17: the baked direct-dispatch loop emits
         // the publish/deliver probes itself (the one flavor with no
         // C dispatch fn to host them).
-        // declare void @lotus_obs_bus_publish(ptr subject, ptr self, i64 bytes)
-        // declare void @lotus_obs_bus_deliver(ptr subject, ptr self, i64 bytes)
+        // declare i64 @lotus_obs_bus_publish(ptr subject, ptr self, i64 bytes)
+        //   — returns the assigned seq + 1 (a TOKEN; 0 = nothing
+        //     recorded), which every deliver probe for this publish
+        //     must receive so deliveries name their exact publish
+        //     (GH #296 review round 3: the reload-high-water
+        //     approximation misattributed racing same-subject
+        //     deliveries).
+        // declare void @lotus_obs_bus_deliver(ptr subject, ptr self,
+        //                                     i64 bytes, i64 seq_token)
         {
             let i64_t = self.context.i64_type();
             self.module.add_function(
                 "lotus_obs_bus_publish",
-                self.context.void_type().fn_type(
+                i64_t.fn_type(
                     &[ptr_t.into(), ptr_t.into(), i64_t.into()],
                     false,
                 ),
@@ -1146,7 +1153,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.module.add_function(
                 "lotus_obs_bus_deliver",
                 self.context.void_type().fn_type(
-                    &[ptr_t.into(), ptr_t.into(), i64_t.into()],
+                    &[
+                        ptr_t.into(),
+                        ptr_t.into(),
+                        i64_t.into(),
+                        i64_t.into(),
+                    ],
                     false,
                 ),
                 None,
@@ -1181,6 +1193,37 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.context
                 .void_type()
                 .fn_type(&[i64_t2.into()], false),
+            None,
+        );
+        // GH #296: build-manifest identity for recording headers,
+        // stamped as four u64 parts of a framed SHA-256.
+        // declare void @lotus_obs_exec_digest_set(i64 part, i64 v)
+        self.module.add_function(
+            "lotus_obs_exec_digest_set",
+            self.context
+                .void_type()
+                .fn_type(&[i64_t2.into(), i64_t2.into()], false),
+            None,
+        );
+        // GH #296 round 5: eager observation-plane init, called from
+        // the prelude AFTER the identity setters (segment creation
+        // snapshots them into the shared header). No-ops unless
+        // recording/replay is active.
+        // declare void @lotus_obs_eager_init()
+        self.module.add_function(
+            "lotus_obs_eager_init",
+            self.context.void_type().fn_type(&[], false),
+            None,
+        );
+        // GH #296: stable consumer identity for a pinned locus's
+        // thread, called once from the __pinned_main prologue
+        // (cold path; no-ops when observation is off).
+        // declare void @lotus_obs_note_consumer_locus(ptr self)
+        self.module.add_function(
+            "lotus_obs_note_consumer_locus",
+            self.context
+                .void_type()
+                .fn_type(&[ptr_t.into()], false),
             None,
         );
         self.module.add_function(
@@ -3237,6 +3280,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module.add_function(
             "lotus_time_now_seconds",
             time_now_seconds_ty,
+            None,
+        );
+        // GH #296 Phase 3: monotonic reads route through a named
+        // primitive so record/replay can interpose (they used to
+        // be inline clock_gettime IR — uninterposable).
+        // declare i64 @lotus_time_monotonic_ns()
+        self.module.add_function(
+            "lotus_time_monotonic_ns",
+            i64_t.fn_type(&[], false),
             None,
         );
         // declare ptr @lotus_time_from_unix(i64 n)

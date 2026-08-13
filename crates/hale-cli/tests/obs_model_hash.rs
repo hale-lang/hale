@@ -32,8 +32,15 @@ fn build(dir: &Path, src: &str, tag: &str) -> PathBuf {
 /// Run the binary under LOTUS_OBS=1 and read the header's
 /// model_hash field (u64 at 0x80) from the live segment.
 fn segment_model_hash(bin: &Path) -> u64 {
-    let mut child = Command::new(bin)
-        .env("LOTUS_OBS", "1")
+    segment_model_hash_env(bin, &[("LOTUS_OBS", "1".into())])
+}
+
+fn segment_model_hash_env(bin: &Path, envs: &[(&str, String)]) -> u64 {
+    let mut cmd = Command::new(bin);
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let mut child = cmd
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -99,5 +106,45 @@ fn model_identity_is_stamped_and_tracks_the_model() {
     let h_c = segment_model_hash(&c);
     assert_ne!(h_a, h_c, "adding a locus changes the model identity");
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// GH #296 round 5: the LIVE segment of a RECORDING process must
+/// carry the same nonzero model identity as an ordinary observed
+/// run. Eager recording init used to create the segment from the C
+/// constructor — before the prelude stamped the identity — so an
+/// attached iris consumer saw model_hash 0 for the process's whole
+/// life (the .halerec artifact was silently repaired by
+/// finalize-time restamping, which is exactly why the recording
+/// canary missed it). Init now runs from the prelude, after the
+/// setters.
+#[test]
+fn recording_processes_publish_the_same_live_model_identity() {
+    let dir = std::env::temp_dir().join(format!(
+        "hale_obs_rec_ident_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let bin = build(&dir, BASE, "ident");
+
+    let observed = segment_model_hash(&bin);
+    assert_ne!(observed, 0, "baseline observed run is unstamped");
+
+    let rec = dir.join("ident.halerec");
+    let recorded = segment_model_hash_env(
+        &bin,
+        &[
+            ("LOTUS_OBS_RECORD", rec.display().to_string()),
+        ],
+    );
+    assert_ne!(
+        recorded, 0,
+        "a recording process published an unstamped live segment"
+    );
+    assert_eq!(
+        recorded, observed,
+        "recording changed the live model identity"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

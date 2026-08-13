@@ -51,6 +51,16 @@ hale test --json        # machine-readable results (one record per file)
 it, reporting which passed and which failed. It's the same binary that
 `hale build` produces — there's no separate test runtime.
 
+One property comes free with that binary: **a test whose loci all
+run on the main scheduler is deterministic.** No `placement`, no
+extra pools — then every publish and every delivery happens in the
+same order on every run, by construction (one pool is one consumer
+thread; handlers run to completion). A flaky single-pool test is
+never the scheduler's fault: look for a real input — time, entropy,
+environment, the network — feeding the assertion instead. If you
+want the compiler to prove there isn't one, mark the code under
+test [`@deterministic`](../effects.md).
+
 ## Testing what runs over time
 
 The assertions above check *values*. For a long-running locus, the

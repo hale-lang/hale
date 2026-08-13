@@ -24,3 +24,4 @@ toml = "0.8"
 # lotus_tls.c implements std::crypto's ES256 with it), so this
 # adds no second crypto provider to the system.
 openssl = "0.10"
+libc = "0.2"

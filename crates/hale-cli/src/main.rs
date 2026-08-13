@@ -30,6 +30,7 @@ use hale_lsp as lsp;
 mod fleet;
 mod mcp;
 mod pkg;
+mod replay;
 mod sign;
 
 fn main() -> ExitCode {
@@ -106,6 +107,13 @@ fn main() -> ExitCode {
     if cmd == "test" {
         let rest: Vec<String> = args.iter().skip(2).cloned().collect();
         return run_test(&rest);
+    }
+
+    // `replay` takes a recording and a program (its own arg shape,
+    // so it parses `rest` itself like `test` does). GH #296.
+    if cmd == "replay" {
+        let rest: Vec<String> = args.iter().skip(2).cloned().collect();
+        return run_replay(&rest);
     }
 
     // `lsp` speaks stdio and takes no target — the seed to check is
@@ -205,6 +213,10 @@ fn usage() {
     eprintln!("    hale verify <file.hl | dir>   check + FAIL on any advisory (discipline gate)");
     eprintln!("    hale run   <file.hl | dir>    compile + run as a native binary");
     eprintln!("    hale build <file.hl | dir>    parse + typecheck + emit native binary");
+    eprintln!("    hale replay <rec> <file.hl>   re-run a LOTUS_OBS_RECORD recording");
+    eprintln!("        [--diff: report first divergence, fail on any]");
+    eprintln!("        [--at <n> | --at <consumer-id>:<ordinal>: SIGSTOP at that consume]");
+    eprintln!("        [--allow-live-effects] [--allow-unverified-model]");
     eprintln!("    hale test  [file | dir]       compile + run *_test.hl (default: cwd)");
     eprintln!("        [-run <substr>] [--json]");
     eprintln!("    hale bench [file | dir]       run *_bench.hl bench_* fns (default: cwd)");
@@ -4500,6 +4512,7 @@ fn compile_and_exec(
     renames: &[(Vec<String>, String)],
     user_args: &[String],
     model_hash: u64,
+    exec_digest: [u64; 4],
 ) -> ExitCode {
     let mut bin = std::env::temp_dir();
     let mut h = DefaultHasher::new();
@@ -4508,6 +4521,7 @@ fn compile_and_exec(
     bin.push(format!("hale_run_{:016x}", h.finish()));
     let options = hale_codegen::BuildOptions {
         model_hash: Some(model_hash),
+        exec_digest: Some(exec_digest),
         ..Default::default()
     };
     if let Err(e) = hale_codegen::build_executable_with_options(
@@ -4527,6 +4541,69 @@ fn compile_and_exec(
             ExitCode::from(1)
         }
     }
+}
+
+/// GH #296: build-manifest identity — a FRAMED SHA-256 over the
+/// build inputs this binary can see:
+///
+///   - the toolchain source hash (`HALE_CODEGEN_SRC_HASH`, computed
+///     by build.rs over the codegen + runtime + stdlib sources this
+///     CLI was linked against — so two different compiler/runtime
+///     commits under one version differ);
+///   - the CLI crate version;
+///   - the build options that alter emitted code;
+///   - every source file's FULL normalized path, byte length, and
+///     contents, each length-framed (no concatenation ambiguity).
+///
+/// Structural `shape_hash` says "same model"; this says "same build
+/// inputs". Residue it cannot see: the LLVM/libc toolchain outside
+/// this binary and the linker environment — a post-link binary
+/// digest is the staged stronger form.
+fn exec_digest(
+    sources: &BTreeMap<PathBuf, String>,
+    entry: &Path,
+    options_fp: &str,
+) -> [u64; 4] {
+    let mut buf: Vec<u8> = Vec::new();
+    let frame = |b: &[u8], buf: &mut Vec<u8>| {
+        buf.extend_from_slice(&(b.len() as u64).to_le_bytes());
+        buf.extend_from_slice(b);
+    };
+    // Round 3: the toolchain half is the FULL workspace-source
+    // SHA-256 (parser, analyses, codegen, every runtime TU incl.
+    // lotus_obs.c, stdlib seeds, the replay CLI) + rustc version +
+    // git commit — computed by build.rs. The old 64-bit stale-CLI
+    // hash covered three files and missed the record/replay
+    // implementation entirely.
+    frame(env!("HALE_TOOLCHAIN_SHA256").as_bytes(), &mut buf);
+    frame(env!("CARGO_PKG_VERSION").as_bytes(), &mut buf);
+    frame(options_fp.as_bytes(), &mut buf);
+    buf.extend_from_slice(&(sources.len() as u64).to_le_bytes());
+    // Logical (entry-relative) source ids: identical trees checked
+    // out under different roots are the same build inputs.
+    let base = entry.parent().map(Path::to_path_buf);
+    for (path, src) in sources {
+        let logical = base
+            .as_deref()
+            .and_then(|b| path.strip_prefix(b).ok())
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| {
+                path.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            });
+        frame(logical.as_bytes(), &mut buf);
+        frame(src.as_bytes(), &mut buf);
+    }
+    let d = openssl::sha::sha256(&buf);
+    let mut out = [0u64; 4];
+    for (i, part) in out.iter_mut().enumerate() {
+        *part = u64::from_le_bytes(d[i * 8..i * 8 + 8].try_into().unwrap());
+    }
+    if out == [0; 4] {
+        out[0] = 1;
+    }
+    out
 }
 
 /// Escape a string for embedding in a JSON string literal.
@@ -4830,6 +4907,461 @@ fn run_test(args: &[String]) -> ExitCode {
     }
 }
 
+/// `hale replay <recording> <program.hl> [--diff] [--at N]` —
+/// GH #296. Re-runs a recorded execution: the same binary (model
+/// identity checked against the recording header), with the
+/// runtime serving journaled inputs (time/entropy/env) and
+/// enforcing each consumer's recorded delivery order. `--diff`
+/// records the replay and reports the first divergence; `--at N`
+/// stops the program (SIGSTOP) at the Nth consume so a debugger
+/// can attach.
+fn run_replay(args: &[String]) -> ExitCode {
+    let mut rec_arg: Option<PathBuf> = None;
+    let mut prog: Option<PathBuf> = None;
+    let mut diff = false;
+    let mut at: Option<String> = None;
+    let mut allow_live_effects = false;
+    let mut allow_unverified = false;
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--diff" {
+            diff = true;
+            i += 1;
+        } else if a == "--allow-live-effects" {
+            allow_live_effects = true;
+            i += 1;
+        } else if a == "--allow-unverified-model" {
+            allow_unverified = true;
+            i += 1;
+        } else if a == "--at" {
+            // N (process-wide consume ordinal — only meaningful
+            // for a single consumer) or consumer:N (stable across
+            // multi-consumer runs).
+            match args.get(i + 1) {
+                Some(v)
+                    if v.parse::<u64>().map(|n| n > 0).unwrap_or(false)
+                        || v.split_once(':').is_some_and(|(c, n)| {
+                            c.parse::<u64>().is_ok()
+                                && n.parse::<u64>()
+                                    .map(|n| n > 0)
+                                    .unwrap_or(false)
+                        }) =>
+                {
+                    at = Some(v.clone());
+                    i += 2;
+                }
+                _ => {
+                    eprintln!(
+                        "hale replay: --at takes N or consumer:N                          (positive)"
+                    );
+                    return ExitCode::from(2);
+                }
+            }
+        } else if a.starts_with('-') {
+            eprintln!("hale replay: unknown flag `{}`", a);
+            return ExitCode::from(2);
+        } else if rec_arg.is_none() {
+            rec_arg = Some(PathBuf::from(a));
+            i += 1;
+        } else if prog.is_none() {
+            prog = Some(PathBuf::from(a));
+            i += 1;
+        } else {
+            eprintln!("hale replay: unexpected extra argument `{}`", a);
+            return ExitCode::from(2);
+        }
+    }
+    let (rec_path, prog) = match (rec_arg, prog) {
+        (Some(r), Some(p)) => (r, p),
+        _ => {
+            eprintln!(
+                "usage: hale replay <recording> <program.hl> \
+                 [--diff] [--at <n> | --at <consumer-id>:<ordinal>] \
+                 [--allow-live-effects] [--allow-unverified-model]"
+            );
+            return ExitCode::from(2);
+        }
+    };
+
+    let rec = match replay::parse(&rec_path) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("hale replay: {}", e);
+            return ExitCode::from(1);
+        }
+    };
+    if !rec.clean {
+        eprintln!(
+            "hale replay: `{}` has no clean-finalize trailer — the \
+             recording is truncated and a partial history replays \
+             as a silent divergence; re-record",
+            rec_path.display()
+        );
+        return ExitCode::from(1);
+    }
+
+    if !prog.is_file() {
+        eprintln!(
+            "hale replay: `{}` is not a file (directory seeds are \
+             not replayable yet)",
+            prog.display()
+        );
+        return ExitCode::from(1);
+    }
+    // Same compile pipeline as `hale run` (parse → check → model
+    // hash), so a recording is admitted against exactly what runs.
+    let (program, renames, sources, file_bases, _ctx) =
+        match parse_with_imports(&prog) {
+            Ok(x) => x,
+            Err(errors) => {
+                for (path, d, src) in &errors {
+                    eprintln!("{}:", path.display());
+                    eprintln!("  {}", d.render(src));
+                }
+                return ExitCode::from(1);
+            }
+        };
+    let mut bundle_programs: BTreeMap<String, &Program> = BTreeMap::new();
+    bundle_programs.insert(prog.display().to_string(), &program);
+    let mut bundle = hale_types::Bundle::new(bundle_programs);
+    bundle.import_renames = renames.clone();
+    let diags = hale_types::check_bundle_opts(&bundle, false);
+    if !diags.is_empty() {
+        for d in &diags {
+            eprintln!("{}", render_located(d, &file_bases, &sources));
+        }
+        if diags.iter().any(|d| d.is_error()) {
+            return ExitCode::from(1);
+        }
+    }
+    let model_hash = hale_types::topology::model_shape_hash(&bundle);
+    let base_options = hale_codegen::BuildOptions::default();
+    let options_fp = format!(
+        "target={:?};cpu={:?};dev={};debug={}",
+        base_options.target,
+        base_options.target_cpu,
+        base_options.dev_profile,
+        base_options.debug.is_some()
+    );
+    let digest = exec_digest(&sources, &prog, &options_fp);
+
+    // Ordered BEFORE identity admission: this refusal is inherent
+    // to the PROGRAM, so it must not be masked by a
+    // recording-mismatch message (and module-gate canaries can
+    // assert it with any recording).
+    // Safe by default (review finding 3, both rounds): re-execution
+    // repeats the program's real side effects. The gate consumes
+    // the TYPED inferred rows, and it must fail CLOSED on the two
+    // paths the first version failed open on: `unclassified`
+    // ("may do anything") and a `publish` whose subject is bound to
+    // an external transport (the send is generated deployment
+    // machinery, invisible in user-level effects). Coarse by class
+    // granularity — over-refusing is the safe direction;
+    // per-primitive replay classes are the staged refinement.
+    if !allow_live_effects {
+        let programs: Vec<&Program> =
+            bundle.programs.values().copied().collect();
+        let rows =
+            hale_types::effects::effect_manifest_with_inference(&programs);
+        let mut residue = std::collections::BTreeSet::new();
+        for row in &rows {
+            for class in &row.inferred {
+                if class == "syscall"
+                    || class == "ffi"
+                    || class == "unclassified"
+                {
+                    residue.insert(class.clone());
+                }
+            }
+        }
+        // External transport bindings: any `bindings { }` block
+        // makes publishes (and listener startup) touch the real
+        // world during re-execution.
+        // Modules nest top declarations arbitrarily deep (round 3,
+        // finding 2) — walk them, or a module-contained binding
+        // fails open.
+        fn scan_bindings(items: &[hale_syntax::ast::TopDecl]) -> bool {
+            items.iter().any(|item| match item {
+                hale_syntax::ast::TopDecl::Locus(l) => {
+                    l.members.iter().any(|m| {
+                        matches!(
+                            m,
+                            hale_syntax::ast::LocusMember::Bindings(_)
+                        )
+                    })
+                }
+                hale_syntax::ast::TopDecl::Module(md) => {
+                    scan_bindings(&md.items)
+                }
+                _ => false,
+            })
+        }
+        let has_bindings =
+            bundle.programs.values().any(|p| scan_bindings(&p.items));
+        if has_bindings {
+            residue.insert("external-bindings".to_string());
+        }
+        if !residue.is_empty() {
+            eprintln!(
+                "hale replay: this program can reach the live world \
+                 during re-execution ({{{}}}) — publishes to bound \
+                 topics send real traffic, unclassified calls may \
+                 do anything, and syscall/ffi writes repeat. \
+                 Refusing by default; pass --allow-live-effects if \
+                 you accept that",
+                residue.into_iter().collect::<Vec<_>>().join(", ")
+            );
+            return ExitCode::from(1);
+        }
+    }
+
+    // Admission, strongest check first (review finding 2):
+    // exec_digest is framed-SHA-256 build-input identity;
+    // shape_hash alone is only structural compatibility and admits
+    // behaviorally different bodies.
+    if rec.exec_digest != [0; 4] && rec.exec_digest != digest {
+        eprintln!(
+            "hale replay: `{}` was recorded from different build \
+             inputs (recorded exec digest {:016x}…, this compile \
+             is {:016x}…) — a structurally compatible model is not \
+             the same executable; re-record, or accept behavioral \
+             divergence explicitly with --allow-unverified-model",
+            rec_path.display(),
+            rec.exec_digest[0],
+            digest[0]
+        );
+        if !allow_unverified {
+            return ExitCode::from(1);
+        }
+    }
+    if rec.model_hash != 0 && rec.model_hash != model_hash {
+        eprintln!(
+            "hale replay: `{}` was recorded from a different model \
+             (recorded shape_hash {:016x}, this program is {:016x}) \
+             — refusing to misreplay; re-record against this \
+             program",
+            rec_path.display(),
+            rec.model_hash,
+            model_hash
+        );
+        return ExitCode::from(1);
+    }
+    if (rec.exec_digest == [0; 4] || rec.model_hash == 0)
+        && !allow_unverified
+    {
+        eprintln!(
+            "hale replay: `{}` carries no execution identity \
+             (unstamped build) — exact replay cannot be admitted. \
+             Pass --allow-unverified-model to proceed anyway",
+            rec_path.display()
+        );
+        return ExitCode::from(1);
+    }
+
+    if rec.env_redacted {
+        eprintln!(
+            "hale replay: this recording withholds env VALUES \
+             (default policy; record with LOTUS_OBS_RECORD_ENV=full \
+             to include them) — env reads will replay as named \
+             withheld divergences"
+        );
+    }
+    let rec_abs = rec_path
+        .canonicalize()
+        .unwrap_or_else(|_| rec_path.clone());
+
+    let mut bin = std::env::temp_dir();
+    let mut h = DefaultHasher::new();
+    h.write_usize(program.items.len());
+    h.write_u32(std::process::id());
+    bin.push(format!("hale_replay_{:016x}", h.finish()));
+    let options = hale_codegen::BuildOptions {
+        model_hash: Some(model_hash),
+        exec_digest: Some(digest),
+        ..Default::default()
+    };
+    if let Err(e) = hale_codegen::build_executable_with_options(
+        &program, &bin, &renames, &options,
+    ) {
+        eprintln!("build error: {:?}", e);
+        return ExitCode::from(1);
+    }
+
+    let verify_path = if diff {
+        let mut v = std::env::temp_dir();
+        v.push(format!(
+            "hale_replay_verify_{}_{:016x}.halerec",
+            std::process::id(),
+            model_hash
+        ));
+        let _ = std::fs::remove_file(&v);
+        Some(v)
+    } else {
+        None
+    };
+
+    let mut status_path = std::env::temp_dir();
+    status_path.push(format!(
+        "hale_replay_status_{}_{:016x}",
+        std::process::id(),
+        model_hash
+    ));
+    let _ = std::fs::remove_file(&status_path);
+    // Pre-create 0600 so the child's fopen("w") inherits restrictive
+    // permissions rather than racing a predictable /tmp name.
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&status_path);
+    }
+    let mut cmd = std::process::Command::new(&bin);
+    cmd.env("LOTUS_REPLAY", &rec_abs);
+    cmd.env("LOTUS_REPLAY_STATUS", &status_path);
+    // Round 3 (artifact trust): the CHILD reads the same file
+    // OBJECT the CLI validated — the fd is inherited (dup2'd to a
+    // fixed number post-fork), so there is no path re-resolution
+    // window between the two validations. The runtime still
+    // revalidates fully and snapshots the bytes into anonymous
+    // memory before serving.
+    {
+        use std::os::unix::io::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        match std::fs::File::open(&rec_abs) {
+            Ok(f) => {
+                let raw = f.as_raw_fd();
+                const REPLAY_FD: i32 = 973;
+                cmd.env("LOTUS_REPLAY_FD", REPLAY_FD.to_string());
+                unsafe {
+                    cmd.pre_exec(move || {
+                        if libc::dup2(raw, REPLAY_FD) < 0 {
+                            return Err(
+                                std::io::Error::last_os_error(),
+                            );
+                        }
+                        Ok(())
+                    });
+                }
+                // Keep the File alive across spawn.
+                std::mem::forget(f);
+            }
+            Err(e) => {
+                eprintln!(
+                    "hale replay: could not reopen `{}` for the \
+                     child: {}",
+                    rec_abs.display(),
+                    e
+                );
+                return ExitCode::from(1);
+            }
+        }
+    }
+    if let Some(spec) = &at {
+        match spec.split_once(':') {
+            Some((c, n)) => {
+                cmd.env("LOTUS_REPLAY_AT_CONSUMER", c);
+                cmd.env("LOTUS_REPLAY_AT", n);
+            }
+            None => {
+                cmd.env("LOTUS_REPLAY_AT", spec);
+            }
+        }
+    }
+    if let Some(v) = &verify_path {
+        cmd.env("LOTUS_OBS_RECORD", v);
+        // The verification recording must apply the SAME env policy
+        // the original did, or a full-env recording diffs against a
+        // redacted one and reports a spurious withheld divergence.
+        if !rec.env_redacted {
+            cmd.env("LOTUS_OBS_RECORD_ENV", "full");
+        }
+    }
+    let status = cmd.status();
+    let _ = std::fs::remove_file(&bin);
+    let code = match status {
+        Ok(s) => s.code().unwrap_or(1).clamp(0, 255) as u8,
+        Err(e) => {
+            eprintln!("could not execute compiled program: {}", e);
+            if let Some(v) = &verify_path {
+                let _ = std::fs::remove_file(v);
+            }
+            return ExitCode::from(1);
+        }
+    };
+
+    // The runtime's machine-readable verdict (review finding 6:
+    // success must come from the verdict, not from the absence of
+    // one comparator mismatch).
+    let runtime_divergences: u64 = std::fs::read_to_string(&status_path)
+        .ok()
+        .map(|body| {
+            body.lines()
+                .filter_map(|l| l.split_once('='))
+                .filter(|(k, _)| *k != "consumes")
+                .filter_map(|(_, v)| v.trim().parse::<u64>().ok())
+                .sum()
+        })
+        .unwrap_or_else(|| {
+            eprintln!(
+                "hale replay: no runtime verdict was written — \
+                 treating as divergent"
+            );
+            1
+        });
+    let _ = std::fs::remove_file(&status_path);
+
+    if let Some(v) = &verify_path {
+        if runtime_divergences > 0 {
+            eprintln!(
+                "replay DIVERGED: {} runtime divergences (see the \
+                 summary above)",
+                runtime_divergences
+            );
+            let _ = std::fs::remove_file(v);
+            return ExitCode::from(1);
+        }
+        let result = match replay::parse(v) {
+            Ok(vr) => match replay::diff(&rec, &vr) {
+                None => {
+                    let consumes: usize = rec
+                        .consume_streams
+                        .iter()
+                        .map(|(_, s)| s.len())
+                        .sum();
+                    println!(
+                        "replay matches the recording: {} consumes \
+                         across {} consumers; canonical payloads \
+                         identical, raw ABI payload sizes matched \
+                         ({} ring records, {} journal reads)",
+                        consumes,
+                        rec.consume_streams.len(),
+                        rec.ring_records,
+                        rec.journal.len()
+                    );
+                    ExitCode::from(code)
+                }
+                Some(msg) => {
+                    eprintln!("replay DIVERGED: {}", msg);
+                    ExitCode::from(1)
+                }
+            },
+            Err(e) => {
+                eprintln!(
+                    "hale replay: verification recording unreadable: {}",
+                    e
+                );
+                ExitCode::from(1)
+            }
+        };
+        let _ = std::fs::remove_file(v);
+        return result;
+    }
+    ExitCode::from(code)
+}
+
 fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
     // Both single-file and directory targets resolve cross-seed
     // imports and thread the per-build path-rename table into
@@ -4877,7 +5409,18 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
         // P26: stamp the model identity of the bundle just checked.
         let model_hash =
             hale_types::topology::model_shape_hash(&bundle);
-        return compile_and_exec(&program, &renames, user_args, model_hash);
+        let base_options = hale_codegen::BuildOptions::default();
+        let options_fp = format!(
+            "target={:?};cpu={:?};dev={};debug={}",
+            base_options.target,
+            base_options.target_cpu,
+            base_options.dev_profile,
+            base_options.debug.is_some()
+        );
+        let digest = exec_digest(&sources, target, &options_fp);
+        return compile_and_exec(
+            &program, &renames, user_args, model_hash, digest,
+        );
     }
 
     let files = match collect_ap_files(target) {
@@ -4998,7 +5541,16 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
     }
     // P26: stamp the model identity of the bundle just checked.
     let model_hash = hale_types::topology::model_shape_hash(&bundle);
-    compile_and_exec(&program, &renames, user_args, model_hash)
+    let base_options = hale_codegen::BuildOptions::default();
+    let options_fp = format!(
+        "target={:?};cpu={:?};dev={};debug={}",
+        base_options.target,
+        base_options.target_cpu,
+        base_options.dev_profile,
+        base_options.debug.is_some()
+    );
+    let digest = exec_digest(&path_sources, target, &options_fp);
+    compile_and_exec(&program, &renames, user_args, model_hash, digest)
 }
 
 fn run_build(target: &Path) -> ExitCode {

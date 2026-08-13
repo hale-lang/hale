@@ -5982,6 +5982,13 @@ typedef struct lotus_bus_cell {
      * nothing to destroy (non-wire cell, or self_ptr was NULL and
      * the deserialize fell back to the global arena). */
     void  *payload_region;
+    /* GH #296 Phase 2: the publish's deterministic recording
+     * identity (consumer_id:8 << 36 | per-publisher-thread seq:36),
+     * stamped from the g_bus_pending_rec_pub TLS by every cell
+     * builder. 0 = unidentified (not recording, or a structural
+     * run/create cell). Consumed by the drain paths' consume
+     * stamp and by replay's order enforcement. */
+    uint64_t rec_pub_id;
     /* 16-byte aligned. The inline buffer holds a verbatim copy of a
      * bus payload struct, which may carry an i128 / Decimal (align-16)
      * field. A subscriber handler reads such a field with an aligned
@@ -6037,6 +6044,14 @@ typedef struct lotus_bus_queue {
  * to exactly the one post call, with no signature change on the
  * three hot post entry points. NULL for every other caller. */
 static __thread void *g_bus_pending_wire_deser = NULL;
+
+/* GH #296 Phase 2: TLS side-channel feeding
+ * lotus_bus_cell_t.rec_pub_id, exactly the wire-deser pattern
+ * above — set by a fanout for the duration of its post calls
+ * (every target of one publish shares the publish's identity),
+ * cleared at fanout exit. 0 (the overwhelming default: not
+ * recording, or a structural cell) stamps 0 = unidentified. */
+static __thread uint64_t g_bus_pending_rec_pub = 0;
 
 /* Materialize a wire cell on its OWNER thread: deserialize the wire
  * payload into the subscriber's arena and replace the cell payload
@@ -6164,15 +6179,222 @@ static void bus_inline_drain_one(lotus_bus_queue_t *q);
  * WEAK like the probes; every guard tests a probe SYMBOL first, so
  * a TU-alone build short-circuits before touching this. */
 extern int lotus_obs_live __attribute__((weak));
-void lotus_obs_bus_publish(const char *subject, void *publisher_self,
-                           uint64_t payload_bytes)
+/* GH #296: recording mode (LOTUS_OBS_RECORD). Process-constant like
+ * lotus_obs_live, and gated behind it at every site, so the unset
+ * default stays one predictable branch. */
+extern int lotus_obs_recording __attribute__((weak));
+void lotus_obs_record_consume(void *subscriber_self, uint64_t pub_id)
+    __attribute__((weak));
+uint64_t lotus_obs_record_publish_payload(const char *subject,
+                                          const void *payload,
+                                          uint64_t size,
+                                          int raw_struct)
+    __attribute__((weak));
+void lotus_obs_record_enqueue(uint64_t pub_id, void *subscriber_self)
+    __attribute__((weak));
+void lotus_obs_note_consumer(uint64_t id) __attribute__((weak));
+void lotus_obs_journal_i64(uint32_t jkind, const void *args,
+                           uint64_t args_len, int64_t v)
+    __attribute__((weak));
+void lotus_obs_journal_bytes(uint32_t jkind, const void *args,
+                             uint64_t args_len, const void *p,
+                             uint64_t n)
+    __attribute__((weak));
+/* Journal call identity is the EXACT encoded argument bytes —
+ * replay memcmps them, so a changed env name, arg index, rand
+ * bound, or read length is the first NAMED divergence, never a
+ * silently substituted value (review round 2: the 32-bit hashes
+ * this replaces folded adjacent integers — hash(0) == hash(1)). */
+/* GH #296 Phase 3: replay serving (LOTUS_REPLAY). serve_* return 1
+ * and fill out when the journal has this thread's next value for
+ * jkind; 0 = journal exhausted or absent → the caller falls back
+ * to the live read and the miss is counted as a divergence
+ * (replay degrades, never refuses). serve_str returns a pointer
+ * into the loaded recording (stable for process life) or NULL. */
+extern int lotus_replay_active __attribute__((weak));
+int lotus_replay_serve_i64(uint32_t jkind, const void *args,
+                           uint64_t args_len, int64_t *out)
+    __attribute__((weak));
+int lotus_replay_expected_consume(uint64_t *out_msg,
+                                  uint32_t *out_locus)
+    __attribute__((weak));
+uint64_t lotus_obs_pub_inst_id(void *self) __attribute__((weak));
+void lotus_replay_note_consume(void) __attribute__((weak));
+void lotus_replay_note_unexpected(void) __attribute__((weak));
+const void *lotus_replay_serve_blob(uint32_t jkind, const void *args,
+                                    uint64_t args_len,
+                                    uint64_t want_size,
+                                    uint64_t *out_n)
+    __attribute__((weak));
+
+/* journal kinds — MUST match lotus_obs.c's JK_* table. */
+#define LOTUS_JK_TIME_NOW 1u
+#define LOTUS_JK_TIME_MONO_NS 2u
+#define LOTUS_JK_RAND_NEXT_INT 3u
+#define LOTUS_JK_OS_GETRANDOM 4u
+#define LOTUS_JK_ENV_VAR 5u
+#define LOTUS_JK_ENV_VAR_EXISTS 6u
+#define LOTUS_JK_ENV_ARG 7u
+#define LOTUS_JK_ENV_ARGS_COUNT 8u
+
+/* One branch on the default path (both flags weak process-constant
+ * ints), mirroring the probe discipline. */
+static inline int lotus_journal_on(void) {
+    return lotus_obs_journal_i64 && lotus_obs_live && lotus_obs_recording;
+}
+static inline int lotus_replay_on(void) {
+    return lotus_replay_serve_i64 && lotus_replay_active;
+}
+uint64_t lotus_obs_bus_publish(const char *subject,
+                               void *publisher_self,
+                               uint64_t payload_bytes)
     __attribute__((weak));
 void lotus_obs_bus_deliver(const char *subject, void *subscriber_self,
-                           uint64_t payload_bytes)
+                           uint64_t payload_bytes, uint64_t seq_token)
     __attribute__((weak));
 int64_t lotus_obs_binding_register(const char *subject,
                                    int64_t transport_kind)
     __attribute__((weak));
+
+/* GH #296 Phase 1: stamp the CONSUMPTION of a queued delivery, on
+ * the consuming thread, right before its handler runs. Recording
+ * mode only. Every dequeue-driven dispatch path calls this (main
+ * queue, coop pool, mailbox, async coro start); the synchronous
+ * direct flavors deliberately do not — their handler runs at the
+ * BUS_DELIVER position on the same ring, so the deliver record IS
+ * the consumption point. Pairing: per queue, k-th consume = k-th
+ * queued delivery (single consumer thread, FIFO). */
+static inline void lotus_bus_note_consume(void *subscriber_self,
+                                          uint64_t pub_id) {
+    if (lotus_obs_record_consume && lotus_obs_live &&
+        lotus_obs_recording) {
+        lotus_obs_record_consume(subscriber_self, pub_id);
+    }
+    if (lotus_replay_note_consume && lotus_replay_active) {
+        lotus_replay_note_consume();
+    }
+}
+
+/* GH #296 Phase 4: per-consumer order enforcement under replay.
+ *
+ * Each consumer thread holds back dequeued cells that are not its
+ * recorded next delivery (TLS pending buffer — one consumer per
+ * queue, so TLS is exactly the right scope) and releases them in
+ * recorded order. Enforcement DEGRADES on divergence: if the
+ * expected delivery hasn't arrived within the hold timeout (the
+ * re-executed run genuinely diverged, or the expected publish never
+ * happened), the oldest held cell is released and the miss is
+ * counted — a replay reports what it couldn't reproduce, it never
+ * deadlocks. Cells with pub_id 0 (structural: run starts, create
+ * cells) match a recorded 0 slot.
+ *
+ * All of this is dead code unless lotus_replay_active. */
+#define LOTUS_REPLAY_HOLD_NS 1000000000LL /* 1s */
+static __thread lotus_bus_cell_t *t_rp_pending = NULL;
+static __thread size_t t_rp_pending_len = 0, t_rp_pending_cap = 0;
+static __thread int64_t t_rp_hold_since = 0;
+static _Atomic uint64_t g_rp_order_divergences = 0;
+uint64_t lotus_replay_order_divergences(void) {
+    return atomic_load_explicit(&g_rp_order_divergences,
+                                memory_order_relaxed);
+}
+
+static int64_t lotus_rp_now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+}
+
+static void lotus_rp_pending_push(const lotus_bus_cell_t *cell) {
+    if (t_rp_pending_len == t_rp_pending_cap) {
+        size_t ncap = t_rp_pending_cap ? t_rp_pending_cap * 2 : 16;
+        lotus_bus_cell_t *g = realloc(
+            t_rp_pending, ncap * sizeof(lotus_bus_cell_t));
+        if (!g) {
+            fprintf(stderr,
+                    "hale replay: hold-buffer allocation failed\n");
+            fflush(NULL);
+            _exit(65);
+        }
+        t_rp_pending = g;
+        t_rp_pending_cap = ncap;
+    }
+    t_rp_pending[t_rp_pending_len++] = *cell;
+    if (t_rp_pending_len == 1) t_rp_hold_since = lotus_rp_now_ns();
+}
+
+static int lotus_rp_pending_take(uint64_t want_msg, uint32_t want_locus,
+                                 lotus_bus_cell_t *out) {
+    for (size_t i = 0; i < t_rp_pending_len; i++) {
+        if (t_rp_pending[i].rec_pub_id == want_msg &&
+            (uint32_t)(lotus_obs_pub_inst_id
+                           ? lotus_obs_pub_inst_id(
+                                 t_rp_pending[i].self_ptr)
+                           : 0) == want_locus) {
+            *out = t_rp_pending[i];
+            memmove(&t_rp_pending[i], &t_rp_pending[i + 1],
+                    (t_rp_pending_len - i - 1) * sizeof(lotus_bus_cell_t));
+            t_rp_pending_len--;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Gate a just-dequeued cell against the recorded order. The
+ * delivery identity is (target locus, msg_id) — two subscribers of
+ * one publish on one consumer are distinguishable (review round 2,
+ * finding 5). Returns 1 = dispatch *cell now (possibly swapped for
+ * a held one), 0 = cell was parked; dequeue more (or wait). */
+static int lotus_replay_gate_cell(lotus_bus_cell_t *cell) {
+    uint64_t exp_msg;
+    uint32_t exp_locus;
+    if (!lotus_replay_expected_consume ||
+        !lotus_replay_expected_consume(&exp_msg, &exp_locus)) {
+        /* Recorded stream exhausted (or consumer unknown to the
+         * recording): dispatch freely, but an IDENTIFIED delivery
+         * here is history the recording does not contain — count
+         * it (round 3 follow-up: silence here let plain replay
+         * under-report). Structural cells stay uncounted. */
+        if (cell->rec_pub_id && lotus_replay_note_unexpected) {
+            lotus_replay_note_unexpected();
+        }
+        return 1;
+    }
+    uint32_t cell_locus = (uint32_t)(
+        lotus_obs_pub_inst_id ? lotus_obs_pub_inst_id(cell->self_ptr)
+                              : 0);
+    if (cell->rec_pub_id == exp_msg && cell_locus == exp_locus)
+        return 1;
+    lotus_rp_pending_push(cell);
+    if (lotus_rp_pending_take(exp_msg, exp_locus, cell)) return 1;
+    return 0;
+}
+
+/* Nothing new in the queue and cells are held: either keep waiting
+ * (returns 0) or — past the hold timeout — degrade by releasing the
+ * oldest held cell into *out (returns 1). */
+static int lotus_replay_gate_idle(lotus_bus_cell_t *out) {
+    if (t_rp_pending_len == 0) return 0;
+    uint64_t exp_msg;
+    uint32_t exp_locus;
+    if (lotus_replay_expected_consume &&
+        lotus_replay_expected_consume(&exp_msg, &exp_locus) &&
+        lotus_rp_pending_take(exp_msg, exp_locus, out)) {
+        return 1;
+    }
+    if (lotus_rp_now_ns() - t_rp_hold_since < LOTUS_REPLAY_HOLD_NS) {
+        return 0;
+    }
+    atomic_fetch_add_explicit(&g_rp_order_divergences, 1,
+                              memory_order_relaxed);
+    *out = t_rp_pending[0];
+    memmove(&t_rp_pending[0], &t_rp_pending[1],
+            (t_rp_pending_len - 1) * sizeof(lotus_bus_cell_t));
+    t_rp_pending_len--;
+    t_rp_hold_since = lotus_rp_now_ns();
+    return 1;
+}
 /* iris handoff-4 P14: subject leads so the probe can resolve the
  * record's topic id (the consumer join key); binding_id drives the
  * per-binding counter line only. */
@@ -6348,6 +6570,7 @@ static void bus_queue_enqueue_inner(lotus_bus_queue_t *q,
     slot->payload_size = payload_size;
     slot->payload_heap = heap_buf;
     slot->deserialize  = g_bus_pending_wire_deser;
+    slot->rec_pub_id   = g_bus_pending_rec_pub;
     if (!heap_buf && payload_size > 0 && payload_src) {
         memcpy(slot->payload_inline, payload_src, payload_size);
     }
@@ -6440,6 +6663,7 @@ static void bus_inline_drain_one(lotus_bus_queue_t *q) {
      * survive a handler-driven q->cells realloc. NULL on this
      * single-threaded inline path (no wire cells); kept uniform. */
     void  *region_ptr   = cell->payload_region;
+    uint64_t rec_pub_id  = cell->rec_pub_id;
     unsigned char stack_payload[LOTUS_PAYLOAD_INLINE]
         __attribute__((aligned(16)));
     void *payload_ptr = NULL;
@@ -6450,6 +6674,7 @@ static void bus_inline_drain_one(lotus_bus_queue_t *q) {
         payload_ptr = stack_payload;
     }
     g_bus_inline_drain_depth++;
+    lotus_bus_note_consume(handler_self, rec_pub_id);
     ((lotus_handler_fn)handler_fn)(handler_self, payload_ptr);
     g_bus_inline_drain_depth--;
     if (heap_ptr) free(heap_ptr);
@@ -6521,11 +6746,55 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
         for (;;) {
             pthread_mutex_lock(&q->lock);
             if (q->head >= q->tail) {
-                q->head = 0;
-                q->tail = 0;
-                g_bus_drain_active = 0;
+                /* GH #296 Phase 4: queue empty but cells held out
+                 * of recorded order — release what matches (or,
+                 * past the hold timeout, degrade). The queue lock
+                 * is NOT held while dispatching. */
                 pthread_mutex_unlock(&q->lock);
-                return;
+                if (lotus_replay_note_consume && lotus_replay_active
+                    && t_rp_pending_len > 0) {
+                    lotus_bus_cell_t held;
+                    if (lotus_replay_gate_idle(&held)) {
+                        if (held.handler) {
+                            lotus_bus_note_dispatched(held.handler,
+                                                      held.self_ptr);
+                        }
+                        if (held.handler &&
+                            lotus_bus_cell_materialize(&held)) {
+                            void *pp = NULL;
+                            if (held.payload_size > 0) {
+                                pp = held.payload_heap
+                                    ? held.payload_heap
+                                    : (void *)held.payload_inline;
+                            }
+                            lotus_bus_note_consume(held.self_ptr,
+                                                   held.rec_pub_id);
+                            ((lotus_handler_fn)held.handler)(
+                                held.self_ptr, pp);
+                            if (held.payload_heap)
+                                free(held.payload_heap);
+                            if (held.payload_region)
+                                lotus_arena_destroy(
+                                    held.payload_region);
+                        }
+                        continue;
+                    }
+                    /* Held cells but no releasable one: the drain
+                     * returns (this is a slice on the owner thread;
+                     * the next slice retries). */
+                }
+                pthread_mutex_lock(&q->lock);
+                if (q->head >= q->tail) {
+                    if (t_rp_pending_len == 0) {
+                        q->head = 0;
+                        q->tail = 0;
+                    }
+                    g_bus_drain_active = 0;
+                    pthread_mutex_unlock(&q->lock);
+                    return;
+                }
+                pthread_mutex_unlock(&q->lock);
+                continue;
             }
             lotus_bus_cell_t cell_copy = q->cells[q->head++];
             pthread_mutex_unlock(&q->lock);
@@ -6534,6 +6803,10 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
              * into the subscriber's arena here, on the queue's
              * owner thread (bug 3). */
             if (!cell_copy.handler) continue; /* GH #255 tombstone */
+            if (lotus_replay_note_consume && lotus_replay_active &&
+                !lotus_replay_gate_cell(&cell_copy)) {
+                continue; /* held; released in recorded order */
+            }
             lotus_bus_note_dispatched(cell_copy.handler,
                                       cell_copy.self_ptr);
             if (!lotus_bus_cell_materialize(&cell_copy)) continue;
@@ -6543,6 +6816,8 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
                     ? cell_copy.payload_heap
                     : (void *)cell_copy.payload_inline;
             }
+            lotus_bus_note_consume(cell_copy.self_ptr,
+                                   cell_copy.rec_pub_id);
             ((lotus_handler_fn)cell_copy.handler)(
                 cell_copy.self_ptr, payload_ptr);
             if (cell_copy.payload_heap) free(cell_copy.payload_heap);
@@ -6578,6 +6853,7 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
              * NULL on this single-threaded path (no wire cells), but
              * kept uniform with the concurrent drain. */
             void *region_ptr = cell->payload_region;
+            uint64_t rec_pub_id = cell->rec_pub_id;
             void *payload_ptr = NULL;
             if (heap_ptr) {
                 /* Heap pointer is stable across handler-driven
@@ -6592,6 +6868,7 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
                 memcpy(stack_payload, cell->payload_inline, psize);
                 payload_ptr = stack_payload;
             }
+            lotus_bus_note_consume(handler_self, rec_pub_id);
             ((lotus_handler_fn)handler_fn)(handler_self, payload_ptr);
             if (heap_ptr) free(heap_ptr);
             if (region_ptr) lotus_arena_destroy((lotus_arena_t *)region_ptr);
@@ -6868,6 +7145,7 @@ static void lotus_mailbox_dispatch_cell(lotus_bus_cell_t *cell) {
             ? cell->payload_heap
             : (void *)cell->payload_inline;
     }
+    lotus_bus_note_consume(cell->self_ptr, cell->rec_pub_id);
     ((lotus_handler_fn)cell->handler)(cell->self_ptr, payload_ptr);
     if (cell->payload_heap) free(cell->payload_heap);
     if (cell->payload_region) lotus_arena_destroy(cell->payload_region);
@@ -6912,6 +7190,7 @@ void lotus_mailbox_post(lotus_mailbox_t *mb,
     cell.payload_size = payload_size;
     cell.payload_heap = heap_buf;
     cell.deserialize  = g_bus_pending_wire_deser;
+    cell.rec_pub_id   = g_bus_pending_rec_pub;
     if (!heap_buf && payload_size > 0 && payload_src) {
         memcpy(cell.payload_inline, payload_src, payload_size);
     }
@@ -7001,10 +7280,12 @@ void lotus_mailbox_post(lotus_mailbox_t *mb,
 int lotus_mailbox_drain_one(lotus_mailbox_t *mb) {
     if (!mb) return 0;
     lotus_bus_cell_t cell;
+    int replaying = lotus_replay_note_consume && lotus_replay_active;
     for (;;) {
         /* Ring first (lock-free), then the consumer-local overflow list. */
         if (lotus_mpsc_ring_try_dequeue(&mb->ring, &cell)) {
             lotus_mailbox_wake_producers(mb);   /* freed a slot (GH #125) */
+            if (replaying && !lotus_replay_gate_cell(&cell)) continue;
             lotus_mailbox_dispatch_cell(&cell);
             return 1;
         }
@@ -7014,8 +7295,20 @@ int lotus_mailbox_drain_one(lotus_mailbox_t *mb) {
             if (!mb->overflow_head) mb->overflow_tail = NULL;
             cell = node->cell;
             free(node);
+            if (replaying && !lotus_replay_gate_cell(&cell)) continue;
             lotus_mailbox_dispatch_cell(&cell);
             return 1;
+        }
+        /* GH #296 Phase 4: cells held out of order (see the coop
+         * drain's twin branch). */
+        if (replaying && t_rp_pending_len > 0) {
+            if (lotus_replay_gate_idle(&cell)) {
+                lotus_mailbox_dispatch_cell(&cell);
+                return 1;
+            }
+            struct timespec ts = {0, 200 * 1000};
+            nanosleep(&ts, NULL);
+            continue;
         }
 
         /* Both empty — park under the mutex with the seq_cst handshake. */
@@ -7032,6 +7325,7 @@ int lotus_mailbox_drain_one(lotus_mailbox_t *mb) {
             atomic_store_explicit(&mb->parked, 0, memory_order_seq_cst);
             pthread_mutex_unlock(&mb->lock);
             lotus_mailbox_wake_producers(mb);
+            if (replaying && !lotus_replay_gate_cell(&cell)) continue;
             lotus_mailbox_dispatch_cell(&cell);
             return 1;
         }
@@ -7223,6 +7517,9 @@ typedef struct lotus_coro {
     void             *handler;
     void             *self_ptr;
     void             *payload_ptr;
+    /* GH #296: the delivery's recording identity, copied from the
+     * cell at coro creation; consumed by the thunk's consume stamp. */
+    uint64_t          rec_pub_id;
     /* Per-coro snapshot of the `lotus_current_caller_arena` TLS
      * (downstream handoff 2026-07-15, item 3). That TLS decides where
      * stdlib primitives (recv result blobs, str builders, …) allocate,
@@ -7464,6 +7761,7 @@ static void lotus_coop_pool_dispatch_cell(lotus_bus_cell_t *cell) {
             ? cell->payload_heap
             : (void *)cell->payload_inline;
     }
+    lotus_bus_note_consume(cell->self_ptr, cell->rec_pub_id);
     ((lotus_handler_fn)cell->handler)(cell->self_ptr, payload_ptr);
     if (cell->payload_heap) free(cell->payload_heap);
     if (cell->payload_region) lotus_arena_destroy(cell->payload_region);
@@ -7508,6 +7806,7 @@ void lotus_coop_pool_post(lotus_coop_pool_t *p,
     cell.payload_size = payload_size;
     cell.payload_heap = heap_buf;
     cell.deserialize  = g_bus_pending_wire_deser;
+    cell.rec_pub_id   = g_bus_pending_rec_pub;
     if (!heap_buf && payload_size > 0 && payload_src) {
         memcpy(cell.payload_inline, payload_src, payload_size);
     }
@@ -7612,10 +7911,12 @@ void lotus_coop_pool_post(lotus_coop_pool_t *p,
  * after shutdown-empty. */
 static int lotus_coop_pool_drain_one(lotus_coop_pool_t *p) {
     lotus_bus_cell_t cell;
+    int replaying = lotus_replay_note_consume && lotus_replay_active;
     for (;;) {
         /* Ring first (lock-free), then the consumer-local overflow list. */
         if (lotus_mpsc_ring_try_dequeue(&p->ring, &cell)) {
             lotus_coop_pool_wake_producers(p);  /* freed a slot */
+            if (replaying && !lotus_replay_gate_cell(&cell)) continue;
             lotus_coop_pool_dispatch_cell(&cell);
             return 1;
         }
@@ -7625,8 +7926,24 @@ static int lotus_coop_pool_drain_one(lotus_coop_pool_t *p) {
             if (!p->overflow_head) p->overflow_tail = NULL;
             cell = node->cell;
             free(node);
+            if (replaying && !lotus_replay_gate_cell(&cell)) continue;
             lotus_coop_pool_dispatch_cell(&cell);
             return 1;
+        }
+        /* GH #296 Phase 4: queue empty but cells held out of order —
+         * release the expected one if it surfaced, keep a bounded
+         * wait otherwise (never park with held cells: the expected
+         * delivery may only exist in the pending buffer). */
+        if (replaying && t_rp_pending_len > 0) {
+            if (lotus_replay_gate_idle(&cell)) {
+                lotus_coop_pool_dispatch_cell(&cell);
+                return 1;
+            }
+            struct timespec ts = {0, 200 * 1000};
+            nanosleep(&ts, NULL);
+            if (atomic_load_explicit(&p->shutdown, memory_order_relaxed))
+                continue; /* drain held cells via the timeout path */
+            continue;
         }
 
         /* Both empty — park under the mutex with the seq_cst handshake.
@@ -7642,6 +7959,7 @@ static int lotus_coop_pool_drain_one(lotus_coop_pool_t *p) {
             atomic_store_explicit(&p->parked, 0, memory_order_seq_cst);
             pthread_mutex_unlock(&p->lock);
             lotus_coop_pool_wake_producers(p);
+            if (replaying && !lotus_replay_gate_cell(&cell)) continue;
             lotus_coop_pool_dispatch_cell(&cell);
             return 1;
         }
@@ -7696,6 +8014,18 @@ lotus_coop_pool_t *lotus_coop_pool_current(void) {
 int lotus_coop_pool_enable_async_io(lotus_coop_pool_t *p) {
     if (!p) return -1;
     if (p->async_io_enabled) return 0;
+    /* GH #296: the async drain multiplexes coros whose park/resume
+     * interleaving is epoll-driven — per-consumer order enforcement
+     * for it is a later milestone. Refuse loudly rather than replay
+     * wrongly. */
+    if (lotus_replay_note_consume && lotus_replay_active) {
+        fprintf(stderr,
+                "hale replay: `where async_io` pools are not "
+                "replayable yet (GH #296 Phase 4 covers classic "
+                "pools, mailboxes, and the main queue)\n");
+        fflush(NULL);
+        _exit(65);
+    }
     int fd = epoll_create1(EPOLL_CLOEXEC);
     if (fd < 0) {
         return -1;
@@ -7741,6 +8071,7 @@ static void lotus_coro_thunk(void) {
         }
         return;
     }
+    lotus_bus_note_consume(c->self_ptr, c->rec_pub_id);
     ((lotus_handler_fn)c->handler)(c->self_ptr, c->payload_ptr);
     c->done = 1;
     /* uc_link would handle this implicitly, but being explicit is
@@ -8155,10 +8486,13 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
      * leak shape becomes observable. */
     lotus_coro_t *c =
         lotus_coro_alloc(p, cell_copy.handler, cell_copy.self_ptr, payload_ptr);
+    if (c) c->rec_pub_id = cell_copy.rec_pub_id;
     if (!c) {
         /* OOM on coro alloc — fall back to direct invocation. The
          * handler runs on the worker's stack; if it parks via
          * `park_on_fd`, the call returns -1 (no current coro). */
+        lotus_bus_note_consume(cell_copy.self_ptr,
+                               cell_copy.rec_pub_id);
         ((lotus_handler_fn)cell_copy.handler)(
             cell_copy.self_ptr, payload_ptr);
         if (cell_copy.payload_heap) free(cell_copy.payload_heap);
@@ -8216,6 +8550,17 @@ int64_t lotus_time_sleep_park_try(int64_t ns) {
 static void *lotus_coop_pool_worker(void *arg) {
     lotus_coop_pool_t *p = (lotus_coop_pool_t *)arg;
     g_current_pool_tls = p;
+    /* GH #296: stable consumer identity — 16 + registration index
+     * (registration order is program structure, so it survives a
+     * re-run; the pthread id does not). */
+    if (lotus_obs_note_consumer) {
+        for (size_t i = 0; i < g_coop_pool_count; i++) {
+            if (g_coop_pools[i] == p) {
+                lotus_obs_note_consumer(16 + (uint64_t)i);
+                break;
+            }
+        }
+    }
     /* F.35 Slice 1: async_io vs classic-blocking branch. The flag
      * is acquire-loaded once per outer loop iteration so a late
      * enable (called between worker start and first drain) takes
@@ -9014,7 +9359,15 @@ static int lotus_bus_log_drop_enabled(void);
 static inline int lotus_bus_post_entry(lotus_bus_entry_t *e,
                                        lotus_bus_queue_t *queue,
                                        const void *payload,
-                                       size_t size) {
+                                       size_t size,
+                                       uint64_t rec_pub) {
+    /* GH #296: the TLS is scoped to exactly this post (the wire-deser
+     * pattern) so a structural cell posted outside any fanout can
+     * never inherit a stale publish identity. Stores are guarded so
+     * the identity-off path (rec_pub == 0, the default) adds no TLS
+     * writes here — the residual default-path cost is one TLS read
+     * per cell build. */
+    if (rec_pub) g_bus_pending_rec_pub = rec_pub;
     if (e->mailbox) {
         lotus_mailbox_post(e->mailbox, e->handler, e->self_ptr,
                            payload, size);
@@ -9025,7 +9378,12 @@ static inline int lotus_bus_post_entry(lotus_bus_entry_t *e,
         lotus_bus_queue_enqueue(queue, e->handler, e->self_ptr,
                                 payload, size);
     } else {
+        if (rec_pub) g_bus_pending_rec_pub = 0;
         return 0;
+    }
+    if (rec_pub) g_bus_pending_rec_pub = 0;
+    if (rec_pub && lotus_obs_record_enqueue && lotus_obs_live) {
+        lotus_obs_record_enqueue(rec_pub, e->self_ptr);
     }
     return 1;
 }
@@ -9039,8 +9397,15 @@ void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
      * matched target below (enqueue-time — see lotus_obs.c v0
      * scope notes). Publisher attribution rides the caller-arena
      * TLS owner when available; v0 passes NULL (unattributed). */
+    uint64_t rec_pub = 0;
+    if (lotus_obs_record_publish_payload && lotus_obs_live &&
+        (lotus_obs_recording || lotus_replay_active)) {
+        rec_pub = lotus_obs_record_publish_payload(
+            subject, payload, (uint64_t)payload_size, 1);
+    }
+    uint64_t obs_tok = 0;
     if (lotus_obs_bus_publish && lotus_obs_live) {
-        lotus_obs_bus_publish(subject, NULL, (uint64_t)payload_size);
+        obs_tok = lotus_obs_bus_publish(subject, NULL, (uint64_t)payload_size);
     }
     size_t delivered = 0;
     for (size_t i = 0; i < g_bus_count; i++) {
@@ -9058,10 +9423,10 @@ void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
          * filter — bypassing the routing-key contract. */
         if (e->key_filter_kind != 0) continue;
         delivered += (size_t)lotus_bus_post_entry(
-            e, queue, payload, payload_size);
+            e, queue, payload, payload_size, rec_pub);
         if (lotus_obs_bus_deliver && lotus_obs_live) {
             lotus_obs_bus_deliver(subject, e->self_ptr,
-                                  (uint64_t)payload_size);
+                                  (uint64_t)payload_size, obs_tok);
         }
     }
     if (delivered == 0 && lotus_bus_log_drop_enabled()) {
@@ -9156,8 +9521,15 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
      * feeds — recorded zero BUS_PUBLISH and a zero published counter.
      * Emit here (publisher-only path; never a reader re-dispatch
      * target) exactly as the non-keyed local fanout does. */
+    uint64_t rec_pub = 0;
+    if (lotus_obs_record_publish_payload && lotus_obs_live &&
+        (lotus_obs_recording || lotus_replay_active)) {
+        rec_pub = lotus_obs_record_publish_payload(
+            subject, payload, (uint64_t)payload_size, 1);
+    }
+    uint64_t obs_tok = 0;
     if (lotus_obs_bus_publish && lotus_obs_live) {
-        lotus_obs_bus_publish(subject, NULL, (uint64_t)payload_size);
+        obs_tok = lotus_obs_bus_publish(subject, NULL, (uint64_t)payload_size);
     }
     int matched_specific = 0;
     size_t specific_subs_on_subject = 0;
@@ -9181,13 +9553,13 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
             continue;
         }
         (void)lotus_bus_post_entry(e, queue,
-            payload, payload_size);
+            payload, payload_size, rec_pub);
         /* iris handoff-4 P15: BUS_DELIVER per matched keyed target
          * (sibling of the non-keyed local_dispatch probe — the keyed
          * flavor had none, so keyed deliveries never counted). */
         if (lotus_obs_bus_deliver && lotus_obs_live) {
             lotus_obs_bus_deliver(subject, e->self_ptr,
-                                  (uint64_t)payload_size);
+                                  (uint64_t)payload_size, obs_tok);
         }
     }
     /* Phase 3 v0.2 hook: when no specific-key match fired AND
@@ -9201,10 +9573,11 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
             if (!e->subject) continue;
             if (!lotus_subject_match(e->subject, subject)) continue;
             if (e->key_filter_kind != 2) continue;
-            (void)lotus_bus_post_entry(e, queue, payload, payload_size);
+            (void)lotus_bus_post_entry(e, queue, payload, payload_size,
+                                       rec_pub);
             if (lotus_obs_bus_deliver && lotus_obs_live) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
-                                      (uint64_t)payload_size);
+                                      (uint64_t)payload_size, obs_tok);
             }
         }
         if (lotus_bus_log_unmatched_enabled()) {
@@ -13301,25 +13674,82 @@ void lotus_io_init(void) {
 }
 
 int lotus_env_args_count(void) {
+    if (lotus_replay_on()) {
+        int64_t v;
+        if (lotus_replay_serve_i64(LOTUS_JK_ENV_ARGS_COUNT, NULL, 0,
+                                   &v)) {
+            if (lotus_journal_on())
+                lotus_obs_journal_i64(LOTUS_JK_ENV_ARGS_COUNT, NULL,
+                                      0, v);
+            return (int)v;
+        }
+    }
+    if (lotus_journal_on())
+        lotus_obs_journal_i64(LOTUS_JK_ENV_ARGS_COUNT, NULL, 0,
+                              (int64_t)g_argc);
     return g_argc;
 }
 
 const char *lotus_env_arg(int i) {
-    if (i < 0 || i >= g_argc || !g_argv || !g_argv[i]) {
-        return g_empty_str;
+    int64_t arg_ix = (int64_t)i;
+    if (lotus_replay_on()) {
+        uint64_t n = 0;
+        const void *v = lotus_replay_serve_blob(
+            LOTUS_JK_ENV_ARG, &arg_ix, 8, 0, &n);
+        if (v && n > 0) {
+            if (lotus_journal_on())
+                lotus_obs_journal_bytes(LOTUS_JK_ENV_ARG, &arg_ix, 8,
+                                        v, n);
+            return (const char *)v; /* NUL included */
+        }
     }
-    return g_argv[i];
+    const char *r = (i < 0 || i >= g_argc || !g_argv || !g_argv[i])
+        ? g_empty_str
+        : g_argv[i];
+    if (lotus_journal_on())
+        lotus_obs_journal_bytes(LOTUS_JK_ENV_ARG, &arg_ix, 8,
+                                r, strlen(r) + 1);
+    return r;
 }
 
 const char *lotus_env_var(const char *name) {
     if (!name) return g_empty_str;
+    if (lotus_replay_on()) {
+        uint64_t n = 0;
+        const void *v = lotus_replay_serve_blob(
+            LOTUS_JK_ENV_VAR, name, strlen(name) + 1, 0, &n);
+        if (v && n > 0) {
+            if (lotus_journal_on())
+                lotus_obs_journal_bytes(LOTUS_JK_ENV_VAR, name,
+                                        strlen(name) + 1, v, n);
+            return (const char *)v; /* NUL included */
+        }
+    }
     const char *v = getenv(name);
-    return v ? v : g_empty_str;
+    const char *r = v ? v : g_empty_str;
+    if (lotus_journal_on())
+        lotus_obs_journal_bytes(LOTUS_JK_ENV_VAR, name,
+                                strlen(name) + 1, r, strlen(r) + 1);
+    return r;
 }
 
 int lotus_env_var_exists(const char *name) {
     if (!name) return 0;
-    return getenv(name) != NULL ? 1 : 0;
+    if (lotus_replay_on()) {
+        int64_t v;
+        if (lotus_replay_serve_i64(LOTUS_JK_ENV_VAR_EXISTS, name,
+                                   strlen(name) + 1, &v)) {
+            if (lotus_journal_on())
+                lotus_obs_journal_i64(LOTUS_JK_ENV_VAR_EXISTS, name,
+                                      strlen(name) + 1, v);
+            return (int)v;
+        }
+    }
+    int r = getenv(name) != NULL ? 1 : 0;
+    if (lotus_journal_on())
+        lotus_obs_journal_i64(LOTUS_JK_ENV_VAR_EXISTS, name,
+                              strlen(name) + 1, (int64_t)r);
+    return r;
 }
 
 /*
@@ -15218,8 +15648,15 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
     /* iris handoff-4 P15: keyed publish probe (sibling of the
      * non-keyed dispatch_wire path). This is the serialize-present
      * keyed local fanout — publisher-only, so no redispatch guard. */
+    uint64_t rec_pub = 0;
+    if (lotus_obs_record_publish_payload && lotus_obs_live &&
+        (lotus_obs_recording || lotus_replay_active)) {
+        rec_pub = lotus_obs_record_publish_payload(
+            subject, wire_bytes, (uint64_t)wire_size, 0);
+    }
+    uint64_t obs_tok = 0;
     if (lotus_obs_bus_publish && lotus_obs_live) {
-        lotus_obs_bus_publish(subject, NULL, (uint64_t)wire_size);
+        obs_tok = lotus_obs_bus_publish(subject, NULL, (uint64_t)wire_size);
     }
     char *struct_buf = g_tls_bus_struct_buf;   /* off the coro stack */
     lotus_arena_t *prev_tls = lotus_current_caller_arena;
@@ -15246,11 +15683,11 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
         if (!lotus_bus_target_owner_is_current(e, g_bus_queue_for_remote)) {
             g_bus_pending_wire_deser = (void *)e->deserialize;
             (void)lotus_bus_post_entry(e, g_bus_queue_for_remote,
-                wire_bytes, wire_size);
+                wire_bytes, wire_size, rec_pub);
             g_bus_pending_wire_deser = NULL;
             if (lotus_obs_bus_deliver && lotus_obs_live) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
-                                      (uint64_t)wire_size);
+                                      (uint64_t)wire_size, obs_tok);
             }
             continue;
         }
@@ -15260,6 +15697,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
         ssize_t struct_size = e->deserialize(
             wire_bytes, wire_size, struct_buf, LOTUS_PAYLOAD_MAX);
         if (struct_size <= 0) continue;
+        g_bus_pending_rec_pub = rec_pub;
         if (e->mailbox) {
             lotus_mailbox_post(
                 e->mailbox, e->handler, e->self_ptr,
@@ -15278,10 +15716,14 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
                 g_bus_queue_for_remote, e->handler, e->self_ptr,
                 struct_buf, (size_t)struct_size);
         }
+        g_bus_pending_rec_pub = 0;
+        if (rec_pub && lotus_obs_record_enqueue && lotus_obs_live) {
+            lotus_obs_record_enqueue(rec_pub, e->self_ptr);
+        }
         /* iris handoff-4 P15: BUS_DELIVER per matched keyed target. */
         if (lotus_obs_bus_deliver && lotus_obs_live) {
             lotus_obs_bus_deliver(subject, e->self_ptr,
-                                  (uint64_t)wire_size);
+                                  (uint64_t)wire_size, obs_tok);
         }
     }
     if (!matched_specific) {
@@ -15296,11 +15738,11 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
             if (!lotus_bus_target_owner_is_current(e, g_bus_queue_for_remote)) {
                 g_bus_pending_wire_deser = (void *)e->deserialize;
                 (void)lotus_bus_post_entry(e, g_bus_queue_for_remote,
-                    wire_bytes, wire_size);
+                    wire_bytes, wire_size, rec_pub);
                 g_bus_pending_wire_deser = NULL;
                 if (lotus_obs_bus_deliver && lotus_obs_live) {
                     lotus_obs_bus_deliver(subject, e->self_ptr,
-                                          (uint64_t)wire_size);
+                                          (uint64_t)wire_size, obs_tok);
                 }
                 continue;
             }
@@ -15310,6 +15752,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
             ssize_t struct_size = e->deserialize(
                 wire_bytes, wire_size, struct_buf, LOTUS_PAYLOAD_MAX);
             if (struct_size <= 0) continue;
+            g_bus_pending_rec_pub = rec_pub;
             if (e->mailbox) {
                 lotus_mailbox_post(
                     e->mailbox, e->handler, e->self_ptr,
@@ -15323,9 +15766,13 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
                     g_bus_queue_for_remote, e->handler, e->self_ptr,
                     struct_buf, (size_t)struct_size);
             }
+            g_bus_pending_rec_pub = 0;
+            if (rec_pub && lotus_obs_record_enqueue && lotus_obs_live) {
+                lotus_obs_record_enqueue(rec_pub, e->self_ptr);
+            }
             if (lotus_obs_bus_deliver && lotus_obs_live) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
-                                      (uint64_t)wire_size);
+                                      (uint64_t)wire_size, obs_tok);
             }
         }
         if (lotus_bus_log_unmatched_enabled()) {
@@ -15348,8 +15795,15 @@ void lotus_bus_dispatch_wire(const char *subject,
     if (!subject || !wire_bytes || wire_size == 0) return;
     /* iris P4: BUS_PUBLISH for the cross-thread wire path (the
      * deliver probe rides the per-subscriber fanout below). */
+    uint64_t rec_pub = 0;
+    if (lotus_obs_record_publish_payload && lotus_obs_live &&
+        (lotus_obs_recording || lotus_replay_active)) {
+        rec_pub = lotus_obs_record_publish_payload(
+            subject, wire_bytes, (uint64_t)wire_size, 0);
+    }
+    uint64_t obs_tok = 0;
     if (lotus_obs_bus_publish && lotus_obs_live) {
-        lotus_obs_bus_publish(subject, NULL, (uint64_t)wire_size);
+        obs_tok = lotus_obs_bus_publish(subject, NULL, (uint64_t)wire_size);
     }
     /* Phase-3 Task 9 (2026-05-20): per-subscriber arena routing.
      * Previously this deserialize-once-then-fanout shape parked
@@ -15404,14 +15858,14 @@ void lotus_bus_dispatch_wire(const char *subject,
         if (!lotus_bus_target_owner_is_current(e, g_bus_queue_for_remote)) {
             g_bus_pending_wire_deser = (void *)e->deserialize;
             (void)lotus_bus_post_entry(e, g_bus_queue_for_remote,
-                wire_bytes, wire_size);
+                wire_bytes, wire_size, rec_pub);
             g_bus_pending_wire_deser = NULL;
             /* handoff-8 P21: BUS_DELIVER per matched target — the
              * plain wire flavor was the one fanout without it (its
              * keyed sibling gained the probe in handoff-4). */
             if (lotus_obs_bus_deliver && lotus_obs_live) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
-                                      (uint64_t)wire_size);
+                                      (uint64_t)wire_size, obs_tok);
             }
             delivered++;
             continue;
@@ -15435,12 +15889,13 @@ void lotus_bus_dispatch_wire(const char *subject,
             continue;
         }
         if (lotus_bus_post_entry(e, g_bus_queue_for_remote,
-                                 struct_buf, (size_t)struct_size)) {
+                                 struct_buf, (size_t)struct_size,
+                                 rec_pub)) {
             /* handoff-8 P21: BUS_DELIVER per matched target (see the
              * cross-thread branch above). */
             if (lotus_obs_bus_deliver && lotus_obs_live) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
-                                      (uint64_t)wire_size);
+                                      (uint64_t)wire_size, obs_tok);
             }
             delivered++;
         } else if (lotus_bus_log_drop_enabled()) {
@@ -15503,9 +15958,16 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
     if (flat) {
         /* Verbatim local fanout (mirror lotus_bus_local_dispatch). */
         size_t delivered = 0;
+        uint64_t rec_pub = 0;
+        if (lotus_obs_record_publish_payload && lotus_obs_live &&
+            (lotus_obs_recording || lotus_replay_active)) {
+            rec_pub = lotus_obs_record_publish_payload(
+                subject, struct_payload, (uint64_t)struct_size, 1);
+        }
         /* iris P4 (mirrors the dynamic path). */
+        uint64_t obs_tok = 0;
         if (lotus_obs_bus_publish && lotus_obs_live) {
-            lotus_obs_bus_publish(subject, NULL, (uint64_t)struct_size);
+            obs_tok = lotus_obs_bus_publish(subject, NULL, (uint64_t)struct_size);
         }
         if (b) {
             for (size_t k = 0; k < b->count; k++) {
@@ -15514,19 +15976,26 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                 if (e->key_filter_kind != 0) continue;
                 if (lotus_obs_bus_deliver && lotus_obs_live) {
                     lotus_obs_bus_deliver(subject, e->self_ptr,
-                                          (uint64_t)struct_size);
+                                          (uint64_t)struct_size, obs_tok);
                 }
                 /* R4 exception: the build #3 no-pinned fast path
                  * takes the no-acquire-load _st enqueue; everything
                  * else routes through lotus_bus_post_entry. */
                 if (no_pinned && !e->mailbox && !e->coop_pool && queue) {
+                    g_bus_pending_rec_pub = rec_pub;
                     lotus_bus_queue_enqueue_st(queue, e->handler,
                                                e->self_ptr, struct_payload,
                                                (size_t)struct_size);
+                    g_bus_pending_rec_pub = 0;
+                    if (rec_pub && lotus_obs_record_enqueue &&
+                        lotus_obs_live) {
+                        lotus_obs_record_enqueue(rec_pub, e->self_ptr);
+                    }
                     delivered++;
                 } else {
                     delivered += (size_t)lotus_bus_post_entry(
-                        e, queue, struct_payload, (size_t)struct_size);
+                        e, queue, struct_payload, (size_t)struct_size,
+                        rec_pub);
                 }
             }
         }
@@ -15568,8 +16037,15 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
      * Counted before the serialize so a serialize FAILURE still
      * records the publish that was attempted; the drop is visible
      * separately via LOTUS_BUS_LOG_DROP. */
+    uint64_t rec_pub = 0;
+    if (lotus_obs_record_publish_payload && lotus_obs_live &&
+        (lotus_obs_recording || lotus_replay_active)) {
+        rec_pub = lotus_obs_record_publish_payload(
+            subject, struct_payload, (uint64_t)struct_size, 1);
+    }
+    uint64_t obs_tok = 0;
     if (lotus_obs_bus_publish && lotus_obs_live) {
-        lotus_obs_bus_publish(subject, NULL, (uint64_t)struct_size);
+        obs_tok = lotus_obs_bus_publish(subject, NULL, (uint64_t)struct_size);
     }
 
     /* Non-flat: serialize once, then deserialize into each subscriber's
@@ -15590,13 +16066,20 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                  * takes the no-acquire-load _st enqueue; everything
                  * else routes through lotus_bus_post_entry. */
                 if (no_pinned && !e->mailbox && !e->coop_pool && queue) {
+                    g_bus_pending_rec_pub = rec_pub;
                     lotus_bus_queue_enqueue_st(queue, e->handler,
                                                e->self_ptr, struct_payload,
                                                (size_t)struct_size);
+                    g_bus_pending_rec_pub = 0;
+                    if (rec_pub && lotus_obs_record_enqueue &&
+                        lotus_obs_live) {
+                        lotus_obs_record_enqueue(rec_pub, e->self_ptr);
+                    }
                     delivered++;
                 } else {
                     delivered += (size_t)lotus_bus_post_entry(
-                        e, queue, struct_payload, (size_t)struct_size);
+                        e, queue, struct_payload, (size_t)struct_size,
+                        rec_pub);
                 }
             }
         }
@@ -15639,7 +16122,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
              * gap. Both halves of the same omission. */
             if (lotus_obs_bus_deliver && lotus_obs_live) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
-                                      (uint64_t)struct_size);
+                                      (uint64_t)struct_size, obs_tok);
             }
             /* Bug 3: cross-thread target — post WIRE bytes +
              * deserialize fn; the owner materializes at drain. */
@@ -15647,7 +16130,8 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                                                    g_bus_queue_for_remote)) {
                 g_bus_pending_wire_deser = (void *)e->deserialize;
                 (void)lotus_bus_post_entry(e, g_bus_queue_for_remote,
-                                           wire_buf, (size_t)wire_size);
+                                           wire_buf, (size_t)wire_size,
+                                           rec_pub);
                 g_bus_pending_wire_deser = NULL;
                 delivered++;
                 continue;
@@ -15662,13 +16146,20 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
              * rest routes through lotus_bus_post_entry. */
             if (no_pinned && !e->mailbox && !e->coop_pool
                 && g_bus_queue_for_remote) {
+                g_bus_pending_rec_pub = rec_pub;
                 lotus_bus_queue_enqueue_st(g_bus_queue_for_remote,
                                            e->handler, e->self_ptr,
                                            struct_buf, (size_t)ssz);
+                g_bus_pending_rec_pub = 0;
+                if (rec_pub && lotus_obs_record_enqueue &&
+                    lotus_obs_live) {
+                    lotus_obs_record_enqueue(rec_pub, e->self_ptr);
+                }
                 delivered++;
             } else {
                 delivered += (size_t)lotus_bus_post_entry(
-                    e, g_bus_queue_for_remote, struct_buf, (size_t)ssz);
+                    e, g_bus_queue_for_remote, struct_buf, (size_t)ssz,
+                    rec_pub);
             }
         }
     }
@@ -15727,8 +16218,9 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
      * subject on this path was invisible to observation (no topic
      * registration, no counters, no BUS records). Publish once,
      * deliver per matched target, exactly as the other flavors. */
+    uint64_t obs_tok = 0;
     if (lotus_obs_bus_publish && lotus_obs_live) {
-        lotus_obs_bus_publish(subject, NULL, size);
+        obs_tok = lotus_obs_bus_publish(subject, NULL, size);
     }
     if (b) {
         for (size_t k = 0; k < b->count; k++) {
@@ -15751,7 +16243,7 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
                 ((lotus_handler_fn)e->handler)(e->self_ptr, (void *)payload);
             }
             if (lotus_obs_bus_deliver && lotus_obs_live) {
-                lotus_obs_bus_deliver(subject, e->self_ptr, size);
+                lotus_obs_bus_deliver(subject, e->self_ptr, size, obs_tok);
             }
             delivered++;
         }
@@ -16058,6 +16550,21 @@ void *lotus_os_getrandom(int64_t n) {
     if (n <= 0) {
         return lotus_caller_or_global_bytes_create(0);
     }
+    if (lotus_replay_on()) {
+        uint64_t jn = 0;
+        const void *jv = lotus_replay_serve_blob(
+            LOTUS_JK_OS_GETRANDOM, &n, 8, (uint64_t)n, &jn);
+        if (jv && jn == (uint64_t)n) {
+            void *jblob = lotus_caller_or_global_bytes_create(n);
+            if (jblob) {
+                memcpy(lotus_bytes_data(jblob), jv, (size_t)n);
+                if (lotus_journal_on())
+                    lotus_obs_journal_bytes(LOTUS_JK_OS_GETRANDOM,
+                                            &n, 8, jv, jn);
+                return jblob;
+            }
+        }
+    }
     if (n > LOTUS_GETRANDOM_PER_CALL_MAX) {
         errno = EINVAL;
         return NULL;
@@ -16092,6 +16599,9 @@ void *lotus_os_getrandom(int64_t n) {
         return NULL;
     }
     if (left == 0) {
+        if (lotus_journal_on())
+            lotus_obs_journal_bytes(LOTUS_JK_OS_GETRANDOM, &n, 8,
+                                    body, (uint64_t)n);
         return blob;
     }
 #endif
@@ -16117,6 +16627,9 @@ void *lotus_os_getrandom(int64_t n) {
         return NULL;
     }
     close(fd);
+    if (lotus_journal_on())
+        lotus_obs_journal_bytes(LOTUS_JK_OS_GETRANDOM, &n, 8, body,
+                                (uint64_t)n);
     return blob;
 }
 
@@ -18236,6 +18749,20 @@ void lotus_rand_seed_from_time(void) {
 }
 
 int64_t lotus_rand_next_int(int64_t max) {
+    /* max <= 0 returns 0 WITHOUT touching the journal on either
+     * side — the recording never journaled it (review finding 7's
+     * concrete bug: serving here consumed the next call's value). */
+    if (max <= 0) return 0;
+    if (lotus_replay_on()) {
+        int64_t v;
+        if (lotus_replay_serve_i64(LOTUS_JK_RAND_NEXT_INT, &max, 8,
+                                   &v)) {
+            if (lotus_journal_on())
+                lotus_obs_journal_i64(LOTUS_JK_RAND_NEXT_INT, &max,
+                                      8, v);
+            return v;
+        }
+    }
     pthread_mutex_lock(&g_rand_mutex);
     if (g_rand_state == 0) {
         /* Auto-seed on first use so callers that forget the
@@ -18254,8 +18781,10 @@ int64_t lotus_rand_next_int(int64_t max) {
     g_rand_state = x;
     uint64_t mixed = x * 0x2545F4914F6CDD1DULL;
     pthread_mutex_unlock(&g_rand_mutex);
-    if (max <= 0) return 0;
-    return (int64_t)(mixed % (uint64_t)max);
+    int64_t r = (int64_t)(mixed % (uint64_t)max);
+    if (lotus_journal_on())
+        lotus_obs_journal_i64(LOTUS_JK_RAND_NEXT_INT, &max, 8, r);
+    return r;
 }
 
 /*
@@ -18267,9 +18796,44 @@ int64_t lotus_rand_next_int(int64_t max) {
  * `std::time::now_ns` if a consumer surfaces it.
  */
 int64_t lotus_time_now_seconds(void) {
+    if (lotus_replay_on()) {
+        int64_t v;
+        if (lotus_replay_serve_i64(LOTUS_JK_TIME_NOW, NULL, 0, &v)) {
+            if (lotus_journal_on())
+                lotus_obs_journal_i64(LOTUS_JK_TIME_NOW, NULL, 0, v);
+            return v;
+        }
+    }
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
-    return (int64_t)ts.tv_sec;
+    int64_t r = (int64_t)ts.tv_sec;
+    if (lotus_journal_on())
+        lotus_obs_journal_i64(LOTUS_JK_TIME_NOW, NULL, 0, r);
+    return r;
+}
+
+/* GH #296 Phase 3: `std::time::monotonic` / `monotonic_ns` used to
+ * lower as inline clock_gettime IR — no symbol, so nothing a
+ * journal or a replay could interpose (the same rationale that
+ * made `now` a named primitive). Codegen now routes both through
+ * this. */
+int64_t lotus_time_monotonic_ns(void) {
+    if (lotus_replay_on()) {
+        int64_t v;
+        if (lotus_replay_serve_i64(LOTUS_JK_TIME_MONO_NS, NULL, 0,
+                                   &v)) {
+            if (lotus_journal_on())
+                lotus_obs_journal_i64(LOTUS_JK_TIME_MONO_NS, NULL, 0,
+                                      v);
+            return v;
+        }
+    }
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    int64_t r = (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+    if (lotus_journal_on())
+        lotus_obs_journal_i64(LOTUS_JK_TIME_MONO_NS, NULL, 0, r);
+    return r;
 }
 
 /*
