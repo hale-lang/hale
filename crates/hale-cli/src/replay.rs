@@ -266,7 +266,21 @@ pub fn parse(path: &Path) -> Result<Recording, String> {
 
     // Resolve public bus records into per-consumer, subject-aligned
     // streams. A ring with no consumer mapping keys under 0.
+    //
+    // Sequence NORMALIZATION (round 3 CI finding): the per-topic
+    // seq counter is shared by every publisher of a subject, so the
+    // raw values assigned to two RACING publishers depend on their
+    // interleaving — which is exactly the cross-consumer ordering
+    // the recording never promises. Within one consumer's stream,
+    // what is deterministic is the publish's rank, and what pairing
+    // needs is only that a publish and its delivers share an
+    // identity. So each raw seq maps to its first-appearance
+    // ordinal within (consumer, subject): stable across runs,
+    // pairing-preserving within the stream, and a genuinely
+    // different publish count or order still diverges.
     let mut public: Vec<(u64, Vec<PubEvent>)> = Vec::new();
+    let mut ranks: BTreeMap<(u64, u32, u64), u64> = BTreeMap::new();
+    let mut next_rank: BTreeMap<(u64, u32), u64> = BTreeMap::new();
     for (ring, w0, w1) in public_raw {
         let ekind = ((w0 >> 20) & 0x1F) as u32;
         if ekind != EK_BUS_PUBLISH && ekind != EK_BUS_DELIVER {
@@ -274,6 +288,13 @@ pub fn parse(path: &Path) -> Result<Recording, String> {
         }
         let id = (w0 & 0xFFFFF) as u32;
         let cid = pub_ring_consumer.get(&ring).copied().unwrap_or(0);
+        let raw_seq = w1 & 0xFFF_FFFF_FFFF;
+        let rank = *ranks.entry((cid, id, raw_seq)).or_insert_with(|| {
+            let n = next_rank.entry((cid, id)).or_insert(0);
+            let r = *n;
+            *n += 1;
+            r
+        });
         let ev = PubEvent {
             subject: topic_names
                 .get(&id)
@@ -281,7 +302,7 @@ pub fn parse(path: &Path) -> Result<Recording, String> {
                 .unwrap_or_else(|| format!("<topic-{}>", id)),
             ekind,
             locus: ((w1 >> 44) & 0xFFFFF) as u32,
-            seq: w1 & 0xFFF_FFFF_FFFF,
+            seq: rank,
         };
         match public.iter_mut().find(|(c, _)| *c == cid) {
             Some((_, v)) => v.push(ev),
