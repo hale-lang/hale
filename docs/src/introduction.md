@@ -3,7 +3,7 @@
 **A concurrent systems language with a GC-free runtime — typed
 message-bus concurrency, data-race-free by design.**
 
-*Say less. Spell more.*
+*Write the system, not the lore.*
 
 Most languages pick a level and live there. Python and
 JavaScript sit high — fast to write, far from the metal. Go
