@@ -990,6 +990,11 @@ uint64_t lotus_obs_record_ingress_wire(const char *subject,
   return pub_id;
 }
 
+/* A reader that captured wire bytes but then failed to deserialize
+ * them never dispatches — the pinned identity must not leak onto
+ * the thread's NEXT dispatch. */
+void lotus_obs_record_ingress_abort(void) { t_rec_forced_pub = 0; }
+
 /* Feed-mode exit report — dropped tape entries are the headline
  * fact: silence would read as "everything was fed." */
 static void rp_feed_report(void) {

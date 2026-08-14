@@ -111,6 +111,13 @@ fn pub_src(sock: &str) -> String {
             bus {{ publish Evt; }}
             bindings {{ Evt: unix("{}", role: connect); }}
             run() {{
+                // Settle before the first send: the listener binds at
+                // realize, BEFORE the subscriber's bus registration —
+                // a send in that window is silently dropped (the
+                // reader's no-deserializer path), which on a loaded
+                // CI runner starved the recorded run. Not a
+                // recording property; a boot-order one.
+                std::time::sleep(400ms);
                 Evt <- T {{ n: 7 }};
                 std::time::sleep(50ms);
                 Evt <- T {{ n: 11 }};

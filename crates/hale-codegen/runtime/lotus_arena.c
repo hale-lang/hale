@@ -6436,6 +6436,7 @@ void lotus_replay_note_inject_dropped(uint32_t topic)
     __attribute__((weak));
 void lotus_replay_note_binding_suppressed(void)
     __attribute__((weak));
+void lotus_obs_record_ingress_abort(void) __attribute__((weak));
 extern int lotus_replay_feed __attribute__((weak));
 /* iris handoff-12 P22: the per-binding backpressure cells
  * (PROTOCOL §6: 3 queue_depth gauge, 4 send_block_ns, 5 retries).
@@ -14382,7 +14383,13 @@ static void lotus_bus_unix_serve(lotus_bus_remote_entry_t *entry) {
             }
             ssize_t struct_size = deserialize(
                 wire_buf, (size_t)n, struct_buf, sizeof(struct_buf));
-            if (struct_size <= 0) continue;
+            if (struct_size <= 0) {
+                /* Captured but not dispatched: unpin the identity
+                 * so it cannot leak onto the next dispatch. */
+                if (lotus_obs_record_ingress_abort)
+                    lotus_obs_record_ingress_abort();
+                continue;
+            }
             /* iris handoff-4 P15: mark the inbound re-dispatch so the
              * BUS_PUBLISH probe at the top of local_dispatch counts it
              * as a delivery, not a publish. */
@@ -14746,6 +14753,10 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
         ssize_t struct_size = deserialize(
             wire, (size_t)n, struct_buf, sizeof(struct_buf));
         if (struct_size <= 0) {
+            /* Captured but not dispatched — unpin (see the unix
+             * reader). */
+            if (lotus_obs_record_ingress_abort)
+                lotus_obs_record_ingress_abort();
             if (lotus_bus_log_deserialize_drop_enabled()) {
                 dprintf(2,
                         "lotus_bus udp reader: drop on `%s` "
