@@ -71,7 +71,20 @@ the clock:
   never deadlock; a dry or pre-phase-6 tape hands the pool back to
   the live drain.
 
-Hardened by a review round: the artifact carries an
+Hardened by two review rounds. Round two closed the degradation
+and compatibility paths: a skipped START retires its birth ordinal
+AND its consume slot (one missing delivery no longer cascades into
+wrong resume pairings — steps naming a retired slot skip
+immediately); the dry-tape flag is set BEFORE the ready-head/held
+flushes so post-tape work is always classified; the CLI comparator
+carries the artifact's async-capability bit and skips schedule
+comparison for pre-phase-6 artifacts (matching the runtime's
+coverage note instead of contradicting it); the one-shot warning
+is atomic; the test module is Linux-gated; and the public
+`hale replay --diff` path is exercised end to end (exact match,
+mutated-step failure, and old-artifact compatibility).
+
+Round one: the artifact carries an
 async-capable header bit, the dry-tape states are named instead of
 silent (pre-phase-6 artifact → one-shot coverage note; truncated
 tape → stated coverage boundary; a finalized tape running dry

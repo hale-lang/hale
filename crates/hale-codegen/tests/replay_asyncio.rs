@@ -19,6 +19,11 @@
 //!      depend on timing; replay must reproduce the recorded
 //!      interleaving from the tape, not re-derive it from timers.
 
+// async_io is Linux-only (epoll/eventfd); the type checker rejects
+// `where async_io` on other platforms, so these integration tests
+// must not compile-and-run there (review round 2, finding 5).
+#![cfg(target_os = "linux")]
+
 use std::process::Command;
 use std::time::Instant;
 
@@ -446,6 +451,138 @@ fn readiness_resumes_follow_the_tape_not_arrival_order() {
     assert!(err.contains("0 divergences"), "stderr:\n{}", err);
 
     let _ = std::fs::remove_file(&ready);
+    let _ = std::fs::remove_file(&rec);
+    let _ = std::fs::remove_file(&bin);
+}
+
+/// Finding 1's cascade canary: a START whose cell never arrives in
+/// replay must RETIRE its birth ordinal, not hand it to the next
+/// coroutine — otherwise every later RESUME/EXPIRE pairs with the
+/// wrong coroutine and one divergence cascades. A's publisher is
+/// gated on a LIVE filesystem read (unjournaled, so replay sees the
+/// replay-time world): the flag file exists at record, and is
+/// deleted before replay — A never publishes, B must keep its own
+/// recorded identity.
+#[test]
+fn skipped_start_retires_its_ordinal_without_cascade() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let flag = format!(
+        "{}/hale-296-cascade-{}-{}.flag",
+        std::env::temp_dir().display(),
+        std::process::id(),
+        nanos
+    );
+    let src = format!(
+        r#"
+        type TA {{ n: Int = 0; }}
+        type TB {{ n: Int = 0; }}
+        locus Gate {{
+            bus {{ publish "oc.a" of type TA; }}
+            run() {{
+                let mut waited = 0;
+                while waited < 40 {{
+                    if std::io::fs::file_exists("{flag}") {{
+                        "oc.a" <- TA {{ n: 7 }};
+                        return;
+                    }}
+                    std::time::sleep(20ms);
+                    waited = waited + 1;
+                }}
+            }}
+        }}
+        locus SubA {{
+            bus {{ subscribe "oc.a" as on_a of type TA; }}
+            fn on_a(t: TA) {{
+                std::time::sleep(30ms);
+                println("a=", t.n);
+            }}
+        }}
+        locus SubB {{
+            bus {{ subscribe "oc.b" as on_b of type TB; }}
+            fn on_b(t: TB) {{
+                std::time::sleep(10ms);
+                println("b=", t.n);
+            }}
+        }}
+        main locus App {{
+            params {{
+                sa: SubA = SubA {{ }};
+                sb: SubB = SubB {{ }};
+                g:  Gate = Gate {{ }};
+            }}
+            placement {{
+                sa: cooperative(pool = io) where async_io;
+                sb: cooperative(pool = io) where async_io;
+                g:  pinned(core = 0);
+            }}
+            bus {{ publish "oc.b" of type TB; }}
+            run() {{
+                std::time::sleep(300ms);
+                "oc.b" <- TB {{ n: 42 }};
+                std::time::sleep(1500ms);
+            }}
+        }}
+        fn main() {{ App {{ }}; }}
+    "#
+    );
+    let bin = build("cascade", &src);
+    let rec = rec_path("cascade");
+
+    // Record WITH the flag present: A publishes, both handlers run.
+    std::fs::write(&flag, "on").unwrap();
+    let recorded = Command::new(&bin)
+        .env("LOTUS_OBS_RECORD", &rec)
+        .output()
+        .expect("recorded run");
+    assert!(
+        recorded.status.success(),
+        "recorded run failed: {}",
+        String::from_utf8_lossy(&recorded.stderr)
+    );
+    let recorded_stdout =
+        String::from_utf8_lossy(&recorded.stdout).into_owned();
+    assert!(
+        recorded_stdout.contains("a=7")
+            && recorded_stdout.contains("b=42"),
+        "recorded run incomplete:\n{}",
+        recorded_stdout
+    );
+
+    // Replay WITHOUT the flag: A's publish never happens. Its START
+    // slot must time out, count, and RETIRE ordinal 0 — B keeps
+    // ordinal 1 and its EXPIRE resumes the right coroutine.
+    let _ = std::fs::remove_file(&flag);
+    let replayed = Command::new(&bin)
+        .env("LOTUS_REPLAY", &rec)
+        .output()
+        .expect("replay without the flag");
+    let out = String::from_utf8_lossy(&replayed.stdout);
+    let err = String::from_utf8_lossy(&replayed.stderr);
+    assert!(
+        replayed.status.success(),
+        "degraded replay must complete; stderr:\n{}",
+        err
+    );
+    assert!(
+        out.contains("b=42"),
+        "B must still run correctly under its own identity:\n{}\n{}",
+        out,
+        err
+    );
+    assert!(
+        !out.contains("a="),
+        "A never arrived — nothing may impersonate it:\n{}",
+        out
+    );
+    assert!(
+        err.contains("divergences from the recorded history"),
+        "the skipped slot must be reported, never silent:\n{}",
+        err
+    );
+
     let _ = std::fs::remove_file(&rec);
     let _ = std::fs::remove_file(&bin);
 }

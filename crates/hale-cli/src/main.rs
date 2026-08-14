@@ -5447,6 +5447,13 @@ fn run_replay(args: &[String]) -> ExitCode {
     let _ = std::fs::remove_file(&status_path);
 
     if let Some(v) = &verify_path {
+        if !rec.async_schedule_capable {
+            eprintln!(
+                "hale replay: note — this recording predates \
+                 async-schedule support; schedule comparison is \
+                 skipped (coverage limitation, not a divergence)"
+            );
+        }
         if runtime_divergences > 0 {
             eprintln!(
                 "replay DIVERGED: {} runtime divergences (see the \

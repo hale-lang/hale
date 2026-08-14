@@ -96,6 +96,12 @@ pub struct Recording {
     /// journal streams: "byte-identical output" alone is weaker
     /// than "the asynchronous schedule matched".
     pub async_steps: Vec<(u64, Vec<(u32, u64)>)>,
+    /// Header flag bit 2 (review round 2, finding 3): whether the
+    /// RECORDING runtime knew how to record async schedules. "No
+    /// schedule was recorded" and "the recorded schedule was empty"
+    /// are different facts — the comparator must not treat an
+    /// old artifact's absence as an asserted empty schedule.
+    pub async_schedule_capable: bool,
 }
 
 pub fn parse(path: &Path) -> Result<Recording, String> {
@@ -151,6 +157,7 @@ pub fn parse_file(file: &std::fs::File, path: &Path) -> Result<Recording, String
         *part = u64_at(&buf, 56 + i * 8);
     }
     let env_redacted = u64_at(&buf, 88) & 1 != 0;
+    let async_schedule_capable = u64_at(&buf, 88) & 4 != 0;
 
     let mut end = buf.len();
     let has_trailer =
@@ -392,6 +399,7 @@ pub fn parse_file(file: &std::fs::File, path: &Path) -> Result<Recording, String
         consume_streams: consume,
         public_streams: public,
         async_steps,
+        async_schedule_capable,
     })
 }
 
@@ -481,13 +489,19 @@ pub fn diff(
     ) {
         return Some(d);
     }
-    if let Some(d) = stream_diff(
-        "async schedule step",
-        &original.async_steps,
-        &replayed.async_steps,
-        prefix_only,
-    ) {
-        return Some(d);
+    // Review round 2 (phase 6, finding 3): only compare schedules
+    // the original could have asserted. An old artifact runs async
+    // pools live — a stated coverage limitation, not a divergence —
+    // and the runtime says the same (the two must not contradict).
+    if original.async_schedule_capable {
+        if let Some(d) = stream_diff(
+            "async schedule step",
+            &original.async_steps,
+            &replayed.async_steps,
+            prefix_only,
+        ) {
+            return Some(d);
+        }
     }
 
     // Payloads, bidirectionally.

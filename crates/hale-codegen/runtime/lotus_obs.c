@@ -2716,6 +2716,21 @@ void lotus_replay_async_step_advance(void) {
   rp_consumer_t *c = rp_consumer(t_consumer_id);
   if (c && c->step_cursor < c->step_len) c->step_cursor++;
 }
+/* Review round 2 (phase 6, finding 1): a skipped START slot owns
+ * exactly one recorded consume — advance past it, or the consume
+ * expectation stays pinned on the never-arriving delivery and every
+ * later START mismatches (the cascade in consume-space). The skip
+ * is already reported as an async-schedule divergence; the entry is
+ * deliberately NOT left to double-count as unconsumed. */
+void lotus_replay_skip_consume(void) {
+  rp_consumer_t *c = rp_consumer(t_consumer_id);
+  if (c && atomic_load_explicit(&c->consume_cursor,
+                                memory_order_relaxed) <
+               c->consume_len) {
+    atomic_fetch_add_explicit(&c->consume_cursor, 1,
+                              memory_order_release);
+  }
+}
 
 void lotus_obs_record_consume(void *subscriber_self, uint64_t pub_id) {
   if (!lotus_obs_recording) return;
