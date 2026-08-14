@@ -1,0 +1,51 @@
+// GH #470 keystone POSITIVE test: the correct middleware contract —
+// `before(ctx) -> Context`, `after(ctx, resp) -> Response` — must
+// typecheck AND behave through the whole promoted Router battery:
+// stdlib literals validated for real, interface coercion at the
+// `use`/`add` call sites, hand-built Request with the new
+// version/headers/body defaults, and the onion order observable in
+// the dispatched Response. (The wrong-arity variant is pinned as a
+// compile ERROR in crates/hale-types/tests/stdlib_nominal.rs; this
+// file is the proof the tightened checker still accepts the code it
+// should.) No sockets: Router.dispatch is exercised directly.
+
+locus Stamp {
+    fn before(ctx: std::http::Context) -> std::http::Context {
+        return ctx;
+    }
+    fn after(ctx: std::http::Context, resp: std::http::Response) -> std::http::Response {
+        return std::http::Response {
+            status: resp.status,
+            body: resp.body + "+after",
+        };
+    }
+}
+
+locus Hello {
+    fn handle(ctx: std::http::Context) -> std::http::Response {
+        return std::http::Response {
+            status: 201,
+            body: "hi:" + ctx.req.path,
+        };
+    }
+}
+
+fn main() {
+    let r = std::http::Router { };
+    r.use(Stamp { });
+    r.add("GET", "/greet", Hello { });
+
+    // Request defaults (GH #470 follow-through): only what the test
+    // means — method, path, body.
+    let req = std::http::Request { method: "GET", path: "/greet", body: "" };
+    let resp = r.dispatch(req);
+
+    std::test::assert_eq_int(resp.status, 201, "handler status survives the onion");
+    std::test::assert_eq_str(resp.body, "hi:/greet+after", "before->handle->after ran in onion order");
+
+    // A miss routes to the default 404 — the not-found path is part
+    // of the same dispatch surface.
+    let missing = std::http::Request { method: "GET", path: "/nope", body: "" };
+    let notfound = r.dispatch(missing);
+    std::test::assert_eq_int(notfound.status, 404, "unrouted path lands on not_found");
+}

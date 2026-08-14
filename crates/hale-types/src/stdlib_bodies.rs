@@ -88,6 +88,13 @@ pub fn demangle_imports(
     // MANGLED name — `__StdSecretSigner::sign` — a symbol that
     // appears nowhere in the author's program. Claims witnesses hit
     // this the moment `secret_use` became findable.
+    // Only genuinely MANGLED spellings are rewritten. Some stdlib
+    // renames alias a BARE name (`ParseError`, `IoError` — the
+    // injected error types); substring-replacing those corrupts any
+    // message that legitimately contains the word ("MyParseError" →
+    // "Mystd::str::ParseError"). A `__` prefix is what makes a name
+    // unspeakable in user source, and unspeakable names are the
+    // entire reason this pass exists.
     let mut table: Vec<(&str, String)> = import_renames
         .iter()
         .map(|(segs, mangled)| (mangled.as_str(), segs.join("::")))
@@ -96,6 +103,7 @@ pub fn demangle_imports(
                 .iter()
                 .map(|(segs, mangled)| (*mangled, segs.join("::"))),
         )
+        .filter(|(mangled, _)| mangled.starts_with("__"))
         .collect();
     table.sort_by_key(|(m, _)| std::cmp::Reverse(m.len()));
     for d in diags.iter_mut() {
