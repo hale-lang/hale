@@ -1637,8 +1637,9 @@ file, private-ring entries carry the high bit in their ring field,
 so the two namespaces can never be confused.
 
 **Delivery identity (Phase 2).** Every queued delivery carries a
-deterministic `pub_id = consumer_id:12 | per-publisher-thread
-seq:32`, re-derivable by a re-executed run without global
+deterministic `pub_id = consumer_id:16 | per-publisher-thread
+seq:48` (full width — the review-round guards fail loudly rather
+than wrap), re-derivable by a re-executed run without global
 coordination. Consumer ids are stable across runs, unlike pthread
 ids: main = 1, cooperative pool workers = 16 + registration
 index, pinned locus threads = 64 + obs instance id; threads with
@@ -1767,7 +1768,13 @@ carrying its source's recorded consumer identity so a `--diff`
 verify recording aligns per-consumer streams with the original
 instead of collapsing every listener onto one injector identity.
 Fresh anonymous claims are floored above the recorded range.
-Injection is keyed by **full identity**: each tape record carries
+The snapshot IS the coverage boundary: a
+subscriber the program only creates during `run()` (spawned or
+accepted) is not visible to injection — such tape entries classify
+as `late_subscription_uncovered` (the injector join rescans the
+live registry at teardown to distinguish them from genuinely
+absent subscribers), a stated boundary rather than a silent
+`unmatched`. Injection is keyed by **full identity**: each tape record carries
 its complete subject string and the subject's canonical payload
 shape (FNV-32 alone is collision-prone and is kept only for
 reporting); a record whose shape does not match the live
@@ -1813,6 +1820,8 @@ entry, and an unfed remainder (unmatched, incompatible,
 unprocessed, start failure) **fails the run by default** —
 `--allow-unmatched-feed` is the explicit acceptance of a partial
 feed.
+
+**`--diff` (strict replay only — feed rejects it, above).**
 `--diff` records the replay (under the original's env policy) and
 compares bidirectionally: per-consumer queued consume streams
 (target locus + msg_id), per-consumer PUBLIC bus streams aligned

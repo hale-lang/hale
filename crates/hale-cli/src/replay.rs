@@ -89,9 +89,28 @@ pub struct Recording {
 }
 
 pub fn parse(path: &Path) -> Result<Recording, String> {
-    let buf = std::fs::read(path)
+    let file = std::fs::File::open(path)
+        .map_err(|e| format!("could not open `{}`: {}", path.display(), e))?;
+    parse_file(&file, path)
+}
+
+/// Parse from an ALREADY-OPEN file object (review round 2, finding
+/// 1): admission and execution must read the same object — the CLI
+/// opens the recording once, parses through this, and hands a dup
+/// of the SAME descriptor to the child. Reopening the pathname
+/// between admission and spawn is a replacement window.
+pub fn parse_file(file: &std::fs::File, path: &Path) -> Result<Recording, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = file;
+    f.seek(SeekFrom::Start(0))
+        .map_err(|e| format!("could not seek `{}`: {}", path.display(), e))?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf)
         .map_err(|e| format!("could not read `{}`: {}", path.display(), e))?;
-    if buf.len() < 112 || u64_at(&buf, 0) != REC_MAGIC {
+    // 96 = the header alone: a header-only file is the earliest
+    // valid crash prefix (review round 2, finding 3 — the old 112
+    // demanded a trailer that a crash never writes).
+    if buf.len() < 96 || u64_at(&buf, 0) != REC_MAGIC {
         return Err(format!(
             "`{}` is not a hale recording (bad magic or too small)",
             path.display()

@@ -12,9 +12,22 @@ behavior.
 
 Three deliverables close the two loudest gaps in the v0.17.0
 replay story — "a crashed run loses its recording" and "a replayed
-server talks to the real world" — hardened by a full adversarial
-review round (10 findings, all resolved; the notes below fold
-them in).
+server talks to the real world" — hardened by two full adversarial
+review rounds (10 + 8 findings, all resolved; the notes below fold
+them in). Round two closed the trust boundaries: ONE file object
+carries the recording from CLI admission into the child (no
+reopen, no path-substitution window, plus a runtime
+identity-vs-binary defense for direct invocations); the eager
+crash-identity stamp is a release/acquire COMMIT of the complete
+identity (the old cross-thread reads raced and could persist a
+half-published digest); a header-only 96-byte file — the earliest
+crash window — admits as a prefix under `--allow-truncated`; the
+feed verdict derives its unclassified remainder at report time, so
+an `std::process::exit(0)` before injection can never ride to
+success; and boot-snapshot injection names late-created
+subscribers as their own `late_subscription_uncovered` coverage
+class (a teardown-time registry rescan distinguishes them from
+genuinely absent subscribers).
 
 **Durable recording / crash-prefix recovery.** Named precisely: a
 durable flight recorder, NOT a write-ahead log — the application

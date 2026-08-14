@@ -167,6 +167,17 @@ static uint64_t g_obs_exec_digest[4] = {0, 0, 0, 0};
 void lotus_obs_exec_digest_set(uint64_t part, uint64_t v) {
   if (part < 4) g_obs_exec_digest[part] = v;
 }
+/* Review round 2, finding 2: the identity setters above are plain
+ * main-thread writes, and the recorder drain used to read them
+ * directly — an unsynchronized race whose XOR change-key also
+ * ignored digest words 2-3 (a crash could persist a HALF-published
+ * digest). The publication protocol is now explicit: the generated
+ * prelude calls lotus_obs_eager_init AFTER every setter, which
+ * copies the COMPLETE identity here and release-publishes the
+ * committed flag; the drain acquire-loads the flag and stamps only
+ * this immutable committed copy, exactly once. */
+static uint64_t g_obs_ident_committed_vals[6];
+static _Atomic int g_obs_ident_committed = 0;
 
 /* iris handoff-2 P10: publisher attribution. Codegen notes the
  * publishing locus's self in this TLS right before lowering a
@@ -554,6 +565,7 @@ int lotus_replay_feed = 0;
 static char g_replay_path[512];
 static const uint8_t *g_rp_base; /* mmap'd recording */
 static int g_rp_truncated = 0; /* accepted without a finalize trailer */
+static uint64_t g_rp_hdr_model = 0;
 static uint64_t g_rp_dropped_tail = 0;
 /* phase 5 (truncated prefix): recorded-history-exhausted events on
  * an accepted truncated tape are the unknown post-crash suffix,
@@ -637,6 +649,11 @@ static uint32_t g_rp_ingress_len = 0, g_rp_ingress_cap = 0;
 static _Atomic uint64_t g_rp_injected = 0;
 static _Atomic uint64_t g_rp_ing_rejected = 0;
 static _Atomic uint64_t g_rp_ing_unmatched = 0;
+/* Review round 2, finding 5: injection snapshots the registry at
+ * the BOOT/run boundary — a subscriber the program only creates
+ * during run() is a distinct fact from "no subscriber exists".
+ * The join path reclassifies (teardown-time registry rescan). */
+static _Atomic uint64_t g_rp_ing_late_sub = 0;
 static _Atomic uint64_t g_rp_ing_incompatible = 0;
 static _Atomic uint64_t g_rp_ing_unprocessed = 0;
 static _Atomic uint64_t g_rp_injector_start_failure = 0;
@@ -707,7 +724,11 @@ static void rp_load(void) {
   if (fd < 0) fd = open(g_replay_path, O_RDONLY | O_NOFOLLOW);
   if (fd < 0) rp_fail(strerror(errno));
   struct stat st;
-  if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 112) {
+  /* Review round 2, finding 3: the minimum is the HEADER alone
+   * (96B) — a header-only file is the earliest valid crash prefix
+   * (killed after recorder creation, before the first complete
+   * frame). 112 demanded a trailer that a crash never writes. */
+  if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 96) {
     close(fd);
     rp_fail("not a recording (too small or not a regular file)");
   }
@@ -740,6 +761,7 @@ static void rp_load(void) {
   if (h->header_len != sizeof(obs_rec_hdr_t)) {
     rp_fail("unexpected header length");
   }
+  g_rp_hdr_model = h->model_hash;
   size_t end = g_rp_len;
   uint64_t trailer_count = 0;
   if (end >= sizeof(obs_rec_hdr_t) + 16 &&
@@ -1074,6 +1096,12 @@ void lotus_replay_note_ingress_unmatched(void) {
   atomic_fetch_add_explicit(&g_rp_ing_unmatched, 1,
                             memory_order_relaxed);
 }
+void lotus_replay_reclassify_unmatched_late(uint64_t n) {
+  atomic_fetch_sub_explicit(&g_rp_ing_unmatched, n,
+                            memory_order_relaxed);
+  atomic_fetch_add_explicit(&g_rp_ing_late_sub, n,
+                            memory_order_relaxed);
+}
 void lotus_replay_note_ingress_incompatible(void) {
   atomic_fetch_add_explicit(&g_rp_ing_incompatible, 1,
                             memory_order_relaxed);
@@ -1134,8 +1162,20 @@ static void rp_feed_report(void) {
   uint64_t rej = atomic_load(&g_rp_ing_rejected);
   uint64_t unm = atomic_load(&g_rp_ing_unmatched);
   uint64_t inc = atomic_load(&g_rp_ing_incompatible);
+  uint64_t late = atomic_load(&g_rp_ing_late_sub);
   uint64_t unp = atomic_load(&g_rp_ing_unprocessed);
   uint64_t sf = atomic_load(&g_rp_injector_start_failure);
+  /* Review round 2, finding 4: the verdict must not depend on the
+   * join path having run. std::process::exit skips lifecycle
+   * teardown entirely — derive the unclassified remainder HERE, so
+   * "0 of N injected" can never ride an exit(0) to success. */
+  uint64_t classified = inj + rej + unm + late + inc + unp;
+  if (classified < g_rp_ingress_len) {
+    uint64_t implicit = g_rp_ingress_len - classified;
+    atomic_fetch_add_explicit(&g_rp_ing_unprocessed, implicit,
+                              memory_order_relaxed);
+    unp += implicit;
+  }
   fprintf(stderr,
           "hale feed: %llu of %u recorded ingress payload(s) "
           "injected\n",
@@ -1150,6 +1190,13 @@ static void rp_feed_report(void) {
             "hale feed:   %llu unmatched — no subscribed subject in "
             "this program\n",
             (unsigned long long)unm);
+  if (late)
+    fprintf(stderr,
+            "hale feed:   %llu uncovered — the subject's subscriber "
+            "is created after boot (injection covers the boot/run "
+            "snapshot; late subscriptions are a stated coverage "
+            "boundary)\n",
+            (unsigned long long)late);
   if (inc)
     fprintf(stderr,
             "hale feed:   %llu incompatible — subject matches but "
@@ -1161,7 +1208,7 @@ static void rp_feed_report(void) {
             (unsigned long long)unp);
   if (sf)
     fprintf(stderr, "hale feed:   injector failed to start\n");
-  if (unm + inc + unp + sf) {
+  if (unm + late + inc + unp + sf) {
     const char *ok = getenv("LOTUS_REPLAY_FEED_ALLOW_UNMATCHED");
     if (!(ok && ok[0] == '1')) {
       fprintf(stderr,
@@ -1338,6 +1385,7 @@ static void rp_report(void) {
               "unconsumed_journal=%llu\nunconsumed_deliveries=%llu\n"
               "unexpected_deliveries=%llu\n"
               "ingress_rejected=%llu\ningress_unmatched=%llu\n"
+              "late_subscription_uncovered=%llu\n"
               "ingress_incompatible=%llu\ningress_unprocessed=%llu\n"
               "injector_start_failure=%llu\n"
               "post_prefix_live_fallback=%llu\nconsumes=%llu\n",
@@ -1347,6 +1395,7 @@ static void rp_report(void) {
               (unsigned long long)unexpected,
               (unsigned long long)atomic_load(&g_rp_ing_rejected),
               (unsigned long long)atomic_load(&g_rp_ing_unmatched),
+              (unsigned long long)atomic_load(&g_rp_ing_late_sub),
               (unsigned long long)atomic_load(&g_rp_ing_incompatible),
               (unsigned long long)atomic_load(&g_rp_ing_unprocessed),
               (unsigned long long)atomic_load(
@@ -1362,6 +1411,7 @@ static void rp_report(void) {
     "env.args_count" };
   uint64_t ing_div = atomic_load(&g_rp_ing_rejected) +
                      atomic_load(&g_rp_ing_unmatched) +
+                     atomic_load(&g_rp_ing_late_sub) +
                      atomic_load(&g_rp_ing_incompatible) +
                      atomic_load(&g_rp_ing_unprocessed) +
                      atomic_load(&g_rp_injector_start_failure);
@@ -1835,8 +1885,9 @@ __attribute__((constructor)) static void obs_live_ctor(void) {
       _exit(64);
     }
     memcpy(g_replay_path, feed, n + 1);
-    rp_load();
+    /* Flag BEFORE load: identity defense (eager_init) keys off it. */
     lotus_replay_feed = 1;
+    rp_load();
     atexit(rp_feed_report);
   }
   if (rp && rp[0]) {
@@ -1892,6 +1943,42 @@ __attribute__((constructor)) static void obs_live_ctor(void) {
  * segment is born with its immutable header complete. The .halerec
  * artifact additionally re-stamps at finalize. */
 void lotus_obs_eager_init(void) {
+  /* Commit the complete identity for the recorder drain (see the
+   * committed-identity note at the globals). Runs on the main
+   * thread after every identity setter, before any user code. */
+  if (!atomic_load_explicit(&g_obs_ident_committed,
+                            memory_order_relaxed)) {
+    g_obs_ident_committed_vals[0] = g_obs_model_hash;
+    g_obs_ident_committed_vals[1] = g_obs_exec_digest[0];
+    g_obs_ident_committed_vals[2] = g_obs_exec_digest[1];
+    g_obs_ident_committed_vals[3] = g_obs_exec_digest[2];
+    g_obs_ident_committed_vals[4] = g_obs_exec_digest[3];
+    g_obs_ident_committed_vals[5] =
+        (g_rec_env_full ? 0u : 1u) | (g_rec_durable ? 2u : 0u);
+    atomic_store_explicit(&g_obs_ident_committed, 1,
+                          memory_order_release);
+  }
+  /* Review round 2, finding 1 (defense in depth): the runtime must
+   * not drive a binary from a recording whose model identity
+   * disagrees with the binary's own — the CLI is the user-facing
+   * admission layer, but a direct LOTUS_REPLAY invocation (or a
+   * substituted artifact) reaches here too. Feed mode bypasses
+   * identity by design; --allow-unverified-model plumbs through as
+   * an env override. */
+  if (lotus_replay_active && !lotus_replay_feed && g_obs_model_hash &&
+      g_rp_hdr_model && g_rp_hdr_model != g_obs_model_hash) {
+    const char *ok = getenv("LOTUS_REPLAY_ALLOW_UNVERIFIED");
+    if (!(ok && ok[0] == '1')) {
+      fprintf(stderr,
+              "hale: LOTUS_REPLAY recording identity (model %016llx) "
+              "disagrees with this binary (model %016llx) — refusing "
+              "to misreplay\n",
+              (unsigned long long)g_rp_hdr_model,
+              (unsigned long long)g_obs_model_hash);
+      fflush(NULL);
+      _exit(66);
+    }
+  }
   if (lotus_obs_recording || lotus_replay_active) {
     (void)obs_on();
   }
@@ -2270,25 +2357,24 @@ static void *obs_record_drain_main(void *arg) {
     /* GH #296 phase 5 (durable recording): identity used to be
      * authoritative only at the finalize re-stamp — so a crashed
      * run's artifact carried whatever the first probe snapshotted
-     * (possibly zeros) and could never be admitted. Stamp the
-     * header the moment the ctor-sequenced setters have run.
-     * Drain-thread-owned; pwrite after a flush, so the append
-     * position never moves. Finalize still re-stamps — both agree. */
-    static uint64_t stamped_key = 0;
-    uint64_t ident_key = g_obs_model_hash ^ g_obs_exec_digest[0] ^
-                         g_obs_exec_digest[1];
-    if (ident_key && ident_key != stamped_key) {
-      uint64_t ident[6] = { g_obs_model_hash,
-                            g_obs_exec_digest[0], g_obs_exec_digest[1],
-                            g_obs_exec_digest[2], g_obs_exec_digest[3],
-                            (g_rec_env_full ? 0u : 1u) |
-                                (g_rec_durable ? 2u : 0u) };
+     * (possibly zeros) and could never be admitted. Stamp it the
+     * moment the main thread has COMMITTED the complete identity
+     * (release/acquire — review round 2: plain cross-thread reads
+     * of the setters' globals were a race, and the old XOR change
+     * key could persist a half-published digest). Drain-thread-
+     * owned; pwrite after a flush, so the append position never
+     * moves. Finalize still re-stamps — both agree. */
+    static int ident_stamped = 0;
+    if (!ident_stamped &&
+        atomic_load_explicit(&g_obs_ident_committed,
+                             memory_order_acquire)) {
       if (fflush(g_rec_file) != 0 ||
-          pwrite(fileno(g_rec_file), ident, sizeof ident, 48) !=
-              (ssize_t)sizeof ident) {
+          pwrite(fileno(g_rec_file), g_obs_ident_committed_vals,
+                 sizeof g_obs_ident_committed_vals, 48) !=
+              (ssize_t)sizeof g_obs_ident_committed_vals) {
         obs_rec_write_failed();
       }
-      stamped_key = ident_key;
+      ident_stamped = 1;
       wrote = 1;
     }
     if (wrote && fflush(g_rec_file) != 0) {

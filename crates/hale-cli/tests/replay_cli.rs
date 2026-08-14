@@ -1100,8 +1100,9 @@ fn main() {{ App {{ }}; }}
     // Record a CLEAN four-message session — the test's PRECONDITION,
     // not its subject. Under extreme parallel load a LIVE run very
     // occasionally loses one mid-stream wire message even with the
-    // ready-file handshake (a rare pre-existing live-ingest race,
-    // independent of replay; tracked separately). The sub exits 3
+    // ready-file handshake (pre-existing live-ingest loss,
+    // tracked as GH #468 — delete this retry when it lands). The
+    // sub exits 3
     // when a message went missing; retry the session rather than
     // fail replay assertions on a recording of a lossy live run.
     let rec = dir.join("two.halerec");
@@ -1179,5 +1180,159 @@ fn main() {{ App {{ }}; }}
         stdout,
         stderr
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// One file object from admission to child (review round 2, finding
+/// 1): after the CLI admits recording A, atomically replacing the
+/// PATH with recording B must not change what the child replays —
+/// the child inherits the admitted descriptor, never a reopen.
+#[test]
+fn admitted_object_survives_path_replacement() {
+    let dir = workdir("toctou");
+    let prog = dir.join("argsy.hl");
+    std::fs::write(
+        &prog,
+        r#"
+main locus App {
+    run() {
+        let n = std::env::args_count();
+        println("args=", n);
+    }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    // Recording A: no extra argv. Recording B: three extra argv.
+    // args_count is journaled, so each replay prints its OWN tape's
+    // count — a perfect witness for which artifact was consumed.
+    let rec_a = dir.join("a.halerec");
+    let out = hale()
+        .arg("run")
+        .arg(&prog)
+        .env("LOTUS_OBS_RECORD", &rec_a)
+        .output()
+        .expect("record a");
+    assert!(out.status.success());
+    let a_line = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .unwrap()
+        .to_string();
+    let rec_b = dir.join("b.halerec");
+    let out = hale()
+        .arg("run")
+        .arg(&prog)
+        .arg("x")
+        .arg("y")
+        .arg("z")
+        .env("LOTUS_OBS_RECORD", &rec_b)
+        .output()
+        .expect("record b");
+    assert!(out.status.success());
+    let b_line = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .unwrap()
+        .to_string();
+    assert_ne!(a_line, b_line, "the two tapes must be distinguishable");
+
+    // Replay the path currently holding A, pausing between admission
+    // and spawn; swap B in during the pause.
+    let target = dir.join("swap.halerec");
+    std::fs::copy(&rec_a, &target).unwrap();
+    let go = dir.join("go");
+    let mut child = hale()
+        .arg("replay")
+        .arg(&target)
+        .arg(&prog)
+        .arg("--allow-live-effects")
+        .env("HALE_REPLAY_TEST_HOLD", &go)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn replay");
+    // Give admission + compile ample time, then replace and release.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    let tmp = dir.join("b-staged.halerec");
+    std::fs::copy(&rec_b, &tmp).unwrap();
+    std::fs::rename(&tmp, &target).unwrap();
+    std::fs::write(&go, "go").unwrap();
+    let out = child.wait_with_output().expect("replay exit");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "replay failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains(&a_line) && !stdout.contains(&b_line),
+        "the child must replay the ADMITTED artifact (A), not the \
+         substituted path (B):\nstdout:{}",
+        stdout
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Header-only and torn-first-frame crash prefixes admit under
+/// --allow-truncated (review round 2, finding 3): the minimum valid
+/// artifact is the 96-byte header, not header + trailer.
+#[test]
+fn header_only_crash_prefixes_admit_with_the_flag() {
+    let dir = workdir("hdronly");
+    let prog = dir.join("tiny.hl");
+    std::fs::write(
+        &prog,
+        r#"
+main locus App {
+    params { x: Int = 1; }
+    run() { let y = self.x + 1; }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let rec = record(&dir, &prog);
+    let bytes = std::fs::read(&rec).unwrap();
+    assert!(bytes.len() > 112);
+
+    for cut in [96usize, 97, 103, 111, 112] {
+        let fixture = dir.join(format!("cut{}.halerec", cut));
+        std::fs::write(&fixture, &bytes[..cut]).unwrap();
+
+        // Default: refused as truncated.
+        let out = hale()
+            .arg("replay")
+            .arg(&fixture)
+            .arg(&prog)
+            .arg("--allow-live-effects")
+            .output()
+            .expect("refusal run");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success() && stderr.contains("truncated"),
+            "cut={} must refuse as truncated:\n{}",
+            cut,
+            stderr
+        );
+
+        // Opted in: the (possibly empty) prefix replays; execution
+        // past the tape is the post-crash suffix.
+        let out = hale()
+            .arg("replay")
+            .arg(&fixture)
+            .arg(&prog)
+            .arg("--allow-truncated")
+            .arg("--allow-live-effects")
+            .output()
+            .expect("prefix run");
+        assert!(
+            out.status.success(),
+            "cut={} must admit under --allow-truncated:\n{}",
+            cut,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

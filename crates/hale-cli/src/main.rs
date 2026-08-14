@@ -5007,7 +5007,28 @@ fn run_replay(args: &[String]) -> ExitCode {
         }
     };
 
-    let rec = match replay::parse(&rec_path) {
+    // ONE file object for admission AND execution (review round 2,
+    // finding 1): open O_NOFOLLOW, parse this object, and later dup
+    // THIS descriptor into the child — never reopen the pathname.
+    let rec_file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&rec_path)
+        {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!(
+                    "hale replay: could not open `{}`: {}",
+                    rec_path.display(),
+                    e
+                );
+                return ExitCode::from(1);
+            }
+        }
+    };
+    let rec = match replay::parse_file(&rec_file, &rec_path) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("hale replay: {}", e);
@@ -5253,12 +5274,20 @@ fn run_replay(args: &[String]) -> ExitCode {
         return ExitCode::from(1);
     }
 
-    if rec.env_redacted {
+    if rec.env_redacted && !feed {
+        // (feed does not serve the env journal at all — review
+        // round 2, finding 7: this warning is replay-only.)
         eprintln!(
             "hale replay: this recording withholds env VALUES \
              (default policy; record with LOTUS_OBS_RECORD_ENV=full \
              to include them) — env reads will replay as named \
              withheld divergences"
+        );
+    } else if rec.env_redacted && feed {
+        eprintln!(
+            "hale replay: feed note — the tape withheld env values; \
+             feed does not replay env reads, so the current process \
+             environment is used"
         );
     }
     let rec_abs = rec_path
@@ -5324,44 +5353,34 @@ fn run_replay(args: &[String]) -> ExitCode {
     if allow_truncated {
         cmd.env("LOTUS_REPLAY_ALLOW_TRUNCATED", "1");
     }
+    if allow_unverified {
+        cmd.env("LOTUS_REPLAY_ALLOW_UNVERIFIED", "1");
+    }
     cmd.env("LOTUS_REPLAY_STATUS", &status_path);
-    // Round 3 (artifact trust): the CHILD reads the same file
-    // OBJECT the CLI validated — the fd is inherited (dup2'd to a
-    // fixed number post-fork), so there is no path re-resolution
-    // window between the two validations. The runtime still
-    // revalidates fully and snapshots the bytes into anonymous
-    // memory before serving.
+    // Round 3 + review round 2, finding 1 (artifact trust): the
+    // CHILD reads THE file object the CLI admitted — `rec_file`
+    // itself, opened once at the top, its descriptor dup2'd to a
+    // fixed number post-fork. There is no reopen and therefore no
+    // path re-resolution window. The runtime still independently
+    // revalidates the structure, snapshots the bytes into anonymous
+    // memory, and (defense in depth) refuses a model identity that
+    // disagrees with the binary's own.
     {
         use std::os::unix::io::AsRawFd;
         use std::os::unix::process::CommandExt;
-        match std::fs::File::open(&rec_abs) {
-            Ok(f) => {
-                let raw = f.as_raw_fd();
-                const REPLAY_FD: i32 = 973;
-                cmd.env("LOTUS_REPLAY_FD", REPLAY_FD.to_string());
-                unsafe {
-                    cmd.pre_exec(move || {
-                        if libc::dup2(raw, REPLAY_FD) < 0 {
-                            return Err(
-                                std::io::Error::last_os_error(),
-                            );
-                        }
-                        Ok(())
-                    });
+        let raw = rec_file.as_raw_fd();
+        const REPLAY_FD: i32 = 973;
+        cmd.env("LOTUS_REPLAY_FD", REPLAY_FD.to_string());
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::dup2(raw, REPLAY_FD) < 0 {
+                    return Err(std::io::Error::last_os_error());
                 }
-                // Keep the File alive across spawn.
-                std::mem::forget(f);
-            }
-            Err(e) => {
-                eprintln!(
-                    "hale replay: could not reopen `{}` for the \
-                     child: {}",
-                    rec_abs.display(),
-                    e
-                );
-                return ExitCode::from(1);
-            }
+                Ok(())
+            });
         }
+        // Keep the admitted File alive across spawn.
+        std::mem::forget(rec_file);
     }
     if let Some(spec) = &at {
         match spec.split_once(':') {
@@ -5381,6 +5400,14 @@ fn run_replay(args: &[String]) -> ExitCode {
         // redacted one and reports a spurious withheld divergence.
         if !rec.env_redacted {
             cmd.env("LOTUS_OBS_RECORD_ENV", "full");
+        }
+    }
+    // Test hook (review round 2, finding 1): hold between admission
+    // and spawn so the one-object invariant can be tested against a
+    // deliberate path replacement, deterministically.
+    if let Ok(hold) = std::env::var("HALE_REPLAY_TEST_HOLD") {
+        while !std::path::Path::new(&hold).exists() {
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
     }
     let status = cmd.status();

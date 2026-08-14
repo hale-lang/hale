@@ -908,3 +908,65 @@ fn shm_ring_refuses_replay_and_touches_no_shared_memory() {
     let _ = std::fs::remove_file(&pub_bin);
     let _ = std::fs::remove_file(&shm_bin);
 }
+
+/// Feed's verdict must not depend on teardown having run (review
+/// round 2, finding 4): a target that exits during birth — before
+/// the boot-phase injector even starts — must still fail with the
+/// whole tape reported unprocessed, because the report derives the
+/// unclassified remainder itself.
+#[test]
+fn feed_early_exit_cannot_fail_open() {
+    let sock = unique_socket_path();
+    let sub_bin = build("earlysub", &sub_src(&sock));
+    let pub_bin = build("earlypub", &pub_src(&sock));
+    let (rec, _) = record_session("early", &sub_bin, &pub_bin);
+
+    let bail = r#"
+        type T { n: Int = 0; }
+        topic Evt { payload: T; subject: "evt"; }
+        locus Sub {
+            params { seen: Int = 0; }
+            bus { subscribe Evt as on_e; }
+            fn on_e(t: T) { self.seen = self.seen + 1; }
+        }
+        main locus App {
+            params { s: Sub = Sub { }; }
+            birth() { std::process::exit(0); }
+            run() { std::time::sleep(100ms); }
+        }
+        fn main() { App { }; }
+    "#;
+    let bail_bin = build("earlybail", bail);
+
+    let fed = Command::new(&bail_bin)
+        .env("LOTUS_REPLAY_FEED", &rec)
+        .output()
+        .expect("feed early-exit target");
+    let err = String::from_utf8_lossy(&fed.stderr);
+    assert!(
+        !fed.status.success(),
+        "an exit(0) before injection must not fail open; stderr:\n{}",
+        err
+    );
+    assert!(
+        err.contains("0 of 3") && err.contains("unprocessed"),
+        "the whole tape must be reported unprocessed; stderr:\n{}",
+        err
+    );
+
+    let allowed = Command::new(&bail_bin)
+        .env("LOTUS_REPLAY_FEED", &rec)
+        .env("LOTUS_REPLAY_FEED_ALLOW_UNMATCHED", "1")
+        .output()
+        .expect("feed allowed");
+    assert!(
+        allowed.status.success(),
+        "--allow-unmatched-feed accepts the (empty) partial feed: {}",
+        String::from_utf8_lossy(&allowed.stderr)
+    );
+
+    let _ = std::fs::remove_file(&rec);
+    let _ = std::fs::remove_file(&sub_bin);
+    let _ = std::fs::remove_file(&pub_bin);
+    let _ = std::fs::remove_file(&bail_bin);
+}

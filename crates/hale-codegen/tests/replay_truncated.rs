@@ -45,6 +45,11 @@ fn build(name: &str, src: &str) -> PathBuf {
     let bin = harness::unique_bin(&format!("hale_test_trunc_{}", name));
     let options = BuildOptions {
         model_hash: Some(model_hash),
+        // A designed digest so the eager-stamp assertion can check
+        // ALL FOUR words landed (review round 2, finding 2: the old
+        // change-key ignored words 2-3 and could persist a
+        // half-published digest).
+        exec_digest: Some([0xA1A1, 0xB2B2, 0xC3C3, 0xD4D4]),
         ..BuildOptions::default()
     };
     build_executable_with_options(&program, &bin, &[], &options)
@@ -133,11 +138,24 @@ fn killed_recording_keeps_an_admissible_prefix() {
         "a SIGKILLed run must not carry a clean-finalize trailer"
     );
     // ...but the header identity is ALREADY stamped (the eager
-    // stamp) — the crashed artifact is attributable, not anonymous.
+    // stamp) — the crashed artifact is attributable, not anonymous,
+    // and the digest is COMPLETE: identity is committed atomically
+    // after every setter and stamped from the immutable committed
+    // copy, so a crash can never persist a half-published digest.
     assert_ne!(
         u64_at(&bytes, 48),
         0,
         "model_hash must be stamped before finalize (eager stamp)"
+    );
+    assert_eq!(
+        [
+            u64_at(&bytes, 56),
+            u64_at(&bytes, 64),
+            u64_at(&bytes, 72),
+            u64_at(&bytes, 80)
+        ],
+        [0xA1A1, 0xB2B2, 0xC3C3, 0xD4D4],
+        "the crash artifact must carry the COMPLETE exec digest"
     );
 
     // 2. Default: fail closed, name the opt-in.

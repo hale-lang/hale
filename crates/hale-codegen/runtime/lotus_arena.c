@@ -6435,6 +6435,8 @@ void lotus_replay_reserve_anon_floor(void) __attribute__((weak));
 void lotus_replay_note_injected(void) __attribute__((weak));
 void lotus_replay_note_ingress_rejected(void) __attribute__((weak));
 void lotus_replay_note_ingress_unmatched(void) __attribute__((weak));
+void lotus_replay_reclassify_unmatched_late(uint64_t n)
+    __attribute__((weak));
 void lotus_replay_note_ingress_incompatible(void)
     __attribute__((weak));
 void lotus_replay_note_ingress_unprocessed(uint64_t n)
@@ -14844,6 +14846,14 @@ typedef struct {
 } lotus_rp_injector_t;
 static lotus_rp_injector_t g_rp_injectors[LOTUS_RP_INJECTOR_MAX];
 static int g_rp_injector_count = 0;
+/* Review round 2, finding 5: unmatched tape subjects, kept so the
+ * JOIN path (main thread, teardown — safe to rescan the registry)
+ * can distinguish "no subscriber exists" from "the subscriber was
+ * created after the boot snapshot" (late_subscription_uncovered).
+ * Bounded; pointers into the artifact snapshot (process-lifetime). */
+#define LOTUS_RP_UNMATCHED_MAX 64
+static const char *g_rp_unmatched_subjects[LOTUS_RP_UNMATCHED_MAX];
+static _Atomic int g_rp_unmatched_subject_len = 0;
 static int g_rp_ingress_started = 0;
 static int g_rp_injector_stop = 0;
 
@@ -14879,6 +14889,12 @@ static void *lotus_replay_injector_worker(void *arg) {
         if (!deserialize) {
             if (lotus_replay_note_ingress_unmatched)
                 lotus_replay_note_ingress_unmatched();
+            int slot = atomic_fetch_add_explicit(
+                &g_rp_unmatched_subject_len, 1,
+                memory_order_relaxed);
+            if (slot < LOTUS_RP_UNMATCHED_MAX) {
+                g_rp_unmatched_subjects[slot] = subject;
+            }
             atomic_store_explicit(&w->next_idx, i + 1,
                                   memory_order_release);
             continue;
@@ -14999,12 +15015,15 @@ void lotus_replay_start_ingress(void) {
          * order with zero divergences reported). */
         lotus_bus_mark_pinned();
         lotus_mark_multithreaded();
-        if (pthread_create(&w->th, NULL,
-                           lotus_replay_injector_worker, w) != 0) {
+        int rc = pthread_create(&w->th, NULL,
+                                lotus_replay_injector_worker, w);
+        if (rc != 0) {
+            /* pthread_create returns the error NUMBER — errno is
+             * not promised to be set (review round 2, finding 6). */
             fprintf(stderr,
                     "hale replay: ingress injector thread failed to "
                     "start (source %llu): %s\n",
-                    (unsigned long long)cid, strerror(errno));
+                    (unsigned long long)cid, strerror(rc));
             if (lotus_replay_note_injector_start_failure)
                 lotus_replay_note_injector_start_failure();
             continue;
@@ -15037,6 +15056,29 @@ void lotus_replay_injector_join(void) {
             lotus_replay_note_ingress_unprocessed(rest);
     }
     g_rp_injector_count = 0;
+    /* finding 5: with the workers joined and this thread owning
+     * teardown, rescan the LIVE registry: an unmatched subject
+     * whose subscriber exists NOW was registered after the boot
+     * snapshot — a distinct, named coverage class. */
+    if (lotus_replay_reclassify_unmatched_late) {
+        int n = atomic_load_explicit(&g_rp_unmatched_subject_len,
+                                     memory_order_acquire);
+        if (n > LOTUS_RP_UNMATCHED_MAX) n = LOTUS_RP_UNMATCHED_MAX;
+        uint64_t late = 0;
+        for (int u = 0; u < n; u++) {
+            const char *subj = g_rp_unmatched_subjects[u];
+            if (!subj) continue;
+            for (size_t e = 0; e < g_bus_count; e++) {
+                lotus_bus_entry_t *be = &g_bus_entries[e];
+                if (!be->subject || !be->deserialize) continue;
+                if (lotus_subject_match(be->subject, subj)) {
+                    late++;
+                    break;
+                }
+            }
+        }
+        if (late) lotus_replay_reclassify_unmatched_late(late);
+    }
 }
 
 int lotus_bus_register_remote(const char *subject,
