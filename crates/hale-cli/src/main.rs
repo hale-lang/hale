@@ -216,7 +216,7 @@ fn usage() {
     eprintln!("    hale replay <rec> <file.hl>   re-run a LOTUS_OBS_RECORD recording");
     eprintln!("        [--diff: report first divergence, fail on any]");
     eprintln!("        [--at <n> | --at <consumer-id>:<ordinal>: SIGSTOP at that consume]");
-    eprintln!("        [--allow-live-effects] [--allow-unverified-model]");
+    eprintln!("        [--allow-live-effects] [--allow-unverified-model] [--allow-truncated]");
     eprintln!("    hale test  [file | dir]       compile + run *_test.hl (default: cwd)");
     eprintln!("        [-run <substr>] [--json]");
     eprintln!("    hale bench [file | dir]       run *_bench.hl bench_* fns (default: cwd)");
@@ -4922,6 +4922,7 @@ fn run_replay(args: &[String]) -> ExitCode {
     let mut at: Option<String> = None;
     let mut allow_live_effects = false;
     let mut allow_unverified = false;
+    let mut allow_truncated = false;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
@@ -4933,6 +4934,9 @@ fn run_replay(args: &[String]) -> ExitCode {
             i += 1;
         } else if a == "--allow-unverified-model" {
             allow_unverified = true;
+            i += 1;
+        } else if a == "--allow-truncated" {
+            allow_truncated = true;
             i += 1;
         } else if a == "--at" {
             // N (process-wide consume ordinal — only meaningful
@@ -4978,7 +4982,8 @@ fn run_replay(args: &[String]) -> ExitCode {
             eprintln!(
                 "usage: hale replay <recording> <program.hl> \
                  [--diff] [--at <n> | --at <consumer-id>:<ordinal>] \
-                 [--allow-live-effects] [--allow-unverified-model]"
+                 [--allow-live-effects] [--allow-unverified-model] \
+                 [--allow-truncated]"
             );
             return ExitCode::from(2);
         }
@@ -4992,13 +4997,21 @@ fn run_replay(args: &[String]) -> ExitCode {
         }
     };
     if !rec.clean {
+        if !allow_truncated {
+            eprintln!(
+                "hale replay: `{}` has no clean-finalize trailer — \
+                 the recording is crash-truncated; re-record, or \
+                 pass --allow-truncated to replay the recorded \
+                 prefix",
+                rec_path.display()
+            );
+            return ExitCode::from(1);
+        }
         eprintln!(
-            "hale replay: `{}` has no clean-finalize trailer — the \
-             recording is truncated and a partial history replays \
-             as a silent divergence; re-record",
+            "hale replay: `{}` has no clean finalize — replaying \
+             the recorded prefix (--allow-truncated)",
             rec_path.display()
         );
-        return ExitCode::from(1);
     }
 
     if !prog.is_file() {
@@ -5220,6 +5233,9 @@ fn run_replay(args: &[String]) -> ExitCode {
     }
     let mut cmd = std::process::Command::new(&bin);
     cmd.env("LOTUS_REPLAY", &rec_abs);
+    if allow_truncated {
+        cmd.env("LOTUS_REPLAY_ALLOW_TRUNCATED", "1");
+    }
     cmd.env("LOTUS_REPLAY_STATUS", &status_path);
     // Round 3 (artifact trust): the CHILD reads the same file
     // OBJECT the CLI validated — the fd is inherited (dup2'd to a
@@ -5324,7 +5340,7 @@ fn run_replay(args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
         let result = match replay::parse(v) {
-            Ok(vr) => match replay::diff(&rec, &vr) {
+            Ok(vr) => match replay::diff(&rec, &vr, !rec.clean) {
                 None => {
                     let consumes: usize = rec
                         .consume_streams

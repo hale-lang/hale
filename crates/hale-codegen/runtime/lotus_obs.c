@@ -329,6 +329,7 @@ static int g_rec_thread_started = 0;
 static _Atomic int g_rec_stop = 0;
 static _Atomic uint64_t g_rec_cursor[64]; /* per-ring drained head */
 static uint64_t g_rec_written = 0;        /* drain-thread-owned */
+static int g_rec_durable = 0; /* LOTUS_OBS_RECORD_DURABLE=1 */
 static __thread uint64_t t_consume_seq = 0;
 
 #define OBS_REC_MAGIC 0x30434552454C4148ULL /* "HALEREC0" */
@@ -521,6 +522,8 @@ uint64_t lotus_obs_consumer_id(void) { return t_consumer_id; }
 int lotus_replay_active = 0;
 static char g_replay_path[512];
 static const uint8_t *g_rp_base; /* mmap'd recording */
+static int g_rp_truncated = 0; /* accepted without a finalize trailer */
+static uint64_t g_rp_dropped_tail = 0;
 static size_t g_rp_len;
 static uint64_t g_replay_at = 0; /* LOTUS_REPLAY_AT: stop at Nth consume */
 static uint64_t g_replay_at_consumer = 0; /* 0 = process-wide count */
@@ -669,8 +672,20 @@ static void rp_load(void) {
     trailer_count = *(const uint64_t *)(g_rp_base + end - 8);
     end -= 16;
   } else {
-    rp_fail("no clean-finalize trailer — the recording is "
-            "truncated; refusing to replay a partial history");
+    /* GH #296 phase 5 (WAL durability): the drain appends whole
+     * frames in stream order, so a crash-truncated file is EXACT
+     * up to one torn frame at the tail — a usable prefix. Partial
+     * history stays opt-in (the refusal was a deliberate
+     * review-round posture): the flag is the operator saying "I
+     * know the tape ends early." */
+    const char *tol = getenv("LOTUS_REPLAY_ALLOW_TRUNCATED");
+    if (!(tol && tol[0] == '1')) {
+      rp_fail("no clean-finalize trailer — the recording is "
+              "truncated (crashed writer?); pass --allow-truncated "
+              "(LOTUS_REPLAY_ALLOW_TRUNCATED=1) to replay the "
+              "recorded prefix");
+    }
+    g_rp_truncated = 1;
   }
   uint64_t parsed = 0;
   memset(rp_ring_consumer, 0, sizeof rp_ring_consumer);
@@ -680,7 +695,10 @@ static void rp_load(void) {
     uint32_t a = *(const uint32_t *)(g_rp_base + off + 4);
     parsed++;
     if (tag == OBS_REC_TAG_RING) {
-      if (end - off < 24) rp_fail("truncated ring record");
+      if (end - off < 24) {
+        if (g_rp_truncated) { parsed--; break; }
+        rp_fail("truncated ring record");
+      }
       uint64_t w0 = *(const uint64_t *)(g_rp_base + off + 8);
       uint64_t w1 = *(const uint64_t *)(g_rp_base + off + 16);
       uint32_t ekind = (uint32_t)((w0 >> 20) & 0x1F);
@@ -713,14 +731,21 @@ static void rp_load(void) {
       off += 24;
     } else if (tag == OBS_REC_TAG_PAYLOAD || tag == OBS_REC_TAG_JOURNAL
                || tag == OBS_REC_TAG_META) {
-      if (end - off < 32) rp_fail("truncated blob header");
+      if (end - off < 32) {
+        if (g_rp_truncated) { parsed--; break; }
+        rp_fail("truncated blob header");
+      }
       uint64_t b = *(const uint64_t *)(g_rp_base + off + 8);
       uint64_t cfield = *(const uint64_t *)(g_rp_base + off + 16);
       uint64_t size = *(const uint64_t *)(g_rp_base + off + 24);
       const uint8_t *bytes = g_rp_base + off + 32;
-      if (size > end - off - 32) rp_fail("blob length out of range");
+      if (size > end - off - 32) {
+        if (g_rp_truncated) { parsed--; break; }
+        rp_fail("blob length out of range");
+      }
       uint64_t padded = (size + 7) & ~7ull;
       if (padded < size || padded > end - off - 32) {
+        if (g_rp_truncated) { parsed--; break; }
         rp_fail("blob padding out of range");
       }
       if (tag == OBS_REC_TAG_JOURNAL) {
@@ -784,9 +809,19 @@ static void rp_load(void) {
       rp_fail("unknown entry tag — recording from a newer hale?");
     }
   }
-  if (off != end) rp_fail("entries do not end at the trailer");
-  if (parsed != trailer_count) {
-    rp_fail("trailer count disagrees with parsed entries");
+  if (!g_rp_truncated) {
+    if (off != end) rp_fail("entries do not end at the trailer");
+    if (parsed != trailer_count) {
+      rp_fail("trailer count disagrees with parsed entries");
+    }
+  } else {
+    g_rp_dropped_tail = end - off;
+    fprintf(stderr,
+            "hale: LOTUS_REPLAY: no clean finalize — replaying the "
+            "recorded prefix (%llu entries; %llu torn tail byte(s) "
+            "dropped)\n",
+            (unsigned long long)parsed,
+            (unsigned long long)g_rp_dropped_tail);
   }
 }
 
@@ -948,6 +983,11 @@ static void rp_report(void) {
       + unconsumed_deliveries + unexpected;
   for (int i = 0; i < RP_MAX_JK; i++)
     total += atomic_load(&g_rp_divergences[i]);
+  if (g_rp_truncated) {
+    fprintf(stderr,
+            "hale replay: note — truncated recording; coverage ends "
+            "at the torn tail\n");
+  }
   if (total == 0) {
     fprintf(stderr,
             "hale replay: journal served fully — 0 divergences, "
@@ -1372,6 +1412,11 @@ __attribute__((constructor)) static void obs_live_ctor(void) {
       _exit(64);
     }
   }
+  /* GH #296 phase 5: durability grade. Default recording rides the
+   * page cache (survives a process crash, not power loss);
+   * DURABLE=1 pushes every flushed drain sweep through fdatasync. */
+  const char *dur = getenv("LOTUS_OBS_RECORD_DURABLE");
+  if (dur && dur[0] == '1') g_rec_durable = 1;
 }
 
 /* Round 4/5: recording must initialize EAGERLY (a probe-free
@@ -1762,7 +1807,34 @@ static void *obs_record_drain_main(void *arg) {
       g_rec_written++;
       wrote = 1;
     }
+    /* GH #296 phase 5 (WAL durability): identity used to be
+     * authoritative only at the finalize re-stamp — so a crashed
+     * run's artifact carried whatever the first probe snapshotted
+     * (possibly zeros) and could never be admitted. Stamp the
+     * header the moment the ctor-sequenced setters have run.
+     * Drain-thread-owned; pwrite after a flush, so the append
+     * position never moves. Finalize still re-stamps — both agree. */
+    static uint64_t stamped_key = 0;
+    uint64_t ident_key = g_obs_model_hash ^ g_obs_exec_digest[0] ^
+                         g_obs_exec_digest[1];
+    if (ident_key && ident_key != stamped_key) {
+      uint64_t ident[6] = { g_obs_model_hash,
+                            g_obs_exec_digest[0], g_obs_exec_digest[1],
+                            g_obs_exec_digest[2], g_obs_exec_digest[3],
+                            g_rec_env_full ? 0u : 1u };
+      if (fflush(g_rec_file) != 0 ||
+          pwrite(fileno(g_rec_file), ident, sizeof ident, 48) !=
+              (ssize_t)sizeof ident) {
+        obs_rec_write_failed();
+      }
+      stamped_key = ident_key;
+      wrote = 1;
+    }
     if (wrote && fflush(g_rec_file) != 0) {
+      obs_rec_write_failed();
+    }
+    if (wrote && g_rec_durable &&
+        fdatasync(fileno(g_rec_file)) != 0) {
       obs_rec_write_failed();
     }
     if (stop) break;
