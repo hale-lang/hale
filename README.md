@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/readme/banner.png" alt="hale" width="100%">
+</p>
+
 # Hale
 
 **Loci all the way down. And all the way up.**
