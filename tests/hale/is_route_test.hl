@@ -1,0 +1,109 @@
+// std::http::build_context + std::http::is_route — the self-dispatching
+// handler surface: ONE locus with many endpoint methods, dispatch
+// written as an if-ladder in its own `handle`, per-endpoint state
+// reached through `self`. No Router, no per-endpoint handler loci,
+// no sockets: `handle` is exercised directly with hand-built
+// Requests.
+//
+// Contract points pinned here:
+//   - build_context(req) splits the query half of the raw target into
+//     params.qs (path matching sees the query-stripped path).
+//   - is_route fills `:name` captures on match (read via
+//     path_param) and clears them on ANY miss — including a
+//     method-only miss — so the if-ladder is first-match-wins in
+//     written order with no stale-capture bleed.
+//   - Method compare is case-insensitive on the argument side,
+//     like Router.add.
+//   - Trailing-slash tolerance and the no-wildcard rule are the
+//     Router's own matcher (shared implementation).
+
+locus Api {
+    params { hits: Int = 0; }
+
+    fn handle(req: std::http::Request) -> std::http::Response {
+        let ctx = std::http::build_context(req);
+        if std::http::is_route(ctx, "get", "/users") {
+            return self.list(ctx);
+        }
+        if std::http::is_route(ctx, "GET", "/users/:id") {
+            return self.show(ctx);
+        }
+        if std::http::is_route(ctx, "POST", "/users/:id") {
+            return self.rename(ctx);
+        }
+        return std::http::Response { status: 404, body: "no" };
+    }
+
+    fn list(ctx: std::http::Context) -> std::http::Response {
+        self.hits = self.hits + 1;
+        let q = std::http::query_param(ctx.params, "page");
+        return std::http::Response { status: 200, body: "list:" + q };
+    }
+
+    fn show(ctx: std::http::Context) -> std::http::Response {
+        self.hits = self.hits + 1;
+        let id = std::http::path_param(ctx.params, "id");
+        return std::http::Response { status: 200, body: "show:" + id };
+    }
+
+    fn rename(ctx: std::http::Context) -> std::http::Response {
+        self.hits = self.hits + 1;
+        let id = std::http::path_param(ctx.params, "id");
+        return std::http::Response { status: 200, body: "rename:" + id + ":" + ctx.req.body };
+    }
+}
+
+fn main() {
+    let api = Api { };
+
+    // Literal route, lowercase method argument, query split off.
+    let r1 = api.handle(std::http::Request {
+        method: "GET", path: "/users?page=2", body: ""
+    });
+    std::test::assert_eq_int(r1.status, 200, "literal route matches");
+    std::test::assert_eq_str(r1.body, "list:2", "qs split into params.qs, not the matched path");
+
+    // Capture route: the more-specific /users literal above must
+    // win first (written order IS precedence), then the capture.
+    let r2 = api.handle(std::http::Request {
+        method: "GET", path: "/users/42", body: ""
+    });
+    std::test::assert_eq_str(r2.body, "show:42", ":id capture filled on match");
+
+    // Same pattern, different method — the earlier GET checks
+    // miss by method; their misses must not leave stale captures
+    // (rename reads :id AFTER two method-misses on the same path).
+    let r3 = api.handle(std::http::Request {
+        method: "POST", path: "/users/7", body: "riley"
+    });
+    std::test::assert_eq_str(r3.body, "rename:7:riley", "method routing + capture after method-misses");
+
+    // Trailing-slash tolerance rides the shared matcher.
+    let r4 = api.handle(std::http::Request {
+        method: "GET", path: "/users/9/", body: ""
+    });
+    std::test::assert_eq_str(r4.body, "show:9", "trailing slash tolerated");
+
+    // No implicit wildcard: deeper paths miss everything.
+    let r5 = api.handle(std::http::Request {
+        method: "GET", path: "/users/1/posts", body: ""
+    });
+    std::test::assert_eq_int(r5.status, 404, "no implicit wildcard suffix");
+
+    // Per-locus state was reachable from every endpoint method.
+    std::test::assert_eq_int(api.hits, 4, "self state incremented across endpoints");
+
+    // A miss leaves captures cleared: after a 404, path_param on
+    // a fresh failed context returns the "" sentinel.
+    let ctx = std::http::build_context(std::http::Request {
+        method: "GET", path: "/users/5", body: ""
+    });
+    let hit = std::http::is_route(ctx, "GET", "/users/:id");
+    std::test::assert(hit, "direct is_route match");
+    let miss = std::http::is_route(ctx, "PUT", "/users/:id");
+    std::test::assert(!miss, "method miss returns false");
+    std::test::assert_eq_str(
+        std::http::path_param(ctx.params, "id"), "",
+        "method miss cleared prior captures"
+    );
+}

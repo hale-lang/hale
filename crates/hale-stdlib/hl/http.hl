@@ -921,6 +921,59 @@ fn __http_match_pattern_into(pattern: String, path: String, p: std::http::RouteP
     return true;
 }
 
+// ---- direct dispatch (build_context / is_route) ----------------------
+
+// `std::http::build_context(req)` — the Context a Router would build
+// for this request: query string split off the raw target into
+// `params.qs`, captures empty. The entry point for the
+// self-dispatching handler shape (a locus whose `handle` walks
+// `is_route` checks — no Router, no per-endpoint handler loci).
+/// Build the per-request Context from a Request; `params.qs`
+/// carries the query half of the raw target.
+fn __http_build_context(req: std::http::Request) -> std::http::Context {
+    return std::http::Context {
+        req: req,
+        params: std::http::RouteParams {
+            qs: __http_query_only(req.path)
+        }
+    };
+}
+
+// `std::http::is_route(ctx, "GET", "/users/:id")` — true when
+// the request matches method + pattern, with `:name` captures
+// filled into `ctx.params` (read via `path_param`). ANY false
+// return leaves the captures cleared, so checks chain as an
+// if-ladder with first-match-wins order:
+//
+//     fn handle(req: std::http::Request) -> std::http::Response {
+//         let ctx = std::http::build_context(req);
+//         if std::http::is_route(ctx, "GET", "/users/:id") {
+//             return self.show(ctx);
+//         }
+//         return std::http::Response { status: 404, body: "no" };
+//     }
+//
+// Method compare is case-insensitive on the argument side, like
+// `Router.add` (the wire method is uppercase per RFC 9110);
+// matching is the Router's own: query-stripped path,
+// trailing-slash tolerant, no implicit wildcard suffix.
+/// True when `ctx.req` matches method + pattern; `:name`
+/// captures land in `ctx.params` (any miss leaves them cleared).
+fn __http_is_route(
+    ctx: std::http::Context,
+    method: String,
+    pattern: String
+) -> Bool {
+    if std::str::upper(method) != ctx.req.method {
+        clear(ctx.params.path_keys);
+        clear(ctx.params.path_vals);
+        return false;
+    }
+    return __http_match_pattern_into(
+        pattern, __http_path_only(ctx.req.path), ctx.params
+    );
+}
+
 // ---- the Router ------------------------------------------------------
 
 // Default 404. Consumer-overridable via `Router { not_found: ... }`.
