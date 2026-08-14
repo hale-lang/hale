@@ -33,13 +33,25 @@ the clock:
   never deadlock; a dry or pre-phase-6 tape hands the pool back to
   the live drain.
 
+Hardened by a review round: the artifact carries an
+async-capable header bit, the dry-tape states are named instead of
+silent (pre-phase-6 artifact → one-shot coverage note; truncated
+tape → stated coverage boundary; a finalized tape running dry
+under continued async work → `async_post_tape` divergences, with
+schedule steps left unconsumed at exit as
+`unconsumed_async_steps`), and `--diff` compares the per-consumer
+async step streams bidirectionally like every other stream.
+
 Boundary, stated: the schedule replays; the data of unjournaled
 I/O still re-executes live (syscall-class, gated), and bindings
 ingress arrives via the phase-5 injector. Tests: a staggered
 two-locus async pool records and replays byte-identically with
-zero divergences, finishes faster than its recorded sleeps (proof
-the tape, not timers, drove it), and two replays of one recording
-agree with each other.
+zero divergences; a 2.5-second recorded park replays in a fraction
+of its own measured recorded wall time (the fast-forward PROOF —
+the old bound was satisfiable live); readiness arriving in the
+OPPOSITE order of the recorded resumes is held on ready_head and
+replayed in tape order across a mixed START/RESUME/EXPIRE stream;
+and two replays of one recording agree with each other.
 
 ### Record & replay, phase 5: durable recording, the hermetic wire, and feed mode (GH #296)
 

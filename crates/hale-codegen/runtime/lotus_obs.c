@@ -575,6 +575,7 @@ static char g_replay_path[512];
 static const uint8_t *g_rp_base; /* mmap'd recording */
 static int g_rp_truncated = 0; /* accepted without a finalize trailer */
 static uint64_t g_rp_hdr_model = 0;
+static uint64_t g_rp_hdr_flags = 0;
 static uint64_t g_rp_dropped_tail = 0;
 /* phase 5 (truncated prefix): recorded-history-exhausted events on
  * an accepted truncated tape are the unknown post-crash suffix,
@@ -679,8 +680,10 @@ static _Atomic uint64_t g_rp_bindings_suppressed = 0;
  * collide in a verify recording. */
 static uint64_t g_rp_anon_floor = 0;
 /* phase 6: async-schedule steps that could not be satisfied from
- * the tape (skipped via the bounded-hold degrade). */
+ * the tape (skipped via the bounded-hold degrade), and live async
+ * work performed after a non-truncated tape ran dry. */
 static _Atomic uint64_t g_rp_async_divergences = 0;
+static _Atomic uint64_t g_rp_async_post_tape = 0;
 
 /* Creation happens ONLY during rp_load (single-threaded, pre-main);
  * at runtime every caller is lookup-only — the table is immutable
@@ -780,6 +783,7 @@ static void rp_load(void) {
     rp_fail("unexpected header length");
   }
   g_rp_hdr_model = h->model_hash;
+  g_rp_hdr_flags = h->flags;
   size_t end = g_rp_len;
   uint64_t trailer_count = 0;
   if (end >= sizeof(obs_rec_hdr_t) + 16 &&
@@ -1414,6 +1418,11 @@ static void rp_report(void) {
       uint64_t jd = 0;
       for (int i = 0; i < RP_MAX_JK; i++)
         jd += atomic_load(&g_rp_divergences[i]);
+      uint64_t sf_steps = 0;
+      for (int ci = 0; ci < g_rp_consumer_count; ci++) {
+        sf_steps += g_rp_consumers[ci].step_len -
+                    g_rp_consumers[ci].step_cursor;
+      }
       fprintf(sf,
               "journal_divergences=%llu\norder_divergences=%llu\n"
               "unconsumed_journal=%llu\nunconsumed_deliveries=%llu\n"
@@ -1422,6 +1431,7 @@ static void rp_report(void) {
               "late_subscription_uncovered=%llu\n"
               "ingress_incompatible=%llu\ningress_unprocessed=%llu\n"
               "injector_start_failure=%llu\nasync_schedule=%llu\n"
+              "unconsumed_async_steps=%llu\nasync_post_tape=%llu\n"
               "post_prefix_live_fallback=%llu\nconsumes=%llu\n",
               (unsigned long long)jd, (unsigned long long)order_div,
               (unsigned long long)unconsumed_journal,
@@ -1435,6 +1445,11 @@ static void rp_report(void) {
               (unsigned long long)atomic_load(
                   &g_rp_injector_start_failure),
               (unsigned long long)atomic_load(&g_rp_async_divergences),
+              (unsigned long long)(g_rp_truncated ? 0 : sf_steps),
+              (unsigned long long)(g_rp_truncated
+                                       ? 0
+                                       : atomic_load(
+                                             &g_rp_async_post_tape)),
               (unsigned long long)atomic_load(&g_rp_post_prefix),
               (unsigned long long)atomic_load(&g_rp_consume_count));
       fclose(sf);
@@ -1451,8 +1466,19 @@ static void rp_report(void) {
                      atomic_load(&g_rp_ing_unprocessed) +
                      atomic_load(&g_rp_injector_start_failure);
   uint64_t async_div = atomic_load(&g_rp_async_divergences);
+  uint64_t async_post = atomic_load(&g_rp_async_post_tape);
+  uint64_t unconsumed_steps = 0;
+  for (int ci = 0; ci < g_rp_consumer_count; ci++) {
+    rp_consumer_t *cc = &g_rp_consumers[ci];
+    unconsumed_steps += cc->step_len - cc->step_cursor;
+  }
+  /* Truncated tape: remaining steps and post-tape work are the
+   * expected coverage boundary, not divergences. */
+  uint64_t async_div_total =
+      g_rp_truncated ? 0 : async_post + unconsumed_steps;
   uint64_t total = order_div + unconsumed_journal
-      + unconsumed_deliveries + unexpected + ing_div + async_div;
+      + unconsumed_deliveries + unexpected + ing_div + async_div
+      + async_div_total;
   for (int i = 0; i < RP_MAX_JK; i++)
     total += atomic_load(&g_rp_divergences[i]);
   if (g_rp_truncated) {
@@ -1503,6 +1529,12 @@ static void rp_report(void) {
   if (async_div)
     fprintf(stderr, "  %-22s %llu\n", "async-schedule",
             (unsigned long long)async_div);
+  if (!g_rp_truncated && unconsumed_steps)
+    fprintf(stderr, "  %-22s %llu\n", "unconsumed-async-steps",
+            (unsigned long long)unconsumed_steps);
+  if (!g_rp_truncated && async_post)
+    fprintf(stderr, "  %-22s %llu\n", "async-post-tape",
+            (unsigned long long)async_post);
   if (unconsumed_journal)
     fprintf(stderr, "  %-22s %llu\n", "unconsumed-journal",
             (unsigned long long)unconsumed_journal);
@@ -1558,7 +1590,11 @@ void lotus_obs_teardown(void) {
                             g_obs_exec_digest[0], g_obs_exec_digest[1],
                             g_obs_exec_digest[2], g_obs_exec_digest[3],
                             (g_rec_env_full ? 0u : 1u) |
-                                (g_rec_durable ? 2u : 0u) };
+                                (g_rec_durable ? 2u : 0u) |
+                                /* bit 2: async-schedule capable —
+                                 * this runtime records the drain's
+                                 * scheduling steps (phase 6). */
+                                4u };
       if (fseek(g_rec_file, 48, SEEK_SET) != 0 ||
           fwrite(ident, sizeof ident, 1, g_rec_file) != 1 ||
           fseek(g_rec_file, 0, SEEK_END) != 0) {
@@ -1834,7 +1870,8 @@ static int obs_create(int64_t rings, int64_t slots) {
       .model_hash = g_obs_model_hash,
       .exec_digest = { g_obs_exec_digest[0], g_obs_exec_digest[1],
                        g_obs_exec_digest[2], g_obs_exec_digest[3] },
-      .flags = g_rec_env_full ? 0 : 1 };
+      .flags = (g_rec_env_full ? 0u : 1u) | (g_rec_durable ? 2u : 0u)
+               | 4u };
     if (fwrite(&rh, sizeof rh, 1, g_rec_file) != 1) {
       fprintf(stderr, "hale: LOTUS_OBS_RECORD header write failed\n");
       fflush(NULL);
@@ -1993,7 +2030,8 @@ void lotus_obs_eager_init(void) {
     g_obs_ident_committed_vals[3] = g_obs_exec_digest[2];
     g_obs_ident_committed_vals[4] = g_obs_exec_digest[3];
     g_obs_ident_committed_vals[5] =
-        (g_rec_env_full ? 0u : 1u) | (g_rec_durable ? 2u : 0u);
+        (g_rec_env_full ? 0u : 1u) | (g_rec_durable ? 2u : 0u) |
+        /* bit 2: async-schedule capable (phase 6). */ 4u;
     atomic_store_explicit(&g_obs_ident_committed, 1,
                           memory_order_release);
   }
@@ -2649,6 +2687,19 @@ void lotus_replay_note_async_divergence(void) {
   atomic_fetch_add_explicit(&g_rp_async_divergences, 1,
                             memory_order_relaxed);
 }
+/* Review round (phase 6): the dry-tape coverage classes must not
+ * collapse into "run live silently". */
+void lotus_replay_note_async_post_tape(void) {
+  atomic_fetch_add_explicit(&g_rp_async_post_tape, 1,
+                            memory_order_relaxed);
+}
+/* Did the RECORDING runtime know how to record async schedules?
+ * (header flag bit 2). Absent = a pre-phase-6 artifact: async
+ * pools run live as a stated coverage note, not a divergence. */
+int lotus_replay_async_capable(void) {
+  return (g_rp_hdr_flags & 4u) != 0;
+}
+int lotus_replay_is_truncated(void) { return g_rp_truncated; }
 
 /* The calling pool-worker's next recorded scheduling step. 0 =
  * stream exhausted (or none recorded) — the drain falls back to
