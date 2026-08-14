@@ -153,6 +153,15 @@ pub fn check_bundle_opts(
 ) -> Vec<Diag> {
     let (top, mut diags) = resolve::build_top_scope(bundle);
     diags.extend(check::check_bundle(bundle, &top, allow_unowned_subscriber));
+    // GH #470: diagnostics speak the user's spelling at EVERY
+    // consumer — CLI, LSP, library callers, tests — not just the
+    // CLI, which used to be the only layer applying the stdlib
+    // demangle. A message naming `__StdHttpMiddleware` points at a
+    // symbol that appears nowhere in the author's source. (The
+    // CLI's own demangle pass additionally rewrites cross-seed
+    // import renames, which only it knows; re-rewriting an
+    // already-public stdlib name there is a no-op.)
+    stdlib_bodies::demangle_imports(&mut diags, &[]);
     diags
 }
 

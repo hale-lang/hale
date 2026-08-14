@@ -950,12 +950,16 @@ enters the program and there is no construction site at which the
 caller held it. `std::secret::Credential` is the same discipline for a
 token or password, with a `fingerprint()` that is safe to log.
 
-Sealing keys off the receiver's resolved type, so a qualified path
-naming a **sealed** Hale-source stdlib locus resolves to the mangled
-name that source declares. Other qualified paths resolve to
-`Ty::Unknown`: resolving them all would turn on field-existence and
-method arity checking across the whole stdlib surface at once, which
-is a separate change.
+Sealing keys off the receiver's resolved type. Since GH #470 every
+qualified path naming a Hale-source stdlib declaration resolves to
+the mangled name that source declares — the whole surface, not only
+sealed loci — so field-existence, method arity, and
+interface-satisfaction checking apply to stdlib-typed values exactly
+as to user types (the old `Ty::Unknown` tolerance was fail-open:
+a wrong-arity method coerced to a stdlib interface unchecked and
+corrupted memory at the fat-pointer call). Rust-implemented builtin
+handles keep the permissive typing; their path-call names are
+validated by the stdlib surface registry.
 
 **The recommended shape**, a pattern rather than an enforced contract:
 an ordinary function prepares a request from public data and returns a

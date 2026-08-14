@@ -146,7 +146,7 @@ locus Gate {
 }
 fn main() {
     let r = std::http::Router { };
-    r.get("/", Hello { });
+    r.add("GET", "/", Hello { });
     let req = std::http::Request { method: "GET", path: "/", body: "" };
     println(Gate { }.probe(r, req));
 }

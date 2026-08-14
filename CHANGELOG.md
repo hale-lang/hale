@@ -8,6 +8,44 @@ behavior.
 
 ## Unreleased
 
+### Stdlib values get their real types - the fail-open `Ty::Unknown` class is closed (GH #470)
+
+Found via a downstream server whose responses curl rejected: a
+middleware locus with the wrong `after` arity typechecked and the
+Router's interface fat-pointer call corrupted the HTTP response
+in-memory (garbage status integer, dangling header, the request's
+method and path bleeding into the output). Root cause: stdlib
+qualified paths resolved to `Ty::Unknown`, which is bidirectionally
+compatible - so `router.use(badMw)` performed no signature lookup,
+no interface-satisfaction check, and codegen coerced blindly. Even
+`let x: Int = router;` and `std::log::TotallyFakeSink {}` (a
+nonexistent name) typechecked.
+
+The fix is the one the sealed-loci injection (GH #436) deferred:
+the ENTIRE Hale-source stdlib surface - loci, types, interfaces,
+free fns - is now registered into the checker's top scope
+(signatures only; stdlib bodies are never added to the checked
+bundle, so no diagnostics can land on stdlib source). `std::...`
+type expressions and struct/locus literals resolve through
+PATH_RENAMES to their nominal symbols and validate for real:
+literal fields are checked, methods resolve against true
+signatures, interface coercions run the structural verifier, and a
+`std::` literal that matches nothing is a hard error. Diagnostics
+render the public spelling (`std::http::Middleware`, not the
+mangled name). Rust-implemented builtins keep their historical
+tolerance (their path-call names were already validated by the
+stdlib surface registry).
+
+Measured blast radius: the whole fixture corpus and workspace pass
+untouched except two tests that pinned the old permissiveness -
+one of which was an invalid fixture the tolerance had been hiding
+(a call to a Router method that does not exist). Ergonomics
+follow-through: `std::http::Request` gained defaults for
+`version`/`headers`/`body` so the documented hand-built-Request
+pattern stays one line. Canaries: the wrong-arity middleware, the
+`Int = router` absurdity, and the typo'd-literal case are all
+compile errors now.
+
 ### Record & replay, phase 5: durable recording, the hermetic wire, and feed mode (GH #296)
 
 Three deliverables close the two loudest gaps in the v0.17.0
@@ -114,7 +152,6 @@ without touching shared memory; two listeners surviving CLI
 `--diff` with per-source identity.
 
 ---
-
 ## v0.17.0 — the run comes back the same (2026-08-13)
 
 ### Record & replay, phases 2–4: `hale replay` (GH #296)

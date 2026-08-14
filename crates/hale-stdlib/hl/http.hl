@@ -41,9 +41,14 @@
 type __StdHttpRequest {
     method: String;
     path: String;
-    version: String;
-    headers: String;
-    body: String;
+    /// Defaults let a hand-built Request (unit tests, Router
+    /// dispatch probes — the documented parse_request-adjacent
+    /// pattern) spell only what it means: method + path (+ body).
+    /// GH #470 made literal fields checked for real; these
+    /// defaults keep that check ergonomic rather than pedantic.
+    version: String = "HTTP/1.1";
+    headers: String = "";
+    body: String = "";
     /// The live connection fd (Upgrade/takeover surface,
     /// 2026-07-19). Populated by the Server's per-connection
     /// loop before dispatch; -1 when the Request was built by

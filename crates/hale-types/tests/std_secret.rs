@@ -118,12 +118,13 @@ fn a_fingerprint_is_publishable_and_the_value_is_not() {
 }
 
 #[test]
-fn only_sealed_stdlib_loci_gained_a_resolved_type() {
-    // The resolver injection is deliberately narrow: making EVERY
-    // qualified stdlib path resolve would switch on field-existence
-    // and arity checking across the whole stdlib surface at once.
-    // An unsealed stdlib locus must still behave exactly as before —
-    // permissive, because its type is still `Unknown`.
+fn every_stdlib_locus_gained_a_resolved_type() {
+    // GH #470 inverted the old sealed-only narrowing: the ENTIRE
+    // Hale-source stdlib surface is registered, so field-existence
+    // and arity checking apply across it. The Unknown tolerance
+    // this test used to pin was fail-open all the way to runtime
+    // memory corruption (a wrong-arity middleware coerced to
+    // `std::http::Middleware` unchecked).
     let src = "
         locus L {
             params { n: Int = 0; }
@@ -134,9 +135,56 @@ fn only_sealed_stdlib_loci_gained_a_resolved_type() {
         main locus App { params { l: L = L { }; } }
         fn main() { App { }; }
     ";
+    let errs = errors(src);
     assert!(
-        errors(src).is_empty(),
-        "unsealed stdlib paths must stay permissive: {:?}",
-        errors(src)
+        errs.iter().any(|d| d.contains("no_such_field_at_all")),
+        "a bogus field on a stdlib handle must now be an error: {:?}",
+        errs
+    );
+}
+
+#[test]
+fn wrong_arity_interface_impl_is_refused_at_the_stdlib_call_site() {
+    // The #470 canary itself: the middleware contract is
+    // `after(ctx, resp) -> Response`; a one-arg `after` used to
+    // typecheck through the Unknown receiver and corrupt memory at
+    // the fat-pointer call.
+    let src = "
+        locus BadMw {
+            fn before(ctx: std::http::Context) -> std::http::Context {
+                return ctx;
+            }
+            fn after(ctx: std::http::Context) -> std::http::Context {
+                return ctx;
+            }
+        }
+        fn main() {
+            let router = std::http::Router {};
+            router.use(BadMw {});
+        }
+    ";
+    let errs = errors(src);
+    assert!(
+        errs.iter().any(|d| {
+            d.contains("after") && d.contains("arity")
+        }),
+        "the wrong-arity middleware must be refused: {:?}",
+        errs
+    );
+}
+
+#[test]
+fn nonexistent_stdlib_paths_are_errors_not_unknowns() {
+    // `std::log::TotallyFakeSink {}` used to typecheck silently.
+    let src = "
+        fn main() {
+            std::log::TotallyFakeSink {};
+        }
+    ";
+    let errs = errors(src);
+    assert!(
+        errs.iter().any(|d| d.contains("unknown stdlib type")),
+        "a typo'd stdlib literal must be an error: {:?}",
+        errs
     );
 }

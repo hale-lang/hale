@@ -15,10 +15,15 @@
 //!   in milestone 2 — just that something is there).
 //! - `self.field`: resolves against enclosing locus's params.
 //!
-//! Names referenced via paths the bundle can't see (stdlib,
-//! `time::sleep`, `println`) resolve to `Ty::Unknown`, which
-//! is bidirectionally compatible — milestone 2 does not error
-//! on these. Milestone 3 will tighten.
+//! Names referenced via paths the bundle can't see resolve to
+//! `Ty::Unknown`, which is bidirectionally compatible. GH #470
+//! tightened the STDLIB half of that tolerance: the Hale-source
+//! stdlib surface is registered into the top scope (signatures
+//! only — its bodies are never checked here), so `std::…` type
+//! exprs, literals, fields, methods, and interface coercions
+//! check for real, and a `std::` literal that resolves nowhere is
+//! an error. Rust-implemented builtins keep the tolerance (their
+//! path-call NAMES are validated by `stdlib_surface`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -10851,6 +10856,82 @@ impl<'a> Checker<'a> {
                             .iter()
                             .map(|s| s.name.as_str())
                             .collect();
+                        // GH #470: a std:: path that renames to a
+                        // REGISTERED Hale-source free fn checks
+                        // against its real signature — full
+                        // fidelity: arity, param types, nominal
+                        // return, fallibility. The surface table
+                        // below stays authoritative only for the
+                        // Rust-implemented builtins it was built
+                        // for. (Before this, `std::io::file::open`
+                        // checked against the table's stale fd-era
+                        // row — `-> Int` — so the DOCUMENTED File
+                        // handle pattern could not typecheck.)
+                        if let Some(mangled) =
+                            crate::stdlib_bodies::mangled_locus_name(
+                                &segs,
+                            )
+                        {
+                            if let Some(TopSymbol::Fn(f)) =
+                                self.top.lookup(mangled).cloned()
+                            {
+                                let min = f
+                                    .min_params
+                                    .unwrap_or(f.params.len());
+                                if args.len() < min
+                                    || args.len() > f.params.len()
+                                {
+                                    self.diags.push(Diag::ty(
+                                        qn.span,
+                                        format!(
+                                            "`{}` takes {} argument{}, \
+                                             got {}",
+                                            segs.join("::"),
+                                            f.params.len(),
+                                            if f.params.len() == 1 {
+                                                ""
+                                            } else {
+                                                "s"
+                                            },
+                                            args.len()
+                                        ),
+                                    ));
+                                }
+                                for (i, a) in args.iter().enumerate() {
+                                    let got =
+                                        self.check_expr_addressed(a);
+                                    if let Some((_, want)) =
+                                        f.params.get(i)
+                                    {
+                                        if !want.assignable_from(&got) {
+                                            self.diags.push(Diag::ty(
+                                                a.span(),
+                                                format!(
+                                                    "`{}` argument {}: \
+                                                     expected `{}`, \
+                                                     got `{}`",
+                                                    segs.join("::"),
+                                                    i + 1,
+                                                    want.display(),
+                                                    got.display()
+                                                ),
+                                            ));
+                                        }
+                                    }
+                                }
+                                return match &f.fallible {
+                                    Some(payload) => Ty::Fallible {
+                                        success: Box::new(
+                                            f.ret.clone(),
+                                        ),
+                                        payload: Box::new(
+                                            payload.clone(),
+                                        ),
+                                    },
+                                    None => f.ret.clone(),
+                                };
+                            }
+                        }
                         if let Some(msg) =
                             crate::stdlib_surface::unknown_fn_error(&segs)
                         {
@@ -11664,6 +11745,72 @@ impl<'a> Checker<'a> {
                         // statically. GH #241: with a nearest-
                         // name suggestion drawn from the
                         // receiver's fields + methods.
+                        // GH #470: stdlib handle-method sugar.
+                        // `f.write_line(x)` on a handle typed
+                        // `std::io::file::File` is codegen-dispatched
+                        // to the handle namespace's free fn
+                        // (`__std_io_file_write_line(f, x)`). Mirror
+                        // that here: reverse-map the receiver's
+                        // mangled name to its public path, swap the
+                        // type leaf for the member name, resolve
+                        // through the same renames, and type the
+                        // member as a bound fn (receiver = arg 0,
+                        // checked for compatibility). Without this,
+                        // making handles nominal would have turned
+                        // the documented handle patterns into false
+                        // "no field" errors.
+                        if let Ty::Named(tn) = &rt {
+                            if let Some(pub_path) = hale_stdlib::PATH_RENAMES
+                                .iter()
+                                .find(|(_, m)| *m == tn.as_str())
+                                .map(|(p, _)| *p)
+                            {
+                                let mut segs: Vec<&str> = pub_path.to_vec();
+                                if let Some(last) = segs.last_mut() {
+                                    *last = name.name.as_str();
+                                }
+                                if let Some(m2) =
+                                    crate::stdlib_bodies::mangled_locus_name(
+                                        &segs,
+                                    )
+                                {
+                                    if let Some(TopSymbol::Fn(f)) =
+                                        self.top.lookup(m2).cloned()
+                                    {
+                                        let recv_ok = f
+                                            .params
+                                            .first()
+                                            .map(|(_, t)| {
+                                                t.assignable_from(&rt)
+                                            })
+                                            .unwrap_or(false);
+                                        if recv_ok {
+                                            let tail: Vec<Ty> = f
+                                                .params
+                                                .iter()
+                                                .skip(1)
+                                                .map(|(_, t)| t.clone())
+                                                .collect();
+                                            let ret = match &f.fallible {
+                                                Some(p) => Ty::Fallible {
+                                                    success: Box::new(
+                                                        f.ret.clone(),
+                                                    ),
+                                                    payload: Box::new(
+                                                        p.clone(),
+                                                    ),
+                                                },
+                                                None => f.ret.clone(),
+                                            };
+                                            return Ty::Function {
+                                                params: tail,
+                                                ret: Box::new(ret),
+                                            };
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         if !matches!(rt, Ty::Unknown) {
                             let mut candidates: Vec<String> = Vec::new();
                             if let Ty::Named(tn) = &rt {
@@ -11820,8 +11967,35 @@ impl<'a> Checker<'a> {
                                 .iter()
                                 .map(|s| s.name.as_str())
                                 .collect();
-                            crate::stdlib_surface::signature_for(&segs)
+                            // GH #470: a path renaming to a
+                            // REGISTERED Hale-source fn is an
+                            // ordinary fn call — the Call arm typed
+                            // it with its real (possibly Fallible)
+                            // signature, and the generic unwrap
+                            // below handles it. The surface table's
+                            // dual-mode or_types are only for the
+                            // Rust builtins (its `open` row was the
+                            // stale fd era and OVERRODE the real
+                            // File return here).
+                            let renamed_registered =
+                                crate::stdlib_bodies::mangled_locus_name(
+                                    &segs,
+                                )
+                                .map(|m| {
+                                    matches!(
+                                        self.top.lookup(m),
+                                        Some(TopSymbol::Fn(_))
+                                    )
+                                })
+                                .unwrap_or(false);
+                            if renamed_registered {
+                                None
+                            } else {
+                                crate::stdlib_surface::signature_for(
+                                    &segs,
+                                )
                                 .and_then(|sig| sig.or_types())
+                            }
                         }
                         _ => None,
                     },
@@ -12382,10 +12556,8 @@ impl<'a> Checker<'a> {
         inits: &[StructInit],
         span: Span,
     ) -> Ty {
+        let mut stdlib_resolved: Option<String> = None;
         if path.segments.len() != 1 {
-            for init in inits {
-                let _ = self.check_expr(&init.value);
-            }
             // Resolve an imported qualified literal (`mat::Grid { }`)
             // to the merged symbol codegen lowers it to, so field and
             // method access on the RESULT is checked against the real
@@ -12393,17 +12565,19 @@ impl<'a> Checker<'a> {
             // the gap that let `mat::Grid { }.make(x)` (no such method;
             // `make` is a free fn) pass `check` and die in codegen.
             //
-            // Only the result TYPE is resolved. The inits are not
-            // re-validated against the imported params, so any literal
-            // `check` accepted before (as Unknown) still typechecks —
-            // this only adds checking downstream of the literal, never
-            // new errors on the literal itself. Empty renames (every
-            // single-seed bundle) fall straight through to Unknown.
+            // Only the result TYPE is resolved for IMPORTS. The inits
+            // are not re-validated against the imported params, so any
+            // literal `check` accepted before (as Unknown) still
+            // typechecks. Empty renames (every single-seed bundle)
+            // skip straight past this.
             let key: Vec<String> =
                 path.segments.iter().map(|s| s.name.clone()).collect();
             if let Some((_, mangled)) =
                 self.import_renames.iter().find(|(p, _)| *p == key)
             {
+                for init in inits {
+                    let _ = self.check_expr(&init.value);
+                }
                 if matches!(
                     self.top.lookup(mangled),
                     Some(
@@ -12414,10 +12588,58 @@ impl<'a> Checker<'a> {
                 ) {
                     return Ty::Named(mangled.clone());
                 }
+                return Ty::Unknown;
             }
-            return Ty::Unknown;
+            // GH #470: a STDLIB qualified literal resolves through
+            // PATH_RENAMES to the mangled symbol the Hale-source
+            // stdlib declares (now registered in the top scope), and
+            // then falls through to FULL literal validation below —
+            // fields checked, interface coercions enforced. The old
+            // `Ty::Unknown` tolerance here was fail-open all the way
+            // to runtime memory corruption (a wrong-arity middleware
+            // coerced to `std::http::Middleware` unchecked).
+            let segs: Vec<&str> =
+                path.segments.iter().map(|s| s.name.as_str()).collect();
+            if let Some(m) = crate::stdlib_bodies::mangled_locus_name(&segs)
+            {
+                if self.top.lookup(m).is_some() {
+                    stdlib_resolved = Some(m.to_string());
+                } else {
+                    // Renamed but not Hale-source-declared (a
+                    // Rust-implemented handle, e.g.
+                    // std::io::tcp::Listener): keep the historical
+                    // tolerance — a Named with no symbol behind it
+                    // would trade fail-open for false errors.
+                    for init in inits {
+                        let _ = self.check_expr(&init.value);
+                    }
+                    return Ty::Unknown;
+                }
+            } else if segs.first() == Some(&"std") {
+                // GH #470: a std:: literal that matches nothing in
+                // the rename table is a typo, not an Unknown —
+                // `std::log::TotallyFakeSink {}` used to typecheck.
+                self.diags.push(Diag::ty(
+                    span,
+                    format!(
+                        "unknown stdlib type `{}` in struct/locus \
+                         literal",
+                        key.join("::")
+                    ),
+                ));
+                for init in inits {
+                    let _ = self.check_expr(&init.value);
+                }
+                return Ty::Unknown;
+            } else {
+                for init in inits {
+                    let _ = self.check_expr(&init.value);
+                }
+                return Ty::Unknown;
+            }
         }
-        let name = &path.segments[0].name;
+        let name: &String =
+            stdlib_resolved.as_ref().unwrap_or(&path.segments[0].name);
         // M3 stage 3 tranche 2 (2026-07-02): mangled generic
         // monomorph literal (`Box_Int { ... }`). Resolve the
         // `Base_Tok[_Tok...]` shape against a generic type

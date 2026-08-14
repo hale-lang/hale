@@ -1,0 +1,23 @@
+// GH #470: the documented File handle pattern, END TO END. Before
+// the nominal-types change this could not even typecheck (the
+// surface table's stale fd-era row typed `open` as -> Int), and
+// before file.hl's handle ops became real locus members it could
+// not lower (codegen's fallible-member machinery had no member to
+// find). This test is the proof both layers now agree.
+
+fn roundtrip(path: String) -> String fallible(IoError) {
+    let w = std::io::file::open(path, "w") or raise;
+    w.write_line("alpha") or raise;
+    w.write_line("beta") or raise;
+    let r = std::io::file::open(path, "r") or raise;
+    // read_line keeps the trailing newline; trim for comparison.
+    let first = std::str::trim(r.read_line());
+    let second = std::str::trim(r.read_line());
+    std::test::assert(len(second) > 0, "read progressed");
+    return first + "|" + second;
+}
+
+fn main() {
+    let got = roundtrip("/tmp/hale_470_file_test.txt") or "FAILED";
+    std::test::assert_eq_str(got, "alpha|beta", "write then read back through the handle");
+}
