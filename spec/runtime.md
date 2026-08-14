@@ -1754,10 +1754,23 @@ with the timed-out sentinel immediately — the recording already
 proves the deadline fired at this point in the sequence, so
 replayed sleeps fast-forward rather than re-waiting. A step
 unsatisfiable within the hold bound counts an `async-schedule`
-divergence and is skipped (degrade, never deadlock); a dry tape —
-the recording ended, or predates phase 6 — hands the pool back to
-the live drain, which still gates cell starts while the consume
-stream lasts. Boundary, stated: the SCHEDULE replays; the DATA of
+divergence and is skipped (degrade, never deadlock).
+
+**Coverage, named (review round).** A dry tape hands the pool back
+to the live drain — never silently. The artifact carries a
+capability bit (header flag 4: this runtime records async
+schedules); the states are distinct and reviewable: a pre-phase-6
+artifact gets a one-shot coverage note ("recording predates
+async-schedule support"); a truncated tape's remaining schedule is
+the stated coverage boundary (excluded from the divergence
+totals); a FINALIZED capable artifact whose tape runs dry while
+the re-execution keeps doing async work counts each such action as
+`async_post_tape`, and schedule steps left unconsumed at exit
+count as `unconsumed_async_steps` — both machine-readable status
+keys and divergence rows. `--diff` compares the per-consumer async
+step streams (kind, value) bidirectionally, exactly like the
+consume and journal streams — "byte-identical output" alone is
+weaker than "the schedule matched". Boundary, stated: the SCHEDULE replays; the DATA of
 unjournaled I/O does not — a coro resumed at its recorded turn
 re-executes its recv against the live world (syscall-class, gated),
 and bindings ingress arrives via the Phase-5 injector.

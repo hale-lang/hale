@@ -6452,6 +6452,9 @@ int lotus_replay_async_step_peek(uint32_t *kind, uint64_t *val)
     __attribute__((weak));
 void lotus_replay_async_step_advance(void) __attribute__((weak));
 void lotus_replay_note_async_divergence(void) __attribute__((weak));
+void lotus_replay_note_async_post_tape(void) __attribute__((weak));
+int lotus_replay_async_capable(void) __attribute__((weak));
+int lotus_replay_is_truncated(void) __attribute__((weak));
 extern int lotus_replay_feed __attribute__((weak));
 /* iris handoff-12 P22: the per-binding backpressure cells
  * (PROTOCOL §6: 3 queue_depth gauge, 4 send_block_ns, 5 retries).
@@ -7669,6 +7672,10 @@ typedef struct lotus_coop_pool {
      * modes so RESUME/EXPIRE records name their coro across runs. */
     lotus_coro_t     *ready_head;
     uint64_t          coro_birth_seq;
+    /* Review round (phase 6): the tape ran dry on this pool — live
+     * async work from here on is a named coverage class, never a
+     * silent fallback. */
+    int               rp_tape_dry;
 #endif
     /* Pool affinity (2026-08-12): a core set stashed by codegen
      * before start_all spawns the worker; applied right after
@@ -7785,6 +7792,7 @@ lotus_coop_pool_t *lotus_coop_pool_register(const char *name) {
     p->free_count       = 0;
     p->ready_head       = NULL;
     p->coro_birth_seq   = 0;
+    p->rp_tape_dry      = 0;
 #endif
     /* Truncated copy — the bound is LOTUS_COOP_POOL_MAX-name's-
      * worth and pool names are conventionally short. Anything
@@ -8357,6 +8365,33 @@ static inline void lotus_async_rec_step(uint32_t ev, uint64_t val) {
     }
 }
 
+/* Review round (phase 6): live async work after this pool's tape
+ * ran dry. Three states, none silent: a pre-phase-6 artifact gets
+ * a one-shot coverage note (nothing recorded to enforce); a
+ * truncated tape's remainder is the stated coverage boundary
+ * (rp_report says so); a dry tape on a FINALIZED capable artifact
+ * means the re-execution did more async work than the recording —
+ * each such action counts as an async-post-tape divergence. */
+static void lotus_async_note_live_action(lotus_coop_pool_t *p) {
+    if (!(lotus_replay_note_consume && lotus_replay_active)) return;
+    if (!p->rp_tape_dry) return;
+    if (lotus_replay_async_capable && !lotus_replay_async_capable()) {
+        static int warned = 0;
+        if (!warned) {
+            warned = 1;
+            fprintf(stderr,
+                    "hale replay: recording predates async-schedule "
+                    "support — async pools run live (coverage "
+                    "note)\n");
+        }
+        return;
+    }
+    if (lotus_replay_is_truncated && lotus_replay_is_truncated())
+        return;
+    if (lotus_replay_note_async_post_tape)
+        lotus_replay_note_async_post_tape();
+}
+
 /* Start one dequeued cell on a fresh coro stack — the tail of the
  * live drain, shared with the replay drain so both modes start
  * cells identically. Numbers the start (birth ordinal) and records
@@ -8621,6 +8656,7 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
     if (replaying && lotus_replay_async_step_peek) {
         int r = lotus_coop_pool_drain_one_async_replay(p);
         if (r >= 0) return r;
+        p->rp_tape_dry = 1;
     }
     /* Phase-1b: the cell SOURCE is now the lock-free ring (+ the consumer-
      * local overflow list); the park stays epoll_wait and the wake stays
@@ -8739,6 +8775,7 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
             if (*pp == c) *pp = c->next;
             c->next      = NULL;
             c->parked_fd = -1;
+            lotus_async_note_live_action(p);
             /* GH #296 phase 6: the scheduling decision IS the
              * nondeterminism on this pool — record it. */
             lotus_async_rec_step(LOTUS_REC_ASYNC_RESUME, c->birth_ord);
@@ -8786,6 +8823,7 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
             expired->next           = NULL;
             expired->parked_fd      = -1;
             expired->park_timed_out = 1;
+            lotus_async_note_live_action(p);
             lotus_async_rec_step(LOTUS_REC_ASYNC_EXPIRE,
                                  expired->birth_ord);
             g_current_coro_tls = expired;
@@ -8832,6 +8870,7 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
     /* GH #296 phase 6: same per-consumer order gate as the classic
      * pool and mailbox drains. */
     if (replaying && !lotus_replay_gate_cell(&cell_copy)) return 1;
+    lotus_async_note_live_action(p);
     return lotus_async_start_cell(p, &cell_copy);
 }
 #else /* !LOTUS_HAVE_ASYNC_IO — macOS / other BSDs */

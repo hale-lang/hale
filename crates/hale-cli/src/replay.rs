@@ -25,6 +25,10 @@ pub const REC_END: u64 = 0x30444E45454C4148; // "HALEEND0"
 // carries PRIV_RING) — disjoint from iris protocol ekinds.
 const REC_EV_CONSUMER: u32 = 1;
 const REC_EV_CONSUME: u32 = 2;
+// GH #296 phase 6: the async drain's recorded scheduling steps.
+const REC_EV_ASYNC_START: u32 = 5;
+const REC_EV_ASYNC_RESUME: u32 = 6;
+const REC_EV_ASYNC_EXPIRE: u32 = 7;
 const PRIV_RING: u32 = 0x8000_0000;
 
 // Public iris ekinds the comparator aligns across runs.
@@ -86,6 +90,12 @@ pub struct Recording {
     /// deliver), subject-aligned — this is what makes synchronous
     /// direct dispatch visible to `--diff`.
     pub public_streams: Vec<(u64, Vec<PubEvent>)>,
+    /// Per consumer id: the async drain's scheduling-step stream
+    /// (phase 6) — (kind, value) in emission order. Compared
+    /// bidirectionally by `--diff`, exactly like the consume and
+    /// journal streams: "byte-identical output" alone is weaker
+    /// than "the asynchronous schedule matched".
+    pub async_steps: Vec<(u64, Vec<(u32, u64)>)>,
 }
 
 pub fn parse(path: &Path) -> Result<Recording, String> {
@@ -154,6 +164,7 @@ pub fn parse_file(file: &std::fs::File, path: &Path) -> Result<Recording, String
     let mut pub_ring_consumer: BTreeMap<u32, u64> = BTreeMap::new();
     let mut topic_names: BTreeMap<u32, String> = BTreeMap::new();
     let mut consume: Vec<(u64, Vec<(u32, u64)>)> = Vec::new();
+    let mut async_steps: Vec<(u64, Vec<(u32, u64)>)> = Vec::new();
     // Public records buffered raw (ring, w0, w1) and resolved into
     // streams at the end, once the meta maps are complete.
     let mut public_raw: Vec<(u32, u64, u64)> = Vec::new();
@@ -186,6 +197,19 @@ pub fn parse_file(file: &std::fs::File, path: &Path) -> Result<Recording, String
                     }
                     if ekind == REC_EV_CONSUMER {
                         priv_ring_consumer[pr] = w1;
+                    } else if ekind == REC_EV_ASYNC_START
+                        || ekind == REC_EV_ASYNC_RESUME
+                        || ekind == REC_EV_ASYNC_EXPIRE
+                    {
+                        let cid = priv_ring_consumer[pr];
+                        match async_steps
+                            .iter_mut()
+                            .find(|(c, _)| *c == cid)
+                        {
+                            Some((_, v)) => v.push((ekind, w1)),
+                            None => async_steps
+                                .push((cid, vec![(ekind, w1)])),
+                        }
                     } else if ekind == REC_EV_CONSUME {
                         let cid = priv_ring_consumer[pr];
                         let locus = (w0 & 0xFFFFF) as u32;
@@ -367,6 +391,7 @@ pub fn parse_file(file: &std::fs::File, path: &Path) -> Result<Recording, String
         journal,
         consume_streams: consume,
         public_streams: public,
+        async_steps,
     })
 }
 
@@ -452,6 +477,14 @@ pub fn diff(
         "public bus event",
         &original.public_streams,
         &replayed.public_streams,
+        prefix_only,
+    ) {
+        return Some(d);
+    }
+    if let Some(d) = stream_diff(
+        "async schedule step",
+        &original.async_steps,
+        &replayed.async_steps,
         prefix_only,
     ) {
         return Some(d);
