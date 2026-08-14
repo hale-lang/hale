@@ -380,6 +380,12 @@ static __thread uint64_t t_consume_seq = 0;
 #define OBS_REC_TAG_META 3u
 #define OBS_REC_META_TOPIC 1u
 #define OBS_REC_META_PUBRING 2u
+/* GH #296 phase 5b: subject-hash → name map. PAYLOAD records carry
+ * the stable FNV of the subject (registration-order manifest ids
+ * race across runs); this subtype lets a reader NAME a payload's
+ * subject without a live registry — which is what makes feed-mode
+ * "recorded topic X has no subscriber here" reports speakable. */
+#define OBS_REC_META_SUBJHASH 3u
 
 /* journal kinds — one per interposed runtime read */
 #define JK_TIME_NOW 1u
@@ -394,6 +400,24 @@ static __thread uint64_t t_consume_seq = 0;
 static __thread uint64_t t_consumer_id = 0; /* 0 = unassigned */
 static __thread uint64_t t_pub_seq = 0;
 static __thread uint64_t t_journal_seq = 0;
+/* GH #296 phase 5b: a pub_id decided BEFORE the dispatch that would
+ * otherwise derive one. Set by the ingress wire capture (the reader
+ * records the verbatim wire bytes and the dispatch must reuse that
+ * record's identity, not mint a second) and by the replay injector
+ * (an injected delivery must carry its RECORDED identity so the
+ * per-consumer order enforcement can match it). Consumed once. */
+static __thread uint64_t t_rec_forced_pub = 0;
+
+/* The stable subject hash payload records carry (see the v0.3 note
+ * in lotus_obs_record_publish_payload). */
+static uint32_t obs_subject_hash(const char *subject) {
+  uint32_t h = 2166136261u;
+  for (const char *q = subject; *q; q++) {
+    h ^= (uint8_t)*q;
+    h *= 16777619u;
+  }
+  return h;
+}
 
 /* Capture side-channel: payload + journal blobs travel from the
  * emitting thread to the drain on an MPSC push list (atomic
@@ -520,6 +544,13 @@ uint64_t lotus_obs_consumer_id(void) { return t_consumer_id; }
  * The file mapping is kept for process life — served strings are
  * pointers into it. */
 int lotus_replay_active = 0;
+/* GH #296 phase 5b: feed mode (LOTUS_REPLAY_FEED=<path>) — the
+ * backtesting contract. The recording is consumed as an INPUT TAPE
+ * only: recorded ingress is injected, transport bindings are
+ * suppressed (the wire belongs to the tape), and nothing else of
+ * replay applies — no journal serving, no order enforcement, no
+ * model admission. Same inputs, changed code, live everything else. */
+int lotus_replay_feed = 0;
 static char g_replay_path[512];
 static const uint8_t *g_rp_base; /* mmap'd recording */
 static int g_rp_truncated = 0; /* accepted without a finalize trailer */
@@ -571,6 +602,17 @@ typedef struct { uint64_t pub_id; uint32_t topic; uint32_t flags;
                  rp_blob_ref_t bytes; } rp_payload_t;
 static rp_payload_t *g_rp_payloads = NULL;
 static uint32_t g_rp_payload_len = 0, g_rp_payload_cap = 0;
+/* phase 5b: subject-hash → name (META_SUBJHASH), and the ingress
+ * tape — indices into g_rp_payloads, artifact order — that the
+ * injector walks. */
+typedef struct { uint32_t hash; const char *name; } rp_subj_t;
+static rp_subj_t *g_rp_subjects = NULL;
+static uint32_t g_rp_subject_len = 0, g_rp_subject_cap = 0;
+static uint32_t *g_rp_ingress = NULL;
+static uint32_t g_rp_ingress_len = 0, g_rp_ingress_cap = 0;
+static _Atomic uint64_t g_rp_injected = 0;
+static _Atomic uint64_t g_rp_inject_dropped = 0;
+static _Atomic uint64_t g_rp_bindings_suppressed = 0;
 
 /* Creation happens ONLY during rp_load (single-threaded, pre-main);
  * at runtime every caller is lookup-only — the table is immutable
@@ -803,7 +845,37 @@ static void rp_load(void) {
         pl->bytes.args_len = 0;
         pl->bytes.jkind = 0;
         pl->bytes.withheld = 0;
-      } /* META entries carry no replay state; validated + skipped */
+        /* phase 5b: ingress payloads with verbatim wire bytes (bit
+         * 0 set, bit 1 clear) are the injectable tape. */
+        if ((cfield & 1) && !(cfield & 2)) {
+          if (g_rp_ingress_len == g_rp_ingress_cap) {
+            g_rp_ingress_cap = g_rp_ingress_cap ? g_rp_ingress_cap * 2 : 64;
+            uint32_t *g = realloc(g_rp_ingress,
+                                  g_rp_ingress_cap * sizeof(uint32_t));
+            if (!g) rp_fail("out of memory");
+            g_rp_ingress = g;
+          }
+          g_rp_ingress[g_rp_ingress_len++] = g_rp_payload_len - 1;
+        }
+      } else {
+        /* META: subject-hash map feeds injection + reports; other
+         * subtypes carry no replay state — validated + skipped. */
+        if (b == OBS_REC_META_SUBJHASH && size > 0 &&
+            bytes[size - 1] == 0) {
+          if (g_rp_subject_len == g_rp_subject_cap) {
+            g_rp_subject_cap =
+                g_rp_subject_cap ? g_rp_subject_cap * 2 : 32;
+            rp_subj_t *g = realloc(
+                g_rp_subjects, g_rp_subject_cap * sizeof(rp_subj_t));
+            if (!g) rp_fail("out of memory");
+            g_rp_subjects = g;
+          }
+          g_rp_subjects[g_rp_subject_len].hash = a;
+          g_rp_subjects[g_rp_subject_len].name =
+              (const char *)bytes;
+          g_rp_subject_len++;
+        }
+      }
       off += 32 + padded;
     } else {
       rp_fail("unknown entry tag — recording from a newer hale?");
@@ -822,6 +894,117 @@ static void rp_load(void) {
             "dropped)\n",
             (unsigned long long)parsed,
             (unsigned long long)g_rp_dropped_tail);
+  }
+}
+
+/* ---- phase 5b: the ingress tape (injection + feed) -------------
+ *
+ * The reader threads' wire captures (verbatim bytes, ingress flag)
+ * become the injectable tape. The arena-side injector walks it in
+ * artifact order through these accessors; identity rides
+ * t_rec_forced_pub so an injected delivery matches its recorded
+ * consume events without minting a new pub_id. */
+uint64_t lotus_replay_ingress_count(void) {
+  return (lotus_replay_active || lotus_replay_feed)
+             ? g_rp_ingress_len
+             : 0;
+}
+int lotus_replay_ingress_get(uint64_t i, uint32_t *topic,
+                             uint64_t *pub_id, const void **bytes,
+                             uint64_t *size) {
+  if (i >= g_rp_ingress_len) return 0;
+  const rp_payload_t *pl = &g_rp_payloads[g_rp_ingress[i]];
+  *topic = pl->topic;
+  *pub_id = pl->pub_id;
+  *bytes = pl->bytes.p;
+  *size = pl->bytes.size;
+  return 1;
+}
+const char *lotus_replay_topic_name(uint32_t topic) {
+  for (uint32_t i = 0; i < g_rp_subject_len; i++) {
+    if (g_rp_subjects[i].hash == topic) return g_rp_subjects[i].name;
+  }
+  return NULL;
+}
+uint32_t lotus_replay_subject_hash(const char *subject) {
+  return obs_subject_hash(subject);
+}
+/* Called by the injector immediately before dispatching one tape
+ * payload. Strict replay: pin the RECORDED identity (and, when a
+ * verify recording is running under --diff, record the injected
+ * payload so the comparator can pair it). Feed: identity is the
+ * new run's own — nothing to pin. */
+uint64_t lotus_replay_inject_begin(const char *subject,
+                                   const void *bytes, uint64_t size,
+                                   uint64_t pub_id) {
+  if (!lotus_replay_active) return 0;
+  if (lotus_obs_recording && subject) {
+    obs_rec_blob_push(OBS_REC_TAG_PAYLOAD, obs_subject_hash(subject),
+                      pub_id, 1u, bytes, size);
+  }
+  t_rec_forced_pub = pub_id;
+  return pub_id;
+}
+void lotus_replay_note_injected(void) {
+  atomic_fetch_add_explicit(&g_rp_injected, 1, memory_order_relaxed);
+}
+void lotus_replay_note_inject_dropped(uint32_t topic) {
+  (void)topic;
+  atomic_fetch_add_explicit(&g_rp_inject_dropped, 1,
+                            memory_order_relaxed);
+}
+void lotus_replay_note_binding_suppressed(void) {
+  atomic_fetch_add_explicit(&g_rp_bindings_suppressed, 1,
+                            memory_order_relaxed);
+}
+
+/* Live-side twin of inject_begin, called by the reader threads
+ * before they deserialize received wire bytes: capture the VERBATIM
+ * wire form with the ingress flag (the injectable shape — the
+ * struct-bytes record local_dispatch would otherwise push is
+ * metadata-only and cannot be re-fed), derive the pub_id here, and
+ * pin it so the dispatch a few lines later reuses this identity. */
+uint64_t lotus_obs_record_ingress_wire(const char *subject,
+                                       const void *bytes,
+                                       uint64_t size) {
+  if ((!lotus_obs_recording && !lotus_replay_active) || !subject)
+    return 0;
+  if (!obs_on()) return 0;
+  if (t_consumer_id == 0) obs_rec_claim();
+  uint64_t cid = t_consumer_id;
+  if (cid > OBS_REC_CONSUMER_MAX || t_pub_seq >= 0xFFFFFFFFFFFFULL) {
+    fprintf(stderr,
+            "hale: recording identity out of range (consumer %llu, "
+            "seq %llu) — refusing to record ambiguously\n",
+            (unsigned long long)cid,
+            (unsigned long long)t_pub_seq);
+    fflush(NULL);
+    _exit(70);
+  }
+  uint64_t pub_id = (cid << 48) | (++t_pub_seq & 0xFFFFFFFFFFFFULL);
+  if (lotus_obs_recording) {
+    obs_rec_blob_push(OBS_REC_TAG_PAYLOAD, obs_subject_hash(subject),
+                      pub_id, 1u, bytes, size);
+  }
+  t_rec_forced_pub = pub_id;
+  return pub_id;
+}
+
+/* Feed-mode exit report — dropped tape entries are the headline
+ * fact: silence would read as "everything was fed." */
+static void rp_feed_report(void) {
+  uint64_t inj = atomic_load(&g_rp_injected);
+  uint64_t drop = atomic_load(&g_rp_inject_dropped);
+  fprintf(stderr,
+          "hale feed: %llu of %u recorded ingress payload(s) "
+          "injected%s\n",
+          (unsigned long long)inj, g_rp_ingress_len,
+          drop ? "" : "; all matched");
+  if (drop) {
+    fprintf(stderr,
+            "hale feed: %llu dropped — no matching subscribed "
+            "subject in this program\n",
+            (unsigned long long)drop);
   }
 }
 
@@ -987,6 +1170,17 @@ static void rp_report(void) {
     fprintf(stderr,
             "hale replay: note — truncated recording; coverage ends "
             "at the torn tail\n");
+  }
+  uint64_t sup = atomic_load(&g_rp_bindings_suppressed);
+  if (sup) {
+    fprintf(stderr,
+            "hale replay: hermetic wire — %llu binding(s) "
+            "suppressed; %llu of %u recorded ingress payload(s) "
+            "injected (%llu dropped)\n",
+            (unsigned long long)sup,
+            (unsigned long long)atomic_load(&g_rp_injected),
+            g_rp_ingress_len,
+            (unsigned long long)atomic_load(&g_rp_inject_dropped));
   }
   if (total == 0) {
     fprintf(stderr,
@@ -1378,7 +1572,28 @@ __attribute__((constructor)) static void obs_live_ctor(void) {
   t_consumer_id = 1;
   /* GH #296: replay. Implies observation (identity machinery rides
    * it); loads the recording eagerly so the first read is served. */
+  /* GH #296 phase 5b: feed mode. Mutually exclusive with strict
+   * replay — one recording cannot be both the law and merely the
+   * input tape in a single run. */
+  const char *feed = getenv("LOTUS_REPLAY_FEED");
   const char *rp = getenv("LOTUS_REPLAY");
+  if (feed && feed[0] && rp && rp[0]) {
+    fprintf(stderr,
+            "hale: LOTUS_REPLAY and LOTUS_REPLAY_FEED are mutually "
+            "exclusive\n");
+    _exit(64);
+  }
+  if (feed && feed[0]) {
+    size_t n = strlen(feed);
+    if (n >= sizeof g_replay_path) {
+      fprintf(stderr, "hale: LOTUS_REPLAY_FEED path too long\n");
+      _exit(64);
+    }
+    memcpy(g_replay_path, feed, n + 1);
+    rp_load();
+    lotus_replay_feed = 1;
+    atexit(rp_feed_report);
+  }
   if (rp && rp[0]) {
     size_t n = strlen(rp);
     if (n >= sizeof g_replay_path) {
@@ -1929,6 +2144,12 @@ static obs_topic_slot_t *obs_topic_slot(const char *subject,
           obs_rec_blob_push(OBS_REC_TAG_META, (uint32_t)id,
                             OBS_REC_META_TOPIC, 0,
                             subject, strlen(subject) + 1);
+          /* phase 5b: and the stable-hash spelling, which is the id
+           * space PAYLOAD records live in. */
+          obs_rec_blob_push(OBS_REC_TAG_META,
+                            obs_subject_hash(subject),
+                            OBS_REC_META_SUBJHASH, 0,
+                            subject, strlen(subject) + 1);
         }
       }
     }
@@ -2089,6 +2310,14 @@ uint64_t lotus_obs_record_publish_payload(const char *subject,
                                           int raw_struct) {
   if ((!lotus_obs_recording && !lotus_replay_active) || !subject)
     return 0;
+  /* phase 5b: an identity pinned by the ingress wire capture or the
+   * replay injector — this dispatch IS that record; do not mint a
+   * second id or push a second payload. */
+  if (t_rec_forced_pub) {
+    uint64_t forced = t_rec_forced_pub;
+    t_rec_forced_pub = 0;
+    return forced;
+  }
   if (!obs_on()) return 0;
   int ingress = g_obs_tls_redispatch; /* peek only */
   if (t_consumer_id == 0) obs_rec_claim(); /* unique anon id */

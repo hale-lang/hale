@@ -33,9 +33,18 @@ because a dropped record is a replay that diverges silently:
 - a thread that cannot get a ring, a capture allocation failure, a
   write failure, or a finalize failure **fails the run** — never a
   silent gap;
-- the file ends with a clean-finalize trailer, and a recording is
-  admitted for replay only when the *entire* artifact validates —
-  exact parse to the trailer, matching entry count.
+- the file ends with a clean-finalize trailer, and a finalized
+  recording is admitted for replay only when the *entire* artifact
+  validates — exact parse to the trailer, matching entry count.
+
+The recording is also **crash-durable**: frames stream to disk in
+order and the header identity is stamped eagerly, so a run that
+dies without teardown — the run whose recording you want most —
+leaves an artifact that is exact up to one torn frame at the tail.
+Replaying it is an explicit opt-in (`--allow-truncated`): the
+loader stops at the torn frame, says how much it kept, and replays
+that prefix. `LOTUS_OBS_RECORD_DURABLE=1` adds an `fdatasync` per
+drain sweep for power-loss durability.
 
 The recording needs no observer attached and works from the first
 probe. It captures four things:
@@ -50,9 +59,11 @@ probe. It captures four things:
    comparator can align them across runs. Synchronous
    direct-dispatch traffic — the devirtualized flavor most
    intra-app traffic compiles to — is visible here.
-3. **Payloads.** Wire-encoded payloads verbatim; raw in-process
-   structs as *metadata only* (an ABI snapshot would carry heap
-   pointers and padding while being useless for comparison).
+3. **Payloads.** Wire-encoded payloads verbatim — including every
+   message a listen binding receives, captured in its wire form as
+   an **injectable ingress tape** — and raw in-process structs as
+   *metadata only* (an ABI snapshot would carry heap pointers and
+   padding while being useless for comparison).
 4. **The input journal.** Every user-facing nondeterministic read —
    `std::time::now`, `std::time::monotonic[_ns]`,
    `std::rand::next_int`, `std::os::getrandom`, the `std::env`
@@ -81,10 +92,12 @@ hale replay run.halerec app.hl --at 65:12 # ...at consumer 65's 12th consume
 
 - **Safety, before anything else.** Re-execution repeats real side
   effects, so a program whose effect frontier reaches `syscall`,
-  `ffi`, `unclassified`, or any transport-bound `bindings` block is
-  refused with the residue named, unless you pass
-  `--allow-live-effects`. This is deliberately coarse (a lone
-  `sleep` trips it); over-refusing is the safe direction.
+  `ffi`, or `unclassified` is refused with the residue named,
+  unless you pass `--allow-live-effects`. This is deliberately
+  coarse (a lone `sleep` trips it); over-refusing is the safe
+  direction. `bindings` blocks are *not* on the list: under replay
+  the wire is hermetic — bound transports never open, and the
+  recorded ingress is injected instead (below).
 - **Executable identity.** The recording carries a framed SHA-256
   over the full compiler/runtime/stdlib source tree, the compiler
   version, build options, and every application source's path,
@@ -113,17 +126,50 @@ interleaving that was recorded — that is the per-consumer order
 enforcement working, and it is pinned by tests that run the race
 repeatedly.
 
+## The wire is hermetic
+
+A replayed server must not talk to the real world — in either
+direction. Under replay, every `bindings { }` transport is
+suppressed at realization: no socket is created, listeners don't
+bind, connectors don't connect, and publishes to bound topics send
+nothing (they are still recorded and compared under `--diff`). In
+the listeners' stead, an injector re-dispatches the recording's
+ingress tape — the verbatim wire bytes each listener received, in
+recorded order, each delivery carrying its *recorded* identity so
+the order enforcement matches it to its recorded consume. Replay a
+server binary with no peers, no free ports, and no network, and
+its subscribers see exactly the traffic they saw.
+
+## Feed mode: same inputs, changed code
+
+```sh
+hale replay run.halerec app.hl --feed
+```
+
+Backtesting is a different contract from replay: not "the same run
+again" but "the same **inputs** again," against code you have
+changed. `--feed` consumes the recording as an input tape only —
+recorded ingress injected, wire hermetic — and deliberately drops
+everything else: no journal serving, no order enforcement, no
+model admission (a hash mismatch prints as information; feeding a
+tape to changed code is the point), no effects gate (everything
+except the wire runs live — that is feed's contract). Record a
+day of production traffic once; run every strategy revision
+against it. The exit report says how many tape entries were
+injected and how many found no matching subject in the new
+program — a dropped tape is a fact, never a silence.
+
 ## The coverage boundary, honestly
 
 - **Per consumer, not global.** Each consumer reproduces its own
   recorded order; cross-consumer wall-clock alignment is not a
   replay property (and is exactly what the recording never
   promised).
-- **External ingress re-executes live.** Socket and adapter input
-  is captured in the artifact (flagged as ingress) but not yet
-  injected — a replayed server talks to the real world, which is
-  half of why the safety gate exists. Ingress injection is the
-  fleet-replay milestone.
+- **The injected tape covers `bindings` ingress.** Raw user-level
+  socket reads are syscall-class live effects (the gate names
+  them), and adapter loci re-execute their own protocol logic.
+  Fleet-scale replay — multiple binaries against one composed
+  tape — is the next milestone.
 - **`where async_io` pools refuse replay** loudly; their coroutine
   interleaving is a later milestone.
 - **The artifact format is pre-stable** while the remaining phases

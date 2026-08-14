@@ -6,6 +6,68 @@ behavior.
 
 ---
 
+## Unreleased
+
+### Record & replay, phase 5: durability, the hermetic wire, and feed mode (GH #296)
+
+Three deliverables close the two loudest gaps in the v0.17.0
+replay story — "a crashed run loses its recording" and "a replayed
+server talks to the real world":
+
+**WAL durability.** The drain already appended whole frames in
+stream order; now the header identity (`model_hash`,
+`exec_digest`, policy flags) is stamped eagerly — not only at
+finalize — so a SIGKILLed run leaves an artifact that is
+attributable and exact up to one torn frame at the tail. Replaying
+a trailer-less recording is an explicit opt-in
+(`hale replay --allow-truncated` / `LOTUS_REPLAY_ALLOW_TRUNCATED=1`):
+both loaders stop at the first incomplete frame, report the parsed
+extent and dropped tail bytes, and replay that prefix; `--diff`
+against a truncated baseline compares the recorded prefix (surplus
+replay events past the crash point are not divergences; missing or
+different ones still are). A finalized artifact keeps the exact
+full-parse + count checks. `LOTUS_OBS_RECORD_DURABLE=1` adds an
+`fdatasync` per flushed drain sweep for power-loss durability.
+
+**Hermetic wire + ingress injection.** Under replay, `bindings`
+transports are suppressed at realization — the entry stays a husk
+(`transport` NULL, the shape the reclaim path already leaves), no
+socket is created, and outbound fanout to bound subjects sends
+nothing (still recorded and compared under `--diff`). In the
+listeners' stead an injector thread re-dispatches the recording's
+ingress tape in artifact order with each delivery's RECORDED
+`pub_id` pinned, so per-consumer order enforcement matches
+injected deliveries to their recorded consumes — replay of a
+server binary with no peers and no network produces byte-identical
+output with zero divergences. To make the tape injectable, reader
+threads now capture each received message's verbatim WIRE bytes
+(the struct-bytes record was metadata-only and could not be
+re-fed), with the identity pinned across the capture-then-dispatch
+pair; the artifact grows a subject-hash → name meta map (subtype
+3) so payloads route and report by name. Consequence: `bindings`
+blocks no longer trip the `--allow-live-effects` gate — the
+remaining residue (`syscall`/`ffi`/`unclassified`) is genuinely
+user-level.
+
+**Feed mode — the backtesting contract.**
+`hale replay --feed rec app.hl` (`LOTUS_REPLAY_FEED=<path>`)
+consumes the recording as an input tape ONLY: recorded ingress
+injected, wire hermetic, and nothing else of replay applies — no
+journal serving, no order enforcement, no model admission (a hash
+mismatch prints as information; feeding a tape to changed code is
+the point), no effects gate, no `--diff`/`--at`. Same inputs,
+changed code, live everything else. The exit report states how
+many tape entries were injected and how many found no matching
+subject — a dropped tape is a fact, never a silence.
+
+Tests: SIGKILL-mid-run prefix admissibility (+ the eager identity
+stamp, + the default refusal naming the flag), durable-grade
+finalize, hermetic strict replay (byte-identical stdout, zero
+divergences, socket never created), and feed into a
+different-model program processing the recorded values.
+
+---
+
 ## v0.17.0 — the run comes back the same (2026-08-13)
 
 ### Record & replay, phases 2–4: `hale replay` (GH #296)

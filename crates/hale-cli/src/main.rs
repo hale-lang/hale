@@ -217,6 +217,7 @@ fn usage() {
     eprintln!("        [--diff: report first divergence, fail on any]");
     eprintln!("        [--at <n> | --at <consumer-id>:<ordinal>: SIGSTOP at that consume]");
     eprintln!("        [--allow-live-effects] [--allow-unverified-model] [--allow-truncated]");
+    eprintln!("        [--feed: inject the recorded ingress tape into (possibly changed) code]");
     eprintln!("    hale test  [file | dir]       compile + run *_test.hl (default: cwd)");
     eprintln!("        [-run <substr>] [--json]");
     eprintln!("    hale bench [file | dir]       run *_bench.hl bench_* fns (default: cwd)");
@@ -4923,6 +4924,7 @@ fn run_replay(args: &[String]) -> ExitCode {
     let mut allow_live_effects = false;
     let mut allow_unverified = false;
     let mut allow_truncated = false;
+    let mut feed = false;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
@@ -4937,6 +4939,9 @@ fn run_replay(args: &[String]) -> ExitCode {
             i += 1;
         } else if a == "--allow-truncated" {
             allow_truncated = true;
+            i += 1;
+        } else if a == "--feed" {
+            feed = true;
             i += 1;
         } else if a == "--at" {
             // N (process-wide consume ordinal — only meaningful
@@ -4976,6 +4981,14 @@ fn run_replay(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     }
+    if feed && (diff || at.is_some()) {
+        eprintln!(
+            "hale replay: --feed re-executes changed code against \
+             the recorded ingress tape — there is no recorded \
+             schedule to --diff against or --at-stop on"
+        );
+        return ExitCode::from(2);
+    }
     let (rec_path, prog) = match (rec_arg, prog) {
         (Some(r), Some(p)) => (r, p),
         _ => {
@@ -4983,7 +4996,7 @@ fn run_replay(args: &[String]) -> ExitCode {
                 "usage: hale replay <recording> <program.hl> \
                  [--diff] [--at <n> | --at <consumer-id>:<ordinal>] \
                  [--allow-live-effects] [--allow-unverified-model] \
-                 [--allow-truncated]"
+                 [--allow-truncated] [--feed]"
             );
             return ExitCode::from(2);
         }
@@ -5072,7 +5085,7 @@ fn run_replay(args: &[String]) -> ExitCode {
     // machinery, invisible in user-level effects). Coarse by class
     // granularity — over-refusing is the safe direction;
     // per-primitive replay classes are the staged refinement.
-    if !allow_live_effects {
+    if !allow_live_effects && !feed {
         let programs: Vec<&Program> =
             bundle.programs.values().copied().collect();
         let rows =
@@ -5110,17 +5123,18 @@ fn run_replay(args: &[String]) -> ExitCode {
                 _ => false,
             })
         }
-        let has_bindings =
-            bundle.programs.values().any(|p| scan_bindings(&p.items));
-        if has_bindings {
-            residue.insert("external-bindings".to_string());
-        }
+        // phase 5b: `bindings { }` no longer forces the flag — the
+        // runtime suppresses bound transports under replay (opens
+        // nothing, sends nothing) and injects the recorded ingress
+        // tape in the listeners' stead. The residue that remains is
+        // genuinely user-level: syscall/ffi writes repeat,
+        // unclassified may do anything.
+        let _ = scan_bindings;
         if !residue.is_empty() {
             eprintln!(
                 "hale replay: this program can reach the live world \
-                 during re-execution ({{{}}}) — publishes to bound \
-                 topics send real traffic, unclassified calls may \
-                 do anything, and syscall/ffi writes repeat. \
+                 during re-execution ({{{}}}) — unclassified calls \
+                 may do anything, and syscall/ffi writes repeat. \
                  Refusing by default; pass --allow-live-effects if \
                  you accept that",
                 residue.into_iter().collect::<Vec<_>>().join(", ")
@@ -5133,7 +5147,21 @@ fn run_replay(args: &[String]) -> ExitCode {
     // exec_digest is framed-SHA-256 build-input identity;
     // shape_hash alone is only structural compatibility and admits
     // behaviorally different bodies.
-    if rec.exec_digest != [0; 4] && rec.exec_digest != digest {
+    //
+    // phase 5b, feed mode: admission is DELIBERATELY not required —
+    // feeding a tape to changed code is the entire point. Say what
+    // is being fed to what, and skip the checks.
+    if feed {
+        if rec.model_hash != model_hash {
+            eprintln!(
+                "hale replay: feed — recording is from model \
+                 {:016x}, this program is {:016x} (admission not \
+                 required in feed mode; subjects matched by name)",
+                rec.model_hash, model_hash
+            );
+        }
+    }
+    if !feed && rec.exec_digest != [0; 4] && rec.exec_digest != digest {
         eprintln!(
             "hale replay: `{}` was recorded from different build \
              inputs (recorded exec digest {:016x}…, this compile \
@@ -5148,7 +5176,7 @@ fn run_replay(args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     }
-    if rec.model_hash != 0 && rec.model_hash != model_hash {
+    if !feed && rec.model_hash != 0 && rec.model_hash != model_hash {
         eprintln!(
             "hale replay: `{}` was recorded from a different model \
              (recorded shape_hash {:016x}, this program is {:016x}) \
@@ -5160,7 +5188,8 @@ fn run_replay(args: &[String]) -> ExitCode {
         );
         return ExitCode::from(1);
     }
-    if (rec.exec_digest == [0; 4] || rec.model_hash == 0)
+    if !feed
+        && (rec.exec_digest == [0; 4] || rec.model_hash == 0)
         && !allow_unverified
     {
         eprintln!(
@@ -5232,7 +5261,11 @@ fn run_replay(args: &[String]) -> ExitCode {
             .open(&status_path);
     }
     let mut cmd = std::process::Command::new(&bin);
-    cmd.env("LOTUS_REPLAY", &rec_abs);
+    if feed {
+        cmd.env("LOTUS_REPLAY_FEED", &rec_abs);
+    } else {
+        cmd.env("LOTUS_REPLAY", &rec_abs);
+    }
     if allow_truncated {
         cmd.env("LOTUS_REPLAY_ALLOW_TRUNCATED", "1");
     }

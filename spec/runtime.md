@@ -1589,6 +1589,19 @@ diverges silently):
   at teardown after a final full sweep; a reader that does not
   find the trailer holds a truncated recording and must say so.
 
+**Durability (Phase 5).** The drain appends whole frames in
+stream order and flushes every sweep, so the on-disk file is an
+exact prefix of the stream at all times — and the header identity
+(`model_hash`, `exec_digest`, policy flags) is stamped **eagerly**
+by the drain as soon as the ctor-sequenced setters have run, not
+only at finalize. A run that dies without teardown therefore
+leaves an artifact that is attributable and exact up to one torn
+frame at the tail. Default recording rides the page cache
+(survives a process crash, not power loss);
+`LOTUS_OBS_RECORD_DURABLE=1` pushes every flushed sweep through
+`fdatasync` — survives power loss to the last sweep, at syscall
+cost per sweep.
+
 **Consume records (private recorder namespace).** `BUS_DELIVER`
 is enqueue-time by design and lands on the *publisher's* ring —
 correct for fanout accounting, structurally unable to say in what
@@ -1663,9 +1676,20 @@ exact parse to the trailer position and a matching entry count,
 enforced by the CLI reader and independently by the runtime
 loader (one open + fstat + private mmap, checked arithmetic,
 per-kind value shapes) — trailer magic at EOF alone proves
-nothing. Identity fields are re-stamped at finalize (a prelude
-binding registration can probe — creating the header — before
-the stamps run).
+nothing. Identity fields are stamped eagerly by the drain and
+re-stamped at finalize (a prelude binding registration can probe —
+creating the header — before the stamps run; the two stamps
+agree). A trailer-less artifact is a **crash-truncated
+recording**: refused by default, but admissible as a PREFIX with
+`hale replay --allow-truncated` (`LOTUS_REPLAY_ALLOW_TRUNCATED=1`)
+— the loaders stop at the first incomplete frame, report the
+parsed extent and dropped tail bytes, and replay that prefix;
+execution past the tape's end falls back live and is counted, per
+the degrade-never-refuse rule. Under `--diff` a truncated baseline
+compares as a prefix: surplus replay events past the crash point
+are not divergences, missing or different ones still are. A
+trailer-FINALIZED artifact keeps the exact full-parse + count
+checks: with a finalize present, any truncation is corruption.
 
 **Replay (`hale replay <recording> <program.hl>`).** Admission,
 strongest check first: the recording's `exec_digest` — a framed
@@ -1680,12 +1704,12 @@ the LLVM/libc toolchain outside the hale binary; a post-link
 binary digest is the staged stronger form. **Safe by default:**
 replay re-executes real side effects, so the typed effect rows
 gate admission and fail CLOSED on `syscall`, `ffi`,
-`unclassified` ("may do anything"), and any transport-bound
-`bindings` block (the user-level effect of a bound publish is
-`publish`; the send is generated deployment machinery) — all
-refused without an explicit `--allow-live-effects` (coarse by
-class granularity — over-refusal is the safe direction;
-per-primitive replay classes are the staged refinement). `LOTUS_REPLAY=<path>`
+`unclassified` ("may do anything") — refused without an explicit
+`--allow-live-effects` (coarse by class granularity —
+over-refusal is the safe direction; per-primitive replay classes
+are the staged refinement). `bindings` blocks are **no longer**
+in that list: under replay the wire is hermetic (below), so a
+bound topic cannot reach the live world. `LOTUS_REPLAY=<path>`
 then serves journaled reads back per consumer in recorded order;
 a read past (or mismatching) the recorded history falls back live
 and is counted — **replay degrades, never refuses** (RFC Q6) —
@@ -1699,6 +1723,44 @@ order, with a bounded hold (1s) after which the oldest held cell
 is released and the miss counted, so a genuinely divergent replay
 reports rather than deadlocks. `where async_io` pools refuse
 replay loudly (their coro interleaving is a later milestone).
+
+**Hermetic wire + ingress injection (Phase 5).** Under replay,
+transport bindings are **suppressed at realization**: the binding
+entry exists (a husk, `transport` NULL — the same shape the
+reclaim path already leaves), but no socket is created, nothing
+binds, nothing connects, and outbound fanout to bound subjects
+sends nothing (the publish is still recorded and compared under
+`--diff`). In the listeners' stead, an **injector thread**
+re-dispatches the recording's ingress tape — every ingress-flagged
+payload, in artifact order, through the same
+deserialize-then-local-dispatch shape as the reader thread it
+replaces — with each delivery's RECORDED `pub_id` pinned, so the
+per-consumer order enforcement matches injected deliveries to
+their recorded consumes exactly. To make the tape injectable, the
+reader threads capture each received message's **verbatim wire
+bytes** (the struct-bytes record local dispatch would otherwise
+push is metadata-only and cannot be re-fed) with the identity
+pinned across the capture-then-dispatch pair, and the artifact
+carries a subject-hash → name meta map so payloads can be routed
+(and reported) by name. A tape subject with no matching
+subscriber waits a bounded grace, then counts as dropped —
+reported at exit, never silent. Adapter-driven ingress (user code
+calling `std::bus::__local_dispatch`) is user logic and
+re-executes as such.
+
+**Feed mode (`hale replay --feed`, `LOTUS_REPLAY_FEED=<path>`) —
+the backtesting contract.** The recording is consumed as an INPUT
+TAPE only: recorded ingress is injected and the wire is hermetic,
+exactly as above — and *nothing else of replay applies*. No
+journal serving, no order enforcement, no model admission (a
+model-hash mismatch is reported informationally; feeding a tape
+to changed code is the point), no effects gate (feed re-executes
+everything live except the wire — that is its contract), no
+`--diff`/`--at` (there is no recorded schedule to compare
+against). Mutually exclusive with `LOTUS_REPLAY`. Injected
+deliveries carry the new run's own identity. The exit report
+states how many tape entries were injected and how many dropped
+for want of a matching subject.
 `--diff` records the replay (under the original's env policy) and
 compares bidirectionally: per-consumer queued consume streams
 (target locus + msg_id), per-consumer PUBLIC bus streams aligned
@@ -1716,11 +1778,12 @@ the obs machinery).
 
 Two honest limits, stated rather than implied: the recorded
 interleaving is reproduced per consumer, not globally — cross-
-consumer wall-clock alignment is not a replay property; and
-external ingress (sockets, adapters) re-executes LIVE in v1 —
-captured ingress payloads exist in the recording (flagged), but
-injection is the fleet-replay milestone (Phase 5, with #262's
-plan admission for Phase 6's replay-under-a-different-plan).
+consumer wall-clock alignment is not a replay property; and the
+injected tape covers **bindings** ingress — raw user-level socket
+reads are syscall-class live effects (gated), and adapter loci
+re-execute their own protocol logic. Fleet-scale replay (multiple
+binaries against one composed tape, with #262's plan admission
+for replay-under-a-different-plan) is the next milestone.
 
 ### Time
 

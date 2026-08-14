@@ -6410,6 +6410,33 @@ int lotus_obs_active(void) __attribute__((weak));
  * so the published counter isn't inflated by deliveries. */
 void lotus_obs_begin_redispatch(void) __attribute__((weak));
 void lotus_obs_end_redispatch(void) __attribute__((weak));
+/* GH #296 phase 5b: the ingress tape (defined in lotus_obs.c).
+ * Reader threads capture verbatim wire bytes with a pinned pub_id;
+ * under replay/feed the transport bindings are suppressed and the
+ * injector below re-dispatches the recorded tape instead. */
+uint64_t lotus_obs_record_ingress_wire(const char *subject,
+                                       const void *bytes,
+                                       uint64_t size)
+    __attribute__((weak));
+uint64_t lotus_replay_inject_begin(const char *subject,
+                                   const void *bytes, uint64_t size,
+                                   uint64_t pub_id)
+    __attribute__((weak));
+uint64_t lotus_replay_ingress_count(void) __attribute__((weak));
+int lotus_replay_ingress_get(uint64_t i, uint32_t *topic,
+                             uint64_t *pub_id, const void **bytes,
+                             uint64_t *size)
+    __attribute__((weak));
+const char *lotus_replay_topic_name(uint32_t topic)
+    __attribute__((weak));
+uint32_t lotus_replay_subject_hash(const char *subject)
+    __attribute__((weak));
+void lotus_replay_note_injected(void) __attribute__((weak));
+void lotus_replay_note_inject_dropped(uint32_t topic)
+    __attribute__((weak));
+void lotus_replay_note_binding_suppressed(void)
+    __attribute__((weak));
+extern int lotus_replay_feed __attribute__((weak));
 /* iris handoff-12 P22: the per-binding backpressure cells
  * (PROTOCOL §6: 3 queue_depth gauge, 4 send_block_ns, 5 retries).
  * Measured here (fd occupancy + send timing live in this TU),
@@ -14345,6 +14372,14 @@ static void lotus_bus_unix_serve(lotus_bus_remote_entry_t *entry) {
                 break;
             }
             if (!deserialize) continue;
+            /* GH #296 phase 5b: capture the VERBATIM wire form with
+             * a pinned identity — the struct-bytes record the
+             * dispatch below would push is metadata-only and cannot
+             * be re-fed as an injectable tape. */
+            if (lotus_obs_record_ingress_wire) {
+                lotus_obs_record_ingress_wire(entry->subject,
+                                              wire_buf, (uint64_t)n);
+            }
             ssize_t struct_size = deserialize(
                 wire_buf, (size_t)n, struct_buf, sizeof(struct_buf));
             if (struct_size <= 0) continue;
@@ -14702,6 +14737,12 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
             }
             continue;
         }
+        /* GH #296 phase 5b: same verbatim wire capture as the unix
+         * reader (see there). */
+        if (lotus_obs_record_ingress_wire) {
+            lotus_obs_record_ingress_wire(args->entry->subject,
+                                          wire, (uint64_t)n);
+        }
         ssize_t struct_size = deserialize(
             wire, (size_t)n, struct_buf, sizeof(struct_buf));
         if (struct_size <= 0) {
@@ -14745,6 +14786,118 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
     return NULL;
 }
 
+/* GH #296 phase 5b: the ingress injector. Under strict replay and
+ * under feed, transport bindings never open (hermetic wire) and
+ * this thread re-dispatches the recording's ingress tape instead —
+ * artifact order, one dispatch per recorded payload, exactly the
+ * reader-thread shape (deserialize into a stack struct buffer, then
+ * local dispatch under the redispatch bracket). Under strict replay
+ * each dispatch carries its RECORDED pub_id (pinned via
+ * lotus_replay_inject_begin) so per-consumer order enforcement
+ * matches injected deliveries to their recorded consumes; under
+ * feed, identity is the new run's own.
+ *
+ * Pacing: none — deliveries queue, and (under strict replay) the
+ * per-consumer enforcement buffer holds early arrivals in exactly
+ * the way it holds any early arrival. Windowed injection for tapes
+ * that dwarf memory is a staged refinement; the whole artifact is
+ * already resident (the loader snapshots it).
+ *
+ * A tape subject with no matching subscriber waits a bounded grace
+ * (subscribers may still be being born on the boot path), then
+ * counts as DROPPED — reported at exit, never silent. */
+static pthread_t g_rp_injector_thread;
+static int g_rp_injector_started = 0;
+static int g_rp_injector_stop = 0;
+
+static void *lotus_replay_injector_main(void *arg) {
+    (void)arg;
+    char struct_buf[LOTUS_PAYLOAD_MAX];
+    uint64_t count = lotus_replay_ingress_count();
+    for (uint64_t i = 0; i < count; i++) {
+        if (__atomic_load_n(&g_rp_injector_stop, __ATOMIC_ACQUIRE))
+            break;
+        uint32_t topic;
+        uint64_t pub_id, size;
+        const void *bytes;
+        if (!lotus_replay_ingress_get(i, &topic, &pub_id, &bytes,
+                                      &size)) {
+            break;
+        }
+        const char *name =
+            lotus_replay_topic_name ? lotus_replay_topic_name(topic)
+                                    : NULL;
+        const char *subject = NULL;
+        lotus_deserialize_fn deserialize = NULL;
+        for (int spin = 0; spin < 5000; spin++) { /* ≤5s grace */
+            for (size_t e = 0; e < g_bus_count; e++) {
+                lotus_bus_entry_t *be = &g_bus_entries[e];
+                if (!be->subject || !be->deserialize) continue;
+                if (name ? lotus_subject_match(be->subject, name)
+                         : (lotus_replay_subject_hash &&
+                            lotus_replay_subject_hash(be->subject) ==
+                                topic)) {
+                    subject = name ? name : be->subject;
+                    deserialize = be->deserialize;
+                    break;
+                }
+            }
+            if (deserialize) break;
+            if (__atomic_load_n(&g_rp_injector_stop,
+                                __ATOMIC_ACQUIRE)) {
+                break;
+            }
+            struct timespec ts = {0, 1000000}; /* 1ms */
+            nanosleep(&ts, NULL);
+        }
+        if (!deserialize) {
+            if (lotus_replay_note_inject_dropped)
+                lotus_replay_note_inject_dropped(topic);
+            continue;
+        }
+        ssize_t struct_size = deserialize(bytes, (size_t)size,
+                                          struct_buf,
+                                          sizeof(struct_buf));
+        if (struct_size <= 0) {
+            if (lotus_replay_note_inject_dropped)
+                lotus_replay_note_inject_dropped(topic);
+            continue;
+        }
+        if (lotus_replay_inject_begin) {
+            lotus_replay_inject_begin(subject, bytes, size, pub_id);
+        }
+        if (lotus_obs_begin_redispatch) lotus_obs_begin_redispatch();
+        lotus_bus_local_dispatch(g_bus_queue_for_remote, subject,
+                                 struct_buf, (size_t)struct_size);
+        if (lotus_obs_end_redispatch) lotus_obs_end_redispatch();
+        if (lotus_replay_note_injected) lotus_replay_note_injected();
+    }
+    return NULL;
+}
+
+/* Boot path is single-threaded (binding registration), so the
+ * started guard needs no lock. */
+static void lotus_replay_injector_spawn(void) {
+    if (g_rp_injector_started) return;
+    if (!lotus_replay_ingress_count ||
+        lotus_replay_ingress_count() == 0) {
+        g_rp_injector_started = 1; /* nothing to inject */
+        return;
+    }
+    lotus_mark_multithreaded();
+    if (pthread_create(&g_rp_injector_thread, NULL,
+                       lotus_replay_injector_main, NULL) == 0) {
+        g_rp_injector_started = 2;
+    }
+}
+
+void lotus_replay_injector_join(void) {
+    if (g_rp_injector_started != 2) return;
+    __atomic_store_n(&g_rp_injector_stop, 1, __ATOMIC_RELEASE);
+    pthread_join(g_rp_injector_thread, NULL);
+    g_rp_injector_started = 1;
+}
+
 int lotus_bus_register_remote(const char *subject,
                               const char *url,
                               int role) {
@@ -14784,6 +14937,21 @@ int lotus_bus_register_remote(const char *subject,
         return -1;
     }
 
+    /* GH #296 phase 5b: hermetic wire. Under strict replay a bound
+     * transport is exactly the hole the safety gate existed for —
+     * the listener would re-receive the live world and the
+     * connector would re-SEND to it. Under feed the wire belongs to
+     * the tape by definition. Either way: validate the URL (above),
+     * open nothing, spawn the injector in the listener's stead. */
+    if (lotus_replay_active || lotus_replay_feed) {
+        if (role == LOTUS_TRANSPORT_LISTEN) {
+            lotus_replay_injector_spawn();
+        }
+        if (lotus_replay_note_binding_suppressed) {
+            lotus_replay_note_binding_suppressed();
+        }
+        return 0;
+    }
     lotus_bus_remote_entry_t *e = lotus_bus_remote_entry_push(
         subject,
         is_udp ? LOTUS_BUS_REMOTE_KIND_UDP : LOTUS_BUS_REMOTE_KIND_UNIX);
@@ -14970,6 +15138,21 @@ int64_t lotus_bus_transport_realize(const char *subject,
         free(e);
         return 0;
     }
+    /* GH #296 phase 5b: hermetic wire under replay/feed. The
+     * binding stays a HUSK — same entry the reclaim/destroy paths
+     * already handle for a post-reclaim transport (transport NULL:
+     * fanout skips it, wait_ready never sees it lost) — but no
+     * socket is created, nothing binds, nothing connects. The
+     * listener's serve thread is replaced by the ingress injector
+     * (spawned from spawn_server below). Birth still succeeds: the
+     * suppressed binding is a fact of the mode, not a failure of
+     * the program. */
+    if (lotus_replay_active || lotus_replay_feed) {
+        if (lotus_replay_note_binding_suppressed) {
+            lotus_replay_note_binding_suppressed();
+        }
+        return (int64_t)(intptr_t)e;
+    }
     if (role == LOTUS_TRANSPORT_LISTEN) {
         e->transport = lotus_transport_listener_create(path);
     } else {
@@ -14988,6 +15171,14 @@ int64_t lotus_bus_transport_realize(const char *subject,
 int64_t lotus_bus_transport_spawn_server(int64_t handle) {
     lotus_bus_remote_entry_t *e =
         (lotus_bus_remote_entry_t *)(intptr_t)handle;
+    /* GH #296 phase 5b: the suppressed listener's serve thread is
+     * the injector — the recording's ingress tape re-dispatched in
+     * the reader's stead. */
+    if (e && e->role == LOTUS_TRANSPORT_LISTEN && !e->transport &&
+        (lotus_replay_active || lotus_replay_feed)) {
+        lotus_replay_injector_spawn();
+        return 0;
+    }
     if (!e || e->role != LOTUS_TRANSPORT_LISTEN || !e->transport) {
         return -1;
     }
@@ -18976,6 +19167,10 @@ const char *lotus_fs_mktemp(const char *prefix, const char *suffix) {
 }
 
 void lotus_bus_remote_destroy_all(void) {
+    /* GH #296 phase 5b: stop and join the ingress injector FIRST —
+     * it dispatches into the queues this teardown is about to
+     * drain and dissolve. */
+    lotus_replay_injector_join();
     /* GH #236: operator/test-facing counter dump. One line per
      * binding to stderr at teardown when LOTUS_BUS_COUNTERS_DUMP=1
      * (same env-diagnostic family as LOTUS_BUS_LOG_DESERIALIZE_DROP).

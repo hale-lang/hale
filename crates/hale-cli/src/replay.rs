@@ -33,6 +33,7 @@ const EK_BUS_DELIVER: u32 = 2;
 
 const META_TOPIC: u64 = 1;
 const META_PUBRING: u64 = 2;
+const META_SUBJHASH: u64 = 3;
 
 fn u32_at(b: &[u8], off: usize) -> u32 {
     u32::from_le_bytes(b[off..off + 4].try_into().unwrap())
@@ -262,6 +263,11 @@ pub fn parse(path: &Path) -> Result<Recording, String> {
                         }
                         META_PUBRING => {
                             pub_ring_consumer.insert(a, c);
+                        }
+                        META_SUBJHASH => {
+                            // phase 5b: subject-hash → name map, a
+                            // replay-runtime (injection) concern.
+                            // Validated by shape, carried nowhere.
                         }
                         _ => {
                             return Err(format!(
