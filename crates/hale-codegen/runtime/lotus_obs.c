@@ -110,6 +110,15 @@
 #define REC_EV_CONSUME 2
 #define REC_EV_ENQ 3
 #define REC_EV_JOURNAL 4
+/* GH #296 phase 6 (async_io replay): the async drain's scheduling
+ * decisions, recorded per pool-worker as a step stream so replay
+ * can drive the same interleaving. START marks a cell start (w1 =
+ * pub_id; its position also assigns the coro's birth ordinal);
+ * RESUME marks an epoll-readiness resume and EXPIRE a timed-park
+ * expiry resume (w1 = the resumed coro's birth ordinal). */
+#define REC_EV_ASYNC_START 5
+#define REC_EV_ASYNC_RESUME 6
+#define REC_EV_ASYNC_EXPIRE 7
 #define OBS_REC_PRIV_RING 0x80000000u
 
 /* manifest kinds */
@@ -606,6 +615,12 @@ typedef struct {
    * ingress pacing check (review round: injection must be bounded
    * by recorded progress, which lives in these cursors). */
   _Atomic uint32_t consume_cursor;
+  /* phase 6: the async drain's recorded scheduling steps (kind =
+   * REC_EV_ASYNC_*, val = pub_id for START / birth ordinal for
+   * RESUME|EXPIRE), in emission order. Empty for non-async
+   * consumers and for pre-phase-6 recordings. */
+  struct { uint32_t kind; uint64_t val; } *steps;
+  uint32_t step_len, step_cap, step_cursor;
 } rp_consumer_t;
 static rp_consumer_t g_rp_consumers[RP_MAX_CONSUMERS];
 static int g_rp_consumer_count = 0;
@@ -663,6 +678,9 @@ static _Atomic uint64_t g_rp_bindings_suppressed = 0;
  * process start above the recorded range so the two can never
  * collide in a verify recording. */
 static uint64_t g_rp_anon_floor = 0;
+/* phase 6: async-schedule steps that could not be satisfied from
+ * the tape (skipped via the bounded-hold degrade). */
+static _Atomic uint64_t g_rp_async_divergences = 0;
 
 /* Creation happens ONLY during rp_load (single-threaded, pre-main);
  * at runtime every caller is lookup-only — the table is immutable
@@ -804,6 +822,22 @@ static void rp_load(void) {
         if (pr >= 64) rp_fail("private ring index out of range");
         if (ekind == REC_EV_CONSUMER) {
           rp_ring_consumer[pr] = w1;
+        } else if (ekind == REC_EV_ASYNC_START ||
+                   ekind == REC_EV_ASYNC_RESUME ||
+                   ekind == REC_EV_ASYNC_EXPIRE) {
+          rp_consumer_t *c = rp_consumer_create(rp_ring_consumer[pr]);
+          if (c) {
+            if (c->step_len == c->step_cap) {
+              c->step_cap = c->step_cap ? c->step_cap * 2 : 64;
+              void *g = realloc(c->steps,
+                                c->step_cap * sizeof(*c->steps));
+              if (!g) rp_fail("out of memory");
+              c->steps = g;
+            }
+            c->steps[c->step_len].kind = ekind;
+            c->steps[c->step_len].val = w1;
+            c->step_len++;
+          }
         } else if (ekind == REC_EV_CONSUME) {
           rp_consumer_t *c =
               rp_consumer_create(rp_ring_consumer[pr]);
@@ -1387,7 +1421,7 @@ static void rp_report(void) {
               "ingress_rejected=%llu\ningress_unmatched=%llu\n"
               "late_subscription_uncovered=%llu\n"
               "ingress_incompatible=%llu\ningress_unprocessed=%llu\n"
-              "injector_start_failure=%llu\n"
+              "injector_start_failure=%llu\nasync_schedule=%llu\n"
               "post_prefix_live_fallback=%llu\nconsumes=%llu\n",
               (unsigned long long)jd, (unsigned long long)order_div,
               (unsigned long long)unconsumed_journal,
@@ -1400,6 +1434,7 @@ static void rp_report(void) {
               (unsigned long long)atomic_load(&g_rp_ing_unprocessed),
               (unsigned long long)atomic_load(
                   &g_rp_injector_start_failure),
+              (unsigned long long)atomic_load(&g_rp_async_divergences),
               (unsigned long long)atomic_load(&g_rp_post_prefix),
               (unsigned long long)atomic_load(&g_rp_consume_count));
       fclose(sf);
@@ -1415,8 +1450,9 @@ static void rp_report(void) {
                      atomic_load(&g_rp_ing_incompatible) +
                      atomic_load(&g_rp_ing_unprocessed) +
                      atomic_load(&g_rp_injector_start_failure);
+  uint64_t async_div = atomic_load(&g_rp_async_divergences);
   uint64_t total = order_div + unconsumed_journal
-      + unconsumed_deliveries + unexpected + ing_div;
+      + unconsumed_deliveries + unexpected + ing_div + async_div;
   for (int i = 0; i < RP_MAX_JK; i++)
     total += atomic_load(&g_rp_divergences[i]);
   if (g_rp_truncated) {
@@ -1464,6 +1500,9 @@ static void rp_report(void) {
   if (ing_div)
     fprintf(stderr, "  %-22s %llu\n", "ingress",
             (unsigned long long)ing_div);
+  if (async_div)
+    fprintf(stderr, "  %-22s %llu\n", "async-schedule",
+            (unsigned long long)async_div);
   if (unconsumed_journal)
     fprintf(stderr, "  %-22s %llu\n", "unconsumed-journal",
             (unsigned long long)unconsumed_journal);
@@ -2596,6 +2635,37 @@ void lotus_obs_bus_deliver(const char *subject, void *subscriber_self,
  * sites gate on lotus_obs_recording, and the fn re-checks so a
  * mis-gated caller cannot leak protocol-addendum records into a
  * plain observer's stream. */
+/* GH #296 phase 6: one async-drain scheduling step, on the pool
+ * worker's private ring (ev = REC_EV_ASYNC_*). Recording only —
+ * which includes the verify recording a --diff replay runs. */
+void lotus_obs_record_async_step(uint32_t ev, uint64_t val) {
+  if (!lotus_obs_recording) return;
+  if (!obs_on()) return;
+  if (t_consumer_id == 0) obs_rec_claim();
+  obs_rec_emit2(ev, 0, val);
+}
+
+void lotus_replay_note_async_divergence(void) {
+  atomic_fetch_add_explicit(&g_rp_async_divergences, 1,
+                            memory_order_relaxed);
+}
+
+/* The calling pool-worker's next recorded scheduling step. 0 =
+ * stream exhausted (or none recorded) — the drain falls back to
+ * live scheduling, per degrade-never-refuse. */
+int lotus_replay_async_step_peek(uint32_t *kind, uint64_t *val) {
+  if (!lotus_replay_active) return 0;
+  rp_consumer_t *c = rp_consumer(t_consumer_id);
+  if (!c || c->step_cursor >= c->step_len) return 0;
+  *kind = c->steps[c->step_cursor].kind;
+  *val = c->steps[c->step_cursor].val;
+  return 1;
+}
+void lotus_replay_async_step_advance(void) {
+  rp_consumer_t *c = rp_consumer(t_consumer_id);
+  if (c && c->step_cursor < c->step_len) c->step_cursor++;
+}
+
 void lotus_obs_record_consume(void *subscriber_self, uint64_t pub_id) {
   if (!lotus_obs_recording) return;
   if (!obs_on()) return;

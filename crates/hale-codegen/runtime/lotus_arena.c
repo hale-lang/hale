@@ -6445,6 +6445,13 @@ void lotus_replay_note_injector_start_failure(void)
     __attribute__((weak));
 void lotus_replay_note_binding_suppressed(void)
     __attribute__((weak));
+/* GH #296 phase 6: async_io scheduling-step stream (lotus_obs.c). */
+void lotus_obs_record_async_step(uint32_t ev, uint64_t val)
+    __attribute__((weak));
+int lotus_replay_async_step_peek(uint32_t *kind, uint64_t *val)
+    __attribute__((weak));
+void lotus_replay_async_step_advance(void) __attribute__((weak));
+void lotus_replay_note_async_divergence(void) __attribute__((weak));
 extern int lotus_replay_feed __attribute__((weak));
 /* iris handoff-12 P22: the per-binding backpressure cells
  * (PROTOCOL §6: 3 queue_depth gauge, 4 send_block_ns, 5 retries).
@@ -7556,6 +7563,10 @@ typedef struct lotus_coro {
     /* GH #296: the delivery's recording identity, copied from the
      * cell at coro creation; consumed by the thunk's consume stamp. */
     uint64_t          rec_pub_id;
+    /* GH #296 phase 6: birth ordinal on this pool — the index of
+     * the START step that created it, which is the identity the
+     * recorded RESUME/EXPIRE steps carry across runs. */
+    uint64_t          birth_ord;
     /* Per-coro snapshot of the `lotus_current_caller_arena` TLS
      * (downstream handoff 2026-07-15, item 3). That TLS decides where
      * stdlib primitives (recv result blobs, str builders, …) allocate,
@@ -7651,6 +7662,13 @@ typedef struct lotus_coop_pool {
      * teardown. `free_count` is the current list length. */
     lotus_coro_t     *free_head;
     int               free_count;
+    /* GH #296 phase 6 (replay): coros whose fd went ready while the
+     * replay drain was waiting for an EARLIER recorded step — fd
+     * deregistered, detached from parked_head, resumed when their
+     * step comes up. `coro_birth_seq` numbers cell starts in both
+     * modes so RESUME/EXPIRE records name their coro across runs. */
+    lotus_coro_t     *ready_head;
+    uint64_t          coro_birth_seq;
 #endif
     /* Pool affinity (2026-08-12): a core set stashed by codegen
      * before start_all spawns the worker; applied right after
@@ -7765,6 +7783,8 @@ lotus_coop_pool_t *lotus_coop_pool_register(const char *name) {
     p->parked_head      = NULL;
     p->free_head        = NULL;
     p->free_count       = 0;
+    p->ready_head       = NULL;
+    p->coro_birth_seq   = 0;
 #endif
     /* Truncated copy — the bound is LOTUS_COOP_POOL_MAX-name's-
      * worth and pool names are conventionally short. Anything
@@ -8050,18 +8070,10 @@ lotus_coop_pool_t *lotus_coop_pool_current(void) {
 int lotus_coop_pool_enable_async_io(lotus_coop_pool_t *p) {
     if (!p) return -1;
     if (p->async_io_enabled) return 0;
-    /* GH #296: the async drain multiplexes coros whose park/resume
-     * interleaving is epoll-driven — per-consumer order enforcement
-     * for it is a later milestone. Refuse loudly rather than replay
-     * wrongly. */
-    if (lotus_replay_note_consume && lotus_replay_active) {
-        fprintf(stderr,
-                "hale replay: `where async_io` pools are not "
-                "replayable yet (GH #296 Phase 4 covers classic "
-                "pools, mailboxes, and the main queue)\n");
-        fflush(NULL);
-        _exit(65);
-    }
+    /* GH #296 phase 6: async pools replay — the drain is driven by
+     * the recording's scheduling-step stream (see
+     * lotus_coop_pool_drain_one_async_replay below), so the old
+     * loud refusal is gone. */
     int fd = epoll_create1(EPOLL_CLOEXEC);
     if (fd < 0) {
         return -1;
@@ -8301,6 +8313,294 @@ int64_t lotus_time_sleep_park_try(int64_t ns) {
     return 1;
 }
 
+/* ---- GH #296 phase 6: async_io replay ---------------------------
+ *
+ * The nondeterminism of an async_io pool is its drain's SCHEDULING:
+ * which cell starts when, which parked coro resumes when (epoll
+ * readiness order), and when a timed park expires relative to both.
+ * Under recording, each of those decisions is stamped on the pool
+ * worker's private ring (REC_EV_ASYNC_START/RESUME/EXPIRE, with
+ * coros named by birth ordinal — the index of the START that
+ * created them). Under replay, the drain below is driven by that
+ * recorded step stream instead of by the clock:
+ *
+ *   - START steps reuse the classic phase-4 cell gate (identity =
+ *     target locus + msg_id via the consume stream, hold buffer,
+ *     bounded-hold degrade) — start order IS consume order;
+ *   - RESUME steps wait for the named coro's fd readiness;
+ *     readiness that arrives for a LATER step parks the coro on
+ *     `ready_head` until its turn;
+ *   - EXPIRE steps resume the named coro with the timed-out
+ *     sentinel IMMEDIATELY — the recording already proves the
+ *     deadline fired at this point in the sequence, so replay does
+ *     not re-wait wall-clock time (sleeps fast-forward);
+ *   - a step unsatisfiable within the phase-4 hold bound counts an
+ *     async-schedule divergence and is skipped — replay degrades,
+ *     never refuses and never deadlocks;
+ *   - a dry tape (recording ended, or a pre-phase-6 recording)
+ *     hands the pool back to the live drain, which still gates
+ *     cell starts while the consume stream lasts.
+ *
+ * What this does NOT reproduce: the DATA of unjournaled I/O. A coro
+ * resumed at its recorded turn re-executes its recv against the
+ * live world (syscall-class — gated by --allow-live-effects);
+ * bindings ingress arrives via the phase-5b injector instead of
+ * sockets. The schedule replays; foreign bytes stay foreign. */
+#define LOTUS_REC_ASYNC_START 5u
+#define LOTUS_REC_ASYNC_RESUME 6u
+#define LOTUS_REC_ASYNC_EXPIRE 7u
+
+static inline void lotus_async_rec_step(uint32_t ev, uint64_t val) {
+    if (lotus_obs_record_async_step && lotus_obs_live &&
+        lotus_obs_recording) {
+        lotus_obs_record_async_step(ev, val);
+    }
+}
+
+/* Start one dequeued cell on a fresh coro stack — the tail of the
+ * live drain, shared with the replay drain so both modes start
+ * cells identically. Numbers the start (birth ordinal) and records
+ * the START step. */
+static int lotus_async_start_cell(lotus_coop_pool_t *p,
+                                  lotus_bus_cell_t *cell_copy) {
+    /* Wire cell from a cross-thread publisher: deserialize into the
+     * subscriber's arena here, on this pool's worker (bug 3,
+     * downstream handoff 2026-07-15). Completes before the coro is
+     * created, so the TLS struct buffer can't be aliased by a park. */
+    if (!lotus_bus_cell_materialize(cell_copy)) return 1;
+    void *payload_ptr = NULL;
+    if (cell_copy->payload_size > 0) {
+        payload_ptr = cell_copy->payload_heap
+            ? cell_copy->payload_heap
+            : (void *)cell_copy->payload_inline;
+    }
+    uint64_t ord = p->coro_birth_seq++;
+    lotus_async_rec_step(LOTUS_REC_ASYNC_START, cell_copy->rec_pub_id);
+    /* Heap payload outlives the cell on the dispatch path; we copy
+     * the pointer into the coro so the thunk can read it. The free
+     * happens after the coro returns (parked or not). For Slice 1
+     * we conservatively leak heap payloads on coro-park because
+     * the coro retains the pointer until it resumes-and-completes.
+     * Tighten in Slice 3 when blocking I/O is wired up and the
+     * leak shape becomes observable. */
+    lotus_coro_t *c =
+        lotus_coro_alloc(p, cell_copy->handler, cell_copy->self_ptr,
+                         payload_ptr);
+    if (c) {
+        c->rec_pub_id = cell_copy->rec_pub_id;
+        c->birth_ord = ord;
+    }
+    if (!c) {
+        /* OOM on coro alloc — fall back to direct invocation. The
+         * handler runs on the worker's stack; if it parks via
+         * `park_on_fd`, the call returns -1 (no current coro). */
+        lotus_bus_note_consume(cell_copy->self_ptr,
+                               cell_copy->rec_pub_id);
+        ((lotus_handler_fn)cell_copy->handler)(
+            cell_copy->self_ptr, payload_ptr);
+        if (cell_copy->payload_heap) free(cell_copy->payload_heap);
+        if (cell_copy->payload_region)
+            lotus_arena_destroy(cell_copy->payload_region);
+        return 1;
+    }
+    g_current_coro_tls = c;
+    swapcontext(&p->drain_ctx, &c->ctx);
+    g_current_coro_tls = NULL;
+    lotus_current_caller_arena = NULL;   /* drain baseline */
+    if (c->done) {
+        if (cell_copy->payload_heap) free(cell_copy->payload_heap);
+        if (cell_copy->payload_region)
+            lotus_arena_destroy(cell_copy->payload_region);
+        lotus_coro_release(p, c);
+    }
+    /* If c is not done (it parked), the cell's payload_heap and
+     * payload_region are retained by the coro and freed when it
+     * resumes-and-completes (Slice 3 wiring). */
+    return 1;
+}
+
+static lotus_coro_t *lotus_async_take_ord(lotus_coro_t **head,
+                                          uint64_t ord) {
+    lotus_coro_t **pp = head;
+    while (*pp) {
+        if ((*pp)->birth_ord == ord) {
+            lotus_coro_t *c = *pp;
+            *pp = c->next;
+            c->next = NULL;
+            return c;
+        }
+        pp = &(*pp)->next;
+    }
+    return NULL;
+}
+
+/* Resume one coro under replay control (also used to flush
+ * ready-held coros when the tape runs dry). Deregisters a still-
+ * registered fd, stamps the step for the verify recording, swaps. */
+static void lotus_async_resume_coro(lotus_coop_pool_t *p,
+                                    lotus_coro_t *c, int timed_out) {
+    if (c->parked_fd >= 0) {
+        (void)epoll_ctl(p->epoll_fd, EPOLL_CTL_DEL, c->parked_fd, NULL);
+        c->parked_fd = -1;
+    }
+    c->next = NULL;
+    c->park_timed_out = timed_out;
+    lotus_async_rec_step(timed_out ? LOTUS_REC_ASYNC_EXPIRE
+                                   : LOTUS_REC_ASYNC_RESUME,
+                         c->birth_ord);
+    g_current_coro_tls = c;
+    swapcontext(&p->drain_ctx, &c->ctx);
+    g_current_coro_tls = NULL;
+    lotus_current_caller_arena = NULL;
+    if (c->done) lotus_coro_release(p, c);
+}
+
+/* Oldest held cell, unconditionally — used when the tape is dry
+ * (no expected-consume constraint remains; free consumption). */
+static int lotus_rp_pending_pop_oldest(lotus_bus_cell_t *out) {
+    if (t_rp_pending_len == 0) return 0;
+    *out = t_rp_pending[0];
+    memmove(&t_rp_pending[0], &t_rp_pending[1],
+            (t_rp_pending_len - 1) * sizeof(lotus_bus_cell_t));
+    t_rp_pending_len--;
+    return 1;
+}
+
+/* The replay-driven drain. Returns like the live drain (0 =
+ * shutdown-and-empty, 1 = advanced), plus -1 = the recorded step
+ * tape is dry — caller falls through to the live drain. */
+static int lotus_coop_pool_drain_one_async_replay(lotus_coop_pool_t *p) {
+    struct epoll_event events[16];
+    uint32_t kind;
+    uint64_t val;
+    if (!lotus_replay_async_step_peek(&kind, &val)) {
+        /* Dry tape: flush replay-held state so the live drain
+         * (which knows nothing of it) starts clean. One item per
+         * call keeps the worker loop's shutdown checks frequent. */
+        if (p->ready_head) {
+            lotus_coro_t *c = p->ready_head;
+            p->ready_head = c->next;
+            lotus_async_resume_coro(p, c, 0);
+            return 1;
+        }
+        lotus_bus_cell_t held;
+        if (lotus_rp_pending_pop_oldest(&held)) {
+            return lotus_async_start_cell(p, &held);
+        }
+        return -1;
+    }
+    int64_t hold_start = lotus_rp_now_ns();
+    for (;;) {
+        int cell_pending = lotus_mpsc_ring_peek_nonempty(&p->ring)
+                           || (p->overflow_head != NULL);
+        int shutdown_set = atomic_load_explicit(&p->shutdown,
+                                                memory_order_seq_cst);
+        if (shutdown_set && !cell_pending && t_rp_pending_len == 0) {
+            /* Same abandon discipline as the live drain, extended
+             * to ready-held coros. */
+            lotus_coro_t *c = p->parked_head;
+            while (c) {
+                lotus_coro_t *next = c->next;
+                if (c->parked_fd >= 0) {
+                    (void)epoll_ctl(p->epoll_fd, EPOLL_CTL_DEL,
+                                    c->parked_fd, NULL);
+                }
+                lotus_coro_free(c);
+                c = next;
+            }
+            p->parked_head = NULL;
+            c = p->ready_head;
+            while (c) {
+                lotus_coro_t *next = c->next;
+                lotus_coro_free(c);
+                c = next;
+            }
+            p->ready_head = NULL;
+            return 0;
+        }
+        if (kind == LOTUS_REC_ASYNC_START) {
+            /* Drain what's available through the phase-4 gate until
+             * the expected cell dispatches; non-matching cells are
+             * held by the gate. */
+            lotus_bus_cell_t cell;
+            for (;;) {
+                int got = lotus_mpsc_ring_try_dequeue(&p->ring, &cell);
+                if (got) {
+                    lotus_coop_pool_wake_producers(p);
+                } else if (p->overflow_head) {
+                    lotus_coop_overflow_t *node = p->overflow_head;
+                    p->overflow_head = node->next;
+                    if (!p->overflow_head) p->overflow_tail = NULL;
+                    cell = node->cell;
+                    free(node);
+                    got = 1;
+                }
+                if (!got) break;
+                if (!lotus_replay_gate_cell(&cell)) continue;
+                lotus_replay_async_step_advance();
+                return lotus_async_start_cell(p, &cell);
+            }
+            if (t_rp_pending_len > 0 && lotus_replay_gate_idle(&cell)) {
+                lotus_replay_async_step_advance();
+                return lotus_async_start_cell(p, &cell);
+            }
+        } else if (kind == LOTUS_REC_ASYNC_RESUME ||
+                   kind == LOTUS_REC_ASYNC_EXPIRE) {
+            lotus_coro_t *c = lotus_async_take_ord(&p->ready_head, val);
+            if (!c && kind == LOTUS_REC_ASYNC_EXPIRE) {
+                /* Expiry needs no readiness — the recording proves
+                 * the deadline fired here. Resume immediately. */
+                c = lotus_async_take_ord(&p->parked_head, val);
+            }
+            if (c) {
+                lotus_replay_async_step_advance();
+                lotus_async_resume_coro(
+                    p, c, kind == LOTUS_REC_ASYNC_EXPIRE);
+                return 1;
+            }
+        }
+        /* Step not yet satisfiable. Bounded hold, then degrade. */
+        if (lotus_rp_now_ns() - hold_start > LOTUS_REPLAY_HOLD_NS) {
+            if (lotus_replay_note_async_divergence) {
+                lotus_replay_note_async_divergence();
+            }
+            lotus_replay_async_step_advance();
+            if (!lotus_replay_async_step_peek(&kind, &val)) {
+                return 1; /* dry now; next call flushes + hands over */
+            }
+            hold_start = lotus_rp_now_ns();
+            continue;
+        }
+        /* Wait for the world to move: readiness harvested here may
+         * satisfy this step or a later one (ready_head). The wake
+         * eventfd covers cross-pool enqueues. */
+        int n = epoll_wait(p->epoll_fd, events, 16, 10);
+        if (n < 0) {
+            if (errno != EINTR) return 0;
+            n = 0;
+        }
+        for (int i = 0; i < n; i++) {
+            if (events[i].data.ptr == p) {
+                if (p->wake_fd >= 0) {
+                    uint64_t v;
+                    (void)read(p->wake_fd, &v, sizeof(v));
+                }
+                continue;
+            }
+            lotus_coro_t *rc = (lotus_coro_t *)events[i].data.ptr;
+            if (!rc) continue;
+            (void)epoll_ctl(p->epoll_fd, EPOLL_CTL_DEL, rc->parked_fd,
+                            NULL);
+            lotus_coro_t **pp = &p->parked_head;
+            while (*pp && *pp != rc) pp = &(*pp)->next;
+            if (*pp == rc) *pp = rc->next;
+            rc->parked_fd = -1;
+            rc->next = p->ready_head;
+            p->ready_head = rc;
+        }
+    }
+}
+
 /* F.35 Slice 1: async-aware drain. Runs in the pool worker thread.
  * Each iteration:
  *   1. epoll_wait if there are parked coros (with timeout 0 if the
@@ -8314,6 +8614,14 @@ int64_t lotus_time_sleep_park_try(int64_t ns) {
  * Returns 0 on shutdown-with-empty-queue-and-no-parked; 1 after a
  * cell or wakeup advanced state (caller loops). */
 static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
+    int replaying = lotus_replay_note_consume && lotus_replay_active;
+    /* GH #296 phase 6: a replaying pool is schedule-driven by the
+     * recording until its step tape runs dry (-1), then falls
+     * through to the live drain below. */
+    if (replaying && lotus_replay_async_step_peek) {
+        int r = lotus_coop_pool_drain_one_async_replay(p);
+        if (r >= 0) return r;
+    }
     /* Phase-1b: the cell SOURCE is now the lock-free ring (+ the consumer-
      * local overflow list); the park stays epoll_wait and the wake stays
      * the wake eventfd — NO cond handshake on this path (eventfd is level-
@@ -8392,6 +8700,13 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
                     timeout_ms = (int)ms;
                 }
             }
+            /* GH #296 phase 6: cells held out of recorded order
+             * (post-tape gate) release on a timeout, so never park
+             * unbounded while any are held. */
+            if (replaying && t_rp_pending_len > 0 &&
+                (timeout_ms < 0 || timeout_ms > 100)) {
+                timeout_ms = 100;
+            }
         }
         struct epoll_event events[16];
         int n = epoll_wait(p->epoll_fd, events, 16, timeout_ms);
@@ -8424,6 +8739,9 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
             if (*pp == c) *pp = c->next;
             c->next      = NULL;
             c->parked_fd = -1;
+            /* GH #296 phase 6: the scheduling decision IS the
+             * nondeterminism on this pool — record it. */
+            lotus_async_rec_step(LOTUS_REC_ASYNC_RESUME, c->birth_ord);
             /* Resume the coro. Returns here when it parks again or
              * the handler returns. */
             g_current_coro_tls = c;
@@ -8468,6 +8786,8 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
             expired->next           = NULL;
             expired->parked_fd      = -1;
             expired->park_timed_out = 1;
+            lotus_async_rec_step(LOTUS_REC_ASYNC_EXPIRE,
+                                 expired->birth_ord);
             g_current_coro_tls = expired;
             swapcontext(&p->drain_ctx, &expired->ctx);
             g_current_coro_tls = NULL;
@@ -8498,58 +8818,21 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
         got = 1;
     }
     if (!got) {
+        /* GH #296 phase 6: cells can be HELD out of order here (the
+         * post-tape live fallback and old-recording replays gate
+         * too) — release per the classic idle discipline. */
+        if (replaying && t_rp_pending_len > 0 &&
+            lotus_replay_gate_idle(&cell_copy)) {
+            return lotus_async_start_cell(p, &cell_copy);
+        }
         /* Spurious — the peek raced a concurrent state change, or the cell
          * was already consumed. Loop. */
         return 1;
     }
-    /* Wire cell from a cross-thread publisher: deserialize into the
-     * subscriber's arena here, on this pool's worker (bug 3,
-     * downstream handoff 2026-07-15). Completes before the coro is
-     * created, so the TLS struct buffer can't be aliased by a park. */
-    if (!lotus_bus_cell_materialize(&cell_copy)) return 1;
-    void *payload_ptr = NULL;
-    if (cell_copy.payload_size > 0) {
-        payload_ptr = cell_copy.payload_heap
-            ? cell_copy.payload_heap
-            : (void *)cell_copy.payload_inline;
-    }
-    /* Heap payload outlives the cell on the dispatch path; we copy
-     * the pointer into the coro so the thunk can read it. The free
-     * happens after the coro returns (parked or not). For Slice 1
-     * we conservatively leak heap payloads on coro-park because
-     * the coro retains the pointer until it resumes-and-completes.
-     * Tighten in Slice 3 when blocking I/O is wired up and the
-     * leak shape becomes observable. */
-    lotus_coro_t *c =
-        lotus_coro_alloc(p, cell_copy.handler, cell_copy.self_ptr, payload_ptr);
-    if (c) c->rec_pub_id = cell_copy.rec_pub_id;
-    if (!c) {
-        /* OOM on coro alloc — fall back to direct invocation. The
-         * handler runs on the worker's stack; if it parks via
-         * `park_on_fd`, the call returns -1 (no current coro). */
-        lotus_bus_note_consume(cell_copy.self_ptr,
-                               cell_copy.rec_pub_id);
-        ((lotus_handler_fn)cell_copy.handler)(
-            cell_copy.self_ptr, payload_ptr);
-        if (cell_copy.payload_heap) free(cell_copy.payload_heap);
-        if (cell_copy.payload_region)
-            lotus_arena_destroy(cell_copy.payload_region);
-        return 1;
-    }
-    g_current_coro_tls = c;
-    swapcontext(&p->drain_ctx, &c->ctx);
-    g_current_coro_tls = NULL;
-    lotus_current_caller_arena = NULL;   /* drain baseline — see above */
-    if (c->done) {
-        if (cell_copy.payload_heap) free(cell_copy.payload_heap);
-        if (cell_copy.payload_region)
-            lotus_arena_destroy(cell_copy.payload_region);
-        lotus_coro_release(p, c);
-    }
-    /* If c is not done (it parked), the cell's payload_heap and
-     * payload_region are retained by the coro and freed when it
-     * resumes-and-completes (Slice 3 wiring). */
-    return 1;
+    /* GH #296 phase 6: same per-consumer order gate as the classic
+     * pool and mailbox drains. */
+    if (replaying && !lotus_replay_gate_cell(&cell_copy)) return 1;
+    return lotus_async_start_cell(p, &cell_copy);
 }
 #else /* !LOTUS_HAVE_ASYNC_IO — macOS / other BSDs */
 /* Async_io is unsupported on this platform. `where async_io` is rejected

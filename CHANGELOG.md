@@ -46,6 +46,39 @@ pattern stays one line. Canaries: the wrong-arity middleware, the
 `Int = router` absurdity, and the typo'd-literal case are all
 compile errors now.
 
+### Record & replay, phase 6: `where async_io` pools replay (GH #296)
+
+The last refusing surface joins the replay story. The
+nondeterminism of an async pool is its drain's SCHEDULING — which
+cell starts when, which parked coro resumes when (epoll readiness
+order), when a timed park expires relative to both. Recording now
+stamps every such decision on the pool worker's private ring as a
+step stream (`ASYNC_START`/`ASYNC_RESUME`/`ASYNC_EXPIRE`; coros
+named by birth ordinal, stable across runs because start order is
+enforced), and replay DRIVES the drain from that stream instead of
+the clock:
+
+- START steps reuse the phase-4 cell gate unchanged (start order
+  is consume order; the async live path now gates too, closing the
+  never-reached gap the old refusal hid);
+- RESUME steps wait for the named coro's readiness — early-ready
+  coros park aside until their recorded turn;
+- EXPIRE steps resume immediately with the timed-out sentinel: the
+  recording proves the deadline fired here, so replayed sleeps
+  fast-forward rather than re-waiting wall-clock time;
+- an unsatisfiable step counts an `async-schedule` divergence
+  (new status-file key, new summary row) and is skipped — degrade,
+  never deadlock; a dry or pre-phase-6 tape hands the pool back to
+  the live drain.
+
+Boundary, stated: the schedule replays; the data of unjournaled
+I/O still re-executes live (syscall-class, gated), and bindings
+ingress arrives via the phase-5 injector. Tests: a staggered
+two-locus async pool records and replays byte-identically with
+zero divergences, finishes faster than its recorded sleeps (proof
+the tape, not timers, drove it), and two replays of one recording
+agree with each other.
+
 ### Record & replay, phase 5: durable recording, the hermetic wire, and feed mode (GH #296)
 
 Three deliverables close the two loudest gaps in the v0.17.0
