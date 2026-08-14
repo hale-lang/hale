@@ -143,6 +143,24 @@ The same rule covers routes added at deploy time through the
 `LOTUS_BUS_CONFIG` file: a route that's asked for but can't be
 opened refuses the boot.
 
+The *listen* side makes a delivery promise of its own: **wire
+data the kernel accepted is delivered, even at the awkward
+edges** (GH #468). A peer that connects and publishes in the
+instant between the socket appearing and this binary's
+subscribers finishing registration used to lose that traffic
+silently — now it's buffered (bounded — 64 messages / 1 MiB per
+binding — and visible as `buffered_early` in the counters dump)
+and delivered the moment the registration lands. And a program
+whose `main` returns while messages still sit undrained in a
+socket queue quiesces first: listeners stop accepting new
+connections, what already arrived is drained and handled while
+every subscriber is still alive, then teardown proceeds. The
+quiesce is bounded (`LOTUS_BUS_QUIESCE_MS`, default 500ms) so a
+silent peer holding its connection open can't stall your exit.
+What you should *not* read into this: it is not durability — a
+message still in the publisher when either process dies is gone,
+and `udp://` remains lossy by declaration.
+
 ## Talking to other languages: codecs
 
 By default the bus uses Hale's internal wire format, which is

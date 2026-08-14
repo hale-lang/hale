@@ -1004,23 +1004,35 @@ pub fn build_executable_with_options(
     //   * pinned OR non-main cooperative placement
     //     (`has_offthread_placement` — drives `lotus_bus_mark_pinned`
     //     for pinned, and `lotus_coop_pool_start_all` for pools), and
-    //   * an inline adapter `bindings { }` on the main locus — a
-    //     transport recv-loop on its own thread, "pinned-equivalent by
-    //     construction" (the term the legacy mark_pinned check carried,
-    //     which the placement-only probe omitted).
+    //   * ANY `bindings { }` block on the main locus. Adapter entries
+    //     were always counted (a transport recv-loop on its own
+    //     thread, "pinned-equivalent by construction") — but unix/udp
+    //     listen bindings spawn EXACTLY the same kind of reader
+    //     thread, and they were omitted (GH #468, the real root of
+    //     the "storm loses a mid-stream wire message" class): two
+    //     binding readers plus the main drain raced the UNLOCKED
+    //     cooperative queue, and a concurrent enqueue pair could
+    //     tear, losing a delivered message silently. Counting every
+    //     binding entry (connect-role too — the loss-supervision
+    //     machinery may spawn reconnect activity, and the lock is
+    //     ~uncontended nanoseconds on an uncontested queue) keeps
+    //     the condition simple and un-driftable. The runtime ALSO
+    //     flips g_bus_has_pinned when it spawns a reader thread
+    //     (LOTUS_BUS_CONFIG env bindings, which codegen cannot see),
+    //     but the statically-baked `no_pinned` enqueue sites can't
+    //     be un-baked at runtime — so the compile-time union here
+    //     must stay the superset.
     let mut bg_programs: BTreeMap<String, &Program> = BTreeMap::new();
     bg_programs.insert("__codegen_merged".to_string(), &merged);
     let bundle = hale_types::symbol::Bundle::new(bg_programs);
-    let has_adapter_binding = merged.items.iter().any(|item| {
+    let has_socket_binding = merged.items.iter().any(|item| {
         matches!(item, TopDecl::Locus(l) if l.is_main && l.members.iter().any(|m| {
-            matches!(m, LocusMember::Bindings(b) if b.entries.iter().any(|e| {
-                matches!(&e.transport, TransportSpec::Adapter { .. })
-            }))
+            matches!(m, LocusMember::Bindings(b) if !b.entries.is_empty())
         }))
     });
     let program_has_offthread =
         hale_types::bus_graph::has_offthread_placement(&bundle)
-            || has_adapter_binding;
+            || has_socket_binding;
 
     // Static-bus-dispatch devirtualization plan (build #1b). Compute
     // the authoritative BusGraph over the MERGED + topic-desugared
@@ -9068,6 +9080,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // pthread_join + the wake-fd close, which would otherwise
             // survive as host imports).
             if !self.is_wasm {
+                // GH #468: drain kernel-accepted LISTEN ingress
+                // through the intact registry BEFORE pools join and
+                // loci dissolve — the exit half of the delivery
+                // contract (the boot half is the readers' early-
+                // ingress buffer).
+                self.emit_bus_ingress_quiesce()?;
                 self.emit_coop_pool_shutdown_all()?;
             }
             self.flush_dissolve_frame()?;
@@ -20452,6 +20470,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // pthread_join + the wake-fd close, which would otherwise
             // survive as host imports).
             if !self.is_wasm {
+                // GH #468: same exit-quiesce as the fallthrough
+                // main-exit path — return-from-main must not lose
+                // kernel-accepted ingress either.
+                self.emit_bus_ingress_quiesce()?;
                 self.emit_coop_pool_shutdown_all()?;
             }
             self.flush_dissolve_frame()?;

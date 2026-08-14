@@ -9570,6 +9570,13 @@ void lotus_bus_register_keyed(const char *subject,
                               uint64_t key_lo,
                               uint64_t key_hi);
 
+/* GH #468 forward decl (defined with the remote-entry machinery
+ * below): a fresh local registration may satisfy wire messages a
+ * LISTEN reader buffered during the boot window — flush them the
+ * moment the deserializer exists, so an in-run waiter sees them
+ * without needing another inbound message or the exit quiesce. */
+static void lotus_bus_early_flush_for_subject(const char *pattern);
+
 void lotus_bus_register(const char *subject,
                         void *self_ptr,
                         void *handler,
@@ -9637,6 +9644,9 @@ void lotus_bus_register_keyed(const char *subject,
     e->key_lo      = key_lo;
     e->key_hi      = key_hi;
     e->key_str     = NULL;
+    /* GH #468: this registration may be the one the boot-window
+     * buffer was waiting for. */
+    lotus_bus_early_flush_for_subject(subject);
 }
 
 /* Gap B (2026-07-17): routing-key hash for String-keyed topics.
@@ -11834,7 +11844,10 @@ int lotus_transport_send(lotus_transport_t *t,
         }
         return 0;
     }
-    ssize_t n = send(t->conn_fd, buf, len, 0);
+    ssize_t n;
+    do {
+        n = send(t->conn_fd, buf, len, 0);
+    } while (n < 0 && errno == EINTR);   /* GH #468: a signal is not a send failure */
     if (n < 0) {
         perror("lotus_transport_send");
         return -1;
@@ -11882,7 +11895,14 @@ ssize_t lotus_transport_recv(lotus_transport_t *t,
         t->recv_seq = seq;
         return (ssize_t)len;
     }
-    ssize_t n = recv(t->conn_fd, buf, cap, 0);
+    ssize_t n;
+    do {
+        n = recv(t->conn_fd, buf, cap, 0);
+    } while (n < 0 && errno == EINTR);
+    /* GH #468: EINTR used to fall through as -1 here, which broke
+     * the serve loop and re-armed — close()ing a connection whose
+     * kernel queue still held messages. A signal is not an error;
+     * retry. (The framed branch's read_full already did.) */
     if (n < 0) {
         perror("lotus_transport_recv");
         return -1;
@@ -14637,7 +14657,45 @@ typedef struct lotus_bus_remote_entry {
     uint64_t           ctr_seq_gaps;   /* framed mode: recv'd seq != last+1 */
     uint64_t           ctr_waits;      /* GH #255: publishes that parked in `or wait` */
     int64_t            obs_binding_id; /* iris P4: manifest id; 0 = unregistered, -1 = declined */
+    /* GH #468 — early-ingress buffer + exit quiesce. A LISTEN
+     * reader that recv's a message with no matching deserializer
+     * registered YET (the boot window between transport
+     * realization and later subscriber registrations in the same
+     * birth) buffers the wire bytes here — bounded — instead of
+     * dropping them; the reader flushes FIFO the moment a
+     * deserializer appears, and lotus_bus_ingress_quiesce flushes
+     * whatever remains at main exit while the registry is still
+     * intact. `pend_lock` orders the reader against the quiesce
+     * flush; `serve_done` (atomic) is the reader's I-have-drained
+     * signal the quiesce wait polls. */
+    pthread_mutex_t    pend_lock;
+    struct lotus_bus_early_msg *pend_head;
+    struct lotus_bus_early_msg *pend_tail;
+    uint32_t           pend_count;
+    size_t             pend_bytes;
+    uint64_t           ctr_buffered_early;
+    uint64_t           ctr_dropped_early;
+    volatile int       serve_done;
 } lotus_bus_remote_entry_t;
+
+/* GH #468: one buffered pre-registration wire message. The obs
+ * (origin, seq) pair is captured at recv time so a flushed
+ * message still emits a correctly-paired NET_DELIVER. */
+typedef struct lotus_bus_early_msg {
+    struct lotus_bus_early_msg *next;
+    size_t   len;
+    uint64_t origin;
+    uint64_t seq;
+    int      have_seq;
+    char     wire[];
+} lotus_bus_early_msg_t;
+
+/* Bounds for the early-ingress buffer, per binding entry. A
+ * relay-shaped program (no local subscriber by design) fills the
+ * buffer and then evicts oldest-first — steady state is identical
+ * to the old drop behavior, just 64 messages later and counted. */
+#define LOTUS_BUS_EARLY_MAX_MSGS  64u
+#define LOTUS_BUS_EARLY_MAX_BYTES (1u << 20)
 
 #define LOTUS_CTR_BUMP(field) \
     __atomic_fetch_add(&(field), 1, __ATOMIC_RELAXED)
@@ -14705,8 +14763,175 @@ static lotus_bus_remote_entry_t *lotus_bus_remote_entry_push(
     e->subject = subject_copy;
     e->kind    = kind;
     e->udp_fd  = -1;
+    pthread_mutex_init(&e->pend_lock, NULL);
     g_bus_remote_entries[g_bus_remote_count++] = e;
     return e;
+}
+
+/* Forward: defined just below (m59 block); the early-flush helper
+ * dispatches through it before the definition point. */
+static lotus_bus_queue_t *g_bus_queue_for_remote;
+
+/* GH #468 — the shared deserializer lookup both readers used to
+ * inline: the FIRST local registration whose (possibly wildcard)
+ * pattern matches this binding's concrete subject. By language
+ * constraint all entries on one subject share the payload type,
+ * so any match works. NULL = nothing registered (yet). */
+static lotus_deserialize_fn lotus_bus_find_deserializer(
+    const char *bound_subject)
+{
+    for (size_t i = 0; i < g_bus_count; i++) {
+        lotus_bus_entry_t *e = &g_bus_entries[i];
+        if (!e->subject) continue;
+        if (!lotus_subject_match(e->subject, bound_subject)) continue;
+        return e->deserialize;
+    }
+    return NULL;
+}
+
+/* GH #468 — registration-time flush trigger (see the forward decl
+ * at lotus_bus_register). `pattern` is the just-registered local
+ * subscription (possibly wildcard); any binding whose concrete
+ * subject it matches gets its buffered boot-window messages
+ * delivered now. The unlocked pend_head read is a fast filter —
+ * the flush itself re-checks under the entry lock. */
+static void lotus_bus_early_flush(lotus_bus_remote_entry_t *entry);
+static void lotus_bus_early_flush_for_subject(const char *pattern) {
+    for (size_t i = 0; i < g_bus_remote_count; i++) {
+        lotus_bus_remote_entry_t *e = g_bus_remote_entries[i];
+        if (!e->pend_head) continue;
+        if (!lotus_subject_match(pattern, e->subject)) continue;
+        lotus_bus_early_flush(e);
+    }
+}
+
+/* GH #468 — buffer one pre-registration wire message, bounded.
+ * Evicts oldest-first at either cap so a relay-shaped program
+ * (no local subscriber ever) degrades to the old drop behavior,
+ * counted instead of silent. Reader thread only (its own entry). */
+static void lotus_bus_early_buffer(lotus_bus_remote_entry_t *entry,
+                                   const char *wire, size_t n,
+                                   uint64_t origin, uint64_t seq,
+                                   int have_seq)
+{
+    if (n == 0 || n > LOTUS_BUS_EARLY_MAX_BYTES) return;
+    lotus_bus_early_msg_t *m =
+        (lotus_bus_early_msg_t *)malloc(sizeof(*m) + n);
+    if (!m) return;
+    m->next     = NULL;
+    m->len      = n;
+    m->origin   = origin;
+    m->seq      = seq;
+    m->have_seq = have_seq;
+    memcpy(m->wire, wire, n);
+    pthread_mutex_lock(&entry->pend_lock);
+    while (entry->pend_head &&
+           (entry->pend_count >= LOTUS_BUS_EARLY_MAX_MSGS ||
+            entry->pend_bytes + n > LOTUS_BUS_EARLY_MAX_BYTES)) {
+        lotus_bus_early_msg_t *old = entry->pend_head;
+        entry->pend_head = old->next;
+        if (!entry->pend_head) entry->pend_tail = NULL;
+        entry->pend_count--;
+        entry->pend_bytes -= old->len;
+        entry->ctr_dropped_early++;
+        if (lotus_bus_log_deserialize_drop_enabled()) {
+            dprintf(2,
+                    "lotus_bus reader: early-ingress buffer full on "
+                    "`%s` — evicting oldest (%zu bytes)\n",
+                    entry->subject, old->len);
+        }
+        free(old);
+    }
+    if (entry->pend_tail) entry->pend_tail->next = m;
+    else                  entry->pend_head       = m;
+    entry->pend_tail = m;
+    entry->pend_count++;
+    entry->pend_bytes += n;
+    entry->ctr_buffered_early++;
+    pthread_mutex_unlock(&entry->pend_lock);
+}
+
+/* GH #468 — teardown: free any never-flushed early messages and
+ * the lock. Single-threaded teardown only (readers joined). */
+static void lotus_bus_early_reset(lotus_bus_remote_entry_t *e) {
+    lotus_bus_early_msg_t *m = e->pend_head;
+    while (m) {
+        lotus_bus_early_msg_t *next = m->next;
+        free(m);
+        m = next;
+    }
+    e->pend_head  = NULL;
+    e->pend_tail  = NULL;
+    e->pend_count = 0;
+    e->pend_bytes = 0;
+    pthread_mutex_destroy(&e->pend_lock);
+}
+
+/* GH #468 — flush the early-ingress buffer FIFO through the (now
+ * populated) registry: deserialize + record + dispatch, the same
+ * sequence the live path runs. A message whose subject STILL has
+ * no deserializer is dropped and counted (post-boot that is the
+ * documented relay-shaped no-local-subscriber case). Called by
+ * the owning reader (on the first post-registration message) and
+ * by lotus_bus_ingress_quiesce (after that reader has exited) —
+ * the lock orders the two. */
+static void lotus_bus_early_flush(lotus_bus_remote_entry_t *entry) {
+    char struct_buf[LOTUS_PAYLOAD_MAX];
+    pthread_mutex_lock(&entry->pend_lock);
+    while (entry->pend_head) {
+        lotus_bus_early_msg_t *m = entry->pend_head;
+        entry->pend_head = m->next;
+        if (!entry->pend_head) entry->pend_tail = NULL;
+        entry->pend_count--;
+        entry->pend_bytes -= m->len;
+        lotus_deserialize_fn deserialize =
+            lotus_bus_find_deserializer(entry->subject);
+        ssize_t struct_size = deserialize
+            ? deserialize(m->wire, m->len, struct_buf, sizeof(struct_buf))
+            : -1;
+        if (struct_size <= 0) {
+            entry->ctr_dropped_early++;
+            if (lotus_bus_log_deserialize_drop_enabled()) {
+                dprintf(2,
+                        "lotus_bus reader: early-ingress drop on `%s` "
+                        "(%s) — %zu-byte payload\n",
+                        entry->subject,
+                        deserialize ? "deserialize failed"
+                                    : "no deserializer registered",
+                        m->len);
+            }
+            free(m);
+            continue;
+        }
+        if (lotus_obs_record_ingress_wire) {
+            lotus_obs_record_ingress_wire(entry->subject, m->wire,
+                                          (uint64_t)m->len);
+        }
+        if (lotus_obs_begin_redispatch) lotus_obs_begin_redispatch();
+        lotus_bus_local_dispatch(g_bus_queue_for_remote, entry->subject,
+                                 struct_buf, (size_t)struct_size);
+        if (lotus_obs_end_redispatch) lotus_obs_end_redispatch();
+        uint64_t dseq = LOTUS_CTR_BUMP(entry->ctr_msgs_delivered);
+        LOTUS_CTR_ADD(entry->ctr_bytes_delivered, m->len);
+        if (lotus_obs_net_deliver && lotus_obs_live &&
+            lotus_obs_binding_register) {
+            if (entry->obs_binding_id == 0) {
+                int64_t id = lotus_obs_binding_register(
+                    entry->subject ? entry->subject : "?", 0);
+                entry->obs_binding_id = (id > 0) ? id : -1;
+            }
+            if (entry->obs_binding_id > 0) {
+                lotus_obs_net_deliver(
+                    entry->subject ? entry->subject : "?",
+                    entry->obs_binding_id,
+                    m->have_seq ? m->origin : 0,
+                    m->have_seq ? m->seq : dseq,
+                    (uint64_t)m->len);
+            }
+        }
+        free(m);
+    }
+    pthread_mutex_unlock(&entry->pend_lock);
 }
 
 /* m59: queue pointer published by the codegen prelude (via
@@ -14764,18 +14989,32 @@ static void lotus_bus_unix_serve(lotus_bus_remote_entry_t *entry) {
              * or there are no local subscribers (the recv'd bytes
              * have nowhere to go locally; that's not an error in
              * relay-shaped programs). */
-            lotus_deserialize_fn deserialize = NULL;
-            for (size_t i = 0; i < g_bus_count; i++) {
-                lotus_bus_entry_t *e = &g_bus_entries[i];
-                if (!e->subject) continue;
-                /* m94: wildcard locals (e.g. "log.**") need to
-                 * match concrete remote-bound subjects too, so use
-                 * the same pattern-matching as the dispatch path. */
-                if (!lotus_subject_match(e->subject, entry->subject)) continue;
-                deserialize = e->deserialize;
-                break;
+            /* m94: wildcard locals (e.g. "log.**") need to match
+             * concrete remote-bound subjects too, so the lookup
+             * uses the same pattern-matching as the dispatch path. */
+            lotus_deserialize_fn deserialize =
+                lotus_bus_find_deserializer(entry->subject);
+            if (!deserialize) {
+                /* GH #468: the boot window — a peer that connected
+                 * and published between transport realization and
+                 * the (later, same-birth) subscriber registrations
+                 * used to lose this message silently. Buffer it,
+                 * bounded; flushed below the moment a registration
+                 * appears, or by the exit quiesce. The (origin,
+                 * seq) pair is captured now so the flushed
+                 * NET_DELIVER still pairs with its NET_SEND. */
+                uint64_t ws = lotus_transport_recv_seq(t);
+                lotus_bus_early_buffer(entry, wire_buf, (size_t)n,
+                                       lotus_transport_recv_origin(t),
+                                       ws, ws != 0);
+                continue;
             }
-            if (!deserialize) continue;
+            if (entry->pend_head) {
+                /* First message AFTER registration: deliver the
+                 * buffered boot-window prefix FIFO before it, so
+                 * arrival order survives the buffering. */
+                lotus_bus_early_flush(entry);
+            }
             ssize_t struct_size = deserialize(
                 wire_buf, (size_t)n, struct_buf, sizeof(struct_buf));
             if (struct_size <= 0) continue;
@@ -14842,10 +15081,38 @@ static void lotus_bus_unix_serve(lotus_bus_remote_entry_t *entry) {
     }
 }
 
+/* GH #468 test hook: deterministically stretch the reader's
+ * "descheduled under load" window. Test-only (mirrors the
+ * HALE_REPLAY_TEST_HOLD precedent); unset = zero cost. */
+static void lotus_bus_test_reader_stall(void) {
+    const char *s = getenv("LOTUS_BUS_TEST_READER_STALL_MS");
+    if (!s || !*s) return;
+    long ms = strtol(s, NULL, 10);
+    if (ms <= 0) return;
+    struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
+    nanosleep(&ts, NULL);
+}
+
+/* GH #468 test hook: hold the BOOT thread right after a listener
+ * is realized (socket bound, reader live) and before the same
+ * birth's later subscriber registrations run — the deterministic
+ * version of the boot window the issue describes. Test-only. */
+static void lotus_bus_test_boot_hold(void) {
+    const char *s = getenv("LOTUS_BUS_TEST_BOOT_HOLD_MS");
+    if (!s || !*s) return;
+    long ms = strtol(s, NULL, 10);
+    if (ms <= 0) return;
+    struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
+    nanosleep(&ts, NULL);
+}
+
 static void *lotus_bus_reader_thread_main(void *arg) {
     lotus_bus_reader_args_t *args = (lotus_bus_reader_args_t *)arg;
     lotus_transport_t *t = args->entry->transport;
+    lotus_bus_test_reader_stall();
     lotus_bus_unix_serve(args->entry);
+    /* GH #468: drained-and-done signal for the exit quiesce. */
+    __atomic_store_n(&args->entry->serve_done, 1, __ATOMIC_RELEASE);
     /* NULL the entry's pointer BEFORE destroying so destroy_all
      * never reads a freed transport — at worst it sees NULL and
      * skips its shutdown, which is fine because this thread is
@@ -15076,6 +15343,7 @@ typedef struct lotus_bus_udp_reader_args {
 
 static void *lotus_bus_udp_reader_thread_main(void *arg) {
     lotus_bus_udp_reader_args_t *args = (lotus_bus_udp_reader_args_t *)arg;
+    lotus_bus_test_reader_stall();
     /* Snapshot the fd: destroy_all resets entry->udp_fd to -1
      * after the join, never before, so the snapshot is stable
      * for this thread's lifetime. */
@@ -15120,29 +15388,23 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
              * Either way, exit the loop. */
             break;
         }
-        lotus_deserialize_fn deserialize = NULL;
-        for (size_t i = 0; i < g_bus_count; i++) {
-            lotus_bus_entry_t *e = &g_bus_entries[i];
-            if (!e->subject) continue;
-            if (!lotus_subject_match(e->subject, args->entry->subject)) continue;
-            deserialize = e->deserialize;
-            break;
-        }
+        lotus_deserialize_fn deserialize =
+            lotus_bus_find_deserializer(args->entry->subject);
         if (!deserialize) {
-            /* 2026-05-28: the silent-skip-on-no-deserializer path.
-             * If LOTUS_BUS_LOG_DESERIALIZE_DROP=1, emit one line
-             * naming the subject + payload size so bring-up bisects
-             * have something to grep for instead of "no log
-             * messages at all". Three udp:// bring-ups this week
-             * burned hours on this drop class. See the
-             * `handoff-compiler-refdata-dispatch-silent-...` brief. */
-            if (lotus_bus_log_deserialize_drop_enabled()) {
-                dprintf(2,
-                        "lotus_bus udp reader: drop on `%s` "
-                        "(no deserializer registered) — %zd-byte payload\n",
-                        args->entry->subject, n);
-            }
+            /* 2026-05-28: this used to be the silent-skip-on-no-
+             * deserializer path (three udp:// bring-ups in one week
+             * burned hours on it; see the
+             * `handoff-compiler-refdata-dispatch-silent-...` brief).
+             * GH #468: now it BUFFERS the boot window instead —
+             * bounded, flushed on first post-registration message
+             * or at the exit quiesce. Steady-state relay traffic
+             * degrades to counted oldest-first eviction. */
+            lotus_bus_early_buffer(args->entry, wire, (size_t)n,
+                                   w_origin, w_seq, have_wire_seq);
             continue;
+        }
+        if (args->entry->pend_head) {
+            lotus_bus_early_flush(args->entry);
         }
         ssize_t struct_size = deserialize(
             wire, (size_t)n, struct_buf, sizeof(struct_buf));
@@ -15189,6 +15451,8 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
                 (uint64_t)n);
         }
     }
+    /* GH #468: drained-and-done signal for the exit quiesce. */
+    __atomic_store_n(&args->entry->serve_done, 1, __ATOMIC_RELEASE);
     free(args);
     return NULL;
 }
@@ -15555,7 +15819,12 @@ int lotus_bus_register_remote(const char *subject,
             if (!args) goto fail_close_udp;
             args->entry = e;
             /* Reader thread dispatches handlers (which open scratch
-             * subregions) concurrently with main → subregion latch. */
+             * subregions) concurrently with main → subregion latch.
+             * GH #468: it also ENQUEUES concurrently with main's
+             * drain — the queue must run locked+gated from here on
+             * (codegen bakes the same condition for source-declared
+             * bindings; this covers LOTUS_BUS_CONFIG env bindings). */
+            lotus_bus_mark_pinned();
             lotus_mark_multithreaded();
             if (pthread_create(&e->reader_thread, NULL,
                                lotus_bus_udp_reader_thread_main, args) != 0)
@@ -15620,7 +15889,10 @@ int lotus_bus_register_remote(const char *subject,
         }
         args->entry = e;
         /* Reader thread dispatches handlers (which open scratch
-         * subregions) concurrently with main → subregion latch. */
+         * subregions) concurrently with main → subregion latch.
+         * GH #468: and it enqueues concurrently with main's drain —
+         * see the udp spawn above. */
+        lotus_bus_mark_pinned();
         lotus_mark_multithreaded();
         if (pthread_create(&e->reader_thread, NULL,
                            lotus_bus_reader_thread_main, args) != 0) {
@@ -15631,6 +15903,7 @@ int lotus_bus_register_remote(const char *subject,
             goto fail_pop_entry;
         }
         e->has_reader_thread = 1;
+        lotus_bus_test_boot_hold();
     } else {
         /* CONNECT: open inline so the connect-with-retry happens
          * on the boot path. The first publish on this subject
@@ -15761,6 +16034,10 @@ int64_t lotus_bus_transport_spawn_server(int64_t handle) {
         (lotus_bus_reader_args_t *)malloc(sizeof(*args));
     if (!args) return -1;
     args->entry = e;
+    /* GH #468: the serve thread enqueues concurrently with main's
+     * drain — locked+gated queue from here on (belt to codegen's
+     * braces: source bindings also bake program_has_offthread). */
+    lotus_bus_mark_pinned();
     lotus_mark_multithreaded();
     if (pthread_create(&e->reader_thread, NULL,
                        lotus_bus_reader_thread_main, args) != 0) {
@@ -15769,6 +16046,7 @@ int64_t lotus_bus_transport_spawn_server(int64_t handle) {
         return -1;
     }
     e->has_reader_thread = 1;
+    lotus_bus_test_boot_hold();
     return 0;
 }
 
@@ -19741,6 +20019,103 @@ const char *lotus_fs_mktemp(const char *prefix, const char *suffix) {
     return out;
 }
 
+/* GH #468 — exit quiesce: deliver what the kernel already
+ * accepted before the world is torn down.
+ *
+ * The tail-loss shape this closes: a storm-descheduled reader
+ * with messages still in its socket queue when main returns. The
+ * old teardown freed the deserializer registry FIRST
+ * (lotus_bus_router_destroy) and only then shut the sockets down
+ * — the kernel dutifully hands the reader the queued tail
+ * post-shutdown (verified: AF_UNIX SEQPACKET/STREAM return queued
+ * data before EOF even after SHUT_RDWR), and the reader dispatched
+ * it into an EMPTY registry: the same silent no-deserializer drop
+ * as the boot window, mirrored at exit.
+ *
+ * Codegen calls this at every main-exit point BEFORE the pool
+ * shutdown and the dissolve cascade, so delivery lands on live
+ * loci through live pools:
+ *   1. Half-close every LISTEN ingress fd. New connections are
+ *      refused from this point (the program is exiting); already-
+ *      queued data + already-accepted backlog connections remain
+ *      readable (kernel contract above), so the readers drain to
+ *      a true EOF and exit their serve loops.
+ *   2. Wait — bounded — for every ingress reader to signal done.
+ *      The bound (LOTUS_BUS_QUIESCE_MS, default 500, 0 disables
+ *      the quiesce) protects exit latency against a reader wedged
+ *      in dispatch; hitting it is loud.
+ *   3. Flush any still-buffered early-ingress messages through
+ *      the (complete, still-intact) registry.
+ *   4. Drain the local queue once so main/pinned-destined cells
+ *      from 1-3 reach their handlers on this thread.
+ * Everything after this point (a peer racing more data into a
+ * half-closed socket) arrived after exit and is dropped by the
+ * existing paths — that is the documented boundary of the
+ * delivery contract. */
+void lotus_bus_ingress_quiesce(lotus_bus_queue_t *queue) {
+    if (g_bus_remote_count == 0) return;
+    long budget_ms = 500;
+    const char *env = getenv("LOTUS_BUS_QUIESCE_MS");
+    if (env && *env) {
+        budget_ms = strtol(env, NULL, 10);
+        if (budget_ms <= 0) return;
+    }
+    int have_ingress = 0;
+    for (size_t i = 0; i < g_bus_remote_count; i++) {
+        lotus_bus_remote_entry_t *e = g_bus_remote_entries[i];
+        if (!e->has_reader_thread) continue;
+        if (e->kind == LOTUS_BUS_REMOTE_KIND_UDP) {
+            if (e->udp_fd >= 0) shutdown(e->udp_fd, SHUT_RDWR);
+            have_ingress = 1;
+        } else if (e->kind == LOTUS_BUS_REMOTE_KIND_UNIX) {
+            /* The reader only exits AFTER these shutdowns land
+             * (accept/recv can't fail before them), so the
+             * transport pointer is stable here — same lifetime
+             * argument destroy_all already relies on. */
+            lotus_transport_t *t = e->transport;
+            if (t) {
+                if (t->listen_fd >= 0) shutdown(t->listen_fd, SHUT_RDWR);
+                if (t->conn_fd >= 0) shutdown(t->conn_fd, SHUT_RDWR);
+                have_ingress = 1;
+            }
+        }
+    }
+    if (have_ingress) {
+        struct timespec tick = { 0, 1000000L };  /* 1ms */
+        long waited_ms = 0;
+        for (;;) {
+            int all_done = 1;
+            for (size_t i = 0; i < g_bus_remote_count; i++) {
+                lotus_bus_remote_entry_t *e = g_bus_remote_entries[i];
+                if (!e->has_reader_thread) continue;
+                if (e->kind != LOTUS_BUS_REMOTE_KIND_UDP &&
+                    e->kind != LOTUS_BUS_REMOTE_KIND_UNIX) continue;
+                if (!__atomic_load_n(&e->serve_done, __ATOMIC_ACQUIRE)) {
+                    all_done = 0;
+                    break;
+                }
+            }
+            if (all_done) break;
+            if (waited_ms >= budget_ms) {
+                dprintf(2,
+                        "[bus] ingress quiesce: reader(s) still "
+                        "draining after %ld ms — undrained ingress "
+                        "may be dropped (LOTUS_BUS_QUIESCE_MS "
+                        "adjusts the bound)\n",
+                        budget_ms);
+                break;
+            }
+            nanosleep(&tick, NULL);
+            waited_ms++;
+        }
+    }
+    for (size_t i = 0; i < g_bus_remote_count; i++) {
+        lotus_bus_remote_entry_t *e = g_bus_remote_entries[i];
+        if (e->pend_head) lotus_bus_early_flush(e);
+    }
+    if (queue) lotus_bus_queue_drain(queue);
+}
+
 void lotus_bus_remote_destroy_all(void) {
     /* GH #296 phase 5b: stop and join the ingress injector FIRST —
      * it dispatches into the queues this teardown is about to
@@ -19764,7 +20139,7 @@ void lotus_bus_remote_destroy_all(void) {
                     "sent=%llu delivered=%llu bytes_sent=%llu "
                     "bytes_delivered=%llu send_failures=%llu "
                     "dropped_lost=%llu waits=%llu rearms=%llu reconnects=%llu "
-                    "seq_gaps=%llu\n",
+                    "seq_gaps=%llu buffered_early=%llu dropped_early=%llu\n",
                     e->subject, e->kind, e->role,
                     (unsigned long long)e->ctr_msgs_sent,
                     (unsigned long long)e->ctr_msgs_delivered,
@@ -19775,7 +20150,9 @@ void lotus_bus_remote_destroy_all(void) {
                     (unsigned long long)e->ctr_waits,
                     (unsigned long long)e->ctr_rearms,
                     (unsigned long long)e->ctr_reconnects,
-                    (unsigned long long)e->ctr_seq_gaps);
+                    (unsigned long long)e->ctr_seq_gaps,
+                    (unsigned long long)e->ctr_buffered_early,
+                    (unsigned long long)e->ctr_dropped_early);
         }
 
         /* Wave B: adapter entries own their protocol lifecycle
@@ -19784,6 +20161,7 @@ void lotus_bus_remote_destroy_all(void) {
          * exit. No transport to destroy or reader thread to join
          * here — only the strdup'd subject string to free. */
         if (e->kind == LOTUS_BUS_REMOTE_KIND_ADAPTER) {
+            lotus_bus_early_reset(e);
             if (e->subject) free(e->subject);
             free(e);
             continue;
@@ -19811,6 +20189,7 @@ void lotus_bus_remote_destroy_all(void) {
                 close(e->udp_fd);
                 e->udp_fd = -1;
             }
+            lotus_bus_early_reset(e);
             if (e->subject) free(e->subject);
             free(e);
             continue;
@@ -19847,6 +20226,7 @@ void lotus_bus_remote_destroy_all(void) {
         if (e->transport) {
             lotus_transport_destroy(e->transport);
         }
+        lotus_bus_early_reset(e);
         if (e->subject) {
             free(e->subject);
         }

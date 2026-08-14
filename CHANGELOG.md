@@ -8,6 +8,57 @@ behavior.
 
 ## Unreleased
 
+### Listen-binding ingest no longer loses messages at the edges (GH #468)
+
+Three defects, one delivery contract. The issue's two observed
+shapes (boot-window drop, tail loss "at peer close") plus the real
+mechanism behind the second, found while root-causing:
+
+- **The unlocked-queue enqueue race - the actual mid-stream loss.**
+  `program_has_offthread` counted adapter bindings but not unix/udp
+  ones, so a plain `bindings { }` program ran the cooperative queue
+  UNLOCKED while two binding reader threads and the main drain
+  raced it - a concurrent enqueue pair could tear, silently losing
+  a message the counters show as delivered. Under recording the
+  window widened to ~1-in-3 on an idle machine. Fixed on both
+  layers: any `bindings { }` block now bakes the off-thread flag at
+  compile time, and the runtime re-asserts `lotus_bus_mark_pinned`
+  whenever it spawns a reader thread (covers `LOTUS_BUS_CONFIG`
+  routes codegen cannot see).
+- **Boot-window buffering.** A message received between transport
+  realization and the same birth's later subscriber registrations
+  was silently dropped by the no-deserializer path. Readers now
+  buffer it - bounded per binding (64 msgs / 1 MiB, oldest-first
+  eviction) - and flush FIFO the moment a matching registration
+  lands, so an in-run waiter sees it without another inbound
+  message. Counted as `buffered_early` / `dropped_early` in the
+  counters dump. Relay-shaped programs degrade to the old drop
+  behavior at the cap, counted instead of silent.
+- **Exit quiesce.** Teardown freed the deserializer registry
+  BEFORE joining readers, so a storm-descheduled reader drained
+  its kernel queue into an empty registry - the boot-window drop
+  mirrored at exit (the kernel itself never discards: AF_UNIX
+  queued data survives peer close and even `shutdown(SHUT_RDWR)`,
+  verified by probe). Codegen now emits
+  `lotus_bus_ingress_quiesce` at every main-exit point before
+  pools join and loci dissolve: listen fds half-close, readers
+  drain to true EOF through the intact registry, buffered residue
+  flushes, one final local drain delivers to live handlers.
+  Bounded by `LOTUS_BUS_QUIESCE_MS` (default 500ms, 0 disables) -
+  a silent peer holding a connection open cannot stall exit.
+
+Also hardened: the non-framed SEQPACKET recv/send retry `EINTR`
+instead of treating a signal as connection death (the old -1 broke
+the serve loop and the re-arm `close()` discarded the queue).
+
+The two-listener replay CLI test drops its record-session retry
+(the issue's promised cleanup) - a lossy live session is now a
+regression, not weather. New deterministic canaries in
+`binding_ingest_468.rs` drive the windows with test-only env hooks
+(`LOTUS_BUS_TEST_BOOT_HOLD_MS`, `LOTUS_BUS_TEST_READER_STALL_MS`).
+Spec: the publish contract gains the listen-side delivery bullet
+(semantics.md); runtime.md documents the new knob and counters.
+
 ### `std::http::is_route` - one locus, many endpoints
 
 `std::http::build_context(req)` + `std::http::is_route(ctx, method,
