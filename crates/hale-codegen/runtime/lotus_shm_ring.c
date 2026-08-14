@@ -133,10 +133,33 @@ typedef struct {
  *
  * Returns NULL on error. errno is set.
  */
+/* GH #296 phase 5b (review round): shm_ring has NO replay class
+ * yet — no suppression, no injection. A replaying or feeding
+ * process must not open, create, or mutate live shared memory, so
+ * this backend FAILS CLOSED with the backend named. Weak externs:
+ * the standalone test drivers compile this TU without lotus_obs.c,
+ * where both flags resolve absent (guard inert). */
+extern int lotus_replay_active __attribute__((weak));
+extern int lotus_replay_feed __attribute__((weak));
+static void lotus_shm_ring_refuse_replay(void) {
+    if ((&lotus_replay_active && lotus_replay_active) ||
+        (&lotus_replay_feed && lotus_replay_feed)) {
+        fprintf(stderr,
+                "hale replay: `shm_ring` bindings have no replay "
+                "class yet — this backend cannot be suppressed or "
+                "injected, and a replayed/fed process must not touch "
+                "live shared memory. Remove the shm_ring binding or "
+                "re-record without it (GH #296).\n");
+        fflush(NULL);
+        _exit(65);
+    }
+}
+
 lotus_shm_ring_t *lotus_shm_ring_open(const char *name,
                                       uint64_t slot_size,
                                       uint64_t slot_count,
                                       lotus_shm_overflow_policy_t policy) {
+    lotus_shm_ring_refuse_replay();
     if (!name || slot_size == 0 || slot_count == 0) {
         errno = EINVAL;
         return NULL;
@@ -422,6 +445,7 @@ static void shm_layout_from_words(const uint64_t *w, lotus_shm_layout_t *d) {
  * magic/version mismatch, or a buffer_size that overruns the map. */
 static lotus_shm_layout_ring_t *
 lotus_shm_ring_open_layout(const char *name, const lotus_shm_layout_t *desc) {
+    lotus_shm_ring_refuse_replay();
     if (!name || !desc) { errno = EINVAL; return NULL; }
     if (strlen(name) + 1 > sizeof(((lotus_shm_layout_ring_t *)0)->shm_name)) {
         errno = ENAMETOOLONG;

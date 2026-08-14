@@ -167,6 +167,17 @@ static uint64_t g_obs_exec_digest[4] = {0, 0, 0, 0};
 void lotus_obs_exec_digest_set(uint64_t part, uint64_t v) {
   if (part < 4) g_obs_exec_digest[part] = v;
 }
+/* Review round 2, finding 2: the identity setters above are plain
+ * main-thread writes, and the recorder drain used to read them
+ * directly — an unsynchronized race whose XOR change-key also
+ * ignored digest words 2-3 (a crash could persist a HALF-published
+ * digest). The publication protocol is now explicit: the generated
+ * prelude calls lotus_obs_eager_init AFTER every setter, which
+ * copies the COMPLETE identity here and release-publishes the
+ * committed flag; the drain acquire-loads the flag and stamps only
+ * this immutable committed copy, exactly once. */
+static uint64_t g_obs_ident_committed_vals[6];
+static _Atomic int g_obs_ident_committed = 0;
 
 /* iris handoff-2 P10: publisher attribution. Codegen notes the
  * publishing locus's self in this TLS right before lowering a
@@ -329,6 +340,7 @@ static int g_rec_thread_started = 0;
 static _Atomic int g_rec_stop = 0;
 static _Atomic uint64_t g_rec_cursor[64]; /* per-ring drained head */
 static uint64_t g_rec_written = 0;        /* drain-thread-owned */
+static int g_rec_durable = 0; /* LOTUS_OBS_RECORD_DURABLE=1 */
 static __thread uint64_t t_consume_seq = 0;
 
 #define OBS_REC_MAGIC 0x30434552454C4148ULL /* "HALEREC0" */
@@ -379,6 +391,12 @@ static __thread uint64_t t_consume_seq = 0;
 #define OBS_REC_TAG_META 3u
 #define OBS_REC_META_TOPIC 1u
 #define OBS_REC_META_PUBRING 2u
+/* GH #296 phase 5b: subject-hash → name map. PAYLOAD records carry
+ * the stable FNV of the subject (registration-order manifest ids
+ * race across runs); this subtype lets a reader NAME a payload's
+ * subject without a live registry — which is what makes feed-mode
+ * "recorded topic X has no subscriber here" reports speakable. */
+#define OBS_REC_META_SUBJHASH 3u
 
 /* journal kinds — one per interposed runtime read */
 #define JK_TIME_NOW 1u
@@ -393,6 +411,24 @@ static __thread uint64_t t_consume_seq = 0;
 static __thread uint64_t t_consumer_id = 0; /* 0 = unassigned */
 static __thread uint64_t t_pub_seq = 0;
 static __thread uint64_t t_journal_seq = 0;
+/* GH #296 phase 5b: a pub_id decided BEFORE the dispatch that would
+ * otherwise derive one. Set by the ingress wire capture (the reader
+ * records the verbatim wire bytes and the dispatch must reuse that
+ * record's identity, not mint a second) and by the replay injector
+ * (an injected delivery must carry its RECORDED identity so the
+ * per-consumer order enforcement can match it). Consumed once. */
+static __thread uint64_t t_rec_forced_pub = 0;
+
+/* The stable subject hash payload records carry (see the v0.3 note
+ * in lotus_obs_record_publish_payload). */
+static uint32_t obs_subject_hash(const char *subject) {
+  uint32_t h = 2166136261u;
+  for (const char *q = subject; *q; q++) {
+    h ^= (uint8_t)*q;
+    h *= 16777619u;
+  }
+  return h;
+}
 
 /* Capture side-channel: payload + journal blobs travel from the
  * emitting thread to the drain on an MPSC push list (atomic
@@ -519,8 +555,23 @@ uint64_t lotus_obs_consumer_id(void) { return t_consumer_id; }
  * The file mapping is kept for process life — served strings are
  * pointers into it. */
 int lotus_replay_active = 0;
+/* GH #296 phase 5b: feed mode (LOTUS_REPLAY_FEED=<path>) — the
+ * backtesting contract. The recording is consumed as an INPUT TAPE
+ * only: recorded ingress is injected, transport bindings are
+ * suppressed (the wire belongs to the tape), and nothing else of
+ * replay applies — no journal serving, no order enforcement, no
+ * model admission. Same inputs, changed code, live everything else. */
+int lotus_replay_feed = 0;
 static char g_replay_path[512];
 static const uint8_t *g_rp_base; /* mmap'd recording */
+static int g_rp_truncated = 0; /* accepted without a finalize trailer */
+static uint64_t g_rp_hdr_model = 0;
+static uint64_t g_rp_dropped_tail = 0;
+/* phase 5 (truncated prefix): recorded-history-exhausted events on
+ * an accepted truncated tape are the unknown post-crash suffix,
+ * not divergences (review round: the runtime verdict contradicted
+ * the prefix comparator). */
+static _Atomic uint64_t g_rp_post_prefix = 0;
 static size_t g_rp_len;
 static uint64_t g_replay_at = 0; /* LOTUS_REPLAY_AT: stop at Nth consume */
 static uint64_t g_replay_at_consumer = 0; /* 0 = process-wide count */
@@ -550,7 +601,11 @@ typedef struct {
    * named divergence instead of a plausible wrong value. */
   rp_queue_t journal;
   rp_consume_t *consume;           /* recorded delivery order */
-  uint32_t consume_len, consume_cap, consume_cursor;
+  uint32_t consume_len, consume_cap;
+  /* Atomic: advanced by the owning consumer thread, READ by the
+   * ingress pacing check (review round: injection must be bounded
+   * by recorded progress, which lives in these cursors). */
+  _Atomic uint32_t consume_cursor;
 } rp_consumer_t;
 static rp_consumer_t g_rp_consumers[RP_MAX_CONSUMERS];
 static int g_rp_consumer_count = 0;
@@ -562,12 +617,52 @@ static _Atomic uint64_t g_rp_consume_count = 0;
  * --diff. Structural cells (pub_id 0) stay uncounted. */
 static _Atomic uint64_t g_rp_unexpected = 0;
 void lotus_replay_note_unexpected(void) {
+  if (g_rp_truncated) {
+    /* Deliveries past the truncated tape are the post-crash
+     * suffix, not unexpected history. */
+    atomic_fetch_add_explicit(&g_rp_post_prefix, 1,
+                              memory_order_relaxed);
+    return;
+  }
   atomic_fetch_add_explicit(&g_rp_unexpected, 1, memory_order_relaxed);
 }
 typedef struct { uint64_t pub_id; uint32_t topic; uint32_t flags;
                  rp_blob_ref_t bytes; } rp_payload_t;
 static rp_payload_t *g_rp_payloads = NULL;
 static uint32_t g_rp_payload_len = 0, g_rp_payload_cap = 0;
+/* phase 5b: subject-hash → name (META_SUBJHASH, reporting only —
+ * routing identity is the FULL subject string each ingress record
+ * carries; review round: FNV-32 alone is collision-prone), and the
+ * ingress tape in artifact order. */
+typedef struct { uint32_t hash; const char *name; } rp_subj_t;
+static rp_subj_t *g_rp_subjects = NULL;
+static uint32_t g_rp_subject_len = 0, g_rp_subject_cap = 0;
+typedef struct {
+  const char *subject; /* into the artifact snapshot, NUL-terminated */
+  const char *shape;   /* canonical payload shape at record time */
+  const uint8_t *wire;
+  uint64_t wire_len;
+  uint64_t pub_id;
+} rp_ingress_t;
+static rp_ingress_t *g_rp_ingress = NULL;
+static uint32_t g_rp_ingress_len = 0, g_rp_ingress_cap = 0;
+static _Atomic uint64_t g_rp_injected = 0;
+static _Atomic uint64_t g_rp_ing_rejected = 0;
+static _Atomic uint64_t g_rp_ing_unmatched = 0;
+/* Review round 2, finding 5: injection snapshots the registry at
+ * the BOOT/run boundary — a subscriber the program only creates
+ * during run() is a distinct fact from "no subscriber exists".
+ * The join path reclassifies (teardown-time registry rescan). */
+static _Atomic uint64_t g_rp_ing_late_sub = 0;
+static _Atomic uint64_t g_rp_ing_incompatible = 0;
+static _Atomic uint64_t g_rp_ing_unprocessed = 0;
+static _Atomic uint64_t g_rp_injector_start_failure = 0;
+static _Atomic uint64_t g_rp_bindings_suppressed = 0;
+/* Anon-identity floor: injector workers carry RECORDED anonymous
+ * consumer ids; fresh anonymous claims in the same (replaying)
+ * process start above the recorded range so the two can never
+ * collide in a verify recording. */
+static uint64_t g_rp_anon_floor = 0;
 
 /* Creation happens ONLY during rp_load (single-threaded, pre-main);
  * at runtime every caller is lookup-only — the table is immutable
@@ -629,7 +724,11 @@ static void rp_load(void) {
   if (fd < 0) fd = open(g_replay_path, O_RDONLY | O_NOFOLLOW);
   if (fd < 0) rp_fail(strerror(errno));
   struct stat st;
-  if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 112) {
+  /* Review round 2, finding 3: the minimum is the HEADER alone
+   * (96B) — a header-only file is the earliest valid crash prefix
+   * (killed after recorder creation, before the first complete
+   * frame). 112 demanded a trailer that a crash never writes. */
+  if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 96) {
     close(fd);
     rp_fail("not a recording (too small or not a regular file)");
   }
@@ -662,6 +761,7 @@ static void rp_load(void) {
   if (h->header_len != sizeof(obs_rec_hdr_t)) {
     rp_fail("unexpected header length");
   }
+  g_rp_hdr_model = h->model_hash;
   size_t end = g_rp_len;
   uint64_t trailer_count = 0;
   if (end >= sizeof(obs_rec_hdr_t) + 16 &&
@@ -669,8 +769,20 @@ static void rp_load(void) {
     trailer_count = *(const uint64_t *)(g_rp_base + end - 8);
     end -= 16;
   } else {
-    rp_fail("no clean-finalize trailer — the recording is "
-            "truncated; refusing to replay a partial history");
+    /* GH #296 phase 5 (durable recording): the drain appends whole
+     * frames in stream order, so a crash-truncated file is EXACT
+     * up to one torn frame at the tail — a usable prefix. Partial
+     * history stays opt-in (the refusal was a deliberate
+     * review-round posture): the flag is the operator saying "I
+     * know the tape ends early." */
+    const char *tol = getenv("LOTUS_REPLAY_ALLOW_TRUNCATED");
+    if (!(tol && tol[0] == '1')) {
+      rp_fail("no clean-finalize trailer — the recording is "
+              "truncated (crashed writer?); pass --allow-truncated "
+              "(LOTUS_REPLAY_ALLOW_TRUNCATED=1) to replay the "
+              "recorded prefix");
+    }
+    g_rp_truncated = 1;
   }
   uint64_t parsed = 0;
   memset(rp_ring_consumer, 0, sizeof rp_ring_consumer);
@@ -680,7 +792,10 @@ static void rp_load(void) {
     uint32_t a = *(const uint32_t *)(g_rp_base + off + 4);
     parsed++;
     if (tag == OBS_REC_TAG_RING) {
-      if (end - off < 24) rp_fail("truncated ring record");
+      if (end - off < 24) {
+        if (g_rp_truncated) { parsed--; break; }
+        rp_fail("truncated ring record");
+      }
       uint64_t w0 = *(const uint64_t *)(g_rp_base + off + 8);
       uint64_t w1 = *(const uint64_t *)(g_rp_base + off + 16);
       uint32_t ekind = (uint32_t)((w0 >> 20) & 0x1F);
@@ -713,14 +828,21 @@ static void rp_load(void) {
       off += 24;
     } else if (tag == OBS_REC_TAG_PAYLOAD || tag == OBS_REC_TAG_JOURNAL
                || tag == OBS_REC_TAG_META) {
-      if (end - off < 32) rp_fail("truncated blob header");
+      if (end - off < 32) {
+        if (g_rp_truncated) { parsed--; break; }
+        rp_fail("truncated blob header");
+      }
       uint64_t b = *(const uint64_t *)(g_rp_base + off + 8);
       uint64_t cfield = *(const uint64_t *)(g_rp_base + off + 16);
       uint64_t size = *(const uint64_t *)(g_rp_base + off + 24);
       const uint8_t *bytes = g_rp_base + off + 32;
-      if (size > end - off - 32) rp_fail("blob length out of range");
+      if (size > end - off - 32) {
+        if (g_rp_truncated) { parsed--; break; }
+        rp_fail("blob length out of range");
+      }
       uint64_t padded = (size + 7) & ~7ull;
       if (padded < size || padded > end - off - 32) {
+        if (g_rp_truncated) { parsed--; break; }
         rp_fail("blob padding out of range");
       }
       if (tag == OBS_REC_TAG_JOURNAL) {
@@ -778,15 +900,323 @@ static void rp_load(void) {
         pl->bytes.args_len = 0;
         pl->bytes.jkind = 0;
         pl->bytes.withheld = 0;
-      } /* META entries carry no replay state; validated + skipped */
+        /* phase 5b: the injectable tape — ingress records carrying
+         * their FULL identity (bit 0 = ingress, bit 2 = prefixed
+         * with subject + canonical payload shape; bit 1 raw records
+         * are never injectable). The bytes are
+         * [u32 slen][subject\0][u32 shlen][shape\0][wire...]. */
+        if ((cfield & 1) && !(cfield & 2) && (cfield & 4)) {
+          if (size < 8) rp_fail("ingress record too small");
+          uint32_t slen, shlen;
+          memcpy(&slen, bytes, 4);
+          if ((uint64_t)slen + 8 > size || slen == 0 ||
+              bytes[4 + slen - 1] != 0) {
+            rp_fail("ingress subject frame out of range");
+          }
+          memcpy(&shlen, bytes + 4 + slen, 4);
+          if ((uint64_t)slen + shlen + 8 > size || shlen == 0 ||
+              bytes[8 + slen + shlen - 1] != 0) {
+            rp_fail("ingress shape frame out of range");
+          }
+          if (g_rp_ingress_len == g_rp_ingress_cap) {
+            g_rp_ingress_cap =
+                g_rp_ingress_cap ? g_rp_ingress_cap * 2 : 64;
+            rp_ingress_t *g = realloc(
+                g_rp_ingress, g_rp_ingress_cap * sizeof(rp_ingress_t));
+            if (!g) rp_fail("out of memory");
+            g_rp_ingress = g;
+          }
+          rp_ingress_t *in = &g_rp_ingress[g_rp_ingress_len++];
+          in->subject = (const char *)bytes + 4;
+          in->shape = (const char *)bytes + 8 + slen;
+          in->wire = bytes + 8 + slen + shlen;
+          in->wire_len = size - 8 - slen - shlen;
+          in->pub_id = b;
+        }
+      } else {
+        /* META: subject-hash map feeds injection + reports; other
+         * subtypes carry no replay state — validated + skipped. */
+        if (b == OBS_REC_META_SUBJHASH && size > 0 &&
+            bytes[size - 1] == 0) {
+          if (g_rp_subject_len == g_rp_subject_cap) {
+            g_rp_subject_cap =
+                g_rp_subject_cap ? g_rp_subject_cap * 2 : 32;
+            rp_subj_t *g = realloc(
+                g_rp_subjects, g_rp_subject_cap * sizeof(rp_subj_t));
+            if (!g) rp_fail("out of memory");
+            g_rp_subjects = g;
+          }
+          g_rp_subjects[g_rp_subject_len].hash = a;
+          g_rp_subjects[g_rp_subject_len].name =
+              (const char *)bytes;
+          g_rp_subject_len++;
+        }
+      }
       off += 32 + padded;
     } else {
       rp_fail("unknown entry tag — recording from a newer hale?");
     }
   }
-  if (off != end) rp_fail("entries do not end at the trailer");
-  if (parsed != trailer_count) {
-    rp_fail("trailer count disagrees with parsed entries");
+  if (!g_rp_truncated) {
+    if (off != end) rp_fail("entries do not end at the trailer");
+    if (parsed != trailer_count) {
+      rp_fail("trailer count disagrees with parsed entries");
+    }
+  } else {
+    g_rp_dropped_tail = end - off;
+    fprintf(stderr,
+            "hale: LOTUS_REPLAY: no clean finalize — replaying the "
+            "recorded prefix (%llu entries; %llu torn tail byte(s) "
+            "dropped)\n",
+            (unsigned long long)parsed,
+            (unsigned long long)g_rp_dropped_tail);
+  }
+}
+
+/* ---- phase 5b: the ingress tape (injection + feed) -------------
+ *
+ * The reader threads' wire captures (verbatim bytes, ingress flag)
+ * become the injectable tape. The arena-side injector walks it in
+ * artifact order through these accessors; identity rides
+ * t_rec_forced_pub so an injected delivery matches its recorded
+ * consume events without minting a new pub_id. */
+uint64_t lotus_replay_ingress_count(void) {
+  return (lotus_replay_active || lotus_replay_feed)
+             ? g_rp_ingress_len
+             : 0;
+}
+int lotus_replay_ingress_get(uint64_t i, const char **subject,
+                             uint64_t *pub_id, const void **bytes,
+                             uint64_t *size) {
+  if (i >= g_rp_ingress_len) return 0;
+  const rp_ingress_t *in = &g_rp_ingress[i];
+  *subject = in->subject;
+  *pub_id = in->pub_id;
+  *bytes = in->wire;
+  *size = in->wire_len;
+  return 1;
+}
+/* Wire-identity admission (review round: subject spelling alone is
+ * not identity — changed code can keep "evt" and change the payload
+ * shape or codec). The recorded canonical shape must match the
+ * LIVE program's canonical shape for the same subject. */
+int lotus_replay_ingress_compatible(uint64_t i) {
+  if (i >= g_rp_ingress_len) return 0;
+  return strcmp(g_rp_ingress[i].shape,
+                obs_shape_for(g_rp_ingress[i].subject)) == 0;
+}
+/* Recorded ingress-source identity (pub_id high bits): the
+ * injector runs one worker per recorded source so the verify
+ * recording's consumer identities line up with the original's. */
+uint64_t lotus_replay_ingress_source(uint64_t i) {
+  if (i >= g_rp_ingress_len) return 0;
+  return g_rp_ingress[i].pub_id >> 48;
+}
+/* Fresh anonymous claims in a replaying process start ABOVE the
+ * recorded ingress-source range (worker ids are forced to the
+ * recorded values; a same-numbered fresh claim would collide in
+ * the verify recording). */
+void lotus_replay_reserve_anon_floor(void) {
+  uint64_t max_src = 0;
+  for (uint32_t i = 0; i < g_rp_ingress_len; i++) {
+    uint64_t src = g_rp_ingress[i].pub_id >> 48;
+    if (src > max_src) max_src = src;
+  }
+  if (max_src >= OBS_REC_ANON_BASE) {
+    g_rp_anon_floor = max_src - OBS_REC_ANON_BASE + 1;
+  }
+}
+/* Has every recorded consume of `pub_id` been re-consumed? The
+ * ingress pacing bound (review round: unpaced injection can shed
+ * at bounded queues before the order gate ever sees the cell). */
+int lotus_replay_ingress_settled(uint64_t pub_id) {
+  for (int ci = 0; ci < g_rp_consumer_count; ci++) {
+    rp_consumer_t *c = &g_rp_consumers[ci];
+    uint32_t cur = atomic_load_explicit(&c->consume_cursor,
+                                        memory_order_acquire);
+    for (uint32_t k = cur; k < c->consume_len; k++) {
+      if (c->consume[k].msg == pub_id) return 0;
+    }
+  }
+  return 1;
+}
+/* Called by the injector immediately before dispatching one tape
+ * payload. Strict replay: pin the RECORDED identity (and, when a
+ * verify recording is running under --diff, record the injected
+ * payload so the comparator can pair it). Feed: identity is the
+ * new run's own — nothing to pin. */
+/* One prefixed ingress payload record:
+ * [u32 slen][subject\0][u32 shlen][shape\0][wire bytes], flags =
+ * ingress | prefixed. Shared by the live capture and the verify
+ * recording of an injected dispatch, so --diff pairs them byte for
+ * byte. */
+static void obs_rec_push_ingress(const char *subject,
+                                 const void *bytes, uint64_t size,
+                                 uint64_t pub_id) {
+  const char *shape = obs_shape_for(subject);
+  uint32_t slen = (uint32_t)strlen(subject) + 1;
+  uint32_t shlen = (uint32_t)strlen(shape) + 1;
+  uint64_t total = 8ull + slen + shlen + size;
+  uint8_t *buf = malloc(total);
+  if (!buf) {
+    fprintf(stderr,
+            "hale: LOTUS_OBS_RECORD ingress capture allocation "
+            "failed — failing the run rather than recording a gap\n");
+    fflush(NULL);
+    _exit(74);
+  }
+  memcpy(buf, &slen, 4);
+  memcpy(buf + 4, subject, slen);
+  memcpy(buf + 4 + slen, &shlen, 4);
+  memcpy(buf + 8 + slen, shape, shlen);
+  if (size) memcpy(buf + 8 + slen + shlen, bytes, size);
+  obs_rec_blob_push(OBS_REC_TAG_PAYLOAD, obs_subject_hash(subject),
+                    pub_id, 1u | 4u, buf, total);
+  free(buf);
+}
+
+uint64_t lotus_replay_inject_begin(const char *subject,
+                                   const void *bytes, uint64_t size,
+                                   uint64_t pub_id) {
+  if (!lotus_replay_active) return 0;
+  if (lotus_obs_recording && subject) {
+    obs_rec_push_ingress(subject, bytes, size, pub_id);
+  }
+  t_rec_forced_pub = pub_id;
+  return pub_id;
+}
+void lotus_replay_note_injected(void) {
+  atomic_fetch_add_explicit(&g_rp_injected, 1, memory_order_relaxed);
+}
+void lotus_replay_note_ingress_rejected(void) {
+  atomic_fetch_add_explicit(&g_rp_ing_rejected, 1,
+                            memory_order_relaxed);
+}
+void lotus_replay_note_ingress_unmatched(void) {
+  atomic_fetch_add_explicit(&g_rp_ing_unmatched, 1,
+                            memory_order_relaxed);
+}
+void lotus_replay_reclassify_unmatched_late(uint64_t n) {
+  atomic_fetch_sub_explicit(&g_rp_ing_unmatched, n,
+                            memory_order_relaxed);
+  atomic_fetch_add_explicit(&g_rp_ing_late_sub, n,
+                            memory_order_relaxed);
+}
+void lotus_replay_note_ingress_incompatible(void) {
+  atomic_fetch_add_explicit(&g_rp_ing_incompatible, 1,
+                            memory_order_relaxed);
+}
+void lotus_replay_note_ingress_unprocessed(uint64_t n) {
+  atomic_fetch_add_explicit(&g_rp_ing_unprocessed, n,
+                            memory_order_relaxed);
+}
+void lotus_replay_note_injector_start_failure(void) {
+  atomic_fetch_add_explicit(&g_rp_injector_start_failure, 1,
+                            memory_order_relaxed);
+}
+void lotus_replay_note_binding_suppressed(void) {
+  atomic_fetch_add_explicit(&g_rp_bindings_suppressed, 1,
+                            memory_order_relaxed);
+}
+
+/* Live-side twin of inject_begin, called by the reader threads
+ * AFTER a successful deserialize (review round: a message the
+ * application rejected must never enter the injectable tape —
+ * identity is allocated per ACCEPTED message, so record and replay
+ * derive the same sequence). Captures the verbatim wire form with
+ * its full identity (subject + canonical shape) and pins the
+ * pub_id so the dispatch a few lines later reuses it. */
+uint64_t lotus_obs_record_ingress_wire(const char *subject,
+                                       const void *bytes,
+                                       uint64_t size) {
+  if ((!lotus_obs_recording && !lotus_replay_active) || !subject)
+    return 0;
+  if (!obs_on()) return 0;
+  if (t_consumer_id == 0) obs_rec_claim();
+  uint64_t cid = t_consumer_id;
+  if (cid > OBS_REC_CONSUMER_MAX || t_pub_seq >= 0xFFFFFFFFFFFFULL) {
+    fprintf(stderr,
+            "hale: recording identity out of range (consumer %llu, "
+            "seq %llu) — refusing to record ambiguously\n",
+            (unsigned long long)cid,
+            (unsigned long long)t_pub_seq);
+    fflush(NULL);
+    _exit(70);
+  }
+  uint64_t pub_id = (cid << 48) | (++t_pub_seq & 0xFFFFFFFFFFFFULL);
+  if (lotus_obs_recording) {
+    obs_rec_push_ingress(subject, bytes, size, pub_id);
+  }
+  t_rec_forced_pub = pub_id;
+  return pub_id;
+}
+
+/* Feed-mode exit report — and verdict. Unfed tape is a failure by
+ * default (review round: "0 of 100 injected; all matched" was a
+ * reportable outcome): every remainder is classified, and any
+ * unmatched / incompatible / unprocessed / start-failure remainder
+ * fails the run unless LOTUS_REPLAY_FEED_ALLOW_UNMATCHED=1
+ * (`hale replay --feed --allow-unmatched-feed`). */
+static void rp_feed_report(void) {
+  uint64_t inj = atomic_load(&g_rp_injected);
+  uint64_t rej = atomic_load(&g_rp_ing_rejected);
+  uint64_t unm = atomic_load(&g_rp_ing_unmatched);
+  uint64_t inc = atomic_load(&g_rp_ing_incompatible);
+  uint64_t late = atomic_load(&g_rp_ing_late_sub);
+  uint64_t unp = atomic_load(&g_rp_ing_unprocessed);
+  uint64_t sf = atomic_load(&g_rp_injector_start_failure);
+  /* Review round 2, finding 4: the verdict must not depend on the
+   * join path having run. std::process::exit skips lifecycle
+   * teardown entirely — derive the unclassified remainder HERE, so
+   * "0 of N injected" can never ride an exit(0) to success. */
+  uint64_t classified = inj + rej + unm + late + inc + unp;
+  if (classified < g_rp_ingress_len) {
+    uint64_t implicit = g_rp_ingress_len - classified;
+    atomic_fetch_add_explicit(&g_rp_ing_unprocessed, implicit,
+                              memory_order_relaxed);
+    unp += implicit;
+  }
+  fprintf(stderr,
+          "hale feed: %llu of %u recorded ingress payload(s) "
+          "injected\n",
+          (unsigned long long)inj, g_rp_ingress_len);
+  if (rej)
+    fprintf(stderr,
+            "hale feed:   %llu rejected by this program's "
+            "deserializer\n",
+            (unsigned long long)rej);
+  if (unm)
+    fprintf(stderr,
+            "hale feed:   %llu unmatched — no subscribed subject in "
+            "this program\n",
+            (unsigned long long)unm);
+  if (late)
+    fprintf(stderr,
+            "hale feed:   %llu uncovered — the subject's subscriber "
+            "is created after boot (injection covers the boot/run "
+            "snapshot; late subscriptions are a stated coverage "
+            "boundary)\n",
+            (unsigned long long)late);
+  if (inc)
+    fprintf(stderr,
+            "hale feed:   %llu incompatible — subject matches but "
+            "the payload shape changed\n",
+            (unsigned long long)inc);
+  if (unp)
+    fprintf(stderr,
+            "hale feed:   %llu unprocessed at shutdown\n",
+            (unsigned long long)unp);
+  if (sf)
+    fprintf(stderr, "hale feed:   injector failed to start\n");
+  if (unm + late + inc + unp + sf) {
+    const char *ok = getenv("LOTUS_REPLAY_FEED_ALLOW_UNMATCHED");
+    if (!(ok && ok[0] == '1')) {
+      fprintf(stderr,
+              "hale feed: unfed tape is a failure by default — pass "
+              "--allow-unmatched-feed to accept a partial feed\n");
+      fflush(NULL);
+      _exit(74);
+    }
   }
 }
 
@@ -802,14 +1232,25 @@ static const rp_blob_ref_t *rp_serve(uint32_t jkind, const void *args,
   if (!lotus_replay_active || jkind >= RP_MAX_JK) return NULL;
   rp_consumer_t *c = rp_consumer(t_consumer_id);
   if (!c) {
-    atomic_fetch_add_explicit(&g_rp_divergences[jkind], 1,
-                              memory_order_relaxed);
+    /* Truncated tape: a consumer the recording never saw belongs
+     * to the unknown post-crash suffix, not to the prefix. */
+    atomic_fetch_add_explicit(g_rp_truncated
+                                  ? &g_rp_post_prefix
+                                  : &g_rp_divergences[jkind],
+                              1, memory_order_relaxed);
     return NULL;
   }
   rp_queue_t *q = &c->journal;
   if (q->cursor >= q->len) {
-    atomic_fetch_add_explicit(&g_rp_divergences[jkind], 1,
-                              memory_order_relaxed);
+    /* Stream exhausted. On a finalized tape that is a divergence;
+     * on an ACCEPTED truncated tape it is the post-crash suffix
+     * executing live (review round: the runtime verdict used to
+     * contradict the prefix comparator here). Mismatches BEFORE
+     * exhaustion stay divergences either way. */
+    atomic_fetch_add_explicit(g_rp_truncated
+                                  ? &g_rp_post_prefix
+                                  : &g_rp_divergences[jkind],
+                              1, memory_order_relaxed);
     return NULL;
   }
   const rp_blob_ref_t *e = &q->items[q->cursor];
@@ -858,9 +1299,12 @@ int lotus_replay_expected_consume(uint64_t *out_msg,
                                   uint32_t *out_locus) {
   if (!lotus_replay_active) return 0;
   rp_consumer_t *c = rp_consumer(t_consumer_id);
-  if (!c || c->consume_cursor >= c->consume_len) return 0;
-  *out_msg = c->consume[c->consume_cursor].msg;
-  *out_locus = c->consume[c->consume_cursor].locus;
+  if (!c) return 0;
+  uint32_t cur = atomic_load_explicit(&c->consume_cursor,
+                                      memory_order_relaxed);
+  if (cur >= c->consume_len) return 0;
+  *out_msg = c->consume[cur].msg;
+  *out_locus = c->consume[cur].locus;
   return 1;
 }
 
@@ -878,14 +1322,20 @@ uint64_t lotus_obs_pub_inst_id(void *self) {
 void lotus_replay_note_consume(void) {
   if (!lotus_replay_active) return;
   rp_consumer_t *c = rp_consumer(t_consumer_id);
-  if (c && c->consume_cursor < c->consume_len) c->consume_cursor++;
+  if (c && atomic_load_explicit(&c->consume_cursor,
+                                memory_order_relaxed) < c->consume_len) {
+    atomic_fetch_add_explicit(&c->consume_cursor, 1,
+                              memory_order_release);
+  }
   uint64_t n = atomic_fetch_add_explicit(&g_rp_consume_count, 1,
                                          memory_order_relaxed) + 1;
   /* consumer:N form — stable across multi-consumer runs, unlike
    * the process-wide ordinal (review, --at stability note). */
   if (g_replay_at_consumer && g_replay_at && c &&
       t_consumer_id == g_replay_at_consumer &&
-      (uint64_t)c->consume_cursor == g_replay_at) {
+      (uint64_t)atomic_load_explicit(&c->consume_cursor,
+                                     memory_order_relaxed) ==
+          g_replay_at) {
     fprintf(stderr,
             "hale replay: stopped at consumer %llu consume #%llu "
             "(pid %d) — attach a debugger, then SIGCONT\n",
@@ -914,7 +1364,9 @@ static void rp_report(void) {
   for (int i = 0; i < g_rp_consumer_count; i++) {
     rp_consumer_t *c = &g_rp_consumers[i];
     unconsumed_journal += c->journal.len - c->journal.cursor;
-    unconsumed_deliveries += c->consume_len - c->consume_cursor;
+    unconsumed_deliveries +=
+        c->consume_len - atomic_load_explicit(&c->consume_cursor,
+                                              memory_order_relaxed);
   }
   uint64_t order_div = lotus_replay_order_divergences
       ? lotus_replay_order_divergences()
@@ -931,11 +1383,24 @@ static void rp_report(void) {
       fprintf(sf,
               "journal_divergences=%llu\norder_divergences=%llu\n"
               "unconsumed_journal=%llu\nunconsumed_deliveries=%llu\n"
-              "unexpected_deliveries=%llu\nconsumes=%llu\n",
+              "unexpected_deliveries=%llu\n"
+              "ingress_rejected=%llu\ningress_unmatched=%llu\n"
+              "late_subscription_uncovered=%llu\n"
+              "ingress_incompatible=%llu\ningress_unprocessed=%llu\n"
+              "injector_start_failure=%llu\n"
+              "post_prefix_live_fallback=%llu\nconsumes=%llu\n",
               (unsigned long long)jd, (unsigned long long)order_div,
               (unsigned long long)unconsumed_journal,
               (unsigned long long)unconsumed_deliveries,
               (unsigned long long)unexpected,
+              (unsigned long long)atomic_load(&g_rp_ing_rejected),
+              (unsigned long long)atomic_load(&g_rp_ing_unmatched),
+              (unsigned long long)atomic_load(&g_rp_ing_late_sub),
+              (unsigned long long)atomic_load(&g_rp_ing_incompatible),
+              (unsigned long long)atomic_load(&g_rp_ing_unprocessed),
+              (unsigned long long)atomic_load(
+                  &g_rp_injector_start_failure),
+              (unsigned long long)atomic_load(&g_rp_post_prefix),
               (unsigned long long)atomic_load(&g_rp_consume_count));
       fclose(sf);
     }
@@ -944,10 +1409,39 @@ static void rp_report(void) {
     "?", "time.now", "time.monotonic", "rand.next_int",
     "os.getrandom", "env.var", "env.var_exists", "env.arg",
     "env.args_count" };
+  uint64_t ing_div = atomic_load(&g_rp_ing_rejected) +
+                     atomic_load(&g_rp_ing_unmatched) +
+                     atomic_load(&g_rp_ing_late_sub) +
+                     atomic_load(&g_rp_ing_incompatible) +
+                     atomic_load(&g_rp_ing_unprocessed) +
+                     atomic_load(&g_rp_injector_start_failure);
   uint64_t total = order_div + unconsumed_journal
-      + unconsumed_deliveries + unexpected;
+      + unconsumed_deliveries + unexpected + ing_div;
   for (int i = 0; i < RP_MAX_JK; i++)
     total += atomic_load(&g_rp_divergences[i]);
+  if (g_rp_truncated) {
+    fprintf(stderr,
+            "hale replay: note — truncated recording; coverage ends "
+            "at the torn tail\n");
+  }
+  uint64_t sup = atomic_load(&g_rp_bindings_suppressed);
+  if (sup) {
+    fprintf(stderr,
+            "hale replay: hermetic wire — %llu binding(s) "
+            "suppressed; %llu of %u recorded ingress payload(s) "
+            "injected (%llu dropped)\n",
+            (unsigned long long)sup,
+            (unsigned long long)atomic_load(&g_rp_injected),
+            g_rp_ingress_len, (unsigned long long)ing_div);
+  }
+  uint64_t post_prefix = atomic_load(&g_rp_post_prefix);
+  if (post_prefix) {
+    fprintf(stderr,
+            "hale replay: %llu event(s) past the truncated tape — "
+            "the unknown post-crash suffix, executed live (not "
+            "divergences)\n",
+            (unsigned long long)post_prefix);
+  }
   if (total == 0) {
     fprintf(stderr,
             "hale replay: journal served fully — 0 divergences, "
@@ -967,6 +1461,9 @@ static void rp_report(void) {
   if (order_div)
     fprintf(stderr, "  %-22s %llu\n", "delivery-order",
             (unsigned long long)order_div);
+  if (ing_div)
+    fprintf(stderr, "  %-22s %llu\n", "ingress",
+            (unsigned long long)ing_div);
   if (unconsumed_journal)
     fprintf(stderr, "  %-22s %llu\n", "unconsumed-journal",
             (unsigned long long)unconsumed_journal);
@@ -1021,7 +1518,8 @@ void lotus_obs_teardown(void) {
       uint64_t ident[6] = { g_obs_model_hash,
                             g_obs_exec_digest[0], g_obs_exec_digest[1],
                             g_obs_exec_digest[2], g_obs_exec_digest[3],
-                            g_rec_env_full ? 0u : 1u };
+                            (g_rec_env_full ? 0u : 1u) |
+                                (g_rec_durable ? 2u : 0u) };
       if (fseek(g_rec_file, 48, SEEK_SET) != 0 ||
           fwrite(ident, sizeof ident, 1, g_rec_file) != 1 ||
           fseek(g_rec_file, 0, SEEK_END) != 0) {
@@ -1032,8 +1530,15 @@ void lotus_obs_teardown(void) {
         _exit(74);
       }
       uint64_t trailer[2] = { OBS_REC_END, g_rec_written };
+      /* Durable grade: the trailer itself must reach stable
+       * storage — a clean exit followed by power loss must not
+       * demote a finalized recording to a truncated one (review
+       * round: the ordinary sweeps synced but the finalize did
+       * not). */
       if (fwrite(trailer, sizeof trailer, 1, g_rec_file) != 1 ||
-          fflush(g_rec_file) != 0 || fclose(g_rec_file) != 0) {
+          fflush(g_rec_file) != 0 ||
+          (g_rec_durable && fdatasync(fileno(g_rec_file)) != 0) ||
+          fclose(g_rec_file) != 0) {
         g_rec_file = NULL;
         fprintf(stderr,
                 "hale: LOTUS_OBS_RECORD finalize failed: %s — "
@@ -1257,6 +1762,30 @@ static int obs_create(int64_t rings, int64_t slots) {
       fflush(NULL);
       _exit(74);
     }
+    /* Durable grade: a newly created NAME is not guaranteed to
+     * survive filesystem recovery until its directory entry is
+     * synchronized — fsync the parent directory once at creation
+     * (review round: the power-loss claim was incomplete without
+     * it). Best-effort resolution of the parent; failure to sync
+     * fails the run like any other durable-write failure. */
+    if (g_rec_durable) {
+      char dirbuf[sizeof g_rec_path];
+      memcpy(dirbuf, g_rec_path, sizeof dirbuf);
+      char *slash = strrchr(dirbuf, '/');
+      const char *dir = slash ? (slash == dirbuf ? "/" : (*slash = 0,
+                                                          dirbuf))
+                              : ".";
+      int dfd = open(dir, O_RDONLY | O_DIRECTORY);
+      if (dfd < 0 || fsync(dfd) != 0) {
+        fprintf(stderr,
+                "hale: LOTUS_OBS_RECORD_DURABLE could not sync the "
+                "recording's parent directory `%s`: %s\n",
+                dir, strerror(errno));
+        fflush(NULL);
+        _exit(74);
+      }
+      close(dfd);
+    }
     setvbuf(g_rec_file, NULL, _IOFBF, 1 << 20);
     obs_rec_hdr_t rh = { .magic = OBS_REC_MAGIC, .maj = 0, .min = 3,
       .header_len = sizeof(obs_rec_hdr_t), .pid = (uint32_t)getpid(),
@@ -1338,7 +1867,29 @@ __attribute__((constructor)) static void obs_live_ctor(void) {
   t_consumer_id = 1;
   /* GH #296: replay. Implies observation (identity machinery rides
    * it); loads the recording eagerly so the first read is served. */
+  /* GH #296 phase 5b: feed mode. Mutually exclusive with strict
+   * replay — one recording cannot be both the law and merely the
+   * input tape in a single run. */
+  const char *feed = getenv("LOTUS_REPLAY_FEED");
   const char *rp = getenv("LOTUS_REPLAY");
+  if (feed && feed[0] && rp && rp[0]) {
+    fprintf(stderr,
+            "hale: LOTUS_REPLAY and LOTUS_REPLAY_FEED are mutually "
+            "exclusive\n");
+    _exit(64);
+  }
+  if (feed && feed[0]) {
+    size_t n = strlen(feed);
+    if (n >= sizeof g_replay_path) {
+      fprintf(stderr, "hale: LOTUS_REPLAY_FEED path too long\n");
+      _exit(64);
+    }
+    memcpy(g_replay_path, feed, n + 1);
+    /* Flag BEFORE load: identity defense (eager_init) keys off it. */
+    lotus_replay_feed = 1;
+    rp_load();
+    atexit(rp_feed_report);
+  }
   if (rp && rp[0]) {
     size_t n = strlen(rp);
     if (n >= sizeof g_replay_path) {
@@ -1372,6 +1923,11 @@ __attribute__((constructor)) static void obs_live_ctor(void) {
       _exit(64);
     }
   }
+  /* GH #296 phase 5: durability grade. Default recording rides the
+   * page cache (survives a process crash, not power loss);
+   * DURABLE=1 pushes every flushed drain sweep through fdatasync. */
+  const char *dur = getenv("LOTUS_OBS_RECORD_DURABLE");
+  if (dur && dur[0] == '1') g_rec_durable = 1;
 }
 
 /* Round 4/5: recording must initialize EAGERLY (a probe-free
@@ -1387,6 +1943,42 @@ __attribute__((constructor)) static void obs_live_ctor(void) {
  * segment is born with its immutable header complete. The .halerec
  * artifact additionally re-stamps at finalize. */
 void lotus_obs_eager_init(void) {
+  /* Commit the complete identity for the recorder drain (see the
+   * committed-identity note at the globals). Runs on the main
+   * thread after every identity setter, before any user code. */
+  if (!atomic_load_explicit(&g_obs_ident_committed,
+                            memory_order_relaxed)) {
+    g_obs_ident_committed_vals[0] = g_obs_model_hash;
+    g_obs_ident_committed_vals[1] = g_obs_exec_digest[0];
+    g_obs_ident_committed_vals[2] = g_obs_exec_digest[1];
+    g_obs_ident_committed_vals[3] = g_obs_exec_digest[2];
+    g_obs_ident_committed_vals[4] = g_obs_exec_digest[3];
+    g_obs_ident_committed_vals[5] =
+        (g_rec_env_full ? 0u : 1u) | (g_rec_durable ? 2u : 0u);
+    atomic_store_explicit(&g_obs_ident_committed, 1,
+                          memory_order_release);
+  }
+  /* Review round 2, finding 1 (defense in depth): the runtime must
+   * not drive a binary from a recording whose model identity
+   * disagrees with the binary's own — the CLI is the user-facing
+   * admission layer, but a direct LOTUS_REPLAY invocation (or a
+   * substituted artifact) reaches here too. Feed mode bypasses
+   * identity by design; --allow-unverified-model plumbs through as
+   * an env override. */
+  if (lotus_replay_active && !lotus_replay_feed && g_obs_model_hash &&
+      g_rp_hdr_model && g_rp_hdr_model != g_obs_model_hash) {
+    const char *ok = getenv("LOTUS_REPLAY_ALLOW_UNVERIFIED");
+    if (!(ok && ok[0] == '1')) {
+      fprintf(stderr,
+              "hale: LOTUS_REPLAY recording identity (model %016llx) "
+              "disagrees with this binary (model %016llx) — refusing "
+              "to misreplay\n",
+              (unsigned long long)g_rp_hdr_model,
+              (unsigned long long)g_obs_model_hash);
+      fflush(NULL);
+      _exit(66);
+    }
+  }
   if (lotus_obs_recording || lotus_replay_active) {
     (void)obs_on();
   }
@@ -1606,7 +2198,7 @@ static void obs_rec_claim(void) {
      * range starts at OBS_REC_ANON_BASE so it cannot overlap the
      * pinned range (guarded at note_consumer_locus). */
     if (t_consumer_id == 0)
-      t_consumer_id = OBS_REC_ANON_BASE + (uint64_t)r;
+      t_consumer_id = OBS_REC_ANON_BASE + g_rp_anon_floor + (uint64_t)r;
     g_rec_rings[r].consumer = t_consumer_id;
     atomic_store_explicit(&g_rec_rings[r].head, 0,
                           memory_order_relaxed);
@@ -1762,7 +2354,34 @@ static void *obs_record_drain_main(void *arg) {
       g_rec_written++;
       wrote = 1;
     }
+    /* GH #296 phase 5 (durable recording): identity used to be
+     * authoritative only at the finalize re-stamp — so a crashed
+     * run's artifact carried whatever the first probe snapshotted
+     * (possibly zeros) and could never be admitted. Stamp it the
+     * moment the main thread has COMMITTED the complete identity
+     * (release/acquire — review round 2: plain cross-thread reads
+     * of the setters' globals were a race, and the old XOR change
+     * key could persist a half-published digest). Drain-thread-
+     * owned; pwrite after a flush, so the append position never
+     * moves. Finalize still re-stamps — both agree. */
+    static int ident_stamped = 0;
+    if (!ident_stamped &&
+        atomic_load_explicit(&g_obs_ident_committed,
+                             memory_order_acquire)) {
+      if (fflush(g_rec_file) != 0 ||
+          pwrite(fileno(g_rec_file), g_obs_ident_committed_vals,
+                 sizeof g_obs_ident_committed_vals, 48) !=
+              (ssize_t)sizeof g_obs_ident_committed_vals) {
+        obs_rec_write_failed();
+      }
+      ident_stamped = 1;
+      wrote = 1;
+    }
     if (wrote && fflush(g_rec_file) != 0) {
+      obs_rec_write_failed();
+    }
+    if (wrote && g_rec_durable &&
+        fdatasync(fileno(g_rec_file)) != 0) {
       obs_rec_write_failed();
     }
     if (stop) break;
@@ -1856,6 +2475,12 @@ static obs_topic_slot_t *obs_topic_slot(const char *subject,
            * the pubring push). */
           obs_rec_blob_push(OBS_REC_TAG_META, (uint32_t)id,
                             OBS_REC_META_TOPIC, 0,
+                            subject, strlen(subject) + 1);
+          /* phase 5b: and the stable-hash spelling, which is the id
+           * space PAYLOAD records live in. */
+          obs_rec_blob_push(OBS_REC_TAG_META,
+                            obs_subject_hash(subject),
+                            OBS_REC_META_SUBJHASH, 0,
                             subject, strlen(subject) + 1);
         }
       }
@@ -2017,6 +2642,14 @@ uint64_t lotus_obs_record_publish_payload(const char *subject,
                                           int raw_struct) {
   if ((!lotus_obs_recording && !lotus_replay_active) || !subject)
     return 0;
+  /* phase 5b: an identity pinned by the ingress wire capture or the
+   * replay injector — this dispatch IS that record; do not mint a
+   * second id or push a second payload. */
+  if (t_rec_forced_pub) {
+    uint64_t forced = t_rec_forced_pub;
+    t_rec_forced_pub = 0;
+    return forced;
+  }
   if (!obs_on()) return 0;
   int ingress = g_obs_tls_redispatch; /* peek only */
   if (t_consumer_id == 0) obs_rec_claim(); /* unique anon id */

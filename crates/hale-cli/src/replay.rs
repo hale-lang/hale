@@ -8,6 +8,12 @@
 //! padded to 8), 16-byte clean-finalize trailer. `clean` means the
 //! WHOLE artifact validated: exact parse to the trailer and a
 //! matching entry count — trailer magic at EOF alone proves nothing.
+//!
+//! GH #296 phase 5 (durable recording): a file WITHOUT the trailer is a
+//! crash-truncated recording. The drain appends whole frames in
+//! stream order, so the prefix is exact up to one torn frame at the
+//! tail — parsing stops there (`clean: false`) instead of erroring,
+//! and `hale replay --allow-truncated` replays that prefix.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -27,6 +33,7 @@ const EK_BUS_DELIVER: u32 = 2;
 
 const META_TOPIC: u64 = 1;
 const META_PUBRING: u64 = 2;
+const META_SUBJHASH: u64 = 3;
 
 fn u32_at(b: &[u8], off: usize) -> u32 {
     u32::from_le_bytes(b[off..off + 4].try_into().unwrap())
@@ -82,9 +89,28 @@ pub struct Recording {
 }
 
 pub fn parse(path: &Path) -> Result<Recording, String> {
-    let buf = std::fs::read(path)
+    let file = std::fs::File::open(path)
+        .map_err(|e| format!("could not open `{}`: {}", path.display(), e))?;
+    parse_file(&file, path)
+}
+
+/// Parse from an ALREADY-OPEN file object (review round 2, finding
+/// 1): admission and execution must read the same object — the CLI
+/// opens the recording once, parses through this, and hands a dup
+/// of the SAME descriptor to the child. Reopening the pathname
+/// between admission and spawn is a replacement window.
+pub fn parse_file(file: &std::fs::File, path: &Path) -> Result<Recording, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = file;
+    f.seek(SeekFrom::Start(0))
+        .map_err(|e| format!("could not seek `{}`: {}", path.display(), e))?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf)
         .map_err(|e| format!("could not read `{}`: {}", path.display(), e))?;
-    if buf.len() < 112 || u64_at(&buf, 0) != REC_MAGIC {
+    // 96 = the header alone: a header-only file is the earliest
+    // valid crash prefix (review round 2, finding 3 — the old 112
+    // demanded a trailer that a crash never writes).
+    if buf.len() < 96 || u64_at(&buf, 0) != REC_MAGIC {
         return Err(format!(
             "`{}` is not a hale recording (bad magic or too small)",
             path.display()
@@ -143,6 +169,10 @@ pub fn parse(path: &Path) -> Result<Recording, String> {
         match tag {
             0 => {
                 if end - off < 24 {
+                    if !has_trailer {
+                        total_entries -= 1;
+                        break;
+                    }
                     return Err("truncated ring record".into());
                 }
                 ring_records += 1;
@@ -174,16 +204,28 @@ pub fn parse(path: &Path) -> Result<Recording, String> {
             }
             1 | 2 | 3 => {
                 if end - off < 32 {
+                    if !has_trailer {
+                        total_entries -= 1;
+                        break;
+                    }
                     return Err("truncated blob header".into());
                 }
                 let b = u64_at(&buf, off + 8);
                 let c = u64_at(&buf, off + 16);
                 let size = u64_at(&buf, off + 24) as usize;
                 if size > end - off - 32 {
+                    if !has_trailer {
+                        total_entries -= 1;
+                        break;
+                    }
                     return Err("blob length out of range".into());
                 }
                 let padded = (size + 7) & !7;
                 if padded > end - off - 32 {
+                    if !has_trailer {
+                        total_entries -= 1;
+                        break;
+                    }
                     return Err("blob padding out of range".into());
                 }
                 let bytes = &buf[off + 32..off + 32 + size];
@@ -240,6 +282,11 @@ pub fn parse(path: &Path) -> Result<Recording, String> {
                         }
                         META_PUBRING => {
                             pub_ring_consumer.insert(a, c);
+                        }
+                        META_SUBJHASH => {
+                            // phase 5b: subject-hash → name map, a
+                            // replay-runtime (injection) concern.
+                            // Validated by shape, carried nowhere.
                         }
                         _ => {
                             return Err(format!(
@@ -330,11 +377,22 @@ pub fn parse(path: &Path) -> Result<Recording, String> {
 /// (topic, flags, bytes; raw ABI snapshots by declared size), and
 /// per-consumer journal streams (kind, args, withheld state, value).
 /// Returns None when equivalent, or the first divergence.
-pub fn diff(original: &Recording, replayed: &Recording) -> Option<String> {
+///
+/// `prefix_only` (a truncated baseline, GH #296 phase 5): the
+/// recording is a crash-cut prefix, so the replay legitimately runs
+/// PAST it — surplus replay events are not divergences, but anything
+/// inside the recorded extent still must match exactly, and a replay
+/// that produces LESS than the recording did still diverges.
+pub fn diff(
+    original: &Recording,
+    replayed: &Recording,
+    prefix_only: bool,
+) -> Option<String> {
     fn stream_diff<T: PartialEq + std::fmt::Debug>(
         what: &str,
         a: &[(u64, Vec<T>)],
         b: &[(u64, Vec<T>)],
+        prefix_only: bool,
     ) -> Option<String> {
         for (cid, orig) in a {
             let rep = b
@@ -356,7 +414,9 @@ pub fn diff(original: &Recording, replayed: &Recording) -> Option<String> {
                     ));
                 }
             }
-            if orig.len() != rep.len() {
+            if orig.len() != rep.len()
+                && !(prefix_only && rep.len() > orig.len())
+            {
                 return Some(format!(
                     "consumer {}: {} {}s recorded, {} replayed",
                     cid,
@@ -366,13 +426,15 @@ pub fn diff(original: &Recording, replayed: &Recording) -> Option<String> {
                 ));
             }
         }
-        for (cid, v) in b {
-            if !v.is_empty() && !a.iter().any(|(c, _)| c == cid) {
-                return Some(format!(
-                    "consumer {} produced {}s in the replay but not \
-                     in the recording",
-                    cid, what
-                ));
+        if !prefix_only {
+            for (cid, v) in b {
+                if !v.is_empty() && !a.iter().any(|(c, _)| c == cid) {
+                    return Some(format!(
+                        "consumer {} produced {}s in the replay but \
+                         not in the recording",
+                        cid, what
+                    ));
+                }
             }
         }
         None
@@ -382,6 +444,7 @@ pub fn diff(original: &Recording, replayed: &Recording) -> Option<String> {
         "queued consume",
         &original.consume_streams,
         &replayed.consume_streams,
+        prefix_only,
     ) {
         return Some(d);
     }
@@ -389,6 +452,7 @@ pub fn diff(original: &Recording, replayed: &Recording) -> Option<String> {
         "public bus event",
         &original.public_streams,
         &replayed.public_streams,
+        prefix_only,
     ) {
         return Some(d);
     }
@@ -426,13 +490,15 @@ pub fn diff(original: &Recording, replayed: &Recording) -> Option<String> {
             }
         }
     }
-    for r in &replayed.payloads {
-        if !original.payloads.iter().any(|p| p.pub_id == r.pub_id) {
-            return Some(format!(
-                "replay produced publish {:#x} (topic {}) that the \
-                 recording does not contain",
-                r.pub_id, r.topic
-            ));
+    if !prefix_only {
+        for r in &replayed.payloads {
+            if !original.payloads.iter().any(|p| p.pub_id == r.pub_id) {
+                return Some(format!(
+                    "replay produced publish {:#x} (topic {}) that \
+                     the recording does not contain",
+                    r.pub_id, r.topic
+                ));
+            }
         }
     }
 
@@ -462,7 +528,7 @@ pub fn diff(original: &Recording, replayed: &Recording) -> Option<String> {
     }
     let a = by_consumer(&original.journal);
     let b = by_consumer(&replayed.journal);
-    if let Some(d) = stream_diff("journal read", &a, &b) {
+    if let Some(d) = stream_diff("journal read", &a, &b, prefix_only) {
         return Some(d);
     }
     None

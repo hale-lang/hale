@@ -760,3 +760,579 @@ fn main() { App { }; }
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- phase 5 review-round canaries ---------------------------------
+
+/// A crash-cut tape under `--allow-truncated --diff`: events past the
+/// recorded prefix are the unknown post-crash suffix, not
+/// divergences — the runtime verdict and the prefix comparator must
+/// AGREE on that (they used to contradict).
+#[test]
+fn truncated_diff_accepts_the_post_crash_surplus() {
+    let dir = workdir("truncdiff");
+    let prog = dir.join("steady.hl");
+    std::fs::write(
+        &prog,
+        r#"
+type Tick { n: Int = 0; }
+locus Sink {
+    params { seen: Int = 0; }
+    bus { subscribe "td.tick" as on_t of type Tick; }
+    fn on_t(t: Tick) { self.seen = self.seen + 1; }
+}
+main locus App {
+    params { s: Sink = Sink { }; }
+    bus { publish "td.tick" of type Tick; }
+    run() {
+        let mut i = 0;
+        while i < 400 {
+            let r = std::rand::next_int(1000000);
+            "td.tick" <- Tick { n: r };
+            std::time::sleep(5ms);
+            i = i + 1;
+        }
+    }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+
+    // Record via `hale run` (which execs the built binary — one pid)
+    // and SIGKILL it mid-stream.
+    let rec = dir.join("crash.halerec");
+    let mut child = hale()
+        .arg("run")
+        .arg(&prog)
+        .env("LOTUS_OBS_RECORD", &rec)
+        .spawn()
+        .expect("spawn recorded run");
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let sz = std::fs::metadata(&rec).map(|m| m.len()).unwrap_or(0);
+        if sz > 8192 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "recording never grew (size {})",
+            sz
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    child.kill().expect("kill");
+    let _ = child.wait();
+
+    // The full flow the review demanded: prefix must match, the
+    // post-crash surplus must not fail the diff.
+    let out = hale()
+        .arg("replay")
+        .arg(&rec)
+        .arg(&prog)
+        .arg("--allow-truncated")
+        .arg("--diff")
+        .arg("--allow-live-effects")
+        .output()
+        .expect("hale replay --allow-truncated --diff");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "truncated --diff must accept the surplus:\nstdout:{}\nstderr:{}",
+        stdout,
+        stderr
+    );
+    assert!(
+        stdout.contains("replay matches the recording"),
+        "expected the prefix match verdict:\n{}\n{}",
+        stdout,
+        stderr
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ...and a divergence INSIDE the recorded prefix still fails.
+/// (Corrupting the baseline cannot create one — replay is DRIVEN by
+/// the baseline, and raw in-process payloads compare by declared
+/// size by design. A withheld env VALUE is the honest in-prefix
+/// mismatch: the default recording policy withholds it, so the
+/// replayed read is a NAMED divergence inside the prefix.)
+#[test]
+fn withheld_read_inside_the_prefix_still_fails_truncated_diff() {
+    let dir = workdir("truncbad");
+    let prog = dir.join("envy.hl");
+    std::fs::write(
+        &prog,
+        r#"
+type Tick { n: Int = 0; }
+locus Sink {
+    params { seen: Int = 0; }
+    bus { subscribe "tb.tick" as on_t of type Tick; }
+    fn on_t(t: Tick) { self.seen = self.seen + 1; }
+}
+main locus App {
+    params { s: Sink = Sink { }; }
+    bus { publish "tb.tick" of type Tick; }
+    run() {
+        // An env read at the very start: inside any nonempty prefix.
+        let home = std::env::var("HOME");
+        let mut i = 0;
+        while i < 40 {
+            "tb.tick" <- Tick { n: i };
+            i = i + 1;
+        }
+    }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let rec = record(&dir, &prog);
+
+    // Cut the trailer + a tail chunk: an accepted truncated tape
+    // whose surviving prefix contains the (value-withheld) env read.
+    let b = std::fs::read(&rec).unwrap();
+    let mut end = b.len();
+    if &b[end - 16..end - 8] == b"HALEEND0" {
+        end -= 16;
+    }
+    let cut = dir.join("cut.halerec");
+    std::fs::write(&cut, &b[..end - 64]).unwrap();
+
+    let out = hale()
+        .arg("replay")
+        .arg(&cut)
+        .arg(&prog)
+        .arg("--allow-truncated")
+        .arg("--diff")
+        .arg("--allow-live-effects")
+        .output()
+        .expect("hale replay withheld prefix");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "an in-prefix divergence must still fail truncated --diff:\n{}",
+        stderr
+    );
+    assert!(
+        stderr.contains("env.var") || stderr.contains("DIVERGED"),
+        "the failure must be the named in-prefix divergence:\n{}",
+        stderr
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--feed` bypasses identity admission, never effect safety: a
+/// program whose frontier reaches syscall must still be refused
+/// until --allow-live-effects joins it.
+#[test]
+fn feed_requires_the_effects_gate_for_live_effects() {
+    let dir = workdir("feedgate");
+    let pure = dir.join("pure.hl");
+    std::fs::write(
+        &pure,
+        r#"
+main locus App {
+    params { x: Int = 1; }
+    run() { let y = self.x + 1; }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let rec = record(&dir, &pure);
+
+    let effectful = dir.join("effectful.hl");
+    std::fs::write(
+        &effectful,
+        r#"
+main locus App {
+    run() { std::time::sleep(1ms); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+
+    // --feed alone: refused, residue named.
+    let out = hale()
+        .arg("replay")
+        .arg(&rec)
+        .arg(&effectful)
+        .arg("--feed")
+        .output()
+        .expect("hale replay --feed");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "--feed alone must not unlock live effects:\n{}",
+        stderr
+    );
+    assert!(
+        stderr.contains("live world") && stderr.contains("syscall"),
+        "the refusal must name the residue:\n{}",
+        stderr
+    );
+
+    // Both flags: the explicit backtest-with-live-effects spelling.
+    let out = hale()
+        .arg("replay")
+        .arg(&rec)
+        .arg(&effectful)
+        .arg("--feed")
+        .arg("--allow-live-effects")
+        .output()
+        .expect("hale replay --feed --allow-live-effects");
+    assert!(
+        out.status.success(),
+        "--feed --allow-live-effects must proceed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Two listener bindings mean two recorded ingress sources; under
+/// --diff the verify recording's per-consumer public streams must
+/// align with the original's — one global injector thread would
+/// collapse them onto one identity.
+#[test]
+fn two_listeners_replay_clean_under_diff() {
+    let dir = workdir("twolisten");
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let sock_a = format!(
+        "{}/hale-2l-{}-{}.a.sock",
+        std::env::temp_dir().display(),
+        std::process::id(),
+        nanos
+    );
+    let sock_b = format!("{}.b", sock_a);
+    let ready = dir.join("sub-ready");
+    let sub = dir.join("sub.hl");
+    std::fs::write(
+        &sub,
+        format!(
+            r#"
+type TA {{ n: Int = 0; }}
+type TB {{ n: Int = 0; }}
+topic A {{ payload: TA; subject: "tl.a"; }}
+topic B {{ payload: TB; subject: "tl.b"; }}
+locus SubA {{
+    params {{ seen: Int = 0; }}
+    bus {{ subscribe A as on_a; }}
+    fn on_a(t: TA) {{ self.seen = self.seen + 1; println("a=", t.n); }}
+}}
+locus SubB {{
+    params {{ seen: Int = 0; }}
+    bus {{ subscribe B as on_b; }}
+    fn on_b(t: TB) {{ self.seen = self.seen + 1; println("b=", t.n); }}
+}}
+main locus App {{
+    params {{ sa: SubA = SubA {{ }}; sb: SubB = SubB {{ }}; }}
+    bindings {{
+        A: unix("{}", role: listen);
+        B: unix("{}", role: listen);
+    }}
+    run() {{
+        // run() begins only after EVERY boot registration — this
+        // write is the true readiness signal (the sockets exist
+        // earlier, at realize, when the subscribers may not yet be
+        // registered; a message in that window drops silently).
+        std::io::fs::write_file("{}", "ready") or discard;
+        // Wait for BOTH pairs: a message consumed during the
+        // teardown flush gets no consume record, and would replay
+        // as an unexpected delivery.
+        let mut waited = 0;
+        while self.sa.seen < 2 || self.sb.seen < 2 {{
+            std::time::sleep(100ms);
+            waited = waited + 1;
+            if waited > 300 {{ std::process::exit(3); }}
+        }}
+        std::time::sleep(300ms);
+    }}
+}}
+fn main() {{ App {{ }}; }}
+"#,
+            sock_a,
+            sock_b,
+            ready.display()
+        ),
+    )
+    .unwrap();
+    let pubs = dir.join("pubs.hl");
+    std::fs::write(
+        &pubs,
+        format!(
+            r#"
+type TA {{ n: Int = 0; }}
+type TB {{ n: Int = 0; }}
+topic A {{ payload: TA; subject: "tl.a"; }}
+topic B {{ payload: TB; subject: "tl.b"; }}
+main locus App {{
+    bus {{ publish A; publish B; }}
+    bindings {{
+        A: unix("{}", role: connect);
+        B: unix("{}", role: connect);
+    }}
+    run() {{
+        A <- TA {{ n: 11 }};
+        B <- TB {{ n: 21 }};
+        std::time::sleep(50ms);
+        A <- TA {{ n: 12 }};
+        B <- TB {{ n: 22 }};
+        // Long settle before close: a storm-descheduled reader that
+        // has not drained its socket when the peer closes can lose
+        // the tail message (live-ingest behavior, tracked
+        // separately) — give it ample room.
+        std::time::sleep(900ms);
+    }}
+}}
+fn main() {{ App {{ }}; }}
+"#,
+            sock_a, sock_b
+        ),
+    )
+    .unwrap();
+
+    // Record a CLEAN four-message session — the test's PRECONDITION,
+    // not its subject. Under extreme parallel load a LIVE run very
+    // occasionally loses one mid-stream wire message even with the
+    // ready-file handshake (pre-existing live-ingest loss,
+    // tracked as GH #468 — delete this retry when it lands). The
+    // sub exits 3
+    // when a message went missing; retry the session rather than
+    // fail replay assertions on a recording of a lossy live run.
+    let rec = dir.join("two.halerec");
+    let mut recorded_ok = false;
+    for _attempt in 0..5 {
+        let _ = std::fs::remove_file(&rec);
+        let _ = std::fs::remove_file(&ready);
+        let _ = std::fs::remove_file(&sock_a);
+        let _ = std::fs::remove_file(&sock_b);
+        let mut subp = hale()
+            .arg("run")
+            .arg(&sub)
+            .env("LOTUS_OBS_RECORD", &rec)
+            .env("LOTUS_BUS_LOG_DESERIALIZE_DROP", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn recorded sub");
+        // The sockets appear at realize — BEFORE the subscribers
+        // register. The sub touches the ready file at the top of
+        // run(), after every boot registration: only then may
+        // traffic flow.
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_secs(60);
+        while !ready.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "subscriber never reached run()"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let p = hale().arg("run").arg(&pubs).output().expect("pubs");
+        assert!(
+            p.status.success(),
+            "publisher run failed: {}",
+            String::from_utf8_lossy(&p.stderr)
+        );
+        let out = subp.wait_with_output().expect("sub exit");
+        if out.status.success() {
+            recorded_ok = true;
+            break;
+        }
+        assert_eq!(
+            out.status.code(),
+            Some(3),
+            "recorded run failed for a reason other than the known \
+             live-loss retry case:\nstdout:{}\nstderr:{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        eprintln!(
+            "lossy attempt {}: stdout:{} stderr:{}",
+            _attempt,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    assert!(recorded_ok, "no clean recorded session in 5 attempts");
+
+    let _ = std::fs::remove_file(&sock_a);
+    let _ = std::fs::remove_file(&sock_b);
+    let out = hale()
+        .arg("replay")
+        .arg(&rec)
+        .arg(&sub)
+        .arg("--diff")
+        .arg("--allow-live-effects")
+        .output()
+        .expect("hale replay --diff");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success() && stdout.contains("replay matches"),
+        "two-source ingress must survive --diff:\nstdout:{}\nstderr:{}",
+        stdout,
+        stderr
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// One file object from admission to child (review round 2, finding
+/// 1): after the CLI admits recording A, atomically replacing the
+/// PATH with recording B must not change what the child replays —
+/// the child inherits the admitted descriptor, never a reopen.
+#[test]
+fn admitted_object_survives_path_replacement() {
+    let dir = workdir("toctou");
+    let prog = dir.join("argsy.hl");
+    std::fs::write(
+        &prog,
+        r#"
+main locus App {
+    run() {
+        let n = std::env::args_count();
+        println("args=", n);
+    }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    // Recording A: no extra argv. Recording B: three extra argv.
+    // args_count is journaled, so each replay prints its OWN tape's
+    // count — a perfect witness for which artifact was consumed.
+    let rec_a = dir.join("a.halerec");
+    let out = hale()
+        .arg("run")
+        .arg(&prog)
+        .env("LOTUS_OBS_RECORD", &rec_a)
+        .output()
+        .expect("record a");
+    assert!(out.status.success());
+    let a_line = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .unwrap()
+        .to_string();
+    let rec_b = dir.join("b.halerec");
+    let out = hale()
+        .arg("run")
+        .arg(&prog)
+        .arg("x")
+        .arg("y")
+        .arg("z")
+        .env("LOTUS_OBS_RECORD", &rec_b)
+        .output()
+        .expect("record b");
+    assert!(out.status.success());
+    let b_line = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .unwrap()
+        .to_string();
+    assert_ne!(a_line, b_line, "the two tapes must be distinguishable");
+
+    // Replay the path currently holding A, pausing between admission
+    // and spawn; swap B in during the pause.
+    let target = dir.join("swap.halerec");
+    std::fs::copy(&rec_a, &target).unwrap();
+    let go = dir.join("go");
+    let mut child = hale()
+        .arg("replay")
+        .arg(&target)
+        .arg(&prog)
+        .arg("--allow-live-effects")
+        .env("HALE_REPLAY_TEST_HOLD", &go)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn replay");
+    // Give admission + compile ample time, then replace and release.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    let tmp = dir.join("b-staged.halerec");
+    std::fs::copy(&rec_b, &tmp).unwrap();
+    std::fs::rename(&tmp, &target).unwrap();
+    std::fs::write(&go, "go").unwrap();
+    let out = child.wait_with_output().expect("replay exit");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "replay failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains(&a_line) && !stdout.contains(&b_line),
+        "the child must replay the ADMITTED artifact (A), not the \
+         substituted path (B):\nstdout:{}",
+        stdout
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Header-only and torn-first-frame crash prefixes admit under
+/// --allow-truncated (review round 2, finding 3): the minimum valid
+/// artifact is the 96-byte header, not header + trailer.
+#[test]
+fn header_only_crash_prefixes_admit_with_the_flag() {
+    let dir = workdir("hdronly");
+    let prog = dir.join("tiny.hl");
+    std::fs::write(
+        &prog,
+        r#"
+main locus App {
+    params { x: Int = 1; }
+    run() { let y = self.x + 1; }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let rec = record(&dir, &prog);
+    let bytes = std::fs::read(&rec).unwrap();
+    assert!(bytes.len() > 112);
+
+    for cut in [96usize, 97, 103, 111, 112] {
+        let fixture = dir.join(format!("cut{}.halerec", cut));
+        std::fs::write(&fixture, &bytes[..cut]).unwrap();
+
+        // Default: refused as truncated.
+        let out = hale()
+            .arg("replay")
+            .arg(&fixture)
+            .arg(&prog)
+            .arg("--allow-live-effects")
+            .output()
+            .expect("refusal run");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success() && stderr.contains("truncated"),
+            "cut={} must refuse as truncated:\n{}",
+            cut,
+            stderr
+        );
+
+        // Opted in: the (possibly empty) prefix replays; execution
+        // past the tape is the post-crash suffix.
+        let out = hale()
+            .arg("replay")
+            .arg(&fixture)
+            .arg(&prog)
+            .arg("--allow-truncated")
+            .arg("--allow-live-effects")
+            .output()
+            .expect("prefix run");
+        assert!(
+            out.status.success(),
+            "cut={} must admit under --allow-truncated:\n{}",
+            cut,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

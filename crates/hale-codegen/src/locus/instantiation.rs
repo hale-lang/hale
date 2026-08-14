@@ -3744,6 +3744,22 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                 .build_conditional_branch(active, run_bb, after_run_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder.position_at_end(run_bb);
+            // GH #296 phase 5b (review round): the ingress injector
+            // starts at an explicit BOOT PHASE — for the main locus,
+            // this point (params children born, bindings
+            // realized/suppressed, every boot subscription
+            // registered, run() not yet entered) is exactly the
+            // boot/run boundary the runtime snapshot needs. Runs on
+            // the main thread; no-op outside replay/feed.
+            if is_main_locus && !self.is_wasm {
+                let start_fn = self
+                    .module
+                    .get_function("lotus_replay_start_ingress")
+                    .expect("lotus_replay_start_ingress declared");
+                self.builder
+                    .build_call(start_fn, &[], "replay.start_ingress")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
             if !info.empty_lifecycle.contains("run") || is_flow {
                 // F.31 Phase 4b + pool-inheritance fix (2026-05-29):
                 // a non-empty run() either runs synchronously here

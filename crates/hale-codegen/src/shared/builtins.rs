@@ -1947,6 +1947,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // binding could not be realized; the prelude routes
         // non-zero into lotus_bus_binding_fail (birth failure of
         // the declaring locus).
+        // GH #296 phase 5b: the boot-phase ingress-injection entry —
+        // emitted once at the main locus's boot/run boundary; no-op
+        // outside replay/feed.
+        // declare void @lotus_replay_start_ingress()
+        let start_ingress_ty = void_t.fn_type(&[], false);
+        self.module.add_function(
+            "lotus_replay_start_ingress",
+            start_ingress_ty,
+            None,
+        );
+
         // declare i32 @lotus_bus_register_remote(ptr subject, ptr url, i32 role)
         let i32_t = self.context.i32_type();
         let bus_register_remote_ty = i32_t.fn_type(

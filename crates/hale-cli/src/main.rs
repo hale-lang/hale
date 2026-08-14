@@ -216,7 +216,9 @@ fn usage() {
     eprintln!("    hale replay <rec> <file.hl>   re-run a LOTUS_OBS_RECORD recording");
     eprintln!("        [--diff: report first divergence, fail on any]");
     eprintln!("        [--at <n> | --at <consumer-id>:<ordinal>: SIGSTOP at that consume]");
-    eprintln!("        [--allow-live-effects] [--allow-unverified-model]");
+    eprintln!("        [--allow-live-effects] [--allow-unverified-model] [--allow-truncated]");
+    eprintln!("        [--feed: inject the recorded ingress tape into (possibly changed) code]");
+    eprintln!("        [--allow-unmatched-feed: accept a partially-fed tape]");
     eprintln!("    hale test  [file | dir]       compile + run *_test.hl (default: cwd)");
     eprintln!("        [-run <substr>] [--json]");
     eprintln!("    hale bench [file | dir]       run *_bench.hl bench_* fns (default: cwd)");
@@ -4922,6 +4924,9 @@ fn run_replay(args: &[String]) -> ExitCode {
     let mut at: Option<String> = None;
     let mut allow_live_effects = false;
     let mut allow_unverified = false;
+    let mut allow_truncated = false;
+    let mut feed = false;
+    let mut allow_unmatched_feed = false;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
@@ -4933,6 +4938,15 @@ fn run_replay(args: &[String]) -> ExitCode {
             i += 1;
         } else if a == "--allow-unverified-model" {
             allow_unverified = true;
+            i += 1;
+        } else if a == "--allow-truncated" {
+            allow_truncated = true;
+            i += 1;
+        } else if a == "--feed" {
+            feed = true;
+            i += 1;
+        } else if a == "--allow-unmatched-feed" {
+            allow_unmatched_feed = true;
             i += 1;
         } else if a == "--at" {
             // N (process-wide consume ordinal — only meaningful
@@ -4972,19 +4986,49 @@ fn run_replay(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     }
+    if feed && (diff || at.is_some()) {
+        eprintln!(
+            "hale replay: --feed re-executes changed code against \
+             the recorded ingress tape — there is no recorded \
+             schedule to --diff against or --at-stop on"
+        );
+        return ExitCode::from(2);
+    }
     let (rec_path, prog) = match (rec_arg, prog) {
         (Some(r), Some(p)) => (r, p),
         _ => {
             eprintln!(
                 "usage: hale replay <recording> <program.hl> \
                  [--diff] [--at <n> | --at <consumer-id>:<ordinal>] \
-                 [--allow-live-effects] [--allow-unverified-model]"
+                 [--allow-live-effects] [--allow-unverified-model] \
+                 [--allow-truncated] [--feed] [--allow-unmatched-feed]"
             );
             return ExitCode::from(2);
         }
     };
 
-    let rec = match replay::parse(&rec_path) {
+    // ONE file object for admission AND execution (review round 2,
+    // finding 1): open O_NOFOLLOW, parse this object, and later dup
+    // THIS descriptor into the child — never reopen the pathname.
+    let rec_file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&rec_path)
+        {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!(
+                    "hale replay: could not open `{}`: {}",
+                    rec_path.display(),
+                    e
+                );
+                return ExitCode::from(1);
+            }
+        }
+    };
+    let rec = match replay::parse_file(&rec_file, &rec_path) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("hale replay: {}", e);
@@ -4992,13 +5036,21 @@ fn run_replay(args: &[String]) -> ExitCode {
         }
     };
     if !rec.clean {
+        if !allow_truncated {
+            eprintln!(
+                "hale replay: `{}` has no clean-finalize trailer — \
+                 the recording is crash-truncated; re-record, or \
+                 pass --allow-truncated to replay the recorded \
+                 prefix",
+                rec_path.display()
+            );
+            return ExitCode::from(1);
+        }
         eprintln!(
-            "hale replay: `{}` has no clean-finalize trailer — the \
-             recording is truncated and a partial history replays \
-             as a silent divergence; re-record",
+            "hale replay: `{}` has no clean finalize — replaying \
+             the recorded prefix (--allow-truncated)",
             rec_path.display()
         );
-        return ExitCode::from(1);
     }
 
     if !prog.is_file() {
@@ -5046,6 +5098,46 @@ fn run_replay(args: &[String]) -> ExitCode {
     );
     let digest = exec_digest(&sources, &prog, &options_fp);
 
+    // GH #296 phase 5b (review round): a binding backend with no
+    // replay class cannot be suppressed OR injected — replaying or
+    // feeding a program that carries one would touch live shared
+    // memory. Fail closed with the backend named; no flag overrides
+    // this (the runtime independently refuses at open). Applies to
+    // strict replay and feed alike.
+    {
+        fn scan_shm_ring(items: &[hale_syntax::ast::TopDecl]) -> bool {
+            items.iter().any(|item| match item {
+                hale_syntax::ast::TopDecl::Locus(l) => {
+                    l.members.iter().any(|m| match m {
+                        hale_syntax::ast::LocusMember::Bindings(b) => {
+                            b.entries.iter().any(|e| {
+                                matches!(
+                                    e.transport,
+                                    hale_syntax::ast::TransportSpec::ShmRing { .. }
+                                )
+                            })
+                        }
+                        _ => false,
+                    })
+                }
+                hale_syntax::ast::TopDecl::Module(md) => {
+                    scan_shm_ring(&md.items)
+                }
+                _ => false,
+            })
+        }
+        if bundle.programs.values().any(|p| scan_shm_ring(&p.items)) {
+            eprintln!(
+                "hale replay: this program binds a `shm_ring` — that \
+                 backend has no replay class yet (it cannot be \
+                 suppressed or injected, and a replayed/fed process \
+                 must not touch live shared memory). Remove the \
+                 binding or re-record without it (GH #296)"
+            );
+            return ExitCode::from(1);
+        }
+    }
+
     // Ordered BEFORE identity admission: this refusal is inherent
     // to the PROGRAM, so it must not be masked by a
     // recording-mismatch message (and module-gate canaries can
@@ -5059,6 +5151,10 @@ fn run_replay(args: &[String]) -> ExitCode {
     // machinery, invisible in user-level effects). Coarse by class
     // granularity — over-refusing is the safe direction;
     // per-primitive replay classes are the staged refinement.
+    // phase 5b review round: --feed bypasses IDENTITY admission
+    // (changed code is its point), never EFFECT safety — feeding a
+    // tape is not an opt-in to live syscalls/FFI. Both flags
+    // together are the explicit backtest-with-live-effects spelling.
     if !allow_live_effects {
         let programs: Vec<&Program> =
             bundle.programs.values().copied().collect();
@@ -5097,17 +5193,21 @@ fn run_replay(args: &[String]) -> ExitCode {
                 _ => false,
             })
         }
-        let has_bindings =
-            bundle.programs.values().any(|p| scan_bindings(&p.items));
-        if has_bindings {
-            residue.insert("external-bindings".to_string());
-        }
+        // phase 5b: native unix/udp `bindings { }` no longer force
+        // the flag — the runtime suppresses those transports under
+        // replay (opens nothing, sends nothing) and injects the
+        // recorded ingress tape in the listeners' stead. Hermeticity
+        // is a BINDING-KIND capability, not a blanket assumption
+        // (review round): a backend with no replay class fails
+        // CLOSED below. The residue that remains here is genuinely
+        // user-level: syscall/ffi writes repeat, unclassified may do
+        // anything.
+        let _ = scan_bindings;
         if !residue.is_empty() {
             eprintln!(
                 "hale replay: this program can reach the live world \
-                 during re-execution ({{{}}}) — publishes to bound \
-                 topics send real traffic, unclassified calls may \
-                 do anything, and syscall/ffi writes repeat. \
+                 during re-execution ({{{}}}) — unclassified calls \
+                 may do anything, and syscall/ffi writes repeat. \
                  Refusing by default; pass --allow-live-effects if \
                  you accept that",
                 residue.into_iter().collect::<Vec<_>>().join(", ")
@@ -5120,7 +5220,21 @@ fn run_replay(args: &[String]) -> ExitCode {
     // exec_digest is framed-SHA-256 build-input identity;
     // shape_hash alone is only structural compatibility and admits
     // behaviorally different bodies.
-    if rec.exec_digest != [0; 4] && rec.exec_digest != digest {
+    //
+    // phase 5b, feed mode: admission is DELIBERATELY not required —
+    // feeding a tape to changed code is the entire point. Say what
+    // is being fed to what, and skip the checks.
+    if feed {
+        if rec.model_hash != model_hash {
+            eprintln!(
+                "hale replay: feed — recording is from model \
+                 {:016x}, this program is {:016x} (admission not \
+                 required in feed mode; subjects matched by name)",
+                rec.model_hash, model_hash
+            );
+        }
+    }
+    if !feed && rec.exec_digest != [0; 4] && rec.exec_digest != digest {
         eprintln!(
             "hale replay: `{}` was recorded from different build \
              inputs (recorded exec digest {:016x}…, this compile \
@@ -5135,7 +5249,7 @@ fn run_replay(args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     }
-    if rec.model_hash != 0 && rec.model_hash != model_hash {
+    if !feed && rec.model_hash != 0 && rec.model_hash != model_hash {
         eprintln!(
             "hale replay: `{}` was recorded from a different model \
              (recorded shape_hash {:016x}, this program is {:016x}) \
@@ -5147,7 +5261,8 @@ fn run_replay(args: &[String]) -> ExitCode {
         );
         return ExitCode::from(1);
     }
-    if (rec.exec_digest == [0; 4] || rec.model_hash == 0)
+    if !feed
+        && (rec.exec_digest == [0; 4] || rec.model_hash == 0)
         && !allow_unverified
     {
         eprintln!(
@@ -5159,12 +5274,20 @@ fn run_replay(args: &[String]) -> ExitCode {
         return ExitCode::from(1);
     }
 
-    if rec.env_redacted {
+    if rec.env_redacted && !feed {
+        // (feed does not serve the env journal at all — review
+        // round 2, finding 7: this warning is replay-only.)
         eprintln!(
             "hale replay: this recording withholds env VALUES \
              (default policy; record with LOTUS_OBS_RECORD_ENV=full \
              to include them) — env reads will replay as named \
              withheld divergences"
+        );
+    } else if rec.env_redacted && feed {
+        eprintln!(
+            "hale replay: feed note — the tape withheld env values; \
+             feed does not replay env reads, so the current process \
+             environment is used"
         );
     }
     let rec_abs = rec_path
@@ -5219,45 +5342,45 @@ fn run_replay(args: &[String]) -> ExitCode {
             .open(&status_path);
     }
     let mut cmd = std::process::Command::new(&bin);
-    cmd.env("LOTUS_REPLAY", &rec_abs);
+    if feed {
+        cmd.env("LOTUS_REPLAY_FEED", &rec_abs);
+        if allow_unmatched_feed {
+            cmd.env("LOTUS_REPLAY_FEED_ALLOW_UNMATCHED", "1");
+        }
+    } else {
+        cmd.env("LOTUS_REPLAY", &rec_abs);
+    }
+    if allow_truncated {
+        cmd.env("LOTUS_REPLAY_ALLOW_TRUNCATED", "1");
+    }
+    if allow_unverified {
+        cmd.env("LOTUS_REPLAY_ALLOW_UNVERIFIED", "1");
+    }
     cmd.env("LOTUS_REPLAY_STATUS", &status_path);
-    // Round 3 (artifact trust): the CHILD reads the same file
-    // OBJECT the CLI validated — the fd is inherited (dup2'd to a
-    // fixed number post-fork), so there is no path re-resolution
-    // window between the two validations. The runtime still
-    // revalidates fully and snapshots the bytes into anonymous
-    // memory before serving.
+    // Round 3 + review round 2, finding 1 (artifact trust): the
+    // CHILD reads THE file object the CLI admitted — `rec_file`
+    // itself, opened once at the top, its descriptor dup2'd to a
+    // fixed number post-fork. There is no reopen and therefore no
+    // path re-resolution window. The runtime still independently
+    // revalidates the structure, snapshots the bytes into anonymous
+    // memory, and (defense in depth) refuses a model identity that
+    // disagrees with the binary's own.
     {
         use std::os::unix::io::AsRawFd;
         use std::os::unix::process::CommandExt;
-        match std::fs::File::open(&rec_abs) {
-            Ok(f) => {
-                let raw = f.as_raw_fd();
-                const REPLAY_FD: i32 = 973;
-                cmd.env("LOTUS_REPLAY_FD", REPLAY_FD.to_string());
-                unsafe {
-                    cmd.pre_exec(move || {
-                        if libc::dup2(raw, REPLAY_FD) < 0 {
-                            return Err(
-                                std::io::Error::last_os_error(),
-                            );
-                        }
-                        Ok(())
-                    });
+        let raw = rec_file.as_raw_fd();
+        const REPLAY_FD: i32 = 973;
+        cmd.env("LOTUS_REPLAY_FD", REPLAY_FD.to_string());
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::dup2(raw, REPLAY_FD) < 0 {
+                    return Err(std::io::Error::last_os_error());
                 }
-                // Keep the File alive across spawn.
-                std::mem::forget(f);
-            }
-            Err(e) => {
-                eprintln!(
-                    "hale replay: could not reopen `{}` for the \
-                     child: {}",
-                    rec_abs.display(),
-                    e
-                );
-                return ExitCode::from(1);
-            }
+                Ok(())
+            });
         }
+        // Keep the admitted File alive across spawn.
+        std::mem::forget(rec_file);
     }
     if let Some(spec) = &at {
         match spec.split_once(':') {
@@ -5277,6 +5400,14 @@ fn run_replay(args: &[String]) -> ExitCode {
         // redacted one and reports a spurious withheld divergence.
         if !rec.env_redacted {
             cmd.env("LOTUS_OBS_RECORD_ENV", "full");
+        }
+    }
+    // Test hook (review round 2, finding 1): hold between admission
+    // and spawn so the one-object invariant can be tested against a
+    // deliberate path replacement, deterministically.
+    if let Ok(hold) = std::env::var("HALE_REPLAY_TEST_HOLD") {
+        while !std::path::Path::new(&hold).exists() {
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
     }
     let status = cmd.status();
@@ -5300,7 +5431,9 @@ fn run_replay(args: &[String]) -> ExitCode {
         .map(|body| {
             body.lines()
                 .filter_map(|l| l.split_once('='))
-                .filter(|(k, _)| *k != "consumes")
+                .filter(|(k, _)| {
+                    *k != "consumes" && *k != "post_prefix_live_fallback"
+                })
                 .filter_map(|(_, v)| v.trim().parse::<u64>().ok())
                 .sum()
         })
@@ -5324,7 +5457,7 @@ fn run_replay(args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
         let result = match replay::parse(v) {
-            Ok(vr) => match replay::diff(&rec, &vr) {
+            Ok(vr) => match replay::diff(&rec, &vr, !rec.clean) {
                 None => {
                     let consumes: usize = rec
                         .consume_streams
