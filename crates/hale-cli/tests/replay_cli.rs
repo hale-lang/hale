@@ -760,3 +760,369 @@ fn main() { App { }; }
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- phase 5 review-round canaries ---------------------------------
+
+/// A crash-cut tape under `--allow-truncated --diff`: events past the
+/// recorded prefix are the unknown post-crash suffix, not
+/// divergences — the runtime verdict and the prefix comparator must
+/// AGREE on that (they used to contradict).
+#[test]
+fn truncated_diff_accepts_the_post_crash_surplus() {
+    let dir = workdir("truncdiff");
+    let prog = dir.join("steady.hl");
+    std::fs::write(
+        &prog,
+        r#"
+type Tick { n: Int = 0; }
+locus Sink {
+    params { seen: Int = 0; }
+    bus { subscribe "td.tick" as on_t of type Tick; }
+    fn on_t(t: Tick) { self.seen = self.seen + 1; }
+}
+main locus App {
+    params { s: Sink = Sink { }; }
+    bus { publish "td.tick" of type Tick; }
+    run() {
+        let mut i = 0;
+        while i < 400 {
+            let r = std::rand::next_int(1000000);
+            "td.tick" <- Tick { n: r };
+            std::time::sleep(5ms);
+            i = i + 1;
+        }
+    }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+
+    // Record via `hale run` (which execs the built binary — one pid)
+    // and SIGKILL it mid-stream.
+    let rec = dir.join("crash.halerec");
+    let mut child = hale()
+        .arg("run")
+        .arg(&prog)
+        .env("LOTUS_OBS_RECORD", &rec)
+        .spawn()
+        .expect("spawn recorded run");
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let sz = std::fs::metadata(&rec).map(|m| m.len()).unwrap_or(0);
+        if sz > 8192 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "recording never grew (size {})",
+            sz
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    child.kill().expect("kill");
+    let _ = child.wait();
+
+    // The full flow the review demanded: prefix must match, the
+    // post-crash surplus must not fail the diff.
+    let out = hale()
+        .arg("replay")
+        .arg(&rec)
+        .arg(&prog)
+        .arg("--allow-truncated")
+        .arg("--diff")
+        .arg("--allow-live-effects")
+        .output()
+        .expect("hale replay --allow-truncated --diff");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "truncated --diff must accept the surplus:\nstdout:{}\nstderr:{}",
+        stdout,
+        stderr
+    );
+    assert!(
+        stdout.contains("replay matches the recording"),
+        "expected the prefix match verdict:\n{}\n{}",
+        stdout,
+        stderr
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ...and a divergence INSIDE the recorded prefix still fails.
+/// (Corrupting the baseline cannot create one — replay is DRIVEN by
+/// the baseline, and raw in-process payloads compare by declared
+/// size by design. A withheld env VALUE is the honest in-prefix
+/// mismatch: the default recording policy withholds it, so the
+/// replayed read is a NAMED divergence inside the prefix.)
+#[test]
+fn withheld_read_inside_the_prefix_still_fails_truncated_diff() {
+    let dir = workdir("truncbad");
+    let prog = dir.join("envy.hl");
+    std::fs::write(
+        &prog,
+        r#"
+type Tick { n: Int = 0; }
+locus Sink {
+    params { seen: Int = 0; }
+    bus { subscribe "tb.tick" as on_t of type Tick; }
+    fn on_t(t: Tick) { self.seen = self.seen + 1; }
+}
+main locus App {
+    params { s: Sink = Sink { }; }
+    bus { publish "tb.tick" of type Tick; }
+    run() {
+        // An env read at the very start: inside any nonempty prefix.
+        let home = std::env::var("HOME");
+        let mut i = 0;
+        while i < 40 {
+            "tb.tick" <- Tick { n: i };
+            i = i + 1;
+        }
+    }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let rec = record(&dir, &prog);
+
+    // Cut the trailer + a tail chunk: an accepted truncated tape
+    // whose surviving prefix contains the (value-withheld) env read.
+    let b = std::fs::read(&rec).unwrap();
+    let mut end = b.len();
+    if &b[end - 16..end - 8] == b"HALEEND0" {
+        end -= 16;
+    }
+    let cut = dir.join("cut.halerec");
+    std::fs::write(&cut, &b[..end - 64]).unwrap();
+
+    let out = hale()
+        .arg("replay")
+        .arg(&cut)
+        .arg(&prog)
+        .arg("--allow-truncated")
+        .arg("--diff")
+        .arg("--allow-live-effects")
+        .output()
+        .expect("hale replay withheld prefix");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "an in-prefix divergence must still fail truncated --diff:\n{}",
+        stderr
+    );
+    assert!(
+        stderr.contains("env.var") || stderr.contains("DIVERGED"),
+        "the failure must be the named in-prefix divergence:\n{}",
+        stderr
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--feed` bypasses identity admission, never effect safety: a
+/// program whose frontier reaches syscall must still be refused
+/// until --allow-live-effects joins it.
+#[test]
+fn feed_requires_the_effects_gate_for_live_effects() {
+    let dir = workdir("feedgate");
+    let pure = dir.join("pure.hl");
+    std::fs::write(
+        &pure,
+        r#"
+main locus App {
+    params { x: Int = 1; }
+    run() { let y = self.x + 1; }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let rec = record(&dir, &pure);
+
+    let effectful = dir.join("effectful.hl");
+    std::fs::write(
+        &effectful,
+        r#"
+main locus App {
+    run() { std::time::sleep(1ms); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+
+    // --feed alone: refused, residue named.
+    let out = hale()
+        .arg("replay")
+        .arg(&rec)
+        .arg(&effectful)
+        .arg("--feed")
+        .output()
+        .expect("hale replay --feed");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "--feed alone must not unlock live effects:\n{}",
+        stderr
+    );
+    assert!(
+        stderr.contains("live world") && stderr.contains("syscall"),
+        "the refusal must name the residue:\n{}",
+        stderr
+    );
+
+    // Both flags: the explicit backtest-with-live-effects spelling.
+    let out = hale()
+        .arg("replay")
+        .arg(&rec)
+        .arg(&effectful)
+        .arg("--feed")
+        .arg("--allow-live-effects")
+        .output()
+        .expect("hale replay --feed --allow-live-effects");
+    assert!(
+        out.status.success(),
+        "--feed --allow-live-effects must proceed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Two listener bindings mean two recorded ingress sources; under
+/// --diff the verify recording's per-consumer public streams must
+/// align with the original's — one global injector thread would
+/// collapse them onto one identity.
+#[test]
+fn two_listeners_replay_clean_under_diff() {
+    let dir = workdir("twolisten");
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let sock_a = format!(
+        "{}/hale-2l-{}-{}.a.sock",
+        std::env::temp_dir().display(),
+        std::process::id(),
+        nanos
+    );
+    let sock_b = format!("{}.b", sock_a);
+    let sub = dir.join("sub.hl");
+    std::fs::write(
+        &sub,
+        format!(
+            r#"
+type TA {{ n: Int = 0; }}
+type TB {{ n: Int = 0; }}
+topic A {{ payload: TA; subject: "tl.a"; }}
+topic B {{ payload: TB; subject: "tl.b"; }}
+locus SubA {{
+    params {{ seen: Int = 0; }}
+    bus {{ subscribe A as on_a; }}
+    fn on_a(t: TA) {{ self.seen = self.seen + 1; println("a=", t.n); }}
+}}
+locus SubB {{
+    params {{ seen: Int = 0; }}
+    bus {{ subscribe B as on_b; }}
+    fn on_b(t: TB) {{ self.seen = self.seen + 1; println("b=", t.n); }}
+}}
+main locus App {{
+    params {{ sa: SubA = SubA {{ }}; sb: SubB = SubB {{ }}; }}
+    bindings {{
+        A: unix("{}", role: listen);
+        B: unix("{}", role: listen);
+    }}
+    run() {{
+        let mut waited = 0;
+        while self.sa.seen < 1 || self.sb.seen < 1 {{
+            std::time::sleep(100ms);
+            waited = waited + 1;
+            if waited > 200 {{ std::process::exit(3); }}
+        }}
+        std::time::sleep(400ms);
+    }}
+}}
+fn main() {{ App {{ }}; }}
+"#,
+            sock_a, sock_b
+        ),
+    )
+    .unwrap();
+    let pubs = dir.join("pubs.hl");
+    std::fs::write(
+        &pubs,
+        format!(
+            r#"
+type TA {{ n: Int = 0; }}
+type TB {{ n: Int = 0; }}
+topic A {{ payload: TA; subject: "tl.a"; }}
+topic B {{ payload: TB; subject: "tl.b"; }}
+main locus App {{
+    bus {{ publish A; publish B; }}
+    bindings {{
+        A: unix("{}", role: connect);
+        B: unix("{}", role: connect);
+    }}
+    run() {{
+        std::time::sleep(900ms);
+        A <- TA {{ n: 11 }};
+        B <- TB {{ n: 21 }};
+        std::time::sleep(50ms);
+        A <- TA {{ n: 12 }};
+        B <- TB {{ n: 22 }};
+        std::time::sleep(200ms);
+    }}
+}}
+fn main() {{ App {{ }}; }}
+"#,
+            sock_a, sock_b
+        ),
+    )
+    .unwrap();
+
+    let rec = dir.join("two.halerec");
+    let mut subp = hale()
+        .arg("run")
+        .arg(&sub)
+        .env("LOTUS_OBS_RECORD", &rec)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn recorded sub");
+    let p = hale().arg("run").arg(&pubs).output().expect("pubs");
+    assert!(
+        p.status.success(),
+        "publisher run failed: {}",
+        String::from_utf8_lossy(&p.stderr)
+    );
+    let out = subp.wait_with_output().expect("sub exit");
+    assert!(
+        out.status.success(),
+        "recorded two-listener run failed:\nstdout:{}\nstderr:{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let _ = std::fs::remove_file(&sock_a);
+    let _ = std::fs::remove_file(&sock_b);
+    let out = hale()
+        .arg("replay")
+        .arg(&rec)
+        .arg(&sub)
+        .arg("--diff")
+        .arg("--allow-live-effects")
+        .output()
+        .expect("hale replay --diff");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success() && stdout.contains("replay matches"),
+        "two-source ingress must survive --diff:\nstdout:{}\nstderr:{}",
+        stdout,
+        stderr
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -9,7 +9,7 @@
 //! WHOLE artifact validated: exact parse to the trailer and a
 //! matching entry count — trailer magic at EOF alone proves nothing.
 //!
-//! GH #296 phase 5 (WAL durability): a file WITHOUT the trailer is a
+//! GH #296 phase 5 (durable recording): a file WITHOUT the trailer is a
 //! crash-truncated recording. The drain appends whole frames in
 //! stream order, so the prefix is exact up to one torn frame at the
 //! tail — parsing stops there (`clean: false`) instead of erroring,

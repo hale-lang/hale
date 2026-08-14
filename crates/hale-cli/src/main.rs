@@ -218,6 +218,7 @@ fn usage() {
     eprintln!("        [--at <n> | --at <consumer-id>:<ordinal>: SIGSTOP at that consume]");
     eprintln!("        [--allow-live-effects] [--allow-unverified-model] [--allow-truncated]");
     eprintln!("        [--feed: inject the recorded ingress tape into (possibly changed) code]");
+    eprintln!("        [--allow-unmatched-feed: accept a partially-fed tape]");
     eprintln!("    hale test  [file | dir]       compile + run *_test.hl (default: cwd)");
     eprintln!("        [-run <substr>] [--json]");
     eprintln!("    hale bench [file | dir]       run *_bench.hl bench_* fns (default: cwd)");
@@ -4925,6 +4926,7 @@ fn run_replay(args: &[String]) -> ExitCode {
     let mut allow_unverified = false;
     let mut allow_truncated = false;
     let mut feed = false;
+    let mut allow_unmatched_feed = false;
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
@@ -4942,6 +4944,9 @@ fn run_replay(args: &[String]) -> ExitCode {
             i += 1;
         } else if a == "--feed" {
             feed = true;
+            i += 1;
+        } else if a == "--allow-unmatched-feed" {
+            allow_unmatched_feed = true;
             i += 1;
         } else if a == "--at" {
             // N (process-wide consume ordinal — only meaningful
@@ -4996,7 +5001,7 @@ fn run_replay(args: &[String]) -> ExitCode {
                 "usage: hale replay <recording> <program.hl> \
                  [--diff] [--at <n> | --at <consumer-id>:<ordinal>] \
                  [--allow-live-effects] [--allow-unverified-model] \
-                 [--allow-truncated] [--feed]"
+                 [--allow-truncated] [--feed] [--allow-unmatched-feed]"
             );
             return ExitCode::from(2);
         }
@@ -5072,6 +5077,46 @@ fn run_replay(args: &[String]) -> ExitCode {
     );
     let digest = exec_digest(&sources, &prog, &options_fp);
 
+    // GH #296 phase 5b (review round): a binding backend with no
+    // replay class cannot be suppressed OR injected — replaying or
+    // feeding a program that carries one would touch live shared
+    // memory. Fail closed with the backend named; no flag overrides
+    // this (the runtime independently refuses at open). Applies to
+    // strict replay and feed alike.
+    {
+        fn scan_shm_ring(items: &[hale_syntax::ast::TopDecl]) -> bool {
+            items.iter().any(|item| match item {
+                hale_syntax::ast::TopDecl::Locus(l) => {
+                    l.members.iter().any(|m| match m {
+                        hale_syntax::ast::LocusMember::Bindings(b) => {
+                            b.entries.iter().any(|e| {
+                                matches!(
+                                    e.transport,
+                                    hale_syntax::ast::TransportSpec::ShmRing { .. }
+                                )
+                            })
+                        }
+                        _ => false,
+                    })
+                }
+                hale_syntax::ast::TopDecl::Module(md) => {
+                    scan_shm_ring(&md.items)
+                }
+                _ => false,
+            })
+        }
+        if bundle.programs.values().any(|p| scan_shm_ring(&p.items)) {
+            eprintln!(
+                "hale replay: this program binds a `shm_ring` — that \
+                 backend has no replay class yet (it cannot be \
+                 suppressed or injected, and a replayed/fed process \
+                 must not touch live shared memory). Remove the \
+                 binding or re-record without it (GH #296)"
+            );
+            return ExitCode::from(1);
+        }
+    }
+
     // Ordered BEFORE identity admission: this refusal is inherent
     // to the PROGRAM, so it must not be masked by a
     // recording-mismatch message (and module-gate canaries can
@@ -5085,7 +5130,11 @@ fn run_replay(args: &[String]) -> ExitCode {
     // machinery, invisible in user-level effects). Coarse by class
     // granularity — over-refusing is the safe direction;
     // per-primitive replay classes are the staged refinement.
-    if !allow_live_effects && !feed {
+    // phase 5b review round: --feed bypasses IDENTITY admission
+    // (changed code is its point), never EFFECT safety — feeding a
+    // tape is not an opt-in to live syscalls/FFI. Both flags
+    // together are the explicit backtest-with-live-effects spelling.
+    if !allow_live_effects {
         let programs: Vec<&Program> =
             bundle.programs.values().copied().collect();
         let rows =
@@ -5123,12 +5172,15 @@ fn run_replay(args: &[String]) -> ExitCode {
                 _ => false,
             })
         }
-        // phase 5b: `bindings { }` no longer forces the flag — the
-        // runtime suppresses bound transports under replay (opens
-        // nothing, sends nothing) and injects the recorded ingress
-        // tape in the listeners' stead. The residue that remains is
-        // genuinely user-level: syscall/ffi writes repeat,
-        // unclassified may do anything.
+        // phase 5b: native unix/udp `bindings { }` no longer force
+        // the flag — the runtime suppresses those transports under
+        // replay (opens nothing, sends nothing) and injects the
+        // recorded ingress tape in the listeners' stead. Hermeticity
+        // is a BINDING-KIND capability, not a blanket assumption
+        // (review round): a backend with no replay class fails
+        // CLOSED below. The residue that remains here is genuinely
+        // user-level: syscall/ffi writes repeat, unclassified may do
+        // anything.
         let _ = scan_bindings;
         if !residue.is_empty() {
             eprintln!(
@@ -5263,6 +5315,9 @@ fn run_replay(args: &[String]) -> ExitCode {
     let mut cmd = std::process::Command::new(&bin);
     if feed {
         cmd.env("LOTUS_REPLAY_FEED", &rec_abs);
+        if allow_unmatched_feed {
+            cmd.env("LOTUS_REPLAY_FEED_ALLOW_UNMATCHED", "1");
+        }
     } else {
         cmd.env("LOTUS_REPLAY", &rec_abs);
     }
@@ -5349,7 +5404,9 @@ fn run_replay(args: &[String]) -> ExitCode {
         .map(|body| {
             body.lines()
                 .filter_map(|l| l.split_once('='))
-                .filter(|(k, _)| *k != "consumes")
+                .filter(|(k, _)| {
+                    *k != "consumes" && *k != "post_prefix_live_fallback"
+                })
                 .filter_map(|(_, v)| v.trim().parse::<u64>().ok())
                 .sum()
         })

@@ -8,63 +8,97 @@ behavior.
 
 ## Unreleased
 
-### Record & replay, phase 5: durability, the hermetic wire, and feed mode (GH #296)
+### Record & replay, phase 5: durable recording, the hermetic wire, and feed mode (GH #296)
 
 Three deliverables close the two loudest gaps in the v0.17.0
 replay story — "a crashed run loses its recording" and "a replayed
-server talks to the real world":
+server talks to the real world" — hardened by a full adversarial
+review round (10 findings, all resolved; the notes below fold
+them in).
 
-**WAL durability.** The drain already appended whole frames in
-stream order; now the header identity (`model_hash`,
-`exec_digest`, policy flags) is stamped eagerly — not only at
-finalize — so a SIGKILLed run leaves an artifact that is
-attributable and exact up to one torn frame at the tail. Replaying
-a trailer-less recording is an explicit opt-in
-(`hale replay --allow-truncated` / `LOTUS_REPLAY_ALLOW_TRUNCATED=1`):
-both loaders stop at the first incomplete frame, report the parsed
-extent and dropped tail bytes, and replay that prefix; `--diff`
-against a truncated baseline compares the recorded prefix (surplus
-replay events past the crash point are not divergences; missing or
-different ones still are). A finalized artifact keeps the exact
-full-parse + count checks. `LOTUS_OBS_RECORD_DURABLE=1` adds an
-`fdatasync` per flushed drain sweep for power-loss durability.
+**Durable recording / crash-prefix recovery.** Named precisely: a
+durable flight recorder, NOT a write-ahead log — the application
+never gates on the recording reaching stable storage. The header
+identity (`model_hash`, `exec_digest`, policy flags) is stamped
+eagerly — not only at finalize — so a SIGKILLed run leaves an
+artifact that is attributable and exact up to one torn frame at
+the tail. Replaying a trailer-less recording is an explicit
+opt-in (`hale replay --allow-truncated` /
+`LOTUS_REPLAY_ALLOW_TRUNCATED=1`): both loaders stop at the first
+incomplete frame, report the parsed extent, and replay that
+prefix. Under `--diff` the runtime verdict and the comparator
+AGREE on prefix semantics: recorded-history-exhausted events
+count into a separate `post_prefix_live_fallback` status key —
+the unknown post-crash suffix, executed live — while any mismatch
+inside the prefix stays a divergence (a withheld env read inside
+the prefix still fails the diff; the surplus past the tape does
+not). A finalized artifact keeps the exact full-parse + count
+checks. `LOTUS_OBS_RECORD_DURABLE=1` is the power-loss grade:
+`fdatasync` per flushed sweep AND on the finalize trailer,
+parent-directory sync at creation, grade recorded in the header.
 
-**Hermetic wire + ingress injection.** Under replay, `bindings`
-transports are suppressed at realization — the entry stays a husk
-(`transport` NULL, the shape the reclaim path already leaves), no
-socket is created, and outbound fanout to bound subjects sends
-nothing (still recorded and compared under `--diff`). In the
-listeners' stead an injector thread re-dispatches the recording's
-ingress tape in artifact order with each delivery's RECORDED
-`pub_id` pinned, so per-consumer order enforcement matches
-injected deliveries to their recorded consumes — replay of a
-server binary with no peers and no network produces byte-identical
-output with zero divergences. To make the tape injectable, reader
-threads now capture each received message's verbatim WIRE bytes
-(the struct-bytes record was metadata-only and could not be
-re-fed), with the identity pinned across the capture-then-dispatch
-pair; the artifact grows a subject-hash → name meta map (subtype
-3) so payloads route and report by name. Consequence: `bindings`
-blocks no longer trip the `--allow-live-effects` gate — the
-remaining residue (`syscall`/`ffi`/`unclassified`) is genuinely
-user-level.
+**Hermetic wire + ingress injection.** Hermeticity is a
+binding-kind capability, not a blanket assumption: native
+`unix://`/`udp://` transports (and the transport-locus form) are
+suppressed at realization — husk entry, no socket, outbound
+fanout sends nothing (still recorded and compared under
+`--diff`) — while a backend with NO replay class fails closed:
+`shm_ring` is refused by the CLI (named) and independently at the
+runtime shm-open seam. Injection runs as an explicit boot phase:
+codegen emits `lotus_replay_start_ingress()` at the main locus's
+boot/run boundary, where the runtime snapshots the subscription
+registry on the main thread (injector workers never read the live
+registry) and spawns one worker per RECORDED ingress source, each
+carrying its source's recorded consumer identity so `--diff`
+aligns per-consumer streams across multiple listeners. Tape
+identity is the full subject string plus the subject's canonical
+payload shape (FNV-32 kept for reporting only — it is
+collision-prone, and a colliding pair now routes correctly by
+name); a shape mismatch refuses injection as *incompatible*
+rather than feeding plausible wrong values. Only ACCEPTED
+messages enter the tape — wire capture runs after the
+deserializer says yes, so rejected traffic is never re-fed.
+Strict injection is PACED against recorded progress (inject one,
+wait for its recorded consumes) so bounded queues shed nothing
+they didn't shed originally. Every tape entry is classified
+(injected / rejected / unmatched / incompatible / unprocessed-at-
+shutdown / start-failure); under strict replay every non-injected
+class is a machine-readable divergence. Found along the way: the
+injector, as a cross-thread producer, must select the locked and
+GATED main-queue drain (`lotus_bus_mark_pinned`) — without it a
+replaying main drained ungated and cross-source order silently
+diverged with a clean verdict. Consequence of hermetic native
+wire: `bindings` blocks with covered backends no longer trip the
+`--allow-live-effects` gate; the remaining residue
+(`syscall`/`ffi`/`unclassified`) is genuinely user-level.
 
-**Feed mode — the backtesting contract.**
-`hale replay --feed rec app.hl` (`LOTUS_REPLAY_FEED=<path>`)
-consumes the recording as an input tape ONLY: recorded ingress
-injected, wire hermetic, and nothing else of replay applies — no
-journal serving, no order enforcement, no model admission (a hash
+**Feed mode — same recorded ingress, changed code, live
+nondeterministic environment.** `hale replay --feed rec app.hl`
+(`LOTUS_REPLAY_FEED=<path>`) consumes the recording as an input
+tape: recorded ingress injected, wire hermetic, no journal
+serving, no order enforcement, no model admission (a hash
 mismatch prints as information; feeding a tape to changed code is
-the point), no effects gate, no `--diff`/`--at`. Same inputs,
-changed code, live everything else. The exit report states how
-many tape entries were injected and how many found no matching
-subject — a dropped tape is a fact, never a silence.
+the point), no `--diff`/`--at`. The effects gate STILL applies —
+`--feed` bypasses identity admission, never effect safety;
+live-effect programs need `--allow-live-effects` beside it. Feed
+targets that dropped or rearranged the listener binding still get
+their tape (tape presence decides injection, not the old
+declaration). The exit report classifies every tape entry, and an
+unfed remainder fails the run by default —
+`--allow-unmatched-feed` is the explicit acceptance.
 
-Tests: SIGKILL-mid-run prefix admissibility (+ the eager identity
-stamp, + the default refusal naming the flag), durable-grade
-finalize, hermetic strict replay (byte-identical stdout, zero
-divergences, socket never created), and feed into a
-different-model program processing the recorded values.
+Tests, beyond the happy paths: SIGKILL-prefix admissibility +
+eager identity stamp + refusal naming the flag; durable-grade
+finalize; hermetic strict replay (byte-identical stdout, zero
+divergences, socket never created); truncated `--allow-truncated
+--diff` accepting the post-crash surplus while an in-prefix
+withheld read still fails; feed requiring the effects gate;
+rejected wire excluded from the tape; the FNV-32 collision pair
+routing by full subject; capacity-one bounded queue replaying
+with zero shedding; feed into a binding-less target; incompatible
+payload shape failing feed closed; `shm_ring` refusing replay
+without touching shared memory; two listeners surviving CLI
+`--diff` with per-source identity.
 
 ---
 

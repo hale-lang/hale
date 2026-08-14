@@ -96,6 +96,7 @@ dependencies = [
  "hale-syntax",
  "hale-types",
  "inkwell",
+ "libc",
 ]
 
 [[package]]

@@ -1,4 +1,4 @@
-//! GH #296 phase 5 — WAL durability: a crash-truncated recording is
+//! GH #296 phase 5 — durable recording: a crash-truncated recording is
 //! a usable prefix.
 //!
 //! The drain appends whole frames in stream order and stamps the
@@ -132,12 +132,12 @@ fn killed_recording_keeps_an_admissible_prefix() {
         REC_END_MAGIC,
         "a SIGKILLed run must not carry a clean-finalize trailer"
     );
-    // ...but the header identity is ALREADY stamped (the WAL eager
+    // ...but the header identity is ALREADY stamped (the eager
     // stamp) — the crashed artifact is attributable, not anonymous.
     assert_ne!(
         u64_at(&bytes, 48),
         0,
-        "model_hash must be stamped before finalize (eager WAL stamp)"
+        "model_hash must be stamped before finalize (eager stamp)"
     );
 
     // 2. Default: fail closed, name the opt-in.

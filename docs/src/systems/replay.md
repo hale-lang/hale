@@ -37,14 +37,20 @@ because a dropped record is a replay that diverges silently:
   recording is admitted for replay only when the *entire* artifact
   validates — exact parse to the trailer, matching entry count.
 
-The recording is also **crash-durable**: frames stream to disk in
-order and the header identity is stamped eagerly, so a run that
-dies without teardown — the run whose recording you want most —
-leaves an artifact that is exact up to one torn frame at the tail.
-Replaying it is an explicit opt-in (`--allow-truncated`): the
-loader stops at the torn frame, says how much it kept, and replays
-that prefix. `LOTUS_OBS_RECORD_DURABLE=1` adds an `fdatasync` per
-drain sweep for power-loss durability.
+The recording is also **crash-durable** (a durable flight
+recorder — not a write-ahead log: the application never waits on
+the recording, so a crash can lose the last instants before it):
+frames stream to disk in order and the header identity is stamped
+eagerly, so a run that dies without teardown — the run whose
+recording you want most — leaves an artifact that is exact up to
+one torn frame at the tail. Replaying it is an explicit opt-in
+(`--allow-truncated`): the loader stops at the torn frame, says
+how much it kept, and replays that prefix; under `--diff` the
+post-crash suffix is surplus, not divergence, while anything
+inside the prefix still must match. `LOTUS_OBS_RECORD_DURABLE=1`
+is the power-loss grade: `fdatasync` per drain sweep AND on the
+finalize trailer, plus a parent-directory sync at creation, with
+the grade recorded in the artifact header.
 
 The recording needs no observer attached and works from the first
 probe. It captures four things:
@@ -126,38 +132,54 @@ interleaving that was recorded — that is the per-consumer order
 enforcement working, and it is pinned by tests that run the race
 repeatedly.
 
-## The wire is hermetic
+## The wire is hermetic (for backends that support it)
 
 A replayed server must not talk to the real world — in either
-direction. Under replay, every `bindings { }` transport is
-suppressed at realization: no socket is created, listeners don't
-bind, connectors don't connect, and publishes to bound topics send
-nothing (they are still recorded and compared under `--diff`). In
-the listeners' stead, an injector re-dispatches the recording's
-ingress tape — the verbatim wire bytes each listener received, in
-recorded order, each delivery carrying its *recorded* identity so
-the order enforcement matches it to its recorded consume. Replay a
-server binary with no peers, no free ports, and no network, and
-its subscribers see exactly the traffic they saw.
+direction. Under replay, the native `unix://` and `udp://`
+binding transports are suppressed at realization: no socket is
+created, listeners don't bind, connectors don't connect, and
+publishes to bound topics send nothing (they are still recorded
+and compared under `--diff`). In the listeners' stead, an
+injector — started at an explicit boot phase, one worker per
+recorded ingress source — re-dispatches the recording's ingress
+tape: the verbatim wire bytes each listener received, in recorded
+order, paced against recorded progress (so bounded queues shed
+nothing they didn't shed originally), each delivery carrying its
+*recorded* identity and matched by its full subject and payload
+shape. Replay a server binary with no peers, no free ports, and
+no network, and its subscribers see exactly the traffic the
+original accepted — rejected frames never re-fed, and every
+non-injected tape entry classified and counted.
 
-## Feed mode: same inputs, changed code
+Hermeticity is a per-backend capability, not a blanket claim: a
+binding backend with no replay class — `shm_ring` today — is
+refused outright, by the CLI and again at the runtime seam, so a
+replayed process cannot touch live shared memory.
+
+## Feed mode: same recorded ingress, changed code
 
 ```sh
 hale replay run.halerec app.hl --feed
 ```
 
 Backtesting is a different contract from replay: not "the same run
-again" but "the same **inputs** again," against code you have
-changed. `--feed` consumes the recording as an input tape only —
-recorded ingress injected, wire hermetic — and deliberately drops
-everything else: no journal serving, no order enforcement, no
-model admission (a hash mismatch prints as information; feeding a
-tape to changed code is the point), no effects gate (everything
-except the wire runs live — that is feed's contract). Record a
-day of production traffic once; run every strategy revision
-against it. The exit report says how many tape entries were
-injected and how many found no matching subject in the new
-program — a dropped tape is a fact, never a silence.
+again" but "the same **recorded ingress** again," against code you
+have changed — time, randomness, env, and argv stay live, which
+is why the name is precise rather than "same inputs." `--feed`
+consumes the recording as an input tape only — recorded ingress
+injected, wire hermetic — and deliberately drops the rest of
+replay: no journal serving, no order enforcement, no model
+admission (a hash mismatch prints as information; feeding a tape
+to changed code is the point). What it does **not** drop is the
+effects gate: `--feed` bypasses identity, never safety — a
+program that reaches `syscall`/`ffi`/`unclassified` still needs
+`--allow-live-effects` beside it. Record a day of production
+traffic once; run every strategy revision against it. The exit
+report classifies every tape entry (injected, rejected,
+unmatched, incompatible shape, unprocessed), and an unfed
+remainder fails the run unless you accept it explicitly with
+`--allow-unmatched-feed` — a dropped tape is a fact, never a
+silence.
 
 ## The coverage boundary, honestly
 
