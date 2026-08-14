@@ -1736,8 +1736,51 @@ in the RECORDED order (Phase 4): dequeued cells that arrive ahead
 of their recorded turn are held per-consumer and released in
 order, with a bounded hold (1s) after which the oldest held cell
 is released and the miss counted, so a genuinely divergent replay
-reports rather than deadlocks. `where async_io` pools refuse
-replay loudly (their coro interleaving is a later milestone).
+reports rather than deadlocks.
+
+**Async pools replay (Phase 6).** The nondeterminism of a `where
+async_io` pool is its drain's SCHEDULING: which cell starts when,
+which parked coro resumes when (epoll readiness order), and when a
+timed park expires relative to both. Under recording, every such
+decision is stamped on the pool worker's private ring as a step
+(`ASYNC_START`/`ASYNC_RESUME`/`ASYNC_EXPIRE`; coros are named by
+birth ordinal — the index of the START that created them, stable
+across runs because start order is enforced). Under replay the
+drain is DRIVEN by that stream instead of the clock: START steps
+reuse the phase-4 cell gate (start order is consume order); RESUME
+steps wait for the named coro's readiness, parking early-ready
+coros aside until their turn; EXPIRE steps resume the named coro
+with the timed-out sentinel immediately — the recording already
+proves the deadline fired at this point in the sequence, so
+replayed sleeps fast-forward rather than re-waiting. A step
+unsatisfiable within the hold bound counts an `async-schedule`
+divergence and is skipped (degrade, never deadlock) — and a
+skipped START **retires** both its birth ordinal and its consume
+slot (review round 2: ordinals belong to the recorded START slots,
+not to whichever cell happened to start next — without retirement
+one missing delivery shifts every later coroutine into an earlier
+recorded identity, and the pinned consume expectation makes every
+later START mismatch; with it, later steps that name a retired
+slot skip immediately and the divergence stays local).
+
+**Coverage, named (review round).** A dry tape hands the pool back
+to the live drain — never silently. The artifact carries a
+capability bit (header flag 4: this runtime records async
+schedules); the states are distinct and reviewable: a pre-phase-6
+artifact gets a one-shot coverage note ("recording predates
+async-schedule support"); a truncated tape's remaining schedule is
+the stated coverage boundary (excluded from the divergence
+totals); a FINALIZED capable artifact whose tape runs dry while
+the re-execution keeps doing async work counts each such action as
+`async_post_tape`, and schedule steps left unconsumed at exit
+count as `unconsumed_async_steps` — both machine-readable status
+keys and divergence rows. `--diff` compares the per-consumer async
+step streams (kind, value) bidirectionally, exactly like the
+consume and journal streams — "byte-identical output" alone is
+weaker than "the schedule matched". Boundary, stated: the SCHEDULE replays; the DATA of
+unjournaled I/O does not — a coro resumed at its recorded turn
+re-executes its recv against the live world (syscall-class, gated),
+and bindings ingress arrives via the Phase-5 injector.
 
 **Hermetic wire + ingress injection (Phase 5).** Hermeticity is
 a **binding-kind capability, not a blanket assumption**: the

@@ -46,6 +46,64 @@ pattern stays one line. Canaries: the wrong-arity middleware, the
 `Int = router` absurdity, and the typo'd-literal case are all
 compile errors now.
 
+### Record & replay, phase 6: `where async_io` pools replay (GH #296)
+
+The last refusing surface joins the replay story. The
+nondeterminism of an async pool is its drain's SCHEDULING — which
+cell starts when, which parked coro resumes when (epoll readiness
+order), when a timed park expires relative to both. Recording now
+stamps every such decision on the pool worker's private ring as a
+step stream (`ASYNC_START`/`ASYNC_RESUME`/`ASYNC_EXPIRE`; coros
+named by birth ordinal, stable across runs because start order is
+enforced), and replay DRIVES the drain from that stream instead of
+the clock:
+
+- START steps reuse the phase-4 cell gate unchanged (start order
+  is consume order; the async live path now gates too, closing the
+  never-reached gap the old refusal hid);
+- RESUME steps wait for the named coro's readiness — early-ready
+  coros park aside until their recorded turn;
+- EXPIRE steps resume immediately with the timed-out sentinel: the
+  recording proves the deadline fired here, so replayed sleeps
+  fast-forward rather than re-waiting wall-clock time;
+- an unsatisfiable step counts an `async-schedule` divergence
+  (new status-file key, new summary row) and is skipped — degrade,
+  never deadlock; a dry or pre-phase-6 tape hands the pool back to
+  the live drain.
+
+Hardened by two review rounds. Round two closed the degradation
+and compatibility paths: a skipped START retires its birth ordinal
+AND its consume slot (one missing delivery no longer cascades into
+wrong resume pairings — steps naming a retired slot skip
+immediately); the dry-tape flag is set BEFORE the ready-head/held
+flushes so post-tape work is always classified; the CLI comparator
+carries the artifact's async-capability bit and skips schedule
+comparison for pre-phase-6 artifacts (matching the runtime's
+coverage note instead of contradicting it); the one-shot warning
+is atomic; the test module is Linux-gated; and the public
+`hale replay --diff` path is exercised end to end (exact match,
+mutated-step failure, and old-artifact compatibility).
+
+Round one: the artifact carries an
+async-capable header bit, the dry-tape states are named instead of
+silent (pre-phase-6 artifact → one-shot coverage note; truncated
+tape → stated coverage boundary; a finalized tape running dry
+under continued async work → `async_post_tape` divergences, with
+schedule steps left unconsumed at exit as
+`unconsumed_async_steps`), and `--diff` compares the per-consumer
+async step streams bidirectionally like every other stream.
+
+Boundary, stated: the schedule replays; the data of unjournaled
+I/O still re-executes live (syscall-class, gated), and bindings
+ingress arrives via the phase-5 injector. Tests: a staggered
+two-locus async pool records and replays byte-identically with
+zero divergences; a 2.5-second recorded park replays in a fraction
+of its own measured recorded wall time (the fast-forward PROOF —
+the old bound was satisfiable live); readiness arriving in the
+OPPOSITE order of the recorded resumes is held on ready_head and
+replayed in tape order across a mixed START/RESUME/EXPIRE stream;
+and two replays of one recording agree with each other.
+
 ### Record & replay, phase 5: durable recording, the hermetic wire, and feed mode (GH #296)
 
 Three deliverables close the two loudest gaps in the v0.17.0
