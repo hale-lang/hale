@@ -920,8 +920,9 @@ Type-check rules:
    type, and names the topic-as-parameter-type mistake
    (`fn on_h(msg: Hello)` where `Hello` is the topic)
    specifically. Payloads that resolve `Unknown` — cross-seed
-   topics, stdlib paths — stay permissive by the milestone-2
-   rule.)
+   topics — stay permissive by the milestone-2 rule; stdlib
+   paths resolve to their real nominal types since GH #470 and
+   are checked like any user type.)
 2. The send-expression's type at a topic-ref `<-` site must match
    `Topic.payload`.
 3. The `of type T` clause is forbidden on topic-ref subscribe /

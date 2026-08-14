@@ -14,9 +14,15 @@ let contents = std::io::fs::read_file("config.toml");
 std::io::tcp::Listener { host: "127.0.0.1", port: 8080 };
 ```
 
-The parser tokenizes `::` as a path separator and the type checker
-punts namespaced paths to `Ty::Unknown`; the codegen layer
-resolves `std::*` paths against a hardcoded namespace dispatcher.
+The parser tokenizes `::` as a path separator. The type checker
+resolves `std::*` paths that name Hale-source stdlib declarations
+to their real nominal types (GH #470 — literals, fields, methods,
+and interface coercions check like user code, and a `std::`
+literal that matches nothing is an error); remaining namespaced
+paths (Rust-implemented builtins) type permissively, with their
+path-call names validated against the stdlib surface registry.
+The codegen layer resolves `std::*` paths against a hardcoded
+namespace dispatcher.
 
 There is **no general module system** at v1 — no `use`
 statements, no user-defined modules, no multi-file `.hl`

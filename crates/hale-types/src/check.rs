@@ -15,10 +15,15 @@
 //!   in milestone 2 — just that something is there).
 //! - `self.field`: resolves against enclosing locus's params.
 //!
-//! Names referenced via paths the bundle can't see (stdlib,
-//! `time::sleep`, `println`) resolve to `Ty::Unknown`, which
-//! is bidirectionally compatible — milestone 2 does not error
-//! on these. Milestone 3 will tighten.
+//! Names referenced via paths the bundle can't see resolve to
+//! `Ty::Unknown`, which is bidirectionally compatible. GH #470
+//! tightened the STDLIB half of that tolerance: the Hale-source
+//! stdlib surface is registered into the top scope (signatures
+//! only — its bodies are never checked here), so `std::…` type
+//! exprs, literals, fields, methods, and interface coercions
+//! check for real, and a `std::` literal that resolves nowhere is
+//! an error. Rust-implemented builtins keep the tolerance (their
+//! path-call NAMES are validated by `stdlib_surface`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -12382,10 +12387,8 @@ impl<'a> Checker<'a> {
         inits: &[StructInit],
         span: Span,
     ) -> Ty {
+        let mut stdlib_resolved: Option<String> = None;
         if path.segments.len() != 1 {
-            for init in inits {
-                let _ = self.check_expr(&init.value);
-            }
             // Resolve an imported qualified literal (`mat::Grid { }`)
             // to the merged symbol codegen lowers it to, so field and
             // method access on the RESULT is checked against the real
@@ -12393,17 +12396,19 @@ impl<'a> Checker<'a> {
             // the gap that let `mat::Grid { }.make(x)` (no such method;
             // `make` is a free fn) pass `check` and die in codegen.
             //
-            // Only the result TYPE is resolved. The inits are not
-            // re-validated against the imported params, so any literal
-            // `check` accepted before (as Unknown) still typechecks —
-            // this only adds checking downstream of the literal, never
-            // new errors on the literal itself. Empty renames (every
-            // single-seed bundle) fall straight through to Unknown.
+            // Only the result TYPE is resolved for IMPORTS. The inits
+            // are not re-validated against the imported params, so any
+            // literal `check` accepted before (as Unknown) still
+            // typechecks. Empty renames (every single-seed bundle)
+            // skip straight past this.
             let key: Vec<String> =
                 path.segments.iter().map(|s| s.name.clone()).collect();
             if let Some((_, mangled)) =
                 self.import_renames.iter().find(|(p, _)| *p == key)
             {
+                for init in inits {
+                    let _ = self.check_expr(&init.value);
+                }
                 if matches!(
                     self.top.lookup(mangled),
                     Some(
@@ -12414,10 +12419,58 @@ impl<'a> Checker<'a> {
                 ) {
                     return Ty::Named(mangled.clone());
                 }
+                return Ty::Unknown;
             }
-            return Ty::Unknown;
+            // GH #470: a STDLIB qualified literal resolves through
+            // PATH_RENAMES to the mangled symbol the Hale-source
+            // stdlib declares (now registered in the top scope), and
+            // then falls through to FULL literal validation below —
+            // fields checked, interface coercions enforced. The old
+            // `Ty::Unknown` tolerance here was fail-open all the way
+            // to runtime memory corruption (a wrong-arity middleware
+            // coerced to `std::http::Middleware` unchecked).
+            let segs: Vec<&str> =
+                path.segments.iter().map(|s| s.name.as_str()).collect();
+            if let Some(m) = crate::stdlib_bodies::mangled_locus_name(&segs)
+            {
+                if self.top.lookup(m).is_some() {
+                    stdlib_resolved = Some(m.to_string());
+                } else {
+                    // Renamed but not Hale-source-declared (a
+                    // Rust-implemented handle, e.g.
+                    // std::io::tcp::Listener): keep the historical
+                    // tolerance — a Named with no symbol behind it
+                    // would trade fail-open for false errors.
+                    for init in inits {
+                        let _ = self.check_expr(&init.value);
+                    }
+                    return Ty::Unknown;
+                }
+            } else if segs.first() == Some(&"std") {
+                // GH #470: a std:: literal that matches nothing in
+                // the rename table is a typo, not an Unknown —
+                // `std::log::TotallyFakeSink {}` used to typecheck.
+                self.diags.push(Diag::ty(
+                    span,
+                    format!(
+                        "unknown stdlib type `{}` in struct/locus \
+                         literal",
+                        key.join("::")
+                    ),
+                ));
+                for init in inits {
+                    let _ = self.check_expr(&init.value);
+                }
+                return Ty::Unknown;
+            } else {
+                for init in inits {
+                    let _ = self.check_expr(&init.value);
+                }
+                return Ty::Unknown;
+            }
         }
-        let name = &path.segments[0].name;
+        let name: &String =
+            stdlib_resolved.as_ref().unwrap_or(&path.segments[0].name);
         // M3 stage 3 tranche 2 (2026-07-02): mangled generic
         // monomorph literal (`Box_Int { ... }`). Resolve the
         // `Base_Tok[_Tok...]` shape against a generic type

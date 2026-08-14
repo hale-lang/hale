@@ -69,16 +69,38 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
             .entry("BusUnmatchedKey".to_string())
             .or_insert(Span::new(0, 0));
     }
-    // GH #436: pre-register the `@sealed` Hale-source stdlib loci, so
-    // a user's `params { s: std::secret::Signer = … }` resolves to
-    // the mangled name that stdlib source declares rather than to
-    // `Ty::Unknown`. This must land BEFORE the register pass below —
-    // that is where user type-exprs resolve.
-    for it in sealed_stdlib_loci() {
-        if let TopDecl::Locus(l) = it {
-            known_names
-                .entry(l.name.name.clone())
-                .or_insert(l.name.span);
+    // GH #470: pre-register the ENTIRE Hale-source stdlib surface —
+    // loci, types, interfaces, enums, free fns — so a user's
+    // `std::http::Router {}` / `ctx: std::http::Context` resolves to
+    // the mangled nominal symbol the stdlib source declares rather
+    // than to `Ty::Unknown`. The Unknown tolerance was fail-open all
+    // the way to runtime memory corruption: a locus with a
+    // wrong-arity method coerced to a stdlib interface unchecked
+    // (`router.use(m)`) and the fat-pointer call scrambled the
+    // frame. Registration is signatures-only — stdlib BODIES are
+    // never added to the checked bundle, so this cannot produce
+    // diagnostics against stdlib source itself. (Supersedes the
+    // GH #436 sealed-only injection, which was this fix restricted
+    // to the loci that could not wait for it.) Must land BEFORE the
+    // register pass below — that is where user type-exprs resolve.
+    for it in stdlib_top_decls() {
+        match it {
+            TopDecl::Locus(l) => {
+                known_names
+                    .entry(l.name.name.clone())
+                    .or_insert(l.name.span);
+            }
+            TopDecl::Type(t) => {
+                known_names
+                    .entry(t.name.name.clone())
+                    .or_insert(t.name.span);
+            }
+            TopDecl::Interface(i) => {
+                known_names
+                    .entry(i.name.name.clone())
+                    .or_insert(i.name.span);
+            }
+            _ => {}
         }
     }
 
@@ -106,14 +128,22 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
         );
     }
 
-    for it in sealed_stdlib_loci() {
-        register_top_decls(
-            std::slice::from_ref(it),
-            &known_names,
-            &topics_resolved,
-            &mut scope,
-            &mut diags,
-        );
+    // GH #470: register the full stdlib surface. Diagnostics from
+    // this pass are swallowed — the stdlib is not the user's code to
+    // fix, and an internal signature that fails to resolve simply
+    // degrades that symbol to the old Unknown tolerance instead of
+    // erroring someone else's build.
+    {
+        let mut stdlib_diags: Vec<Diag> = Vec::new();
+        for it in stdlib_top_decls() {
+            register_top_decls(
+                std::slice::from_ref(it),
+                &known_names,
+                &topics_resolved,
+                &mut scope,
+                &mut stdlib_diags,
+            );
+        }
     }
 
     // v1.x-FORM-1 PR3b: inject the form-specific stdlib type
@@ -491,29 +521,22 @@ fn finalize_topic_chain(
     }
 }
 
-/// GH #436: the `@sealed` loci declared in the Hale-source stdlib.
+/// GH #470: every top declaration in the Hale-source stdlib.
 ///
-/// Deliberately ONLY the sealed ones. Every multi-segment stdlib path
-/// (`std::io::tcp::Stream`, `std::http::Server`, …) resolves to
-/// `Ty::Unknown` today, and making them all `Named` would switch on
-/// field-existence and method arity/fallibility checking across the
-/// whole stdlib surface at once — a real improvement, and one that can
-/// newly reject programs that compile today. That is its own change
-/// with its own measurement.
-///
-/// Sealing cannot wait for it, because it fails OPEN without it.
-/// `@sealed` keys off the receiver's resolved type, so a sealed stdlib
-/// locus reached through a qualified path had readable params —
-/// verified before this fix: `self.signer.key` returned real key bytes
-/// and `hale check` passed it.
-///
-/// Restricting the injection to sealed loci puts the blast radius at
-/// exactly the types that could not otherwise be protected.
-fn sealed_stdlib_loci() -> impl Iterator<Item = &'static TopDecl> {
+/// This is the "its own change with its own measurement" the GH #436
+/// sealed-only note promised: the whole surface is registered, so
+/// field-existence, method arity, and interface-satisfaction checking
+/// apply across it. The measurement happened - the fixture corpus and
+/// full workspace pass untouched except for two tests that pinned the
+/// old permissiveness (one of which was a genuinely invalid fixture
+/// the tolerance had been hiding: a call to a Router method that does
+/// not exist). What forced the timing was fail-open UB: a locus with
+/// a wrong-arity method coerced to `std::http::Middleware` unchecked,
+/// and the interface fat-pointer call corrupted the frame.
+fn stdlib_top_decls() -> impl Iterator<Item = &'static TopDecl> {
     crate::stdlib_bodies::program()
         .into_iter()
         .flat_map(|p| p.items.iter())
-        .filter(|it| matches!(it, TopDecl::Locus(l) if l.sealed))
 }
 
 fn register_top_decls(
