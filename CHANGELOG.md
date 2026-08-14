@@ -6,7 +6,7 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.17.0 — the run comes back the same (2026-08-13)
 
 ### Record & replay, phases 2–4: `hale replay` (GH #296)
 
