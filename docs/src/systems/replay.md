@@ -192,8 +192,12 @@ silence.
   them), and adapter loci re-execute their own protocol logic.
   Fleet-scale replay — multiple binaries against one composed
   tape — is the next milestone.
-- **`where async_io` pools refuse replay** loudly; their coroutine
-  interleaving is a later milestone.
+- **`where async_io` pools replay their recorded schedule.** The
+  drain's decisions — cell starts, readiness resumes, timed-park
+  expiries — are recorded as a per-worker step stream and drive the
+  replayed drain instead of the clock (recorded sleeps
+  fast-forward). What replays is the *schedule*: the data of
+  unjournaled I/O still re-executes live (and is gated).
 - **The artifact format is pre-stable** while the remaining phases
   (fleet replay, replay-under-a-different-plan, durability grades)
   land.
