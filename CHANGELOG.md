@@ -8,6 +8,25 @@ behavior.
 
 ## Unreleased
 
+### `std::http::is_route` - one locus, many endpoints
+
+`std::http::build_context(req)` + `std::http::is_route(ctx, method,
+pattern)` make a single locus a complete API surface: its own
+`handle` dispatches through an `if`-ladder of `is_route` checks and
+each endpoint is a plain method with `self` in scope - so shared
+per-instance state (a db handle, a session table) needs no Router
+and no per-endpoint `RouteHandler` loci. `build_context` builds the same
+per-request bundle the Router does (query string split into
+`params.qs`); `is_route` runs the Router's own matcher (`:name`
+captures via `path_param`, trailing-slash tolerant, no implicit
+wildcard), fills captures on a hit, and clears them on ANY miss -
+including a method-only miss - so the ladder is first-match-wins in
+written order with no stale-capture bleed. Composes with
+`pinned(..., replicas = K)` placement: each replica is its own
+instance, so that db handle is per-thread by construction. Pinned
+by `tests/hale/is_route_test.hl`; docs routing chapter and spec
+stdlib row updated.
+
 ### Stdlib values get their real types - the fail-open `Ty::Unknown` class is closed (GH #470)
 
 Found via a downstream server whose responses curl rejected: a

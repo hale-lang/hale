@@ -451,7 +451,7 @@ pub const SURFACES: &[NsSurface] = &[
     NsSurface {
         ns: &["http"],
         fns: &[
-            e("get", EffectSet::SYSCALL.union(EffectSet::BLOCK)), e("header", EffectSet::PURE), e("parse_request", EffectSet::PURE), e("parse_url", EffectSet::PURE), e("path_param", EffectSet::PURE),
+            e("build_context", EffectSet::PURE), e("get", EffectSet::SYSCALL.union(EffectSet::BLOCK)), e("header", EffectSet::PURE), e("is_route", EffectSet::PURE), e("parse_request", EffectSet::PURE), e("parse_url", EffectSet::PURE), e("path_param", EffectSet::PURE),
             e("post", EffectSet::SYSCALL.union(EffectSet::BLOCK)), e("query_param", EffectSet::PURE), e("request", EffectSet::SYSCALL.union(EffectSet::BLOCK)), e("write_response", EffectSet::SYSCALL.union(EffectSet::BLOCK)),
         ],
         open_prefixes: &[],

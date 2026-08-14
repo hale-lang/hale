@@ -271,6 +271,10 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "http", "NotFound404"], "__StdHttpNotFound404"),
     (&["std", "http", "path_param"], "__http_path_param"),
     (&["std", "http", "query_param"], "__http_query_param"),
+    // Direct-dispatch surface (2026-08-14): a single locus serving
+    // many endpoints from its own `handle` — no Router required.
+    (&["std", "http", "build_context"], "__http_build_context"),
+    (&["std", "http", "is_route"], "__http_is_route"),
     // Client surface (promoted from pond/http/client, 2026-07-17).
     (&["std", "http", "Client"], "__StdHttpClient"),
     (&["std", "http", "ClientRequest"], "__StdHttpClientRequest"),

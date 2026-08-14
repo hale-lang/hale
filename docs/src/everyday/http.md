@@ -120,6 +120,61 @@ Each route's handler is its own locus, so per-route state lives
 where it belongs (a `hits` counter on the route that counts, not
 on a god-handler).
 
+### One locus, many endpoints
+
+Sometimes the opposite shape is right: one API locus owning one
+piece of state — a database handle, a session table — with every
+endpoint as a method on it. For that, skip the Router and
+self-dispatch with `std::http::build_context` + `std::http::is_route`:
+
+```hale
+locus Api {
+    params { hits: Int = 0; }
+
+    fn handle(req: std::http::Request) -> std::http::Response {
+        let ctx = std::http::build_context(req);
+        if std::http::is_route(ctx, "GET", "/users") {
+            return self.list(ctx);
+        }
+        if std::http::is_route(ctx, "GET", "/users/:id") {
+            return self.show(ctx);
+        }
+        return std::http::Response { status: 404, body: "not found" };
+    }
+
+    fn list(ctx: std::http::Context) -> std::http::Response {
+        self.hits = self.hits + 1;
+        return std::http::Response { status: 200, body: "users" };
+    }
+
+    fn show(ctx: std::http::Context) -> std::http::Response {
+        let id = std::http::path_param(ctx.params, "id");
+        return std::http::Response { status: 200, body: "user " + id };
+    }
+}
+
+fn main() {
+    std::http::Server { port: 8080, handler: Api { } };
+}
+```
+
+`build_context(req)` builds the same per-request bundle the Router
+would (query string split into `ctx.params.qs`); `is_route`
+matches method + pattern with the Router's own matcher — `:name`
+captures land in `ctx.params` on a hit, and *any* miss leaves
+them cleared, so the `if` ladder is first-match-wins in written
+order with no stale captures. The endpoint methods are plain
+direct calls with `self` in scope: state without ceremony.
+
+Don't reach for a fancier router on performance instinct: at
+service-sized route counts (tens of routes) this linear scan
+costs a few hundred nanoseconds against the microseconds the
+request spends in parsing and syscalls. The shape also pairs
+naturally with [replicated placement](../services/concurrency.md):
+under `pinned(..., replicas = K)` each replica is its own `Api`
+instance, so `params` state — that database handle — is
+per-thread by construction.
+
 ## A first taste of interfaces
 
 How does `Server` know `Api` is a valid handler? `Server`'s
