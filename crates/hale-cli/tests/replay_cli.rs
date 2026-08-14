@@ -1010,6 +1010,7 @@ fn two_listeners_replay_clean_under_diff() {
         nanos
     );
     let sock_b = format!("{}.b", sock_a);
+    let ready = dir.join("sub-ready");
     let sub = dir.join("sub.hl");
     std::fs::write(
         &sub,
@@ -1036,18 +1037,28 @@ main locus App {{
         B: unix("{}", role: listen);
     }}
     run() {{
+        // run() begins only after EVERY boot registration — this
+        // write is the true readiness signal (the sockets exist
+        // earlier, at realize, when the subscribers may not yet be
+        // registered; a message in that window drops silently).
+        std::io::fs::write_file("{}", "ready") or discard;
+        // Wait for BOTH pairs: a message consumed during the
+        // teardown flush gets no consume record, and would replay
+        // as an unexpected delivery.
         let mut waited = 0;
-        while self.sa.seen < 1 || self.sb.seen < 1 {{
+        while self.sa.seen < 2 || self.sb.seen < 2 {{
             std::time::sleep(100ms);
             waited = waited + 1;
-            if waited > 200 {{ std::process::exit(3); }}
+            if waited > 300 {{ std::process::exit(3); }}
         }}
-        std::time::sleep(400ms);
+        std::time::sleep(300ms);
     }}
 }}
 fn main() {{ App {{ }}; }}
 "#,
-            sock_a, sock_b
+            sock_a,
+            sock_b,
+            ready.display()
         ),
     )
     .unwrap();
@@ -1067,13 +1078,16 @@ main locus App {{
         B: unix("{}", role: connect);
     }}
     run() {{
-        std::time::sleep(900ms);
         A <- TA {{ n: 11 }};
         B <- TB {{ n: 21 }};
         std::time::sleep(50ms);
         A <- TA {{ n: 12 }};
         B <- TB {{ n: 22 }};
-        std::time::sleep(200ms);
+        // Long settle before close: a storm-descheduled reader that
+        // has not drained its socket when the peer closes can lose
+        // the tail message (live-ingest behavior, tracked
+        // separately) — give it ample room.
+        std::time::sleep(900ms);
     }}
 }}
 fn main() {{ App {{ }}; }}
@@ -1083,28 +1097,69 @@ fn main() {{ App {{ }}; }}
     )
     .unwrap();
 
+    // Record a CLEAN four-message session — the test's PRECONDITION,
+    // not its subject. Under extreme parallel load a LIVE run very
+    // occasionally loses one mid-stream wire message even with the
+    // ready-file handshake (a rare pre-existing live-ingest race,
+    // independent of replay; tracked separately). The sub exits 3
+    // when a message went missing; retry the session rather than
+    // fail replay assertions on a recording of a lossy live run.
     let rec = dir.join("two.halerec");
-    let mut subp = hale()
-        .arg("run")
-        .arg(&sub)
-        .env("LOTUS_OBS_RECORD", &rec)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("spawn recorded sub");
-    let p = hale().arg("run").arg(&pubs).output().expect("pubs");
-    assert!(
-        p.status.success(),
-        "publisher run failed: {}",
-        String::from_utf8_lossy(&p.stderr)
-    );
-    let out = subp.wait_with_output().expect("sub exit");
-    assert!(
-        out.status.success(),
-        "recorded two-listener run failed:\nstdout:{}\nstderr:{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
+    let mut recorded_ok = false;
+    for _attempt in 0..5 {
+        let _ = std::fs::remove_file(&rec);
+        let _ = std::fs::remove_file(&ready);
+        let _ = std::fs::remove_file(&sock_a);
+        let _ = std::fs::remove_file(&sock_b);
+        let mut subp = hale()
+            .arg("run")
+            .arg(&sub)
+            .env("LOTUS_OBS_RECORD", &rec)
+            .env("LOTUS_BUS_LOG_DESERIALIZE_DROP", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn recorded sub");
+        // The sockets appear at realize — BEFORE the subscribers
+        // register. The sub touches the ready file at the top of
+        // run(), after every boot registration: only then may
+        // traffic flow.
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_secs(60);
+        while !ready.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "subscriber never reached run()"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let p = hale().arg("run").arg(&pubs).output().expect("pubs");
+        assert!(
+            p.status.success(),
+            "publisher run failed: {}",
+            String::from_utf8_lossy(&p.stderr)
+        );
+        let out = subp.wait_with_output().expect("sub exit");
+        if out.status.success() {
+            recorded_ok = true;
+            break;
+        }
+        assert_eq!(
+            out.status.code(),
+            Some(3),
+            "recorded run failed for a reason other than the known \
+             live-loss retry case:\nstdout:{}\nstderr:{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        eprintln!(
+            "lossy attempt {}: stdout:{} stderr:{}",
+            _attempt,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    assert!(recorded_ok, "no clean recorded session in 5 attempts");
 
     let _ = std::fs::remove_file(&sock_a);
     let _ = std::fs::remove_file(&sock_b);

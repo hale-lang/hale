@@ -475,6 +475,7 @@ fn colliding_subject_hashes_route_by_full_name() {
 
     let sock_a = unique_socket_path();
     let sock_b = format!("{}.b", sock_a);
+    let ready = format!("{}.ready", sock_a);
     let sub = format!(
         r#"
         type TA {{ n: Int = 0; }}
@@ -504,12 +505,15 @@ fn colliding_subject_hashes_route_by_full_name() {
                 B: unix("{}", role: listen);
             }}
             run() {{
+                // run() begins only after every boot registration:
+                // the ready-file is the true "subscribers exist"
+                // signal (the sockets exist earlier, at realize —
+                // a message in that window drops silently).
+                std::io::fs::write_file("{}", "ready") or discard;
                 // At least one message per subject proves routing;
                 // demanding every message makes the test hostage to
-                // the live boot-window drop (a message arriving
-                // before its subscriber registers is dropped by
-                // design — replay equivalence holds for whatever
-                // the tape actually carries).
+                // residual live-ingest loss under load — replay
+                // equivalence holds for whatever the tape carries.
                 let mut waited = 0;
                 while self.sa.seen < 1 || self.sb.seen < 1 {{
                     std::time::sleep(100ms);
@@ -521,7 +525,7 @@ fn colliding_subject_hashes_route_by_full_name() {
         }}
         fn main() {{ App {{ }}; }}
     "#,
-        sock_a, sock_b
+        sock_a, sock_b, ready
     );
     let pubs = format!(
         r#"
@@ -536,16 +540,12 @@ fn colliding_subject_hashes_route_by_full_name() {
                 B: unix("{}", role: connect);
             }}
             run() {{
-                // Generous settle: this test runs alongside seven
-                // siblings; the boot-order window (listener bound
-                // before subscribers register) widens under load.
-                std::time::sleep(900ms);
                 A <- TA {{ n: 101 }};
                 B <- TB {{ n: 202 }};
                 std::time::sleep(50ms);
                 A <- TA {{ n: 103 }};
                 B <- TB {{ n: 204 }};
-                std::time::sleep(200ms);
+                std::time::sleep(900ms);
             }}
         }}
         fn main() {{ App {{ }}; }}
@@ -562,6 +562,15 @@ fn colliding_subject_hashes_route_by_full_name() {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("spawn");
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_secs(30);
+    while !std::path::Path::new(&ready).exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "subscriber never reached run()"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
     let p = Command::new(&pub_bin).output().expect("pubs");
     assert!(p.status.success());
     let out = subp.wait_with_output().expect("sub exit");
@@ -603,6 +612,7 @@ fn colliding_subject_hashes_route_by_full_name() {
     assert!(err.contains("0 divergences"), "stderr:\n{}", err);
 
     let _ = std::fs::remove_file(&rec);
+    let _ = std::fs::remove_file(&ready);
     let _ = std::fs::remove_file(&sub_bin);
     let _ = std::fs::remove_file(&pub_bin);
 }
