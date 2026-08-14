@@ -6452,6 +6452,7 @@ int lotus_replay_async_step_peek(uint32_t *kind, uint64_t *val)
     __attribute__((weak));
 void lotus_replay_async_step_advance(void) __attribute__((weak));
 void lotus_replay_note_async_divergence(void) __attribute__((weak));
+void lotus_replay_skip_consume(void) __attribute__((weak));
 void lotus_replay_note_async_post_tape(void) __attribute__((weak));
 int lotus_replay_async_capable(void) __attribute__((weak));
 int lotus_replay_is_truncated(void) __attribute__((weak));
@@ -7676,6 +7677,19 @@ typedef struct lotus_coop_pool {
      * async work from here on is a named coverage class, never a
      * silent fallback. */
     int               rp_tape_dry;
+    /* Review round 2 (phase 6, finding 1): the ordinal domain
+     * belongs to the RECORDED START slots, not to "whichever cell
+     * happened to start" — a skipped slot must retire its ordinal
+     * or every later coroutine shifts into earlier recorded
+     * identities and one divergence cascades into wrong resume
+     * pairings. */
+    uint64_t          rp_start_ord;
+    /* Retired START slots (finding 1): a RESUME/EXPIRE naming a
+     * retired ordinal can never be satisfied — skip it immediately
+     * instead of burning a full hold on a known-dead identity.
+     * Bitmap covers the first 256 slots; later ones fall back to
+     * the bounded hold. */
+    uint64_t          rp_retired[4];
 #endif
     /* Pool affinity (2026-08-12): a core set stashed by codegen
      * before start_all spawns the worker; applied right after
@@ -7793,6 +7807,11 @@ lotus_coop_pool_t *lotus_coop_pool_register(const char *name) {
     p->ready_head       = NULL;
     p->coro_birth_seq   = 0;
     p->rp_tape_dry      = 0;
+    p->rp_start_ord     = 0;
+    p->rp_retired[0]    = 0;
+    p->rp_retired[1]    = 0;
+    p->rp_retired[2]    = 0;
+    p->rp_retired[3]    = 0;
 #endif
     /* Truncated copy — the bound is LOTUS_COOP_POOL_MAX-name's-
      * worth and pool names are conventionally short. Anything
@@ -8376,9 +8395,11 @@ static void lotus_async_note_live_action(lotus_coop_pool_t *p) {
     if (!(lotus_replay_note_consume && lotus_replay_active)) return;
     if (!p->rp_tape_dry) return;
     if (lotus_replay_async_capable && !lotus_replay_async_capable()) {
-        static int warned = 0;
-        if (!warned) {
-            warned = 1;
+        /* Concurrent pool workers reach this — the suppression flag
+         * must be atomic (review round 2, finding 4). */
+        static _Atomic int warned = 0;
+        if (!atomic_exchange_explicit(&warned, 1,
+                                      memory_order_relaxed)) {
             fprintf(stderr,
                     "hale replay: recording predates async-schedule "
                     "support — async pools run live (coverage "
@@ -8397,7 +8418,8 @@ static void lotus_async_note_live_action(lotus_coop_pool_t *p) {
  * cells identically. Numbers the start (birth ordinal) and records
  * the START step. */
 static int lotus_async_start_cell(lotus_coop_pool_t *p,
-                                  lotus_bus_cell_t *cell_copy) {
+                                  lotus_bus_cell_t *cell_copy,
+                                  uint64_t ord) {
     /* Wire cell from a cross-thread publisher: deserialize into the
      * subscriber's arena here, on this pool's worker (bug 3,
      * downstream handoff 2026-07-15). Completes before the coro is
@@ -8409,7 +8431,9 @@ static int lotus_async_start_cell(lotus_coop_pool_t *p,
             ? cell_copy->payload_heap
             : (void *)cell_copy->payload_inline;
     }
-    uint64_t ord = p->coro_birth_seq++;
+    /* Keep the live counter monotone past any replay-assigned slot
+     * ordinal so post-tape live starts stay in a disjoint range. */
+    if (p->coro_birth_seq <= ord) p->coro_birth_seq = ord + 1;
     lotus_async_rec_step(LOTUS_REC_ASYNC_START, cell_copy->rec_pub_id);
     /* Heap payload outlives the cell on the dispatch path; we copy
      * the pointer into the coro so the thunk can read it. The free
@@ -8509,18 +8533,26 @@ static int lotus_coop_pool_drain_one_async_replay(lotus_coop_pool_t *p) {
     uint32_t kind;
     uint64_t val;
     if (!lotus_replay_async_step_peek(&kind, &val)) {
+        /* Review round 2, finding 2: the tape is dry the moment the
+         * peek says so — BEFORE the flushes below, or the flushed
+         * actions escape post-tape classification and a finalized
+         * replay can do unrecorded async work with a clean verdict. */
+        p->rp_tape_dry = 1;
         /* Dry tape: flush replay-held state so the live drain
          * (which knows nothing of it) starts clean. One item per
          * call keeps the worker loop's shutdown checks frequent. */
         if (p->ready_head) {
             lotus_coro_t *c = p->ready_head;
             p->ready_head = c->next;
+            lotus_async_note_live_action(p);
             lotus_async_resume_coro(p, c, 0);
             return 1;
         }
         lotus_bus_cell_t held;
         if (lotus_rp_pending_pop_oldest(&held)) {
-            return lotus_async_start_cell(p, &held);
+            lotus_async_note_live_action(p);
+            return lotus_async_start_cell(p, &held,
+                                          p->coro_birth_seq);
         }
         return -1;
     }
@@ -8556,7 +8588,10 @@ static int lotus_coop_pool_drain_one_async_replay(lotus_coop_pool_t *p) {
         if (kind == LOTUS_REC_ASYNC_START) {
             /* Drain what's available through the phase-4 gate until
              * the expected cell dispatches; non-matching cells are
-             * held by the gate. */
+             * held by the gate. The slot's ordinal is assigned only
+             * to the MATCHING cell (finding 1) — a degraded release
+             * of some other held cell under this slot would pair
+             * later RESUME/EXPIRE steps with the wrong coroutine. */
             lotus_bus_cell_t cell;
             for (;;) {
                 int got = lotus_mpsc_ring_try_dequeue(&p->ring, &cell);
@@ -8573,14 +8608,35 @@ static int lotus_coop_pool_drain_one_async_replay(lotus_coop_pool_t *p) {
                 if (!got) break;
                 if (!lotus_replay_gate_cell(&cell)) continue;
                 lotus_replay_async_step_advance();
-                return lotus_async_start_cell(p, &cell);
+                return lotus_async_start_cell(p, &cell,
+                                              p->rp_start_ord++);
             }
-            if (t_rp_pending_len > 0 && lotus_replay_gate_idle(&cell)) {
+            /* The expected cell may already sit in the hold buffer
+             * (pushed while some earlier slot was being served). */
+            uint64_t exp_msg;
+            uint32_t exp_locus;
+            if (lotus_replay_expected_consume &&
+                lotus_replay_expected_consume(&exp_msg, &exp_locus) &&
+                lotus_rp_pending_take(exp_msg, exp_locus, &cell)) {
                 lotus_replay_async_step_advance();
-                return lotus_async_start_cell(p, &cell);
+                return lotus_async_start_cell(p, &cell,
+                                              p->rp_start_ord++);
             }
         } else if (kind == LOTUS_REC_ASYNC_RESUME ||
                    kind == LOTUS_REC_ASYNC_EXPIRE) {
+            /* A step naming a RETIRED slot can never be satisfied —
+             * count and move on without burning the hold. */
+            if (val < 256 &&
+                (p->rp_retired[val >> 6] & (1ull << (val & 63)))) {
+                if (lotus_replay_note_async_divergence)
+                    lotus_replay_note_async_divergence();
+                lotus_replay_async_step_advance();
+                if (!lotus_replay_async_step_peek(&kind, &val)) {
+                    return 1; /* dry next call */
+                }
+                hold_start = lotus_rp_now_ns();
+                continue;
+            }
             lotus_coro_t *c = lotus_async_take_ord(&p->ready_head, val);
             if (!c && kind == LOTUS_REC_ASYNC_EXPIRE) {
                 /* Expiry needs no readiness — the recording proves
@@ -8598,6 +8654,21 @@ static int lotus_coop_pool_drain_one_async_replay(lotus_coop_pool_t *p) {
         if (lotus_rp_now_ns() - hold_start > LOTUS_REPLAY_HOLD_NS) {
             if (lotus_replay_note_async_divergence) {
                 lotus_replay_note_async_divergence();
+            }
+            /* A skipped START still owns its ordinal AND its
+             * consume slot — retire both, so later coroutines keep
+             * their recorded identities and later STARTs still
+             * match their own cells (finding 1: without this, one
+             * missing delivery cascades in ordinal-space AND in
+             * consume-space). */
+            if (kind == LOTUS_REC_ASYNC_START) {
+                uint64_t retired = p->rp_start_ord++;
+                if (retired < 256) {
+                    p->rp_retired[retired >> 6] |=
+                        1ull << (retired & 63);
+                }
+                if (lotus_replay_skip_consume)
+                    lotus_replay_skip_consume();
             }
             lotus_replay_async_step_advance();
             if (!lotus_replay_async_step_peek(&kind, &val)) {
@@ -8861,7 +8932,9 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
          * too) — release per the classic idle discipline. */
         if (replaying && t_rp_pending_len > 0 &&
             lotus_replay_gate_idle(&cell_copy)) {
-            return lotus_async_start_cell(p, &cell_copy);
+            lotus_async_note_live_action(p);
+            return lotus_async_start_cell(p, &cell_copy,
+                                          p->coro_birth_seq);
         }
         /* Spurious — the peek raced a concurrent state change, or the cell
          * was already consumed. Loop. */
@@ -8871,7 +8944,7 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
      * pool and mailbox drains. */
     if (replaying && !lotus_replay_gate_cell(&cell_copy)) return 1;
     lotus_async_note_live_action(p);
-    return lotus_async_start_cell(p, &cell_copy);
+    return lotus_async_start_cell(p, &cell_copy, p->coro_birth_seq);
 }
 #else /* !LOTUS_HAVE_ASYNC_IO — macOS / other BSDs */
 /* Async_io is unsupported on this platform. `where async_io` is rejected

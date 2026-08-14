@@ -1336,3 +1336,224 @@ fn main() { App { }; }
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---- phase 6 review-round canaries (async schedule × CLI) ----------
+
+#[cfg(target_os = "linux")]
+const ASYNC_PROG: &str = r#"
+type Job { n: Int = 0; }
+type Poke { n: Int = 0; }
+locus Slow {
+    bus { subscribe "cd.job" as on_j of type Job; }
+    fn on_j(j: Job) {
+        std::time::sleep(20ms);
+        println("slow=", j.n);
+    }
+}
+locus Fast {
+    bus { subscribe "cd.poke" as on_p of type Poke; }
+    fn on_p(p: Poke) {
+        std::time::sleep(6ms);
+        println("fast=", p.n);
+    }
+}
+main locus App {
+    params { s: Slow = Slow { }; f: Fast = Fast { }; }
+    placement {
+        s: cooperative(pool = io) where async_io;
+        f: cooperative(pool = io) where async_io;
+    }
+    bus {
+        publish "cd.job" of type Job;
+        publish "cd.poke" of type Poke;
+    }
+    run() {
+        let mut i = 0;
+        while i < 3 {
+            "cd.job" <- Job { n: i };
+            "cd.poke" <- Poke { n: i };
+            i = i + 1;
+        }
+        std::time::sleep(400ms);
+    }
+}
+fn main() { App { }; }
+"#;
+
+/// Walk a recording's frames, calling `f` on each 24-byte tag-0
+/// entry offset; returns (header_len, end_before_trailer).
+#[cfg(target_os = "linux")]
+fn walk_ring_entries(buf: &[u8], mut f: impl FnMut(usize)) -> (usize, usize) {
+    let hlen = u32::from_le_bytes(buf[12..16].try_into().unwrap()) as usize;
+    let mut end = buf.len();
+    if &buf[end - 16..end - 8] == b"HALEEND0" {
+        end -= 16;
+    }
+    let mut off = hlen;
+    while off + 8 <= end {
+        let tag = u32::from_le_bytes(buf[off..off + 4].try_into().unwrap());
+        if tag == 0 {
+            f(off);
+            off += 24;
+        } else {
+            let size = u64::from_le_bytes(
+                buf[off + 24..off + 32].try_into().unwrap(),
+            ) as usize;
+            off += 32 + ((size + 7) & !7);
+        }
+    }
+    (hlen, end)
+}
+
+/// The public `hale replay --diff` path must certify the async
+/// schedule end to end (review round 2, finding 6).
+#[cfg(target_os = "linux")]
+#[test]
+fn async_schedule_matches_under_cli_diff() {
+    let dir = workdir("asyncdiff");
+    let prog = dir.join("as.hl");
+    std::fs::write(&prog, ASYNC_PROG).unwrap();
+    let rec = record(&dir, &prog);
+    let out = hale()
+        .arg("replay")
+        .arg(&rec)
+        .arg(&prog)
+        .arg("--diff")
+        .arg("--allow-live-effects")
+        .output()
+        .expect("replay --diff");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("replay matches"),
+        "stdout:{}\nstderr:{}",
+        stdout,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ...and a mutated schedule step must fail it: flipping one
+/// recorded RESUME/EXPIRE ordinal makes that step unsatisfiable.
+#[cfg(target_os = "linux")]
+#[test]
+fn mutated_async_step_fails_cli_diff() {
+    let dir = workdir("asyncmut");
+    let prog = dir.join("as.hl");
+    std::fs::write(&prog, ASYNC_PROG).unwrap();
+    let rec = record(&dir, &prog);
+    let mut buf = std::fs::read(&rec).unwrap();
+    let mut flip_at = None;
+    walk_ring_entries(&buf.clone(), |off| {
+        if flip_at.is_some() {
+            return;
+        }
+        let ring =
+            u32::from_le_bytes(buf[off + 4..off + 8].try_into().unwrap());
+        let w0 =
+            u64::from_le_bytes(buf[off + 8..off + 16].try_into().unwrap());
+        let ekind = ((w0 >> 20) & 0x1F) as u32;
+        if ring & 0x8000_0000 != 0 && (ekind == 6 || ekind == 7) {
+            flip_at = Some(off + 16);
+        }
+    });
+    let at = flip_at.expect("no RESUME/EXPIRE step found to mutate");
+    buf[at] ^= 1; // flip the low bit of the step's ordinal (w1)
+    let bad = dir.join("mut.halerec");
+    std::fs::write(&bad, &buf).unwrap();
+    let out = hale()
+        .arg("replay")
+        .arg(&bad)
+        .arg(&prog)
+        .arg("--diff")
+        .arg("--allow-live-effects")
+        .output()
+        .expect("replay mutated");
+    assert!(
+        !out.status.success(),
+        "a mutated schedule step must fail --diff:\nstdout:{}\nstderr:{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A pre-phase-6 artifact (no async-capability bit, no schedule
+/// events) must NOT fail --diff merely because the verify run emits
+/// schedule steps — the runtime calls it a coverage limitation and
+/// the comparator must agree (review round 2, finding 3).
+#[cfg(target_os = "linux")]
+#[test]
+fn pre_phase6_artifact_diff_skips_schedule_comparison() {
+    let dir = workdir("asyncold");
+    let prog = dir.join("as.hl");
+    std::fs::write(&prog, ASYNC_PROG).unwrap();
+    let rec = record(&dir, &prog);
+    let buf = std::fs::read(&rec).unwrap();
+
+    // Rebuild the artifact as a pre-phase-6 runtime would have
+    // written it: drop the ASYNC_* private events, fix the trailer
+    // count, clear capability bit 2.
+    let (hlen, end) = walk_ring_entries(&buf, |_| {});
+    let mut out_bytes: Vec<u8> = buf[..hlen].to_vec();
+    let mut removed = 0u64;
+    let mut off = hlen;
+    while off + 8 <= end {
+        let tag = u32::from_le_bytes(buf[off..off + 4].try_into().unwrap());
+        if tag == 0 {
+            let ring = u32::from_le_bytes(
+                buf[off + 4..off + 8].try_into().unwrap(),
+            );
+            let w0 = u64::from_le_bytes(
+                buf[off + 8..off + 16].try_into().unwrap(),
+            );
+            let ekind = ((w0 >> 20) & 0x1F) as u32;
+            if ring & 0x8000_0000 != 0 && (5..=7).contains(&ekind) {
+                removed += 1;
+            } else {
+                out_bytes.extend_from_slice(&buf[off..off + 24]);
+            }
+            off += 24;
+        } else {
+            let size = u64::from_le_bytes(
+                buf[off + 24..off + 32].try_into().unwrap(),
+            ) as usize;
+            let padded = 32 + ((size + 7) & !7);
+            out_bytes.extend_from_slice(&buf[off..off + padded]);
+            off += padded;
+        }
+    }
+    assert!(removed > 0, "the recording should contain async steps");
+    // clear capability bit 2 in the header flags (offset 88)
+    let flags = u64::from_le_bytes(out_bytes[88..96].try_into().unwrap());
+    out_bytes[88..96].copy_from_slice(&(flags & !4u64).to_le_bytes());
+    // trailer: magic + corrected entry count
+    let old_count =
+        u64::from_le_bytes(buf[buf.len() - 8..].try_into().unwrap());
+    out_bytes.extend_from_slice(b"HALEEND0");
+    out_bytes.extend_from_slice(&(old_count - removed).to_le_bytes());
+
+    let old = dir.join("old.halerec");
+    std::fs::write(&old, &out_bytes).unwrap();
+    let out = hale()
+        .arg("replay")
+        .arg(&old)
+        .arg(&prog)
+        .arg("--diff")
+        .arg("--allow-live-effects")
+        .output()
+        .expect("replay old artifact");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "an old artifact must not fail --diff on schedule steps:\n{}\n{}",
+        stdout,
+        stderr
+    );
+    assert!(
+        stderr.contains("predates async-schedule support"),
+        "both layers must state the coverage limitation:\n{}",
+        stderr
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -1754,7 +1754,14 @@ with the timed-out sentinel immediately — the recording already
 proves the deadline fired at this point in the sequence, so
 replayed sleeps fast-forward rather than re-waiting. A step
 unsatisfiable within the hold bound counts an `async-schedule`
-divergence and is skipped (degrade, never deadlock).
+divergence and is skipped (degrade, never deadlock) — and a
+skipped START **retires** both its birth ordinal and its consume
+slot (review round 2: ordinals belong to the recorded START slots,
+not to whichever cell happened to start next — without retirement
+one missing delivery shifts every later coroutine into an earlier
+recorded identity, and the pinned consume expectation makes every
+later START mismatch; with it, later steps that name a retired
+slot skip immediately and the divergence stays local).
 
 **Coverage, named (review round).** A dry tape hands the pool back
 to the live drain — never silently. The artifact carries a
