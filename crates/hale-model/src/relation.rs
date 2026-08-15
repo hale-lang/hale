@@ -160,13 +160,46 @@ pub struct Subscribe {
     pub provenance: ProvenanceId,
 }
 
-/// `member_of_group(group, member)` — one row per resolved group
-/// member (loci and free fns; a glob is already enumerated by
-/// resolution, so members are always concrete).
+/// `member_of_group(group, member)` — one row per RESOLVED group
+/// member (loci and free fns; globs enumerated). This is the
+/// normalized grain judgments quantify over. It is deliberately
+/// NOT the authored grain: the legacy artifact hashes the selector
+/// list AS WRITTEN (`lib::*` stays unexpanded), so projection
+/// reads [`GroupSelector`] — `{ lib::* }` and `{ lib::A, lib::B }`
+/// may resolve to identical membership yet MUST keep distinct
+/// shapes.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct GroupMember {
     pub group: GroupId,
     pub member: crate::ids::EntityRef,
+    pub provenance: ProvenanceId,
+}
+
+/// One authored selector of a group declaration, in authored order
+/// (`ordinal`). The authored spelling is the fact the legacy hash
+/// covers; `GroupMember` carries the resolution.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum SelectorForm {
+    /// A single named member — canonical reference plus the
+    /// authored display spelling (`DeltaStore`, `lib::A`).
+    Named {
+        member: crate::ids::EntityRef,
+        display: String,
+    },
+    /// A trailing glob over a seed's exports, kept UNEXPANDED as
+    /// authored (`lib::*`) — a zero-member glob is still a
+    /// selector row even though it contributes no members.
+    SeedGlob { seed: SeedId, display: String },
+}
+
+/// `group_selector(group, ordinal)` — the authored selector list.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct GroupSelector {
+    pub group: GroupId,
+    /// 0-based authored position — the artifact hashes the list
+    /// ordered, so order is a semantic fact.
+    pub ordinal: u32,
+    pub selector: SelectorForm,
     pub provenance: ProvenanceId,
 }
 

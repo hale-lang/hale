@@ -16,8 +16,9 @@ use crate::hole::Hole;
 use crate::ids::{EntityRef, ProvenanceId};
 use crate::provenance::{Provenance, ProvenanceTable};
 use crate::relation::{
-    AffinedTo, Call, DeadInterfaceCall, DeclaredIn, GroupMember, MemberOf, Owns, PhaseOf, PlacedIn,
-    Publish, Realizes, Subscribe, Supervises, TopicBinding,
+    AffinedTo, Call, DeadInterfaceCall, DeclaredIn, GroupMember,
+    GroupSelector, MemberOf, Owns, PhaseOf, PlacedIn, Publish, Realizes,
+    SelectorForm, Subscribe, Supervises, TopicBinding,
 };
 
 /// The meaning of the model's rows. Bumped when a row's
@@ -103,6 +104,9 @@ pub struct Relations {
     pub binds: Vec<TopicBinding>,
     pub supervises: Vec<Supervises>,
     pub group_members: Vec<GroupMember>,
+    /// The AUTHORED selector lists (legacy-hash grain), alongside
+    /// the resolved `group_members` (judgment grain).
+    pub group_selectors: Vec<GroupSelector>,
 }
 
 #[derive(Clone, Debug)]
@@ -205,6 +209,7 @@ impl ApplicationModel {
     /// | `binds`          | (topic, binding)                 |
     /// | `supervises`     | (parent, child, error_type)      |
     /// | `group_members`  | (group, member)                  |
+    /// | `group_selectors`| (group, ordinal)                 |
     /// | `labels`         | (at, label)                      |
     /// | `weights`        | (at, metric)                     |
     /// | `holes`          | (at, kind, reason)               |
@@ -696,6 +701,25 @@ impl ApplicationModel {
                 });
             }
             prov("group_members", i, x.provenance)?;
+        }
+        check_sorted_keys(
+            "group_selectors",
+            r.group_selectors.iter().map(|x| (x.group, x.ordinal)),
+        )?;
+        for (i, x) in r.group_selectors.iter().enumerate() {
+            let sel_ok = match &x.selector {
+                SelectorForm::Named { member, .. } => ref_ok(member),
+                SelectorForm::SeedGlob { seed, .. } => {
+                    seed.index() < seeds
+                }
+            };
+            if x.group.index() >= groups_len || !sel_ok {
+                return Err(ModelError::DanglingId {
+                    table: "group_selectors",
+                    index: i,
+                });
+            }
+            prov("group_selectors", i, x.provenance)?;
         }
 
         // --- labels / weights.

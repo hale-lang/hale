@@ -1159,3 +1159,109 @@ fn endpoint_payloads_are_kept_and_must_agree() {
         })
     );
 }
+
+// -----------------------------------------------------------------
+// Review round 6 — authored selectors alongside resolved members.
+// -----------------------------------------------------------------
+
+/// The legacy hash covers group selectors AS AUTHORED — `{ lib::* }`
+/// and `{ lib::A, lib::B }` may resolve identically but must keep
+/// distinct shapes. Both grains coexist: GroupSelector (authored,
+/// ordered, globs unexpanded) and GroupMember (resolved).
+#[test]
+fn authored_selectors_are_kept_alongside_resolved_members() {
+    let mut m = tiny_model();
+    let p = ProvenanceId(0);
+    m.entities.groups = vec![Group {
+        name: "workers".to_string(),
+        may_be_empty: false,
+        provenance: p,
+    }];
+    // Resolved membership: one locus (as if lib::* enumerated it).
+    m.relations.group_members = vec![GroupMember {
+        group: GroupId(0),
+        member: EntityRef::LocusDecl(LocusDeclId(1)),
+        provenance: p,
+    }];
+    // Authored grain, variant A: a glob, UNEXPANDED.
+    m.relations.group_selectors = vec![GroupSelector {
+        group: GroupId(0),
+        ordinal: 0,
+        selector: SelectorForm::SeedGlob {
+            seed: SeedId(0),
+            display: "lib::*".to_string(),
+        },
+        provenance: p,
+    }];
+    m.validate().expect("glob selector + resolved member coexist");
+    let glob_selectors = m.relations.group_selectors.clone();
+
+    // Authored grain, variant B: the same membership spelled as a
+    // named selector — the RESOLVED rows are identical, the
+    // AUTHORED rows differ, which is exactly what keeps the two
+    // programs' shapes distinct.
+    m.relations.group_selectors = vec![GroupSelector {
+        group: GroupId(0),
+        ordinal: 0,
+        selector: SelectorForm::Named {
+            member: EntityRef::LocusDecl(LocusDeclId(1)),
+            display: "lib::Worker".to_string(),
+        },
+        provenance: p,
+    }];
+    m.validate().expect("named selector variant is lawful");
+    assert_ne!(
+        glob_selectors, m.relations.group_selectors,
+        "identical membership, distinct authored shapes"
+    );
+
+    // A zero-member glob is still a selector row: authored shape
+    // survives even when resolution contributes nothing.
+    m.relations.group_members.clear();
+    m.entities.groups[0].may_be_empty = true;
+    m.relations.group_selectors = vec![GroupSelector {
+        group: GroupId(0),
+        ordinal: 0,
+        selector: SelectorForm::SeedGlob {
+            seed: SeedId(0),
+            display: "lib::*".to_string(),
+        },
+        provenance: p,
+    }];
+    m.validate().expect("zero-member glob keeps its authored row");
+
+    // Ordinals are ordered facts; a duplicate ordinal is refused.
+    m.relations.group_selectors.push(GroupSelector {
+        group: GroupId(0),
+        ordinal: 0,
+        selector: SelectorForm::Named {
+            member: EntityRef::Function(FunctionId(0)),
+            display: "App::run".to_string(),
+        },
+        provenance: p,
+    });
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::NotCanonical {
+            table: "group_selectors",
+            index: 1
+        })
+    );
+    // Dangling glob seed is refused.
+    m.relations.group_selectors = vec![GroupSelector {
+        group: GroupId(0),
+        ordinal: 0,
+        selector: SelectorForm::SeedGlob {
+            seed: SeedId(7),
+            display: "ghost::*".to_string(),
+        },
+        provenance: p,
+    }];
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::DanglingId {
+            table: "group_selectors",
+            index: 0
+        })
+    );
+}
