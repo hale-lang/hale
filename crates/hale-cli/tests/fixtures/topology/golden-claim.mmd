@@ -1,0 +1,27 @@
+flowchart LR
+  %% topology · claim view — schema 1.10 · shape 9e25ca5ffbf88ac3 · verdict clean
+  subgraph App["App"]
+    App__run["run  [hook]  {publish,alloc}"]
+  end
+  subgraph Store["Store"]
+    Store__on_c["on_c"]
+  end
+  subgraph Worker["Worker"]
+    Worker__on_r["on_r  {unclassified}"]
+  end
+  subgraph _free_functions_["(free functions)"]
+    call_it["call_it  {unclassified}"]
+    double["double"]
+    main["main  {alloc}"]
+  end
+  topic_Cmds(["Cmds<br/>ctl.cmd · payload 828a7a8d"])
+  topic_Readings(["Readings<br/>sense.reading · payload fb9fb455"])
+  App__run -->|publish| topic_Readings
+  Worker__on_r -->|publish| topic_Cmds
+  topic_Cmds -.->|subscribe| Store__on_c
+  topic_Readings -.->|subscribe| Worker__on_r
+  Store__on_c -->|calls| double
+  Worker__on_r -->|calls| call_it
+  classDef hl stroke:#d69e2e,stroke-width:3px
+  class Store__on_c,Worker__on_r hl
+  %% card: claim apart — holds | forbid reaches(stores, workers) via { calls }

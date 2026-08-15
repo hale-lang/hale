@@ -32,6 +32,7 @@ mod mcp;
 mod pkg;
 mod replay;
 mod sign;
+mod topology_graph;
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
@@ -152,6 +153,15 @@ fn main() -> ExitCode {
         return run_fleet(&rest);
     }
 
+    // GH #476 Track A: `hale topology graph <artifact>` — deterministic
+    // visuals from a committed topology artifact. Like `fleet`, an
+    // artifact CLIENT: reads exactly what a third party reads, never
+    // Hale source. Experimental surface pre-1.0.
+    if cmd == "topology" {
+        let rest: Vec<String> = args.iter().skip(2).cloned().collect();
+        return topology_graph::run_topology(&rest);
+    }
+
     // `bench` is discovery-driven like `test`: *_bench.hl files,
     // bench_* fns, self-calibrating harness.
     if cmd == "bench" {
@@ -211,6 +221,7 @@ fn usage() {
     eprintln!("        [--dump-effects-manifest] [--json] [--workspace]");
     eprintln!("        (`hale check --help` for all)");
     eprintln!("    hale verify <file.hl | dir>   check + FAIL on any advisory (discipline gate)");
+    eprintln!("    hale topology graph <artifact> render a --dump-topology artifact (svg|mermaid|dot; experimental)");
     eprintln!("    hale run   <file.hl | dir>    compile + run as a native binary");
     eprintln!("    hale build <file.hl | dir>    parse + typecheck + emit native binary");
     eprintln!("    hale replay <rec> <file.hl>   re-run a LOTUS_OBS_RECORD recording");

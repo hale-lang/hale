@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1196" height="422" viewBox="0 0 1196 422" font-family="monospace" font-size="13">
+<rect x="0" y="0" width="1196" height="422" fill="#ffffff"/>
+<text x="90" y="18" font-size="15" font-weight="bold" fill="#1a202c">topology · system view</text>
+<text x="90" y="36" fill="#718096">schema 1.10 · shape 9e25ca5ffbf88ac3 · verdict clean</text>
+<path d="M 344 97 C 414 97, 414 163, 484 163" fill="none" stroke="#2f855a" stroke-width="1.5"/>
+<path d="M 484 163 l -7 -4 l 0 8 z" fill="#2f855a"/>
+<text x="358" y="110" font-size="11" fill="#2f855a">publish</text>
+<path d="M 344 237 C 414 237, 414 93, 484 93" fill="none" stroke="#2f855a" stroke-width="1.5"/>
+<path d="M 484 93 l -7 -4 l 0 8 z" fill="#2f855a"/>
+<text x="358" y="188" font-size="11" fill="#2f855a">publish</text>
+<path d="M 484 93 C 414 93, 414 167, 344 167" fill="none" stroke="#6b46c1" stroke-width="1.5" stroke-dasharray="6,4"/>
+<path d="M 344 167 l 7 -4 l 0 8 z" fill="#6b46c1"/>
+<text x="350" y="138" font-size="11" fill="#6b46c1">subscribe</text>
+<path d="M 484 163 C 414 163, 414 237, 344 237" fill="none" stroke="#6b46c1" stroke-width="1.5" stroke-dasharray="6,4"/>
+<path d="M 344 237 l 7 -4 l 0 8 z" fill="#6b46c1"/>
+<text x="350" y="208" font-size="11" fill="#6b46c1">subscribe</text>
+<path d="M 90 167 C 30 167, 30 325, 90 325" fill="none" stroke="#4a5568" stroke-width="1.5"/>
+<path d="M 90 325 l -7 -4 l 0 8 z" fill="#4a5568"/>
+<text x="30" y="242" font-size="11" fill="#4a5568">calls</text>
+<path d="M 90 237 C 30 237, 30 307, 90 307" fill="none" stroke="#4a5568" stroke-width="1.5"/>
+<path d="M 90 307 l -7 -4 l 0 8 z" fill="#4a5568"/>
+<text x="30" y="268" font-size="11" fill="#4a5568">calls</text>
+<rect x="90" y="70" width="254" height="46" rx="6" fill="#f7fafc" stroke="#4a5568" stroke-width="1.5"/>
+<text x="100" y="84" font-weight="bold" fill="#1a202c">App</text>
+<text x="110" y="101" fill="#2d3748">run  [hook]  {publish,alloc}</text>
+<rect x="90" y="140" width="254" height="46" rx="6" fill="#f7fafc" stroke="#4a5568" stroke-width="1.5"/>
+<text x="100" y="154" font-weight="bold" fill="#1a202c">Store</text>
+<text x="110" y="171" fill="#2d3748">on_c</text>
+<rect x="90" y="210" width="254" height="46" rx="6" fill="#f7fafc" stroke="#4a5568" stroke-width="1.5"/>
+<text x="100" y="224" font-weight="bold" fill="#1a202c">Worker</text>
+<text x="110" y="241" fill="#2d3748">on_r  {unclassified}</text>
+<rect x="90" y="280" width="254" height="82" rx="6" fill="#f7fafc" stroke="#4a5568" stroke-width="1.5"/>
+<text x="100" y="294" font-weight="bold" fill="#1a202c">(free functions)</text>
+<text x="110" y="311" fill="#2d3748">call_it  {unclassified}</text>
+<text x="110" y="329" fill="#2d3748">double</text>
+<text x="110" y="347" fill="#2d3748">main  {alloc}</text>
+<rect x="484" y="70" width="276" height="46" rx="14" fill="#ebf8ff" stroke="#2b6cb0" stroke-width="1.5"/>
+<text x="494" y="84" font-weight="bold" fill="#2b6cb0">Cmds</text>
+<text x="494" y="100" font-size="11" fill="#4a5568">ctl.cmd · payload 828a7a8d</text>
+<rect x="484" y="140" width="276" height="46" rx="14" fill="#ebf8ff" stroke="#2b6cb0" stroke-width="1.5"/>
+<text x="494" y="154" font-weight="bold" fill="#2b6cb0">Readings</text>
+<text x="494" y="170" font-size="11" fill="#4a5568">sense.reading · payload fb9fb455</text>
+<rect x="900" y="210" width="276" height="46" rx="6" fill="#fffff0" stroke="#b7791f" stroke-width="1.5"/>
+<text x="910" y="224" font-weight="bold" fill="#744210">1 unresolved</text>
+<text x="910" y="238" font-size="12" fill="#744210">call_it: indirect_call</text>
+</svg>
