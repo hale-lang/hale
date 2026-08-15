@@ -139,6 +139,8 @@ fn tiny_model() -> ApplicationModel {
             }],
             bindings: vec![],
             groups: vec![],
+            types: vec![],
+            interfaces: vec![],
         },
         relations: Relations {
             realizes: vec![Realizes {
@@ -160,14 +162,16 @@ fn tiny_model() -> ApplicationModel {
             ],
             publishes: vec![Publish {
                 function: FunctionId(0),
-                topic: TopicId(0),
+                subject: SubjectId(0),
+                declared_topic: Some(TopicId(0)),
                 site: 0,
                 key_domain: Some(KeyDomain::Exact(vec![KeyValue::Int(1)])),
                 disposition: PublishDisposition::Default,
                 provenance: p,
             }],
             subscribes: vec![Subscribe {
-                topic: TopicId(0),
+                subject: SubjectId(0),
+                declared_topic: Some(TopicId(0)),
                 handler: FunctionId(1),
                 site: 0,
                 key_predicate: KeyPredicate::EqReplica,
@@ -559,7 +563,8 @@ fn two_publish_sites_on_one_topic_are_representable() {
     let mut m = tiny_model();
     m.relations.publishes.push(Publish {
         function: FunctionId(0),
-        topic: TopicId(0),
+        subject: SubjectId(0),
+        declared_topic: Some(TopicId(0)),
         site: 1,
         key_domain: Some(KeyDomain::Exact(vec![KeyValue::Int(2)])),
         disposition: PublishDisposition::Wait,
@@ -797,4 +802,174 @@ fn keyedness_must_match_the_topic_both_ways() {
             index: 0
         })
     );
+}
+
+// -----------------------------------------------------------------
+// Review round 4 — dead dispatches, literal/wildcard endpoints, and
+// the full declaration universe.
+// -----------------------------------------------------------------
+
+/// A call through an uninhabited interface is a DEAD site, not a
+/// hole: representable without hiding CALLS, so `exact_calls` stays
+/// claimable — precisely the artifact's closed-world rule.
+#[test]
+fn dead_interface_calls_are_not_holes() {
+    let mut m = tiny_model();
+    m.relations.dead_interface_calls = vec![DeadInterfaceCall {
+        from: FunctionId(1),
+        site: 0,
+        interface: "Notifier".to_string(),
+        method: "notify".to_string(),
+        provenance: ProvenanceId(0),
+    }];
+    // exact_calls is TRUE in tiny_model — the dead site must not
+    // contradict it (it is not residue).
+    assert!(m.capabilities.exact_calls);
+    m.validate()
+        .expect("a dead dispatch coexists with exact_calls");
+    // Same (from, site) twice is a duplicate.
+    m.relations
+        .dead_interface_calls
+        .push(m.relations.dead_interface_calls[0].clone());
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::NotCanonical {
+            table: "dead_interface_calls",
+            index: 1
+        })
+    );
+}
+
+/// Literal and wildcard subjects are real endpoints WITHOUT topic
+/// declarations: subject-grained rows carry them, and no fake Topic
+/// enters the declared sort.
+#[test]
+fn literal_and_wildcard_endpoints_are_representable() {
+    let mut m = tiny_model();
+    let p = ProvenanceId(0);
+    m.entities.subjects.push(Subject {
+        pattern: "z.orders.**".to_string(),
+        exact: false,
+        provenance: p,
+    });
+    // A wildcard subscription with no declared topic.
+    m.relations.subscribes.push(Subscribe {
+        subject: SubjectId(1),
+        declared_topic: None,
+        handler: FunctionId(1),
+        site: 1,
+        key_predicate: KeyPredicate::Any,
+        capacity: Capacity::Unbounded,
+        shed: ShedPolicy::None,
+        provenance: p,
+    });
+    // A literal publish with no declared topic (unkeyed: None).
+    m.relations.publishes.push(Publish {
+        function: FunctionId(0),
+        subject: SubjectId(1),
+        declared_topic: None,
+        site: 1,
+        key_domain: None,
+        disposition: PublishDisposition::Default,
+        provenance: p,
+    });
+    m.validate()
+        .expect("undeclared endpoints are lawful subject rows");
+    assert_eq!(
+        m.entities.topics.len(),
+        1,
+        "no fake Topic was needed — the declared sort is untouched"
+    );
+
+    // A keyed predicate on an undeclared endpoint is refused.
+    m.relations.subscribes[1].key_predicate = KeyPredicate::EqReplica;
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::KeyContract {
+            table: "subscribes",
+            index: 1
+        })
+    );
+}
+
+/// A declared_topic whose subject disagrees with the row's subject
+/// is one endpoint with two addresses — refused.
+#[test]
+fn declared_topic_subject_must_agree() {
+    let mut m = tiny_model();
+    m.entities.subjects.push(Subject {
+        pattern: "z.other".to_string(),
+        exact: true,
+        provenance: ProvenanceId(0),
+    });
+    m.relations.publishes[0].subject = SubjectId(1);
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::DeclaredTopicDisagrees {
+            table: "publishes",
+            index: 0
+        })
+    );
+}
+
+/// The declaration universe covers the seed sort: types,
+/// interfaces, and groups participate in `declared_in` alongside
+/// loci, fns, and topics — the full rename table, no side channel.
+#[test]
+fn declared_in_covers_the_full_declaration_universe() {
+    let mut m = tiny_model();
+    let p = ProvenanceId(0);
+    m.entities.types = vec![TypeDecl {
+        name: "Reading".to_string(),
+        display: "Reading".to_string(),
+        provenance: p,
+    }];
+    m.entities.interfaces = vec![InterfaceDecl {
+        name: "Notifier".to_string(),
+        display: "Notifier".to_string(),
+        provenance: p,
+    }];
+    m.entities.groups = vec![Group {
+        name: "workers".to_string(),
+        may_be_empty: false,
+        provenance: p,
+    }];
+    m.relations.declared_in = vec![
+        DeclaredIn {
+            entity: EntityRef::Function(FunctionId(1)),
+            seed: SeedId(0),
+            provenance: p,
+        },
+        DeclaredIn {
+            entity: EntityRef::LocusDecl(LocusDeclId(1)),
+            seed: SeedId(0),
+            provenance: p,
+        },
+        DeclaredIn {
+            entity: EntityRef::Topic(TopicId(0)),
+            seed: SeedId(0),
+            provenance: p,
+        },
+        DeclaredIn {
+            entity: EntityRef::Group(GroupId(0)),
+            seed: SeedId(0),
+            provenance: p,
+        },
+        DeclaredIn {
+            entity: EntityRef::Type(TypeDeclId(0)),
+            seed: SeedId(0),
+            provenance: p,
+        },
+        DeclaredIn {
+            entity: EntityRef::Interface(InterfaceDeclId(0)),
+            seed: SeedId(0),
+            provenance: p,
+        },
+    ];
+    m.validate()
+        .expect("the full declaration universe joins the seed sort");
+
+    // Dangling type id in an EntityRef is still refused.
+    m.relations.declared_in[4].entity = EntityRef::Type(TypeDeclId(7));
+    assert!(m.validate().is_err());
 }

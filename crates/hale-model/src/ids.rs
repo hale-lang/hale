@@ -73,6 +73,14 @@ table_id!(
     GroupId
 );
 table_id!(
+    /// A declared value type (`type T { ... }`, enums included).
+    TypeDeclId
+);
+table_id!(
+    /// A declared interface.
+    InterfaceDeclId
+);
+table_id!(
     /// A source-neutral origin record in the [`ProvenanceTable`].
     ///
     /// [`ProvenanceTable`]: crate::provenance::ProvenanceTable
@@ -96,4 +104,12 @@ pub enum EntityRef {
     ThreadDomain(ThreadDomainId),
     Phase(PhaseId),
     Seed(SeedId),
+    /// A declared group — seed membership (`declared_in`) covers
+    /// groups, since the seed sort hashes the full rename table.
+    Group(GroupId),
+    /// A declared value type — a seed member even though types are
+    /// not path vertices.
+    Type(TypeDeclId),
+    /// A declared interface.
+    Interface(InterfaceDeclId),
 }

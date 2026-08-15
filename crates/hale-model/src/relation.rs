@@ -16,7 +16,7 @@
 
 use crate::ids::{
     BindingId, FunctionId, GroupId, LocusDeclId, LocusInstanceId, PhaseId,
-    ProvenanceId, SeedId, ThreadDomainId, TopicId,
+    ProvenanceId, SeedId, SubjectId, ThreadDomainId, TopicId,
 };
 use crate::keys::{Capacity, KeyDomain, KeyPredicate, PublishDisposition, ShedPolicy};
 
@@ -101,20 +101,27 @@ pub struct Call {
     pub provenance: ProvenanceId,
 }
 
-/// `publishes(function, topic)` at SITE grain, with the site's key
-/// domain and declared loss disposition. One function may publish
-/// one topic from several sites with DIFFERENT dispositions
-/// (`Orders <- a or wait; Orders <- b or discard;`) — each is its
-/// own row with its own provenance. `site` is the 0-based
-/// source-order ordinal within the function.
+/// `publishes(function, subject)` at SITE grain, with the site's
+/// key domain and declared loss disposition. The endpoint identity
+/// is the WIRE SUBJECT — literal (`publish "orders.created"`) and
+/// declared-topic publishes are both real endpoints; when a
+/// declared topic exists, `declared_topic` links it (and its
+/// subject must agree — validated). Synthesizing a fake Topic for
+/// a literal subject would corrupt the declared-topic sort and the
+/// legacy hash. One function may publish one subject from several
+/// sites with DIFFERENT dispositions — each its own row.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Publish {
     pub function: FunctionId,
-    pub topic: TopicId,
+    pub subject: SubjectId,
+    /// `Some` when a declared topic covers this endpoint; its
+    /// subject must equal `subject`.
+    pub declared_topic: Option<TopicId>,
     /// Source-order site ordinal within `function`.
     pub site: u32,
-    /// `Some` iff the topic is keyed (validated both ways) — an
-    /// unkeyed publish has no key domain to invent.
+    /// `Some` iff the declared topic is keyed (validated both
+    /// ways) — an undeclared or unkeyed endpoint has no key domain
+    /// to invent.
     pub key_domain: Option<KeyDomain>,
     pub disposition: PublishDisposition,
     pub provenance: ProvenanceId,
@@ -125,7 +132,12 @@ pub struct Publish {
 /// derive from.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Subscribe {
-    pub topic: TopicId,
+    /// The wire subject or pattern — wildcard subscriptions
+    /// (`subscribe "orders.**"`) are subject-only endpoints.
+    pub subject: SubjectId,
+    /// `Some` when a declared topic covers this endpoint; subjects
+    /// must agree (validated).
+    pub declared_topic: Option<TopicId>,
     pub handler: FunctionId,
     /// Source-order ordinal of the subscription declaration within
     /// its locus's bus block — two subscriptions of one topic by
@@ -144,6 +156,25 @@ pub struct Subscribe {
 pub struct GroupMember {
     pub group: GroupId,
     pub member: crate::ids::EntityRef,
+    pub provenance: ProvenanceId,
+}
+
+/// A known-DEAD interface dispatch: a call through an interface no
+/// locus in the closed world conforms to. NOT a hole — an
+/// uninhabited interface has no values, so the site contributes no
+/// edge and does not prevent certification (`exact_calls` stays
+/// claimable). Retained as a row because a conformer appearing
+/// later must change the model shape — exactly why the topology
+/// artifact records it inside the hashed half.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct DeadInterfaceCall {
+    pub from: FunctionId,
+    /// Source-order site ordinal within `from`.
+    pub site: u32,
+    /// The uninhabited interface's canonical name.
+    pub interface: String,
+    /// The dispatched method name.
+    pub method: String,
     pub provenance: ProvenanceId,
 }
 

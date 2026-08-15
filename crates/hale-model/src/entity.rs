@@ -118,6 +118,26 @@ pub struct Group {
     pub provenance: ProvenanceId,
 }
 
+/// A declared value type. Types are not path vertices — they exist
+/// in the model because the declaration universe must cover the
+/// seed sort exactly (the topology hash covers the full rename
+/// table: loci, fns, types, interfaces, topics, groups), and
+/// because payload contracts and key types name them.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct TypeDecl {
+    pub name: String,
+    pub display: String,
+    pub provenance: ProvenanceId,
+}
+
+/// A declared interface (the F.20 structural contract).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct InterfaceDecl {
+    pub name: String,
+    pub display: String,
+    pub provenance: ProvenanceId,
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Phase {
     pub name: String,

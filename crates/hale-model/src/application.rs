@@ -9,15 +9,16 @@
 
 use crate::capability::Capabilities;
 use crate::entity::{
-    Binding, Function, Group, LocusDecl, LocusInstance, PayloadContract,
-    Phase, Seed, Subject, ThreadDomain, Topic,
+    Binding, Function, Group, InterfaceDecl, LocusDecl, LocusInstance,
+    PayloadContract, Phase, Seed, Subject, ThreadDomain, Topic, TypeDecl,
 };
 use crate::hole::Hole;
 use crate::ids::{EntityRef, ProvenanceId};
 use crate::provenance::{Provenance, ProvenanceTable};
 use crate::relation::{
-    AffinedTo, Call, DeclaredIn, GroupMember, MemberOf, Owns, PhaseOf,
-    PlacedIn, Publish, Realizes, Subscribe, Supervises, TopicBinding,
+    AffinedTo, Call, DeadInterfaceCall, DeclaredIn, GroupMember, MemberOf,
+    Owns, PhaseOf, PlacedIn, Publish, Realizes, Subscribe, Supervises,
+    TopicBinding,
 };
 
 /// The meaning of the model's rows. Bumped when a row's
@@ -80,6 +81,8 @@ pub struct Entities {
     pub thread_domains: Vec<ThreadDomain>,
     pub bindings: Vec<Binding>,
     pub groups: Vec<Group>,
+    pub types: Vec<TypeDecl>,
+    pub interfaces: Vec<InterfaceDecl>,
 }
 
 #[derive(Clone, Default, Debug)]
@@ -90,6 +93,7 @@ pub struct Relations {
     pub realizes: Vec<Realizes>,
     pub owns: Vec<Owns>,
     pub calls: Vec<Call>,
+    pub dead_interface_calls: Vec<DeadInterfaceCall>,
     pub publishes: Vec<Publish>,
     pub subscribes: Vec<Subscribe>,
     pub placed_in: Vec<PlacedIn>,
@@ -163,6 +167,10 @@ pub enum ModelError {
     /// one), or a keyed predicate (`EqLiteral`/`EqReplica`/
     /// `Fallback`/`Unknown`) filtering an unkeyed topic.
     KeyContract { table: &'static str, index: usize },
+    /// A bus row's `declared_topic` names a topic whose subject
+    /// differs from the row's own subject — one endpoint, two
+    /// addresses.
+    DeclaredTopicDisagrees { table: &'static str, index: usize },
 }
 
 impl ApplicationModel {
@@ -184,8 +192,9 @@ impl ApplicationModel {
     /// | `realizes`       | (instance, decl)                 |
     /// | `owns`           | (parent, child)                  |
     /// | `calls`          | (from, to, dispatch, site)       |
-    /// | `publishes`      | (function, topic, site)          |
-    /// | `subscribes`     | (topic, handler, site)           |
+    /// | `publishes`      | (function, subject, site)        |
+    /// | `subscribes`     | (subject, handler, site)         |
+    /// | `dead_interface_calls` | (from, site)               |
     /// | `placed_in`      | (instance)                       |
     /// | `affined_to`     | (domain)                         |
     /// | `binds`          | (topic, binding)                 |
@@ -231,6 +240,11 @@ impl ApplicationModel {
             e.thread_domains.iter().map(|d| &d.name),
         )?;
         check_sorted_keys("groups", e.groups.iter().map(|g| &g.name))?;
+        check_sorted_keys("types", e.types.iter().map(|t| &t.name))?;
+        check_sorted_keys(
+            "interfaces",
+            e.interfaces.iter().map(|t| &t.name),
+        )?;
         check_sorted_keys(
             "bindings",
             e.bindings
@@ -308,6 +322,12 @@ impl ApplicationModel {
         for (i, g) in e.groups.iter().enumerate() {
             prov("groups", i, g.provenance)?;
         }
+        for (i, t) in e.types.iter().enumerate() {
+            prov("types", i, t.provenance)?;
+        }
+        for (i, t) in e.interfaces.iter().enumerate() {
+            prov("interfaces", i, t.provenance)?;
+        }
         for (i, b) in e.bindings.iter().enumerate() {
             if b.subject.index() >= subjects {
                 return Err(ModelError::DanglingId {
@@ -330,6 +350,11 @@ impl ApplicationModel {
                 EntityRef::ThreadDomain(id) => id.index() < domains,
                 EntityRef::Phase(id) => id.index() < phases,
                 EntityRef::Seed(id) => id.index() < seeds,
+                EntityRef::Group(id) => id.index() < e.groups.len(),
+                EntityRef::Type(id) => id.index() < e.types.len(),
+                EntityRef::Interface(id) => {
+                    id.index() < e.interfaces.len()
+                }
             }
         };
         // Does a hole hiding `family` anchor at `at`?
@@ -443,21 +468,51 @@ impl ApplicationModel {
             prov("calls", i, x.provenance)?;
         }
         check_sorted_keys(
+            "dead_interface_calls",
+            r.dead_interface_calls.iter().map(|x| (x.from, x.site)),
+        )?;
+        for (i, x) in r.dead_interface_calls.iter().enumerate() {
+            if x.from.index() >= fns {
+                return Err(ModelError::DanglingId {
+                    table: "dead_interface_calls",
+                    index: i,
+                });
+            }
+            prov("dead_interface_calls", i, x.provenance)?;
+        }
+        check_sorted_keys(
             "publishes",
             r.publishes
                 .iter()
-                .map(|x| (x.function, x.topic, x.site)),
+                .map(|x| (x.function, x.subject, x.site)),
         )?;
         for (i, x) in r.publishes.iter().enumerate() {
-            if x.function.index() >= fns || x.topic.index() >= topics {
+            if x.function.index() >= fns
+                || x.subject.index() >= subjects
+                || x.declared_topic
+                    .map(|t| t.index() >= topics)
+                    .unwrap_or(false)
+            {
                 return Err(ModelError::DanglingId {
                     table: "publishes",
                     index: i,
                 });
             }
-            // Keyed-ness must match the topic, both ways.
-            let topic_keyed =
-                e.topics[x.topic.index()].key.is_some();
+            // A declared topic's subject must agree with the row's.
+            if let Some(t) = x.declared_topic {
+                if e.topics[t.index()].subject != x.subject {
+                    return Err(ModelError::DeclaredTopicDisagrees {
+                        table: "publishes",
+                        index: i,
+                    });
+                }
+            }
+            // Keyed-ness must match the declared topic, both ways;
+            // an undeclared (literal/wildcard) endpoint is unkeyed.
+            let topic_keyed = x
+                .declared_topic
+                .map(|t| e.topics[t.index()].key.is_some())
+                .unwrap_or(false);
             if topic_keyed != x.key_domain.is_some() {
                 return Err(ModelError::KeyContract {
                     table: "publishes",
@@ -491,14 +546,27 @@ impl ApplicationModel {
             "subscribes",
             r.subscribes
                 .iter()
-                .map(|x| (x.topic, x.handler, x.site)),
+                .map(|x| (x.subject, x.handler, x.site)),
         )?;
         for (i, x) in r.subscribes.iter().enumerate() {
-            if x.topic.index() >= topics || x.handler.index() >= fns {
+            if x.subject.index() >= subjects
+                || x.handler.index() >= fns
+                || x.declared_topic
+                    .map(|t| t.index() >= topics)
+                    .unwrap_or(false)
+            {
                 return Err(ModelError::DanglingId {
                     table: "subscribes",
                     index: i,
                 });
+            }
+            if let Some(t) = x.declared_topic {
+                if e.topics[t.index()].subject != x.subject {
+                    return Err(ModelError::DeclaredTopicDisagrees {
+                        table: "subscribes",
+                        index: i,
+                    });
+                }
             }
             if matches!(x.capacity, crate::keys::Capacity::Bounded(0)) {
                 return Err(ModelError::InvalidBound {
@@ -506,9 +574,14 @@ impl ApplicationModel {
                     index: i,
                 });
             }
-            // A keyed predicate needs a keyed topic; unkeyed topics
-            // admit only the plain full-delivery subscription.
-            if e.topics[x.topic.index()].key.is_none()
+            // A keyed predicate needs a keyed declared topic;
+            // unkeyed and undeclared endpoints admit only the plain
+            // full-delivery subscription.
+            let sub_keyed = x
+                .declared_topic
+                .map(|t| e.topics[t.index()].key.is_some())
+                .unwrap_or(false);
+            if !sub_keyed
                 && !matches!(
                     x.key_predicate,
                     crate::keys::KeyPredicate::Any
@@ -540,10 +613,9 @@ impl ApplicationModel {
                 x.key_predicate,
                 crate::keys::KeyPredicate::Fallback
             );
-            let topic_policy = e.topics[x.topic.index()]
-                .key
-                .as_ref()
-                .map(|k| k.on_unmatched);
+            let topic_policy = x.declared_topic.and_then(|t| {
+                e.topics[t.index()].key.as_ref().map(|k| k.on_unmatched)
+            });
             if is_fallback_pred
                 && topic_policy
                     != Some(crate::keys::KeyOnUnmatched::Fallback)
@@ -562,7 +634,7 @@ impl ApplicationModel {
                 .unwrap_or(false);
             if wants_fallback
                 && !r.subscribes.iter().any(|x| {
-                    x.topic.index() == ti
+                    x.declared_topic.map(|t| t.index()) == Some(ti)
                         && matches!(
                             x.key_predicate,
                             crate::keys::KeyPredicate::Fallback
