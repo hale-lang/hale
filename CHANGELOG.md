@@ -8,6 +8,29 @@ behavior.
 
 ## Unreleased
 
+### `hale-model` - the canonical semantic model schema (GH #476 Change 1)
+
+The first change of the canonical-model epic: a new source-independent
+crate holding the typed schema and its laws - nothing derives it yet
+(Change 2) and nothing consumes it yet, so there is zero behavior
+change. What Change 1 pins is exactly the set of facts that would be
+expensive to retrofit: typed entity sorts (declaration/instance split
+included) and relation tables with per-row provenance; keyed delivery
+as first-class schema (topic keys, publish key domains, subscription
+predicates incl. `EqReplica`, the may/must-deliver polarity documented
+as law); bounds and loss policy (capacity, shed policies, publish
+dispositions, binding loss behavior) recorded BEFORE any must-arrive
+claim exists to consume them; typed holes that must hide at least one
+relation family; positive capabilities with a validated
+no-contradiction law (a model cannot claim `exact_calls` while a hole
+hides CALLS); `ModelHashKind::TopologyShapeV1` naming the legacy hash
+algorithm so the Change-3 projection cannot ship an unnamed identity;
+and canonical-order validation (an unsorted table is not a model).
+The crate depends on NOTHING - source independence and
+no-serialization-promise are enforced by an architecture canary that
+fails on any dependency line at all. Design note ships as the crate's
+rustdoc; 8 canary tests in `tests/architecture.rs`.
+
 ### `hale topology graph` - deterministic visuals from the artifact (GH #476 Track A)
 
 A committed `--dump-topology` artifact can now be rendered:
