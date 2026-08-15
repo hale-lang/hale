@@ -81,6 +81,13 @@ table_id!(
     InterfaceDeclId
 );
 table_id!(
+    /// A seed-membership-only declaration (perspective, const,
+    /// ring layout, target) — see [`Declaration`].
+    ///
+    /// [`Declaration`]: crate::entity::Declaration
+    DeclarationId
+);
+table_id!(
     /// A source-neutral origin record in the [`ProvenanceTable`].
     ///
     /// [`ProvenanceTable`]: crate::provenance::ProvenanceTable
@@ -112,4 +119,7 @@ pub enum EntityRef {
     Type(TypeDeclId),
     /// A declared interface.
     Interface(InterfaceDeclId),
+    /// A seed-membership-only declaration (perspective, const,
+    /// ring layout, target).
+    Declaration(DeclarationId),
 }

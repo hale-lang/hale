@@ -33,7 +33,10 @@ pub enum KeyValue {
     EnumTag(String),
     /// The spec-defined u128 comparison pair (`key_lo`, `key_hi`) —
     /// equality over Decimal keys IS two i64 compares by contract.
-    Decimal { lo: u64, hi: u64 },
+    Decimal {
+        lo: u64,
+        hi: u64,
+    },
     Str(String),
 }
 

@@ -133,30 +133,28 @@ pub mod provenance;
 pub mod relation;
 
 pub use application::{
-    ApplicationModel, Entities, LabelRow, ModelError, ModelHashKind,
-    ModelHeader, Relations, WeightRow, MODEL_SEMANTICS_V1,
+    ApplicationModel, Entities, LabelRow, ModelError, ModelHashKind, ModelHeader, Relations,
+    WeightRow, MODEL_SEMANTICS_V1,
 };
 pub use capability::Capabilities;
 pub use entity::{
-    Binding, BindingRole, Function, FunctionKind, Group, InterfaceDecl,
-    LocusDecl, LocusInstance, PayloadContract, Phase, Seed, Subject,
-    ThreadDomain, Topic, TransportKind, TypeDecl,
+    Binding, BindingRole, DeclKind, Declaration, Function, FunctionKind, Group, InterfaceDecl,
+    LocusDecl, LocusInstance, PayloadContract, Phase, Seed, Subject, ThreadDomain, Topic,
+    TransportKind, TypeDecl,
 };
 pub use hole::{Hole, HoleKind, RelationSet};
 pub use ids::{
-    BindingId, EntityRef, FunctionId, GroupId, InterfaceDeclId,
-    LocusDeclId, LocusInstanceId, PayloadContractId, PhaseId,
-    ProvenanceId, SeedId, SourceId, SubjectId, ThreadDomainId, TopicId,
-    TypeDeclId,
+    BindingId, DeclarationId, EntityRef, FunctionId, GroupId, InterfaceDeclId, LocusDeclId,
+    LocusInstanceId, PayloadContractId, PhaseId, ProvenanceId, SeedId, SourceId, SubjectId,
+    ThreadDomainId, TopicId, TypeDeclId,
 };
 pub use keys::{
-    BindingLossBehavior, Capacity, KeyDomain, KeyOnUnmatched, KeyPredicate,
-    KeyValue, PublishDisposition, ShedPolicy, TopicBound, TopicKey,
-    TopicOnFull,
+    BindingLossBehavior, Capacity, KeyDomain, KeyOnUnmatched, KeyPredicate, KeyValue,
+    PublishDisposition, ShedPolicy, TopicBound, TopicKey, TopicOnFull,
 };
 pub use provenance::{Provenance, ProvenanceTable};
 pub use relation::{
-    AffinedTo, Call, CoreSet, DeadInterfaceCall, DeclaredIn, DispatchKind,
-    GroupMember, MemberOf, Owns, PhaseOf, PlacedIn, Publish, Realizes,
-    Subscribe, Supervises, SupervisionPolicy, TopicBinding,
+    AffinedTo, Call, CoreSet, DeadInterfaceCall, DeclaredIn, DispatchKind, GroupMember, MemberOf,
+    Owns, PhaseOf, PlacedIn, Publish, Realizes, Subscribe, Supervises, SupervisionPolicy,
+    TopicBinding,
 };

@@ -15,7 +15,7 @@
 //! [`Hole`]: crate::hole::Hole
 
 use crate::ids::{
-    BindingId, FunctionId, GroupId, LocusDeclId, LocusInstanceId, PhaseId,
+    BindingId, FunctionId, GroupId, LocusDeclId, LocusInstanceId, PayloadContractId, PhaseId,
     ProvenanceId, SeedId, SubjectId, ThreadDomainId, TopicId,
 };
 use crate::keys::{Capacity, KeyDomain, KeyPredicate, PublishDisposition, ShedPolicy};
@@ -69,7 +69,9 @@ pub enum DispatchKind {
     /// Dispatch through an interface, fanned to a conformer in the
     /// closed world. `interface` is the contract's canonical name;
     /// one authored site yields one row per conformer.
-    Interface { interface: String },
+    Interface {
+        interface: String,
+    },
     /// A contracted through-stdlib path: the artifact deliberately
     /// hides stdlib interiors, but the endpoints are exact.
     ViaStdlib,
@@ -117,6 +119,11 @@ pub struct Publish {
     /// `Some` when a declared topic covers this endpoint; its
     /// subject must equal `subject`.
     pub declared_topic: Option<TopicId>,
+    /// The endpoint's payload contract. A literal endpoint carries
+    /// its `of type T` here (the checked fact BusGraph keeps); a
+    /// declared endpoint's payload must agree with its topic's
+    /// (validated).
+    pub payload: PayloadContractId,
     /// Source-order site ordinal within `function`.
     pub site: u32,
     /// `Some` iff the declared topic is keyed (validated both
@@ -138,6 +145,10 @@ pub struct Subscribe {
     /// `Some` when a declared topic covers this endpoint; subjects
     /// must agree (validated).
     pub declared_topic: Option<TopicId>,
+    /// The endpoint's payload contract (`of type T` on literal /
+    /// wildcard subscriptions; must agree with a declared topic's
+    /// payload).
+    pub payload: PayloadContractId,
     pub handler: FunctionId,
     /// Source-order ordinal of the subscription declaration within
     /// its locus's bus block — two subscriptions of one topic by

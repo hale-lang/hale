@@ -22,11 +22,8 @@ use hale_model::*;
 
 #[test]
 fn the_model_crate_depends_on_nothing() {
-    let manifest = std::fs::read_to_string(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/Cargo.toml"
-    ))
-    .expect("read own manifest");
+    let manifest = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+        .expect("read own manifest");
     let deps = manifest
         .split("[dependencies]")
         .nth(1)
@@ -141,6 +138,7 @@ fn tiny_model() -> ApplicationModel {
             groups: vec![],
             types: vec![],
             interfaces: vec![],
+            declarations: vec![],
         },
         relations: Relations {
             realizes: vec![Realizes {
@@ -164,6 +162,7 @@ fn tiny_model() -> ApplicationModel {
                 function: FunctionId(0),
                 subject: SubjectId(0),
                 declared_topic: Some(TopicId(0)),
+                payload: PayloadContractId(0),
                 site: 0,
                 key_domain: Some(KeyDomain::Exact(vec![KeyValue::Int(1)])),
                 disposition: PublishDisposition::Default,
@@ -172,6 +171,7 @@ fn tiny_model() -> ApplicationModel {
             subscribes: vec![Subscribe {
                 subject: SubjectId(0),
                 declared_topic: Some(TopicId(0)),
+                payload: PayloadContractId(0),
                 handler: FunctionId(1),
                 site: 0,
                 key_predicate: KeyPredicate::EqReplica,
@@ -461,7 +461,10 @@ fn realizes_must_be_total_unique_and_agree() {
     // Disagreeing row (instance says Worker, relation says App).
     let mut m = tiny_model();
     m.relations.realizes[0].decl = LocusDeclId(0);
-    assert_eq!(m.validate(), Err(ModelError::RealizesDisagrees { index: 0 }));
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::RealizesDisagrees { index: 0 })
+    );
     // Duplicate rows: not unique (tripped as incomplete-≠-1).
     let mut m = tiny_model();
     let mut dup = m.relations.realizes[0].clone();
@@ -565,6 +568,7 @@ fn two_publish_sites_on_one_topic_are_representable() {
         function: FunctionId(0),
         subject: SubjectId(0),
         declared_topic: Some(TopicId(0)),
+        payload: PayloadContractId(0),
         site: 1,
         key_domain: Some(KeyDomain::Exact(vec![KeyValue::Int(2)])),
         disposition: PublishDisposition::Wait,
@@ -574,8 +578,7 @@ fn two_publish_sites_on_one_topic_are_representable() {
         .expect("two sites with different dispositions are lawful");
     // The SAME site twice is still a duplicate.
     m.relations.publishes[1].site = 0;
-    m.relations.publishes[1].key_domain =
-        Some(KeyDomain::Exact(vec![KeyValue::Int(1)]));
+    m.relations.publishes[1].key_domain = Some(KeyDomain::Exact(vec![KeyValue::Int(1)]));
     m.relations.publishes[1].disposition = PublishDisposition::Default;
     assert_eq!(
         m.validate(),
@@ -647,8 +650,7 @@ fn supervision_is_per_error_type() {
     ];
     m.validate().expect("per-error-type supervision is lawful");
     // Same (parent, child, error_type) twice is a duplicate.
-    m.relations.supervises[1].error_type =
-        "ClosureViolation".to_string();
+    m.relations.supervises[1].error_type = "ClosureViolation".to_string();
     assert_eq!(
         m.validate(),
         Err(ModelError::NotCanonical {
@@ -793,8 +795,7 @@ fn keyedness_must_match_the_topic_both_ways() {
     m.validate().expect("unkeyed topic, unkeyed rows: lawful");
 
     // A keyed predicate on the unkeyed topic is refused.
-    m.relations.subscribes[0].key_predicate =
-        KeyPredicate::EqLiteral(KeyValue::Int(1));
+    m.relations.subscribes[0].key_predicate = KeyPredicate::EqLiteral(KeyValue::Int(1));
     assert_eq!(
         m.validate(),
         Err(ModelError::KeyContract {
@@ -856,6 +857,7 @@ fn literal_and_wildcard_endpoints_are_representable() {
     m.relations.subscribes.push(Subscribe {
         subject: SubjectId(1),
         declared_topic: None,
+        payload: PayloadContractId(0),
         handler: FunctionId(1),
         site: 1,
         key_predicate: KeyPredicate::Any,
@@ -868,6 +870,7 @@ fn literal_and_wildcard_endpoints_are_representable() {
         function: FunctionId(0),
         subject: SubjectId(1),
         declared_topic: None,
+        payload: PayloadContractId(0),
         site: 1,
         key_domain: None,
         disposition: PublishDisposition::Default,
@@ -972,4 +975,187 @@ fn declared_in_covers_the_full_declaration_universe() {
     // Dangling type id in an EntityRef is still refused.
     m.relations.declared_in[4].entity = EntityRef::Type(TypeDeclId(7));
     assert!(m.validate().is_err());
+}
+
+// -----------------------------------------------------------------
+// Review round 5 — the COMPLETE nameable universe + endpoint
+// payloads.
+// -----------------------------------------------------------------
+
+/// The declaration-universe canary, covering every variant the
+/// compiler's `top_decl_name` names — not a hand-picked subset:
+/// locus, fn, topic, type, interface, group (specialized sorts)
+/// PLUS perspective, const, ring layout, target (opaque
+/// Declaration rows). Module/Claims/Constitution are deliberately
+/// nameless there and absent here. A new nameable TopDecl variant
+/// must extend this test alongside the schema.
+#[test]
+fn the_nameable_declaration_universe_is_complete() {
+    let mut m = tiny_model();
+    let p = ProvenanceId(0);
+    m.entities.types = vec![TypeDecl {
+        name: "Reading".to_string(),
+        display: "Reading".to_string(),
+        provenance: p,
+    }];
+    m.entities.interfaces = vec![InterfaceDecl {
+        name: "Notifier".to_string(),
+        display: "Notifier".to_string(),
+        provenance: p,
+    }];
+    m.entities.groups = vec![Group {
+        name: "workers".to_string(),
+        may_be_empty: false,
+        provenance: p,
+    }];
+    m.entities.declarations = vec![
+        Declaration {
+            kind: DeclKind::Const,
+            name: "MAX_DEPTH".to_string(),
+            display: "MAX_DEPTH".to_string(),
+            provenance: p,
+        },
+        Declaration {
+            kind: DeclKind::RingLayout,
+            name: "TickRing".to_string(),
+            display: "TickRing".to_string(),
+            provenance: p,
+        },
+        Declaration {
+            kind: DeclKind::Target,
+            name: "edge_node".to_string(),
+            display: "edge_node".to_string(),
+            provenance: p,
+        },
+        Declaration {
+            kind: DeclKind::Perspective,
+            name: "public_api".to_string(),
+            display: "public_api".to_string(),
+            provenance: p,
+        },
+    ];
+    m.entities
+        .declarations
+        .sort_by(|a, b| (&a.name, a.kind).cmp(&(&b.name, b.kind)));
+    // ALL ten nameable kinds join the seed sort.
+    m.relations.declared_in = vec![
+        DeclaredIn {
+            entity: EntityRef::Function(FunctionId(1)),
+            seed: SeedId(0),
+            provenance: p,
+        },
+        DeclaredIn {
+            entity: EntityRef::LocusDecl(LocusDeclId(1)),
+            seed: SeedId(0),
+            provenance: p,
+        },
+        DeclaredIn {
+            entity: EntityRef::Topic(TopicId(0)),
+            seed: SeedId(0),
+            provenance: p,
+        },
+        DeclaredIn {
+            entity: EntityRef::Group(GroupId(0)),
+            seed: SeedId(0),
+            provenance: p,
+        },
+        DeclaredIn {
+            entity: EntityRef::Type(TypeDeclId(0)),
+            seed: SeedId(0),
+            provenance: p,
+        },
+        DeclaredIn {
+            entity: EntityRef::Interface(InterfaceDeclId(0)),
+            seed: SeedId(0),
+            provenance: p,
+        },
+        DeclaredIn {
+            entity: EntityRef::Declaration(DeclarationId(0)),
+            seed: SeedId(0),
+            provenance: p,
+        },
+        DeclaredIn {
+            entity: EntityRef::Declaration(DeclarationId(1)),
+            seed: SeedId(0),
+            provenance: p,
+        },
+        DeclaredIn {
+            entity: EntityRef::Declaration(DeclarationId(2)),
+            seed: SeedId(0),
+            provenance: p,
+        },
+        DeclaredIn {
+            entity: EntityRef::Declaration(DeclarationId(3)),
+            seed: SeedId(0),
+            provenance: p,
+        },
+    ];
+    m.validate()
+        .expect("all ten nameable declaration kinds join the seed sort");
+    // Kind is part of the DeclKind vocabulary — all four opaque
+    // kinds are present in this model.
+    let kinds: std::collections::BTreeSet<_> =
+        m.entities.declarations.iter().map(|d| d.kind).collect();
+    assert_eq!(
+        kinds.len(),
+        4,
+        "perspective, const, ring layout, target all representable"
+    );
+    // Dangling opaque-declaration ref is refused.
+    m.relations.declared_in[9].entity = EntityRef::Declaration(DeclarationId(9));
+    assert!(m.validate().is_err());
+}
+
+/// Literal/wildcard endpoints keep their `of type T` payload — the
+/// checked BusGraph fact — and a declared endpoint's payload must
+/// agree with its topic's.
+#[test]
+fn endpoint_payloads_are_kept_and_must_agree() {
+    // Undeclared endpoint with its own payload: lawful, payload
+    // reachable straight off the row.
+    let mut m = tiny_model();
+    let p = ProvenanceId(0);
+    m.entities.subjects.push(Subject {
+        pattern: "z.orders.**".to_string(),
+        exact: false,
+        provenance: p,
+    });
+    m.entities.payloads.push(PayloadContract {
+        shape: "z_op:i".to_string(),
+        hash: 0x828a,
+        provenance: p,
+    });
+    m.relations.subscribes.push(Subscribe {
+        subject: SubjectId(1),
+        declared_topic: None,
+        payload: PayloadContractId(1),
+        handler: FunctionId(1),
+        site: 1,
+        key_predicate: KeyPredicate::Any,
+        capacity: Capacity::Unbounded,
+        shed: ShedPolicy::None,
+        provenance: p,
+    });
+    m.validate().expect("undeclared endpoint keeps its payload");
+
+    // Declared endpoint whose payload disagrees with the topic's:
+    // one endpoint, two shapes — refused.
+    m.relations.publishes[0].payload = PayloadContractId(1);
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::EndpointPayloadDisagrees {
+            table: "publishes",
+            index: 0
+        })
+    );
+
+    // Dangling payload id refused.
+    m.relations.publishes[0].payload = PayloadContractId(9);
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::DanglingId {
+            table: "publishes",
+            index: 0
+        })
+    );
 }

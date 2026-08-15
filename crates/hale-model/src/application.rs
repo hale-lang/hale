@@ -9,16 +9,15 @@
 
 use crate::capability::Capabilities;
 use crate::entity::{
-    Binding, Function, Group, InterfaceDecl, LocusDecl, LocusInstance,
+    Binding, Declaration, Function, Group, InterfaceDecl, LocusDecl, LocusInstance,
     PayloadContract, Phase, Seed, Subject, ThreadDomain, Topic, TypeDecl,
 };
 use crate::hole::Hole;
 use crate::ids::{EntityRef, ProvenanceId};
 use crate::provenance::{Provenance, ProvenanceTable};
 use crate::relation::{
-    AffinedTo, Call, DeadInterfaceCall, DeclaredIn, GroupMember, MemberOf,
-    Owns, PhaseOf, PlacedIn, Publish, Realizes, Subscribe, Supervises,
-    TopicBinding,
+    AffinedTo, Call, DeadInterfaceCall, DeclaredIn, GroupMember, MemberOf, Owns, PhaseOf, PlacedIn,
+    Publish, Realizes, Subscribe, Supervises, TopicBinding,
 };
 
 /// The meaning of the model's rows. Bumped when a row's
@@ -83,6 +82,9 @@ pub struct Entities {
     pub groups: Vec<Group>,
     pub types: Vec<TypeDecl>,
     pub interfaces: Vec<InterfaceDecl>,
+    /// Seed-membership-only declarations (perspective, const, ring
+    /// layout, target) — the rest of the nameable universe.
+    pub declarations: Vec<Declaration>,
 }
 
 #[derive(Clone, Default, Debug)]
@@ -171,6 +173,9 @@ pub enum ModelError {
     /// differs from the row's own subject — one endpoint, two
     /// addresses.
     DeclaredTopicDisagrees { table: &'static str, index: usize },
+    /// A bus row's payload contract differs from its declared
+    /// topic's — one endpoint, two shapes.
+    EndpointPayloadDisagrees { table: &'static str, index: usize },
 }
 
 impl ApplicationModel {
@@ -213,9 +218,7 @@ impl ApplicationModel {
         for (i, rec) in self.provenance.records.iter().enumerate() {
             if let Provenance::Source { source, span } = rec {
                 if source.index() >= src_len || span.0 > span.1 {
-                    return Err(ModelError::InvalidProvenanceRecord {
-                        index: i,
-                    });
+                    return Err(ModelError::InvalidProvenanceRecord { index: i });
                 }
             }
         }
@@ -223,27 +226,19 @@ impl ApplicationModel {
         // --- canonical order: entity tables sort by canonical name.
         check_sorted_keys("functions", e.functions.iter().map(|f| &f.name))?;
         check_sorted_keys("loci", e.loci.iter().map(|l| &l.name))?;
-        check_sorted_keys(
-            "locus_instances",
-            e.locus_instances.iter().map(|i| &i.path),
-        )?;
+        check_sorted_keys("locus_instances", e.locus_instances.iter().map(|i| &i.path))?;
         check_sorted_keys("topics", e.topics.iter().map(|t| &t.name))?;
         check_sorted_keys("subjects", e.subjects.iter().map(|s| &s.pattern))?;
-        check_sorted_keys(
-            "payloads",
-            e.payloads.iter().map(|p| (&p.shape, p.hash)),
-        )?;
+        check_sorted_keys("payloads", e.payloads.iter().map(|p| (&p.shape, p.hash)))?;
         check_sorted_keys("phases", e.phases.iter().map(|p| &p.name))?;
         check_sorted_keys("seeds", e.seeds.iter().map(|s| &s.name))?;
-        check_sorted_keys(
-            "thread_domains",
-            e.thread_domains.iter().map(|d| &d.name),
-        )?;
+        check_sorted_keys("thread_domains", e.thread_domains.iter().map(|d| &d.name))?;
         check_sorted_keys("groups", e.groups.iter().map(|g| &g.name))?;
         check_sorted_keys("types", e.types.iter().map(|t| &t.name))?;
+        check_sorted_keys("interfaces", e.interfaces.iter().map(|t| &t.name))?;
         check_sorted_keys(
-            "interfaces",
-            e.interfaces.iter().map(|t| &t.name),
+            "declarations",
+            e.declarations.iter().map(|d| (&d.name, d.kind)),
         )?;
         check_sorted_keys(
             "bindings",
@@ -287,8 +282,7 @@ impl ApplicationModel {
             prov("locus_instances", i, inst.provenance)?;
         }
         for (i, t) in e.topics.iter().enumerate() {
-            if t.subject.index() >= subjects || t.payload.index() >= payloads
-            {
+            if t.subject.index() >= subjects || t.payload.index() >= payloads {
                 return Err(ModelError::DanglingId {
                     table: "topics",
                     index: i,
@@ -328,6 +322,9 @@ impl ApplicationModel {
         for (i, t) in e.interfaces.iter().enumerate() {
             prov("interfaces", i, t.provenance)?;
         }
+        for (i, d) in e.declarations.iter().enumerate() {
+            prov("declarations", i, d.provenance)?;
+        }
         for (i, b) in e.bindings.iter().enumerate() {
             if b.subject.index() >= subjects {
                 return Err(ModelError::DanglingId {
@@ -352,9 +349,8 @@ impl ApplicationModel {
                 EntityRef::Seed(id) => id.index() < seeds,
                 EntityRef::Group(id) => id.index() < e.groups.len(),
                 EntityRef::Type(id) => id.index() < e.types.len(),
-                EntityRef::Interface(id) => {
-                    id.index() < e.interfaces.len()
-                }
+                EntityRef::Interface(id) => id.index() < e.interfaces.len(),
+                EntityRef::Declaration(id) => id.index() < e.declarations.len(),
             }
         };
         // Does a hole hiding `family` anchor at `at`?
@@ -380,10 +376,7 @@ impl ApplicationModel {
             }
             prov("member_of", i, x.provenance)?;
         }
-        check_sorted_keys(
-            "phase_of",
-            r.phase_of.iter().map(|x| (x.function, x.phase)),
-        )?;
+        check_sorted_keys("phase_of", r.phase_of.iter().map(|x| (x.function, x.phase)))?;
         for (i, x) in r.phase_of.iter().enumerate() {
             if x.function.index() >= fns || x.phase.index() >= phases {
                 return Err(ModelError::DanglingId {
@@ -406,10 +399,7 @@ impl ApplicationModel {
             }
             prov("declared_in", i, x.provenance)?;
         }
-        check_sorted_keys(
-            "realizes",
-            r.realizes.iter().map(|x| (x.instance, x.decl)),
-        )?;
+        check_sorted_keys("realizes", r.realizes.iter().map(|x| (x.instance, x.decl)))?;
         for (i, x) in r.realizes.iter().enumerate() {
             if x.instance.index() >= insts || x.decl.index() >= loci {
                 return Err(ModelError::DanglingId {
@@ -423,23 +413,14 @@ impl ApplicationModel {
         // instance's own `decl` field: one fact, two access paths,
         // provably identical.
         for (i, inst) in e.locus_instances.iter().enumerate() {
-            let mut rows = r
-                .realizes
-                .iter()
-                .filter(|x| x.instance.index() == i);
+            let mut rows = r.realizes.iter().filter(|x| x.instance.index() == i);
             match (rows.next(), rows.next()) {
                 (Some(row), None) => {
                     if row.decl != inst.decl {
-                        return Err(ModelError::RealizesDisagrees {
-                            index: i,
-                        });
+                        return Err(ModelError::RealizesDisagrees { index: i });
                     }
                 }
-                _ => {
-                    return Err(ModelError::RealizesIncomplete {
-                        instance: i,
-                    })
-                }
+                _ => return Err(ModelError::RealizesIncomplete { instance: i }),
             }
         }
         check_sorted_keys("owns", r.owns.iter().map(|x| (x.parent, x.child)))?;
@@ -482,9 +463,7 @@ impl ApplicationModel {
         }
         check_sorted_keys(
             "publishes",
-            r.publishes
-                .iter()
-                .map(|x| (x.function, x.subject, x.site)),
+            r.publishes.iter().map(|x| (x.function, x.subject, x.site)),
         )?;
         for (i, x) in r.publishes.iter().enumerate() {
             if x.function.index() >= fns
@@ -498,10 +477,23 @@ impl ApplicationModel {
                     index: i,
                 });
             }
-            // A declared topic's subject must agree with the row's.
+            if x.payload.index() >= payloads {
+                return Err(ModelError::DanglingId {
+                    table: "publishes",
+                    index: i,
+                });
+            }
+            // A declared topic's subject AND payload must agree
+            // with the row's.
             if let Some(t) = x.declared_topic {
                 if e.topics[t.index()].subject != x.subject {
                     return Err(ModelError::DeclaredTopicDisagrees {
+                        table: "publishes",
+                        index: i,
+                    });
+                }
+                if e.topics[t.index()].payload != x.payload {
+                    return Err(ModelError::EndpointPayloadDisagrees {
                         table: "publishes",
                         index: i,
                     });
@@ -519,22 +511,20 @@ impl ApplicationModel {
                     index: i,
                 });
             }
-            if let Some(crate::keys::KeyDomain::Exact(vals)) =
-                &x.key_domain
-            {
-                check_sorted_keys("publishes.key_domain", vals.iter())
-                    .map_err(|_| ModelError::NotCanonical {
+            if let Some(crate::keys::KeyDomain::Exact(vals)) = &x.key_domain {
+                check_sorted_keys("publishes.key_domain", vals.iter()).map_err(|_| {
+                    ModelError::NotCanonical {
                         table: "publishes.key_domain",
                         index: i,
-                    })?;
+                    }
+                })?;
             }
-            if matches!(
-                x.key_domain,
-                Some(crate::keys::KeyDomain::Unknown)
-            ) && !hole_at(
-                EntityRef::Function(x.function),
-                crate::hole::RelationSet::KEY_FILTERS,
-            ) {
+            if matches!(x.key_domain, Some(crate::keys::KeyDomain::Unknown))
+                && !hole_at(
+                    EntityRef::Function(x.function),
+                    crate::hole::RelationSet::KEY_FILTERS,
+                )
+            {
                 return Err(ModelError::UnrepresentedUnknown {
                     table: "publishes",
                     index: i,
@@ -544,9 +534,7 @@ impl ApplicationModel {
         }
         check_sorted_keys(
             "subscribes",
-            r.subscribes
-                .iter()
-                .map(|x| (x.subject, x.handler, x.site)),
+            r.subscribes.iter().map(|x| (x.subject, x.handler, x.site)),
         )?;
         for (i, x) in r.subscribes.iter().enumerate() {
             if x.subject.index() >= subjects
@@ -560,9 +548,21 @@ impl ApplicationModel {
                     index: i,
                 });
             }
+            if x.payload.index() >= payloads {
+                return Err(ModelError::DanglingId {
+                    table: "subscribes",
+                    index: i,
+                });
+            }
             if let Some(t) = x.declared_topic {
                 if e.topics[t.index()].subject != x.subject {
                     return Err(ModelError::DeclaredTopicDisagrees {
+                        table: "subscribes",
+                        index: i,
+                    });
+                }
+                if e.topics[t.index()].payload != x.payload {
+                    return Err(ModelError::EndpointPayloadDisagrees {
                         table: "subscribes",
                         index: i,
                     });
@@ -581,24 +581,18 @@ impl ApplicationModel {
                 .declared_topic
                 .map(|t| e.topics[t.index()].key.is_some())
                 .unwrap_or(false);
-            if !sub_keyed
-                && !matches!(
-                    x.key_predicate,
-                    crate::keys::KeyPredicate::Any
-                )
-            {
+            if !sub_keyed && !matches!(x.key_predicate, crate::keys::KeyPredicate::Any) {
                 return Err(ModelError::KeyContract {
                     table: "subscribes",
                     index: i,
                 });
             }
-            if matches!(
-                x.key_predicate,
-                crate::keys::KeyPredicate::Unknown
-            ) && !hole_at(
-                EntityRef::Function(x.handler),
-                crate::hole::RelationSet::KEY_FILTERS,
-            ) {
+            if matches!(x.key_predicate, crate::keys::KeyPredicate::Unknown)
+                && !hole_at(
+                    EntityRef::Function(x.handler),
+                    crate::hole::RelationSet::KEY_FILTERS,
+                )
+            {
                 return Err(ModelError::UnrepresentedUnknown {
                     table: "subscribes",
                     index: i,
@@ -609,17 +603,11 @@ impl ApplicationModel {
         // Fallback contract, both directions: `_` only on fallback
         // topics; fallback topics have their catch.
         for (i, x) in r.subscribes.iter().enumerate() {
-            let is_fallback_pred = matches!(
-                x.key_predicate,
-                crate::keys::KeyPredicate::Fallback
-            );
-            let topic_policy = x.declared_topic.and_then(|t| {
-                e.topics[t.index()].key.as_ref().map(|k| k.on_unmatched)
-            });
-            if is_fallback_pred
-                && topic_policy
-                    != Some(crate::keys::KeyOnUnmatched::Fallback)
-            {
+            let is_fallback_pred = matches!(x.key_predicate, crate::keys::KeyPredicate::Fallback);
+            let topic_policy = x
+                .declared_topic
+                .and_then(|t| e.topics[t.index()].key.as_ref().map(|k| k.on_unmatched));
+            if is_fallback_pred && topic_policy != Some(crate::keys::KeyOnUnmatched::Fallback) {
                 return Err(ModelError::IllegalFallback { index: i });
             }
         }
@@ -627,27 +615,18 @@ impl ApplicationModel {
             let wants_fallback = t
                 .key
                 .as_ref()
-                .map(|k| {
-                    k.on_unmatched
-                        == crate::keys::KeyOnUnmatched::Fallback
-                })
+                .map(|k| k.on_unmatched == crate::keys::KeyOnUnmatched::Fallback)
                 .unwrap_or(false);
             if wants_fallback
                 && !r.subscribes.iter().any(|x| {
                     x.declared_topic.map(|t| t.index()) == Some(ti)
-                        && matches!(
-                            x.key_predicate,
-                            crate::keys::KeyPredicate::Fallback
-                        )
+                        && matches!(x.key_predicate, crate::keys::KeyPredicate::Fallback)
                 })
             {
                 return Err(ModelError::FallbackUncovered { topic: ti });
             }
         }
-        check_sorted_keys(
-            "placed_in",
-            r.placed_in.iter().map(|x| x.instance),
-        )?;
+        check_sorted_keys("placed_in", r.placed_in.iter().map(|x| x.instance))?;
         for (i, x) in r.placed_in.iter().enumerate() {
             if x.instance.index() >= insts || x.domain.index() >= domains {
                 return Err(ModelError::DanglingId {
@@ -657,10 +636,7 @@ impl ApplicationModel {
             }
             prov("placed_in", i, x.provenance)?;
         }
-        check_sorted_keys(
-            "affined_to",
-            r.affined_to.iter().map(|x| x.domain),
-        )?;
+        check_sorted_keys("affined_to", r.affined_to.iter().map(|x| x.domain))?;
         for (i, x) in r.affined_to.iter().enumerate() {
             if x.domain.index() >= domains {
                 return Err(ModelError::DanglingId {
@@ -668,18 +644,15 @@ impl ApplicationModel {
                     index: i,
                 });
             }
-            check_sorted_keys("affined_to.cores", x.cores.0.iter()).map_err(
-                |_| ModelError::NotCanonical {
+            check_sorted_keys("affined_to.cores", x.cores.0.iter()).map_err(|_| {
+                ModelError::NotCanonical {
                     table: "affined_to.cores",
                     index: i,
-                },
-            )?;
+                }
+            })?;
             prov("affined_to", i, x.provenance)?;
         }
-        check_sorted_keys(
-            "binds",
-            r.binds.iter().map(|x| (x.topic, x.binding)),
-        )?;
+        check_sorted_keys("binds", r.binds.iter().map(|x| (x.topic, x.binding)))?;
         for (i, x) in r.binds.iter().enumerate() {
             if x.topic.index() >= topics || x.binding.index() >= bindings {
                 return Err(ModelError::DanglingId {
@@ -689,12 +662,8 @@ impl ApplicationModel {
             }
             // The topic's subject and the binding's subject repeat
             // one fact — they must agree.
-            if e.topics[x.topic.index()].subject
-                != e.bindings[x.binding.index()].subject
-            {
-                return Err(ModelError::BindingSubjectDisagrees {
-                    index: i,
-                });
+            if e.topics[x.topic.index()].subject != e.bindings[x.binding.index()].subject {
+                return Err(ModelError::BindingSubjectDisagrees { index: i });
             }
             prov("binds", i, x.provenance)?;
         }
@@ -730,10 +699,7 @@ impl ApplicationModel {
         }
 
         // --- labels / weights.
-        check_sorted_keys(
-            "labels",
-            self.labels.iter().map(|l| (l.at, &l.label)),
-        )?;
+        check_sorted_keys("labels", self.labels.iter().map(|l| (l.at, &l.label)))?;
         for (i, l) in self.labels.iter().enumerate() {
             if !ref_ok(&l.at) {
                 return Err(ModelError::DanglingId {
@@ -743,10 +709,7 @@ impl ApplicationModel {
             }
             prov("labels", i, l.provenance)?;
         }
-        check_sorted_keys(
-            "weights",
-            self.weights.iter().map(|w| (w.at, &w.metric)),
-        )?;
+        check_sorted_keys("weights", self.weights.iter().map(|w| (w.at, &w.metric)))?;
         for (i, w) in self.weights.iter().enumerate() {
             if !ref_ok(&w.at) {
                 return Err(ModelError::DanglingId {
@@ -760,9 +723,7 @@ impl ApplicationModel {
         // --- holes: canonical, anchored, non-empty, provenanced.
         check_sorted_keys(
             "holes",
-            self.holes
-                .iter()
-                .map(|h| (h.at, h.kind.clone(), &h.reason)),
+            self.holes.iter().map(|h| (h.at, h.kind.clone(), &h.reason)),
         )?;
         for (i, h) in self.holes.iter().enumerate() {
             if !ref_ok(&h.at) {
@@ -780,15 +741,12 @@ impl ApplicationModel {
         // --- capability/hole contradiction: exactness may not be
         // claimed for a family any hole hides. Every capability is
         // mapped (an unmapped flag would be unfalsifiable).
-        for (name, claimed, family) in self.capabilities.vouched_families()
-        {
+        for (name, claimed, family) in self.capabilities.vouched_families() {
             if !claimed {
                 continue;
             }
             if self.holes.iter().any(|h| h.hides.intersects(family)) {
-                return Err(ModelError::CapabilityContradiction {
-                    capability: name,
-                });
+                return Err(ModelError::CapabilityContradiction { capability: name });
             }
         }
         Ok(())
@@ -797,10 +755,7 @@ impl ApplicationModel {
 
 /// Strictly-increasing check over a table's canonical keys —
 /// enforces sorted AND deduplicated in one pass.
-fn check_sorted_keys<K: Ord, I>(
-    table: &'static str,
-    keys: I,
-) -> Result<(), ModelError>
+fn check_sorted_keys<K: Ord, I>(table: &'static str, keys: I) -> Result<(), ModelError>
 where
     I: Iterator<Item = K>,
 {

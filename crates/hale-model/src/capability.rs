@@ -30,9 +30,7 @@ impl Capabilities {
     /// flag participates: a capability with no mapped family would
     /// be unfalsifiable, which is exactly the drift this law
     /// exists to prevent.
-    pub fn vouched_families(
-        self,
-    ) -> Vec<(&'static str, bool, RelationSet)> {
+    pub fn vouched_families(self) -> Vec<(&'static str, bool, RelationSet)> {
         vec![
             ("exact_calls", self.exact_calls, RelationSet::CALLS),
             (

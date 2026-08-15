@@ -138,6 +138,36 @@ pub struct InterfaceDecl {
     pub provenance: ProvenanceId,
 }
 
+/// A declaration kind that participates in seed membership but has
+/// no structural role elsewhere in the model (yet). The
+/// declaration-universe law: every NAMEABLE top-level declaration
+/// (`top_decl_name` in the compiler: locus, perspective, type,
+/// const, fn, interface, topic, ring layout, target, group) is
+/// representable — as a specialized sort where the model needs its
+/// structure, or as an opaque [`Declaration`] row where seed
+/// membership is the only fact. `Module`, `Claims`, and
+/// `Constitution` are deliberately nameless there and are NOT
+/// declarations here either. A new nameable TopDecl variant must
+/// extend one side or the other — the universe canary in
+/// tests/architecture.rs mirrors the compiler's list (this crate
+/// cannot depend on the AST, so the mirror is by test, not type).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum DeclKind {
+    Perspective,
+    Const,
+    RingLayout,
+    Target,
+}
+
+/// An opaque seed-membership-only declaration (see [`DeclKind`]).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Declaration {
+    pub kind: DeclKind,
+    pub name: String,
+    pub display: String,
+    pub provenance: ProvenanceId,
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Phase {
     pub name: String,
