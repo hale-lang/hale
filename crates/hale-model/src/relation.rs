@@ -75,24 +75,44 @@ pub enum DispatchKind {
     ViaStdlib,
 }
 
-/// `calls(caller, callee)` — resolved calls only (law 1 above).
+/// `calls(caller, callee)` at SITE grain — resolved calls only
+/// (law 1 above). One row per call site: two sites sharing
+/// endpoints but differing in loop/boundedness facts are two rows,
+/// each with its own provenance span (witnesses point at sites).
+/// `site` is the 0-based source-order ordinal of the site within
+/// its caller — stable under source motion as long as relative
+/// order holds, which is the same stability class as the shape
+/// hash. Endpoint-grained projections (the artifact's merged
+/// `calls` relation) are DERIVED by conservative merge: `in_loop`
+/// and `unbounded` OR together, never dropped.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Call {
     pub from: FunctionId,
     pub to: FunctionId,
     pub dispatch: DispatchKind,
-    /// The site sits inside a loop (quantitative judgments weight
-    /// it unbounded-per-activation unless bounded elsewhere).
+    /// Source-order site ordinal within `from` (see above).
+    pub site: u32,
+    /// The site sits inside a loop.
     pub in_loop: bool,
+    /// The site's per-activation repetition is not statically
+    /// bounded (the topology model keeps loop and unbounded as
+    /// separate facts; so does this schema).
+    pub unbounded: bool,
     pub provenance: ProvenanceId,
 }
 
-/// `publishes(function, topic)` with the site's key domain and
-/// declared loss disposition.
+/// `publishes(function, topic)` at SITE grain, with the site's key
+/// domain and declared loss disposition. One function may publish
+/// one topic from several sites with DIFFERENT dispositions
+/// (`Orders <- a or wait; Orders <- b or discard;`) — each is its
+/// own row with its own provenance. `site` is the 0-based
+/// source-order ordinal within the function.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Publish {
     pub function: FunctionId,
     pub topic: TopicId,
+    /// Source-order site ordinal within `function`.
+    pub site: u32,
     pub key_domain: KeyDomain,
     pub disposition: PublishDisposition,
     pub provenance: ProvenanceId,
@@ -105,6 +125,10 @@ pub struct Publish {
 pub struct Subscribe {
     pub topic: TopicId,
     pub handler: FunctionId,
+    /// Source-order ordinal of the subscription declaration within
+    /// its locus's bus block — two subscriptions of one topic by
+    /// one handler with different filters are two rows.
+    pub site: u32,
     pub key_predicate: KeyPredicate,
     pub capacity: Capacity,
     pub shed: ShedPolicy,
@@ -149,11 +173,17 @@ pub struct SupervisionPolicy {
     pub retry_bound: Option<u32>,
 }
 
-/// `supervises(parent, child, policy)`.
+/// `supervises(parent, child, error_type, policy)` — one row per
+/// `on_failure` handler. Two handlers supervising the same child
+/// for DIFFERENT error types are distinct policies (the schema-1.10
+/// supervision section is per-handler), so the error type is part
+/// of the row and its canonical key.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Supervises {
     pub parent: LocusDeclId,
     pub child: LocusDeclId,
+    /// The handled error/violation type's canonical name.
+    pub error_type: String,
     pub policy: SupervisionPolicy,
     pub provenance: ProvenanceId,
 }

@@ -147,6 +147,15 @@ pub enum ModelError {
     /// disagree — the entity attribute and the relation repeat one
     /// fact and drifted.
     BindingSubjectDisagrees { index: usize },
+    /// A `where key == _` (Fallback) subscription on a topic whose
+    /// `on_unmatched` policy is not `fallback` — the `_` sentinel
+    /// is legal only on fallback topics (resolve-time law,
+    /// mirrored in the schema).
+    IllegalFallback { index: usize },
+    /// A topic declares `on_unmatched: fallback` but has no
+    /// Fallback subscription — the policy's required catch is
+    /// missing.
+    FallbackUncovered { topic: usize },
 }
 
 impl ApplicationModel {
@@ -167,13 +176,13 @@ impl ApplicationModel {
     /// | `declared_in`    | (entity, seed)                   |
     /// | `realizes`       | (instance, decl)                 |
     /// | `owns`           | (parent, child)                  |
-    /// | `calls`          | (from, to, dispatch)             |
-    /// | `publishes`      | (function, topic)                |
-    /// | `subscribes`     | (topic, handler)                 |
+    /// | `calls`          | (from, to, dispatch, site)       |
+    /// | `publishes`      | (function, topic, site)          |
+    /// | `subscribes`     | (topic, handler, site)           |
     /// | `placed_in`      | (instance)                       |
     /// | `affined_to`     | (domain)                         |
     /// | `binds`          | (topic, binding)                 |
-    /// | `supervises`     | (parent, child)                  |
+    /// | `supervises`     | (parent, child, error_type)      |
     /// | `labels`         | (at, label)                      |
     /// | `weights`        | (at, metric)                     |
     /// | `holes`          | (at, kind, reason)               |
@@ -410,7 +419,7 @@ impl ApplicationModel {
             "calls",
             r.calls
                 .iter()
-                .map(|x| (x.from, x.to, x.dispatch.clone())),
+                .map(|x| (x.from, x.to, x.dispatch.clone(), x.site)),
         )?;
         for (i, x) in r.calls.iter().enumerate() {
             if x.from.index() >= fns || x.to.index() >= fns {
@@ -423,7 +432,9 @@ impl ApplicationModel {
         }
         check_sorted_keys(
             "publishes",
-            r.publishes.iter().map(|x| (x.function, x.topic)),
+            r.publishes
+                .iter()
+                .map(|x| (x.function, x.topic, x.site)),
         )?;
         for (i, x) in r.publishes.iter().enumerate() {
             if x.function.index() >= fns || x.topic.index() >= topics {
@@ -454,7 +465,9 @@ impl ApplicationModel {
         }
         check_sorted_keys(
             "subscribes",
-            r.subscribes.iter().map(|x| (x.topic, x.handler)),
+            r.subscribes
+                .iter()
+                .map(|x| (x.topic, x.handler, x.site)),
         )?;
         for (i, x) in r.subscribes.iter().enumerate() {
             if x.topic.index() >= topics || x.handler.index() >= fns {
@@ -482,6 +495,45 @@ impl ApplicationModel {
                 });
             }
             prov("subscribes", i, x.provenance)?;
+        }
+        // Fallback contract, both directions: `_` only on fallback
+        // topics; fallback topics have their catch.
+        for (i, x) in r.subscribes.iter().enumerate() {
+            let is_fallback_pred = matches!(
+                x.key_predicate,
+                crate::keys::KeyPredicate::Fallback
+            );
+            let topic_policy = e.topics[x.topic.index()]
+                .key
+                .as_ref()
+                .map(|k| k.on_unmatched);
+            if is_fallback_pred
+                && topic_policy
+                    != Some(crate::keys::KeyOnUnmatched::Fallback)
+            {
+                return Err(ModelError::IllegalFallback { index: i });
+            }
+        }
+        for (ti, t) in e.topics.iter().enumerate() {
+            let wants_fallback = t
+                .key
+                .as_ref()
+                .map(|k| {
+                    k.on_unmatched
+                        == crate::keys::KeyOnUnmatched::Fallback
+                })
+                .unwrap_or(false);
+            if wants_fallback
+                && !r.subscribes.iter().any(|x| {
+                    x.topic.index() == ti
+                        && matches!(
+                            x.key_predicate,
+                            crate::keys::KeyPredicate::Fallback
+                        )
+                })
+            {
+                return Err(ModelError::FallbackUncovered { topic: ti });
+            }
         }
         check_sorted_keys(
             "placed_in",
@@ -539,7 +591,9 @@ impl ApplicationModel {
         }
         check_sorted_keys(
             "supervises",
-            r.supervises.iter().map(|x| (x.parent, x.child)),
+            r.supervises
+                .iter()
+                .map(|x| (x.parent, x.child, &x.error_type)),
         )?;
         for (i, x) in r.supervises.iter().enumerate() {
             if x.parent.index() >= loci || x.child.index() >= loci {

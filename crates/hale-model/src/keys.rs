@@ -13,18 +13,54 @@
 //! The first implementation proves no arithmetic: it preserves the
 //! authored filter and says what it does not know (`Unknown`).
 
-/// A routing-key value. Typecheck fixes ONE key type per topic, so a
-/// topic's publishes and subscriptions never mix variants.
+/// A routing-key value — one variant per key-eligible field type in
+/// the shipped routing contract (spec/semantics.md "Width is
+/// inherited from the keyed_by field's type"): `Bool`, `Int`,
+/// `Time`/`Duration` (ns), no-payload `enum` (by variant name — the
+/// source-level identity; the runtime tag is derivation), `Decimal`
+/// (the spec-defined u128 comparison pair), `String`. Typecheck
+/// fixes ONE key type per topic, so a topic's publishes and
+/// subscriptions never mix variants.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum KeyValue {
+    Bool(bool),
     Int(i64),
+    /// Nanoseconds since epoch.
+    Time(i64),
+    /// Nanoseconds.
+    Duration(i64),
+    /// A no-payload enum key, by variant name.
+    EnumTag(String),
+    /// The spec-defined u128 comparison pair (`key_lo`, `key_hi`) —
+    /// equality over Decimal keys IS two i64 compares by contract.
+    Decimal { lo: u64, hi: u64 },
     Str(String),
 }
 
-/// A topic's declared key: the `keyed_by` payload field.
+/// A topic's declared key: the `keyed_by` payload field plus the
+/// topic's `on_unmatched` policy — what happens when a keyed
+/// publish matches no subscriber. Both are routing-contract facts
+/// the delivery judgments need (a `Fail` policy changes the send
+/// contract; a `Fallback` policy adds a delivery edge to the
+/// catch-unmatched subscriber).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct TopicKey {
     pub field: String,
+    pub on_unmatched: KeyOnUnmatched,
+}
+
+/// `on_unmatched:` policy of a keyed topic (spec/semantics.md).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum KeyOnUnmatched {
+    /// Drop silently (the default).
+    Swallow,
+    /// The publish becomes fallible at the send site.
+    Fail,
+    /// A `where key == _` subscriber receives unmatched messages.
+    /// The model law (validated): a Fallback topic has at least one
+    /// [`KeyPredicate::Fallback`] subscription, and the `_`
+    /// sentinel is legal ONLY on Fallback topics.
+    Fallback,
 }
 
 /// What a subscription's `where key == …` filter admits.
@@ -39,6 +75,12 @@ pub enum KeyPredicate {
     /// the delivery semantics stay on the subscription — placement
     /// remains semantics-free).
     EqReplica,
+    /// The `where key == _` catch-unmatched subscription — receives
+    /// exactly the messages no other filter matched. Legal only on
+    /// topics with `on_unmatched: fallback` (validated). Distinct
+    /// from [`KeyPredicate::Any`], which is the ordinary unkeyed
+    /// full-delivery subscription.
+    Fallback,
     /// The filter exists but its value is not statically known.
     /// Adds possible edges; never supports a guarantee.
     Unknown,

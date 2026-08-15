@@ -149,8 +149,9 @@ pub use ids::{
     ThreadDomainId, TopicId,
 };
 pub use keys::{
-    BindingLossBehavior, Capacity, KeyDomain, KeyPredicate, KeyValue,
-    PublishDisposition, ShedPolicy, TopicBound, TopicKey, TopicOnFull,
+    BindingLossBehavior, Capacity, KeyDomain, KeyOnUnmatched, KeyPredicate,
+    KeyValue, PublishDisposition, ShedPolicy, TopicBound, TopicKey,
+    TopicOnFull,
 };
 pub use provenance::{Provenance, ProvenanceTable};
 pub use relation::{

@@ -107,6 +107,7 @@ fn tiny_model() -> ApplicationModel {
                 payload: PayloadContractId(0),
                 key: Some(TopicKey {
                     field: "sensor".to_string(),
+                    on_unmatched: KeyOnUnmatched::Swallow,
                 }),
                 bound: Some(TopicBound {
                     capacity: 64,
@@ -159,6 +160,7 @@ fn tiny_model() -> ApplicationModel {
             publishes: vec![Publish {
                 function: FunctionId(0),
                 topic: TopicId(0),
+                site: 0,
                 key_domain: KeyDomain::Exact(vec![KeyValue::Int(1)]),
                 disposition: PublishDisposition::Default,
                 provenance: p,
@@ -166,6 +168,7 @@ fn tiny_model() -> ApplicationModel {
             subscribes: vec![Subscribe {
                 topic: TopicId(0),
                 handler: FunctionId(1),
+                site: 0,
                 key_predicate: KeyPredicate::EqReplica,
                 capacity: Capacity::Bounded(16),
                 shed: ShedPolicy::DropOld,
@@ -338,6 +341,7 @@ fn unsorted_supervises_are_not_canonical() {
         Supervises {
             parent: LocusDeclId(1),
             child: LocusDeclId(0),
+            error_type: "IoError".to_string(),
             policy: SupervisionPolicy {
                 ops: vec!["restart".to_string()],
                 retry_bound: Some(3),
@@ -347,6 +351,7 @@ fn unsorted_supervises_are_not_canonical() {
         Supervises {
             parent: LocusDeclId(0),
             child: LocusDeclId(1),
+            error_type: "IoError".to_string(),
             policy: SupervisionPolicy {
                 ops: vec!["restart".to_string()],
                 retry_bound: None,
@@ -537,4 +542,155 @@ fn every_capability_flag_is_mapped_to_a_family() {
         assert!(claimed, "{} must carry its flag", name);
         assert!(!family.is_empty(), "{} must vouch a real family", name);
     }
+}
+
+// -----------------------------------------------------------------
+// Review round 2 — site grain, supervision error types, and the
+// full routing contract.
+// -----------------------------------------------------------------
+
+/// The review's motivating program: one function publishing one
+/// topic twice with different dispositions
+/// (`Orders <- a or wait; Orders <- b or discard;`) — two rows at
+/// site grain, each keeping its own disposition and provenance.
+#[test]
+fn two_publish_sites_on_one_topic_are_representable() {
+    let mut m = tiny_model();
+    m.relations.publishes.push(Publish {
+        function: FunctionId(0),
+        topic: TopicId(0),
+        site: 1,
+        key_domain: KeyDomain::Exact(vec![KeyValue::Int(2)]),
+        disposition: PublishDisposition::Wait,
+        provenance: ProvenanceId(0),
+    });
+    m.validate()
+        .expect("two sites with different dispositions are lawful");
+    // The SAME site twice is still a duplicate.
+    m.relations.publishes[1].site = 0;
+    m.relations.publishes[1].key_domain =
+        KeyDomain::Exact(vec![KeyValue::Int(1)]);
+    m.relations.publishes[1].disposition = PublishDisposition::Default;
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::NotCanonical {
+            table: "publishes",
+            index: 1
+        })
+    );
+}
+
+/// Two call sites sharing endpoints with different loop facts are
+/// two rows; the endpoint merge is a projection concern, never a
+/// schema collapse.
+#[test]
+fn call_sites_keep_their_own_loop_facts() {
+    let mut m = tiny_model();
+    let p = ProvenanceId(0);
+    m.relations.calls = vec![
+        Call {
+            from: FunctionId(0),
+            to: FunctionId(1),
+            dispatch: DispatchKind::Direct,
+            site: 0,
+            in_loop: false,
+            unbounded: false,
+            provenance: p,
+        },
+        Call {
+            from: FunctionId(0),
+            to: FunctionId(1),
+            dispatch: DispatchKind::Direct,
+            site: 1,
+            in_loop: true,
+            unbounded: true,
+            provenance: p,
+        },
+    ];
+    m.validate().expect("site-grained call rows are lawful");
+}
+
+/// Two on_failure handlers for the same child, different error
+/// types: distinct policies, both representable (the schema-1.10
+/// supervision section is per-handler).
+#[test]
+fn supervision_is_per_error_type() {
+    let mut m = tiny_model();
+    let p = ProvenanceId(0);
+    m.relations.supervises = vec![
+        Supervises {
+            parent: LocusDeclId(0),
+            child: LocusDeclId(1),
+            error_type: "ClosureViolation".to_string(),
+            policy: SupervisionPolicy {
+                ops: vec!["restart".to_string()],
+                retry_bound: Some(3),
+            },
+            provenance: p,
+        },
+        Supervises {
+            parent: LocusDeclId(0),
+            child: LocusDeclId(1),
+            error_type: "IoError".to_string(),
+            policy: SupervisionPolicy {
+                ops: vec!["replace".to_string()],
+                retry_bound: None,
+            },
+            provenance: p,
+        },
+    ];
+    m.validate().expect("per-error-type supervision is lawful");
+    // Same (parent, child, error_type) twice is a duplicate.
+    m.relations.supervises[1].error_type =
+        "ClosureViolation".to_string();
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::NotCanonical {
+            table: "supervises",
+            index: 1
+        })
+    );
+}
+
+/// The fallback contract, both directions: `where key == _` is
+/// legal only on `on_unmatched: fallback` topics, and a fallback
+/// topic must have its catch.
+#[test]
+fn fallback_contract_is_validated_both_ways() {
+    // `_` on a swallow topic: illegal.
+    let mut m = tiny_model();
+    m.relations.subscribes[0].key_predicate = KeyPredicate::Fallback;
+    assert_eq!(m.validate(), Err(ModelError::IllegalFallback { index: 0 }));
+
+    // Fallback topic without a catch: uncovered.
+    let mut m = tiny_model();
+    m.entities.topics[0].key = Some(TopicKey {
+        field: "sensor".to_string(),
+        on_unmatched: KeyOnUnmatched::Fallback,
+    });
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::FallbackUncovered { topic: 0 })
+    );
+
+    // Properly paired: lawful.
+    m.relations.subscribes[0].key_predicate = KeyPredicate::Fallback;
+    m.validate().expect("fallback topic + catch is lawful");
+}
+
+/// Every shipped key-eligible type has a KeyValue variant, and
+/// mixed-variant canonical sets stay ordered.
+#[test]
+fn key_values_cover_the_shipped_routing_types() {
+    let mut m = tiny_model();
+    m.relations.publishes[0].key_domain = KeyDomain::Exact(vec![
+        KeyValue::Bool(true),
+        KeyValue::Int(3),
+        KeyValue::Time(1_000),
+        KeyValue::Duration(5_000),
+        KeyValue::EnumTag("Buy".to_string()),
+        KeyValue::Decimal { lo: 1, hi: 2 },
+        KeyValue::Str("sym".to_string()),
+    ]);
+    m.validate().expect("all key-type variants are usable");
 }
