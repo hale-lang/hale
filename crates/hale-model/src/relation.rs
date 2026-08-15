@@ -15,7 +15,7 @@
 //! [`Hole`]: crate::hole::Hole
 
 use crate::ids::{
-    BindingId, FunctionId, LocusDeclId, LocusInstanceId, PhaseId,
+    BindingId, FunctionId, GroupId, LocusDeclId, LocusInstanceId, PhaseId,
     ProvenanceId, SeedId, ThreadDomainId, TopicId,
 };
 use crate::keys::{Capacity, KeyDomain, KeyPredicate, PublishDisposition, ShedPolicy};
@@ -113,7 +113,9 @@ pub struct Publish {
     pub topic: TopicId,
     /// Source-order site ordinal within `function`.
     pub site: u32,
-    pub key_domain: KeyDomain,
+    /// `Some` iff the topic is keyed (validated both ways) — an
+    /// unkeyed publish has no key domain to invent.
+    pub key_domain: Option<KeyDomain>,
     pub disposition: PublishDisposition,
     pub provenance: ProvenanceId,
 }
@@ -132,6 +134,16 @@ pub struct Subscribe {
     pub key_predicate: KeyPredicate,
     pub capacity: Capacity,
     pub shed: ShedPolicy,
+    pub provenance: ProvenanceId,
+}
+
+/// `member_of_group(group, member)` — one row per resolved group
+/// member (loci and free fns; a glob is already enumerated by
+/// resolution, so members are always concrete).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct GroupMember {
+    pub group: GroupId,
+    pub member: crate::ids::EntityRef,
     pub provenance: ProvenanceId,
 }
 

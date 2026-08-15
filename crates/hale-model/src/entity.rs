@@ -101,6 +101,23 @@ pub struct Topic {
     pub provenance: ProvenanceId,
 }
 
+/// A declared claim-vocabulary group. Groups are
+/// verification-relevant and shape-hashed in the existing artifact
+/// (claims resolve their selectors through them), so they are model
+/// rows, not a side channel. Membership lives in the
+/// [`GroupMember`] relation.
+///
+/// [`GroupMember`]: crate::relation::GroupMember
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Group {
+    pub name: String,
+    /// Declared `may_be_empty` — an empty group without it is a
+    /// checker error (vacuity fail-closed), so the declared intent
+    /// is a semantic fact selectors need.
+    pub may_be_empty: bool,
+    pub provenance: ProvenanceId,
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Phase {
     pub name: String,

@@ -86,7 +86,12 @@ pub enum KeyPredicate {
     Unknown,
 }
 
-/// What key values a publication site can produce.
+/// What key values a publication site can produce. Only meaningful
+/// on a KEYED topic: an unkeyed publish carries NO KeyDomain
+/// (`Publish.key_domain: Option<KeyDomain>` is `None`), and the
+/// validator enforces the correspondence both ways — inventing a
+/// domain for an unkeyed publish (or omitting one on a keyed topic)
+/// is not a model.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum KeyDomain {
     /// Statically exact value set (sorted, deduplicated).

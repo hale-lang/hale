@@ -69,6 +69,10 @@ table_id!(
     BindingId
 );
 table_id!(
+    /// A declared claim-vocabulary group (`group g = { ... }`).
+    GroupId
+);
+table_id!(
     /// A source-neutral origin record in the [`ProvenanceTable`].
     ///
     /// [`ProvenanceTable`]: crate::provenance::ProvenanceTable

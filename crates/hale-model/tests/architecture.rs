@@ -138,6 +138,7 @@ fn tiny_model() -> ApplicationModel {
                 provenance: p,
             }],
             bindings: vec![],
+            groups: vec![],
         },
         relations: Relations {
             realizes: vec![Realizes {
@@ -161,7 +162,7 @@ fn tiny_model() -> ApplicationModel {
                 function: FunctionId(0),
                 topic: TopicId(0),
                 site: 0,
-                key_domain: KeyDomain::Exact(vec![KeyValue::Int(1)]),
+                key_domain: Some(KeyDomain::Exact(vec![KeyValue::Int(1)])),
                 disposition: PublishDisposition::Default,
                 provenance: p,
             }],
@@ -372,7 +373,7 @@ fn unsorted_supervises_are_not_canonical() {
 fn nested_key_sets_must_be_canonical() {
     let mut m = tiny_model();
     m.relations.publishes[0].key_domain =
-        KeyDomain::Exact(vec![KeyValue::Int(2), KeyValue::Int(1)]);
+        Some(KeyDomain::Exact(vec![KeyValue::Int(2), KeyValue::Int(1)]));
     assert_eq!(
         m.validate(),
         Err(ModelError::NotCanonical {
@@ -389,7 +390,7 @@ fn nested_key_sets_must_be_canonical() {
 fn inline_unknown_key_domain_requires_a_hole() {
     let mut m = tiny_model();
     m.capabilities.exact_key_filters = true;
-    m.relations.publishes[0].key_domain = KeyDomain::Unknown;
+    m.relations.publishes[0].key_domain = Some(KeyDomain::Unknown);
     // No hole at all: the unknown is unrepresented.
     assert_eq!(
         m.validate(),
@@ -560,7 +561,7 @@ fn two_publish_sites_on_one_topic_are_representable() {
         function: FunctionId(0),
         topic: TopicId(0),
         site: 1,
-        key_domain: KeyDomain::Exact(vec![KeyValue::Int(2)]),
+        key_domain: Some(KeyDomain::Exact(vec![KeyValue::Int(2)])),
         disposition: PublishDisposition::Wait,
         provenance: ProvenanceId(0),
     });
@@ -569,7 +570,7 @@ fn two_publish_sites_on_one_topic_are_representable() {
     // The SAME site twice is still a duplicate.
     m.relations.publishes[1].site = 0;
     m.relations.publishes[1].key_domain =
-        KeyDomain::Exact(vec![KeyValue::Int(1)]);
+        Some(KeyDomain::Exact(vec![KeyValue::Int(1)]));
     m.relations.publishes[1].disposition = PublishDisposition::Default;
     assert_eq!(
         m.validate(),
@@ -683,7 +684,7 @@ fn fallback_contract_is_validated_both_ways() {
 #[test]
 fn key_values_cover_the_shipped_routing_types() {
     let mut m = tiny_model();
-    m.relations.publishes[0].key_domain = KeyDomain::Exact(vec![
+    m.relations.publishes[0].key_domain = Some(KeyDomain::Exact(vec![
         KeyValue::Bool(true),
         KeyValue::Int(3),
         KeyValue::Time(1_000),
@@ -691,6 +692,109 @@ fn key_values_cover_the_shipped_routing_types() {
         KeyValue::EnumTag("Buy".to_string()),
         KeyValue::Decimal { lo: 1, hi: 2 },
         KeyValue::Str("sym".to_string()),
-    ]);
+    ]));
     m.validate().expect("all key-type variants are usable");
+}
+
+// -----------------------------------------------------------------
+// Review round 3 — groups and the unkeyed key contract.
+// -----------------------------------------------------------------
+
+/// Groups are model rows (claims resolve selectors through them and
+/// the artifact shape-hashes them) — with membership as a typed
+/// relation over EntityRefs, covering loci AND free fns.
+#[test]
+fn groups_are_typed_model_rows() {
+    let mut m = tiny_model();
+    let p = ProvenanceId(0);
+    m.entities.groups = vec![
+        Group {
+            name: "probes".to_string(),
+            may_be_empty: true,
+            provenance: p,
+        },
+        Group {
+            name: "workers".to_string(),
+            may_be_empty: false,
+            provenance: p,
+        },
+    ];
+    m.relations.group_members = vec![
+        GroupMember {
+            group: GroupId(1),
+            member: EntityRef::LocusDecl(LocusDeclId(1)),
+            provenance: p,
+        },
+        GroupMember {
+            group: GroupId(1),
+            member: EntityRef::Function(FunctionId(0)),
+            provenance: p,
+        },
+    ];
+    // Members sort by (group, member); the rows above are reversed.
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::NotCanonical {
+            table: "group_members",
+            index: 1
+        })
+    );
+    m.relations.group_members.swap(0, 1);
+    m.validate().expect("sorted group membership is lawful");
+
+    // Dangling group id refused (perturb the LAST row so the table
+    // stays sorted and the reference check is what fires).
+    m.relations.group_members[1].group = GroupId(9);
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::DanglingId {
+            table: "group_members",
+            index: 1
+        })
+    );
+}
+
+/// The unkeyed contract, all four directions: an unkeyed publish
+/// carries NO key domain; a keyed publish carries one; an unkeyed
+/// topic admits only the plain subscription; keyed predicates need
+/// keyed topics.
+#[test]
+fn keyedness_must_match_the_topic_both_ways() {
+    // Keyed topic (tiny_model default), publish without a domain.
+    let mut m = tiny_model();
+    m.relations.publishes[0].key_domain = None;
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::KeyContract {
+            table: "publishes",
+            index: 0
+        })
+    );
+
+    // Unkeyed topic, publish WITH a domain: inventing a meaning.
+    let mut m = tiny_model();
+    m.entities.topics[0].key = None;
+    m.relations.subscribes[0].key_predicate = KeyPredicate::Any;
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::KeyContract {
+            table: "publishes",
+            index: 0
+        })
+    );
+
+    // Fully unkeyed: publish None + Any subscription is lawful.
+    m.relations.publishes[0].key_domain = None;
+    m.validate().expect("unkeyed topic, unkeyed rows: lawful");
+
+    // A keyed predicate on the unkeyed topic is refused.
+    m.relations.subscribes[0].key_predicate =
+        KeyPredicate::EqLiteral(KeyValue::Int(1));
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::KeyContract {
+            table: "subscribes",
+            index: 0
+        })
+    );
 }

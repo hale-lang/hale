@@ -138,15 +138,15 @@ pub use application::{
 };
 pub use capability::Capabilities;
 pub use entity::{
-    Binding, BindingRole, Function, FunctionKind, LocusDecl, LocusInstance,
-    PayloadContract, Phase, Seed, Subject, ThreadDomain, Topic,
-    TransportKind,
+    Binding, BindingRole, Function, FunctionKind, Group, LocusDecl,
+    LocusInstance, PayloadContract, Phase, Seed, Subject, ThreadDomain,
+    Topic, TransportKind,
 };
 pub use hole::{Hole, HoleKind, RelationSet};
 pub use ids::{
-    BindingId, EntityRef, FunctionId, LocusDeclId, LocusInstanceId,
-    PayloadContractId, PhaseId, ProvenanceId, SeedId, SourceId, SubjectId,
-    ThreadDomainId, TopicId,
+    BindingId, EntityRef, FunctionId, GroupId, LocusDeclId,
+    LocusInstanceId, PayloadContractId, PhaseId, ProvenanceId, SeedId,
+    SourceId, SubjectId, ThreadDomainId, TopicId,
 };
 pub use keys::{
     BindingLossBehavior, Capacity, KeyDomain, KeyOnUnmatched, KeyPredicate,
@@ -155,7 +155,7 @@ pub use keys::{
 };
 pub use provenance::{Provenance, ProvenanceTable};
 pub use relation::{
-    AffinedTo, Call, CoreSet, DeclaredIn, DispatchKind, MemberOf, Owns,
-    PhaseOf, PlacedIn, Publish, Realizes, Subscribe, Supervises,
-    SupervisionPolicy, TopicBinding,
+    AffinedTo, Call, CoreSet, DeclaredIn, DispatchKind, GroupMember,
+    MemberOf, Owns, PhaseOf, PlacedIn, Publish, Realizes, Subscribe,
+    Supervises, SupervisionPolicy, TopicBinding,
 };

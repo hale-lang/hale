@@ -9,15 +9,15 @@
 
 use crate::capability::Capabilities;
 use crate::entity::{
-    Binding, Function, LocusDecl, LocusInstance, PayloadContract, Phase,
-    Seed, Subject, ThreadDomain, Topic,
+    Binding, Function, Group, LocusDecl, LocusInstance, PayloadContract,
+    Phase, Seed, Subject, ThreadDomain, Topic,
 };
 use crate::hole::Hole;
 use crate::ids::{EntityRef, ProvenanceId};
 use crate::provenance::{Provenance, ProvenanceTable};
 use crate::relation::{
-    AffinedTo, Call, DeclaredIn, MemberOf, Owns, PhaseOf, PlacedIn,
-    Publish, Realizes, Subscribe, Supervises, TopicBinding,
+    AffinedTo, Call, DeclaredIn, GroupMember, MemberOf, Owns, PhaseOf,
+    PlacedIn, Publish, Realizes, Subscribe, Supervises, TopicBinding,
 };
 
 /// The meaning of the model's rows. Bumped when a row's
@@ -79,6 +79,7 @@ pub struct Entities {
     pub seeds: Vec<Seed>,
     pub thread_domains: Vec<ThreadDomain>,
     pub bindings: Vec<Binding>,
+    pub groups: Vec<Group>,
 }
 
 #[derive(Clone, Default, Debug)]
@@ -95,6 +96,7 @@ pub struct Relations {
     pub affined_to: Vec<AffinedTo>,
     pub binds: Vec<TopicBinding>,
     pub supervises: Vec<Supervises>,
+    pub group_members: Vec<GroupMember>,
 }
 
 #[derive(Clone, Debug)]
@@ -156,6 +158,11 @@ pub enum ModelError {
     /// Fallback subscription — the policy's required catch is
     /// missing.
     FallbackUncovered { topic: usize },
+    /// The keyed-ness of a publish/subscription disagrees with its
+    /// topic: a key domain on an unkeyed topic (or none on a keyed
+    /// one), or a keyed predicate (`EqLiteral`/`EqReplica`/
+    /// `Fallback`/`Unknown`) filtering an unkeyed topic.
+    KeyContract { table: &'static str, index: usize },
 }
 
 impl ApplicationModel {
@@ -183,6 +190,7 @@ impl ApplicationModel {
     /// | `affined_to`     | (domain)                         |
     /// | `binds`          | (topic, binding)                 |
     /// | `supervises`     | (parent, child, error_type)      |
+    /// | `group_members`  | (group, member)                  |
     /// | `labels`         | (at, label)                      |
     /// | `weights`        | (at, metric)                     |
     /// | `holes`          | (at, kind, reason)               |
@@ -222,6 +230,7 @@ impl ApplicationModel {
             "thread_domains",
             e.thread_domains.iter().map(|d| &d.name),
         )?;
+        check_sorted_keys("groups", e.groups.iter().map(|g| &g.name))?;
         check_sorted_keys(
             "bindings",
             e.bindings
@@ -295,6 +304,9 @@ impl ApplicationModel {
         }
         for (i, d) in e.thread_domains.iter().enumerate() {
             prov("thread_domains", i, d.provenance)?;
+        }
+        for (i, g) in e.groups.iter().enumerate() {
+            prov("groups", i, g.provenance)?;
         }
         for (i, b) in e.bindings.iter().enumerate() {
             if b.subject.index() >= subjects {
@@ -443,19 +455,31 @@ impl ApplicationModel {
                     index: i,
                 });
             }
-            if let crate::keys::KeyDomain::Exact(vals) = &x.key_domain {
+            // Keyed-ness must match the topic, both ways.
+            let topic_keyed =
+                e.topics[x.topic.index()].key.is_some();
+            if topic_keyed != x.key_domain.is_some() {
+                return Err(ModelError::KeyContract {
+                    table: "publishes",
+                    index: i,
+                });
+            }
+            if let Some(crate::keys::KeyDomain::Exact(vals)) =
+                &x.key_domain
+            {
                 check_sorted_keys("publishes.key_domain", vals.iter())
                     .map_err(|_| ModelError::NotCanonical {
                         table: "publishes.key_domain",
                         index: i,
                     })?;
             }
-            if matches!(x.key_domain, crate::keys::KeyDomain::Unknown)
-                && !hole_at(
-                    EntityRef::Function(x.function),
-                    crate::hole::RelationSet::KEY_FILTERS,
-                )
-            {
+            if matches!(
+                x.key_domain,
+                Some(crate::keys::KeyDomain::Unknown)
+            ) && !hole_at(
+                EntityRef::Function(x.function),
+                crate::hole::RelationSet::KEY_FILTERS,
+            ) {
                 return Err(ModelError::UnrepresentedUnknown {
                     table: "publishes",
                     index: i,
@@ -478,6 +502,19 @@ impl ApplicationModel {
             }
             if matches!(x.capacity, crate::keys::Capacity::Bounded(0)) {
                 return Err(ModelError::InvalidBound {
+                    table: "subscribes",
+                    index: i,
+                });
+            }
+            // A keyed predicate needs a keyed topic; unkeyed topics
+            // admit only the plain full-delivery subscription.
+            if e.topics[x.topic.index()].key.is_none()
+                && !matches!(
+                    x.key_predicate,
+                    crate::keys::KeyPredicate::Any
+                )
+            {
+                return Err(ModelError::KeyContract {
                     table: "subscribes",
                     index: i,
                 });
@@ -603,6 +640,21 @@ impl ApplicationModel {
                 });
             }
             prov("supervises", i, x.provenance)?;
+        }
+
+        check_sorted_keys(
+            "group_members",
+            r.group_members.iter().map(|x| (x.group, x.member)),
+        )?;
+        let groups_len = e.groups.len();
+        for (i, x) in r.group_members.iter().enumerate() {
+            if x.group.index() >= groups_len || !ref_ok(&x.member) {
+                return Err(ModelError::DanglingId {
+                    table: "group_members",
+                    index: i,
+                });
+            }
+            prov("group_members", i, x.provenance)?;
         }
 
         // --- labels / weights.
