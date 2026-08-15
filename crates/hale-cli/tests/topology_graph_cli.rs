@@ -697,3 +697,78 @@ fn referentially_invalid_rows_are_refused() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Round 4 (shared P1): `uninhabited_interface_call:*` rows are
+/// known-DEAD closed-world dispatches, not residue — the artifact's
+/// own documented distinction. They must render neutrally, never
+/// join the unresolved count, and a clean-but-for-dead-sites
+/// application must not be visualized as incomplete.
+#[test]
+fn dead_dispatches_are_not_rendered_as_unresolved() {
+    let dir = workdir("dead");
+    let artifact = dump_artifact(&dir, &fixture("pipeline.hl"));
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+
+    // Add a dead-dispatch row alongside the genuine indirect_call.
+    let body = strip_trailer(&raw).replace(
+        "{\"fn\": \"call_it\", \"reasons\": [\"indirect_call\"]}",
+        "{\"fn\": \"call_it\", \"reasons\": [\"indirect_call\"]}, \
+         {\"fn\": \"double\", \"reasons\": [\"uninhabited_interface_call:Notifier.notify\"]}",
+    );
+    let mixed = dir.join("dead.topology");
+    std::fs::write(&mixed, restamp_digest(&body)).unwrap();
+
+    // System view: the unresolved count stays 1 (the genuine hole);
+    // the dead site gets its own neutral card stating exactness.
+    let mmd = render(&mixed, &["--format", "mermaid"]);
+    assert!(
+        mmd.contains("1 unresolved"),
+        "dead dispatch must not inflate the unresolved count:\n{}",
+        mmd
+    );
+    assert!(
+        mmd.contains("1 dead dispatch")
+            && mmd.contains("call relation stays exact"),
+        "dead dispatch gets its own neutral card:\n{}",
+        mmd
+    );
+
+    // Residue view: both render, distinctly — the dead site as a
+    // dead dispatch, not an unresolved hole.
+    let svg = render(&mixed, &["--view", "residue"]);
+    assert!(svg.contains("indirect_call"), "genuine hole rendered");
+    assert!(
+        svg.contains("dead dispatch: Notifier.notify")
+            && svg.contains("dead (uninhabited)"),
+        "dead site rendered neutrally:\n{}",
+        svg
+    );
+    // The neutral grey, not the residue red, styles the dead node.
+    assert!(
+        svg.contains("#718096"),
+        "dead node uses the neutral palette"
+    );
+
+    // A DEAD-ONLY artifact renders as exact: no unresolved card at
+    // all, and the residue view says so.
+    let body = strip_trailer(&raw).replace(
+        "{\"fn\": \"call_it\", \"reasons\": [\"indirect_call\"]}",
+        "{\"fn\": \"call_it\", \"reasons\": [\"uninhabited_interface_call:Notifier.notify\"]}",
+    );
+    let deadonly = dir.join("deadonly.topology");
+    std::fs::write(&deadonly, restamp_digest(&body)).unwrap();
+    let mmd = render(&deadonly, &["--format", "mermaid"]);
+    assert!(
+        !mmd.contains("unresolved"),
+        "a dead-only application is not incomplete:\n{}",
+        mmd
+    );
+    let residue = render(&deadonly, &["--view", "residue", "--format", "mermaid"]);
+    assert!(
+        residue.contains("no unresolved residue"),
+        "residue view states exactness over dead-only unknowns:\n{}",
+        residue
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

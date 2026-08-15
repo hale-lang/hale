@@ -764,6 +764,9 @@ enum EdgeKind {
     Publish,
     Subscribe,
     Hole,
+    /// A known-dead uninhabited-interface dispatch: neutral, NOT
+    /// residue — the call relation stays exact.
+    Dead,
 }
 
 #[derive(Clone)]
@@ -791,6 +794,9 @@ struct TopicNode {
 struct UnknownNode {
     id: String, // "unknown:<fn>" — the edge from its fn carries the anchor
     label: String,
+    /// True for dead uninhabited dispatches (rendered neutrally,
+    /// never counted as unresolved).
+    dead: bool,
 }
 
 #[derive(Clone)]
@@ -814,6 +820,7 @@ enum CardTone {
     Ok,
     Bad,
     Warn,
+    Info,
 }
 
 struct RenderGraph {
@@ -996,23 +1003,67 @@ fn build_graph(
         }
     }
 
-    // Unknown residue nodes (residue view renders them; every other
-    // view — claim included — notes them in a card, so residue is
-    // never invisible).
+    // Unknown residue nodes. The artifact's unknowns section holds
+    // two DIFFERENT things (its own documented distinction): genuine
+    // unresolved residue, and `uninhabited_interface_call:*` rows,
+    // which are known-DEAD closed-world dispatches retained only so
+    // a later conformer changes the shape hash — the call relation
+    // stays exact. Rendering them as "unresolved" would show a
+    // clean application as incomplete, so they are partitioned:
+    // dead sites render neutrally and never join unresolved counts.
+    let is_dead =
+        |r: &String| r.starts_with("uninhabited_interface_call:");
     let unknown_rows = art.unknowns();
+    let mut genuine: Vec<(String, Vec<String>)> = Vec::new();
+    let mut dead: Vec<(String, Vec<String>)> = Vec::new();
+    for (f, reasons) in &unknown_rows {
+        let (d, g): (Vec<String>, Vec<String>) =
+            reasons.iter().cloned().partition(&is_dead);
+        if !g.is_empty() {
+            genuine.push((f.clone(), g));
+        }
+        if !d.is_empty() {
+            dead.push((f.clone(), d));
+        }
+    }
     let mut unknowns: Vec<UnknownNode> = Vec::new();
     if view == "residue" {
-        for (f, reasons) in &unknown_rows {
+        for (f, reasons) in &genuine {
             let id = format!("unknown:{}", f);
             unknowns.push(UnknownNode {
                 id: id.clone(),
                 label: reasons.join("; "),
+                dead: false,
             });
             edges.push(Edge {
                 from: f.clone(),
                 to: id,
                 kind: EdgeKind::Hole,
                 label: "unresolved".to_string(),
+                highlight: false,
+            });
+        }
+        for (f, reasons) in &dead {
+            let id = format!("unknown:dead:{}", f);
+            unknowns.push(UnknownNode {
+                id: id.clone(),
+                label: reasons
+                    .iter()
+                    .map(|r| {
+                        r.replace(
+                            "uninhabited_interface_call:",
+                            "dead dispatch: ",
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; "),
+                dead: true,
+            });
+            edges.push(Edge {
+                from: f.clone(),
+                to: id,
+                kind: EdgeKind::Dead,
+                label: "dead (uninhabited)".to_string(),
                 highlight: false,
             });
         }
@@ -1023,7 +1074,7 @@ fn build_graph(
     let mut cards: Vec<Card> = Vec::new();
     match view {
         "residue" => {
-            if unknown_rows.is_empty() {
+            if genuine.is_empty() {
                 cards.push(Card {
                     title: "no unresolved residue".to_string(),
                     lines: vec![
@@ -1094,14 +1145,37 @@ fn build_graph(
         }
         _ => {}
     }
-    if view != "residue" && !unknown_rows.is_empty() {
+    if view != "residue" && !genuine.is_empty() {
         cards.push(Card {
-            title: format!("{} unresolved", unknown_rows.len()),
-            lines: unknown_rows
+            title: format!("{} unresolved", genuine.len()),
+            lines: genuine
                 .iter()
                 .map(|(f, r)| format!("{}: {}", f, r.join("; ")))
                 .collect(),
             tone: CardTone::Warn,
+        });
+    }
+    if !dead.is_empty() {
+        cards.push(Card {
+            title: format!(
+                "{} dead dispatch{}",
+                dead.len(),
+                if dead.len() == 1 { "" } else { "es" }
+            ),
+            lines: dead
+                .iter()
+                .map(|(f, r)| {
+                    format!(
+                        "{}: {} — uninhabited; call relation stays exact",
+                        f,
+                        r.join("; ").replace(
+                            "uninhabited_interface_call:",
+                            ""
+                        )
+                    )
+                })
+                .collect(),
+            tone: CardTone::Info,
         });
     }
 
@@ -1378,7 +1452,7 @@ fn render_mermaid(g: &RenderGraph) -> String {
         let arrow = match e.kind {
             EdgeKind::Publish | EdgeKind::Call => "-->",
             EdgeKind::Subscribe | EdgeKind::CallViaStdlib => "-.->",
-            EdgeKind::Hole => "-.->",
+            EdgeKind::Hole | EdgeKind::Dead => "-.->",
         };
         out.push_str(&format!(
             "  {} {}|{}| {}\n",
@@ -1481,7 +1555,7 @@ fn render_dot(g: &RenderGraph) -> String {
             EdgeKind::Subscribe => "dashed",
             EdgeKind::Call => "solid",
             EdgeKind::CallViaStdlib => "dashed",
-            EdgeKind::Hole => "dotted",
+            EdgeKind::Hole | EdgeKind::Dead => "dotted",
         };
         out.push_str(&format!(
             "  \"{}\" -> \"{}\" [label=\"{}\", style={}{}];\n",
@@ -1708,6 +1782,7 @@ fn render_svg(g: &RenderGraph) -> String {
                 ("#718096", " stroke-dasharray=\"6,4\"")
             }
             EdgeKind::Hole => ("#c53030", " stroke-dasharray=\"2,3\""),
+            EdgeKind::Dead => ("#718096", " stroke-dasharray=\"2,3\""),
         };
         let (color, width_attr) = if e.highlight {
             ("#d69e2e", " stroke-width=\"2.5\"")
@@ -1839,18 +1914,25 @@ fn render_svg(g: &RenderGraph) -> String {
         ));
     }
 
-    // Unknown nodes.
+    // Unknown nodes: red for genuine residue, neutral grey for
+    // known-dead dispatches.
     for (u, (_, p)) in g.unknowns.iter().zip(&unk_pos) {
+        let (fill, stroke) = if u.dead {
+            ("#f7fafc", "#718096")
+        } else {
+            ("#fff5f5", "#c53030")
+        };
         s.push_str(&format!(
             "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"4\" \
-             fill=\"#fff5f5\" stroke=\"#c53030\" stroke-width=\"1.5\" \
+             fill=\"{}\" stroke=\"{}\" stroke-width=\"1.5\" \
              stroke-dasharray=\"4,3\"/>\n",
-            p.x, p.y, p.w, p.h
+            p.x, p.y, p.w, p.h, fill, stroke
         ));
         s.push_str(&format!(
-            "<text x=\"{}\" y=\"{}\" fill=\"#c53030\">{}</text>\n",
+            "<text x=\"{}\" y=\"{}\" fill=\"{}\">{}</text>\n",
             p.x + PAD,
             p.y + LINE_H - 4,
+            stroke,
             xml_escape(&u.label)
         ));
     }
@@ -1861,6 +1943,7 @@ fn render_svg(g: &RenderGraph) -> String {
             CardTone::Ok => ("#2f855a", "#f0fff4", "#22543d"),
             CardTone::Bad => ("#c53030", "#fff5f5", "#742a2a"),
             CardTone::Warn => ("#b7791f", "#fffff0", "#744210"),
+            CardTone::Info => ("#4a5568", "#f7fafc", "#2d3748"),
         };
         s.push_str(&format!(
             "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" rx=\"6\" \
