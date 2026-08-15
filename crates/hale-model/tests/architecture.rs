@@ -108,6 +108,10 @@ fn tiny_model() -> ApplicationModel {
                 key: Some(TopicKey {
                     field: "sensor".to_string(),
                 }),
+                bound: Some(TopicBound {
+                    capacity: 64,
+                    on_full: TopicOnFull::Fail,
+                }),
                 provenance: p,
             }],
             subjects: vec![Subject {
@@ -135,6 +139,11 @@ fn tiny_model() -> ApplicationModel {
             bindings: vec![],
         },
         relations: Relations {
+            realizes: vec![Realizes {
+                instance: LocusInstanceId(0),
+                decl: LocusDeclId(1),
+                provenance: p,
+            }],
             member_of: vec![
                 MemberOf {
                     function: FunctionId(0),
@@ -298,4 +307,234 @@ fn duplicate_rows_are_not_canonical() {
             index: 1
         })
     );
+}
+
+// -----------------------------------------------------------------
+// Review round 1 — the laws validate() previously stated but did
+// not enforce.
+// -----------------------------------------------------------------
+
+/// The review's exact counterexample: a duplicated relation row
+/// near the END of the schema must be rejected, so a newly added
+/// table cannot accidentally miss the canonical law.
+#[test]
+fn duplicate_publishes_are_not_canonical() {
+    let mut m = tiny_model();
+    m.relations.publishes.push(m.relations.publishes[0].clone());
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::NotCanonical {
+            table: "publishes",
+            index: 1
+        })
+    );
+}
+
+#[test]
+fn unsorted_supervises_are_not_canonical() {
+    let mut m = tiny_model();
+    let p = ProvenanceId(0);
+    m.relations.supervises = vec![
+        Supervises {
+            parent: LocusDeclId(1),
+            child: LocusDeclId(0),
+            policy: SupervisionPolicy {
+                ops: vec!["restart".to_string()],
+                retry_bound: Some(3),
+            },
+            provenance: p,
+        },
+        Supervises {
+            parent: LocusDeclId(0),
+            child: LocusDeclId(1),
+            policy: SupervisionPolicy {
+                ops: vec!["restart".to_string()],
+                retry_bound: None,
+            },
+            provenance: p,
+        },
+    ];
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::NotCanonical {
+            table: "supervises",
+            index: 1
+        })
+    );
+}
+
+#[test]
+fn nested_key_sets_must_be_canonical() {
+    let mut m = tiny_model();
+    m.relations.publishes[0].key_domain =
+        KeyDomain::Exact(vec![KeyValue::Int(2), KeyValue::Int(1)]);
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::NotCanonical {
+            table: "publishes.key_domain",
+            index: 0
+        })
+    );
+}
+
+/// The review's second counterexample: an inline Unknown may not
+/// hide inside an otherwise resolved row — it needs typed residue,
+/// and the residue then drives the capability law.
+#[test]
+fn inline_unknown_key_domain_requires_a_hole() {
+    let mut m = tiny_model();
+    m.capabilities.exact_key_filters = true;
+    m.relations.publishes[0].key_domain = KeyDomain::Unknown;
+    // No hole at all: the unknown is unrepresented.
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::UnrepresentedUnknown {
+            table: "publishes",
+            index: 0
+        })
+    );
+    // With the hole, the capability contradiction fires instead.
+    m.holes.push(Hole {
+        at: EntityRef::Function(FunctionId(0)),
+        kind: HoleKind::UnknownKeyDomain,
+        hides: RelationSet::KEY_FILTERS,
+        reason: "computed shard key".to_string(),
+        provenance: ProvenanceId(0),
+    });
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::CapabilityContradiction {
+            capability: "exact_key_filters"
+        })
+    );
+    // Withdrawing the claim makes the honest value lawful.
+    m.capabilities.exact_key_filters = false;
+    m.validate().expect("unknown + hole + no claim is lawful");
+}
+
+#[test]
+fn zero_bounds_are_invalid() {
+    let mut m = tiny_model();
+    m.relations.subscribes[0].capacity = Capacity::Bounded(0);
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::InvalidBound {
+            table: "subscribes",
+            index: 0
+        })
+    );
+    let mut m = tiny_model();
+    m.entities.topics[0].bound = Some(TopicBound {
+        capacity: 0,
+        on_full: TopicOnFull::Fail,
+    });
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::InvalidBound {
+            table: "topics",
+            index: 0
+        })
+    );
+}
+
+/// One fact, two access paths: the instance's `decl` field and its
+/// `realizes` row must exist (totality), be unique, and agree.
+#[test]
+fn realizes_must_be_total_unique_and_agree() {
+    // Missing row.
+    let mut m = tiny_model();
+    m.relations.realizes.clear();
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::RealizesIncomplete { instance: 0 })
+    );
+    // Disagreeing row (instance says Worker, relation says App).
+    let mut m = tiny_model();
+    m.relations.realizes[0].decl = LocusDeclId(0);
+    assert_eq!(m.validate(), Err(ModelError::RealizesDisagrees { index: 0 }));
+    // Duplicate rows: not unique (tripped as incomplete-≠-1).
+    let mut m = tiny_model();
+    let mut dup = m.relations.realizes[0].clone();
+    dup.decl = LocusDeclId(0);
+    m.relations.realizes.insert(0, dup);
+    assert!(m.validate().is_err());
+}
+
+#[test]
+fn binds_subject_agreement_is_checked() {
+    let mut m = tiny_model();
+    let p = ProvenanceId(0);
+    // A second subject the binding points at while the topic keeps
+    // the first — the repeated fact drifted.
+    m.entities.subjects.push(Subject {
+        pattern: "z.other".to_string(),
+        exact: true,
+        provenance: p,
+    });
+    m.entities.bindings.push(Binding {
+        subject: SubjectId(1),
+        transport: TransportKind::Unix,
+        role: BindingRole::Listen,
+        loss: BindingLossBehavior::Fail,
+        provenance: p,
+    });
+    m.relations.binds.push(TopicBinding {
+        topic: TopicId(0),
+        binding: BindingId(0),
+        provenance: p,
+    });
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::BindingSubjectDisagrees { index: 0 })
+    );
+    // Agreeing subjects are lawful.
+    m.entities.bindings[0].subject = SubjectId(0);
+    m.validate().expect("agreeing binding subject is lawful");
+}
+
+#[test]
+fn provenance_record_contents_must_resolve() {
+    // Dangling SourceId inside an otherwise-indexed record.
+    let mut m = tiny_model();
+    m.provenance.records[0] = Provenance::Source {
+        source: SourceId(999),
+        span: (0, 10),
+    };
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::InvalidProvenanceRecord { index: 0 })
+    );
+    // Inverted span.
+    let mut m = tiny_model();
+    m.provenance.records[0] = Provenance::Source {
+        source: SourceId(0),
+        span: (10, 4),
+    };
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::InvalidProvenanceRecord { index: 0 })
+    );
+}
+
+/// Every capability flag participates in the contradiction law — an
+/// unmapped flag would be unfalsifiable.
+#[test]
+fn every_capability_flag_is_mapped_to_a_family() {
+    let all = Capabilities {
+        exact_calls: true,
+        exact_bus_endpoints: true,
+        exact_key_filters: true,
+        exact_ownership: true,
+        exact_placement: true,
+        exact_routes: true,
+        exact_effects: true,
+        exact_cardinality: true,
+        exact_delivery_guarantees: true,
+    };
+    let vouched = all.vouched_families();
+    assert_eq!(vouched.len(), 9, "every flag appears exactly once");
+    for (name, claimed, family) in vouched {
+        assert!(claimed, "{} must carry its flag", name);
+        assert!(!family.is_empty(), "{} must vouch a real family", name);
+    }
 }

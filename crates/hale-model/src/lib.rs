@@ -150,7 +150,7 @@ pub use ids::{
 };
 pub use keys::{
     BindingLossBehavior, Capacity, KeyDomain, KeyPredicate, KeyValue,
-    PublishDisposition, ShedPolicy, TopicKey,
+    PublishDisposition, ShedPolicy, TopicBound, TopicKey, TopicOnFull,
 };
 pub use provenance::{Provenance, ProvenanceTable};
 pub use relation::{

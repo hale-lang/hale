@@ -28,7 +28,7 @@ pub struct TopicKey {
 }
 
 /// What a subscription's `where key == …` filter admits.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum KeyPredicate {
     /// Unkeyed subscription: every message on the subject.
     Any,
@@ -59,12 +59,36 @@ pub enum KeyDomain {
 
 /// A queue bound. `Unbounded` is the declared default, not an
 /// unknown — an unknown capacity would be a [`Hole`].
+/// `Bounded(0)` is invalid (the settled #255 design excludes it);
+/// [`ApplicationModel::validate`] rejects it.
 ///
 /// [`Hole`]: crate::hole::Hole
+/// [`ApplicationModel::validate`]: crate::application::ApplicationModel::validate
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Capacity {
     Unbounded,
     Bounded(u64),
+}
+
+/// The topic-level half of the #255 bounds design: `bounded(N)`
+/// declared ON THE TOPIC, applying to every publisher, with the
+/// topic's `on_full` contract selected before any per-site
+/// disposition. Not reconstructible from publish rows — the N and
+/// the refusal contract are topic facts, which is why they are
+/// schema now (Change 1 pins what is expensive to retrofit).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct TopicBound {
+    /// Must be > 0; validate rejects `0`.
+    pub capacity: u64,
+    pub on_full: TopicOnFull,
+}
+
+/// What a full bounded topic does to a publish.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TopicOnFull {
+    /// `on_full: fail` — the send contract refuses at the publish
+    /// site (before any per-site disposition applies).
+    Fail,
 }
 
 /// What a bounded subscription does when full (GH #255 vocabulary).

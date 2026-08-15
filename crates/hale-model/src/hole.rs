@@ -28,6 +28,16 @@ impl RelationSet {
     pub const SUPERVISES: RelationSet = RelationSet(1 << 6);
     pub const EFFECTS: RelationSet = RelationSet(1 << 7);
     pub const ROUTES: RelationSet = RelationSet(1 << 8);
+    /// Key-filter knowledge: hidden by unknown key domains or
+    /// predicates. Every inline `KeyDomain::Unknown` /
+    /// `KeyPredicate::Unknown` REQUIRES a hole hiding this family
+    /// (validated) — an unknown may not hide solely inside an
+    /// otherwise resolved row.
+    pub const KEY_FILTERS: RelationSet = RelationSet(1 << 9);
+    /// Cardinality knowledge (instance/publisher/subscriber counts).
+    pub const CARDINALITY: RelationSet = RelationSet(1 << 10);
+    /// Delivery-guarantee knowledge (the must-deliver side).
+    pub const DELIVERY: RelationSet = RelationSet(1 << 11);
 
     pub const fn union(self, other: RelationSet) -> RelationSet {
         RelationSet(self.0 | other.0)
@@ -44,7 +54,7 @@ impl RelationSet {
 }
 
 /// Why the model does not know.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum HoleKind {
     /// A call through a fn pointer / indirect site.
     IndirectCall,

@@ -63,7 +63,7 @@ pub struct Owns {
 /// How a resolved call dispatches. The *fact* of the mechanism —
 /// which lowering flavor it gets (direct call, static bucket, local
 /// queue) is a `DispatchPlan` conclusion, not a model row.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum DispatchKind {
     Direct,
     /// Dispatch through an interface, fanned to a conformer in the

@@ -95,6 +95,9 @@ pub struct Topic {
     pub payload: PayloadContractId,
     /// `Some` for `keyed_by` topics.
     pub key: Option<TopicKey>,
+    /// `Some` for `bounded(N)` topics — the publisher-facing
+    /// capacity + refusal contract (GH #255's topic-level knob).
+    pub bound: Option<crate::keys::TopicBound>,
     pub provenance: ProvenanceId,
 }
 
@@ -120,7 +123,7 @@ pub struct ThreadDomain {
     pub provenance: ProvenanceId,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum TransportKind {
     Unix,
     Udp,
@@ -129,7 +132,7 @@ pub enum TransportKind {
     Adapter(String),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum BindingRole {
     Listen,
     Connect,

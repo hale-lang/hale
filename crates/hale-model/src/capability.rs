@@ -26,18 +26,39 @@ pub struct Capabilities {
 
 impl Capabilities {
     /// The relation families each capability vouches for — the
-    /// contradiction check in `validate` walks this mapping.
-    pub fn vouched_families(self) -> Vec<(bool, RelationSet)> {
+    /// contradiction check in `validate` walks this mapping. EVERY
+    /// flag participates: a capability with no mapped family would
+    /// be unfalsifiable, which is exactly the drift this law
+    /// exists to prevent.
+    pub fn vouched_families(
+        self,
+    ) -> Vec<(&'static str, bool, RelationSet)> {
         vec![
-            (self.exact_calls, RelationSet::CALLS),
+            ("exact_calls", self.exact_calls, RelationSet::CALLS),
             (
+                "exact_bus_endpoints",
                 self.exact_bus_endpoints,
                 RelationSet::PUBLISHES.union(RelationSet::SUBSCRIBES),
             ),
-            (self.exact_ownership, RelationSet::OWNS),
-            (self.exact_placement, RelationSet::PLACED),
-            (self.exact_routes, RelationSet::ROUTES),
-            (self.exact_effects, RelationSet::EFFECTS),
+            (
+                "exact_key_filters",
+                self.exact_key_filters,
+                RelationSet::KEY_FILTERS,
+            ),
+            ("exact_ownership", self.exact_ownership, RelationSet::OWNS),
+            ("exact_placement", self.exact_placement, RelationSet::PLACED),
+            ("exact_routes", self.exact_routes, RelationSet::ROUTES),
+            ("exact_effects", self.exact_effects, RelationSet::EFFECTS),
+            (
+                "exact_cardinality",
+                self.exact_cardinality,
+                RelationSet::CARDINALITY,
+            ),
+            (
+                "exact_delivery_guarantees",
+                self.exact_delivery_guarantees,
+                RelationSet::DELIVERY,
+            ),
         ]
     }
 }
