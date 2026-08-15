@@ -1045,6 +1045,43 @@ acted on. Consequences, all normative:
   still bound; the serve loop re-arms and accepts the next peer
   (GH #233 step 2), so rolling restarts of connect-side
   binaries work without policy.
+- **Listen-side ingress the kernel accepted is delivered
+  (GH #468).** Three normative pieces, closing what used to be
+  silent loss at the registry's edges:
+  1. *Binding readers imply the locked queue.* Any `bindings { }`
+     block makes the program off-thread for queue purposes
+     (compile-time, same flag as pinned placement), and the
+     runtime re-asserts it whenever it spawns a reader thread
+     (covers `LOTUS_BUS_CONFIG`) — a concurrent reader enqueue
+     can never race the owner's drain on the unlocked
+     single-threaded path. This was the actual mechanism behind
+     "a loaded run occasionally loses a mid-stream wire
+     message": two binding readers and the drain on an unlocked
+     queue.
+  2. *The boot window buffers.* A message received between
+     transport realization and the same birth's (later)
+     subscriber registrations is buffered — bounded, per
+     binding: 64 messages / 1 MiB, oldest-first eviction,
+     counted (`buffered_early` / `dropped_early` in the
+     counters dump) — and flushed FIFO the moment a matching
+     registration lands. A relay-shaped program with no local
+     subscriber degrades to the old drop behavior at the cap,
+     counted instead of silent. Post-boot, a message with no
+     registered deserializer remains the documented
+     relay-shaped skip.
+  3. *Exit quiesces before teardown.* At every main-exit point,
+     before pools join and loci dissolve, listen fds half-close
+     (new connections are refused; queued data and
+     already-accepted backlog connections stay readable — the
+     kernel returns queued AF_UNIX data before EOF even after
+     `shutdown`), readers drain to true EOF through the
+     still-intact registry, buffered boot-window residue is
+     flushed, and one final local drain delivers to still-alive
+     handlers. Bounded: `LOTUS_BUS_QUIESCE_MS` (default 500,
+     `0` disables), loud if exceeded — a silent peer holding a
+     connection open cannot stall exit. Wire data arriving
+     after the half-close arrived after exit and is outside the
+     contract.
 - **Connect-side loss is structural, with reconnection as
   supervision policy (GH #233 steps 3–4).** A send failure on a
   source-declared connect binding marks the entry *lost*

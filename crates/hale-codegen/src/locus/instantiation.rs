@@ -4016,6 +4016,13 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
             // no-op. Gated to the main locus: a non-main ephemeral
             // locus dissolving mid-program must not join global pools.
             if is_main_locus {
+                // GH #468: drain kernel-accepted LISTEN ingress
+                // while the registry, pools, and subscriber loci
+                // are all still alive (the main locus's run() just
+                // returned; nothing has dissolved yet).
+                if !self.is_wasm {
+                    self.emit_bus_ingress_quiesce()?;
+                }
                 self.emit_coop_pool_shutdown_all()?;
                 // GH #255: wake `or wait` parked publishers into
                 // the raise path before the pinned joins below.

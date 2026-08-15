@@ -19,6 +19,7 @@ pub(crate) trait BusRuntime<'ctx> {
         self_ptr: PointerValue<'ctx>,
     ) -> Result<(), CodegenError>;
     fn emit_bus_queue_destroy(&mut self) -> Result<(), CodegenError>;
+    fn emit_bus_ingress_quiesce(&mut self) -> Result<(), CodegenError>;
     fn emit_bus_register_shm_ring(
         &mut self,
         subject: &str,
@@ -137,6 +138,39 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
                 drain_fn,
                 &[queue_ptr.into()],
                 "bus.queue.drain",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
+    /// GH #468: emit `lotus_bus_ingress_quiesce(queue)` — the
+    /// main-exit drain of kernel-accepted LISTEN ingress. Must run
+    /// BEFORE the pool shutdown and the dissolve cascade so the
+    /// drained messages reach live handlers through live pools;
+    /// the runtime fn no-ops when no remote bindings exist.
+    fn emit_bus_ingress_quiesce(&mut self) -> Result<(), CodegenError> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let queue_global = self
+            .module
+            .get_global("lotus.bus_queue.global")
+            .expect("bus queue global declared");
+        let queue_ptr = self
+            .builder
+            .build_load(
+                ptr_t,
+                queue_global.as_pointer_value(),
+                "queue.quiesce.cur",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let quiesce_fn = self
+            .module
+            .get_function("lotus_bus_ingress_quiesce")
+            .expect("lotus_bus_ingress_quiesce declared");
+        self.builder
+            .build_call(
+                quiesce_fn,
+                &[queue_ptr.into()],
+                "bus.ingress.quiesce",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())

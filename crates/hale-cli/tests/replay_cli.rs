@@ -1083,11 +1083,10 @@ main locus App {{
         std::time::sleep(50ms);
         A <- TA {{ n: 12 }};
         B <- TB {{ n: 22 }};
-        // Long settle before close: a storm-descheduled reader that
-        // has not drained its socket when the peer closes can lose
-        // the tail message (live-ingest behavior, tracked
-        // separately) — give it ample room.
-        std::time::sleep(900ms);
+        // No settle-before-close: GH #468 made undrained peer-close
+        // tails a delivered case (kernel queues survive close; the
+        // reader drains them through the intact registry), so
+        // closing right behind the burst is safe — and exercises it.
     }}
 }}
 fn main() {{ App {{ }}; }}
@@ -1098,69 +1097,53 @@ fn main() {{ App {{ }}; }}
     .unwrap();
 
     // Record a CLEAN four-message session — the test's PRECONDITION,
-    // not its subject. Under extreme parallel load a LIVE run very
-    // occasionally loses one mid-stream wire message even with the
-    // ready-file handshake (pre-existing live-ingest loss,
-    // tracked as GH #468 — delete this retry when it lands). The
-    // sub exits 3
-    // when a message went missing; retry the session rather than
-    // fail replay assertions on a recording of a lossy live run.
+    // not its subject. This used to loop up to 5 attempts because a
+    // storm-descheduled reader could lose a live message (GH #468);
+    // that loss class is fixed (boot-window buffering + exit
+    // quiesce), so one session must be enough — a loss here is a
+    // regression, not weather.
     let rec = dir.join("two.halerec");
-    let mut recorded_ok = false;
-    for _attempt in 0..5 {
-        let _ = std::fs::remove_file(&rec);
-        let _ = std::fs::remove_file(&ready);
-        let _ = std::fs::remove_file(&sock_a);
-        let _ = std::fs::remove_file(&sock_b);
-        let mut subp = hale()
-            .arg("run")
-            .arg(&sub)
-            .env("LOTUS_OBS_RECORD", &rec)
-            .env("LOTUS_BUS_LOG_DESERIALIZE_DROP", "1")
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .expect("spawn recorded sub");
-        // The sockets appear at realize — BEFORE the subscribers
-        // register. The sub touches the ready file at the top of
-        // run(), after every boot registration: only then may
-        // traffic flow.
-        let deadline = std::time::Instant::now()
-            + std::time::Duration::from_secs(60);
-        while !ready.exists() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "subscriber never reached run()"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
-        let p = hale().arg("run").arg(&pubs).output().expect("pubs");
+    let _ = std::fs::remove_file(&rec);
+    let _ = std::fs::remove_file(&ready);
+    let _ = std::fs::remove_file(&sock_a);
+    let _ = std::fs::remove_file(&sock_b);
+    let subp = hale()
+        .arg("run")
+        .arg(&sub)
+        .env("LOTUS_OBS_RECORD", &rec)
+        .env("LOTUS_BUS_LOG_DESERIALIZE_DROP", "1")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn recorded sub");
+    // The sockets appear at realize — BEFORE the subscribers
+    // register. The sub touches the ready file at the top of
+    // run(), after every boot registration: only then may
+    // traffic flow. (Kept for ORDER stability of the recorded
+    // artifact the --diff below replays, not for loss.)
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !ready.exists() {
         assert!(
-            p.status.success(),
-            "publisher run failed: {}",
-            String::from_utf8_lossy(&p.stderr)
+            std::time::Instant::now() < deadline,
+            "subscriber never reached run()"
         );
-        let out = subp.wait_with_output().expect("sub exit");
-        if out.status.success() {
-            recorded_ok = true;
-            break;
-        }
-        assert_eq!(
-            out.status.code(),
-            Some(3),
-            "recorded run failed for a reason other than the known \
-             live-loss retry case:\nstdout:{}\nstderr:{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        eprintln!(
-            "lossy attempt {}: stdout:{} stderr:{}",
-            _attempt,
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
     }
-    assert!(recorded_ok, "no clean recorded session in 5 attempts");
+    let p = hale().arg("run").arg(&pubs).output().expect("pubs");
+    assert!(
+        p.status.success(),
+        "publisher run failed: {}",
+        String::from_utf8_lossy(&p.stderr)
+    );
+    let out = subp.wait_with_output().expect("sub exit");
+    assert!(
+        out.status.success(),
+        "recorded session lost a message — GH #468 regression:\
+         \nstdout:{}\nstderr:{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let _ = std::fs::remove_file(&sock_a);
     let _ = std::fs::remove_file(&sock_b);
@@ -1243,7 +1226,7 @@ fn main() { App { }; }
     let target = dir.join("swap.halerec");
     std::fs::copy(&rec_a, &target).unwrap();
     let go = dir.join("go");
-    let mut child = hale()
+    let child = hale()
         .arg("replay")
         .arg(&target)
         .arg(&prog)

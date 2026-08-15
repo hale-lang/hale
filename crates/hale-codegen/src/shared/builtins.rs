@@ -1919,6 +1919,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             bus_router_destroy_ty,
             None,
         );
+        // GH #468: exit quiesce — drain kernel-accepted LISTEN
+        // ingress through the still-intact registry before the
+        // pool shutdown / dissolve cascade.
+        // declare void @lotus_bus_ingress_quiesce(ptr queue)
+        let bus_ingress_quiesce_ty = void_t.fn_type(&[ptr_t.into()], false);
+        self.module.add_function(
+            "lotus_bus_ingress_quiesce",
+            bus_ingress_quiesce_ty,
+            None,
+        );
 
         // m58: deployment-config subject binding. Codegen emits
         // a single call in main's prelude:
