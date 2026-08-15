@@ -653,3 +653,47 @@ fn malformed_rows_are_refused_not_dropped() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Round 3: a digest-valid, well-TYPED row naming a ghost endpoint
+/// must be refused — the anchored-edge filter would otherwise
+/// silently delete the edge, a false absence again.
+#[test]
+fn referentially_invalid_rows_are_refused() {
+    let dir = workdir("ghost");
+    let artifact = dump_artifact(&dir, &fixture("pipeline.hl"));
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+
+    // Ghost call endpoint.
+    let body = strip_trailer(&raw).replace(
+        "{\"from\": \"Worker::on_r\", \"to\": \"call_it\"}",
+        "{\"from\": \"Ghost::run\", \"to\": \"call_it\"}",
+    );
+    assert!(body.contains("Ghost::run"), "test premise: edit landed");
+    let bad = dir.join("ghostcall.topology");
+    std::fs::write(&bad, restamp_digest(&body)).unwrap();
+    let out = hale().arg("topology").arg("graph").arg(&bad).output().unwrap();
+    assert!(!out.status.success(), "ghost call endpoint must refuse");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("Ghost::run") && err.contains("not in the sorts"),
+        "refusal names the ghost: {}",
+        err
+    );
+
+    // Ghost subscription locus.
+    let body = strip_trailer(&raw).replace(
+        "{\"subject\": \"Cmds\", \"locus\": \"Store\", \"handler\": \"on_c\"}",
+        "{\"subject\": \"Cmds\", \"locus\": \"Phantom\", \"handler\": \"on_c\"}",
+    );
+    assert!(body.contains("Phantom"), "test premise: edit landed");
+    let bad2 = dir.join("ghostsub.topology");
+    std::fs::write(&bad2, restamp_digest(&body)).unwrap();
+    let out = hale().arg("topology").arg("graph").arg(&bad2).output().unwrap();
+    assert!(!out.status.success(), "ghost subscription locus must refuse");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("Phantom"),
+        "refusal names the phantom locus"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

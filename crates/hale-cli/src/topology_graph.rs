@@ -419,6 +419,139 @@ impl Artifact {
                 ));
             }
         }
+        // Referential integrity: every function/locus a row names
+        // must exist in the sorts. A well-typed row referencing a
+        // ghost endpoint would otherwise build an edge the anchored
+        // -edge filter then silently deletes — a false absence
+        // instead of a refusal.
+        let fn_set: std::collections::BTreeSet<&str> = art.v["sorts"]
+            ["fns"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|x| x.as_str())
+            .collect();
+        let locus_set: std::collections::BTreeSet<&str> = art.v["sorts"]
+            ["loci"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|x| x.as_str())
+            .collect();
+        let ghost = |section: &str, i: usize, field: &str, who: &str| {
+            format!(
+                "{}: referentially invalid artifact — {}[{}].{} names \
+                 `{}`, which is not in the sorts",
+                path.display(),
+                section,
+                i,
+                field,
+                who
+            )
+        };
+        for rel in ["calls", "calls_via_stdlib"] {
+            for (i, row) in art.v["relations"][rel]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                for field in ["from", "to"] {
+                    let who = row[field].as_str().unwrap_or("");
+                    if !fn_set.contains(who) {
+                        return Err(ghost(
+                            &format!("relations.{}", rel),
+                            i,
+                            field,
+                            who,
+                        ));
+                    }
+                }
+            }
+        }
+        for (i, row) in art.v["relations"]["publishes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let who = row["fn"].as_str().unwrap_or("");
+            if !fn_set.contains(who) {
+                return Err(ghost("relations.publishes", i, "fn", who));
+            }
+        }
+        for (i, row) in art.v["relations"]["subscribes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let locus = row["locus"].as_str().unwrap_or("");
+            if !locus_set.contains(locus) {
+                return Err(ghost(
+                    "relations.subscribes",
+                    i,
+                    "locus",
+                    locus,
+                ));
+            }
+            let handler = format!(
+                "{}::{}",
+                locus,
+                row["handler"].as_str().unwrap_or("")
+            );
+            if !fn_set.contains(handler.as_str()) {
+                return Err(ghost(
+                    "relations.subscribes",
+                    i,
+                    "handler",
+                    &handler,
+                ));
+            }
+        }
+        for (i, row) in
+            art.v["unknowns"].as_array().into_iter().flatten().enumerate()
+        {
+            let who = row["fn"].as_str().unwrap_or("");
+            if !fn_set.contains(who) {
+                return Err(ghost("unknowns", i, "fn", who));
+            }
+        }
+        for key in ["phases", "effects"] {
+            for (name, _) in
+                art.v[key].as_object().into_iter().flatten()
+            {
+                if !fn_set.contains(name.as_str()) {
+                    return Err(format!(
+                        "{}: referentially invalid artifact — {}.{} is \
+                         not in sorts.fns",
+                        path.display(),
+                        key,
+                        name
+                    ));
+                }
+            }
+        }
+        for (gname, members) in
+            art.v["groups"].as_object().into_iter().flatten()
+        {
+            for (i, mv) in
+                members.as_array().into_iter().flatten().enumerate()
+            {
+                let m = mv.as_str().unwrap_or("");
+                if !locus_set.contains(m) && !fn_set.contains(m) {
+                    return Err(format!(
+                        "{}: referentially invalid artifact — \
+                         groups.{}[{}] names `{}`, which is neither a \
+                         locus nor a fn",
+                        path.display(),
+                        gname,
+                        i,
+                        m
+                    ));
+                }
+            }
+        }
         Ok(art)
     }
 
