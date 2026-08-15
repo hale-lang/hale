@@ -295,6 +295,130 @@ impl Artifact {
             art.v["shape_hash"].is_string(),
             "shape_hash must be a string",
         )?;
+        // Row-level validation: every row this adapter reads must
+        // carry its required fields with the required types. A
+        // malformed row is an ERROR naming its location — never a
+        // silently dropped edge rendering as a false absence. (The
+        // digest is an unkeyed tripwire, not an authenticator; row
+        // shape is checked on its own.)
+        let str_fields = |section: &str, fields: &[&str]| -> Result<(), String> {
+            let rows = art.v[section.split('.').next().unwrap()].clone();
+            let rows = if let Some(rel) = section.strip_prefix("relations.") {
+                art.v["relations"][rel].clone()
+            } else {
+                rows
+            };
+            for (i, row) in
+                rows.as_array().into_iter().flatten().enumerate()
+            {
+                for f in fields {
+                    if !row[*f].is_string() {
+                        return Err(format!(
+                            "{}: malformed artifact — {}[{}].{} must \
+                             be a string",
+                            path.display(),
+                            section,
+                            i,
+                            f
+                        ));
+                    }
+                }
+            }
+            Ok(())
+        };
+        str_fields("relations.calls", &["from", "to"])?;
+        str_fields("relations.calls_via_stdlib", &["from", "to"])?;
+        str_fields("relations.publishes", &["fn", "subject"])?;
+        str_fields(
+            "relations.subscribes",
+            &["subject", "locus", "handler"],
+        )?;
+        str_fields(
+            "topics",
+            &["name", "subject", "shape", "payload_hash"],
+        )?;
+        str_fields("claims", &["name", "form", "result"])?;
+        for (i, row) in art.v["unknowns"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let reasons_ok = row["reasons"]
+                .as_array()
+                .map(|a| a.iter().all(|x| x.is_string()))
+                .unwrap_or(false);
+            if !row["fn"].is_string() || !reasons_ok {
+                return Err(format!(
+                    "{}: malformed artifact — unknowns[{}] needs a \
+                     string `fn` and string `reasons`",
+                    path.display(),
+                    i
+                ));
+            }
+        }
+        for sort in ["loci", "fns"] {
+            for (i, x) in art.v["sorts"][sort]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                if !x.is_string() {
+                    return Err(format!(
+                        "{}: malformed artifact — sorts.{}[{}] must be \
+                         a string",
+                        path.display(),
+                        sort,
+                        i
+                    ));
+                }
+            }
+        }
+        for (name, members) in
+            art.v["groups"].as_object().into_iter().flatten()
+        {
+            let ok = members
+                .as_array()
+                .map(|a| a.iter().all(|x| x.is_string()))
+                .unwrap_or(false);
+            if !ok {
+                return Err(format!(
+                    "{}: malformed artifact — groups.{} must be an \
+                     array of strings",
+                    path.display(),
+                    name
+                ));
+            }
+        }
+        for (name, row) in
+            art.v["phases"].as_object().into_iter().flatten()
+        {
+            if !row["phase"].is_string() || !row["kind"].is_string() {
+                return Err(format!(
+                    "{}: malformed artifact — phases.{} needs string \
+                     `phase` and `kind`",
+                    path.display(),
+                    name
+                ));
+            }
+        }
+        for (name, effects) in
+            art.v["effects"].as_object().into_iter().flatten()
+        {
+            let ok = effects
+                .as_array()
+                .map(|a| a.iter().all(|x| x.is_string()))
+                .unwrap_or(false);
+            if !ok {
+                return Err(format!(
+                    "{}: malformed artifact — effects.{} must be an \
+                     array of strings",
+                    path.display(),
+                    name
+                ));
+            }
+        }
         Ok(art)
     }
 

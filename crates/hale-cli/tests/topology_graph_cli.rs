@@ -605,3 +605,51 @@ fn focus_drops_non_neighbors() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Round 2: a digest-valid artifact with a MALFORMED relation row
+/// (numeric `from`) must be refused naming the row — never rendered
+/// with the edge silently absent. The digest is a tripwire, not an
+/// authenticator; row shape is validated on its own.
+#[test]
+fn malformed_rows_are_refused_not_dropped() {
+    let dir = workdir("badrow");
+    let artifact = dump_artifact(&dir, &fixture("pipeline.hl"));
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+
+    // Corrupt one call row's `from` into a number, restamp so the
+    // digest is valid — the exact fail-open the review demonstrated.
+    let body = strip_trailer(&raw).replace(
+        "{\"from\": \"Worker::on_r\", \"to\": \"call_it\"}",
+        "{\"from\": 7, \"to\": \"call_it\"}",
+    );
+    assert!(body.contains("\"from\": 7"), "test premise: the edit landed");
+    let bad = dir.join("badrow.topology");
+    std::fs::write(&bad, restamp_digest(&body)).unwrap();
+    let out = hale().arg("topology").arg("graph").arg(&bad).output().unwrap();
+    assert!(
+        !out.status.success(),
+        "malformed row must refuse, not render a false absence"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("relations.calls[") && err.contains(".from"),
+        "refusal names the row and field: {}",
+        err
+    );
+
+    // Same for a malformed unknowns row: residue must never be
+    // silently droppable either.
+    let body = strip_trailer(&raw).replace(
+        "{\"fn\": \"call_it\", \"reasons\": [\"indirect_call\"]}",
+        "{\"fn\": \"call_it\", \"reasons\": \"indirect_call\"}",
+    );
+    let bad2 = dir.join("badunknown.topology");
+    std::fs::write(&bad2, restamp_digest(&body)).unwrap();
+    let out = hale().arg("topology").arg("graph").arg(&bad2).output().unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("unknowns[0]"),
+        "refusal names the unknowns row"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
