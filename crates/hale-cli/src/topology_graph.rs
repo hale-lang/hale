@@ -112,26 +112,17 @@ pub fn run_topology(rest: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let v: Value = match serde_json::from_str(&raw) {
-        Ok(v) => v,
+    // Admission, in the fleet loader's order: integrity BEFORE
+    // meaning, meaning before rendering. The renderer does NOT
+    // require a clean verdict (violations are worth drawing), but it
+    // refuses artifacts it cannot trust or cannot correctly read.
+    let art = match Artifact::admit(&path, &raw) {
+        Ok(a) => a,
         Err(e) => {
-            eprintln!("{} is not a JSON topology artifact: {}", path.display(), e);
+            eprintln!("{}", e);
             return ExitCode::from(1);
         }
     };
-    let art = Artifact { v };
-    // Version adapter: this renderer understands the 1.x artifact
-    // family. A future major schema gets a new adapter, not silent
-    // misreading.
-    let schema = art.schema();
-    if !schema.starts_with("1.") && schema != "1" {
-        eprintln!(
-            "unsupported topology artifact schema `{}` (this renderer \
-             understands 1.x)",
-            schema
-        );
-        return ExitCode::from(1);
-    }
 
     let config = match config_path {
         None => RenderConfig::default(),
@@ -203,6 +194,110 @@ struct Artifact {
 }
 
 impl Artifact {
+    /// Admission: (1) whole-body `artifact_digest` verifies — a
+    /// hand-edited claims/topics section is refused, not rendered
+    /// under a stale identity; (2) `semantics` matches this build —
+    /// rows that share a shape but mean different things are not
+    /// renderable; (3) the schema minor is one this adapter's field
+    /// set actually covers (`topics` landed in 1.2, `verdict` in
+    /// 1.4 — older 1.x artifacts would silently render as having
+    /// neither); higher minors are accepted per the artifact's
+    /// additive-minor contract; (4) the sections this adapter reads
+    /// are present with the right JSON types — absence is an error,
+    /// never an empty graph.
+    fn admit(
+        path: &std::path::Path,
+        raw: &str,
+    ) -> Result<Artifact, String> {
+        match hale_types::topology::verify_artifact_digest(raw) {
+            Some(true) => {}
+            Some(false) => {
+                return Err(format!(
+                    "{}: artifact_digest does not match its contents — \
+                     refusing to render an edited or corrupted artifact",
+                    path.display()
+                ))
+            }
+            None => {
+                return Err(format!(
+                    "{}: no artifact_digest (predates schema 1.3) — an \
+                     unverifiable artifact is not renderable; re-dump \
+                     with a current compiler",
+                    path.display()
+                ))
+            }
+        }
+        let v: Value = serde_json::from_str(raw)
+            .map_err(|e| format!("{}: not a JSON artifact: {}", path.display(), e))?;
+        let sem = v["semantics"].as_u64();
+        if sem != Some(hale_types::topology::MODEL_SEMANTICS as u64) {
+            return Err(format!(
+                "{}: model semantics {} — this build speaks {}; the rows \
+                 may share a shape and mean different things",
+                path.display(),
+                sem.map(|s| s.to_string()).unwrap_or_else(|| "absent".into()),
+                hale_types::topology::MODEL_SEMANTICS
+            ));
+        }
+        let art = Artifact { v };
+        let schema = art.schema();
+        let minor: Option<u32> = schema
+            .strip_prefix("1.")
+            .and_then(|m| m.parse().ok());
+        match minor {
+            Some(m) if m >= 4 => {}
+            _ => {
+                return Err(format!(
+                    "{}: unsupported topology artifact schema `{}` — this \
+                     renderer's adapter covers 1.4+ (topics landed in \
+                     1.2, verdict in 1.4; an older artifact would render \
+                     misleadingly incomplete)",
+                    path.display(),
+                    schema
+                ))
+            }
+        }
+        // Structural presence: every section this adapter reads.
+        let need = |ok: bool, what: &str| -> Result<(), String> {
+            if ok {
+                Ok(())
+            } else {
+                Err(format!(
+                    "{}: malformed artifact — {} (digest verified, so \
+                     this is a schema drift, not corruption)",
+                    path.display(),
+                    what
+                ))
+            }
+        };
+        need(
+            art.v["sorts"]["loci"].is_array(),
+            "sorts.loci must be an array",
+        )?;
+        need(
+            art.v["sorts"]["fns"].is_array(),
+            "sorts.fns must be an array",
+        )?;
+        for rel in ["calls", "calls_via_stdlib", "publishes", "subscribes"] {
+            need(
+                art.v["relations"][rel].is_array(),
+                &format!("relations.{} must be an array", rel),
+            )?;
+        }
+        need(art.v["topics"].is_array(), "topics must be an array")?;
+        need(art.v["claims"].is_array(), "claims must be an array")?;
+        need(art.v["unknowns"].is_array(), "unknowns must be an array")?;
+        need(art.v["groups"].is_object(), "groups must be an object")?;
+        need(art.v["phases"].is_object(), "phases must be an object")?;
+        need(art.v["effects"].is_object(), "effects must be an object")?;
+        need(art.v["verdict"].is_string(), "verdict must be a string")?;
+        need(
+            art.v["shape_hash"].is_string(),
+            "shape_hash must be a string",
+        )?;
+        Ok(art)
+    }
+
     fn schema(&self) -> String {
         match &self.v["schema"] {
             Value::String(s) => s.clone(),
@@ -474,12 +569,22 @@ struct RenderGraph {
     cards: Vec<Card>,
 }
 
-fn locus_of(fn_full: &str) -> Option<&str> {
-    fn_full.split_once("::").map(|(l, _)| l)
-}
-
-fn short_fn(fn_full: &str) -> &str {
-    fn_full.split_once("::").map(|(_, f)| f).unwrap_or(fn_full)
+/// The owning locus of a function by LONGEST declared-locus
+/// prefix. Author spellings may contain seed aliases
+/// (`p::Store::get` is method `get` on imported locus `p::Store`),
+/// so membership is never inferred from the first `::` — only a
+/// declared locus name followed by `::` claims a function. No
+/// declared prefix ⇒ free function, even when the spelling is
+/// qualified (`p::helper`).
+fn owner_of<'a>(loci: &'a [String], fn_full: &str) -> Option<&'a str> {
+    loci.iter()
+        .filter(|l| {
+            fn_full.len() > l.len() + 2
+                && fn_full.starts_with(l.as_str())
+                && fn_full[l.len()..].starts_with("::")
+        })
+        .max_by_key(|l| l.len())
+        .map(|l| l.as_str())
 }
 
 const FREE_FNS: &str = "(free functions)";
@@ -491,7 +596,9 @@ fn build_graph(
 ) -> Result<RenderGraph, String> {
     let loci = art.loci();
     let fns = art.fns();
-    let topics = art.topics();
+    let declared_topics = art.topics();
+    let publishes = art.publishes();
+    let subscribes = art.subscribes();
     let with_chips = view != "bus";
 
     // Which fns appear as lines. bus view: only endpoint fns.
@@ -499,23 +606,23 @@ fn build_graph(
         if view != "bus" {
             return true;
         }
-        art.publishes().iter().any(|(pf, _)| pf == f)
-            || art
-                .subscribes()
+        publishes.iter().any(|(pf, _)| pf == f)
+            || subscribes
                 .iter()
                 .any(|(_, l, h)| format!("{}::{}", l, h) == *f)
     };
 
-    // Locus boxes with fn lines (sorted fn order inside each box).
+    // Locus boxes with fn lines, membership by longest declared
+    // prefix; everything unclaimed is free.
     let mut boxes: Vec<LocusBox> = Vec::new();
     for locus in &loci {
         let lines: Vec<FnLine> = fns
             .iter()
-            .filter(|f| locus_of(f) == Some(locus.as_str()))
+            .filter(|f| owner_of(&loci, f) == Some(locus.as_str()))
             .filter(|f| keep_fn(f))
             .map(|f| FnLine {
                 full: f.clone(),
-                label: fn_label(art, f, with_chips),
+                label: fn_label(art, f, &f[locus.len() + 2..], with_chips),
                 highlight: false,
             })
             .collect();
@@ -527,11 +634,11 @@ fn build_graph(
     }
     let free: Vec<FnLine> = fns
         .iter()
-        .filter(|f| locus_of(f).is_none())
+        .filter(|f| owner_of(&loci, f).is_none())
         .filter(|f| keep_fn(f))
         .map(|f| FnLine {
             full: f.clone(),
-            label: fn_label(art, f, with_chips),
+            label: fn_label(art, f, f, with_chips),
             highlight: false,
         })
         .collect();
@@ -542,40 +649,66 @@ fn build_graph(
             highlight: false,
         });
     }
-    // A box with no lines still renders (a locus with no visible fns).
-    boxes.retain(|b| !b.lines.is_empty() || b.name != FREE_FNS);
 
-    // Topic nodes (not in the code view).
+    // Bus nodes: the UNION of subjects referenced by publish and
+    // subscribe rows, plus declared topics. Literal and wildcard
+    // subjects have no declared-topic row but are real endpoints —
+    // they get a visible node, enriched with wire/payload identity
+    // only when a declaration exists.
     let topic_nodes: Vec<TopicNode> = if view == "code" {
         Vec::new()
     } else {
-        topics
-            .iter()
-            .map(|t| TopicNode {
-                name: t.name.clone(),
-                sub: format!(
-                    "{} · payload {}",
-                    t.subject,
-                    t.payload_hash.chars().take(8).collect::<String>()
-                ),
-                highlight: false,
+        let mut names: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
+        for (_, t) in &publishes {
+            names.insert(t.clone());
+        }
+        for (t, _, _) in &subscribes {
+            names.insert(t.clone());
+        }
+        for t in &declared_topics {
+            names.insert(t.name.clone());
+        }
+        names
+            .into_iter()
+            .map(|name| {
+                let sub = match declared_topics
+                    .iter()
+                    .find(|t| t.name == name)
+                {
+                    Some(t) => format!(
+                        "{} · payload {}",
+                        t.subject,
+                        t.payload_hash.chars().take(8).collect::<String>()
+                    ),
+                    None if name.contains('*') => {
+                        "(pattern subject)".to_string()
+                    }
+                    None => "(literal subject)".to_string(),
+                };
+                TopicNode {
+                    name,
+                    sub,
+                    highlight: false,
+                }
             })
             .collect()
     };
+    let mut topic_nodes = topic_nodes;
 
     // Edges.
     let mut edges: Vec<Edge> = Vec::new();
     if view != "code" {
-        for (f, topic) in art.publishes() {
+        for (f, topic) in &publishes {
             edges.push(Edge {
-                from: f,
+                from: f.clone(),
                 to: format!("topic:{}", topic),
                 kind: EdgeKind::Publish,
                 label: "publish".to_string(),
                 highlight: false,
             });
         }
-        for (topic, locus, handler) in art.subscribes() {
+        for (topic, locus, handler) in &subscribes {
             edges.push(Edge {
                 from: format!("topic:{}", topic),
                 to: format!("{}::{}", locus, handler),
@@ -606,8 +739,9 @@ fn build_graph(
         }
     }
 
-    // Unknown residue nodes (residue view renders them; other views
-    // note them in a card so they are never silently absent).
+    // Unknown residue nodes (residue view renders them; every other
+    // view — claim included — notes them in a card, so residue is
+    // never invisible).
     let unknown_rows = art.unknowns();
     let mut unknowns: Vec<UnknownNode> = Vec::new();
     if view == "residue" {
@@ -627,7 +761,8 @@ fn build_graph(
         }
     }
 
-    // Cards.
+    // Cards + view-specific decoration. NO early returns: the
+    // residue card at the bottom must reach every non-residue view.
     let mut cards: Vec<Card> = Vec::new();
     match view {
         "residue" => {
@@ -668,10 +803,11 @@ fn build_graph(
                 lines: vec![form.clone()],
                 tone,
             });
-            // Highlight every group member and topic the claim's
-            // rendered form names. (The artifact carries the claim as
-            // normalized text; structured ClaimIr rows are the Track B
-            // upgrade — this stays presentation-side.)
+            // Highlight every group member (loci AND free fns) and
+            // topic the claim's rendered form names. (The artifact
+            // carries the claim as normalized text; structured
+            // ClaimIr rows are the Track B upgrade — this stays
+            // presentation-side.)
             let mut hl: Vec<String> = Vec::new();
             for (gname, members) in art.groups() {
                 if form_mentions(&form, &gname) {
@@ -687,16 +823,17 @@ fn build_graph(
                 if hl.iter().any(|h| h == &b.name) {
                     b.highlight = true;
                 }
+                for line in &mut b.lines {
+                    if hl.iter().any(|h| h == &line.full) {
+                        line.highlight = true;
+                    }
+                }
             }
-            let mut tnodes = topic_nodes.clone();
-            for t in &mut tnodes {
+            for t in &mut topic_nodes {
                 if form_mentions(&form, &t.name) {
                     t.highlight = true;
                 }
             }
-            return finish_graph(
-                art, view, boxes, tnodes, unknowns, edges, cards,
-            );
         }
         _ => {}
     }
@@ -711,23 +848,11 @@ fn build_graph(
         });
     }
 
-    finish_graph(art, view, boxes, topic_nodes, unknowns, edges, cards)
-}
-
-fn finish_graph(
-    art: &Artifact,
-    view: &str,
-    boxes: Vec<LocusBox>,
-    topics: Vec<TopicNode>,
-    unknowns: Vec<UnknownNode>,
-    edges: Vec<Edge>,
-    cards: Vec<Card>,
-) -> Result<RenderGraph, String> {
     Ok(RenderGraph {
         title: format!("topology · {} view", view),
         footer: art.footer(),
         boxes,
-        topics,
+        topics: topic_nodes,
         unknowns,
         edges,
         cards,
@@ -756,8 +881,12 @@ fn is_ident(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-fn fn_label(art: &Artifact, f: &str, with_chips: bool) -> String {
-    let mut label = short_fn(f).to_string();
+/// `short` is the display name inside the owning box (the full name
+/// with the owner's longest-prefix stripped — computed by the
+/// caller, which knows the owner; a free fn keeps its full author
+/// spelling, alias-qualified or not).
+fn fn_label(art: &Artifact, f: &str, short: &str, with_chips: bool) -> String {
+    let mut label = short.to_string();
     if !with_chips {
         return label;
     }
@@ -819,12 +948,27 @@ impl RenderConfig {
         }
         if !self.focus.is_empty() {
             // Keep focused boxes/topics plus anything sharing an edge
-            // with a focused endpoint.
+            // with a focused endpoint. Ownership comes from the built
+            // boxes (longest-prefix membership), never re-derived
+            // from name shape.
+            let fn_owner: std::collections::BTreeMap<String, String> = g
+                .boxes
+                .iter()
+                .flat_map(|b| {
+                    b.lines
+                        .iter()
+                        .map(|l| (l.full.clone(), b.name.clone()))
+                        .collect::<Vec<_>>()
+                })
+                .collect();
             let anchor_owner = |anchor: &str| -> String {
                 if let Some(t) = anchor.strip_prefix("topic:") {
                     t.to_string()
                 } else {
-                    locus_of(anchor).unwrap_or(FREE_FNS).to_string()
+                    fn_owner
+                        .get(anchor)
+                        .cloned()
+                        .unwrap_or_else(|| FREE_FNS.to_string())
                 }
             };
             let mut keep: Vec<String> = self.focus.clone();
@@ -900,13 +1044,23 @@ impl RenderConfig {
 // Mermaid
 // ---------------------------------------------------------------
 
-fn mm_id(name: &str) -> String {
-    let mut s = String::with_capacity(name.len());
-    for c in name.chars() {
-        if c.is_ascii_alphanumeric() {
-            s.push(c);
+/// Injective Mermaid node ID: a kind prefix (functions `n_`, topics
+/// `t_`, unknowns `u_`, subgraphs `g_`) plus bytewise hex-escaping
+/// of every non-alphanumeric byte (`_` included — `A::B` →
+/// `n_A_3a_3aB`, `A__B` → `n_A_5f_5fB`). Distinct entities can
+/// never collapse onto one Mermaid node, and the cross-sort prefix
+/// prevents a function literally named `t_X` from colliding with
+/// topic `X`.
+fn mm_id(kind: &str, name: &str) -> String {
+    let mut s = String::with_capacity(name.len() + 4);
+    s.push_str(kind);
+    s.push('_');
+    for b in name.bytes() {
+        if b.is_ascii_alphanumeric() {
+            s.push(b as char);
         } else {
             s.push('_');
+            s.push_str(&format!("{:02x}", b));
         }
     }
     s
@@ -927,13 +1081,13 @@ fn render_mermaid(g: &RenderGraph) -> String {
     for b in &g.boxes {
         out.push_str(&format!(
             "  subgraph {}[\"{}\"]\n",
-            mm_id(&b.name),
+            mm_id("g", &b.name),
             mm_escape(&b.name)
         ));
         for l in &b.lines {
             out.push_str(&format!(
                 "    {}[\"{}\"]\n",
-                mm_id(&l.full),
+                mm_id("n", &l.full),
                 mm_escape(&l.label)
             ));
         }
@@ -941,8 +1095,8 @@ fn render_mermaid(g: &RenderGraph) -> String {
     }
     for t in &g.topics {
         out.push_str(&format!(
-            "  topic_{}([\"{}<br/>{}\"])\n",
-            mm_id(&t.name),
+            "  {}([\"{}<br/>{}\"])\n",
+            mm_id("t", &t.name),
             mm_escape(&t.name),
             mm_escape(&t.sub)
         ));
@@ -950,15 +1104,17 @@ fn render_mermaid(g: &RenderGraph) -> String {
     for u in &g.unknowns {
         out.push_str(&format!(
             "  {}[/\"{}\"/]\n",
-            mm_id(&u.id),
+            mm_id("u", &u.id),
             mm_escape(&u.label)
         ));
     }
     let anchor = |a: &str| -> String {
         if let Some(t) = a.strip_prefix("topic:") {
-            format!("topic_{}", mm_id(t))
+            mm_id("t", t)
+        } else if a.starts_with("unknown:") {
+            mm_id("u", a)
         } else {
-            mm_id(a)
+            mm_id("n", a)
         }
     };
     for e in &g.edges {
@@ -980,13 +1136,13 @@ fn render_mermaid(g: &RenderGraph) -> String {
     for b in &g.boxes {
         for l in &b.lines {
             if l.highlight || b.highlight {
-                hl_nodes.push(mm_id(&l.full));
+                hl_nodes.push(mm_id("n", &l.full));
             }
         }
     }
     for t in &g.topics {
         if t.highlight {
-            hl_nodes.push(format!("topic_{}", mm_id(&t.name)));
+            hl_nodes.push(mm_id("t", &t.name));
         }
     }
     if !hl_nodes.is_empty() {

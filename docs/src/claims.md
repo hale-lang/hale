@@ -840,6 +840,13 @@ views note them on a card). A `--config file.json` can retitle,
 `focus`, `hide`, or `highlight` — presentation choices only, never
 new semantics.
 
+The renderer admits before it draws, in the fleet loader's order:
+the whole-body `artifact_digest` must verify (a hand-edited
+artifact is refused, not rendered under a stale identity), the
+model `semantics` must match the build, and the schema minor must
+be one the adapter actually covers (1.4+). It does *not* require a
+clean verdict — violations are worth drawing.
+
 The renderer is an **artifact client**: it reads exactly the JSON a
 third party reads, never your source, and its output is
 deterministic by construction — fixed text metrics (no font

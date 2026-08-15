@@ -173,11 +173,25 @@ fn claim_view_highlights_the_named_groups_and_states_the_result() {
     // group members' fn nodes carry the highlight class, and the
     // card states the verdict.
     assert!(mmd.contains("class ") && mmd.contains(" hl"));
-    assert!(mmd.contains("Store__on_c"), "stores member highlighted");
-    assert!(mmd.contains("Worker__on_r"), "workers member highlighted");
+    assert!(
+        mmd.contains("n_Store_3a_3aon_5fc"),
+        "stores member highlighted"
+    );
+    assert!(
+        mmd.contains("n_Worker_3a_3aon_5fr"),
+        "workers member highlighted"
+    );
     assert!(
         mmd.contains("claim apart — holds"),
         "card carries name + verdict:\n{}",
+        mmd
+    );
+    // P2 (review round 1): the claim view must NOT hide residue —
+    // the pinned fixture has an indirect_call hole, and the very
+    // view most likely to become a proof slide says so.
+    assert!(
+        mmd.contains("1 unresolved"),
+        "claim view carries the residue card:\n{}",
         mmd
     );
 
@@ -234,15 +248,10 @@ fn render_config_focuses_and_highlights_without_new_semantics() {
             fixture("slide-focus.json").to_str().unwrap(),
         ],
     );
-    // Focus keeps Worker plus its edge-neighbors (App publishes the
-    // topic Worker subscribes; the free fns Worker calls)...
-    assert!(mmd.contains("Worker__on_r"));
-    assert!(mmd.contains("topic_Readings"), "subscribed topic kept");
-    // ...and drops the unconnected-to-Worker Store subscription side
-    // only if Store shares no edge with Worker's anchors. Store
-    // subscribes Cmds which Worker publishes — via the topic they ARE
-    // neighbors, so Store stays. The one guaranteed drop: nothing.
-    // What MUST hold: the config title replaced the default.
+    // Focus keeps Worker plus its edge-neighbors...
+    assert!(mmd.contains("n_Worker_3a_3aon_5fr"));
+    assert!(mmd.contains("t_Readings"), "subscribed topic kept");
+    // ...and the config title replaced the default.
     assert!(
         mmd.contains("sensor pipeline — worker focus"),
         "config title applied:\n{}",
@@ -296,5 +305,303 @@ fn bad_inputs_fail_closed() {
             .unwrap();
         assert!(!out.status.success(), "must refuse: {:?}", args);
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// -----------------------------------------------------------------
+// Review round 1 — adapter and identity coverage.
+// -----------------------------------------------------------------
+
+/// FNV-1a 64 (the artifact's own tripwire algorithm) — used to craft
+/// a digest-valid artifact with hostile CONTENT, so the admission
+/// checks past the digest can be exercised.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in bytes {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+/// Re-stamp a (possibly edited) artifact with a fresh valid digest,
+/// mirroring the emitter's trailer format.
+fn restamp_digest(body_without_trailer: &str) -> String {
+    format!(
+        "{},\n  \"artifact_digest\": \"{:016x}\"\n}}\n",
+        body_without_trailer,
+        fnv1a64(body_without_trailer.as_bytes())
+    )
+}
+
+fn strip_trailer(artifact: &str) -> String {
+    let key = ",\n  \"artifact_digest\": \"";
+    let i = artifact.rfind(key).expect("artifact has a digest trailer");
+    artifact[..i].to_string()
+}
+
+#[test]
+fn tampered_or_unverifiable_artifacts_are_refused() {
+    let dir = workdir("admission");
+    let artifact = dump_artifact(&dir, &fixture("pipeline.hl"));
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+
+    // 1. Hand-edited claims section under the ORIGINAL digest: the
+    //    exact attack the review named — refused as tampered.
+    let edited = raw.replace("\"result\": \"holds\"", "\"result\": \"violated\"");
+    assert_ne!(raw, edited, "test premise: the edit landed");
+    let tampered = dir.join("tampered.topology");
+    std::fs::write(&tampered, &edited).unwrap();
+    let out = hale().arg("topology").arg("graph").arg(&tampered).output().unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("artifact_digest"),
+        "refusal names the digest"
+    );
+
+    // 2. No digest at all (pre-1.3 artifact): refused as unverifiable.
+    let undigested = dir.join("undigested.topology");
+    std::fs::write(&undigested, strip_trailer(&raw) + "\n}\n").unwrap();
+    let out = hale().arg("topology").arg("graph").arg(&undigested).output().unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("artifact_digest"),
+        "refusal names the missing digest"
+    );
+
+    // 3. Valid digest, WRONG SEMANTICS: rows may mean different
+    //    things; refused past the integrity gate.
+    let body = strip_trailer(&raw).replace("\"semantics\": 1", "\"semantics\": 999");
+    let wrong_sem = dir.join("semantics.topology");
+    std::fs::write(&wrong_sem, restamp_digest(&body)).unwrap();
+    let out = hale().arg("topology").arg("graph").arg(&wrong_sem).output().unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("semantics"),
+        "refusal names the semantics mismatch: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // 4. Valid digest, unsupported OLD schema minor (pre-topics /
+    //    pre-verdict): refused rather than rendered misleadingly
+    //    empty.
+    let body = strip_trailer(&raw).replace("\"schema\": \"1.10\"", "\"schema\": \"1.3\"");
+    let old_schema = dir.join("oldschema.topology");
+    std::fs::write(&old_schema, restamp_digest(&body)).unwrap();
+    let out = hale().arg("topology").arg("graph").arg(&old_schema).output().unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("schema"),
+        "refusal names the unsupported schema"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Imported locus methods (`p::Store::get`) and imported free fns
+/// (`p::helper`) must land in the right boxes — membership by
+/// longest declared-locus prefix, never by the first `::`.
+#[test]
+fn imported_members_keep_their_owners() {
+    let dir = workdir("xseed");
+    let app = dir.join("app");
+    let lib = dir.join("lib/kv");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::write(dir.join("hale.toml"), "name = \"xseed-graph\"\n").unwrap();
+    std::fs::write(
+        lib.join("kv.hl"),
+        r#"
+type Pair { k: Int = 0; v: Int = 0; }
+locus Store {
+    params { total: Int = 0; }
+    fn get(k: Int) -> Int { return self.total + k; }
+}
+fn helper(v: Int) -> Int { return v + 1; }
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("main.hl"),
+        r#"
+import "lib/kv" as p;
+main locus App {
+    params { s: p::Store = p::Store { }; }
+    run() {
+        let a = self.s.get(1);
+        let b = p::helper(a);
+        println(b);
+    }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dir.join("x.topology");
+    let out = hale()
+        .arg("check")
+        .arg(&app)
+        .arg(format!("--dump-topology={}", artifact.display()))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "cross-seed fixture must check: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let mmd = render(&artifact, &["--format", "mermaid"]);
+    // The imported locus box exists and OWNS its method (the method
+    // node appears inside the subgraph, labeled by its short name).
+    assert!(
+        mmd.contains("subgraph g_p_3a_3aStore"),
+        "imported locus box exists:\n{}",
+        mmd
+    );
+    assert!(
+        mmd.contains("n_p_3a_3aStore_3a_3aget[\"get"),
+        "imported method placed in its locus, short-labeled:\n{}",
+        mmd
+    );
+    // The imported free fn is rendered as free — present, not
+    // orphaned into a phantom `p` locus.
+    assert!(
+        mmd.contains("n_p_3a_3ahelper"),
+        "imported free fn is rendered:\n{}",
+        mmd
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Literal and wildcard bus subjects have no declared-topic row but
+/// are real endpoints: they need visible nodes and edges in every
+/// format.
+#[test]
+fn literal_and_wildcard_subjects_render() {
+    let dir = workdir("litsubj");
+    let src = dir.join("lit.hl");
+    std::fs::write(
+        &src,
+        r#"
+type Event { n: Int = 0; }
+locus Audit {
+    params { seen: Int = 0; }
+    bus { subscribe "orders.**" as on_any of type Event; }
+    fn on_any(e: Event) { self.seen = self.seen + 1; }
+}
+main locus App {
+    params { a: Audit = Audit { }; }
+    bus { publish "orders.created" of type Event; }
+    run() { "orders.created" <- Event { n: 1 }; }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dir.join("lit.topology");
+    let out = hale()
+        .arg("check")
+        .arg(&src)
+        .arg(format!("--dump-topology={}", artifact.display()))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "literal-subject fixture must check: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    for format in ["mermaid", "dot", "svg"] {
+        let rendered = render(&artifact, &["--format", format]);
+        assert!(
+            rendered.contains("orders.created"),
+            "{}: literal subject node present:\n{}",
+            format,
+            rendered
+        );
+        assert!(
+            rendered.contains("orders.**"),
+            "{}: wildcard subject node present:\n{}",
+            format,
+            rendered
+        );
+        assert!(
+            rendered.contains("publish") && rendered.contains("subscribe"),
+            "{}: both bus edges survive:\n{}",
+            format,
+            rendered
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The Mermaid-ID collision canary: `A::B` (method), `A__B` (free
+/// fn), and a fn named like a prefixed topic must all get distinct
+/// injective IDs.
+#[test]
+fn mermaid_ids_are_injective() {
+    let dir = workdir("collide");
+    let src = dir.join("collide.hl");
+    std::fs::write(
+        &src,
+        r#"
+fn A__B(v: Int) -> Int { return v; }
+locus A {
+    fn B(v: Int) -> Int { return v + 1; }
+}
+main locus App {
+    params { a: A = A { }; }
+    run() { println(self.a.B(A__B(1))); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dir.join("collide.topology");
+    let out = hale()
+        .arg("check")
+        .arg(&src)
+        .arg(format!("--dump-topology={}", artifact.display()))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "collision fixture must check: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let mmd = render(&artifact, &["--format", "mermaid"]);
+    // Method A::B → n_A_3a_3aB; free fn A__B → n_A_5f_5fB. Distinct.
+    assert!(mmd.contains("n_A_3a_3aB"), "method id present:\n{}", mmd);
+    assert!(mmd.contains("n_A_5f_5fB"), "free fn id present:\n{}", mmd);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Focus must actually DROP non-neighbors: focusing Store keeps its
+/// subscribed topic (Cmds) and drops App and Readings, which share
+/// no edge with a focused endpoint.
+#[test]
+fn focus_drops_non_neighbors() {
+    let dir = workdir("focusdrop");
+    let artifact = dump_artifact(&dir, &fixture("pipeline.hl"));
+    let cfg = dir.join("focus-store.json");
+    std::fs::write(&cfg, r#"{ "focus": ["Store"] }"#).unwrap();
+    let mmd = render(
+        &artifact,
+        &["--format", "mermaid", "--config", cfg.to_str().unwrap()],
+    );
+    assert!(mmd.contains("g_Store"), "focused box kept:\n{}", mmd);
+    assert!(
+        mmd.contains("t_Cmds"),
+        "edge-neighbor topic kept:\n{}",
+        mmd
+    );
+    assert!(
+        !mmd.contains("g_App"),
+        "App shares no edge with Store — dropped:\n{}",
+        mmd
+    );
+    assert!(
+        !mmd.contains("t_Readings"),
+        "Readings shares no edge with Store — dropped:\n{}",
+        mmd
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

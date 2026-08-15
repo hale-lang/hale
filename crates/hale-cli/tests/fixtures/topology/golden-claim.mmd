@@ -1,27 +1,28 @@
 flowchart LR
   %% topology · claim view — schema 1.10 · shape 9e25ca5ffbf88ac3 · verdict clean
-  subgraph App["App"]
-    App__run["run  [hook]  {publish,alloc}"]
+  subgraph g_App["App"]
+    n_App_3a_3arun["run  [hook]  {publish,alloc}"]
   end
-  subgraph Store["Store"]
-    Store__on_c["on_c"]
+  subgraph g_Store["Store"]
+    n_Store_3a_3aon_5fc["on_c"]
   end
-  subgraph Worker["Worker"]
-    Worker__on_r["on_r  {unclassified}"]
+  subgraph g_Worker["Worker"]
+    n_Worker_3a_3aon_5fr["on_r  {unclassified}"]
   end
-  subgraph _free_functions_["(free functions)"]
-    call_it["call_it  {unclassified}"]
-    double["double"]
-    main["main  {alloc}"]
+  subgraph g__28free_20functions_29["(free functions)"]
+    n_call_5fit["call_it  {unclassified}"]
+    n_double["double"]
+    n_main["main  {alloc}"]
   end
-  topic_Cmds(["Cmds<br/>ctl.cmd · payload 828a7a8d"])
-  topic_Readings(["Readings<br/>sense.reading · payload fb9fb455"])
-  App__run -->|publish| topic_Readings
-  Worker__on_r -->|publish| topic_Cmds
-  topic_Cmds -.->|subscribe| Store__on_c
-  topic_Readings -.->|subscribe| Worker__on_r
-  Store__on_c -->|calls| double
-  Worker__on_r -->|calls| call_it
+  t_Cmds(["Cmds<br/>ctl.cmd · payload 828a7a8d"])
+  t_Readings(["Readings<br/>sense.reading · payload fb9fb455"])
+  n_App_3a_3arun -->|publish| t_Readings
+  n_Worker_3a_3aon_5fr -->|publish| t_Cmds
+  t_Cmds -.->|subscribe| n_Store_3a_3aon_5fc
+  t_Readings -.->|subscribe| n_Worker_3a_3aon_5fr
+  n_Store_3a_3aon_5fc -->|calls| n_double
+  n_Worker_3a_3aon_5fr -->|calls| n_call_5fit
   classDef hl stroke:#d69e2e,stroke-width:3px
-  class Store__on_c,Worker__on_r hl
+  class n_Store_3a_3aon_5fc,n_Worker_3a_3aon_5fr hl
   %% card: claim apart — holds | forbid reaches(stores, workers) via { calls }
+  %% card: 1 unresolved | call_it: indirect_call
