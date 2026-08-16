@@ -222,6 +222,24 @@ pub struct DeadInterfaceCall {
     pub provenance: ProvenanceId,
 }
 
+/// `declares_publish(locus, subject)` — a DECLARED publisher end
+/// (`bus { publish Orders; }`), distinct from [`Publish`]'s
+/// site-grained send expressions. The `require publishes(...)`
+/// claim semantics quantify over declared ends: a locus that
+/// declares the end but never sends still publishes in the
+/// endpoint sense, and dropping this row while claiming
+/// `exact_bus_endpoints` was review round 7's catch.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct DeclaresPublish {
+    pub locus: LocusDeclId,
+    pub subject: SubjectId,
+    /// `Some` when a declared topic covers the end; subject and
+    /// payload agreement validated exactly as for `Publish`.
+    pub declared_topic: Option<TopicId>,
+    pub payload: PayloadContractId,
+    pub provenance: ProvenanceId,
+}
+
 /// `placed_in(instance, thread_domain)`.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct PlacedIn {

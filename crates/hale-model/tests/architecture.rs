@@ -100,6 +100,7 @@ fn tiny_model() -> ApplicationModel {
             }],
             topics: vec![Topic {
                 name: "Readings".to_string(),
+                display: "Readings".to_string(),
                 subject: SubjectId(0),
                 payload: PayloadContractId(0),
                 key: Some(TopicKey {
@@ -190,6 +191,7 @@ fn tiny_model() -> ApplicationModel {
             ..Capabilities::default()
         },
         provenance: prov,
+        legacy: LegacyProjection::default(),
     }
 }
 
@@ -717,11 +719,13 @@ fn groups_are_typed_model_rows() {
     m.entities.groups = vec![
         Group {
             name: "probes".to_string(),
+            display: "probes".to_string(),
             may_be_empty: true,
             provenance: p,
         },
         Group {
             name: "workers".to_string(),
+            display: "workers".to_string(),
             may_be_empty: false,
             provenance: p,
         },
@@ -934,6 +938,7 @@ fn declared_in_covers_the_full_declaration_universe() {
     }];
     m.entities.groups = vec![Group {
         name: "workers".to_string(),
+        display: "workers".to_string(),
         may_be_empty: false,
         provenance: p,
     }];
@@ -1005,6 +1010,7 @@ fn the_nameable_declaration_universe_is_complete() {
     }];
     m.entities.groups = vec![Group {
         name: "workers".to_string(),
+        display: "workers".to_string(),
         may_be_empty: false,
         provenance: p,
     }];
@@ -1174,6 +1180,7 @@ fn authored_selectors_are_kept_alongside_resolved_members() {
     let p = ProvenanceId(0);
     m.entities.groups = vec![Group {
         name: "workers".to_string(),
+        display: "workers".to_string(),
         may_be_empty: false,
         provenance: p,
     }];
@@ -1261,6 +1268,56 @@ fn authored_selectors_are_kept_alongside_resolved_members() {
         m.validate(),
         Err(ModelError::DanglingId {
             table: "group_selectors",
+            index: 0
+        })
+    );
+}
+
+// -----------------------------------------------------------------
+// Review round 7 — declared publisher ends and the legacy bridge.
+// -----------------------------------------------------------------
+
+/// A declared publisher end is its own typed relation with the same
+/// agreement laws as sends.
+#[test]
+fn declared_publisher_ends_are_typed_rows() {
+    let mut m = tiny_model();
+    let p = ProvenanceId(0);
+    m.relations.declares_publish = vec![DeclaresPublish {
+        locus: LocusDeclId(0),
+        subject: SubjectId(0),
+        declared_topic: Some(TopicId(0)),
+        payload: PayloadContractId(0),
+        provenance: p,
+    }];
+    m.validate().expect("declared end is lawful");
+    // Payload disagreement with the declared topic refuses.
+    m.entities.payloads.push(PayloadContract {
+        shape: "z:i".to_string(),
+        hash: 0x2222,
+        provenance: p,
+    });
+    m.relations.declares_publish[0].payload = PayloadContractId(1);
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::EndpointPayloadDisagrees {
+            table: "declares_publish",
+            index: 0
+        })
+    );
+}
+
+/// The legacy projection is validated: sorted, in range.
+#[test]
+fn legacy_projection_is_validated() {
+    let mut m = tiny_model();
+    m.legacy.topology_v1_fns = vec![FunctionId(0), FunctionId(1)];
+    m.validate().expect("sorted legacy sort is lawful");
+    m.legacy.topology_v1_fns = vec![FunctionId(9)];
+    assert_eq!(
+        m.validate(),
+        Err(ModelError::DanglingId {
+            table: "legacy.topology_v1_fns",
             index: 0
         })
     );

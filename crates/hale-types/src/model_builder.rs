@@ -66,6 +66,19 @@ use crate::symbol::Bundle;
 
 static BUILDS: AtomicU64 = AtomicU64::new(0);
 
+/// A named TypeExpr's raw path (joined `::`), `"?"` otherwise.
+fn te_name_of(t: &TypeExpr) -> String {
+    match t {
+        TypeExpr::Named { path, .. } => path
+            .segments
+            .iter()
+            .map(|s| s.name.clone())
+            .collect::<Vec<_>>()
+            .join("::"),
+        _ => "?".to_string(),
+    }
+}
+
 /// How many times the builder has run in this process — the
 /// demand-gating instrumentation. The no-claims check path must
 /// leave this at zero.
@@ -109,7 +122,18 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     let name = |n: &str| -> String {
         demangle.get(n).cloned().unwrap_or_else(|| n.to_string())
     };
+    // CANONICAL identity is the RAW post-merge symbol (stable across
+    // importers — `p::Store` vs `db::Store` must be one identity);
+    // author spelling lives in per-row `display` fields and nothing
+    // else (review round 7). fn_name is raw; fn_display demangles
+    // both halves.
     let fn_name = |k: &FnKey| -> String {
+        match &k.locus {
+            Some(l) => format!("{}::{}", l, k.fn_name),
+            None => k.fn_name.clone(),
+        }
+    };
+    let fn_display = |k: &FnKey| -> String {
         match &k.locus {
             Some(l) => format!("{}::{}", name(l), k.fn_name),
             None => name(&k.fn_name),
@@ -316,13 +340,13 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         id
     };
 
-    // ---- entity tables (canonical order via BTree keys) ----
+    // ---- entity tables (canonical order via BTree keys, RAW) ----
     // Loci.
     let mut locus_rows: BTreeMap<String, (bool, hale_syntax::Span)> =
         BTreeMap::new();
     for l in &ast.loci {
         locus_rows
-            .insert(name(&l.name.name), (l.sealed, l.name.span));
+            .insert(l.name.name.clone(), (l.sealed, l.name.span));
     }
     let locus_id: BTreeMap<&String, LocusDeclId> = locus_rows
         .keys()
@@ -341,7 +365,12 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     struct FnInfo {
         kind: FunctionKind,
         locus: Option<String>,
+        display: String,
         span: Option<hale_syntax::Span>,
+        /// The behavior analysis did not walk this body (module
+        /// scope / on_failure at Change 2) — emits an
+        /// UnanalyzedBody hole.
+        unanalyzed: bool,
     }
     fn hook_name(k: &hale_syntax::ast::LifecycleKind) -> &'static str {
         use hale_syntax::ast::LifecycleKind as LK;
@@ -364,36 +393,64 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     }
     let mut fn_rows: BTreeMap<String, FnInfo> = BTreeMap::new();
     {
+        // depth > 0 = inside a module: the behavior summary's body
+        // walk does not recurse into modules, so those bodies are
+        // UNANALYZED at Change 2 and must hole out (review round 7).
         fn walk_free<'a>(
             items: &'a [TopDecl],
-            out: &mut Vec<(&'a str, hale_syntax::Span)>,
+            depth: u32,
+            out: &mut Vec<(&'a str, hale_syntax::Span, bool)>,
         ) {
             for item in items {
                 match item {
-                    TopDecl::Fn(f) => {
-                        out.push((f.name.name.as_str(), f.name.span))
+                    TopDecl::Fn(f) => out.push((
+                        f.name.name.as_str(),
+                        f.name.span,
+                        depth > 0,
+                    )),
+                    TopDecl::Module(m) => {
+                        walk_free(&m.items, depth + 1, out)
                     }
-                    TopDecl::Module(m) => walk_free(&m.items, out),
+                    _ => {}
+                }
+            }
+        }
+        fn walk_loci_mod<'a>(
+            items: &'a [TopDecl],
+            depth: u32,
+            out: &mut Vec<(&'a AstLocusDecl, bool)>,
+        ) {
+            for item in items {
+                match item {
+                    TopDecl::Locus(l) => out.push((l, depth > 0)),
+                    TopDecl::Module(m) => {
+                        walk_loci_mod(&m.items, depth + 1, out)
+                    }
                     _ => {}
                 }
             }
         }
         let mut frees = Vec::new();
+        let mut mod_loci = Vec::new();
         for pr in &programs {
-            walk_free(&pr.items, &mut frees);
+            walk_free(&pr.items, 0, &mut frees);
+            walk_loci_mod(&pr.items, 0, &mut mod_loci);
         }
-        for (n, sp) in frees {
+        for (n, sp, in_module) in frees {
             fn_rows.insert(
-                name(n),
+                n.to_string(),
                 FnInfo {
                     kind: FunctionKind::Free,
                     locus: None,
+                    display: name(n),
                     span: Some(sp),
+                    unanalyzed: in_module,
                 },
             );
         }
-        for l in &ast.loci {
-            let ld = name(&l.name.name);
+        for (l, in_module) in &mod_loci {
+            let ld = l.name.name.clone();
+            let ld_display = name(&ld);
             for m in &l.members {
                 let (fname, kind, sp) = match m {
                     LocusMember::Fn(f) => (
@@ -411,6 +468,40 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                         FunctionKind::Mode,
                         md.span,
                     ),
+                    LocusMember::Failure(fd) => {
+                        // on_failure handlers ARE executable hooks;
+                        // the summary never walks them, so they
+                        // enter the universe with an UnanalyzedBody
+                        // hole. Uniqueness: one handler per
+                        // (child, err) signature.
+                        let sig = fd
+                            .params
+                            .iter()
+                            .map(|pa| te_name_of(&pa.ty))
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        fn_rows.insert(
+                            format!("{}::on_failure({})", ld, sig),
+                            FnInfo {
+                                kind: FunctionKind::Hook,
+                                locus: Some(ld.clone()),
+                                display: format!(
+                                    "{}::on_failure({})",
+                                    ld_display,
+                                    fd.params
+                                        .iter()
+                                        .map(|pa| name(&te_name_of(
+                                            &pa.ty
+                                        )))
+                                        .collect::<Vec<_>>()
+                                        .join(",")
+                                ),
+                                span: Some(fd.span),
+                                unanalyzed: true,
+                            },
+                        );
+                        continue;
+                    }
                     _ => continue,
                 };
                 fn_rows.insert(
@@ -418,7 +509,9 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                     FnInfo {
                         kind,
                         locus: Some(ld.clone()),
+                        display: format!("{}::{}", ld_display, fname),
                         span: Some(sp),
+                        unanalyzed: *in_module,
                     },
                 );
             }
@@ -435,8 +528,10 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                     Some(_) => FunctionKind::Method,
                     None => FunctionKind::Free,
                 },
-                locus: k.locus.as_ref().map(|l| name(l)),
+                locus: k.locus.clone(),
+                display: fn_display(k),
                 span: None,
+                unanalyzed: false,
             });
         }
     }
@@ -493,6 +588,8 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         .collect();
     let wire_subjects =
         crate::topic_identity::topic_wire_subjects(&all_items);
+    // Keyed by RAW name — canonical identity — with the author
+    // spelling carried alongside.
     let mut topic_decl_by_name: BTreeMap<String, TInfo> = BTreeMap::new();
     for t in &ast.topics {
         let raw = t.name.name.clone();
@@ -504,7 +601,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             .cloned()
             .unwrap_or_else(|| raw.clone());
         topic_decl_by_name
-            .insert(name(&raw), TInfo { raw, decl: t, wire });
+            .insert(raw.clone(), TInfo { raw, decl: t, wire });
     }
 
     let mut subject_set: BTreeSet<String> = BTreeSet::new();
@@ -512,9 +609,8 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         subject_set.insert(info.wire.clone());
     }
     for (subject, _) in &graph.subjects {
-        let display = name(subject);
-        if !topic_decl_by_name.contains_key(&display) {
-            subject_set.insert(display);
+        if !topic_decl_by_name.contains_key(subject.as_str()) {
+            subject_set.insert(subject.clone());
         }
     }
 
@@ -569,7 +665,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     let mut endpoint_payload: BTreeMap<String, (String, u64)> =
         BTreeMap::new();
     for (subject, info) in &graph.subjects {
-        let display = name(subject);
+        let display = subject.clone();
         if topic_decl_by_name.contains_key(&display) {
             continue;
         }
@@ -595,14 +691,30 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     // still exists, holes and all.)
     let unresolved_payload = ("?".to_string(), fnv("?"));
     {
-        let mut need = |display: String| {
-            if !topic_decl_by_name.contains_key(&display)
-                && !endpoint_payload.contains_key(&display)
-            {
-                subject_set.insert(display.clone());
-                payload_rows.insert(unresolved_payload.clone(), ());
-                endpoint_payload
-                    .insert(display, unresolved_payload.clone());
+        // `known` overrides the "?" fallback with the endpoint's
+        // real structural contract (an explicit `of type T`) — one
+        // closure owns ALL mutation so the borrows stay linear.
+        let mut need = |display: String,
+                        known: Option<(String, u64)>| {
+            if topic_decl_by_name.contains_key(&display) {
+                return;
+            }
+            subject_set.insert(display.clone());
+            match known {
+                Some(key) => {
+                    payload_rows.insert(key.clone(), ());
+                    endpoint_payload.insert(display, key);
+                }
+                None => {
+                    if !endpoint_payload.contains_key(&display) {
+                        payload_rows
+                            .insert(unresolved_payload.clone(), ());
+                        endpoint_payload.insert(
+                            display,
+                            unresolved_payload.clone(),
+                        );
+                    }
+                }
             }
         };
         for (k, fs) in &summary.fns {
@@ -612,7 +724,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             for site in &fs.effect_sites {
                 if let EffectSiteKind::Publish(Some(subj)) = &site.kind
                 {
-                    need(name(subj));
+                    need(subj.clone(), None);
                 }
             }
         }
@@ -621,9 +733,20 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                 let LocusMember::Bus(bus) = m else { continue };
                 for bm in &bus.members {
                     match bm {
-                        BusMember::Subscribe { subject, .. }
-                        | BusMember::Publish { subject, .. } => {
-                            need(name(subject.canonical()));
+                        BusMember::Subscribe {
+                            subject, ty, ..
+                        }
+                        | BusMember::Publish { subject, ty, .. } => {
+                            // An explicit `of type T` names the
+                            // endpoint's real structural contract —
+                            // registered so every consumer (graph,
+                            // sends, declared ends) shares one key.
+                            need(
+                                subject.canonical().to_string(),
+                                ty.as_ref().map(|t| {
+                                    shape_of_type(&te_name_of(t))
+                                }),
+                            );
                         }
                     }
                 }
@@ -676,10 +799,10 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         .map(|(i, k)| (k, SeedId(i as u32)))
         .collect();
 
-    // Groups.
+    // Groups, keyed raw.
     let mut group_rows: BTreeMap<String, &GroupDecl> = BTreeMap::new();
     for g in &ast.groups {
-        group_rows.insert(name(&g.name.name), g);
+        group_rows.insert(g.name.name.clone(), g);
     }
     let group_id: BTreeMap<&String, GroupId> = group_rows
         .keys()
@@ -691,7 +814,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     let mut type_rows: BTreeMap<String, hale_syntax::Span> =
         BTreeMap::new();
     for (n, sp) in &ast.types {
-        type_rows.insert(name(n), *sp);
+        type_rows.insert(n.to_string(), *sp);
     }
     let type_id: BTreeMap<&String, TypeDeclId> = type_rows
         .keys()
@@ -701,7 +824,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     let mut iface_rows: BTreeMap<String, hale_syntax::Span> =
         BTreeMap::new();
     for (n, sp) in &ast.interfaces {
-        iface_rows.insert(name(n), *sp);
+        iface_rows.insert(n.to_string(), *sp);
     }
     let iface_id: BTreeMap<&String, InterfaceDeclId> = iface_rows
         .keys()
@@ -711,7 +834,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     let mut other_rows: BTreeMap<(String, DeclKind), hale_syntax::Span> =
         BTreeMap::new();
     for (kind, n, sp) in &ast.others {
-        other_rows.insert((name(n), *kind), *sp);
+        other_rows.insert((n.to_string(), *kind), *sp);
     }
     let other_id: BTreeMap<&(String, DeclKind), hale_model::DeclarationId> =
         other_rows
@@ -806,7 +929,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                     let to = fn_id[&fn_name(next)];
                     let dispatch = match &edge.via_interface {
                         Some(i) => DispatchKind::Interface {
-                            interface: name(i),
+                            interface: i.clone(),
                         },
                         None => DispatchKind::Direct,
                     };
@@ -842,7 +965,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                     } else if let Some(iface) = &edge.via_interface {
                         dead.insert(
                             (from, site),
-                            (name(iface), n.clone(), pid),
+                            (iface.clone(), n.clone(), pid),
                         );
                     } else if edge.receiver_present
                         && edge.recv_ty.is_none()
@@ -1123,7 +1246,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         for s in &fs.effect_sites {
             match &s.kind {
                 EffectSiteKind::Publish(Some(subj)) => {
-                    let display = name(subj);
+                    let display = subj.clone();
                     let pid = intern_span(&mut records, s.span);
                     let (declared, subject_str, payload, keyed) =
                         match topic_decl_by_name.get(&display) {
@@ -1200,7 +1323,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         ),
     > = BTreeMap::new();
     for l in &ast.loci {
-        let locus_display = name(&l.name.name);
+        let locus_raw = l.name.name.clone();
         let mut site: u32 = 0;
         for m in &l.members {
             let LocusMember::Bus(bus) = m else { continue };
@@ -1216,9 +1339,9 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                 else {
                     continue;
                 };
-                let display = name(subject.canonical());
+                let display = subject.canonical().to_string();
                 let handler_full =
-                    format!("{}::{}", locus_display, handler.name);
+                    format!("{}::{}", locus_raw, handler.name);
                 let Some(hid) = fn_id.get(&handler_full) else {
                     continue;
                 };
@@ -1386,11 +1509,11 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                     let mut ops = Vec::new();
                     let mut retry = None;
                     walk_ops(&fd.body, &mut ops, &mut retry);
-                    let parent = locus_id[&name(&l.name.name)];
+                    let parent = locus_id[&l.name.name];
                     let child_name = fd
                         .params
                         .first()
-                        .map(|p| name(&te_name(&p.ty)))
+                        .map(|p| te_name(&p.ty))
                         .unwrap_or_else(|| "?".to_string());
                     let child = match locus_id.get(&child_name) {
                         Some(id) => SupervisedRef::Locus(*id),
@@ -1399,7 +1522,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                     let err = fd
                         .params
                         .get(1)
-                        .map(|p| name(&te_name(&p.ty)))
+                        .map(|p| te_name(&p.ty))
                         .unwrap_or_else(|| "?".to_string());
                     let pid = intern_span(&mut records, fd.span);
                     sup.insert(
@@ -1440,7 +1563,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                 // Enumerate: the alias's loci and free fns.
                 if let Some(members) = vmodel.seeds.get(&alias) {
                     for mangled in members {
-                        let display = name(mangled);
+                        let display = mangled.clone();
                         if let Some(id) =
                             locus_id.get(&display)
                         {
@@ -1470,7 +1593,10 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                     }
                 }
             } else {
-                let display = name(&m.display());
+                // Lookups are by RAW name (qualified members were
+                // collapsed to mangled segments by the import
+                // pass); the selector row's display re-spells them.
+                let display = m.display();
                 // Both-join rule: a name shared by a locus and a
                 // fn contributes both members; the selector row
                 // references the locus when both exist.
@@ -1496,10 +1622,11 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                             // Author spelling: qualified members have
                             // been collapsed to mangled single
                             // segments by the import pass, so the
-                            // raw display() may read __lib_… — run
-                            // it through the demangle map exactly as
-                            // the artifact does.
-                            display,
+                            // raw display() may read __lib_… — the
+                            // STORED spelling runs through the
+                            // demangle map exactly as the artifact's
+                            // does (lookups above stayed raw).
+                            display: name(&m.display()),
                         },
                         provenance: pid,
                     });
@@ -1516,8 +1643,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     for (alias, members) in &vmodel.seeds {
         let sid = seed_id[alias];
         for mangled in members {
-            let display = name(mangled);
-            if let Some(r) = entity_of(&display) {
+            if let Some(r) = entity_of(mangled) {
                 declared_in.insert((r, sid));
                 let pid = intern_synth(
                     &mut records,
@@ -1534,7 +1660,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         let pid = intern_span(&mut records, *sp);
         e.loci.push(LocusDecl {
             name: n.clone(),
-            display: n.clone(),
+            display: name(n),
             sealed: *sealed,
             provenance: pid,
         });
@@ -1560,7 +1686,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         };
         e.functions.push(Function {
             name: n.clone(),
-            display: n.clone(),
+            display: info.display.clone(),
             kind: info.kind,
             effects: derived_effects.get(n).cloned().unwrap_or_default(),
             provenance: pid,
@@ -1588,6 +1714,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         let pid = intern_span(&mut records, t.name.span);
         e.topics.push(Topic {
             name: tname.clone(),
+            display: name(tname),
             subject: subject_id[&info.wire],
             payload: payload_id[&topic_payload[tname].clone()],
             key: t.keyed_by.as_ref().map(|f| TopicKey {
@@ -1628,6 +1755,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         let pid = intern_span(&mut records, g.name.span);
         e.groups.push(Group {
             name: n.clone(),
+            display: name(n),
             may_be_empty: g.may_be_empty,
             provenance: pid,
         });
@@ -1636,7 +1764,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         let pid = intern_span(&mut records, *sp);
         e.types.push(MTypeDecl {
             name: n.clone(),
-            display: n.clone(),
+            display: name(n),
             provenance: pid,
         });
     }
@@ -1644,7 +1772,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         let pid = intern_span(&mut records, *sp);
         e.interfaces.push(InterfaceDecl {
             name: n.clone(),
-            display: n.clone(),
+            display: name(n),
             provenance: pid,
         });
     }
@@ -1653,7 +1781,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         e.declarations.push(Declaration {
             kind: *kind,
             name: n.clone(),
-            display: n.clone(),
+            display: name(n),
             provenance: pid,
         });
     }
@@ -1789,6 +1917,100 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         }
     }
 
+    // Unanalyzed bodies (module scope, on_failure): declared
+    // executable entities whose calls/publishes/effects the summary
+    // never walked — typed holes keep the capabilities honest.
+    for (n, info) in &fn_rows {
+        if info.unanalyzed {
+            let pid = match info.span {
+                Some(sp) => intern_span(&mut records, sp),
+                None => intern_synth(&mut records, "unanalyzed body"),
+            };
+            holes
+                .entry((
+                    EntityRef::Function(fn_id[n]),
+                    HoleKind::UnanalyzedBody,
+                    "body not walked by the behavior analysis"
+                        .to_string(),
+                ))
+                .or_insert((
+                    hale_model::RelationSet::CALLS
+                        .union(hale_model::RelationSet::PUBLISHES)
+                        .union(hale_model::RelationSet::EFFECTS),
+                    pid,
+                ));
+        }
+    }
+
+    // Declared publisher ends: `bus { publish T; }` — the endpoint
+    // grain, independent of whether any send exists.
+    {
+        let mut ends: BTreeMap<
+            (hale_model::LocusDeclId, SubjectId),
+            (Option<TopicId>, PayloadContractId, ProvenanceId),
+        > = BTreeMap::new();
+        for l in &ast.loci {
+            let Some(lid) = locus_id.get(&l.name.name) else {
+                continue;
+            };
+            for m in &l.members {
+                let LocusMember::Bus(bus) = m else { continue };
+                for bm in &bus.members {
+                    let BusMember::Publish { subject, ty, span, .. } =
+                        bm
+                    else {
+                        continue;
+                    };
+                    let raw = subject.canonical().to_string();
+                    let (declared, subj_str, payload) =
+                        match topic_decl_by_name.get(&raw) {
+                            Some(info) => (
+                                Some(topic_id[&raw]),
+                                info.wire.clone(),
+                                payload_id
+                                    [&topic_payload[&raw].clone()],
+                            ),
+                            None => {
+                                let _ = ty;
+                                let key = endpoint_payload
+                                    .get(&raw)
+                                    .cloned()
+                                    .unwrap_or_else(|| {
+                                        unresolved_payload.clone()
+                                    });
+                                (None, raw.clone(), payload_id[&key])
+                            }
+                        };
+                    let pid = intern_span(&mut records, *span);
+                    ends.entry((*lid, subject_id[&subj_str]))
+                        .or_insert((declared, payload, pid));
+                }
+            }
+        }
+        for ((lid, sid), (declared, payload, pid)) in ends {
+            r.declares_publish.push(
+                hale_model::DeclaresPublish {
+                    locus: lid,
+                    subject: sid,
+                    declared_topic: declared,
+                    payload,
+                    provenance: pid,
+                },
+            );
+        }
+    }
+
+    // The Change-3 bridge: the legacy artifact's fn sort, recorded
+    // so TopologyShapeV1 projects from the model alone.
+    let mut legacy_fns: Vec<hale_model::FunctionId> = summary
+        .fns
+        .keys()
+        .filter(|k| user_key(k))
+        .map(|k| fn_id[&fn_name(k)])
+        .collect();
+    legacy_fns.sort();
+    legacy_fns.dedup();
+
     // holes, canonically ordered.
     let mut hole_rows: Vec<Hole> = holes
         .into_iter()
@@ -1834,6 +2056,9 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
 
     prov.records = records;
     let model = ApplicationModel {
+        legacy: hale_model::LegacyProjection {
+            topology_v1_fns: legacy_fns,
+        },
         header: ModelHeader {
             semantics: MODEL_SEMANTICS_V1,
             entrypoint,
@@ -1863,16 +2088,17 @@ pub fn render_internal(m: &ApplicationModel) -> String {
         m.header.semantics, m.header.entrypoint
     ));
     let e = &m.entities;
-    let fn_name = |id: FunctionId| e.functions[id.index()].name.clone();
-    let locus_name = |id: LocusDeclId| e.loci[id.index()].name.clone();
+    let fn_name =
+        |id: FunctionId| e.functions[id.index()].display.clone();
+    let locus_name = |id: LocusDeclId| e.loci[id.index()].display.clone();
     let subject_pat = |id: SubjectId| e.subjects[id.index()].pattern.clone();
-    let topic_name = |id: TopicId| e.topics[id.index()].name.clone();
+    let topic_name = |id: TopicId| e.topics[id.index()].display.clone();
 
     s.push_str(&format!("loci ({}):\n", e.loci.len()));
     for l in &e.loci {
         s.push_str(&format!(
             "  {}{}\n",
-            l.name,
+            l.display,
             if l.sealed { " @sealed" } else { "" }
         ));
     }
@@ -1880,7 +2106,7 @@ pub fn render_internal(m: &ApplicationModel) -> String {
     for f in &e.functions {
         s.push_str(&format!(
             "  {} [{}]{}\n",
-            f.name,
+            f.display,
             match f.kind {
                 FunctionKind::Hook => "hook",
                 FunctionKind::Method => "method",
@@ -1898,7 +2124,7 @@ pub fn render_internal(m: &ApplicationModel) -> String {
     for t in &e.topics {
         let mut line = format!(
             "  {} -> {} payload#{:016x}",
-            t.name,
+            t.display,
             subject_pat(t.subject),
             e.payloads[t.payload.index()].hash
         );
@@ -1935,7 +2161,7 @@ pub fn render_internal(m: &ApplicationModel) -> String {
             .map(|g| {
                 format!(
                     "{}{}",
-                    g.name,
+                    g.display,
                     if g.may_be_empty { " may_be_empty" } else { "" }
                 )
             })
@@ -1946,17 +2172,17 @@ pub fn render_internal(m: &ApplicationModel) -> String {
         "declaration universe: types [{}], interfaces [{}], other [{}]\n",
         e.types
             .iter()
-            .map(|t| t.name.clone())
+            .map(|t| t.display.clone())
             .collect::<Vec<_>>()
             .join(", "),
         e.interfaces
             .iter()
-            .map(|t| t.name.clone())
+            .map(|t| t.display.clone())
             .collect::<Vec<_>>()
             .join(", "),
         e.declarations
             .iter()
-            .map(|d| format!("{:?}:{}", d.kind, d.name))
+            .map(|d| format!("{:?}:{}", d.kind, d.display))
             .collect::<Vec<_>>()
             .join(", ")
     ));
@@ -2049,7 +2275,7 @@ pub fn render_internal(m: &ApplicationModel) -> String {
     for gs in &r.group_selectors {
         s.push_str(&format!(
             "  {}[{}] = {}\n",
-            e.groups[gs.group.index()].name,
+            e.groups[gs.group.index()].display,
             gs.ordinal,
             match &gs.selector {
                 SelectorForm::Named { display, .. } => display.clone(),

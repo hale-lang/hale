@@ -13,12 +13,12 @@ use crate::entity::{
     PayloadContract, Phase, Seed, Subject, ThreadDomain, Topic, TypeDecl,
 };
 use crate::hole::Hole;
-use crate::ids::{EntityRef, ProvenanceId};
+use crate::ids::{EntityRef, FunctionId, ProvenanceId};
 use crate::provenance::{Provenance, ProvenanceTable};
 use crate::relation::{
-    AffinedTo, Call, DeadInterfaceCall, DeclaredIn, GroupMember,
-    GroupSelector, MemberOf, Owns, PhaseOf, PlacedIn, Publish, Realizes,
-    SelectorForm, Subscribe, Supervises, TopicBinding,
+    AffinedTo, Call, DeadInterfaceCall, DeclaredIn, DeclaresPublish,
+    GroupMember, GroupSelector, MemberOf, Owns, PhaseOf, PlacedIn,
+    Publish, Realizes, SelectorForm, Subscribe, Supervises, TopicBinding,
 };
 
 /// The meaning of the model's rows. Bumped when a row's
@@ -98,6 +98,10 @@ pub struct Relations {
     pub calls: Vec<Call>,
     pub dead_interface_calls: Vec<DeadInterfaceCall>,
     pub publishes: Vec<Publish>,
+    /// Declared publisher ends (`bus { publish T; }`) — the
+    /// endpoint grain `require publishes(...)` quantifies over,
+    /// distinct from the site-grained sends above.
+    pub declares_publish: Vec<DeclaresPublish>,
     pub subscribes: Vec<Subscribe>,
     pub placed_in: Vec<PlacedIn>,
     pub affined_to: Vec<AffinedTo>,
@@ -107,6 +111,19 @@ pub struct Relations {
     /// The AUTHORED selector lists (legacy-hash grain), alongside
     /// the resolved `group_members` (judgment grain).
     pub group_selectors: Vec<GroupSelector>,
+}
+
+/// The Change-3 bridge, quarantined in one named structure: the
+/// EXACT membership of legacy serialized sorts that are narrower
+/// than the model's universe, so `TopologyShapeV1` can be projected
+/// from the model alone (no summary/AST side channel). Deleted when
+/// the legacy artifact schema is versioned past.
+#[derive(Clone, Debug, Default)]
+pub struct LegacyProjection {
+    /// The legacy artifact's fn sort (behavior-summary keys): a
+    /// strict subset of `entities.functions` — a module-scoped or
+    /// empty declaration exists in the universe but not here.
+    pub topology_v1_fns: Vec<FunctionId>,
 }
 
 #[derive(Clone, Debug)]
@@ -119,6 +136,7 @@ pub struct ApplicationModel {
     pub holes: Vec<Hole>,
     pub capabilities: Capabilities,
     pub provenance: ProvenanceTable,
+    pub legacy: LegacyProjection,
 }
 
 /// A violated model law. `validate` returns the FIRST violation —
@@ -202,6 +220,7 @@ impl ApplicationModel {
     /// | `owns`           | (parent, child)                  |
     /// | `calls`          | (from, to, dispatch, site)       |
     /// | `publishes`      | (function, subject, site)        |
+    /// | `declares_publish` | (locus, subject)               |
     /// | `subscribes`     | (subject, handler, site)         |
     /// | `dead_interface_calls` | (from, site)               |
     /// | `placed_in`      | (instance)                       |
@@ -538,6 +557,39 @@ impl ApplicationModel {
             prov("publishes", i, x.provenance)?;
         }
         check_sorted_keys(
+            "declares_publish",
+            r.declares_publish.iter().map(|x| (x.locus, x.subject)),
+        )?;
+        for (i, x) in r.declares_publish.iter().enumerate() {
+            if x.locus.index() >= loci
+                || x.subject.index() >= subjects
+                || x.payload.index() >= payloads
+                || x.declared_topic
+                    .map(|t| t.index() >= topics)
+                    .unwrap_or(false)
+            {
+                return Err(ModelError::DanglingId {
+                    table: "declares_publish",
+                    index: i,
+                });
+            }
+            if let Some(t) = x.declared_topic {
+                if e.topics[t.index()].subject != x.subject {
+                    return Err(ModelError::DeclaredTopicDisagrees {
+                        table: "declares_publish",
+                        index: i,
+                    });
+                }
+                if e.topics[t.index()].payload != x.payload {
+                    return Err(ModelError::EndpointPayloadDisagrees {
+                        table: "declares_publish",
+                        index: i,
+                    });
+                }
+            }
+            prov("declares_publish", i, x.provenance)?;
+        }
+        check_sorted_keys(
             "subscribes",
             r.subscribes.iter().map(|x| (x.subject, x.handler, x.site)),
         )?;
@@ -766,6 +818,20 @@ impl ApplicationModel {
                 return Err(ModelError::EmptyHole { index: i });
             }
             prov("holes", i, h.provenance)?;
+        }
+
+        // --- legacy projection: sorted ids, all in range.
+        check_sorted_keys(
+            "legacy.topology_v1_fns",
+            self.legacy.topology_v1_fns.iter(),
+        )?;
+        for (i, f) in self.legacy.topology_v1_fns.iter().enumerate() {
+            if f.index() >= fns {
+                return Err(ModelError::DanglingId {
+                    table: "legacy.topology_v1_fns",
+                    index: i,
+                });
+            }
         }
 
         // --- capability/hole contradiction: exactness may not be

@@ -233,11 +233,24 @@ fn model_and_artifact_extract_the_same_facts() {
         e.functions.iter().map(|f| f.name.clone()).collect();
     // The model's universe is DECLARATIONS (round 6): a superset of
     // the artifact's summary-derived sort — an empty fn exists here
-    // and not there. Change 3's projection filters back down.
+    // and not there.
     assert!(
         art_fns.is_subset(&model_fns),
         "artifact fn sort ⊆ model universe; missing: {:?}",
         art_fns.difference(&model_fns).collect::<Vec<_>>()
+    );
+    // …and the legacy projection recovers the EXACT legacy sort from
+    // the model alone (round 7): no summary/AST side channel for
+    // Change 3.
+    let legacy_fns: BTreeSet<String> = m
+        .legacy
+        .topology_v1_fns
+        .iter()
+        .map(|id| e.functions[id.index()].display.clone())
+        .collect();
+    assert_eq!(
+        art_fns, legacy_fns,
+        "legacy.topology_v1_fns projects the artifact's fn sort exactly"
     );
 
     // loci sort equality.
@@ -363,15 +376,29 @@ fn model_and_artifact_extract_the_same_facts() {
         .iter()
         .map(|r| r["fn"].as_str().unwrap().to_string())
         .collect();
+    // The model's residue is a SUPERSET: it holes bodies the legacy
+    // summary never walked (on_failure, module scope). Every
+    // artifact anchor must be a model hole, and every extra must be
+    // exactly that richer species.
     let model_hole_fns: BTreeSet<String> = m
         .holes
         .iter()
+        .filter(|h| h.kind != HoleKind::UnanalyzedBody)
         .filter_map(|h| match h.at {
             EntityRef::Function(id) => Some(fname(id)),
             _ => None,
         })
         .collect();
-    assert_eq!(art_unknown_fns, model_hole_fns, "residue anchors agree");
+    assert_eq!(
+        art_unknown_fns, model_hole_fns,
+        "legacy-visible residue anchors agree"
+    );
+    assert!(
+        m.holes
+            .iter()
+            .any(|h| h.kind == HoleKind::UnanalyzedBody),
+        "the on_failure body holes out (model-richer residue)"
+    );
 
     // groups: the artifact's as-authored member lists equal the
     // model's authored selector displays, per group, in order.
@@ -672,7 +699,15 @@ fn main() { App { }; }
     );
     let e = &m.entities;
     // Topic names are author-spelled…
-    let orders = e.topics.iter().find(|t| t.name == "e::Orders").unwrap();
+    let orders = e
+        .topics
+        .iter()
+        .find(|t| t.display == "e::Orders")
+        .unwrap();
+    assert_eq!(
+        orders.name, "__lib_e_events_Orders",
+        "canonical topic identity is the RAW post-merge symbol"
+    );
     // …but the wire subject is the DECLARED subject, raw.
     assert_eq!(
         e.subjects[orders.subject.index()].pattern, "orders.wire",
@@ -680,7 +715,11 @@ fn main() { App { }; }
     );
     // A subject-less imported topic defaults to the RAW mangled
     // name (the byte-exact runtime join key), NOT `e::Audit`.
-    let audit = e.topics.iter().find(|t| t.name == "e::Audit").unwrap();
+    let audit = e
+        .topics
+        .iter()
+        .find(|t| t.display == "e::Audit")
+        .unwrap();
     assert_eq!(
         e.subjects[audit.subject.index()].pattern,
         "__lib_e_events_Audit",
@@ -1051,4 +1090,164 @@ fn main() { App { }; }
     // contracted edge carries the path's truth even though the user
     // call site has none.
     assert!(via.in_loop, "path crosses the router's entry loop");
+}
+
+// -----------------------------------------------------------------
+// Review round 7 — declared ends, unanalyzed bodies, the legacy
+// bridge, canonical identity.
+// -----------------------------------------------------------------
+
+/// P1 (round 7): a locus that DECLARES a publisher end but never
+/// sends still publishes in the endpoint sense — the grain
+/// `require publishes(...)` quantifies over.
+#[test]
+fn declared_publisher_ends_survive_without_sends() {
+    let src = r#"
+type T { n: Int = 0; }
+topic Orders { payload: T; subject: "orders.wire"; }
+locus Gateway {
+    params { n: Int = 0; }
+    bus { publish Orders; }
+    fn idle(v: Int) -> Int { return v; }
+}
+locus Sub {
+    params { seen: Int = 0; }
+    bus { subscribe Orders as on_o; }
+    fn on_o(t: T) { self.seen = self.seen + 1; }
+}
+main locus App {
+    params { g: Gateway = Gateway { }; s: Sub = Sub { }; }
+    run() { println(self.g.idle(1)); }
+}
+fn main() { App { }; }
+"#;
+    let m = derive(src);
+    let e = &m.entities;
+    // No send site exists…
+    assert!(m.relations.publishes.is_empty(), "no send expressions");
+    // …but the declared end does, with the topic's contract.
+    let end = m
+        .relations
+        .declares_publish
+        .iter()
+        .find(|d| e.loci[d.locus.index()].name == "Gateway")
+        .expect("Gateway's declared publisher end exists");
+    assert!(end.declared_topic.is_some());
+    assert_eq!(
+        e.subjects[end.subject.index()].pattern, "orders.wire",
+        "declared end carries the wire subject"
+    );
+}
+
+/// P1 (round 7): module-scoped and on_failure bodies the behavior
+/// analysis never walked HOLE OUT — the entities exist, their
+/// behavior is typed-unknown, and the capabilities go false.
+#[test]
+fn unanalyzed_bodies_hole_out() {
+    let src = r#"
+type T { n: Int = 0; }
+topic Evt { payload: T; subject: "evt"; }
+module hidden {
+    fn sneaky(f: fn (Int) -> Int, v: Int) -> Int { return f(v); }
+}
+locus Child {
+    params { n: Int = 0; }
+    fn poke(v: Int) { self.n = v; }
+}
+locus Parent {
+    params { c: Child = Child { }; }
+    bus { publish Evt; }
+    on_failure(c: Child, err: ClosureViolation) {
+        Evt <- T { n: 1 };
+        restart (c);
+    }
+}
+main locus App {
+    params { p: Parent = Parent { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let m = derive(src);
+    let e = &m.entities;
+    // The module fn and the failure handler EXIST as entities…
+    assert!(e.functions.iter().any(|f| f.name == "sneaky"));
+    let handler = e
+        .functions
+        .iter()
+        .find(|f| f.name.contains("on_failure"))
+        .expect("failure handler is an executable entity");
+    assert_eq!(handler.kind, hale_model::FunctionKind::Hook);
+    // …and both hole out as UnanalyzedBody…
+    let unanalyzed: Vec<String> = m
+        .holes
+        .iter()
+        .filter(|h| h.kind == HoleKind::UnanalyzedBody)
+        .filter_map(|h| match h.at {
+            EntityRef::Function(id) => {
+                Some(e.functions[id.index()].name.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        unanalyzed.iter().any(|n| n == "sneaky"),
+        "module body holes out: {:?}",
+        unanalyzed
+    );
+    assert!(
+        unanalyzed.iter().any(|n| n.contains("on_failure")),
+        "failure body holes out: {:?}",
+        unanalyzed
+    );
+    // …so the capabilities cannot lie.
+    assert!(!m.capabilities.exact_calls);
+    assert!(!m.capabilities.exact_bus_endpoints);
+    assert!(!m.capabilities.exact_effects);
+}
+
+/// P1 (round 7): canonical identity is importer-independent — the
+/// same declaration imported under two aliases is ONE identity with
+/// two spellings only at the display layer.
+#[test]
+fn canonical_identity_is_alias_independent() {
+    let lib = r#"
+locus __lib_x_kv_Store {
+    params { n: Int = 0; }
+    fn get(k: Int) -> Int { return self.n + k; }
+}
+"#;
+    let main_src = r#"
+main locus App {
+    params { s: __lib_x_kv_Store = __lib_x_kv_Store { }; }
+    run() { println(self.s.get(1)); }
+}
+fn main() { App { }; }
+"#;
+    let via_p = xseed_bundle(
+        main_src,
+        lib,
+        &[(&["p", "Store"], "__lib_x_kv_Store")],
+    );
+    let via_db = xseed_bundle(
+        main_src,
+        lib,
+        &[(&["db", "Store"], "__lib_x_kv_Store")],
+    );
+    let canon = |m: &hale_model::ApplicationModel| -> Vec<String> {
+        m.entities.loci.iter().map(|l| l.name.clone()).collect()
+    };
+    assert_eq!(
+        canon(&via_p),
+        canon(&via_db),
+        "alias choice must not change canonical identity"
+    );
+    let disp = |m: &hale_model::ApplicationModel| -> Vec<String> {
+        m.entities.loci.iter().map(|l| l.display.clone()).collect()
+    };
+    assert_ne!(
+        disp(&via_p),
+        disp(&via_db),
+        "…only the display spelling differs"
+    );
 }
