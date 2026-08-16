@@ -1155,13 +1155,15 @@ locus Child {
     fn poke(v: Int) { self.n = v; }
 }
 locus Parent {
-    params { c: Child = Child { }; }
+    params { c: Child = Child { }; cb: fn (Int) -> Int = fallback_fn; }
     bus { publish Evt; }
     on_failure(c: Child, err: ClosureViolation) {
         Evt <- T { n: 1 };
-        restart (c);
+        let v = self.cb(1);
+        if v > 0 { restart (c); }
     }
 }
+fn fallback_fn(v: Int) -> Int { return v; }
 main locus App {
     params { p: Parent = Parent { }; }
     run() { println(1); }
