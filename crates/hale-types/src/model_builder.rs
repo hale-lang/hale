@@ -180,6 +180,70 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     }
     let raw_loci: BTreeSet<&str> =
         ast.loci.iter().map(|l| l.name.name.as_str()).collect();
+    // Raw type-name -> decl, for keyed_by field-type resolution.
+    let mut type_decl_by_raw: BTreeMap<&str, &hale_syntax::ast::TypeDecl> =
+        BTreeMap::new();
+    {
+        fn walk_types<'a>(
+            items: &'a [TopDecl],
+            out: &mut BTreeMap<&'a str, &'a hale_syntax::ast::TypeDecl>,
+        ) {
+            for item in items {
+                match item {
+                    TopDecl::Type(t) => {
+                        out.insert(t.name.name.as_str(), t);
+                    }
+                    TopDecl::Module(m) => walk_types(&m.items, out),
+                    _ => {}
+                }
+            }
+        }
+        for pr in &programs {
+            walk_types(&pr.items, &mut type_decl_by_raw);
+        }
+    }
+    // The canonical KEY-TYPE name for `keyed_by FIELD` on payload
+    // type `raw_ty` — AnyOfType names the key's TYPE (Int, Bool,
+    // Time, Duration, Decimal, String, or a no-payload enum's
+    // name), never the field. "?" when unresolvable (a hole-free
+    // fallback would be a lie; the differential pins the resolved
+    // cases and "?" only appears on programs the checker refuses).
+    let key_type_of = |raw_ty: &str, field: &str| -> String {
+        let Some(td) = type_decl_by_raw.get(raw_ty) else {
+            return "?".to_string();
+        };
+        let hale_syntax::ast::TypeDeclBody::Struct(fields) = &td.body
+        else {
+            return "?".to_string();
+        };
+        let Some(f) = fields.iter().find(|f| f.name.name == field)
+        else {
+            return "?".to_string();
+        };
+        match &f.ty {
+            TypeExpr::Primitive(prim, _) => {
+                use hale_syntax::ast::PrimType;
+                match prim {
+                    PrimType::Int | PrimType::Uint => "Int",
+                    PrimType::Bool => "Bool",
+                    PrimType::Time => "Time",
+                    PrimType::Duration => "Duration",
+                    PrimType::Decimal => "Decimal",
+                    PrimType::String | PrimType::StringView => "String",
+                    _ => "?",
+                }
+                .to_string()
+            }
+            TypeExpr::Named { path, .. }
+                if path.segments.len() == 1 =>
+            {
+                // A no-payload enum key routes by tag; its canonical
+                // key-type name is the enum's (author-spelled) name.
+                name(&path.segments[0].name)
+            }
+            _ => "?".to_string(),
+        }
+    };
     let user_key = |k: &FnKey| -> bool {
         match &k.locus {
             Some(l) => raw_loci.contains(l.as_str()),
@@ -266,11 +330,114 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         .map(|(i, k)| (k, LocusDeclId(i as u32)))
         .collect();
 
-    // Functions: the summary's user keys (the fn sort).
-    let mut fn_rows: BTreeMap<String, FnKey> = BTreeMap::new();
-    for k in summary.fns.keys() {
-        if user_key(k) {
-            fn_rows.insert(fn_name(k), k.clone());
+    // Functions: the DECLARATION universe (free fns, methods,
+    // lifecycle hooks, modes), unioned with the summary's user keys.
+    // The summary is a behavior analysis, not a declaration
+    // inventory — an EMPTY free fn has no summary entry but must
+    // still exist as an entity (group member, seed member, zero-
+    // length reachability endpoint); the claims layer carries the
+    // same correction. The union keeps the artifact's fn sort a
+    // subset of the model's.
+    struct FnInfo {
+        kind: FunctionKind,
+        locus: Option<String>,
+        span: Option<hale_syntax::Span>,
+    }
+    fn hook_name(k: &hale_syntax::ast::LifecycleKind) -> &'static str {
+        use hale_syntax::ast::LifecycleKind as LK;
+        match k {
+            LK::Birth => "birth",
+            LK::Accept => "accept",
+            LK::Release => "release",
+            LK::Run => "run",
+            LK::Drain => "drain",
+            LK::Dissolve => "dissolve",
+        }
+    }
+    fn mode_name(k: &hale_syntax::ast::ModeKind) -> &'static str {
+        use hale_syntax::ast::ModeKind as MK;
+        match k {
+            MK::Bulk => "bulk",
+            MK::Harmonic => "harmonic",
+            MK::Resolution => "resolution",
+        }
+    }
+    let mut fn_rows: BTreeMap<String, FnInfo> = BTreeMap::new();
+    {
+        fn walk_free<'a>(
+            items: &'a [TopDecl],
+            out: &mut Vec<(&'a str, hale_syntax::Span)>,
+        ) {
+            for item in items {
+                match item {
+                    TopDecl::Fn(f) => {
+                        out.push((f.name.name.as_str(), f.name.span))
+                    }
+                    TopDecl::Module(m) => walk_free(&m.items, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut frees = Vec::new();
+        for pr in &programs {
+            walk_free(&pr.items, &mut frees);
+        }
+        for (n, sp) in frees {
+            fn_rows.insert(
+                name(n),
+                FnInfo {
+                    kind: FunctionKind::Free,
+                    locus: None,
+                    span: Some(sp),
+                },
+            );
+        }
+        for l in &ast.loci {
+            let ld = name(&l.name.name);
+            for m in &l.members {
+                let (fname, kind, sp) = match m {
+                    LocusMember::Fn(f) => (
+                        f.name.name.clone(),
+                        FunctionKind::Method,
+                        f.name.span,
+                    ),
+                    LocusMember::Lifecycle(lc) => (
+                        hook_name(&lc.kind).to_string(),
+                        FunctionKind::Hook,
+                        lc.span,
+                    ),
+                    LocusMember::Mode(md) => (
+                        mode_name(&md.kind).to_string(),
+                        FunctionKind::Mode,
+                        md.span,
+                    ),
+                    _ => continue,
+                };
+                fn_rows.insert(
+                    format!("{}::{}", ld, fname),
+                    FnInfo {
+                        kind,
+                        locus: Some(ld.clone()),
+                        span: Some(sp),
+                    },
+                );
+            }
+        }
+        // Union: summary keys the enumeration missed (analysis-
+        // synthesized shapes) join with kind inferred from phases.
+        for k in summary.fns.keys() {
+            if !user_key(k) {
+                continue;
+            }
+            fn_rows.entry(fn_name(k)).or_insert_with(|| FnInfo {
+                kind: match vmodel.phases.get(k) {
+                    Some(p) if p.hook => FunctionKind::Hook,
+                    Some(_) => FunctionKind::Method,
+                    None => FunctionKind::Free,
+                },
+                locus: k.locus.as_ref().map(|l| name(l)),
+                span: None,
+            });
         }
     }
     let fn_id: BTreeMap<&String, FunctionId> = fn_rows
@@ -296,30 +463,53 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         .map(|(i, k)| (k, PhaseId(i as u32)))
         .collect();
 
-    // Topics + subjects + payloads.
-    // Subject strings: a declared topic's WIRE subject; plus every
-    // literal endpoint subject from the bus graph.
-    let mut topic_decl_by_name: BTreeMap<String, &TopicDecl> =
-        BTreeMap::new();
-    for t in &ast.topics {
-        topic_decl_by_name.insert(name(&t.name.name), t);
+    // Topics + subjects + payloads. THREE identities per topic, kept
+    // apart (the review-1 law, re-learned here in review 6): the RAW
+    // post-merge declaration name (what wire_subjects and the graph
+    // key by), the DISPLAY spelling (what the model's Topic.name and
+    // the artifact's topic sort carry), and the WIRE subject (the
+    // byte-exact runtime/recording join key — deliberately RAW in
+    // the artifact, never author-spelled).
+    struct TInfo<'t> {
+        raw: String,
+        decl: &'t TopicDecl,
+        wire: String,
     }
-    let wire_subjects = crate::topic_identity::topic_wire_subjects(
-        &programs
-            .iter()
-            .flat_map(|p| p.items.iter().cloned())
-            .collect::<Vec<_>>(),
-    );
-    let wire_of = |topic_display: &str| -> String {
-        wire_subjects
-            .get(topic_display)
+    impl<'t> TInfo<'t> {
+        fn raw_payload_ty(&self) -> String {
+            match &self.decl.payload {
+                TypeExpr::Named { path, .. }
+                    if path.segments.len() == 1 =>
+                {
+                    path.segments[0].name.clone()
+                }
+                _ => "?".to_string(),
+            }
+        }
+    }
+    let all_items: Vec<TopDecl> = programs
+        .iter()
+        .flat_map(|p| p.items.iter().cloned())
+        .collect();
+    let wire_subjects =
+        crate::topic_identity::topic_wire_subjects(&all_items);
+    let mut topic_decl_by_name: BTreeMap<String, TInfo> = BTreeMap::new();
+    for t in &ast.topics {
+        let raw = t.name.name.clone();
+        // The wire map is keyed by the RAW name; a subject-less
+        // topic's default wire subject is likewise the raw name
+        // (parent joins included) — exactly the artifact's rule.
+        let wire = wire_subjects
+            .get(&raw)
             .cloned()
-            .unwrap_or_else(|| topic_display.to_string())
-    };
+            .unwrap_or_else(|| raw.clone());
+        topic_decl_by_name
+            .insert(name(&raw), TInfo { raw, decl: t, wire });
+    }
 
     let mut subject_set: BTreeSet<String> = BTreeSet::new();
-    for tname in topic_decl_by_name.keys() {
-        subject_set.insert(wire_of(tname));
+    for info in topic_decl_by_name.values() {
+        subject_set.insert(info.wire.clone());
     }
     for (subject, _) in &graph.subjects {
         let display = name(subject);
@@ -328,29 +518,14 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         }
     }
 
-    // Payload contracts: canonical shapes for declared topics, and
-    // name-only contracts for literal-endpoint payload types.
-    let all_items: Vec<TopDecl> = programs
-        .iter()
-        .flat_map(|p| p.items.iter().cloned())
-        .collect();
-    let mut payload_rows: BTreeMap<(String, u64), ()> = BTreeMap::new();
-    let mut topic_payload: BTreeMap<String, (String, u64)> =
-        BTreeMap::new();
-    for (tname, t) in &topic_decl_by_name {
-        let shape =
-            crate::topic_identity::canonical_topic_shape(&all_items, t);
-        let subject = wire_of(tname);
-        let hash = crate::topic_identity::topic_shape_hash(
-            &subject, &shape,
-        );
-        payload_rows.insert((shape.clone(), hash), ());
-        topic_payload.insert(tname.clone(), (shape, hash));
-    }
-    // Literal endpoints: the payload TYPE NAME is the contract
-    // identity we have (BusGraph resolves it); shape falls back to
-    // the type name with a name-derived hash — honest and stable,
-    // upgraded when Change 3 unifies shape rendering.
+    // Payload contracts: SHAPE-ONLY identity — the schema separates
+    // address identity (Subject) from payload identity, so the
+    // fused subject+shape hash the runtime keeps is a Change-3
+    // projection (`hash(wire ++ ':' ++ shape)`), never the payload
+    // schema. Structural equality across subjects shares one
+    // contract; a field change on a literal endpoint's type changes
+    // its contract; renaming a type without structural change does
+    // not.
     let fnv = |s: &str| -> u64 {
         let mut h: u64 = 0xcbf29ce484222325;
         for b in s.as_bytes() {
@@ -359,6 +534,38 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         }
         h
     };
+    // Structural shape of a payload TYPE (by raw post-merge name),
+    // through the SAME renderer topics use. A non-bare-struct
+    // payload has no canonical shape; its contract falls back to an
+    // opaque per-type identity (structure unknown ⇒ the name is the
+    // only honest identity we have).
+    let shape_of_type = |raw_ty: &str| -> (String, u64) {
+        let shape = crate::topic_identity::canonical_type_shape(
+            &all_items, raw_ty,
+        );
+        if shape.is_empty() {
+            let opaque = format!("opaque:{}", name(raw_ty));
+            let h = fnv(&opaque);
+            (opaque, h)
+        } else {
+            let h = fnv(&shape);
+            (shape, h)
+        }
+    };
+    let mut payload_rows: BTreeMap<(String, u64), ()> = BTreeMap::new();
+    let mut topic_payload: BTreeMap<String, (String, u64)> =
+        BTreeMap::new();
+    for (tname, info) in &topic_decl_by_name {
+        let raw_ty = match &info.decl.payload {
+            TypeExpr::Named { path, .. } if path.segments.len() == 1 => {
+                path.segments[0].name.clone()
+            }
+            _ => "?".to_string(),
+        };
+        let key = shape_of_type(&raw_ty);
+        payload_rows.insert(key.clone(), ());
+        topic_payload.insert(tname.clone(), key);
+    }
     let mut endpoint_payload: BTreeMap<String, (String, u64)> =
         BTreeMap::new();
     for (subject, info) in &graph.subjects {
@@ -374,7 +581,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                 info.subscribers.first().map(|s| s.payload.clone())
             })
             .unwrap_or_else(|| "?".to_string());
-        let key = (ty.clone(), fnv(&ty));
+        let key = shape_of_type(&ty);
         payload_rows.insert(key.clone(), ());
         endpoint_payload.insert(display, key);
     }
@@ -437,6 +644,9 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
 
     let topic_names: Vec<String> =
         topic_decl_by_name.keys().cloned().collect();
+    let wire_of = |display: &str| -> String {
+        topic_decl_by_name[display].wire.clone()
+    };
     let topic_id: BTreeMap<&String, TopicId> = topic_names
         .iter()
         .enumerate()
@@ -565,11 +775,31 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             continue;
         }
         let from = fn_id[&fn_name(k)];
-        let mut site: u32 = 0;
-        let mut dead_site: u32 = 0;
+        // Authored-site ordinals: every conformer alternative of ONE
+        // interface dispatch shares one dispatch_group and therefore
+        // ONE site ordinal (one source expression = one site; a new
+        // conformer must not renumber later calls). Unresolved and
+        // dead edges consume ordinals too — they are authored sites.
+        let mut next_ordinal: u32 = 0;
+        let mut group_site: BTreeMap<u32, u32> = BTreeMap::new();
+        let mut site_of = |group: Option<u32>| -> u32 {
+            match group {
+                Some(g) => *group_site.entry(g).or_insert_with(|| {
+                    let o = next_ordinal;
+                    next_ordinal += 1;
+                    o
+                }),
+                None => {
+                    let o = next_ordinal;
+                    next_ordinal += 1;
+                    o
+                }
+            }
+        };
         for edge in &fs.calls {
             match &edge.callee {
                 Callee::Resolved(next) => {
+                    let site = site_of(edge.dispatch_group);
                     if !user_key(next) {
                         continue;
                     }
@@ -589,9 +819,9 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                             pid,
                         ),
                     );
-                    site += 1;
                 }
                 Callee::Unresolved(n) => {
+                    let site = site_of(edge.dispatch_group);
                     let anchor = EntityRef::Function(from);
                     let pid = intern_span(&mut records, edge.span);
                     if edge.indirect
@@ -611,10 +841,9 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                             ));
                     } else if let Some(iface) = &edge.via_interface {
                         dead.insert(
-                            (from, dead_site),
+                            (from, site),
                             (name(iface), n.clone(), pid),
                         );
-                        dead_site += 1;
                     } else if edge.receiver_present
                         && edge.recv_ty.is_none()
                     {
@@ -639,23 +868,54 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             }
         }
     }
-    // Through-stdlib contraction (same walk as the artifact's).
-    let mut via_stdlib: BTreeMap<(FunctionId, FunctionId), bool> =
+    // Through-stdlib contraction — with a TWO-component lattice.
+    // "Inside a loop" and "unbounded" are separate facts (a path
+    // through a statically bounded loop is looped but NOT
+    // unbounded), and a node is revisited whenever EITHER component
+    // strengthens, so results cannot depend on traversal order.
+    #[derive(Clone, Copy, PartialEq, Eq, Default)]
+    struct PathFlags {
+        in_loop: bool,
+        unbounded: bool,
+    }
+    impl PathFlags {
+        fn join(self, o: PathFlags) -> PathFlags {
+            PathFlags {
+                in_loop: self.in_loop || o.in_loop,
+                unbounded: self.unbounded || o.unbounded,
+            }
+        }
+        fn strengthens(self, prev: PathFlags) -> bool {
+            (self.in_loop && !prev.in_loop)
+                || (self.unbounded && !prev.unbounded)
+        }
+    }
+    let mut via_stdlib: BTreeMap<(FunctionId, FunctionId), PathFlags> =
         BTreeMap::new();
     for (k, fs) in &merged.fns {
         if !user_key(k) {
             continue;
         }
         let from = fn_id[&fn_name(k)];
-        let mut stack: Vec<(FnKey, bool)> = Vec::new();
-        let mut seen: BTreeSet<FnKey> = BTreeSet::new();
+        let mut stack: Vec<(FnKey, PathFlags)> = Vec::new();
+        let mut seen: BTreeMap<FnKey, PathFlags> = BTreeMap::new();
+        let edge_flags = |edge: &crate::alloc_summary::CallEdge| {
+            PathFlags {
+                in_loop: edge.loop_depth > 0,
+                unbounded: edge.in_unbounded_loop,
+            }
+        };
         for edge in &fs.calls {
             if let Callee::Resolved(next) = &edge.callee {
-                if !user_key(next) && seen.insert(next.clone()) {
-                    stack.push((
-                        next.clone(),
-                        edge.loop_depth > 0 || edge.in_unbounded_loop,
-                    ));
+                if !user_key(next) {
+                    let f = edge_flags(edge);
+                    let prev =
+                        seen.get(next).copied().unwrap_or_default();
+                    if !seen.contains_key(next) || f.strengthens(prev)
+                    {
+                        seen.insert(next.clone(), f.join(prev));
+                        stack.push((next.clone(), f));
+                    }
                 }
             }
         }
@@ -670,15 +930,22 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                 let Callee::Resolved(next) = &edge.callee else {
                     continue;
                 };
-                let l2 =
-                    lp || edge.loop_depth > 0 || edge.in_unbounded_loop;
+                let f2 = lp.join(edge_flags(edge));
                 if user_key(next) {
                     let to = fn_id[&fn_name(next)];
-                    let e =
-                        via_stdlib.entry((from, to)).or_insert(false);
-                    *e |= l2;
-                } else if seen.insert(next.clone()) {
-                    stack.push((next.clone(), l2));
+                    let e = via_stdlib
+                        .entry((from, to))
+                        .or_insert_with(PathFlags::default);
+                    *e = e.join(f2);
+                } else {
+                    let prev =
+                        seen.get(next).copied().unwrap_or_default();
+                    if !seen.contains_key(next)
+                        || f2.strengthens(prev)
+                    {
+                        seen.insert(next.clone(), f2.join(prev));
+                        stack.push((next.clone(), f2));
+                    }
                 }
             }
         }
@@ -699,9 +966,9 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                     .unwrap_or(0),
             );
         }
-        let contracted: Vec<((FunctionId, FunctionId), bool)> =
+        let contracted: Vec<((FunctionId, FunctionId), PathFlags)> =
             via_stdlib.into_iter().collect();
-        for ((from, to), looped) in contracted {
+        for ((from, to), flags) in contracted {
             let pid = intern_synth(
                 &mut records,
                 "through-stdlib contraction",
@@ -714,15 +981,138 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             };
             calls.insert(
                 (from, to, DispatchKind::ViaStdlib, site),
-                (looped, looped, pid),
+                (flags.in_loop, flags.unbounded, pid),
             );
         }
     }
 
+    // Publish dispositions: a span-indexed map of every authored
+    // send statement's `or` disposition, joined to effect sites by
+    // containment (sends do not nest). Walks EVERY statement
+    // container so a send inside a match arm or nested block cannot
+    // silently read as Default.
+    let mut send_dispositions: Vec<(u32, u32, PublishDisposition)> =
+        Vec::new();
+    {
+        use hale_syntax::ast::OrDisposition;
+        fn disp(d: &Option<OrDisposition>) -> PublishDisposition {
+            match d {
+                None => PublishDisposition::Default,
+                Some(OrDisposition::Raise(_)) => {
+                    PublishDisposition::Raise
+                }
+                Some(OrDisposition::Discard(_)) => {
+                    PublishDisposition::Discard
+                }
+                Some(OrDisposition::Wait(_)) => PublishDisposition::Wait,
+                // `or fail <p>` / `or <handler-ish expr>` both route
+                // the refusal into user code — the Handler class.
+                Some(OrDisposition::Fail(..))
+                | Some(OrDisposition::Substitute(_)) => {
+                    PublishDisposition::Handler
+                }
+            }
+        }
+        fn walk_block(
+            b: &Block,
+            out: &mut Vec<(u32, u32, PublishDisposition)>,
+        ) {
+            for st in &b.stmts {
+                match st {
+                    Stmt::Send {
+                        or_disposition, span, ..
+                    } => out.push((
+                        span.start.as_usize() as u32,
+                        span.end.as_usize() as u32,
+                        disp(or_disposition),
+                    )),
+                    Stmt::If(i) => {
+                        walk_block(&i.then_block, out);
+                        let mut cur = i.else_block.as_deref();
+                        while let Some(eb) = cur {
+                            match eb {
+                                ElseBranch::Else(bb) => {
+                                    walk_block(bb, out);
+                                    cur = None;
+                                }
+                                ElseBranch::ElseIf(ei) => {
+                                    walk_block(&ei.then_block, out);
+                                    cur = ei.else_block.as_deref();
+                                }
+                            }
+                        }
+                    }
+                    Stmt::While { body, .. }
+                    | Stmt::For { body, .. } => walk_block(body, out),
+                    Stmt::Block(bb) => walk_block(bb, out),
+                    Stmt::Match(m) => {
+                        for arm in &m.arms {
+                            if let hale_syntax::ast::MatchArmBody::Block(
+                                bb,
+                            ) = &arm.body
+                            {
+                                walk_block(bb, out);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        fn walk_members(
+            items: &[TopDecl],
+            out: &mut Vec<(u32, u32, PublishDisposition)>,
+        ) {
+            for item in items {
+                match item {
+                    TopDecl::Fn(f) => walk_block(&f.body, out),
+                    TopDecl::Locus(l) => {
+                        for m in &l.members {
+                            match m {
+                                LocusMember::Fn(f) => {
+                                    walk_block(&f.body, out)
+                                }
+                                LocusMember::Lifecycle(lc) => {
+                                    walk_block(&lc.body, out)
+                                }
+                                LocusMember::Mode(md) => {
+                                    walk_block(&md.body, out)
+                                }
+                                LocusMember::Failure(fd) => {
+                                    walk_block(&fd.body, out)
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    TopDecl::Module(m) => walk_members(&m.items, out),
+                    _ => {}
+                }
+            }
+        }
+        for pr in &programs {
+            walk_members(&pr.items, &mut send_dispositions);
+        }
+        send_dispositions.sort_by_key(|(a, b, _)| (*a, *b));
+    }
+    let disposition_at = |pos: u32| -> PublishDisposition {
+        send_dispositions
+            .iter()
+            .find(|(s, e2, _)| *s <= pos && pos <= *e2)
+            .map(|(_, _, d)| *d)
+            .unwrap_or(PublishDisposition::Default)
+    };
+
     // publishes: effect sites at SITE grain, + computed-subject holes.
     let mut publishes: BTreeMap<
         (FunctionId, SubjectId, u32),
-        (Option<TopicId>, PayloadContractId, Option<KeyDomain>, ProvenanceId),
+        (
+            Option<TopicId>,
+            PayloadContractId,
+            Option<KeyDomain>,
+            PublishDisposition,
+            ProvenanceId,
+        ),
     > = BTreeMap::new();
     for (k, fs) in &summary.fns {
         if !user_key(k) {
@@ -744,9 +1134,12 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                                     Some(topic_id[&display]),
                                     wire_of(&display),
                                     payload_id[&shape_hash],
-                                    t.keyed_by.as_ref().map(|f| {
+                                    t.decl.keyed_by.as_ref().map(|f| {
                                         KeyDomain::AnyOfType(
-                                            f.name.clone(),
+                                            key_type_of(
+                                                &t.raw_payload_ty(),
+                                                &f.name,
+                                            ),
                                         )
                                     }),
                                 )
@@ -762,7 +1155,15 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                         };
                     publishes.insert(
                         (from, subject_id[&subject_str], site),
-                        (declared, payload, keyed, pid),
+                        (
+                            declared,
+                            payload,
+                            keyed,
+                            disposition_at(
+                                s.span.start.as_usize() as u32
+                            ),
+                            pid,
+                        ),
                     );
                     site += 1;
                 }
@@ -1092,7 +1493,13 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                         ordinal: ordinal as u32,
                         selector: SelectorForm::Named {
                             member: r,
-                            display: m.display(),
+                            // Author spelling: qualified members have
+                            // been collapsed to mangled single
+                            // segments by the import pass, so the
+                            // raw display() may read __lib_… — run
+                            // it through the demangle map exactly as
+                            // the artifact does.
+                            display,
                         },
                         provenance: pid,
                     });
@@ -1146,17 +1553,15 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             derived_effects.insert(fn_name(k), classes);
         }
     }
-    for (n, key) in &fn_rows {
-        let kind = match vmodel.phases.get(key) {
-            Some(p) if p.hook => FunctionKind::Hook,
-            Some(_) => FunctionKind::Method,
-            None => FunctionKind::Free,
+    for (n, info) in &fn_rows {
+        let pid = match info.span {
+            Some(sp) => intern_span(&mut records, sp),
+            None => intern_synth(&mut records, "fn (summary key)"),
         };
-        let pid = intern_synth(&mut records, "fn (summary key)");
         e.functions.push(Function {
             name: n.clone(),
             display: n.clone(),
-            kind,
+            kind: info.kind,
             effects: derived_effects.get(n).cloned().unwrap_or_default(),
             provenance: pid,
         });
@@ -1178,11 +1583,12 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         });
     }
     for tname in &topic_names {
-        let t = topic_decl_by_name[tname];
+        let info = &topic_decl_by_name[tname];
+        let t = info.decl;
         let pid = intern_span(&mut records, t.name.span);
         e.topics.push(Topic {
             name: tname.clone(),
-            subject: subject_id[&wire_of(tname)],
+            subject: subject_id[&info.wire],
             payload: payload_id[&topic_payload[tname].clone()],
             key: t.keyed_by.as_ref().map(|f| TopicKey {
                 field: f.name.clone(),
@@ -1254,10 +1660,9 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
 
     let mut r = Relations::default();
     // member_of + phase_of from the fn rows.
-    for (n, key) in &fn_rows {
-        if let Some(l) = &key.locus {
-            let ld = name(l);
-            if let Some(lid) = locus_id.get(&ld) {
+    for (n, info) in &fn_rows {
+        if let Some(ld) = &info.locus {
+            if let Some(lid) = locus_id.get(ld) {
                 let pid =
                     intern_synth(&mut records, "locus membership");
                 r.member_of.push(MemberOf {
@@ -1297,7 +1702,9 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             provenance: *pid,
         });
     }
-    for ((f, s, site), (declared, payload, keyed, pid)) in &publishes {
+    for ((f, s, site), (declared, payload, keyed, dispo, pid)) in
+        &publishes
+    {
         r.publishes.push(Publish {
             function: *f,
             subject: *s,
@@ -1305,7 +1712,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             payload: *payload,
             site: *site,
             key_domain: keyed.clone(),
-            disposition: PublishDisposition::Default,
+            disposition: *dispo,
             provenance: *pid,
         });
     }

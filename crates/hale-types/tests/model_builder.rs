@@ -68,6 +68,7 @@ locus Worker {
     fn on_r(r: Reading) {
         self.seen = self.seen + 1;
         if r.v > 100 { Cmds <- Cmd { op: call_it(double, r.v) } or discard; }
+        Cmds <- Cmd { op: 0 } or raise;
     }
 }
 
@@ -230,7 +231,14 @@ fn model_and_artifact_extract_the_same_facts() {
         .collect();
     let model_fns: BTreeSet<String> =
         e.functions.iter().map(|f| f.name.clone()).collect();
-    assert_eq!(art_fns, model_fns, "fn sorts agree");
+    // The model's universe is DECLARATIONS (round 6): a superset of
+    // the artifact's summary-derived sort — an empty fn exists here
+    // and not there. Change 3's projection filters back down.
+    assert!(
+        art_fns.is_subset(&model_fns),
+        "artifact fn sort ⊆ model universe; missing: {:?}",
+        art_fns.difference(&model_fns).collect::<Vec<_>>()
+    );
 
     // loci sort equality.
     let art_loci: BTreeSet<String> = art["sorts"]["loci"]
@@ -586,4 +594,461 @@ fn every_corpus_program_derives_a_lawful_model() {
         bad.len(),
         bad.join("\n")
     );
+}
+
+// -----------------------------------------------------------------
+// Review round 6 — identity separation, dispositions, sites, the
+// declaration-derived function universe, and key types.
+// -----------------------------------------------------------------
+
+/// Builds a post-merge bundle the way the import pass does: the
+/// imported seed's decls arrive mangled, and import_renames maps
+/// author paths to mangled names.
+fn xseed_bundle(
+    main_src: &str,
+    lib_src: &str,
+    renames: &[(&[&str], &str)],
+) -> hale_model::ApplicationModel {
+    let main_p = hale_syntax::parse_source(main_src).expect("parse main");
+    let lib_p = hale_syntax::parse_source(lib_src).expect("parse lib");
+    let mut programs = BTreeMap::new();
+    programs.insert("app/main.hl".to_string(), &main_p);
+    programs.insert("lib/events.hl".to_string(), &lib_p);
+    let mut bundle = Bundle::new(programs);
+    bundle.import_renames = renames
+        .iter()
+        .map(|(segs, m)| {
+            (
+                segs.iter().map(|s| s.to_string()).collect(),
+                m.to_string(),
+            )
+        })
+        .collect();
+    let m = derive_application_model(&bundle);
+    m.validate().expect("cross-seed model is lawful");
+    m
+}
+
+/// P1 (round 6): raw identity vs author spelling for imported
+/// topics — the wire subject is the DECLARED subject (or the raw
+/// mangled default), never the author spelling; the topic NAME is
+/// the author spelling; named selectors store author spelling.
+#[test]
+fn imported_topic_identities_stay_separated() {
+    let lib = r#"
+type __lib_e_events_Order { id: Int = 0; }
+topic __lib_e_events_Orders {
+    payload: __lib_e_events_Order;
+    subject: "orders.wire";
+}
+topic __lib_e_events_Audit { payload: __lib_e_events_Order; }
+locus __lib_e_events_Worker {
+    params { n: Int = 0; }
+    fn poke(v: Int) -> Int { return v + self.n; }
+}
+"#;
+    let main_src = r#"
+group workers = { __lib_e_events_Worker };
+locus Sub {
+    params { seen: Int = 0; }
+    bus { subscribe __lib_e_events_Orders as on_o; }
+    fn on_o(o: __lib_e_events_Order) { self.seen = self.seen + 1; }
+}
+main locus App {
+    params { s: Sub = Sub { }; }
+    run() { println(self.s.seen); }
+}
+fn main() { App { }; }
+"#;
+    let m = xseed_bundle(
+        main_src,
+        lib,
+        &[
+            (&["e", "Order"], "__lib_e_events_Order"),
+            (&["e", "Orders"], "__lib_e_events_Orders"),
+            (&["e", "Audit"], "__lib_e_events_Audit"),
+            (&["e", "Worker"], "__lib_e_events_Worker"),
+        ],
+    );
+    let e = &m.entities;
+    // Topic names are author-spelled…
+    let orders = e.topics.iter().find(|t| t.name == "e::Orders").unwrap();
+    // …but the wire subject is the DECLARED subject, raw.
+    assert_eq!(
+        e.subjects[orders.subject.index()].pattern, "orders.wire",
+        "explicit subject survives import demangling"
+    );
+    // A subject-less imported topic defaults to the RAW mangled
+    // name (the byte-exact runtime join key), NOT `e::Audit`.
+    let audit = e.topics.iter().find(|t| t.name == "e::Audit").unwrap();
+    assert_eq!(
+        e.subjects[audit.subject.index()].pattern,
+        "__lib_e_events_Audit",
+        "subject-less imported topic keeps its raw wire identity"
+    );
+    // Named selector display is author-spelled even though the
+    // import pass collapsed the member to a mangled segment.
+    let sel = &m.relations.group_selectors[0];
+    match &sel.selector {
+        SelectorForm::Named { display, .. } => {
+            assert_eq!(display, "e::Worker", "selector display demangled")
+        }
+        other => panic!("expected Named selector, got {:?}", other),
+    }
+}
+
+/// P1 (round 6): payload identity is SHAPE-only. Equal shapes on
+/// two subjects share one contract; a field change on a literal
+/// endpoint's type changes its contract; a rename that keeps the
+/// structure does not.
+#[test]
+fn payload_identity_is_structural() {
+    let two_subjects = r#"
+type Evt { n: Int = 0; }
+topic A { payload: Evt; subject: "wire.a"; }
+topic B { payload: Evt; subject: "wire.b"; }
+locus S {
+    params { n: Int = 0; }
+    bus { subscribe A as on_a; subscribe B as on_b; }
+    fn on_a(e: Evt) { self.n = self.n + e.n; }
+    fn on_b(e: Evt) { self.n = self.n + e.n; }
+}
+main locus App {
+    params { s: S = S { }; }
+    bus { publish A; publish B; }
+    run() { A <- Evt { n: 1 }; B <- Evt { n: 2 }; }
+}
+fn main() { App { }; }
+"#;
+    let m = derive(two_subjects);
+    let a = m.entities.topics.iter().find(|t| t.name == "A").unwrap();
+    let b = m.entities.topics.iter().find(|t| t.name == "B").unwrap();
+    assert_eq!(
+        a.payload, b.payload,
+        "one shape on two subjects = ONE payload contract"
+    );
+
+    let lit = |fields: &str| {
+        format!(
+            r#"
+type Event {{ {} }}
+locus S {{
+    params {{ n: Int = 0; }}
+    bus {{ subscribe "orders.created" as on_e of type Event; }}
+    fn on_e(e: Event) {{ self.n = self.n + 1; }}
+}}
+main locus App {{
+    params {{ s: S = S {{ }}; }}
+    run() {{ println(self.n_of()); }}
+    fn n_of() -> Int {{ return 0; }}
+}}
+fn main() {{ App {{ }}; }}
+"#,
+            fields
+        )
+    };
+    let shape_of = |src: &str| -> (String, u64) {
+        let m = derive(src);
+        let sub = &m.relations.subscribes[0];
+        let p = &m.entities.payloads[sub.payload.index()];
+        (p.shape.clone(), p.hash)
+    };
+    let v1 = shape_of(&lit("id: Int = 0;"));
+    let v2 = shape_of(&lit("id: Int = 0; amount: Decimal = 0.0d;"));
+    assert_ne!(
+        v1, v2,
+        "adding a field to a literal endpoint's type MUST change \
+         its contract"
+    );
+    // Rename without structural change: same shape.
+    let renamed = lit("id: Int = 0;").replace("Event", "Evt2");
+    assert_eq!(
+        v1,
+        shape_of(&renamed),
+        "renaming a type without changing structure keeps the contract"
+    );
+}
+
+/// P1 (round 6): dispositions survive. Two sends to one topic in
+/// one function — `or discard` and `or raise` — are two site rows
+/// with distinct dispositions.
+#[test]
+fn publish_dispositions_are_preserved_per_site() {
+    let m = derive(RICH);
+    let e = &m.entities;
+    let cmds_rows: Vec<_> = m
+        .relations
+        .publishes
+        .iter()
+        .filter(|p| {
+            p.declared_topic
+                .map(|t| e.topics[t.index()].name == "Cmds")
+                .unwrap_or(false)
+        })
+        .collect();
+    assert_eq!(cmds_rows.len(), 2, "two authored sites on Cmds");
+    let dispositions: BTreeSet<_> = cmds_rows
+        .iter()
+        .map(|p| format!("{:?}", p.disposition))
+        .collect();
+    assert_eq!(
+        dispositions,
+        ["Discard".to_string(), "Raise".to_string()]
+            .into_iter()
+            .collect(),
+        "each site keeps ITS disposition"
+    );
+    assert_ne!(cmds_rows[0].site, cmds_rows[1].site);
+}
+
+/// P1 (round 6): AnyOfType names the key's TYPE, not the field.
+#[test]
+fn key_domain_names_the_key_type() {
+    let m = derive(RICH);
+    let keyed: Vec<_> = m
+        .relations
+        .publishes
+        .iter()
+        .filter_map(|p| match &p.key_domain {
+            Some(hale_model::KeyDomain::AnyOfType(t)) => Some(t.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(keyed, ["Int"], "keyed_by sensor (an Int field) → Int");
+}
+
+/// P1 (round 6): one interface dispatch = ONE authored site shared
+/// by every conformer row, and adding a conformer must not renumber
+/// later calls.
+#[test]
+fn interface_alternatives_share_one_site() {
+    let base = |extra_conformer: &str| {
+        format!(
+            r#"
+interface Notifier {{
+    fn notify(v: Int) -> Int;
+}}
+locus Bell {{
+    params {{ n: Int = 0; }}
+    fn notify(v: Int) -> Int {{ return v + 1; }}
+}}
+locus Horn {{
+    params {{ n: Int = 0; }}
+    fn notify(v: Int) -> Int {{ return v + 2; }}
+}}
+{}
+fn after(v: Int) -> Int {{ return v; }}
+fn go(x: Notifier, v: Int) -> Int {{
+    let a = x.notify(v);
+    let b = after(a);
+    return b;
+}}
+main locus App {{
+    run() {{
+        let e = Bell {{ }};
+        println(go(e, 1));
+    }}
+}}
+fn main() {{ App {{ }}; }}
+"#,
+            extra_conformer
+        )
+    };
+    let site_facts = |src: &str| {
+        let m = derive(src);
+        let e = m.entities.clone();
+        let fname = |id: hale_model::FunctionId| {
+            e.functions[id.index()].name.clone()
+        };
+        let iface_sites: BTreeSet<u32> = m
+            .relations
+            .calls
+            .iter()
+            .filter(|c| {
+                matches!(c.dispatch, DispatchKind::Interface { .. })
+            })
+            .map(|c| c.site)
+            .collect();
+        let iface_rows = m
+            .relations
+            .calls
+            .iter()
+            .filter(|c| {
+                matches!(c.dispatch, DispatchKind::Interface { .. })
+            })
+            .count();
+        let after_site = m
+            .relations
+            .calls
+            .iter()
+            .find(|c| fname(c.to) == "after")
+            .map(|c| c.site)
+            .expect("the later direct call exists");
+        (iface_rows, iface_sites, after_site)
+    };
+    let (rows2, sites2, after2) = site_facts(&base(""));
+    assert_eq!(rows2, 2, "two conformers = two rows");
+    assert_eq!(sites2.len(), 1, "…sharing ONE authored site");
+    let (rows3, sites3, after3) = site_facts(&base(
+        "locus Siren { params { n: Int = 0; } \
+         fn notify(v: Int) -> Int { return v + 3; } }",
+    ));
+    assert_eq!(rows3, 3, "three conformers = three rows");
+    assert_eq!(sites3.len(), 1, "…still one authored site");
+    assert_eq!(
+        after2, after3,
+        "adding a conformer must not renumber the later call"
+    );
+}
+
+/// P1 (round 6): the function universe comes from DECLARATIONS. An
+/// empty free fn exists (and stays groupable); a mode is a Mode,
+/// not a Hook.
+#[test]
+fn declaration_universe_includes_empty_fns_and_modes() {
+    let src = r#"
+fn unused_helper() { }
+locus Cell {
+    params { v: Int = 0; }
+    mode bulk() -> Int { return self.v; }
+    fn poke(v: Int) { self.v = v; }
+}
+group helpers = { unused_helper };
+main locus App {
+    params { c: Cell = Cell { }; }
+    run() { self.c.poke(2); println(self.c.bulk()); }
+}
+fn main() { App { }; }
+"#;
+    let m = derive(src);
+    let e = &m.entities;
+    let helper = e
+        .functions
+        .iter()
+        .find(|f| f.name == "unused_helper")
+        .expect("an EMPTY free fn is still an entity");
+    assert_eq!(helper.kind, hale_model::FunctionKind::Free);
+    // …and its group membership resolved.
+    assert!(m.relations.group_members.iter().any(|gm| matches!(
+        gm.member,
+        EntityRef::Function(id)
+            if e.functions[id.index()].name == "unused_helper"
+    )));
+    let bulk = e
+        .functions
+        .iter()
+        .find(|f| f.name == "Cell::bulk")
+        .expect("mode present");
+    assert_eq!(
+        bulk.kind,
+        hale_model::FunctionKind::Mode,
+        "a mode is a Mode, not a Hook"
+    );
+}
+
+/// P1 (round 6): "inside a loop" and "unbounded" are SEPARATE
+/// facts, at both grains the model records.
+///
+/// Direct grain: the summarizer proves `while i < 3` bounded, so a
+/// call inside it is (in_loop, !unbounded) — the exact cell the old
+/// single-boolean lattice destroyed — while `while true` is
+/// (in_loop, unbounded).
+///
+/// Contraction grain: the Router-dispatch path re-emerges at the
+/// user handler THROUGH the router's own entry loop, so the
+/// contracted edge is honestly (true, true) even when the user call
+/// site has no loop — the flags reflect the whole path, joined with
+/// the two-component lattice (revisit-on-strengthen, so results
+/// cannot depend on traversal order). No current stdlib surface
+/// re-emerges at user code through a PROVEN-bounded interior path;
+/// when one exists, pin the (true, false) contraction cell here.
+#[test]
+fn loop_and_unbounded_stay_separate_facts() {
+    let src = r#"
+fn leaf(v: Int) -> Int { return v + 1; }
+fn bounded_caller() -> Int {
+    let mut acc = 0;
+    let mut i = 0;
+    while i < 3 {
+        acc = acc + leaf(i);
+        i = i + 1;
+    }
+    return acc;
+}
+fn unbounded_caller() -> Int {
+    let mut acc = 0;
+    while true {
+        acc = acc + leaf(acc);
+        if acc > 10 { return acc; }
+    }
+    return acc;
+}
+fn main() { println(bounded_caller() + unbounded_caller()); }
+"#;
+    let m = derive(src);
+    let e = &m.entities;
+    let fname =
+        |id: hale_model::FunctionId| e.functions[id.index()].name.clone();
+    let flags = |from: &str| -> (bool, bool) {
+        let c = m
+            .relations
+            .calls
+            .iter()
+            .find(|c| fname(c.from) == from && fname(c.to) == "leaf")
+            .expect("edge exists");
+        (c.in_loop, c.unbounded)
+    };
+    assert_eq!(
+        flags("bounded_caller"),
+        (true, false),
+        "a PROVEN-bounded loop is looped but NOT unbounded — the \
+         cell a single-boolean lattice destroys"
+    );
+    assert_eq!(flags("unbounded_caller"), (true, true));
+}
+
+#[test]
+fn stdlib_contraction_reflects_the_whole_path() {
+    let src = r#"
+type Req { n: Int = 0; }
+locus Fwd {
+    params { n: Int = 0; }
+    fn handle(ctx: std::http::Context) -> std::http::Response {
+        return std::http::Response { status: 200, body: "ok" };
+    }
+}
+locus Oms {
+    params { n: Int = 0; }
+    fn kick(i: Int) {
+        let r = std::http::Router { };
+        r.add("GET", "/fwd", Fwd { });
+        let resp = r.dispatch(std::http::Request {
+            method: "GET", path: "/fwd", body: ""
+        });
+        self.n = resp.status;
+    }
+}
+main locus App {
+    params { o: Oms = Oms { }; }
+    run() { self.o.kick(1); }
+}
+fn main() { App { }; }
+"#;
+    let m = derive(src);
+    let e = &m.entities;
+    let fname =
+        |id: hale_model::FunctionId| e.functions[id.index()].name.clone();
+    let via = m
+        .relations
+        .calls
+        .iter()
+        .find(|c| {
+            c.dispatch == DispatchKind::ViaStdlib
+                && fname(c.to) == "Fwd::handle"
+        })
+        .expect("the through-stdlib edge to the handler exists");
+    // The router's entry walk is a loop the path crosses — the
+    // contracted edge carries the path's truth even though the user
+    // call site has none.
+    assert!(via.in_loop, "path crosses the router's entry loop");
 }

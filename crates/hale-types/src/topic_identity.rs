@@ -110,8 +110,24 @@ pub fn canonical_topic_shape(
     items: &[TopDecl],
     topic: &TopicDecl,
 ) -> String {
-    // Type decls by name, modules included, for struct lookup and
-    // alias resolution.
+    let TypeExpr::Named { path, generic_args, .. } = &topic.payload
+    else {
+        return String::new();
+    };
+    if path.segments.len() != 1 || !generic_args.is_empty() {
+        return String::new();
+    }
+    canonical_type_shape(items, path.segments[0].name.as_str())
+}
+
+/// The canonical structural shape of one declared bare struct type,
+/// by (post-merge) name — the type-level half of
+/// [`canonical_topic_shape`], exposed for the model builder (GH #476
+/// Change 2), which needs payload identity for LITERAL endpoints'
+/// `of type T` too, through the exact same renderer (a second shape
+/// renderer would drift). Empty string when the name is not a
+/// declared bare struct.
+pub fn canonical_type_shape(items: &[TopDecl], type_name: &str) -> String {
     let mut types: BTreeMap<&str, &TypeDecl> = BTreeMap::new();
     fn collect<'a>(
         items: &'a [TopDecl],
@@ -128,15 +144,7 @@ pub fn canonical_topic_shape(
         }
     }
     collect(items, &mut types);
-
-    let TypeExpr::Named { path, generic_args, .. } = &topic.payload
-    else {
-        return String::new();
-    };
-    if path.segments.len() != 1 || !generic_args.is_empty() {
-        return String::new();
-    }
-    let Some(td) = types.get(path.segments[0].name.as_str()) else {
+    let Some(td) = types.get(type_name) else {
         return String::new();
     };
     let TypeDeclBody::Struct(fields) = &td.body else {
