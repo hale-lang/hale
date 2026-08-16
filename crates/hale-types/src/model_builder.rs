@@ -55,10 +55,11 @@ use hale_model::{
     TypeDeclId, MODEL_SEMANTICS_V1,
 };
 use hale_syntax::ast::{
-    Block, BusMember, ElseBranch, Expr, GroupDecl, KeyFilter, Literal,
-    LocusDecl as AstLocusDecl, LocusMember, Program, RecoveryModifier,
-    RecoveryOp, ShedPolicy as AstShedPolicy, Stmt, TopDecl, TopicDecl,
-    TypeExpr, UnmatchedPolicy,
+    Block, BusMember, BusSubject, ElseBranch, Expr, GroupDecl,
+    KeyFilter, Literal, LocusDecl as AstLocusDecl, LocusMember,
+    Program, RecoveryModifier, RecoveryOp,
+    ShedPolicy as AstShedPolicy, Stmt, TopDecl, TopicDecl, TypeExpr,
+    UnmatchedPolicy,
 };
 
 use crate::alloc_summary::{self, Callee, EffectSiteKind, FnKey};
@@ -216,6 +217,13 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     let name = |n: &str| -> String {
         demangle.get(n).cloned().unwrap_or_else(|| n.to_string())
     };
+    // The inverse: author-spelled path ("alias::helper") → raw
+    // post-merge symbol. An unresolved call can carry the AUTHOR
+    // spelling while the model's tables are keyed raw (round 10).
+    let remangle: BTreeMap<String, String> = demangle
+        .iter()
+        .map(|(m, d)| (d.clone(), (*m).to_string()))
+        .collect();
     // CANONICAL identity is the RAW post-merge symbol (stable across
     // importers — `p::Store` vs `db::Store` must be one identity);
     // author spelling lives in per-row `display` fields and nothing
@@ -746,24 +754,28 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             (shape, h)
         }
     };
-    let mut payload_rows: BTreeMap<(String, u64), ()> = BTreeMap::new();
-    let mut topic_payload: BTreeMap<String, (String, u64)> =
-        BTreeMap::new();
-    for (tname, info) in &topic_decl_by_name {
-        let raw_ty = match &info.decl.payload {
+    // The ONE payload-contract rule for a type EXPRESSION — used by
+    // declared topics and explicit `of type T` endpoint clauses
+    // alike (round 10; endpoint clauses previously collapsed every
+    // non-named form to `opaque:?` through a name-only path):
+    //   bare named struct → canonical structural shape;
+    //   every other form  → opaque over the structural descriptor.
+    let contract_of_te = |te: &TypeExpr| -> (String, u64) {
+        match te {
             TypeExpr::Named { path, generic_args, .. }
                 if path.segments.len() == 1
                     && generic_args.is_empty() =>
             {
-                path.segments[0].name.clone()
+                shape_of_type(&path.segments[0].name)
             }
-            // Any other payload form gets a source-independent
-            // STRUCTURAL descriptor, not "?" — distinct primitive /
-            // array / tuple contracts must stay distinct identities
-            // (round 9).
-            other => type_descriptor(other),
-        };
-        let key = shape_of_type(&raw_ty);
+            other => shape_of_type(&type_descriptor(other)),
+        }
+    };
+    let mut payload_rows: BTreeMap<(String, u64), ()> = BTreeMap::new();
+    let mut topic_payload: BTreeMap<String, (String, u64)> =
+        BTreeMap::new();
+    for (tname, info) in &topic_decl_by_name {
+        let key = contract_of_te(&info.decl.payload);
         payload_rows.insert(key.clone(), ());
         topic_payload.insert(tname.clone(), key);
     }
@@ -799,9 +811,15 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         // `known` overrides the "?" fallback with the endpoint's
         // real structural contract (an explicit `of type T`) — one
         // closure owns ALL mutation so the borrows stay linear.
+        // `literal` is the SYNTACTIC form (round 10): a string-
+        // literal subject is a wire address and NEVER resolves
+        // through the topic table, even when its text collides with
+        // a topic NAME — only a topic REFERENCE takes the early
+        // return.
         let mut need = |display: String,
+                        literal: bool,
                         known: Option<(String, u64)>| {
-            if topic_decl_by_name.contains_key(&display) {
+            if !literal && topic_decl_by_name.contains_key(&display) {
                 return;
             }
             subject_set.insert(display.clone());
@@ -829,7 +847,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             for site in &fs.effect_sites {
                 if let EffectSiteKind::Publish(Some(subj)) = &site.kind
                 {
-                    need(subj.clone(), None);
+                    need(subj.text.clone(), subj.literal, None);
                 }
             }
         }
@@ -845,12 +863,15 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                             // An explicit `of type T` names the
                             // endpoint's real structural contract —
                             // registered so every consumer (graph,
-                            // sends, declared ends) shares one key.
+                            // sends, declared ends) shares one key,
+                            // through the ONE type-expression rule.
                             need(
                                 subject.canonical().to_string(),
-                                ty.as_ref().map(|t| {
-                                    shape_of_type(&te_name_of(t))
-                                }),
+                                matches!(
+                                    subject,
+                                    BusSubject::Literal { .. }
+                                ),
+                                ty.as_ref().map(&contract_of_te),
                             );
                         }
                     }
@@ -1091,7 +1112,44 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                                 ),
                                 pid,
                             ));
-                    } else if let Some(to) = fn_id.get(n) {
+                    } else if edge.receiver_present {
+                        // A TYPED method miss (`w.tick()` with
+                        // `recv_ty` known): resolve by call shape —
+                        // raw `RecvTy::method` in the declaration
+                        // universe, where a module-scoped locus's
+                        // method lands. A stdlib/external method
+                        // that resolves nowhere must NOT wire to a
+                        // same-named free fn (round 10); the effect
+                        // frontier and the stdlib contraction own
+                        // those.
+                        if let Some(t) = &edge.recv_ty {
+                            let mkey = format!("{}::{}", t, n);
+                            if let Some(to) = fn_id.get(&mkey) {
+                                calls.insert(
+                                    (
+                                        from,
+                                        *to,
+                                        DispatchKind::Direct,
+                                        site,
+                                    ),
+                                    (
+                                        edge.loop_depth > 0,
+                                        edge.in_unbounded_loop,
+                                        pid,
+                                    ),
+                                );
+                            }
+                        }
+                    } else if let Some(to) =
+                        fn_id.get(n).or_else(|| {
+                            // An imported qualified miss keeps its
+                            // AUTHOR spelling (`alias::helper`);
+                            // the universe is keyed raw.
+                            remangle
+                                .get(n)
+                                .and_then(|raw| fn_id.get(raw))
+                        })
+                    {
                         // The summary resolves callees against its
                         // own analyzed-body set only, so a direct
                         // call to a module-scoped fn arrives
@@ -1374,10 +1432,18 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         for s in &fs.effect_sites {
             match &s.kind {
                 EffectSiteKind::Publish(Some(subj)) => {
-                    let display = subj.clone();
+                    let display = subj.text.clone();
                     let pid = intern_span(&mut records, s.span);
+                    // The SYNTACTIC form decides: a string-literal
+                    // send is a wire address even when its text
+                    // collides with a topic NAME (round 10).
+                    let declared_info = if subj.literal {
+                        None
+                    } else {
+                        topic_decl_by_name.get(&display)
+                    };
                     let (declared, subject_str, payload, keyed) =
-                        match topic_decl_by_name.get(&display) {
+                        match declared_info {
                             Some(t) => {
                                 let shape_hash =
                                     topic_payload[&display].clone();
@@ -1462,6 +1528,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                     key_filter,
                     bound,
                     span,
+                    ty,
                     ..
                 } = bm
                 else {
@@ -1473,8 +1540,21 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                 let Some(hid) = fn_id.get(&handler_full) else {
                     continue;
                 };
+                // The BusSubject VARIANT decides declaredness — a
+                // literal `subscribe "Orders"` keeps its literal
+                // wire address and its own `of type` contract even
+                // when the text collides with a topic NAME
+                // (round 10; the resolver's distinction must
+                // survive extraction).
+                let declared_info = match subject {
+                    BusSubject::Literal { .. } => None,
+                    BusSubject::Topic(_)
+                    | BusSubject::QualifiedTopic(_) => {
+                        topic_decl_by_name.get(&display)
+                    }
+                };
                 let (declared, subject_str, payload) =
-                    match topic_decl_by_name.get(&display) {
+                    match declared_info {
                         Some(_) => (
                             Some(topic_id[&display]),
                             wire_of(&display),
@@ -1484,7 +1564,13 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                         None => (
                             None,
                             display.clone(),
-                            payload_id[&endpoint_payload[&display]],
+                            match ty {
+                                Some(t) => {
+                                    payload_id[&contract_of_te(t)]
+                                }
+                                None => payload_id
+                                    [&endpoint_payload[&display]],
+                            },
                         ),
                     };
                 let predicate = match key_filter {
@@ -2090,8 +2176,20 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                         continue;
                     };
                     let raw = subject.canonical().to_string();
+                    // Variant-decided, like every endpoint: a
+                    // literal `publish "addr" of type T` declares a
+                    // publisher end on a WIRE ADDRESS with its own
+                    // contract, never on a name-colliding topic
+                    // (round 10).
+                    let declared_info = match subject {
+                        BusSubject::Literal { .. } => None,
+                        BusSubject::Topic(_)
+                        | BusSubject::QualifiedTopic(_) => {
+                            topic_decl_by_name.get(&raw)
+                        }
+                    };
                     let (declared, subj_str, payload) =
-                        match topic_decl_by_name.get(&raw) {
+                        match declared_info {
                             Some(info) => (
                                 Some(topic_id[&raw]),
                                 info.wire.clone(),
@@ -2099,10 +2197,14 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                                     [&topic_payload[&raw].clone()],
                             ),
                             None => {
-                                let _ = ty;
-                                let key = endpoint_payload
-                                    .get(&raw)
-                                    .cloned()
+                                let key = ty
+                                    .as_ref()
+                                    .map(&contract_of_te)
+                                    .or_else(|| {
+                                        endpoint_payload
+                                            .get(&raw)
+                                            .cloned()
+                                    })
                                     .unwrap_or_else(|| {
                                         unresolved_payload.clone()
                                     });

@@ -1074,7 +1074,7 @@ fn check_class(
                         EffectClass::Publish,
                         alloc_summary::EffectSiteKind::Publish(subj),
                     ) => Some(match subj {
-                        Some(s) => format!("publishes to `{}`", s),
+                        Some(s) => format!("publishes to `{}`", s.text),
                         None => "publishes".to_string(),
                     }),
                     (
@@ -1389,10 +1389,10 @@ fn check_publish_set(
 ) {
     let found = find_effect_site(summary, key, |k| match k {
         alloc_summary::EffectSiteKind::Publish(Some(subj)) => {
-            if allowed.iter().any(|a| topic_ref_matches(a, subj)) {
+            if allowed.iter().any(|a| topic_ref_matches(a, &subj.text)) {
                 None
             } else {
-                Some(format!("publishes to `{}`", subj))
+                Some(format!("publishes to `{}`", subj.text))
             }
         }
         alloc_summary::EffectSiteKind::Publish(None) => Some(

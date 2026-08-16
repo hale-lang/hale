@@ -279,10 +279,10 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
         }
         for site in &fs.effect_sites {
             if let EffectSiteKind::Publish(Some(s)) = &site.kind {
-                publishes.insert((fn_name(k), name(s)));
+                publishes.insert((fn_name(k), name(&s.text)));
                 publish_spans.insert((
                     fn_name(k),
-                    name(s),
+                    name(&s.text),
                     site.span.start.as_usize() as u32,
                     site.span.end.as_usize() as u32,
                 ));

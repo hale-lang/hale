@@ -537,13 +537,29 @@ pub struct EffectSite {
     pub span: Span,
 }
 
+/// A publish site's subject, WITH its syntactic form. The resolver
+/// distinguishes a string-literal wire address (`"subject" <- v`)
+/// from a declared-topic reference (`Topic <- v`) — a literal keeps
+/// its literal address even when its text collides with a topic
+/// NAME, so consumers must never decide "declared topic?" from the
+/// string alone (GH #476 Change 2, round 10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishSubject {
+    /// The subject as written: the literal text, the topic name, or
+    /// the author-spelled qualified path.
+    pub text: String,
+    /// `true` iff the source expression was a string literal — a
+    /// wire address, never a topic reference.
+    pub literal: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EffectSiteKind {
     /// `Topic <- value` / `"subject" <- value`. Carries the subject
     /// as written when it is a compile-time-constant string or a
     /// declared topic name (the closed topic set makes publish-set
     /// assertions exact); None for a computed subject.
-    Publish(Option<String>),
+    Publish(Option<PublishSubject>),
     /// A locus instantiation (`Child { ... }`) — an arena creation
     /// plus, depending on placement, a thread spawn or a pool post.
     Spawn(String),
@@ -2502,24 +2518,32 @@ impl<'a> Walker<'a> {
                 // the closed-topic-set claim hold.
                 let subj = match subject {
                     Expr::Literal(Literal::String(s), _) => {
-                        Some(s.clone())
+                        Some(PublishSubject {
+                            text: s.clone(),
+                            literal: true,
+                        })
                     }
                     // A declared topic name (`Sig <- v`) parses as a
                     // bare identifier.
-                    Expr::Ident(id) => Some(id.name.clone()),
+                    Expr::Ident(id) => Some(PublishSubject {
+                        text: id.name.clone(),
+                        literal: false,
+                    }),
                     // A topic imported from a shared catalog
                     // (`t::SharedTopic <- v`) is a qualified
                     // path. Treating it as "computed" made every
                     // publish of a SHARED topic unprovable — which is
                     // every topic that crosses a binary, and so the
                     // only ones a publish-set contract is really for.
-                    Expr::Path(qp) => Some(
-                        qp.segments
+                    Expr::Path(qp) => Some(PublishSubject {
+                        text: qp
+                            .segments
                             .iter()
                             .map(|s| s.name.as_str())
                             .collect::<Vec<_>>()
                             .join("::"),
-                    ),
+                        literal: false,
+                    }),
                     _ => None,
                 };
                 self.push_effect_site(

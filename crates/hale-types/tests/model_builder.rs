@@ -1490,3 +1490,206 @@ fn main() {
         .collect();
     assert_eq!(lattice, proj_ends, "lattice and legacy endpoints agree");
 }
+
+/// P1 (round 10): unresolved calls resolve BY SHAPE. A typed method
+/// miss (`w.tick()`) must never wire to a same-named free fn; a
+/// method on a module-scoped locus resolves to `RecvTy::method` in
+/// the declaration universe.
+#[test]
+fn unresolved_method_calls_resolve_by_shape() {
+    let src = r#"
+module hidden {
+    locus Store {
+        params { n: Int = 0; }
+        fn get(k: Int) -> Int { return self.n + k; }
+    }
+}
+fn tick() -> Int { return 1; }
+locus W {
+    params { n: Int = 0; }
+}
+fn poke(w: W, s: Store) -> Int {
+    let a = w.tick();
+    return s.get(1) + a;
+}
+main locus App {
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let m = derive(src);
+    let e = &m.entities;
+    let fname =
+        |id: hale_model::FunctionId| e.functions[id.index()].name.clone();
+    // The typed method miss on the module locus resolves to the raw
+    // qualified method…
+    assert!(
+        m.relations.calls.iter().any(|c| fname(c.from) == "poke"
+            && fname(c.to) == "Store::get"
+            && c.dispatch == DispatchKind::Direct),
+        "typed method miss resolves to RecvTy::method"
+    );
+    // …and `w.tick()` (no such method on W) must NOT acquire a
+    // false edge to the free fn `tick`.
+    assert!(
+        !m.relations
+            .calls
+            .iter()
+            .any(|c| fname(c.from) == "poke" && fname(c.to) == "tick"),
+        "a method miss never wires to a same-named free fn"
+    );
+}
+
+/// P1 (round 10): a qualified call kept at its AUTHOR spelling
+/// (`p::helper`) resolves to its raw imported identity in the
+/// universe.
+#[test]
+fn qualified_calls_into_unanalyzed_imports_resolve_raw() {
+    let lib = r#"
+module m {
+    fn __lib_e_events_helper(v: Int) -> Int { return v; }
+}
+"#;
+    let main_src = r#"
+fn caller(v: Int) -> Int { return p::helper(v); }
+main locus App {
+    run() { println(caller(1)); }
+}
+fn main() { App { }; }
+"#;
+    let m = xseed_bundle(
+        main_src,
+        lib,
+        &[(&["p", "helper"], "__lib_e_events_helper")],
+    );
+    let e = &m.entities;
+    let fname =
+        |id: hale_model::FunctionId| e.functions[id.index()].name.clone();
+    assert!(
+        m.relations.calls.iter().any(|c| fname(c.from) == "caller"
+            && fname(c.to) == "__lib_e_events_helper"),
+        "author-spelled qualified call resolves to the raw identity: {:?}",
+        m.relations
+            .calls
+            .iter()
+            .map(|c| (fname(c.from), fname(c.to)))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// P1 (round 10): the BusSubject VARIANT survives extraction — a
+/// literal endpoint whose text collides with a topic NAME keeps its
+/// literal wire address and its own `of type` contract; it is never
+/// rewritten into the declared topic.
+#[test]
+fn literal_endpoints_never_conflate_with_topics() {
+    let src = r#"
+type NamedPayload { id: Int = 0; }
+type LiteralPayload { value: String = ""; }
+topic Orders { payload: NamedPayload; subject: "wire.orders"; }
+locus Sink {
+    bus { subscribe "Orders" as on_literal of type LiteralPayload; }
+    fn on_literal(v: LiteralPayload) { }
+}
+main locus App {
+    params { s: Sink = Sink { }; }
+    bus { publish "Orders" of type LiteralPayload; }
+    run() {
+        "Orders" <- LiteralPayload { };
+        Orders <- NamedPayload { };
+    }
+}
+fn main() { App { }; }
+"#;
+    let m = derive(src);
+    let e = &m.entities;
+    let pattern =
+        |id: hale_model::SubjectId| e.subjects[id.index()].pattern.clone();
+    let shape = |id: hale_model::PayloadContractId| {
+        e.payloads[id.index()].shape.clone()
+    };
+    // Both addresses exist as distinct subjects.
+    let subjects: BTreeSet<String> =
+        e.subjects.iter().map(|s| s.pattern.clone()).collect();
+    assert!(subjects.contains("Orders"), "literal address: {subjects:?}");
+    assert!(
+        subjects.contains("wire.orders"),
+        "topic wire address: {subjects:?}"
+    );
+    // The literal SUBSCRIBE keeps address "Orders", no declared
+    // topic, and the LiteralPayload contract.
+    let sub = m
+        .relations
+        .subscribes
+        .iter()
+        .find(|s| pattern(s.subject) == "Orders")
+        .expect("literal subscription exists at its literal address");
+    assert_eq!(sub.declared_topic, None);
+    assert_eq!(shape(sub.payload), "value:s");
+    // The literal SEND stays a wire-address publish; the topic send
+    // resolves through the declaration.
+    let lit_pub = m
+        .relations
+        .publishes
+        .iter()
+        .find(|p| pattern(p.subject) == "Orders")
+        .expect("literal publish keeps its literal address");
+    assert_eq!(lit_pub.declared_topic, None);
+    assert_eq!(shape(lit_pub.payload), "value:s");
+    let topic_pub = m
+        .relations
+        .publishes
+        .iter()
+        .find(|p| pattern(p.subject) == "wire.orders")
+        .expect("topic publish resolves to the wire subject");
+    assert!(topic_pub.declared_topic.is_some());
+    assert_eq!(shape(topic_pub.payload), "id:i");
+    // The declared publisher end on the literal address keeps its
+    // own contract as well.
+    let dp = m
+        .relations
+        .declares_publish
+        .iter()
+        .find(|d| pattern(d.subject) == "Orders")
+        .expect("literal declared end exists");
+    assert_eq!(dp.declared_topic, None);
+    assert_eq!(shape(dp.payload), "value:s");
+}
+
+/// P1 (round 10): explicit `of type` endpoint clauses go through the
+/// ONE type-expression contract rule — non-named forms stay
+/// structurally distinct instead of collapsing to `opaque:?`.
+#[test]
+fn explicit_endpoint_payloads_keep_structural_identity() {
+    let src = r#"
+locus S {
+    bus {
+        subscribe "a" as on_a of type Int;
+        subscribe "b" as on_b of type (Int, Bool);
+        subscribe "c" as on_c of type [Int; 4];
+    }
+    fn on_a(v: Int) { }
+    fn on_b(v: (Int, Bool)) { }
+    fn on_c(v: [Int; 4]) { }
+}
+main locus App {
+    params { s: S = S { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let m = derive(src);
+    let e = &m.entities;
+    let shape_at = |addr: &str| -> String {
+        let sub = m
+            .relations
+            .subscribes
+            .iter()
+            .find(|s| e.subjects[s.subject.index()].pattern == addr)
+            .unwrap_or_else(|| panic!("subscription at {addr}"));
+        e.payloads[sub.payload.index()].shape.clone()
+    };
+    assert_eq!(shape_at("a"), "opaque:Int");
+    assert_eq!(shape_at("b"), "opaque:(Int,Bool)");
+    assert_eq!(shape_at("c"), "opaque:[Int; 4]");
+}

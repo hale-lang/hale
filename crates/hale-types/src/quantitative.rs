@@ -242,7 +242,7 @@ fn count_dim(
                 QuantDim::Publish => 1,
                 QuantDim::Fanout => subj
                     .as_ref()
-                    .map(|s| fanout_of(s))
+                    .map(|s| fanout_of(&s.text))
                     .unwrap_or(1),
                 _ => 0,
             };
