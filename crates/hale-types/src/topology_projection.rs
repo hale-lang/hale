@@ -142,7 +142,13 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
         .collect();
     let topics: BTreeSet<String> =
         e.topics.iter().map(|t| t.display.clone()).collect();
-    let sealed: BTreeSet<String> = e
+    // RAW-name order with display values: the legacy encoder sorts
+    // sealed loci by raw canonical name and demangles only while
+    // serializing, so two imports whose raw and alias orders
+    // disagree render displays in raw order (review round 13).
+    // `e.loci` is canonically raw-sorted — collect WITHOUT
+    // re-sorting.
+    let sealed: Vec<String> = e
         .loci
         .iter()
         .filter(|l| l.sealed)
@@ -376,7 +382,7 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
         child: String,
         err: String,
         ops: Vec<String>,
-        retry: Option<u32>,
+        retry: Option<i64>,
         // Authored position for the tie-break below.
         origin: u32,
     }

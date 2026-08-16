@@ -351,7 +351,7 @@ fn unsorted_supervises_are_not_canonical() {
             error_type: "IoError".to_string(),
             policy: SupervisionPolicy {
                 ops: vec!["restart".to_string()],
-                retry_bound: Some(3),
+                retry_bound: Some(3i64),
             },
             authored_ordinal: 0,
             provenance: p,
@@ -637,7 +637,7 @@ fn supervision_is_per_error_type() {
             error_type: "ClosureViolation".to_string(),
             policy: SupervisionPolicy {
                 ops: vec!["restart".to_string()],
-                retry_bound: Some(3),
+                retry_bound: Some(3i64),
             },
             authored_ordinal: 0,
             provenance: p,

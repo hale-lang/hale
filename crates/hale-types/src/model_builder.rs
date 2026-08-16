@@ -1649,7 +1649,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     // supervision (same walk as the artifact's, per-handler).
     let mut sup: BTreeMap<
         (LocusDeclId, SupervisedRef, String),
-        (Vec<String>, Option<u32>, u32, ProvenanceId),
+        (Vec<String>, Option<i64>, u32, ProvenanceId),
     > = BTreeMap::new();
     {
         fn te_name(t: &TypeExpr) -> String {
@@ -1666,7 +1666,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         fn walk_ops(
             b: &Block,
             ops: &mut Vec<String>,
-            retry: &mut Option<u32>,
+            retry: &mut Option<i64>,
         ) {
             for st in &b.stmts {
                 match st {
@@ -1687,7 +1687,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                             Expr::Literal(Literal::Int(kk), _),
                         )) = modifier
                         {
-                            *retry = Some(*kk as u32);
+                            *retry = Some(*kk);
                         }
                     }
                     Stmt::If(i) => {
@@ -1724,7 +1724,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             for member in &l.members {
                 if let LocusMember::Failure(fd) = member {
                     let mut ops = Vec::new();
-                    let mut retry = None;
+                    let mut retry: Option<i64> = None;
                     walk_ops(&fd.body, &mut ops, &mut retry);
                     let parent = locus_id[&l.name.name];
                     let child_name = fd

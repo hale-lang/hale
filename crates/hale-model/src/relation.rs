@@ -275,7 +275,11 @@ pub struct TopicBinding {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SupervisionPolicy {
     pub ops: Vec<String>,
-    pub retry_bound: Option<u32>,
+    /// The literal as WRITTEN — i64 like the legacy artifact, which
+    /// serializes any int literal the parser accepted (`for
+    /// 4294967296` is check-clean; a narrower type here silently
+    /// truncated it — review round 13).
+    pub retry_bound: Option<i64>,
 }
 
 /// What an `on_failure` handler supervises. Usually a declared

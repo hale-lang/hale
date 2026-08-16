@@ -577,3 +577,88 @@ fn labels_and_effects_are_restricted_to_the_v1_universe() {
     assert!(out.contains("\"hidden_extra\": [\"syscall\"]"));
     assert!(out.contains("\"hidden_extra\": [\"money\"]"));
 }
+
+/// P1 (round 13): sealed renders DISPLAY values in RAW-name order —
+/// the legacy encoder sorts raw and demangles only while
+/// serializing. Two imports with deliberately reversed raw/alias
+/// order pin it: raw `__lib_a_pack_Z` < `__lib_b_pack_A`, displays
+/// `z::Z` then `a::A` — non-lexical display order is CORRECT.
+#[test]
+fn sealed_order_is_raw_not_display() {
+    let lib_a = r#"
+@sealed
+locus __lib_a_pack_Z {
+    params { n: Int = 0; }
+}
+"#;
+    let lib_b = r#"
+@sealed
+locus __lib_b_pack_A {
+    params { n: Int = 0; }
+}
+"#;
+    let main_src = r#"
+main locus App {
+    params { z: __lib_a_pack_Z = __lib_a_pack_Z { }; a: __lib_b_pack_A = __lib_b_pack_A { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let main_p = hale_syntax::parse_source(main_src).expect("parse main");
+    let a_p = hale_syntax::parse_source(lib_a).expect("parse lib a");
+    let b_p = hale_syntax::parse_source(lib_b).expect("parse lib b");
+    let mut programs = BTreeMap::new();
+    programs.insert("app/main.hl".to_string(), &main_p);
+    programs.insert("lib/a.hl".to_string(), &a_p);
+    programs.insert("lib/b.hl".to_string(), &b_p);
+    let mut bundle = Bundle::new(programs);
+    bundle.import_renames = vec![
+        (
+            vec!["z".to_string(), "Z".to_string()],
+            "__lib_a_pack_Z".to_string(),
+        ),
+        (
+            vec!["a".to_string(), "A".to_string()],
+            "__lib_b_pack_A".to_string(),
+        ),
+    ];
+    let art = hale_types::topology::dump_topology(&bundle);
+    let model = derive_application_model(&bundle);
+    let legacy = model_half_of(&art);
+    let projected = project_model_half(&model);
+    assert!(
+        legacy.contains("\"sealed\": [\"z::Z\", \"a::A\"]"),
+        "raw order, display values:\n{}",
+        legacy
+    );
+    assert_eq!(legacy, projected, "{}", first_diff(legacy, &projected));
+}
+
+/// P1 (round 13): a retry bound is the literal AS WRITTEN — i64.
+/// `for 4294967296` is check-clean; a u32 field silently truncated
+/// it to 0 in the projected hash.
+#[test]
+fn retry_bound_keeps_the_full_literal() {
+    let src = r#"
+locus Child {
+    params { n: Int = 0; }
+}
+locus Parent {
+    params { c: Child = Child { }; }
+    on_failure(c: Child, err: ClosureViolation) {
+        restart (c) for 4294967296;
+    }
+}
+main locus App {
+    params { p: Parent = Parent { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let legacy = assert_projection_matches(src, "retry bound width");
+    assert!(
+        legacy.contains("\"retry_bound\": 4294967296"),
+        "the literal survives at full width:\n{}",
+        legacy
+    );
+}
