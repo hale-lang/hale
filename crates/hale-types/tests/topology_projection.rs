@@ -662,3 +662,46 @@ fn main() { App { }; }
         legacy
     );
 }
+
+/// P1 (round 14): duplicate-signature handlers — identical
+/// (locus, child, error_type) — are check-clean, and the legacy
+/// artifact serializes one row PER DECLARATION. The model's
+/// canonical key includes the authored ordinal so both rows exist,
+/// and the projection renders both in authored order.
+#[test]
+fn duplicate_signature_supervision_rows_both_survive() {
+    let src = r#"
+locus Child {
+    params { n: Int = 0; }
+}
+locus Parent {
+    params { c: Child = Child { }; }
+    on_failure(c: Child, err: ClosureViolation) {
+        restart (c);
+    }
+    on_failure(c: Child, err: ClosureViolation) {
+        quarantine (c);
+    }
+}
+main locus App {
+    params { p: Parent = Parent { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let legacy = assert_projection_matches(
+        src,
+        "duplicate-signature supervision",
+    );
+    let restart = legacy
+        .find("\"ops\": [\"restart\"]")
+        .expect("first handler row");
+    let quarantine = legacy
+        .find("\"ops\": [\"quarantine\"]")
+        .expect("second handler row");
+    assert!(
+        restart < quarantine,
+        "both rows, authored order:\n{}",
+        legacy
+    );
+}

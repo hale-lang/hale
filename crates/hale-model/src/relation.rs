@@ -312,7 +312,10 @@ pub struct Supervises {
     /// its encoder collects handlers in source order and
     /// stable-sorts by (locus, child) only, so handlers sharing
     /// both serialize in authored order, not error-type order
-    /// (review round 11). Not part of the canonical key.
+    /// (review round 11). PART OF THE CANONICAL KEY: two handlers
+    /// with identical (parent, child, error_type) signatures are
+    /// check-clean and both serialize in the legacy artifact, so
+    /// the model must hold both rows (review round 14).
     pub authored_ordinal: u32,
     pub provenance: ProvenanceId,
 }

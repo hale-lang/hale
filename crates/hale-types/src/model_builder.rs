@@ -1647,9 +1647,13 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     }
 
     // supervision (same walk as the artifact's, per-handler).
+    // Keyed WITH the authored ordinal: duplicate-signature handlers
+    // are check-clean and the legacy artifact serializes each
+    // declaration -- a (parent, child, err)-only key silently
+    // dropped the earlier one (review round 14).
     let mut sup: BTreeMap<
-        (LocusDeclId, SupervisedRef, String),
-        (Vec<String>, Option<i64>, u32, ProvenanceId),
+        (LocusDeclId, SupervisedRef, String, u32),
+        (Vec<String>, Option<i64>, ProvenanceId),
     > = BTreeMap::new();
     {
         fn te_name(t: &TypeExpr) -> String {
@@ -1743,8 +1747,8 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                         .unwrap_or_else(|| "?".to_string());
                     let pid = intern_span(&mut records, fd.span);
                     sup.insert(
-                        (parent, child, err),
-                        (ops, retry, authored, pid),
+                        (parent, child, err, authored),
+                        (ops, retry, pid),
                     );
                     authored += 1;
                 }
@@ -2077,7 +2081,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             provenance: *pid,
         });
     }
-    for ((parent, child, err), (ops, retry, authored, pid)) in &sup {
+    for ((parent, child, err, authored), (ops, retry, pid)) in &sup {
         r.supervises.push(Supervises {
             parent: *parent,
             child: child.clone(),

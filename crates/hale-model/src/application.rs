@@ -737,9 +737,14 @@ impl ApplicationModel {
         }
         check_sorted_keys(
             "supervises",
-            r.supervises
-                .iter()
-                .map(|x| (x.parent, x.child.clone(), &x.error_type)),
+            r.supervises.iter().map(|x| {
+                (
+                    x.parent,
+                    x.child.clone(),
+                    &x.error_type,
+                    x.authored_ordinal,
+                )
+            }),
         )?;
         for (i, x) in r.supervises.iter().enumerate() {
             let child_ok = match &x.child {
