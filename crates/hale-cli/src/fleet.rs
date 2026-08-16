@@ -1393,106 +1393,108 @@ fn fnv(s: &str) -> String {
 }
 
 /// GH #476 Change 4 — lower the plan's claim rows to `ClaimIr`.
-/// Fleet targets are PLAN-level names (instances, plan groups, wire
-/// subjects); they resolve against a typed `FleetModel` at Change 7,
-/// so every row lowers name-level here and the old evaluator stays
-/// authoritative. A `CountSpec` with several bounds present lowers
-/// one row per bound (eq, then max, then min) — each is its own law.
+/// ONE row per `ClaimSpec`, mirroring the evaluator's
+/// one-name/one-sentence rule (a claim name identifies one sentence
+/// and one verdict): a spec with zero or several verbs set lowers to
+/// a structured [`hale_model::LoweringIssue`], never to a split or
+/// silently dropped law, and a `CountSpec`'s eq/max/min bounds stay
+/// ONE conjunctive law. Fleet targets are PLAN-level names
+/// (instances, plan groups, wire subjects); they resolve against a
+/// typed `FleetModel` at Change 7, so every row lowers name-level
+/// and the old evaluator stays authoritative.
 pub fn lower_plan_claims(
     claims: &[ClaimSpec],
 ) -> hale_model::ClaimIrTable {
     use hale_model::{
-        ClaimIr, ClaimIrTable, ClaimOrigin, ClaimRow, CountCmpIr,
-        ProvenanceId,
+        ClaimIr, ClaimIrTable, ClaimOrigin, ClaimRow, ProvenanceId,
     };
     let mut table = ClaimIrTable::default();
-    let push = |table: &mut ClaimIrTable,
-                    name: &str,
-                    law: ClaimIr| {
+    let mut prov = |table: &mut ClaimIrTable, name: &str| {
         let pid = ProvenanceId(table.provenance.records.len() as u32);
         table.provenance.records.push(
             hale_model::Provenance::Synthetic {
                 origin: format!("deployment plan claim `{}`", name),
             },
         );
+        pid
+    };
+    for c in claims {
+        let verbs = [
+            c.forbid_reaches.is_some(),
+            c.require_subscribes.is_some(),
+            c.require_publishes.is_some(),
+            c.count_publisher_instances.is_some(),
+            c.count_subscriber_instances.is_some(),
+            c.only_edges.is_some(),
+        ]
+        .iter()
+        .filter(|v| **v)
+        .count();
+        if verbs != 1 {
+            // The evaluator's one-name/one-sentence rule: this spec
+            // is not one law. Structured invalidity, not a split.
+            let pid = prov(&mut table, &c.name);
+            table.issues.push(hale_model::LoweringIssue {
+                message: format!(
+                    "plan claim `{}` sets {} verbs — a claim is ONE \
+                     sentence with one verdict",
+                    c.name, verbs
+                ),
+                provenance: pid,
+            });
+            continue;
+        }
+        let law = if let Some(fr) = &c.forbid_reaches {
+            ClaimIr::FleetForbidReaches {
+                from: fr.from.clone(),
+                to: fr.to.clone(),
+                avoiding: fr.avoiding.clone(),
+            }
+        } else if let Some(r) = &c.require_subscribes {
+            ClaimIr::FleetRequireEndpoint {
+                publishers: false,
+                target: r.group.clone(),
+                topic: r.subject.clone(),
+            }
+        } else if let Some(r) = &c.require_publishes {
+            ClaimIr::FleetRequireEndpoint {
+                publishers: true,
+                target: r.group.clone(),
+                topic: r.subject.clone(),
+            }
+        } else if let Some(spec) = &c.count_publisher_instances {
+            ClaimIr::FleetCountInstances {
+                publishers: true,
+                topic: spec.subject.clone(),
+                eq: spec.eq.map(|n| n as u64),
+                max: spec.max.map(|n| n as u64),
+                min: spec.min.map(|n| n as u64),
+            }
+        } else if let Some(spec) = &c.count_subscriber_instances {
+            ClaimIr::FleetCountInstances {
+                publishers: false,
+                topic: spec.subject.clone(),
+                eq: spec.eq.map(|n| n as u64),
+                max: spec.max.map(|n| n as u64),
+                min: spec.min.map(|n| n as u64),
+            }
+        } else {
+            let Some(oe) = &c.only_edges else { unreachable!() };
+            ClaimIr::FleetOnlyEdges {
+                src: oe.from.clone(),
+                dst: oe.to.clone(),
+                grants: oe.grant_subjects.clone(),
+            }
+        };
+        let pid = prov(&mut table, &c.name);
         let ordinal = table.rows.len() as u32;
         table.rows.push(ClaimRow {
             ordinal,
-            name: name.to_string(),
+            name: c.name.clone(),
             origin: ClaimOrigin::FleetPlan,
             law,
             provenance: pid,
         });
-    };
-    for c in claims {
-        if let Some(fr) = &c.forbid_reaches {
-            push(
-                &mut table,
-                &c.name,
-                ClaimIr::FleetForbidReaches {
-                    from: fr.from.clone(),
-                    to: fr.to.clone(),
-                    avoiding: fr.avoiding.clone(),
-                },
-            );
-        }
-        if let Some(r) = &c.require_subscribes {
-            push(
-                &mut table,
-                &c.name,
-                ClaimIr::FleetRequireEndpoint {
-                    publishers: false,
-                    target: r.group.clone(),
-                    topic: r.subject.clone(),
-                },
-            );
-        }
-        if let Some(r) = &c.require_publishes {
-            push(
-                &mut table,
-                &c.name,
-                ClaimIr::FleetRequireEndpoint {
-                    publishers: true,
-                    target: r.group.clone(),
-                    topic: r.subject.clone(),
-                },
-            );
-        }
-        for (publishers, spec) in [
-            (true, &c.count_publisher_instances),
-            (false, &c.count_subscriber_instances),
-        ] {
-            let Some(spec) = spec else { continue };
-            for (cmp, n) in [
-                (CountCmpIr::Eq, spec.eq),
-                (CountCmpIr::Le, spec.max),
-                (CountCmpIr::Ge, spec.min),
-            ] {
-                if let Some(n) = n {
-                    push(
-                        &mut table,
-                        &c.name,
-                        ClaimIr::FleetCountInstances {
-                            publishers,
-                            topic: spec.subject.clone(),
-                            cmp,
-                            n: n as u64,
-                        },
-                    );
-                }
-            }
-        }
-        if let Some(oe) = &c.only_edges {
-            push(
-                &mut table,
-                &c.name,
-                ClaimIr::FleetOnlyEdges {
-                    src: oe.from.clone(),
-                    dst: oe.to.clone(),
-                    grants: oe.grant_subjects.clone(),
-                },
-            );
-        }
     }
     table
 }
@@ -1500,71 +1502,74 @@ pub fn lower_plan_claims(
 #[cfg(test)]
 mod claim_ir_tests {
     use super::*;
-    use hale_model::{ClaimIr, ClaimOrigin, CountCmpIr};
+    use hale_model::{ClaimIr, ClaimOrigin};
 
-    /// GH #476 Change 4: every plan claim verb lowers, a multi-bound
-    /// CountSpec lowers one row per bound, and rows keep authored
-    /// order with FleetPlan origin.
+    fn empty_spec(name: &str) -> ClaimSpec {
+        ClaimSpec {
+            name: name.to_string(),
+            forbid_reaches: None,
+            require_subscribes: None,
+            require_publishes: None,
+            count_publisher_instances: None,
+            count_subscriber_instances: None,
+            only_edges: None,
+        }
+    }
+
+    /// GH #476 Change 4 (round 15): ONE row per ClaimSpec — the
+    /// evaluator's one-name/one-sentence rule. A multi-bound count
+    /// stays one conjunctive law; a multi-verb or verbless spec
+    /// lowers to a structured issue, never a split or a silent drop.
     #[test]
-    fn plan_claims_lower_one_row_per_law() {
-        let claims = vec![
-            ClaimSpec {
-                name: "iso".to_string(),
-                forbid_reaches: Some(ForbidReaches {
-                    from: "gw-0".to_string(),
-                    to: "risk-0".to_string(),
-                    avoiding: Some("audit".to_string()),
-                }),
-                require_subscribes: None,
-                require_publishes: None,
-                count_publisher_instances: None,
-                count_subscriber_instances: None,
-                only_edges: None,
-            },
-            ClaimSpec {
-                name: "writer".to_string(),
-                forbid_reaches: None,
-                require_subscribes: None,
-                require_publishes: Some(RequireEndpoint {
-                    group: "gw".to_string(),
-                    subject: "orders".to_string(),
-                }),
-                count_publisher_instances: Some(CountSpec {
-                    subject: "orders".to_string(),
-                    eq: None,
-                    max: Some(3),
-                    min: Some(1),
-                }),
-                count_subscriber_instances: None,
-                only_edges: Some(OnlyEdges {
-                    from: "gw".to_string(),
-                    to: "risk".to_string(),
-                    grant_subjects: vec!["orders".to_string()],
-                }),
-            },
-        ];
-        let t = lower_plan_claims(&claims);
-        assert_eq!(t.rows.len(), 5, "1 + (1 require + 2 bounds + 1 only)");
+    fn plan_claims_lower_one_row_per_sentence() {
+        let mut iso = empty_spec("iso");
+        iso.forbid_reaches = Some(ForbidReaches {
+            from: "gw-0".to_string(),
+            to: "risk-0".to_string(),
+            avoiding: Some("audit".to_string()),
+        });
+        let mut writers = empty_spec("writers");
+        writers.count_publisher_instances = Some(CountSpec {
+            subject: "orders".to_string(),
+            eq: None,
+            max: Some(3),
+            min: Some(1),
+        });
+        let mut broken = empty_spec("broken");
+        broken.require_publishes = Some(RequireEndpoint {
+            group: "gw".to_string(),
+            subject: "orders".to_string(),
+        });
+        broken.only_edges = Some(OnlyEdges {
+            from: "gw".to_string(),
+            to: "risk".to_string(),
+            grant_subjects: vec![],
+        });
+        let hollow = empty_spec("hollow");
+        let t = lower_plan_claims(&[iso, writers, broken, hollow]);
+        assert_eq!(t.rows.len(), 2, "one row per well-formed sentence");
         assert!(t
             .rows
             .iter()
             .all(|r| r.origin == ClaimOrigin::FleetPlan));
-        assert!((0..5).all(|i| t.rows[i].ordinal == i as u32));
         assert!(matches!(
             &t.rows[0].law,
             ClaimIr::FleetForbidReaches { avoiding: Some(a), .. } if a == "audit"
         ));
+        // The two-bound count is ONE conjunctive law.
         assert!(matches!(
-            &t.rows[2].law,
-            ClaimIr::FleetCountInstances { cmp: CountCmpIr::Le, n: 3, .. }
+            &t.rows[1].law,
+            ClaimIr::FleetCountInstances {
+                eq: None,
+                max: Some(3),
+                min: Some(1),
+                ..
+            }
         ));
-        assert!(matches!(
-            &t.rows[3].law,
-            ClaimIr::FleetCountInstances { cmp: CountCmpIr::Ge, n: 1, .. }
-        ));
-        assert!(matches!(
-            &t.rows[4].law,
-            ClaimIr::FleetOnlyEdges { grants, .. } if grants.len() == 1
-        ));
+        // Multi-verb and verbless specs are structured invalidity.
+        assert_eq!(t.issues.len(), 2);
+        assert!(t.issues[0].message.contains("`broken` sets 2 verbs"));
+        assert!(t.issues[1].message.contains("`hollow` sets 0 verbs"));
     }
 }
+

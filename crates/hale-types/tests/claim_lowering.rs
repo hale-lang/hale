@@ -211,7 +211,7 @@ fn main() { App { }; }
         unreachable!()
     };
     assert!(locus.0.is_some());
-    assert!(subjects[0].0.is_some(), "subject `evt` resolves");
+    assert!(subjects[0].subject.is_some(), "subject `evt` resolves");
     let pe = by("Worker", &|l| {
         matches!(l, ClaimIr::PhaseEffects { .. })
     });
@@ -322,5 +322,202 @@ fn lowering_matches_evaluator_outcomes_over_the_corpus() {
         "{} corpus programs diverge:\n{}",
         bad.len(),
         bad.join("\n")
+    );
+}
+
+/// P1 (round 15): law-SELECTION invalidity is preserved as
+/// structured issues — `adopt Missing` produced an evaluator
+/// diagnostic but lowered to an empty table, so an IR-only
+/// evaluator would have observed "no law" with nothing to reject.
+#[test]
+fn invalid_law_selection_becomes_issues() {
+    let src = r#"
+main locus App {
+    claims { adopt Missing; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let (t, _m) = lower(src);
+    assert!(t.rows.is_empty());
+    assert!(
+        t.issues
+            .iter()
+            .any(|i| i.message.contains("Missing")),
+        "the unknown constitution is a structured issue: {:?}",
+        t.issues
+    );
+}
+
+/// P1 (round 15): the effect-class vocabulary is typed. A declared
+/// class resolves to a table row with `declared: true`; a bare
+/// reference (interned typo) resolves to a row with
+/// `declared: false`; a composed class carries its normalized
+/// atomic expansion.
+#[test]
+fn effect_class_vocabulary_is_typed() {
+    let declared_src = r#"
+effect money;
+effect io = { syscall, block };
+@effects(none: { money, io })
+fn f(v: Int) -> Int { return v; }
+main locus App { run() { println(f(1)); } }
+fn main() { App { }; }
+"#;
+    let (t, m) = lower(declared_src);
+    let ClaimIr::EffectForbid { classes, .. } = &t
+        .rows
+        .iter()
+        .find(|r| matches!(r.law, ClaimIr::EffectForbid { .. }))
+        .expect("forbid row")
+        .law
+    else {
+        unreachable!()
+    };
+    let money = &classes[0];
+    assert!(!money.builtin);
+    let row = &m.entities.effect_classes
+        [money.class.expect("declared class resolves").index()];
+    assert!(row.declared && row.composition.is_empty());
+    let io = &classes[1];
+    let io_row = &m.entities.effect_classes
+        [io.class.expect("composed class resolves").index()];
+    assert!(io_row.declared);
+    assert_eq!(io_row.composition, ["block", "syscall"]);
+
+    let typo_src = r#"
+@effects(none: { money })
+fn f(v: Int) -> Int { return v; }
+main locus App { run() { println(f(1)); } }
+fn main() { App { }; }
+"#;
+    let (t2, m2) = lower(typo_src);
+    let ClaimIr::EffectForbid { classes, .. } = &t2
+        .rows
+        .iter()
+        .find(|r| matches!(r.law, ClaimIr::EffectForbid { .. }))
+        .expect("forbid row")
+        .law
+    else {
+        unreachable!()
+    };
+    let interned = &m2.entities.effect_classes
+        [classes[0].class.expect("interned ref resolves").index()];
+    assert!(
+        !interned.declared,
+        "a bare reference is distinguishable from a declaration"
+    );
+    // Built-ins never resolve into the user table.
+    let (t3, _m3) = lower(
+        r#"
+@effects(none: { syscall })
+fn f(v: Int) -> Int { return v; }
+main locus App { run() { println(f(1)); } }
+fn main() { App { }; }
+"#,
+    );
+    let ClaimIr::EffectForbid { classes, .. } = &t3.rows[0].law
+    else {
+        unreachable!()
+    };
+    assert!(classes[0].builtin && classes[0].class.is_none());
+}
+
+/// P1 (round 15): `@effects(publish: {Orders})` is TOPIC-space —
+/// the entry resolves to the declared topic even though its wire
+/// subject is different, never to a subject-pattern lookup miss.
+#[test]
+fn publish_set_is_topic_space() {
+    let src = r#"
+type Order { n: Int = 0; }
+topic Orders { payload: Order; subject: "wire.orders"; }
+main locus App {
+    bus { publish Orders; }
+    @effects(publish: { Orders })
+    fn send(v: Int) { Orders <- Order { }; }
+    run() { self.send(1); }
+}
+fn main() { App { }; }
+"#;
+    let (t, m) = lower(src);
+    let ClaimIr::EffectPublishSet { topics, .. } = &t
+        .rows
+        .iter()
+        .find(|r| matches!(r.law, ClaimIr::EffectPublishSet { .. }))
+        .expect("publish-set row")
+        .law
+    else {
+        unreachable!()
+    };
+    let tref = &topics[0];
+    let tid = tref.topic.expect("`Orders` resolves as a TOPIC");
+    assert_eq!(m.entities.topics[tid.index()].name, "Orders");
+}
+
+/// P1 (round 15): a resolved reference takes its name/display from
+/// the model ENTITY — an imported locus method's display demangles
+/// the locus half (`kv::Store::bump`), which a whole-symbol lookup
+/// missed. Per-reference provenance is distinct from the row's.
+#[test]
+fn resolved_refs_are_entity_sourced() {
+    let lib = r#"
+locus __lib_x_kv_Store {
+    params { n: Int = 0; }
+    @no_panic
+    fn bump(v: Int) -> Int { return v; }
+}
+"#;
+    let main_src = r#"
+main locus App {
+    params { s: __lib_x_kv_Store = __lib_x_kv_Store { }; }
+    run() { println(self.s.bump(1)); }
+}
+fn main() { App { }; }
+"#;
+    let main_p = hale_syntax::parse_source(main_src).expect("parse");
+    let lib_p = hale_syntax::parse_source(lib).expect("parse lib");
+    let mut programs = BTreeMap::new();
+    programs.insert("app/main.hl".to_string(), &main_p);
+    programs.insert("lib/kv.hl".to_string(), &lib_p);
+    let mut bundle = Bundle::new(programs);
+    bundle.import_renames = vec![(
+        vec!["kv".to_string(), "Store".to_string()],
+        "__lib_x_kv_Store".to_string(),
+    )];
+    let model = derive_application_model(&bundle);
+    let t = lower_claims(&bundle, &model);
+    t.validate(&model).expect("lawful");
+    let row = t
+        .rows
+        .iter()
+        .find(|r| matches!(r.law, ClaimIr::NoPanic { .. }))
+        .expect("annotation on the imported method lowers");
+    let ClaimIr::NoPanic { at } = &row.law else { unreachable!() };
+    assert!(at.0.is_some());
+    assert_eq!(at.1.raw, "__lib_x_kv_Store::bump");
+    assert_eq!(
+        at.1.display, "kv::Store::bump",
+        "display demangles the locus half (entity-sourced)"
+    );
+}
+
+/// P1 (round 15): source-bearing references carry their OWN
+/// provenance, anchored at the reference — not the clause.
+#[test]
+fn references_carry_their_own_provenance() {
+    let (t, _m) = lower(ALL_FORMS);
+    let row = &t.rows[0];
+    let ClaimIr::ForbidReaches { src, avoiding, .. } = &row.law
+    else {
+        unreachable!()
+    };
+    let SetIr::Group(g) = src else { unreachable!() };
+    assert_ne!(
+        g.provenance, row.provenance,
+        "the group ref anchors at its own span"
+    );
+    assert_ne!(
+        avoiding.as_ref().unwrap().provenance,
+        row.provenance
     );
 }

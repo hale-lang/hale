@@ -181,6 +181,27 @@ pub struct Phase {
     pub provenance: ProvenanceId,
 }
 
+/// A declared USER effect class (`effect NAME;` /
+/// `effect io = { syscall, block };`) — the vocabulary
+/// `@effects` contracts and `bound`/`effects(...)` claims speak
+/// (GH #476 Change 4). The interner also creates entries for BARE
+/// references in `@effects(...)` clauses, and the evaluators
+/// distinguish a declared class from an interned typo — so the
+/// model must too: `declared: false` is exactly "referenced,
+/// never declared".
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct EffectClassDecl {
+    pub name: String,
+    /// `effect NAME;` exists (false = bare reference only).
+    pub declared: bool,
+    /// The NORMALIZED atomic expansion for a composed class
+    /// (`effect io = { syscall, block }` → `["block", "syscall"]`,
+    /// sorted) — a composed class owns no bit of its own and means
+    /// its expansion. Empty for atomic classes.
+    pub composition: Vec<String>,
+    pub provenance: ProvenanceId,
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Seed {
     pub name: String,

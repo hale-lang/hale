@@ -31,6 +31,11 @@ table_id!(
     FunctionId
 );
 table_id!(
+    /// A declared USER effect class (GH #476 Change 4) — built-in
+    /// classes are language-fixed and never table rows.
+    EffectClassId
+);
+table_id!(
     /// A locus declaration (the type, not a running instance).
     LocusDeclId
 );

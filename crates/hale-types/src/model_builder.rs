@@ -1878,6 +1878,80 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
 
     // ---- assemble, in canonical order ----
     let mut e = Entities::default();
+    // Effect classes (GH #476 Change 4): the USER class vocabulary,
+    // with declaration status and NORMALIZED atomic composition —
+    // the evaluators' declared_of / defs_of facts, made model rows
+    // so a ClaimIr consumer can tell a declared class from an
+    // interned typo and expand `effect io = {…}` without the AST.
+    {
+        let names = crate::effects::effect_names_of(&programs);
+        let defs = crate::effects::defs_of(&programs);
+        let declared: BTreeSet<u16> =
+            crate::effects::declared_of(&programs);
+        fn expand(
+            i: u16,
+            names: &[String],
+            defs: &[Option<Vec<hale_syntax::ast::EffectClass>>],
+            out: &mut BTreeSet<String>,
+            stack: &mut Vec<u16>,
+        ) {
+            if stack.contains(&i) {
+                return;
+            }
+            stack.push(i);
+            match defs.get(i as usize).and_then(|d| d.as_ref()) {
+                Some(members) => {
+                    for m in members {
+                        match m {
+                            hale_syntax::ast::EffectClass::User(j) => {
+                                expand(*j, names, defs, out, stack)
+                            }
+                            b => {
+                                out.insert(b.as_str().to_string());
+                            }
+                        }
+                    }
+                }
+                None => {
+                    if let Some(n) = names.get(i as usize) {
+                        out.insert(n.clone());
+                    }
+                }
+            }
+            stack.pop();
+        }
+        let mut rows: Vec<hale_model::EffectClassDecl> = Vec::new();
+        for (i, n) in names.iter().enumerate() {
+            let composed =
+                defs.get(i).map(|d| d.is_some()).unwrap_or(false);
+            let composition: Vec<String> = if composed {
+                let mut atoms = BTreeSet::new();
+                expand(
+                    i as u16,
+                    &names,
+                    &defs,
+                    &mut atoms,
+                    &mut Vec::new(),
+                );
+                atoms.remove(n.as_str());
+                atoms.into_iter().collect()
+            } else {
+                Vec::new()
+            };
+            let pid = intern_synth(
+                &mut records,
+                "effect class declaration",
+            );
+            rows.push(hale_model::EffectClassDecl {
+                name: n.clone(),
+                declared: declared.contains(&(i as u16)),
+                composition,
+                provenance: pid,
+            });
+        }
+        rows.sort_by(|a, b| a.name.cmp(&b.name));
+        e.effect_classes = rows;
+    }
     for (n, (sealed, sp)) in &locus_rows {
         let pid = intern_span(&mut records, *sp);
         e.loci.push(LocusDecl {

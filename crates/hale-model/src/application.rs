@@ -9,8 +9,9 @@
 
 use crate::capability::Capabilities;
 use crate::entity::{
-    Binding, Declaration, Function, Group, InterfaceDecl, LocusDecl, LocusInstance,
-    PayloadContract, Phase, Seed, Subject, ThreadDomain, Topic, TypeDecl,
+    Binding, Declaration, EffectClassDecl, Function, Group,
+    InterfaceDecl, LocusDecl, LocusInstance, PayloadContract, Phase,
+    Seed, Subject, ThreadDomain, Topic, TypeDecl,
 };
 use crate::hole::Hole;
 use crate::ids::{EntityRef, FunctionId, ProvenanceId};
@@ -83,6 +84,8 @@ pub struct Entities {
     pub groups: Vec<Group>,
     pub types: Vec<TypeDecl>,
     pub interfaces: Vec<InterfaceDecl>,
+    /// Declared/referenced USER effect classes (GH #476 Change 4).
+    pub effect_classes: Vec<EffectClassDecl>,
     /// Seed-membership-only declarations (perspective, const, ring
     /// layout, target) — the rest of the nameable universe.
     pub declarations: Vec<Declaration>,
@@ -270,6 +273,10 @@ impl ApplicationModel {
         check_sorted_keys("thread_domains", e.thread_domains.iter().map(|d| &d.name))?;
         check_sorted_keys("groups", e.groups.iter().map(|g| &g.name))?;
         check_sorted_keys("types", e.types.iter().map(|t| &t.name))?;
+        check_sorted_keys(
+            "effect_classes",
+            e.effect_classes.iter().map(|c| &c.name),
+        )?;
         check_sorted_keys("interfaces", e.interfaces.iter().map(|t| &t.name))?;
         check_sorted_keys(
             "declarations",
@@ -301,6 +308,19 @@ impl ApplicationModel {
                 Ok(())
             }
         };
+        for (i, c) in e.effect_classes.iter().enumerate() {
+            // Composition is the NORMALIZED atomic expansion:
+            // sorted, deduplicated, and never self-referential.
+            if c.composition.windows(2).any(|w| w[0] >= w[1])
+                || c.composition.iter().any(|m| *m == c.name)
+            {
+                return Err(ModelError::NotCanonical {
+                    table: "effect_classes.composition",
+                    index: i,
+                });
+            }
+            prov("effect_classes", i, c.provenance)?;
+        }
         for (i, f) in e.functions.iter().enumerate() {
             prov("functions", i, f.provenance)?;
         }
