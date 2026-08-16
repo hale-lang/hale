@@ -1253,3 +1253,240 @@ fn main() { App { }; }
         "…only the display spelling differs"
     );
 }
+
+/// P1 (round 9): a DIRECT call from an analyzed body into an
+/// unanalyzed (module-scoped) callee is a KNOWN edge — the summary
+/// resolves callees only against its analyzed-body set, so the edge
+/// arrives `Unresolved`, but the declaration universe knows the
+/// target. Dropping it would make "a concrete path beats a hole"
+/// impossible: the path would be absent, and a boundary claim would
+/// miss a concrete cross-group call.
+#[test]
+fn direct_call_into_unanalyzed_callee_is_a_known_edge() {
+    let src = r#"
+module hidden {
+    fn helper(v: Int) -> Int { return v + 1; }
+}
+fn caller(v: Int) -> Int { return helper(v); }
+main locus App {
+    run() { println(caller(1)); }
+}
+fn main() { App { }; }
+"#;
+    let m = derive(src);
+    let e = &m.entities;
+    let fname =
+        |id: hale_model::FunctionId| e.functions[id.index()].name.clone();
+    let edge = m
+        .relations
+        .calls
+        .iter()
+        .find(|c| fname(c.from) == "caller" && fname(c.to) == "helper")
+        .expect("the concrete edge into the unanalyzed callee exists");
+    assert_eq!(edge.dispatch, DispatchKind::Direct);
+    // …and the callee still holes out, bounding reasoning PAST it —
+    // the edge and the hole coexist.
+    assert!(m.holes.iter().any(|h| h.kind == HoleKind::UnanalyzedBody
+        && matches!(h.at, EntityRef::Function(id)
+            if e.functions[id.index()].name == "helper")));
+    assert!(!m.capabilities.exact_calls);
+}
+
+/// P1 (round 9): opaque payload contracts and enum key-type names
+/// are RAW canonical identities — importer-independent — and
+/// structurally distinct payload forms stay distinct (no `opaque:?`
+/// collapse).
+#[test]
+fn opaque_identities_are_alias_independent_and_distinct() {
+    let lib = r#"
+type __lib_e_events_Status = enum { Up, Down };
+"#;
+    let main_src = r#"
+type Ping { st: __lib_e_events_Status = __lib_e_events_Status::Up; }
+topic Health { payload: __lib_e_events_Status; subject: "health"; }
+topic Pings { payload: Ping; subject: "pings"; keyed_by st; }
+main locus App {
+    bus { publish Pings; }
+    run() { Pings <- Ping { }; }
+}
+fn main() { App { }; }
+"#;
+    let via_p = xseed_bundle(
+        main_src,
+        lib,
+        &[(&["p", "Status"], "__lib_e_events_Status")],
+    );
+    let via_db = xseed_bundle(
+        main_src,
+        lib,
+        &[(&["db", "Status"], "__lib_e_events_Status")],
+    );
+    let contracts = |m: &hale_model::ApplicationModel| -> Vec<String> {
+        m.entities
+            .payloads
+            .iter()
+            .map(|p| p.shape.clone())
+            .collect()
+    };
+    // The enum payload's contract is the raw opaque identity, and
+    // it is byte-identical under both importer aliases.
+    assert_eq!(contracts(&via_p), contracts(&via_db));
+    assert!(
+        contracts(&via_p)
+            .iter()
+            .any(|s| s == "opaque:__lib_e_events_Status"),
+        "raw opaque identity, never the alias spelling: {:?}",
+        contracts(&via_p)
+    );
+    // The enum KEY type name is raw and alias-independent too.
+    let key_of = |m: &hale_model::ApplicationModel| -> Vec<String> {
+        m.relations
+            .publishes
+            .iter()
+            .filter_map(|p| match &p.key_domain {
+                Some(hale_model::KeyDomain::AnyOfType(t)) => {
+                    Some(t.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(key_of(&via_p), key_of(&via_db));
+    assert!(
+        key_of(&via_p)
+            .iter()
+            .any(|t| t == "__lib_e_events_Status"),
+        "AnyOfType names the RAW enum: {:?}",
+        key_of(&via_p)
+    );
+
+    // Distinctness: structurally different non-struct payload forms
+    // get different descriptors, not one shared `opaque:?`.
+    let m = derive(
+        r#"
+topic Pair { payload: (Int, Bool); subject: "pair"; }
+topic Row { payload: [Int; 4]; subject: "row"; }
+main locus App {
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#,
+    );
+    let shapes: BTreeSet<String> = m
+        .entities
+        .payloads
+        .iter()
+        .map(|p| p.shape.clone())
+        .collect();
+    assert!(
+        shapes.contains("opaque:(Int,Bool)"),
+        "tuple descriptor: {:?}",
+        shapes
+    );
+    assert!(
+        shapes.contains("opaque:[Int; 4]"),
+        "sized-array descriptor: {:?}",
+        shapes
+    );
+}
+
+/// P1 (round 9): `LegacyProjection.topology_v1_calls_via_stdlib`
+/// reproduces the artifact's serialized rows EXACTLY — from/to AND
+/// the loop bit, which sits inside the hashed model half. The
+/// projection runs the shared LEGACY walk (one Boolean, no
+/// revisit), not the model's lattice, whose loop bits may be
+/// legitimately stronger.
+#[test]
+fn legacy_via_stdlib_projection_matches_the_artifact_exactly() {
+    // The #392 recipe that manufactures a real user→stdlib→user
+    // contracted edge: Router.dispatch's interior reaches the
+    // registered user handler.
+    let src = r#"
+locus Hello {
+    fn handle(ctx: std::http::Context) -> std::http::Response {
+        return std::http::Response {
+            status: 200,
+            content_type: "text/plain",
+            body: "hi"
+        };
+    }
+}
+locus Gate {
+    fn probe(r: std::http::Router, req: std::http::Request) -> Int {
+        let resp = r.dispatch(req);
+        return resp.status;
+    }
+}
+fn main() {
+    let r = std::http::Router { };
+    r.add("GET", "/", Hello { });
+    let req = std::http::Request { method: "GET", path: "/", body: "" };
+    println(Gate { }.probe(r, req));
+}
+"#;
+    let (program, ()) = bundle_of(src);
+    let mut programs = BTreeMap::new();
+    programs.insert("app.hl".to_string(), &program);
+    let bundle = Bundle::new(programs);
+    let m = derive_application_model(&bundle);
+    m.validate().expect("lawful");
+    let art: serde_json::Value = serde_json::from_str(
+        &hale_types::topology::dump_topology(&bundle),
+    )
+    .expect("artifact parses");
+
+    let e = &m.entities;
+    let art_rows: BTreeSet<(String, String, bool)> = art["relations"]
+        ["calls_via_stdlib"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            (
+                r["from"].as_str().unwrap().to_string(),
+                r["to"].as_str().unwrap().to_string(),
+                r["loop"].as_bool().unwrap_or(false),
+            )
+        })
+        .collect();
+    assert!(
+        !art_rows.is_empty(),
+        "the recipe must manufacture a contracted edge"
+    );
+    // Artifact strings are DISPLAY — project through display fields.
+    let proj_rows: BTreeSet<(String, String, bool)> = m
+        .legacy
+        .topology_v1_calls_via_stdlib
+        .iter()
+        .map(|(f, t, l)| {
+            (
+                e.functions[f.index()].display.clone(),
+                e.functions[t.index()].display.clone(),
+                *l,
+            )
+        })
+        .collect();
+    assert_eq!(
+        art_rows, proj_rows,
+        "projection reproduces serialized rows incl. loop bits"
+    );
+    // The model's OWN lattice rows agree on endpoints (the loop bit
+    // may only ever be stronger there, never on fewer endpoints).
+    let lattice: BTreeSet<(String, String)> = m
+        .relations
+        .calls
+        .iter()
+        .filter(|c| c.dispatch == DispatchKind::ViaStdlib)
+        .map(|c| {
+            (
+                e.functions[c.from.index()].display.clone(),
+                e.functions[c.to.index()].display.clone(),
+            )
+        })
+        .collect();
+    let proj_ends: BTreeSet<(String, String)> = proj_rows
+        .iter()
+        .map(|(f, t, _)| (f.clone(), t.clone()))
+        .collect();
+    assert_eq!(lattice, proj_ends, "lattice and legacy endpoints agree");
+}

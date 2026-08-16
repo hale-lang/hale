@@ -124,6 +124,17 @@ pub struct LegacyProjection {
     /// strict subset of `entities.functions` — a module-scoped or
     /// empty declaration exists in the universe but not here.
     pub topology_v1_fns: Vec<FunctionId>,
+    /// The legacy artifact's `calls_via_stdlib` rows, verbatim:
+    /// the output of the legacy one-Boolean, no-revisit contraction
+    /// walk, NOT of the model's two-component lattice. The two can
+    /// legitimately disagree on a loop bit — a stdlib node first
+    /// reached on a non-looped path is never revisited by the
+    /// legacy walk, while the lattice strengthens it — and the
+    /// loop bit is inside the hashed model half, so projecting the
+    /// lattice rows would silently change `TopologyShapeV1` for
+    /// unchanged source. Both endpoints are legacy fns
+    /// (∈ `topology_v1_fns`).
+    pub topology_v1_calls_via_stdlib: Vec<(FunctionId, FunctionId, bool)>,
 }
 
 #[derive(Clone, Debug)]
@@ -831,6 +842,33 @@ impl ApplicationModel {
                     table: "legacy.topology_v1_fns",
                     index: i,
                 });
+            }
+        }
+        check_sorted_keys(
+            "legacy.topology_v1_calls_via_stdlib",
+            self.legacy
+                .topology_v1_calls_via_stdlib
+                .iter()
+                .map(|(f, t, _)| (f, t)),
+        )?;
+        {
+            let legacy_set: std::collections::BTreeSet<&FunctionId> =
+                self.legacy.topology_v1_fns.iter().collect();
+            for (i, (f, t, _)) in self
+                .legacy
+                .topology_v1_calls_via_stdlib
+                .iter()
+                .enumerate()
+            {
+                // Endpoint law: a legacy contracted row only ever
+                // connects legacy fns — the legacy walk starts and
+                // ends at its own serialized sort.
+                if !legacy_set.contains(f) || !legacy_set.contains(t) {
+                    return Err(ModelError::DanglingId {
+                        table: "legacy.topology_v1_calls_via_stdlib",
+                        index: i,
+                    });
+                }
             }
         }
 

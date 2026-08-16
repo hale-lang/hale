@@ -372,3 +372,65 @@ pub fn render_witness(root: &FnKey, steps: &[WitnessStep]) -> String {
     }
     s
 }
+
+/// The LEGACY through-stdlib contraction (#392), byte-for-byte the
+/// algorithm whose output `TopologyShapeV1` hashes: one Boolean of
+/// path state, a no-revisit `seen` set, LIFO traversal, [`MAX_STEPS`]
+/// saturation. A stdlib node first reached on a non-looped path is
+/// **never revisited** when a looped path reaches it later — that
+/// order-dependence is part of the shipped hash, so this function is
+/// shared verbatim by `dump_topology` (which serializes it) and the
+/// model builder's `LegacyProjection` (which preserves it for
+/// Change 3). It is NOT the model's algorithm: the model relation
+/// uses a two-component revisit-on-strengthen lattice that can
+/// legitimately report a stronger loop bit for the same source.
+pub fn legacy_via_stdlib_contraction(
+    merged: &AllocSummary,
+    user_key: &dyn Fn(&FnKey) -> bool,
+) -> std::collections::BTreeMap<(FnKey, FnKey), bool> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut via_stdlib: BTreeMap<(FnKey, FnKey), bool> =
+        BTreeMap::new();
+    for (k, fs) in &merged.fns {
+        if !user_key(k) {
+            continue;
+        }
+        let mut stack: Vec<(FnKey, bool)> = Vec::new();
+        let mut seen: BTreeSet<FnKey> = BTreeSet::new();
+        for edge in &fs.calls {
+            if let Callee::Resolved(next) = &edge.callee {
+                if !user_key(next) && seen.insert(next.clone()) {
+                    stack.push((
+                        next.clone(),
+                        edge.loop_depth > 0 || edge.in_unbounded_loop,
+                    ));
+                }
+            }
+        }
+        let mut steps = 0u32;
+        while let Some((n, lp)) = stack.pop() {
+            steps += 1;
+            if steps > MAX_STEPS {
+                break;
+            }
+            let Some(nfs) = merged.fns.get(&n) else { continue };
+            for edge in &nfs.calls {
+                let Callee::Resolved(next) = &edge.callee else {
+                    continue;
+                };
+                let l2 = lp
+                    || edge.loop_depth > 0
+                    || edge.in_unbounded_loop;
+                if user_key(next) {
+                    let e = via_stdlib
+                        .entry((k.clone(), next.clone()))
+                        .or_insert(false);
+                    *e |= l2;
+                } else if seen.insert(next.clone()) {
+                    stack.push((next.clone(), l2));
+                }
+            }
+        }
+    }
+    via_stdlib
+}

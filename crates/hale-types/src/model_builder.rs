@@ -90,6 +90,100 @@ pub fn builds() -> u64 {
 /// the bundle; every returned value passes
 /// `ApplicationModel::validate()` (asserted in tests over the
 /// corpus, and cheap enough to keep as a debug assertion here).
+/// A source-independent structural descriptor for a payload type
+/// expression that is not a bare named struct — the identity of an
+/// `opaque:` payload contract. Raw canonical names only (path
+/// segments as merged, no demangling), so the same type spelled
+/// through different importer aliases descriptorizes identically,
+/// and distinct primitive / array / tuple / fn forms stay distinct
+/// (round 9 — these previously collapsed to `opaque:?`).
+fn type_descriptor(ty: &TypeExpr) -> String {
+    fn prim(p: &hale_syntax::ast::PrimType) -> &'static str {
+        use hale_syntax::ast::PrimType as P;
+        match p {
+            P::Int => "Int",
+            P::Uint => "Uint",
+            P::Float => "Float",
+            P::Bool => "Bool",
+            P::Decimal => "Decimal",
+            P::Time => "Time",
+            P::Duration => "Duration",
+            P::String => "String",
+            P::StringView => "StringView",
+            P::Bytes => "Bytes",
+            P::BytesView => "BytesView",
+            P::BytesMut => "BytesMut",
+        }
+    }
+    match ty {
+        TypeExpr::Primitive(p, _) => prim(p).to_string(),
+        TypeExpr::Named { path, generic_args, .. } => {
+            let base = path
+                .segments
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>()
+                .join("::");
+            if generic_args.is_empty() {
+                base
+            } else {
+                format!(
+                    "{}<{}>",
+                    base,
+                    generic_args
+                        .iter()
+                        .map(type_descriptor)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+            }
+        }
+        TypeExpr::Projection { class, inner, .. } => format!(
+            "projection:{:?}({})",
+            class,
+            type_descriptor(inner)
+        ),
+        TypeExpr::Array { elem, size, .. } => {
+            // A literal length is part of the identity; a computed
+            // one degrades to `_` (still elem-distinct).
+            let n = match size {
+                Some(hale_syntax::ast::Expr::Literal(
+                    hale_syntax::ast::Literal::Int(v),
+                    _,
+                )) => format!("; {}", v),
+                Some(_) => "; _".to_string(),
+                None => String::new(),
+            };
+            format!("[{}{}]", type_descriptor(elem), n)
+        }
+        TypeExpr::Bounded { elem, cap, .. } => {
+            format!("bounded[{}; {}]", type_descriptor(elem), cap)
+        }
+        TypeExpr::Tuple(ts, _) => format!(
+            "({})",
+            ts.iter()
+                .map(type_descriptor)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        TypeExpr::Function { params, ret, .. } => format!(
+            "fn({}){}",
+            params
+                .iter()
+                .map(type_descriptor)
+                .collect::<Vec<_>>()
+                .join(","),
+            match ret {
+                Some(r) => format!(" -> {}", type_descriptor(r)),
+                None => String::new(),
+            }
+        ),
+        TypeExpr::Perspective { name, .. } => {
+            format!("perspective({})", name.name)
+        }
+    }
+}
+
 pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     BUILDS.fetch_add(1, Ordering::Relaxed);
     if std::env::var("HALE_MODEL_TRACE").as_deref() == Ok("1") {
@@ -262,8 +356,10 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                 if path.segments.len() == 1 =>
             {
                 // A no-payload enum key routes by tag; its canonical
-                // key-type name is the enum's (author-spelled) name.
-                name(&path.segments[0].name)
+                // key-type name is the enum's RAW post-merge name —
+                // importer-independent, like every identity
+                // (round 9; display never enters AnyOfType).
+                path.segments[0].name.clone()
             }
             _ => "?".to_string(),
         }
@@ -633,14 +729,16 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     // Structural shape of a payload TYPE (by raw post-merge name),
     // through the SAME renderer topics use. A non-bare-struct
     // payload has no canonical shape; its contract falls back to an
-    // opaque per-type identity (structure unknown ⇒ the name is the
-    // only honest identity we have).
+    // opaque per-type identity over the RAW name — the raw symbol
+    // is path-derived and importer-independent, so `p::Status` and
+    // `db::Status` share one contract (round 9; display spelling
+    // never enters an identity).
     let shape_of_type = |raw_ty: &str| -> (String, u64) {
         let shape = crate::topic_identity::canonical_type_shape(
             &all_items, raw_ty,
         );
         if shape.is_empty() {
-            let opaque = format!("opaque:{}", name(raw_ty));
+            let opaque = format!("opaque:{}", raw_ty);
             let h = fnv(&opaque);
             (opaque, h)
         } else {
@@ -653,10 +751,17 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         BTreeMap::new();
     for (tname, info) in &topic_decl_by_name {
         let raw_ty = match &info.decl.payload {
-            TypeExpr::Named { path, .. } if path.segments.len() == 1 => {
+            TypeExpr::Named { path, generic_args, .. }
+                if path.segments.len() == 1
+                    && generic_args.is_empty() =>
+            {
                 path.segments[0].name.clone()
             }
-            _ => "?".to_string(),
+            // Any other payload form gets a source-independent
+            // STRUCTURAL descriptor, not "?" — distinct primitive /
+            // array / tuple contracts must stay distinct identities
+            // (round 9).
+            other => type_descriptor(other),
         };
         let key = shape_of_type(&raw_ty);
         payload_rows.insert(key.clone(), ());
@@ -986,6 +1091,29 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                                 ),
                                 pid,
                             ));
+                    } else if let Some(to) = fn_id.get(n) {
+                        // The summary resolves callees against its
+                        // own analyzed-body set only, so a direct
+                        // call to a module-scoped fn arrives
+                        // Unresolved — but the DECLARATION universe
+                        // knows the target. The edge is authored
+                        // fact and must exist ("a concrete path
+                        // beats a hole" is impossible if the path is
+                        // dropped); the callee's UnanalyzedBody hole
+                        // bounds any reasoning past it (round 9).
+                        calls.insert(
+                            (
+                                from,
+                                *to,
+                                DispatchKind::Direct,
+                                site,
+                            ),
+                            (
+                                edge.loop_depth > 0,
+                                edge.in_unbounded_loop,
+                                pid,
+                            ),
+                        );
                     }
                 }
             }
@@ -2010,6 +2138,33 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         .collect();
     legacy_fns.sort();
     legacy_fns.dedup();
+    // …and the legacy contracted rows, from the SHARED legacy walk
+    // (one Boolean, no revisit) — NOT from the model's lattice rows,
+    // whose loop bits can legitimately be stronger. This is what
+    // lets Change 3 reproduce serialized `calls_via_stdlib` (and
+    // therefore the TopologyShapeV1 hash) from the model alone
+    // (round 9).
+    let legacy_via: Vec<(
+        hale_model::FunctionId,
+        hale_model::FunctionId,
+        bool,
+    )> = {
+        let mut rows: BTreeMap<
+            (hale_model::FunctionId, hale_model::FunctionId),
+            bool,
+        > = BTreeMap::new();
+        for ((k, next), looped) in
+            crate::callgraph::legacy_via_stdlib_contraction(
+                &merged, &user_key,
+            )
+        {
+            let e = rows
+                .entry((fn_id[&fn_name(&k)], fn_id[&fn_name(&next)]))
+                .or_insert(false);
+            *e |= looped;
+        }
+        rows.into_iter().map(|((f, t), l)| (f, t, l)).collect()
+    };
 
     // holes, canonically ordered.
     let mut hole_rows: Vec<Hole> = holes
@@ -2058,6 +2213,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     let model = ApplicationModel {
         legacy: hale_model::LegacyProjection {
             topology_v1_fns: legacy_fns,
+            topology_v1_calls_via_stdlib: legacy_via,
         },
         header: ModelHeader {
             semantics: MODEL_SEMANTICS_V1,
