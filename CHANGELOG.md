@@ -8,6 +8,31 @@ behavior.
 
 ## Unreleased
 
+### ClaimIr - every law surface, lowered (GH #476 Change 4)
+
+`hale-model` gains `ClaimIr` - one typed variant per law form across
+every surface the language has grown: the eight claims-block forms
+(reachability, boundary grants, path bounds, endpoint existence,
+sealing, attribution, coverage, cardinality), constitution clauses
+with recorded origin, library-tier claims with alias attribution,
+the annotation surfaces (`@effects(none/publish/causes/only)`,
+`@no_panic`, `@effects(depends:)`, `@phase_effects`, `@budget` in
+both alloc and quantitative forms), and deployment-plan claim rows
+(name-level until Change 7's FleetModel).
+`hale_types::claim_lowering::lower_claims(bundle, model)` lowers
+the program surfaces through the evaluator's OWN clause enumeration
+(`enumerate_clauses`, extracted from `claims_report_inner` so two
+walks cannot drift); `fleet::lower_plan_claims` lowers plan rows.
+Lowering is total over parseable programs (unresolved refs keep
+raw+display spellings with no id - Change 5's `invalid` residue),
+rows keep authored order, and a corpus-wide differential holds the
+claims-family rows equal to the evaluator's outcomes on count,
+name, order, and constitution source. Lowering only: the old
+evaluators stay active and authoritative; nothing consumes these
+rows yet. `@effects(is:)` deliberately does not lower - carries is
+a classification fact the model already records as labels.
+
+
 ### The model-backed artifact projection (GH #476 Change 3)
 
 `hale_types::topology_projection::project_model_half(&ApplicationModel)`

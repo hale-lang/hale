@@ -1378,3 +1378,49 @@ fn label_order_is_semantic_within_an_entity() {
         Err(hale_model::ModelError::NotCanonical { table: "labels", .. })
     ));
 }
+
+/// GH #476 Change 4: `ClaimIrTable` laws — authored-ordinal
+/// contiguity is the canonical order, present ids must be in range,
+/// and every row is named.
+#[test]
+fn claim_ir_table_laws_hold() {
+    use hale_model::{
+        ClaimIr, ClaimIrError, ClaimIrTable, ClaimOrigin, ClaimRow,
+        GroupRef, NameRef,
+    };
+    let m = tiny_model();
+    let mut t = ClaimIrTable::default();
+    t.provenance.records.push(Provenance::Synthetic {
+        origin: "test".to_string(),
+    });
+    let row = |ordinal: u32, group: Option<hale_model::GroupId>| ClaimRow {
+        ordinal,
+        name: "vault".to_string(),
+        origin: ClaimOrigin::Main,
+        law: ClaimIr::RequireSealed {
+            group: GroupRef {
+                group,
+                name: NameRef {
+                    raw: "gates".to_string(),
+                    display: "gates".to_string(),
+                },
+            },
+        },
+        provenance: ProvenanceId(0),
+    };
+    // Unresolved is lawful residue…
+    t.rows.push(row(0, None));
+    t.validate(&m).expect("None id is lawful");
+    // …a PRESENT id must be in range…
+    t.rows[0] = row(0, Some(hale_model::GroupId(99)));
+    assert!(matches!(
+        t.validate(&m),
+        Err(ClaimIrError::DanglingId { .. })
+    ));
+    // …and ordinals are contiguous from zero.
+    t.rows[0] = row(1, None);
+    assert!(matches!(
+        t.validate(&m),
+        Err(ClaimIrError::NonContiguousOrdinal { .. })
+    ));
+}

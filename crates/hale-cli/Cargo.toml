@@ -11,6 +11,7 @@ name = "hale"
 path = "src/main.rs"
 
 [dependencies]
+hale-model = { path = "../hale-model" }
 hale-syntax = { path = "../hale-syntax" }
 hale-types = { path = "../hale-types" }
 hale-codegen = { path = "../hale-codegen" }

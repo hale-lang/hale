@@ -78,6 +78,7 @@ version = "0.17.0"
 dependencies = [
  "hale-codegen",
  "hale-lsp",
+ "hale-model",
  "hale-syntax",
  "hale-types",
  "libc",

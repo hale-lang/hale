@@ -125,6 +125,7 @@
 
 pub mod application;
 pub mod capability;
+pub mod claim_ir;
 pub mod entity;
 pub mod hole;
 pub mod ids;
@@ -137,6 +138,11 @@ pub use application::{
     Relations, WeightRow, MODEL_SEMANTICS_V1,
 };
 pub use capability::Capabilities;
+pub use claim_ir::{
+    ClaimIr, ClaimIrError, ClaimIrTable, ClaimOrigin, ClaimRow,
+    CountCmpIr, EffectClassRef, GrantIr, GroupRef, NameRef, QuantDimIr,
+    SetIr, TopicIrRef,
+};
 pub use entity::{
     Binding, BindingRole, DeclKind, Declaration, Function, FunctionKind, Group, InterfaceDecl,
     LocusDecl, LocusInstance, PayloadContract, Phase, Seed, Subject, ThreadDomain, Topic,

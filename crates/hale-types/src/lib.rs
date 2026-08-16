@@ -28,6 +28,7 @@ pub mod callgraph;
 pub mod effects;
 pub mod frontier;
 pub mod check;
+pub mod claim_lowering;
 pub mod claims;
 pub mod model;
 pub mod model_builder;

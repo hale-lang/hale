@@ -628,6 +628,18 @@ fn evaluate_claims(
             .collect()
     };
 
+    // GH #476 Change 4: the plan's law rows lower to ClaimIr
+    // alongside the evaluation (lowering only — this evaluator
+    // stays authoritative until Change 7's FleetModel). The trace
+    // line is the same demand-proof surface the model builder uses.
+    if std::env::var("HALE_MODEL_TRACE").as_deref() == Ok("1") {
+        let lowered = lower_plan_claims(&plan.claims);
+        eprintln!(
+            "[hale-model] lowered {} fleet claim row(s)",
+            lowered.rows.len()
+        );
+    }
+
     let mut rows: Vec<String> = Vec::new();
     for c in &plan.claims {
         // A claim is ONE sentence, exactly as it is in source.
@@ -1378,4 +1390,181 @@ fn fnv(s: &str) -> String {
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
     format!("{:016x}", h)
+}
+
+/// GH #476 Change 4 — lower the plan's claim rows to `ClaimIr`.
+/// Fleet targets are PLAN-level names (instances, plan groups, wire
+/// subjects); they resolve against a typed `FleetModel` at Change 7,
+/// so every row lowers name-level here and the old evaluator stays
+/// authoritative. A `CountSpec` with several bounds present lowers
+/// one row per bound (eq, then max, then min) — each is its own law.
+pub fn lower_plan_claims(
+    claims: &[ClaimSpec],
+) -> hale_model::ClaimIrTable {
+    use hale_model::{
+        ClaimIr, ClaimIrTable, ClaimOrigin, ClaimRow, CountCmpIr,
+        ProvenanceId,
+    };
+    let mut table = ClaimIrTable::default();
+    let push = |table: &mut ClaimIrTable,
+                    name: &str,
+                    law: ClaimIr| {
+        let pid = ProvenanceId(table.provenance.records.len() as u32);
+        table.provenance.records.push(
+            hale_model::Provenance::Synthetic {
+                origin: format!("deployment plan claim `{}`", name),
+            },
+        );
+        let ordinal = table.rows.len() as u32;
+        table.rows.push(ClaimRow {
+            ordinal,
+            name: name.to_string(),
+            origin: ClaimOrigin::FleetPlan,
+            law,
+            provenance: pid,
+        });
+    };
+    for c in claims {
+        if let Some(fr) = &c.forbid_reaches {
+            push(
+                &mut table,
+                &c.name,
+                ClaimIr::FleetForbidReaches {
+                    from: fr.from.clone(),
+                    to: fr.to.clone(),
+                    avoiding: fr.avoiding.clone(),
+                },
+            );
+        }
+        if let Some(r) = &c.require_subscribes {
+            push(
+                &mut table,
+                &c.name,
+                ClaimIr::FleetRequireEndpoint {
+                    publishers: false,
+                    target: r.group.clone(),
+                    topic: r.subject.clone(),
+                },
+            );
+        }
+        if let Some(r) = &c.require_publishes {
+            push(
+                &mut table,
+                &c.name,
+                ClaimIr::FleetRequireEndpoint {
+                    publishers: true,
+                    target: r.group.clone(),
+                    topic: r.subject.clone(),
+                },
+            );
+        }
+        for (publishers, spec) in [
+            (true, &c.count_publisher_instances),
+            (false, &c.count_subscriber_instances),
+        ] {
+            let Some(spec) = spec else { continue };
+            for (cmp, n) in [
+                (CountCmpIr::Eq, spec.eq),
+                (CountCmpIr::Le, spec.max),
+                (CountCmpIr::Ge, spec.min),
+            ] {
+                if let Some(n) = n {
+                    push(
+                        &mut table,
+                        &c.name,
+                        ClaimIr::FleetCountInstances {
+                            publishers,
+                            topic: spec.subject.clone(),
+                            cmp,
+                            n: n as u64,
+                        },
+                    );
+                }
+            }
+        }
+        if let Some(oe) = &c.only_edges {
+            push(
+                &mut table,
+                &c.name,
+                ClaimIr::FleetOnlyEdges {
+                    src: oe.from.clone(),
+                    dst: oe.to.clone(),
+                    grants: oe.grant_subjects.clone(),
+                },
+            );
+        }
+    }
+    table
+}
+
+#[cfg(test)]
+mod claim_ir_tests {
+    use super::*;
+    use hale_model::{ClaimIr, ClaimOrigin, CountCmpIr};
+
+    /// GH #476 Change 4: every plan claim verb lowers, a multi-bound
+    /// CountSpec lowers one row per bound, and rows keep authored
+    /// order with FleetPlan origin.
+    #[test]
+    fn plan_claims_lower_one_row_per_law() {
+        let claims = vec![
+            ClaimSpec {
+                name: "iso".to_string(),
+                forbid_reaches: Some(ForbidReaches {
+                    from: "gw-0".to_string(),
+                    to: "risk-0".to_string(),
+                    avoiding: Some("audit".to_string()),
+                }),
+                require_subscribes: None,
+                require_publishes: None,
+                count_publisher_instances: None,
+                count_subscriber_instances: None,
+                only_edges: None,
+            },
+            ClaimSpec {
+                name: "writer".to_string(),
+                forbid_reaches: None,
+                require_subscribes: None,
+                require_publishes: Some(RequireEndpoint {
+                    group: "gw".to_string(),
+                    subject: "orders".to_string(),
+                }),
+                count_publisher_instances: Some(CountSpec {
+                    subject: "orders".to_string(),
+                    eq: None,
+                    max: Some(3),
+                    min: Some(1),
+                }),
+                count_subscriber_instances: None,
+                only_edges: Some(OnlyEdges {
+                    from: "gw".to_string(),
+                    to: "risk".to_string(),
+                    grant_subjects: vec!["orders".to_string()],
+                }),
+            },
+        ];
+        let t = lower_plan_claims(&claims);
+        assert_eq!(t.rows.len(), 5, "1 + (1 require + 2 bounds + 1 only)");
+        assert!(t
+            .rows
+            .iter()
+            .all(|r| r.origin == ClaimOrigin::FleetPlan));
+        assert!((0..5).all(|i| t.rows[i].ordinal == i as u32));
+        assert!(matches!(
+            &t.rows[0].law,
+            ClaimIr::FleetForbidReaches { avoiding: Some(a), .. } if a == "audit"
+        ));
+        assert!(matches!(
+            &t.rows[2].law,
+            ClaimIr::FleetCountInstances { cmp: CountCmpIr::Le, n: 3, .. }
+        ));
+        assert!(matches!(
+            &t.rows[3].law,
+            ClaimIr::FleetCountInstances { cmp: CountCmpIr::Ge, n: 1, .. }
+        ));
+        assert!(matches!(
+            &t.rows[4].law,
+            ClaimIr::FleetOnlyEdges { grants, .. } if grants.len() == 1
+        ));
+    }
 }
