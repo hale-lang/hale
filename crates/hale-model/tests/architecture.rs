@@ -351,8 +351,9 @@ fn unsorted_supervises_are_not_canonical() {
             error_type: "IoError".to_string(),
             policy: SupervisionPolicy {
                 ops: vec!["restart".to_string()],
-                retry_bound: Some(3),
+                retry_bound: Some(3i64),
             },
+            authored_ordinal: 0,
             provenance: p,
         },
         Supervises {
@@ -363,6 +364,7 @@ fn unsorted_supervises_are_not_canonical() {
                 ops: vec!["restart".to_string()],
                 retry_bound: None,
             },
+            authored_ordinal: 0,
             provenance: p,
         },
     ];
@@ -635,8 +637,9 @@ fn supervision_is_per_error_type() {
             error_type: "ClosureViolation".to_string(),
             policy: SupervisionPolicy {
                 ops: vec!["restart".to_string()],
-                retry_bound: Some(3),
+                retry_bound: Some(3i64),
             },
+            authored_ordinal: 0,
             provenance: p,
         },
         Supervises {
@@ -647,6 +650,7 @@ fn supervision_is_per_error_type() {
                 ops: vec!["replace".to_string()],
                 retry_bound: None,
             },
+            authored_ordinal: 0,
             provenance: p,
         },
     ];
@@ -1321,4 +1325,56 @@ fn legacy_projection_is_validated() {
             index: 0
         })
     );
+}
+
+/// Round 11: label rows are grouped by entity in canonical entity
+/// order, but WITHIN one entity the label order is semantic
+/// (declared class order, which the artifact hashes) — non-lexical
+/// in-entity order is LAWFUL, out-of-order entities and duplicate
+/// (entity, label) pairs are not.
+#[test]
+fn label_order_is_semantic_within_an_entity() {
+    use hale_model::LabelRow;
+    let mut m = tiny_model();
+    let p = m.labels.first().map(|l| l.provenance).unwrap_or(
+        hale_model::ProvenanceId(0),
+    );
+    // Non-lexical order within one entity: lawful.
+    m.labels = vec![
+        LabelRow {
+            at: EntityRef::Function(FunctionId(0)),
+            label: "zebra".to_string(),
+            provenance: p,
+        },
+        LabelRow {
+            at: EntityRef::Function(FunctionId(0)),
+            label: "alpha".to_string(),
+            provenance: p,
+        },
+    ];
+    m.validate().expect("declaration order within an entity is lawful");
+    // Duplicate (entity, label): rejected.
+    m.labels.push(LabelRow {
+        at: EntityRef::Function(FunctionId(0)),
+        label: "zebra".to_string(),
+        provenance: p,
+    });
+    assert!(matches!(
+        m.validate(),
+        Err(hale_model::ModelError::NotCanonical { table: "labels", .. })
+    ));
+    m.labels.pop();
+    // Interleaved entities (0, then 1, then 0 again): rejected.
+    m.labels.insert(
+        1,
+        LabelRow {
+            at: EntityRef::Function(FunctionId(1)),
+            label: "alpha".to_string(),
+            provenance: p,
+        },
+    );
+    assert!(matches!(
+        m.validate(),
+        Err(hale_model::ModelError::NotCanonical { table: "labels", .. })
+    ));
 }

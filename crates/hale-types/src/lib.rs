@@ -33,6 +33,7 @@ pub mod model;
 pub mod model_builder;
 pub mod topic_identity;
 pub mod topology;
+pub mod topology_projection;
 pub mod model_graph;
 pub mod verdict;
 pub mod stdlib_bodies;

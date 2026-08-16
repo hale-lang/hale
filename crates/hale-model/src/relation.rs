@@ -275,7 +275,11 @@ pub struct TopicBinding {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct SupervisionPolicy {
     pub ops: Vec<String>,
-    pub retry_bound: Option<u32>,
+    /// The literal as WRITTEN — i64 like the legacy artifact, which
+    /// serializes any int literal the parser accepted (`for
+    /// 4294967296` is check-clean; a narrower type here silently
+    /// truncated it — review round 13).
+    pub retry_bound: Option<i64>,
 }
 
 /// What an `on_failure` handler supervises. Usually a declared
@@ -303,5 +307,15 @@ pub struct Supervises {
     /// The handled error/violation type's canonical name.
     pub error_type: String,
     pub policy: SupervisionPolicy,
+    /// Authored declaration order across the bundle walk. Handler
+    /// order is an authored fact the legacy artifact depends on:
+    /// its encoder collects handlers in source order and
+    /// stable-sorts by (locus, child) only, so handlers sharing
+    /// both serialize in authored order, not error-type order
+    /// (review round 11). PART OF THE CANONICAL KEY: two handlers
+    /// with identical (parent, child, error_type) signatures are
+    /// check-clean and both serialize in the legacy artifact, so
+    /// the model must hold both rows (review round 14).
+    pub authored_ordinal: u32,
     pub provenance: ProvenanceId,
 }

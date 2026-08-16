@@ -1099,7 +1099,9 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                         holes
                             .entry((
                                 anchor,
-                                HoleKind::UntypedReceiver,
+                                HoleKind::UntypedReceiver {
+                                    callee: n.clone(),
+                                },
                                 format!(
                                     "method call `{}` on untyped \
                                      receiver",
@@ -1645,9 +1647,13 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     }
 
     // supervision (same walk as the artifact's, per-handler).
+    // Keyed WITH the authored ordinal: duplicate-signature handlers
+    // are check-clean and the legacy artifact serializes each
+    // declaration -- a (parent, child, err)-only key silently
+    // dropped the earlier one (review round 14).
     let mut sup: BTreeMap<
-        (LocusDeclId, SupervisedRef, String),
-        (Vec<String>, Option<u32>, ProvenanceId),
+        (LocusDeclId, SupervisedRef, String, u32),
+        (Vec<String>, Option<i64>, ProvenanceId),
     > = BTreeMap::new();
     {
         fn te_name(t: &TypeExpr) -> String {
@@ -1664,7 +1670,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         fn walk_ops(
             b: &Block,
             ops: &mut Vec<String>,
-            retry: &mut Option<u32>,
+            retry: &mut Option<i64>,
         ) {
             for st in &b.stmts {
                 match st {
@@ -1685,7 +1691,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                             Expr::Literal(Literal::Int(kk), _),
                         )) = modifier
                         {
-                            *retry = Some(*kk as u32);
+                            *retry = Some(*kk);
                         }
                     }
                     Stmt::If(i) => {
@@ -1717,11 +1723,12 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                 }
             }
         }
+        let mut authored: u32 = 0;
         for l in &ast.loci {
             for member in &l.members {
                 if let LocusMember::Failure(fd) = member {
                     let mut ops = Vec::new();
-                    let mut retry = None;
+                    let mut retry: Option<i64> = None;
                     walk_ops(&fd.body, &mut ops, &mut retry);
                     let parent = locus_id[&l.name.name];
                     let child_name = fd
@@ -1740,9 +1747,10 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                         .unwrap_or_else(|| "?".to_string());
                     let pid = intern_span(&mut records, fd.span);
                     sup.insert(
-                        (parent, child, err),
+                        (parent, child, err, authored),
                         (ops, retry, pid),
                     );
+                    authored += 1;
                 }
             }
         }
@@ -2073,7 +2081,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             provenance: *pid,
         });
     }
-    for ((parent, child, err), (ops, retry, pid)) in &sup {
+    for ((parent, child, err, authored), (ops, retry, pid)) in &sup {
         r.supervises.push(Supervises {
             parent: *parent,
             child: child.clone(),
@@ -2082,6 +2090,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                 ops: ops.clone(),
                 retry_bound: *retry,
             },
+            authored_ordinal: *authored,
             provenance: *pid,
         });
     }
@@ -2101,10 +2110,17 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         });
     }
 
-    // labels: declared effect carriers.
+    // labels: declared effect carriers. Entities in canonical
+    // order, but WITHIN one entity the class order is semantic —
+    // `render_effects_named` order (fixed built-ins, then user
+    // classes in declaration order), which the artifact hashes.
+    // Flattening through a sorted set here once lexicalized
+    // `["zebra","alpha"]` into `["alpha","zebra"]` and silently
+    // changed the projected identity (review round 11).
     let mut labels: Vec<LabelRow> = Vec::new();
     {
-        let mut rows: BTreeSet<(EntityRef, String)> = BTreeSet::new();
+        let mut per_fn: BTreeMap<hale_model::FunctionId, Vec<String>> =
+            BTreeMap::new();
         for (k, set) in &summary.carries {
             if !user_key(k) {
                 continue;
@@ -2113,21 +2129,22 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                 *set,
                 &effect_names,
             );
-            for c in classes {
-                rows.insert((
-                    EntityRef::Function(fn_id[&fn_name(k)]),
-                    c,
-                ));
+            if !classes.is_empty() {
+                per_fn.insert(fn_id[&fn_name(k)], classes);
             }
         }
-        for (at, label) in rows {
-            let pid =
-                intern_synth(&mut records, "declared effect carrier");
-            labels.push(LabelRow {
-                at,
-                label,
-                provenance: pid,
-            });
+        for (f, classes) in per_fn {
+            for label in classes {
+                let pid = intern_synth(
+                    &mut records,
+                    "declared effect carrier",
+                );
+                labels.push(LabelRow {
+                    at: EntityRef::Function(f),
+                    label,
+                    provenance: pid,
+                });
+            }
         }
     }
 
