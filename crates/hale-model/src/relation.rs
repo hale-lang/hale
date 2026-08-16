@@ -222,6 +222,24 @@ pub struct DeadInterfaceCall {
     pub provenance: ProvenanceId,
 }
 
+/// `declares_publish(locus, subject)` — a DECLARED publisher end
+/// (`bus { publish Orders; }`), distinct from [`Publish`]'s
+/// site-grained send expressions. The `require publishes(...)`
+/// claim semantics quantify over declared ends: a locus that
+/// declares the end but never sends still publishes in the
+/// endpoint sense, and dropping this row while claiming
+/// `exact_bus_endpoints` was review round 7's catch.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct DeclaresPublish {
+    pub locus: LocusDeclId,
+    pub subject: SubjectId,
+    /// `Some` when a declared topic covers the end; subject and
+    /// payload agreement validated exactly as for `Publish`.
+    pub declared_topic: Option<TopicId>,
+    pub payload: PayloadContractId,
+    pub provenance: ProvenanceId,
+}
+
 /// `placed_in(instance, thread_domain)`.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct PlacedIn {
@@ -260,6 +278,19 @@ pub struct SupervisionPolicy {
     pub retry_bound: Option<u32>,
 }
 
+/// What an `on_failure` handler supervises. Usually a declared
+/// locus — but transport supervision is shipped surface (GH #233:
+/// `on_failure(t: std::bus::UnixTransport, err: ClosureViolation)`),
+/// and a substrate type is not a locus declaration. External
+/// carries the canonical type name rather than pretending.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum SupervisedRef {
+    Locus(LocusDeclId),
+    /// A supervised non-locus (substrate transport, external
+    /// boundary), by canonical type name.
+    External(String),
+}
+
 /// `supervises(parent, child, error_type, policy)` — one row per
 /// `on_failure` handler. Two handlers supervising the same child
 /// for DIFFERENT error types are distinct policies (the schema-1.10
@@ -268,7 +299,7 @@ pub struct SupervisionPolicy {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Supervises {
     pub parent: LocusDeclId,
-    pub child: LocusDeclId,
+    pub child: SupervisedRef,
     /// The handled error/violation type's canonical name.
     pub error_type: String,
     pub policy: SupervisionPolicy,

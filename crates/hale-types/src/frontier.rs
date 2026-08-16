@@ -239,7 +239,7 @@ fn collect_published_subjects(
     let Some(fs) = summary.fns.get(key) else { return };
     for site in &fs.effect_sites {
         if let alloc_summary::EffectSiteKind::Publish(Some(s)) = &site.kind {
-            out.insert(s.clone());
+            out.insert(s.text.clone());
         }
     }
     for edge in &fs.calls {

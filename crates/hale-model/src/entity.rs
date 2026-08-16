@@ -90,7 +90,11 @@ pub struct PayloadContract {
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Topic {
+    /// Canonical identity: the RAW post-merge declaration name.
     pub name: String,
+    /// Author-facing spelling (the alias-qualified form for
+    /// imports) — what the artifact's topic sort renders.
+    pub display: String,
     pub subject: SubjectId,
     pub payload: PayloadContractId,
     /// `Some` for `keyed_by` topics.
@@ -110,7 +114,10 @@ pub struct Topic {
 /// [`GroupMember`]: crate::relation::GroupMember
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Group {
+    /// Canonical identity: the RAW post-merge declaration name.
     pub name: String,
+    /// Author-facing spelling.
+    pub display: String,
     /// Declared `may_be_empty` — an empty group without it is a
     /// checker error (vacuity fail-closed), so the declared intent
     /// is a semantic fact selectors need.

@@ -279,10 +279,10 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
         }
         for site in &fs.effect_sites {
             if let EffectSiteKind::Publish(Some(s)) = &site.kind {
-                publishes.insert((fn_name(k), name(s)));
+                publishes.insert((fn_name(k), name(&s.text)));
                 publish_spans.insert((
                     fn_name(k),
-                    name(s),
+                    name(&s.text),
                     site.span.start.as_usize() as u32,
                     site.span.end.as_usize() as u32,
                 ));
@@ -301,48 +301,19 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
         &programs,
         &bundle.import_renames,
     );
+    // The walk itself lives in `callgraph::legacy_via_stdlib_contraction`,
+    // shared with the model builder's `LegacyProjection` so the
+    // projected `TopologyShapeV1` hash and this serialization cannot
+    // drift (GH #476 Change 2, review round 9).
     let mut via_stdlib: BTreeMap<(String, String), bool> =
         BTreeMap::new();
-    for (k, fs) in &merged.fns {
-        if !user_key(k) {
-            continue;
-        }
-        let mut stack: Vec<(FnKey, bool)> = Vec::new();
-        let mut seen: BTreeSet<FnKey> = BTreeSet::new();
-        for edge in &fs.calls {
-            if let Callee::Resolved(next) = &edge.callee {
-                if !user_key(next) && seen.insert(next.clone()) {
-                    stack.push((
-                        next.clone(),
-                        edge.loop_depth > 0 || edge.in_unbounded_loop,
-                    ));
-                }
-            }
-        }
-        let mut steps = 0u32;
-        while let Some((n, lp)) = stack.pop() {
-            steps += 1;
-            if steps > crate::callgraph::MAX_STEPS {
-                break;
-            }
-            let Some(nfs) = merged.fns.get(&n) else { continue };
-            for edge in &nfs.calls {
-                let Callee::Resolved(next) = &edge.callee else {
-                    continue;
-                };
-                let l2 = lp
-                    || edge.loop_depth > 0
-                    || edge.in_unbounded_loop;
-                if user_key(next) {
-                    let e = via_stdlib
-                        .entry((fn_name(k), fn_name(next)))
-                        .or_insert(false);
-                    *e |= l2;
-                } else if seen.insert(next.clone()) {
-                    stack.push((next.clone(), l2));
-                }
-            }
-        }
+    for ((k, next), looped) in
+        crate::callgraph::legacy_via_stdlib_contraction(&merged, &user_key)
+    {
+        let e = via_stdlib
+            .entry((fn_name(&k), fn_name(&next)))
+            .or_insert(false);
+        *e |= looped;
     }
     let mut subscribes: BTreeSet<(String, String, String)> =
         BTreeSet::new();

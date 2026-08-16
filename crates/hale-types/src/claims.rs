@@ -1683,6 +1683,7 @@ fn evaluate_forbid_reaches(
                         ));
                         return model_graph::Visit::hole(());
                     };
+                    let subj = &subj.text;
                     for (sub_locus, sub_handler, sub_span) in
                         subscribers_of(cx.graph, subj)
                     {
@@ -1898,6 +1899,7 @@ fn evaluate_only_edges(
                 ));
                 return Verdict::Uncertified;
             };
+            let subj = &subj.text;
             for (sub_locus, sub_handler, sub_span) in
                 subscribers_of(cx.graph, subj)
             {
@@ -2272,6 +2274,7 @@ fn site_count(
                 });
                 break;
             };
+            let subj = &subj.text;
             for (sub_locus, sub_handler, _sub_span) in
                 subscribers_of(cx.graph, subj)
             {

@@ -76,6 +76,13 @@ pub enum HoleKind {
     /// An artifact carried semantics this consumer does not
     /// implement (decode-side honesty: refuse to pretend).
     UnsupportedArtifactSemantics,
+    /// A declared executable body the behavior analysis did not
+    /// walk (module-scoped bodies, `on_failure` handlers at
+    /// Change 2). The declaration EXISTS as an entity; its calls,
+    /// publishes, and effects are unknown — this hole is what
+    /// keeps `exact_calls`/`exact_effects` honest until the
+    /// summary covers the body family.
+    UnanalyzedBody,
 }
 
 /// One hole: where, why, and — critically — which relation families

@@ -133,8 +133,8 @@ pub mod provenance;
 pub mod relation;
 
 pub use application::{
-    ApplicationModel, Entities, LabelRow, ModelError, ModelHashKind, ModelHeader, Relations,
-    WeightRow, MODEL_SEMANTICS_V1,
+    ApplicationModel, Entities, LabelRow, LegacyProjection, ModelError, ModelHashKind, ModelHeader,
+    Relations, WeightRow, MODEL_SEMANTICS_V1,
 };
 pub use capability::Capabilities;
 pub use entity::{
@@ -154,7 +154,7 @@ pub use keys::{
 };
 pub use provenance::{Provenance, ProvenanceTable};
 pub use relation::{
-    AffinedTo, Call, CoreSet, DeadInterfaceCall, DeclaredIn, DispatchKind, GroupMember,
+    AffinedTo, Call, CoreSet, DeadInterfaceCall, DeclaredIn, DeclaresPublish, DispatchKind, GroupMember,
     GroupSelector, MemberOf, Owns, PhaseOf, PlacedIn, Publish, Realizes, SelectorForm, Subscribe,
-    Supervises, SupervisionPolicy, TopicBinding,
+    Supervises, SupervisedRef, SupervisionPolicy, TopicBinding,
 };

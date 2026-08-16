@@ -30,6 +30,7 @@ pub mod frontier;
 pub mod check;
 pub mod claims;
 pub mod model;
+pub mod model_builder;
 pub mod topic_identity;
 pub mod topology;
 pub mod model_graph;
