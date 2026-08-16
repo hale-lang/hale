@@ -49,7 +49,14 @@ mechanism behind the second, found while root-causing:
 
 Also hardened: the non-framed SEQPACKET recv/send retry `EINTR`
 instead of treating a signal as connection death (the old -1 broke
-the serve loop and the re-arm `close()` discarded the queue).
+the serve loop and the re-arm `close()` discarded the queue). And
+one follow-up the ASan corpus caught: the reader thread used to
+destroy its transport on exit, racing the quiesce's second
+`shutdown()` the instant the first one woke it (use-after-free on
+`t->conn_fd`). Ownership law now: the reader NEVER destroys the
+transport - destruction happens only on the main thread after
+`pthread_join` (reclaim or teardown), where no concurrent reader
+can exist.
 
 The two-listener replay CLI test drops its record-session retry
 (the issue's promised cleanup) - a lossy live session is now a
