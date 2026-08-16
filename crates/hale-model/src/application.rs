@@ -792,7 +792,36 @@ impl ApplicationModel {
         }
 
         // --- labels / weights.
-        check_sorted_keys("labels", self.labels.iter().map(|l| (l.at, &l.label)))?;
+        // Labels are grouped by entity in canonical entity order,
+        // but WITHIN one entity the label order is semantic — the
+        // declared class order the artifact hashes (`zebra` declared
+        // before `alpha` renders before it) — so rows are NOT fully
+        // key-sorted (review round 11; mirrors `Function.effects`,
+        // whose declaration order was already preserved).
+        {
+            let mut prev_at: Option<crate::ids::EntityRef> = None;
+            let mut seen: std::collections::BTreeSet<(
+                crate::ids::EntityRef,
+                &String,
+            )> = std::collections::BTreeSet::new();
+            for (i, l) in self.labels.iter().enumerate() {
+                if let Some(p) = prev_at {
+                    if l.at < p {
+                        return Err(ModelError::NotCanonical {
+                            table: "labels",
+                            index: i,
+                        });
+                    }
+                }
+                prev_at = Some(l.at);
+                if !seen.insert((l.at, &l.label)) {
+                    return Err(ModelError::NotCanonical {
+                        table: "labels",
+                        index: i,
+                    });
+                }
+            }
+        }
         for (i, l) in self.labels.iter().enumerate() {
             if !ref_ok(&l.at) {
                 return Err(ModelError::DanglingId {

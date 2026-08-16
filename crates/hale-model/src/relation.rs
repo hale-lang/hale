@@ -303,5 +303,12 @@ pub struct Supervises {
     /// The handled error/violation type's canonical name.
     pub error_type: String,
     pub policy: SupervisionPolicy,
+    /// Authored declaration order across the bundle walk. Handler
+    /// order is an authored fact the legacy artifact depends on:
+    /// its encoder collects handlers in source order and
+    /// stable-sorts by (locus, child) only, so handlers sharing
+    /// both serialize in authored order, not error-type order
+    /// (review round 11). Not part of the canonical key.
+    pub authored_ordinal: u32,
     pub provenance: ProvenanceId,
 }

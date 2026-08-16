@@ -57,7 +57,7 @@ pub fn project_shape_hash(m: &ApplicationModel) -> u64 {
 /// Render the hashed model half of the topology artifact from the
 /// model alone. Byte-compatible with the string `dump_topology`
 /// builds internally (the substring `shape_hash` covers).
-pub fn project_model_half(m: &ApplicationModel) -> String {
+pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
     let e = &m.entities;
     let r = &m.relations;
 
@@ -72,6 +72,49 @@ pub fn project_model_half(m: &ApplicationModel) -> String {
             .iter()
             .find(|i| i.name == raw)
             .map(|i| i.display.clone())
+            .unwrap_or_else(|| raw.to_string())
+    };
+    // The V1 display map: raw post-merge symbol → author spelling,
+    // over EVERY declaration table. The legacy encoder ran name()
+    // (full-string demangle) unconditionally over subjects,
+    // supervision child/error types, and more — including strings
+    // that merely COLLIDE with an imported declaration's raw symbol
+    // (a literal subject spelled like a mangled name demangles
+    // under V1). The projection must apply the same rule everywhere
+    // name() ran (review round 11).
+    let mut v1_display: BTreeMap<&str, &str> = BTreeMap::new();
+    {
+        let mut add = |name: &'a str, display: &'a str| {
+            if name != display {
+                v1_display.insert(name, display);
+            }
+        };
+        for l in &e.loci {
+            add(&l.name, &l.display);
+        }
+        for t in &e.topics {
+            add(&t.name, &t.display);
+        }
+        for t in &e.types {
+            add(&t.name, &t.display);
+        }
+        for i in &e.interfaces {
+            add(&i.name, &i.display);
+        }
+        for g in &e.groups {
+            add(&g.name, &g.display);
+        }
+        for d in &e.declarations {
+            add(&d.name, &d.display);
+        }
+        for f in &e.functions {
+            add(&f.name, &f.display);
+        }
+    }
+    let v1_name = |raw: &str| -> String {
+        v1_display
+            .get(raw)
+            .map(|d| d.to_string())
             .unwrap_or_else(|| raw.to_string())
     };
     // The legacy fn universe: only these functions appear in the
@@ -104,7 +147,13 @@ pub fn project_model_half(m: &ApplicationModel) -> String {
     struct EdgeMeta {
         looped: bool,
         unbounded: bool,
-        via_interface: Option<String>,
+        // (authored site ordinal, display) — the legacy encoder
+        // walks call sites in SOURCE order and last-writer-wins, so
+        // when one (from, to) pair is dispatched through several
+        // interfaces the winner is the greatest authored site, NOT
+        // the lexicographically greatest interface the model's
+        // canonical row order would visit last (review round 11).
+        via_interface: Option<(u32, String)>,
     }
     let mut calls: BTreeMap<(String, String), EdgeMeta> = BTreeMap::new();
     for c in &r.calls {
@@ -123,7 +172,15 @@ pub fn project_model_half(m: &ApplicationModel) -> String {
         meta.looped |= c.in_loop;
         meta.unbounded |= c.unbounded;
         if let DispatchKind::Interface { interface } = &c.dispatch {
-            meta.via_interface = Some(iface_display(interface));
+            let cand = (c.site, iface_display(interface));
+            if meta
+                .via_interface
+                .as_ref()
+                .map(|(s, _)| cand.0 >= *s)
+                .unwrap_or(true)
+            {
+                meta.via_interface = Some(cand);
+            }
         }
     }
     let mut via_stdlib: BTreeMap<(String, String), bool> = BTreeMap::new();
@@ -140,7 +197,7 @@ pub fn project_model_half(m: &ApplicationModel) -> String {
      -> String {
         match declared {
             Some(t) => topic_display(t),
-            None => e.subjects[subject.index()].pattern.clone(),
+            None => v1_name(&e.subjects[subject.index()].pattern),
         }
     };
     let mut publishes: BTreeSet<(String, String)> = BTreeSet::new();
@@ -195,6 +252,9 @@ pub fn project_model_half(m: &ApplicationModel) -> String {
     }
 
     // ---- labels: declared effect carriers ----
+    // Row order within one entity IS the artifact's class order
+    // (render_effects_named order, preserved by the builder) — do
+    // not re-sort it (review round 11).
     let mut labels: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for row in &m.labels {
         if let EntityRef::Function(f) = row.at {
@@ -297,6 +357,8 @@ pub fn project_model_half(m: &ApplicationModel) -> String {
         err: String,
         ops: Vec<String>,
         retry: Option<u32>,
+        // Authored position for the tie-break below.
+        origin: u32,
     }
     let mut sup_rows: Vec<SupRow> = r
         .supervises
@@ -305,13 +367,20 @@ pub fn project_model_half(m: &ApplicationModel) -> String {
             locus: locus_display(s.parent),
             child: match &s.child {
                 SupervisedRef::Locus(l) => locus_display(*l),
-                SupervisedRef::External(n) => n.clone(),
+                SupervisedRef::External(n) => v1_name(n),
             },
-            err: s.error_type.clone(),
+            err: v1_name(&s.error_type),
             ops: s.policy.ops.clone(),
             retry: s.policy.retry_bound,
+            origin: s.authored_ordinal,
         })
         .collect();
+    // The legacy encoder collects handlers in SOURCE order and then
+    // STABLE-sorts by (locus, child) only — handlers sharing both
+    // keep authored order, not error-type order (the model's
+    // canonical key). Recover authored order from provenance, then
+    // reproduce the legacy stable sort (review round 11).
+    sup_rows.sort_by(|a, b| a.origin.cmp(&b.origin));
     sup_rows.sort_by(|a, b| (&a.locus, &a.child).cmp(&(&b.locus, &b.child)));
 
     // ---- unknowns: re-fold holes + dead dispatches ----
@@ -321,17 +390,9 @@ pub fn project_model_half(m: &ApplicationModel) -> String {
         if !v1.contains(&f) {
             continue;
         }
-        let reason = match h.kind {
+        let reason = match &h.kind {
             HoleKind::IndirectCall => "indirect_call".to_string(),
-            HoleKind::UntypedReceiver => {
-                // The hole reason is the builder's stable rendering
-                // "method call `NAME` on untyped receiver"; the
-                // legacy row carries the callee name.
-                let callee = h
-                    .reason
-                    .split('`')
-                    .nth(1)
-                    .unwrap_or_default();
+            HoleKind::UntypedReceiver { callee } => {
                 format!("untyped_receiver_call:{}", callee)
             }
             HoleKind::ComputedSubject => "computed_publish".to_string(),
@@ -377,7 +438,7 @@ pub fn project_model_half(m: &ApplicationModel) -> String {
         if meta.unbounded {
             row.push_str(", \"unbounded\": true");
         }
-        if let Some(i) = &meta.via_interface {
+        if let Some((_, i)) = &meta.via_interface {
             row.push_str(&format!(", \"via_interface\": {}", quote(i)));
         }
         row.push_str("},\n");

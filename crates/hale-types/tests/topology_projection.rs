@@ -288,3 +288,163 @@ fn main() { App { }; }
         first_diff(legacy, &projected)
     );
 }
+
+/// Direct comparison without the check gate — for fixtures pinning
+/// legacy-order behavior the checker may or may not accept; both
+/// derivations are total over parseable programs.
+fn assert_projection_matches(src: &str, label: &str) -> String {
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let mut programs = BTreeMap::new();
+    programs.insert("app.hl".to_string(), &program);
+    let bundle = Bundle::new(programs);
+    let art = hale_types::topology::dump_topology(&bundle);
+    let model = derive_application_model(&bundle);
+    let legacy = model_half_of(&art).to_string();
+    let projected = project_model_half(&model);
+    assert_eq!(
+        legacy,
+        projected,
+        "{}: {}",
+        label,
+        first_diff(&legacy, &projected)
+    );
+    legacy
+}
+
+/// P1 (round 11): when one (from, to) pair is dispatched through
+/// several interfaces, the legacy encoder's last-in-source site
+/// wins — NOT the lexicographically last interface the model's
+/// canonical row order visits last. Source order here is Z then A,
+/// so V1 selects A.
+#[test]
+fn via_interface_tie_follows_authored_order() {
+    let src = r#"
+interface AIface { fn notify(v: Int) -> Int; }
+interface ZIface { fn notify(v: Int) -> Int; }
+locus Conformer {
+    params { n: Int = 0; }
+    fn notify(v: Int) -> Int { return v + self.n; }
+}
+fn relay(z: ZIface, a: AIface, v: Int) -> Int {
+    let first = z.notify(v);
+    let second = a.notify(v);
+    return first + second;
+}
+main locus App {
+    params { c: Conformer = Conformer { }; }
+    run() { println(relay(self.c, self.c, 1)); }
+}
+fn main() { App { }; }
+"#;
+    let legacy = assert_projection_matches(src, "via_interface tie");
+    assert!(
+        legacy.contains("\"via_interface\": \"AIface\""),
+        "the LAST authored dispatch (AIface) wins:\n{}",
+        legacy
+    );
+}
+
+/// P1 (round 11): multi-class carrier labels render in
+/// render_effects_named order — built-ins in fixed order, then USER
+/// classes in declaration order — never lexical. `zebra` is
+/// declared before `alpha` and must render before it.
+#[test]
+fn label_order_follows_declaration_not_lexical() {
+    let src = r#"
+effect zebra;
+effect alpha;
+@effects(is: { zebra, alpha })
+fn classified() { println(1); }
+main locus App {
+    run() { classified(); }
+}
+fn main() { App { }; }
+"#;
+    let legacy =
+        assert_projection_matches(src, "label declaration order");
+    assert!(
+        legacy.contains("[\"zebra\", \"alpha\"]"),
+        "declaration order, not lexical:\n{}",
+        legacy
+    );
+}
+
+/// P1 (round 11): supervision handlers sharing (locus, child) keep
+/// AUTHORED order under the legacy stable sort — not the model's
+/// canonical error-type order. ZTrouble is authored before ATrouble.
+#[test]
+fn supervision_ties_keep_authored_order() {
+    let src = r#"
+type ZTrouble { n: Int = 0; }
+type ATrouble { n: Int = 0; }
+locus Child {
+    params { n: Int = 0; }
+}
+locus Parent {
+    params { c: Child = Child { }; }
+    on_failure(c: Child, err: ZTrouble) {
+        restart (c);
+    }
+    on_failure(c: Child, err: ATrouble) {
+        quarantine (c);
+    }
+}
+main locus App {
+    params { p: Parent = Parent { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let legacy =
+        assert_projection_matches(src, "supervision authored order");
+    let z = legacy.find("\"err\": \"ZTrouble\"").expect("Z row");
+    let a = legacy.find("\"err\": \"ATrouble\"").expect("A row");
+    assert!(
+        z < a,
+        "authored order (Z first) survives the stable sort:\n{}",
+        legacy
+    );
+}
+
+/// P1 (round 11): V1 runs name() over EVERY subject string — a
+/// literal subject whose text equals an imported declaration's raw
+/// symbol demangles in the legacy artifact, so the projection must
+/// apply the same map.
+#[test]
+fn literal_subject_colliding_with_raw_symbol_demangles() {
+    let lib = r#"
+type __lib_x_kv_Item { n: Int = 0; }
+"#;
+    let main_src = r#"
+type Note { text: String = ""; }
+locus Sink {
+    bus { subscribe "__lib_x_kv_Item" as on_x of type Note; }
+    fn on_x(n: Note) { }
+}
+main locus App {
+    params { s: Sink = Sink { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let main_p = hale_syntax::parse_source(main_src).expect("parse main");
+    let lib_p = hale_syntax::parse_source(lib).expect("parse lib");
+    let mut programs = BTreeMap::new();
+    programs.insert("app/main.hl".to_string(), &main_p);
+    programs.insert("lib/kv.hl".to_string(), &lib_p);
+    let mut bundle = Bundle::new(programs);
+    bundle.import_renames = vec![(
+        vec!["kv".to_string(), "Item".to_string()],
+        "__lib_x_kv_Item".to_string(),
+    )];
+    let art = hale_types::topology::dump_topology(&bundle);
+    let model = derive_application_model(&bundle);
+    let legacy = model_half_of(&art);
+    let projected = project_model_half(&model);
+    assert!(
+        legacy.contains("\"subject\": \"kv::Item\""),
+        "V1 demangles the colliding literal:\n{}",
+        legacy
+    );
+    assert_eq!(legacy, projected, "{}", first_diff(legacy, &projected));
+}

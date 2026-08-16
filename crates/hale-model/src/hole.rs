@@ -58,8 +58,12 @@ impl RelationSet {
 pub enum HoleKind {
     /// A call through a fn pointer / indirect site.
     IndirectCall,
-    /// A method call on a receiver the summarizer cannot type.
-    UntypedReceiver,
+    /// A method call on a receiver the summarizer cannot type. The
+    /// dispatched method name is MACHINE data (the legacy artifact's
+    /// `untyped_receiver_call:<callee>` row requires it), so it
+    /// lives here in the kind — never parsed back out of the
+    /// human-readable `reason` text (review round 11).
+    UntypedReceiver { callee: String },
     /// A publish whose subject is computed at runtime.
     ComputedSubject,
     /// A keyed publish/subscription whose key values are unknown
