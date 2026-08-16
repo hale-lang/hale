@@ -1,0 +1,24 @@
+# GH #476 — the canonical semantic model (Change 1: schema skeleton).
+#
+# ARCHITECTURE LAW: this crate is source-independent. It must never
+# depend on `hale-syntax` (or transitively on the AST): the model
+# carries source-neutral provenance records, and `hale-types` maps
+# compiler spans INTO those records while deriving the model. The
+# dependency-direction canary in tests/architecture.rs enforces this
+# at test time; review enforces it at the boundary.
+#
+# Deliberately dependency-free: schema types, invariants, and laws —
+# nothing else. No serde: the external serialization surface is
+# Change 3+ (the legacy topology projection), and promising a wire
+# format from the schema crate would freeze exactly what the epic
+# says must stay evolvable during consolidation.
+
+[package]
+name = "hale-model"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Hale language: canonical typed semantic model (ApplicationModel schema)"
+
+[dependencies]
