@@ -309,15 +309,22 @@ impl ApplicationModel {
             }
         };
         for (i, c) in e.effect_classes.iter().enumerate() {
-            // Composition is the NORMALIZED atomic expansion:
-            // sorted, deduplicated, and never self-referential.
-            if c.composition.windows(2).any(|w| w[0] >= w[1])
-                || c.composition.iter().any(|m| *m == c.name)
+            // A composed definition is the NORMALIZED atomic
+            // expansion: sorted, deduplicated, never
+            // self-referential. Atomic and InvalidCycle carry no
+            // atoms by construction.
+            if let crate::entity::EffectClassDefinition::Composed {
+                atoms,
+            } = &c.definition
             {
-                return Err(ModelError::NotCanonical {
-                    table: "effect_classes.composition",
-                    index: i,
-                });
+                if atoms.windows(2).any(|w| w[0] >= w[1])
+                    || atoms.iter().any(|m| *m == c.name)
+                {
+                    return Err(ModelError::NotCanonical {
+                        table: "effect_classes.definition",
+                        index: i,
+                    });
+                }
             }
             prov("effect_classes", i, c.provenance)?;
         }

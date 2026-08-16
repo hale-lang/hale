@@ -378,12 +378,21 @@ fn main() { App { }; }
     assert!(!money.builtin);
     let row = &m.entities.effect_classes
         [money.class.expect("declared class resolves").index()];
-    assert!(row.declared && row.composition.is_empty());
+    assert!(row.declared);
+    assert_eq!(
+        row.definition,
+        hale_model::EffectClassDefinition::Atomic
+    );
     let io = &classes[1];
     let io_row = &m.entities.effect_classes
         [io.class.expect("composed class resolves").index()];
     assert!(io_row.declared);
-    assert_eq!(io_row.composition, ["block", "syscall"]);
+    assert_eq!(
+        io_row.definition,
+        hale_model::EffectClassDefinition::Composed {
+            atoms: vec!["block".to_string(), "syscall".to_string()]
+        }
+    );
 
     let typo_src = r#"
 @effects(none: { money })
@@ -449,9 +458,18 @@ fn main() { App { }; }
     else {
         unreachable!()
     };
-    let tref = &topics[0];
-    let tid = tref.topic.expect("`Orders` resolves as a TOPIC");
-    assert_eq!(m.entities.topics[tid.index()].name, "Orders");
+    let hale_model::TopicSelector::Unqualified {
+        name, candidates, ..
+    } = &topics[0]
+    else {
+        panic!("unqualified spelling is a candidate-set selector")
+    };
+    assert_eq!(name, "Orders");
+    assert_eq!(candidates.len(), 1, "the local topic is the candidate");
+    assert_eq!(
+        m.entities.topics[candidates[0].index()].name,
+        "Orders"
+    );
 }
 
 /// P1 (round 15): a resolved reference takes its name/display from
@@ -519,5 +537,120 @@ fn references_carry_their_own_provenance() {
     assert_ne!(
         avoiding.as_ref().unwrap().provenance,
         row.provenance
+    );
+}
+
+/// P1 (round 16): a cyclic effect-class definition stays
+/// distinguishable from an atomic class — the evaluator rejects it
+/// at the declaration because it resolves to no effect and makes
+/// contracts vacuous, and the model preserves that as
+/// `EffectClassDefinition::InvalidCycle`.
+#[test]
+fn cyclic_effect_class_definitions_stay_invalid() {
+    let src = r#"
+effect a = { b };
+effect b = { a };
+@effects(none: { a })
+fn f(v: Int) -> Int { return v; }
+main locus App { run() { println(f(1)); } }
+fn main() { App { }; }
+"#;
+    let (t, m) = lower(src);
+    let ClaimIr::EffectForbid { classes, .. } = &t
+        .rows
+        .iter()
+        .find(|r| matches!(r.law, ClaimIr::EffectForbid { .. }))
+        .expect("forbid row")
+        .law
+    else {
+        unreachable!()
+    };
+    let a_row = &m.entities.effect_classes
+        [classes[0].class.expect("`a` resolves").index()];
+    assert_eq!(
+        a_row.definition,
+        hale_model::EffectClassDefinition::InvalidCycle,
+        "a cycle is NOT an atomic class"
+    );
+    let b_row = m
+        .entities
+        .effect_classes
+        .iter()
+        .find(|c| c.name == "b")
+        .expect("b row");
+    assert_eq!(
+        b_row.definition,
+        hale_model::EffectClassDefinition::InvalidCycle
+    );
+}
+
+/// P1 (round 16): an UNQUALIFIED `@effects(publish:)` reference
+/// authored inside an imported seed resolves by trailing name to
+/// the merged (mangled) topic — the evaluator's documented
+/// cross-seed rule; the library author cannot know the consumer's
+/// alias.
+#[test]
+fn unqualified_imported_publish_ref_gets_candidates() {
+    let lib = r#"
+type __lib_r_main_Alert { n: Int = 0; }
+topic __lib_r_main_Recalled { payload: __lib_r_main_Alert; }
+locus __lib_r_main_Relay {
+    params { n: Int = 0; }
+    bus { publish __lib_r_main_Recalled; }
+    @effects(publish: { Recalled })
+    fn emit(v: Int) { __lib_r_main_Recalled <- __lib_r_main_Alert { }; }
+}
+"#;
+    let main_src = r#"
+main locus App {
+    params { r: __lib_r_main_Relay = __lib_r_main_Relay { }; }
+    run() { self.r.emit(1); }
+}
+fn main() { App { }; }
+"#;
+    let main_p = hale_syntax::parse_source(main_src).expect("parse");
+    let lib_p = hale_syntax::parse_source(lib).expect("parse lib");
+    let mut programs = BTreeMap::new();
+    programs.insert("app/main.hl".to_string(), &main_p);
+    programs.insert("lib/relay.hl".to_string(), &lib_p);
+    let mut bundle = Bundle::new(programs);
+    bundle.import_renames = vec![
+        (
+            vec!["relay".to_string(), "Alert".to_string()],
+            "__lib_r_main_Alert".to_string(),
+        ),
+        (
+            vec!["relay".to_string(), "Recalled".to_string()],
+            "__lib_r_main_Recalled".to_string(),
+        ),
+        (
+            vec!["relay".to_string(), "Relay".to_string()],
+            "__lib_r_main_Relay".to_string(),
+        ),
+    ];
+    let model = derive_application_model(&bundle);
+    let t = lower_claims(&bundle, &model);
+    t.validate(&model).expect("lawful");
+    let ClaimIr::EffectPublishSet { topics, .. } = &t
+        .rows
+        .iter()
+        .find(|r| matches!(r.law, ClaimIr::EffectPublishSet { .. }))
+        .expect("the imported seed's annotation lowers")
+        .law
+    else {
+        unreachable!()
+    };
+    let hale_model::TopicSelector::Unqualified {
+        name, candidates, ..
+    } = &topics[0]
+    else {
+        panic!("unqualified library spelling is a candidate set")
+    };
+    assert_eq!(name, "Recalled");
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(
+        model.entities.topics[candidates[0].index()].name,
+        "__lib_r_main_Recalled",
+        "trailing-name match reaches the merged topic"
     );
 }

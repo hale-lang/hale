@@ -142,10 +142,10 @@ pub use claim_ir::{
     ClaimIr, ClaimIrError, ClaimIrTable, ClaimOrigin, ClaimRow,
     CountCmpIr, EffectClassRef, GrantIr, GroupRef, LoweringIssue,
     NameRef, PhaseIrRef, QuantDimIr, SeedIrRef, SetIr, SubjectIrRef,
-    TopicIrRef,
+    TopicIrRef, TopicSelector,
 };
 pub use entity::{
-    Binding, BindingRole, DeclKind, Declaration, EffectClassDecl, Function, FunctionKind, Group, InterfaceDecl,
+    Binding, BindingRole, DeclKind, Declaration, EffectClassDecl, EffectClassDefinition, Function, FunctionKind, Group, InterfaceDecl,
     LocusDecl, LocusInstance, PayloadContract, Phase, Seed, Subject, ThreadDomain, Topic,
     TransportKind, TypeDecl,
 };

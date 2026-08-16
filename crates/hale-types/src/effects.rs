@@ -1367,7 +1367,7 @@ pub(crate) fn topic_ref_matches(declared: &str, resolved: &str) -> bool {
 /// Known limitation: two topics with the same trailing name from
 /// different seeds are indistinguishable here. Disambiguating them
 /// needs the resolver's alias table, which this layer does not have.
-fn topic_tail(s: &str) -> &str {
+pub(crate) fn topic_tail(s: &str) -> &str {
     let s = s.rsplit("::").next().unwrap_or(s);
     match s.strip_prefix("__lib_") {
         Some(rest) => rest.rsplit('_').next().unwrap_or(rest),

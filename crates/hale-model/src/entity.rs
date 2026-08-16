@@ -194,12 +194,28 @@ pub struct EffectClassDecl {
     pub name: String,
     /// `effect NAME;` exists (false = bare reference only).
     pub declared: bool,
-    /// The NORMALIZED atomic expansion for a composed class
-    /// (`effect io = { syscall, block }` → `["block", "syscall"]`,
-    /// sorted) — a composed class owns no bit of its own and means
-    /// its expansion. Empty for atomic classes.
-    pub composition: Vec<String>,
+    pub definition: EffectClassDefinition,
     pub provenance: ProvenanceId,
+}
+
+/// How a user effect class is defined. An EXPLICIT shape (review
+/// round 16): a cyclic definition (`effect a = { b }; effect b =
+/// { a };`) expands to nothing and would otherwise be
+/// indistinguishable from an atomic class — the evaluator rejects
+/// cycles at the declaration precisely because they make contracts
+/// vacuous, and the model must preserve that invalidity.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum EffectClassDefinition {
+    /// `effect money;` — the class is its own atom.
+    Atomic,
+    /// `effect io = { syscall, block };` — the NORMALIZED atomic
+    /// expansion, sorted and deduplicated; the class owns no bit of
+    /// its own and means its expansion.
+    Composed { atoms: Vec<String> },
+    /// The definition participates in a cycle: it resolves to no
+    /// effect, and every contract naming it is vacuous. Diagnosed
+    /// at the declaration by the checker.
+    InvalidCycle,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]

@@ -108,6 +108,27 @@ pub struct SubjectIrRef {
     pub provenance: ProvenanceId,
 }
 
+/// A topic selector for annotation surfaces (review round 16). The
+/// evaluator's documented cross-seed rule: a library author writes
+/// an UNQUALIFIED topic name (they cannot know the consumer's
+/// alias), and it matches merged topics by TRAILING name — possibly
+/// several same-tailed topics, "the permissiveness the author asked
+/// for". A qualified/canonical spelling stays an exact reference.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum TopicSelector {
+    /// A qualified or canonical spelling — one topic (or an
+    /// unresolved reference).
+    Exact(TopicIrRef),
+    /// An unqualified spelling: the candidate set of merged topics
+    /// whose trailing name matches, sorted. Empty = resolves to
+    /// nothing (Change 5's residue).
+    Unqualified {
+        name: String,
+        candidates: Vec<TopicId>,
+        provenance: ProvenanceId,
+    },
+}
+
 /// An effect class reference. The class universe is TYPED
 /// (review round 15): a built-in is language-fixed and always
 /// valid; a user class resolves into `entities.effect_classes`,
@@ -239,7 +260,7 @@ pub enum ClaimIr {
     /// declared topic must never masquerade as its wire subject.
     EffectPublishSet {
         at: (Option<FunctionId>, NameRef),
-        topics: Vec<TopicIrRef>,
+        topics: Vec<TopicSelector>,
     },
     /// `@effects(causes: {…})` — transitive through bus edges.
     EffectCauses {
@@ -625,7 +646,33 @@ impl ClaimIrTable {
                 ClaimIr::EffectPublishSet { at, topics } => {
                     fn_ok(at)?;
                     for t in topics {
-                        topic_ok(t)?;
+                        match t {
+                            TopicSelector::Exact(t) => topic_ok(t)?,
+                            TopicSelector::Unqualified {
+                                candidates,
+                                provenance,
+                                ..
+                            } => {
+                                if !pr(*provenance) {
+                                    return Err(ClaimIrError::DanglingProvenance { index: i });
+                                }
+                                if candidates
+                                    .windows(2)
+                                    .any(|w| w[0] >= w[1])
+                                {
+                                    return Err(bad(
+                                        "topic candidates",
+                                    ));
+                                }
+                                if candidates.iter().any(|c| {
+                                    c.index() >= e.topics.len()
+                                }) {
+                                    return Err(bad(
+                                        "topic candidate",
+                                    ));
+                                }
+                            }
+                        }
                     }
                 }
                 ClaimIr::NoPanic { at } => fn_ok(at)?,

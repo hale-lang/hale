@@ -38,7 +38,7 @@ use hale_model::{
     ApplicationModel, ClaimIr, ClaimIrTable, ClaimOrigin, ClaimRow,
     CountCmpIr, EffectClassRef, GrantIr, GroupRef, LoweringIssue,
     NameRef, PhaseIrRef, Provenance, ProvenanceId, QuantDimIr,
-    SeedIrRef, SetIr, SubjectIrRef, TopicIrRef,
+    SeedIrRef, SetIr, SubjectIrRef, TopicIrRef, TopicSelector,
 };
 use hale_syntax::ast::{
     ClaimForm, ClaimSet, CountCmp, EffectAssert, EffectClass,
@@ -251,6 +251,37 @@ pub fn lower_claims(
      -> TopicIrRef {
         let segs: Vec<&str> = s.split("::").collect();
         topic_ref_parts(recs, s, &segs, span)
+    };
+    let topic_selector = |recs: &mut Vec<Provenance>,
+                          s: &str,
+                          span: hale_syntax::Span|
+     -> TopicSelector {
+        if s.contains("::") {
+            // Qualified — the author named one topic through an
+            // alias path.
+            return TopicSelector::Exact(topic_ref_str(recs, s, span));
+        }
+        // Unqualified: ALWAYS the tail-match candidate set,
+        // mirroring `effects::topic_ref_matches` — the evaluator
+        // never privileges an exact hit for an unqualified
+        // spelling, so a local topic and a same-tailed import both
+        // match (the documented permissiveness).
+        let mut candidates: Vec<hale_model::TopicId> = e
+            .topics
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                crate::effects::topic_tail(&t.name) == s
+            })
+            .map(|(i, _)| hale_model::TopicId(i as u32))
+            .collect();
+        candidates.sort();
+        candidates.dedup();
+        TopicSelector::Unqualified {
+            name: s.to_string(),
+            candidates,
+            provenance: intern(recs, span),
+        }
     };
     let subject_ref = |recs: &mut Vec<Provenance>,
                        s: &str,
@@ -537,16 +568,20 @@ pub fn lower_claims(
                         .map(|c| class_ref(recs, c, f.name.span))
                         .collect(),
                 },
-                // TOPIC references (review round 15): the source
-                // names topics and the evaluator matches topic
-                // identity across spellings — never wire subjects.
+                // TOPIC selectors (review rounds 15/16): a
+                // qualified/canonical spelling is exact; an
+                // UNQUALIFIED spelling follows the evaluator's
+                // documented cross-seed rule — a library author
+                // cannot know the consumer's alias, so the name
+                // matches merged topics by TRAILING name, possibly
+                // several.
                 EffectAssert::PublishSet(topics) => {
                     ClaimIr::EffectPublishSet {
                         at,
                         topics: topics
                             .iter()
                             .map(|t| {
-                                topic_ref_str(recs, t, f.name.span)
+                                topic_selector(recs, t, f.name.span)
                             })
                             .collect(),
                     }

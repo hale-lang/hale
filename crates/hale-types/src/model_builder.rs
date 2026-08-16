@@ -1888,23 +1888,30 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         let defs = crate::effects::defs_of(&programs);
         let declared: BTreeSet<u16> =
             crate::effects::declared_of(&programs);
+        // Returns true iff the expansion re-entered a class on the
+        // current path — a CYCLE, which resolves to no effect and
+        // must stay distinguishable from an atomic class (review
+        // round 16; the checker rejects it at the declaration).
         fn expand(
             i: u16,
             names: &[String],
             defs: &[Option<Vec<hale_syntax::ast::EffectClass>>],
             out: &mut BTreeSet<String>,
             stack: &mut Vec<u16>,
-        ) {
+        ) -> bool {
             if stack.contains(&i) {
-                return;
+                return true;
             }
             stack.push(i);
+            let mut cyclic = false;
             match defs.get(i as usize).and_then(|d| d.as_ref()) {
                 Some(members) => {
                     for m in members {
                         match m {
                             hale_syntax::ast::EffectClass::User(j) => {
-                                expand(*j, names, defs, out, stack)
+                                cyclic |= expand(
+                                    *j, names, defs, out, stack,
+                                );
                             }
                             b => {
                                 out.insert(b.as_str().to_string());
@@ -1919,24 +1926,30 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                 }
             }
             stack.pop();
+            cyclic
         }
         let mut rows: Vec<hale_model::EffectClassDecl> = Vec::new();
         for (i, n) in names.iter().enumerate() {
             let composed =
                 defs.get(i).map(|d| d.is_some()).unwrap_or(false);
-            let composition: Vec<String> = if composed {
+            let definition = if composed {
                 let mut atoms = BTreeSet::new();
-                expand(
+                let cyclic = expand(
                     i as u16,
                     &names,
                     &defs,
                     &mut atoms,
                     &mut Vec::new(),
                 );
-                atoms.remove(n.as_str());
-                atoms.into_iter().collect()
+                if cyclic {
+                    hale_model::EffectClassDefinition::InvalidCycle
+                } else {
+                    hale_model::EffectClassDefinition::Composed {
+                        atoms: atoms.into_iter().collect(),
+                    }
+                }
             } else {
-                Vec::new()
+                hale_model::EffectClassDefinition::Atomic
             };
             let pid = intern_synth(
                 &mut records,
@@ -1945,7 +1958,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             rows.push(hale_model::EffectClassDecl {
                 name: n.clone(),
                 declared: declared.contains(&(i as u16)),
-                composition,
+                definition,
                 provenance: pid,
             });
         }
