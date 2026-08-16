@@ -448,3 +448,132 @@ fn main() { App { }; }
     );
     assert_eq!(legacy, projected, "{}", first_diff(legacy, &projected));
 }
+
+/// P1 (round 12): the V1 display map is EXACT-renames scope. A
+/// literal subject spelled like an imported locus's METHOD identity
+/// (`__lib_x_kv_Store::bump`) is not a renames key — legacy name()
+/// leaves it verbatim, and so must the projection. (The type-symbol
+/// collision above demangles; the method shape must not.)
+#[test]
+fn method_shaped_literal_subject_does_not_demangle() {
+    let lib = r#"
+type __lib_x_kv_Event { n: Int = 0; }
+locus __lib_x_kv_Store {
+    params { n: Int = 0; }
+    fn bump() { self.n = self.n + 1; }
+}
+"#;
+    let main_src = r#"
+type Note { text: String = ""; }
+locus Sink {
+    bus { subscribe "__lib_x_kv_Store::bump" as on_ev of type Note; }
+    fn on_ev(n: Note) { }
+}
+main locus App {
+    params { s: Sink = Sink { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let main_p = hale_syntax::parse_source(main_src).expect("parse main");
+    let lib_p = hale_syntax::parse_source(lib).expect("parse lib");
+    let mut programs = BTreeMap::new();
+    programs.insert("app/main.hl".to_string(), &main_p);
+    programs.insert("lib/kv.hl".to_string(), &lib_p);
+    let mut bundle = Bundle::new(programs);
+    bundle.import_renames = vec![
+        (
+            vec!["kv".to_string(), "Event".to_string()],
+            "__lib_x_kv_Event".to_string(),
+        ),
+        (
+            vec!["kv".to_string(), "Store".to_string()],
+            "__lib_x_kv_Store".to_string(),
+        ),
+    ];
+    let art = hale_types::topology::dump_topology(&bundle);
+    let model = derive_application_model(&bundle);
+    let legacy = model_half_of(&art);
+    let projected = project_model_half(&model);
+    assert!(
+        legacy.contains("\"subject\": \"__lib_x_kv_Store::bump\""),
+        "V1 keeps the method-shaped literal verbatim:\n{}",
+        legacy
+    );
+    assert_eq!(legacy, projected, "{}", first_diff(legacy, &projected));
+}
+
+/// P1 (round 12): labels and effects are V1-universe sections. The
+/// projector is public over any lawful model — a non-V1 function
+/// (module-scoped, unanalyzed) carrying a label or an effect set
+/// must NOT surface in a section whose fns are absent from
+/// sorts.fns. Constructed directly: the current builder never
+/// populates behavior on non-V1 fns, and this pin must hold as it
+/// gains coverage.
+#[test]
+fn labels_and_effects_are_restricted_to_the_v1_universe() {
+    use hale_model::*;
+    let mut prov = ProvenanceTable::default();
+    prov.records.push(Provenance::Synthetic {
+        origin: "test".to_string(),
+    });
+    let p = ProvenanceId(0);
+    let f = |name: &str, effects: Vec<&str>| Function {
+        name: name.to_string(),
+        display: name.to_string(),
+        kind: FunctionKind::Free,
+        effects: effects.into_iter().map(String::from).collect(),
+        provenance: p,
+    };
+    let mut m = ApplicationModel {
+        header: ModelHeader {
+            semantics: MODEL_SEMANTICS_V1,
+            entrypoint: "main".to_string(),
+        },
+        entities: Entities {
+            functions: vec![
+                f("analyzed", vec!["alloc"]),
+                f("hidden_extra", vec!["syscall"]),
+            ],
+            ..Entities::default()
+        },
+        relations: Relations::default(),
+        labels: vec![
+            LabelRow {
+                at: EntityRef::Function(FunctionId(0)),
+                label: "money".to_string(),
+                provenance: p,
+            },
+            LabelRow {
+                at: EntityRef::Function(FunctionId(1)),
+                label: "money".to_string(),
+                provenance: p,
+            },
+        ],
+        weights: Vec::new(),
+        holes: Vec::new(),
+        capabilities: Capabilities::default(),
+        provenance: prov,
+        legacy: LegacyProjection {
+            topology_v1_fns: vec![FunctionId(0)],
+            topology_v1_calls_via_stdlib: Vec::new(),
+        },
+    };
+    let out = project_model_half(&m);
+    assert!(
+        out.contains("\"analyzed\": [\"alloc\"]"),
+        "V1 fn keeps its effects:\n{}",
+        out
+    );
+    assert!(
+        !out.contains("hidden_extra"),
+        "a non-V1 fn appears in NO fn-keyed section:\n{}",
+        out
+    );
+    // …and with the extra fn enrolled, both sections carry it —
+    // the filter is the universe, not the function.
+    m.legacy.topology_v1_fns = vec![FunctionId(0), FunctionId(1)];
+    let out = project_model_half(&m);
+    assert!(out.contains("\"hidden_extra\": [\"syscall\"]"));
+    assert!(out.contains("\"hidden_extra\": [\"money\"]"));
+}

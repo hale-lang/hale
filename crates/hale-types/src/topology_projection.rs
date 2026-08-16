@@ -107,8 +107,17 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
         for d in &e.declarations {
             add(&d.name, &d.display);
         }
+        // FREE functions only: the legacy name() is an EXACT lookup
+        // in import_renames, which holds renamed top-level
+        // declarations — a method identity (`__lib_x_Store::bump`)
+        // is never a renames key, so a literal subject spelled like
+        // one must NOT demangle (review round 12). Every other
+        // table above holds top-level declarations whose raw names
+        // are exactly the renames keys.
         for f in &e.functions {
-            add(&f.name, &f.display);
+            if f.kind == FunctionKind::Free {
+                add(&f.name, &f.display);
+            }
         }
     }
     let v1_name = |raw: &str| -> String {
@@ -255,9 +264,16 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
     // Row order within one entity IS the artifact's class order
     // (render_effects_named order, preserved by the builder) — do
     // not re-sort it (review round 11).
+    // Restricted to the legacy fn universe (the legacy encoder
+    // iterates summary-keyed carriers): a lawful model may label a
+    // non-V1 function, and that row must not appear in a section
+    // whose fns are absent from sorts.fns (review round 12).
     let mut labels: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for row in &m.labels {
         if let EntityRef::Function(f) = row.at {
+            if !v1.contains(&f) {
+                continue;
+            }
             labels
                 .entry(fn_display(f))
                 .or_default()
@@ -343,8 +359,12 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
     }
 
     // ---- effects: derived per-fn classes, declaration order ----
+    // Same restriction: the legacy effects section iterates the
+    // stdlib-merged summary's user keys — the V1 universe — never
+    // the model's broader declaration universe (review round 12).
     let mut derived_effects: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for f in &e.functions {
+    for id in &m.legacy.topology_v1_fns {
+        let f = &e.functions[id.index()];
         if !f.effects.is_empty() {
             derived_effects.insert(f.display.clone(), f.effects.clone());
         }
