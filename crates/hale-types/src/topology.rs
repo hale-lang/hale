@@ -1239,7 +1239,7 @@ pub fn verify_artifact_digest(artifact: &str) -> Option<bool> {
     Some(claimed == format!("{:016x}", fnv1a64(body.as_bytes())))
 }
 
-fn join_str<'a>(items: impl Iterator<Item = &'a String>) -> String {
+pub(crate) fn join_str<'a>(items: impl Iterator<Item = &'a String>) -> String {
     items
         .map(|s| quote(s))
         .collect::<Vec<_>>()
@@ -1248,7 +1248,7 @@ fn join_str<'a>(items: impl Iterator<Item = &'a String>) -> String {
 
 /// Minimal JSON string escaping — names are identifiers and wire
 /// subjects, but fail-closed on the full set anyway.
-fn quote(s: &str) -> String {
+pub(crate) fn quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for ch in s.chars() {
@@ -1269,7 +1269,7 @@ fn quote(s: &str) -> String {
 }
 
 /// Drop the trailing ",\n" of the last array element (valid JSON).
-fn trim_trailing_comma(s: &mut String) {
+pub(crate) fn trim_trailing_comma(s: &mut String) {
     if s.ends_with(",\n") {
         s.truncate(s.len() - 2);
         s.push('\n');
@@ -1279,7 +1279,7 @@ fn trim_trailing_comma(s: &mut String) {
 /// FNV-1a, 64-bit — the runtime's hash family (lotus_obs.c uses
 /// FNV for the per-topic payload shape); deterministic, dependency-
 /// free, stable across platforms.
-fn fnv1a64(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in bytes {
         h ^= *b as u64;

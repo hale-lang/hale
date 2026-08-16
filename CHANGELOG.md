@@ -8,6 +8,23 @@ behavior.
 
 ## Unreleased
 
+### The model-backed artifact projection (GH #476 Change 3)
+
+`hale_types::topology_projection::project_model_half(&ApplicationModel)`
+renders the topology artifact's hashed model half from the canonical
+model alone, and `project_shape_hash` reproduces `TopologyShapeV1`
+exactly - proven byte-for-byte against `dump_topology`'s own
+derivation over every checkable corpus program by a permanent
+differential gate (`tests/topology_projection.rs`). The projection
+maps the model's raw canonical identities back to the artifact's
+display spelling, merges site-grained rows to the legacy endpoint
+grain, renders `calls_via_stdlib` from the preserved legacy
+contraction rows, and re-folds typed holes + dead interface
+dispatches into the legacy `unknowns` vocabulary. Both derivations
+stay live until the Change-6 versioned identity transition: a model
+change that would silently re-key `.halerec` replay admission now
+fails the differential instead. No user-visible behavior change.
+
 ### The ApplicationModel builder - demand-gated derivation (GH #476 Change 2)
 
 `hale_types::model_builder::derive_application_model(&Bundle)` - one
