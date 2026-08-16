@@ -15108,17 +15108,20 @@ static void lotus_bus_test_boot_hold(void) {
 
 static void *lotus_bus_reader_thread_main(void *arg) {
     lotus_bus_reader_args_t *args = (lotus_bus_reader_args_t *)arg;
-    lotus_transport_t *t = args->entry->transport;
     lotus_bus_test_reader_stall();
     lotus_bus_unix_serve(args->entry);
     /* GH #468: drained-and-done signal for the exit quiesce. */
     __atomic_store_n(&args->entry->serve_done, 1, __ATOMIC_RELEASE);
-    /* NULL the entry's pointer BEFORE destroying so destroy_all
-     * never reads a freed transport — at worst it sees NULL and
-     * skips its shutdown, which is fine because this thread is
-     * already past the serve loop and exiting. */
-    args->entry->transport = NULL;
-    lotus_transport_destroy(t);
+    /* OWNERSHIP LAW (ASan corpus catch, post-#475): the reader
+     * NEVER destroys the transport. It used to NULL-and-free on
+     * exit, which raced every main-thread reader of
+     * entry->transport — the quiesce's second shutdown() call
+     * read t->conn_fd from freed memory the instant its FIRST
+     * shutdown woke this thread out of accept (85-bindings-unix
+     * under ASan: freed by T1 in reader exit, read by T0 in
+     * lotus_bus_ingress_quiesce). Destruction now happens only on
+     * the main thread AFTER pthread_join (reclaim or destroy_all),
+     * where no concurrent reader can exist. */
     free(args);
     return NULL;
 }
@@ -16191,11 +16194,12 @@ void lotus_bus_transport_reclaim(int64_t handle) {
     }
     if (e->has_reader_thread) {
         pthread_join(e->reader_thread, NULL);
-        /* The thread destroyed the transport and NULLed the
-         * entry's pointer on its way out. Clear the flag so
-         * destroy_all doesn't double-join. */
+        /* Clear the flag so destroy_all doesn't double-join. */
         e->has_reader_thread = 0;
     }
+    /* Post-join (or never-spawned): this thread is the only one
+     * left touching the transport — the reader never destroys it
+     * (ownership law at lotus_bus_reader_thread_main). */
     if (e->transport) {
         lotus_transport_destroy(e->transport);
         e->transport = NULL;
@@ -20068,10 +20072,13 @@ void lotus_bus_ingress_quiesce(lotus_bus_queue_t *queue) {
             if (e->udp_fd >= 0) shutdown(e->udp_fd, SHUT_RDWR);
             have_ingress = 1;
         } else if (e->kind == LOTUS_BUS_REMOTE_KIND_UNIX) {
-            /* The reader only exits AFTER these shutdowns land
-             * (accept/recv can't fail before them), so the
-             * transport pointer is stable here — same lifetime
-             * argument destroy_all already relies on. */
+            /* Safe to dereference: the reader thread never
+             * destroys the transport (ownership law at
+             * lotus_bus_reader_thread_main — the old reader-frees
+             * design made exactly this block a use-after-free the
+             * moment the first shutdown woke the reader; caught by
+             * the ASan corpus). Destruction happens post-join on
+             * this thread, later. */
             lotus_transport_t *t = e->transport;
             if (t) {
                 if (t->listen_fd >= 0) shutdown(t->listen_fd, SHUT_RDWR);
@@ -20218,10 +20225,9 @@ void lotus_bus_remote_destroy_all(void) {
                 }
             }
             pthread_join(e->reader_thread, NULL);
-            /* Reader thread has already nulled e->transport on
-             * its way out (both the EOF and the accept-refused
-             * paths), so the CONNECT-style destroy below is a
-             * no-op for this slot. */
+            /* Post-join, the transport (still set — the reader
+             * never destroys it) is destroyed by the shared tail
+             * below, single-threaded. */
         }
         if (e->transport) {
             lotus_transport_destroy(e->transport);
