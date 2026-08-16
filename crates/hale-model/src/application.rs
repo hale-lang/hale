@@ -676,10 +676,16 @@ impl ApplicationModel {
             "supervises",
             r.supervises
                 .iter()
-                .map(|x| (x.parent, x.child, &x.error_type)),
+                .map(|x| (x.parent, x.child.clone(), &x.error_type)),
         )?;
         for (i, x) in r.supervises.iter().enumerate() {
-            if x.parent.index() >= loci || x.child.index() >= loci {
+            let child_ok = match &x.child {
+                crate::relation::SupervisedRef::Locus(id) => {
+                    id.index() < loci
+                }
+                crate::relation::SupervisedRef::External(_) => true,
+            };
+            if x.parent.index() >= loci || !child_ok {
                 return Err(ModelError::DanglingId {
                     table: "supervises",
                     index: i,

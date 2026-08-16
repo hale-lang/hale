@@ -8,6 +8,43 @@ behavior.
 
 ## Unreleased
 
+### The ApplicationModel builder - demand-gated derivation (GH #476 Change 2)
+
+`hale_types::model_builder::derive_application_model(&Bundle)` - one
+entry point assembling the canonical model from the same trusted
+analyses the topology artifact consumes (AllocSummary, BusGraph,
+model::Model, effects/frontier) plus direct AST reads for facts no
+summary carries (topic key/bound policy, subscription filters and
+bounds, authored group selectors, the declaration universe,
+@sealed). Sites stay site-grained; through-stdlib contraction uses
+the artifact's own walk; uninhabited dispatches land in
+`dead_interface_calls` while genuine residue becomes typed holes;
+capabilities are COMPUTED from the holes so the two completeness
+accounts cannot drift. Ownership/placement/bindings stay empty
+tables with capabilities false (Change 8 completes them - the
+artifact exports none today).
+
+DEMAND-GATED, proven cross-process: the builder runs only for
+`hale model dump <target>` (new, internal non-stable format,
+same ill-typed refusal as the artifact); plain `hale check` - even
+with claims present, even with `--dump-topology` - provably never
+derives it (HALE_MODEL_TRACE=1 stays silent; pinned by test).
+
+Tested three ways: family fixtures (keyed delivery incl. fallback
++ replica, bounds, literal/wildcard endpoints, supervision,
+groups, dead-vs-indirect separation); a model/artifact
+DIFFERENTIAL asserting both extractions agree on fns, loci, calls
+(endpoint projection), through-stdlib edges, publishes,
+subscribes, unknown anchors, authored group selectors,
+supervision, and per-fn effects; and a whole-corpus property -
+derivation never panics on any parseable program, and a derived
+model may violate a schema law ONLY where the checker also
+refuses the program (negative fixtures' models mirror the
+checker's refusals; checks-clean-but-unlawful is a builder bug).
+The corpus property earned its keep immediately: its first run
+caught a fail-open glob-alias fallback and two non-total lookup
+paths in the builder.
+
 ### `hale-model` - the canonical semantic model schema (GH #476 Change 1)
 
 The first change of the canonical-model epic: a new source-independent

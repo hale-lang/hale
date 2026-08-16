@@ -345,7 +345,7 @@ fn unsorted_supervises_are_not_canonical() {
     m.relations.supervises = vec![
         Supervises {
             parent: LocusDeclId(1),
-            child: LocusDeclId(0),
+            child: SupervisedRef::Locus(LocusDeclId(0)),
             error_type: "IoError".to_string(),
             policy: SupervisionPolicy {
                 ops: vec!["restart".to_string()],
@@ -355,7 +355,7 @@ fn unsorted_supervises_are_not_canonical() {
         },
         Supervises {
             parent: LocusDeclId(0),
-            child: LocusDeclId(1),
+            child: SupervisedRef::Locus(LocusDeclId(1)),
             error_type: "IoError".to_string(),
             policy: SupervisionPolicy {
                 ops: vec!["restart".to_string()],
@@ -629,7 +629,7 @@ fn supervision_is_per_error_type() {
     m.relations.supervises = vec![
         Supervises {
             parent: LocusDeclId(0),
-            child: LocusDeclId(1),
+            child: SupervisedRef::Locus(LocusDeclId(1)),
             error_type: "ClosureViolation".to_string(),
             policy: SupervisionPolicy {
                 ops: vec!["restart".to_string()],
@@ -639,7 +639,7 @@ fn supervision_is_per_error_type() {
         },
         Supervises {
             parent: LocusDeclId(0),
-            child: LocusDeclId(1),
+            child: SupervisedRef::Locus(LocusDeclId(1)),
             error_type: "IoError".to_string(),
             policy: SupervisionPolicy {
                 ops: vec!["replace".to_string()],

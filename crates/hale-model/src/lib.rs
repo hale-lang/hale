@@ -156,5 +156,5 @@ pub use provenance::{Provenance, ProvenanceTable};
 pub use relation::{
     AffinedTo, Call, CoreSet, DeadInterfaceCall, DeclaredIn, DispatchKind, GroupMember,
     GroupSelector, MemberOf, Owns, PhaseOf, PlacedIn, Publish, Realizes, SelectorForm, Subscribe,
-    Supervises, SupervisionPolicy, TopicBinding,
+    Supervises, SupervisedRef, SupervisionPolicy, TopicBinding,
 };

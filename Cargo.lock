@@ -141,6 +141,7 @@ name = "hale-types"
 version = "0.17.0"
 dependencies = [
  "hale-corpus",
+ "hale-model",
  "hale-stdlib",
  "hale-syntax",
  "serde_json",

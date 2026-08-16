@@ -260,6 +260,19 @@ pub struct SupervisionPolicy {
     pub retry_bound: Option<u32>,
 }
 
+/// What an `on_failure` handler supervises. Usually a declared
+/// locus — but transport supervision is shipped surface (GH #233:
+/// `on_failure(t: std::bus::UnixTransport, err: ClosureViolation)`),
+/// and a substrate type is not a locus declaration. External
+/// carries the canonical type name rather than pretending.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum SupervisedRef {
+    Locus(LocusDeclId),
+    /// A supervised non-locus (substrate transport, external
+    /// boundary), by canonical type name.
+    External(String),
+}
+
 /// `supervises(parent, child, error_type, policy)` — one row per
 /// `on_failure` handler. Two handlers supervising the same child
 /// for DIFFERENT error types are distinct policies (the schema-1.10
@@ -268,7 +281,7 @@ pub struct SupervisionPolicy {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Supervises {
     pub parent: LocusDeclId,
-    pub child: LocusDeclId,
+    pub child: SupervisedRef,
     /// The handled error/violation type's canonical name.
     pub error_type: String,
     pub policy: SupervisionPolicy,

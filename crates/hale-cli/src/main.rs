@@ -162,6 +162,33 @@ fn main() -> ExitCode {
         return topology_graph::run_topology(&rest);
     }
 
+    // GH #476 Change 2: `hale model dump <target>` — derive and print
+    // the canonical ApplicationModel (internal, non-stable format).
+    // The DEMAND surface: this command is what builds the model;
+    // plain `hale check` provably never does (HALE_MODEL_TRACE=1
+    // shows the derivation line here and stays silent there).
+    // Implemented as a shim into the check pipeline so bundle
+    // loading, imports, and the ill-typed refusal are identical.
+    if cmd == "model" {
+        let rest: Vec<String> = args.iter().skip(2).cloned().collect();
+        if rest.first().map(String::as_str) != Some("dump") {
+            eprintln!(
+                "usage: hale model dump <file.hl | dir>\n\
+                 \n\
+                 Derives the canonical ApplicationModel (GH #476) and \
+                 prints an internal,\nnon-stable dump. Experimental \
+                 surface pre-1.0."
+            );
+            return ExitCode::from(2);
+        }
+        // The check pipeline's dump section reads PROCESS argv (it
+        // is a top-level-command scope), so the flag cannot ride the
+        // rest-args; the shim marks the demand via env instead.
+        std::env::set_var("HALE_DUMP_MODEL", "1");
+        let shim: Vec<String> = rest[1..].to_vec();
+        return run_check_cli(&shim, false);
+    }
+
     // `bench` is discovery-driven like `test`: *_bench.hl files,
     // bench_* fns, self-calibrating harness.
     if cmd == "bench" {
@@ -222,6 +249,7 @@ fn usage() {
     eprintln!("        (`hale check --help` for all)");
     eprintln!("    hale verify <file.hl | dir>   check + FAIL on any advisory (discipline gate)");
     eprintln!("    hale topology graph <artifact> render a --dump-topology artifact (svg|mermaid|dot; experimental)");
+    eprintln!("    hale model dump <file.hl | dir> derive + print the canonical ApplicationModel (internal; experimental)");
     eprintln!("    hale run   <file.hl | dir>    compile + run as a native binary");
     eprintln!("    hale build <file.hl | dir>    parse + typecheck + emit native binary");
     eprintln!("    hale replay <rec> <file.hl>   re-run a LOTUS_OBS_RECORD recording");
@@ -2891,6 +2919,7 @@ fn run_fleet(rest: &[String]) -> ExitCode {
 /// evaluations.
 const PER_SEED_FLAGS: &[&str] = &[
     "--dump-topology",
+    "--dump-model",
     "--check-topology",
     "--check-topology-shape",
     "--dump-effects-manifest",
@@ -2910,6 +2939,10 @@ const CHECK_FLAGS: &[(&str, bool)] = &[
     ("--dump-effects-manifest", false),
     ("--dump-resource-budget", false),
     ("--dump-topology", false),
+    // GH #476 Change 2: derive + print the canonical
+    // ApplicationModel (internal format). The demand surface the
+    // `hale model dump` shim routes through.
+    ("--dump-model", false),
     ("--json", false),
     ("--no-warn-unbounded-alloc", false),
     // Retired opt-in spelling from when the unbounded-alloc survey
@@ -4145,6 +4178,40 @@ fn run_check_impl_labelled(
             }
             None => print!("{}", artifact),
         }
+    }
+    // GH #476 Change 2: the canonical-model demand surface. Same
+    // refusal rule as the artifact — a model of a program that does
+    // not typecheck describes nothing.
+    if argv.iter().any(|a| a == "--dump-model")
+        || std::env::var("HALE_DUMP_MODEL").as_deref() == Ok("1")
+    {
+        if let Some(d) = checked.iter().find(|d| {
+            d.is_error()
+                && d.kind != hale_syntax::error::DiagKind::Claim
+        }) {
+            eprintln!(
+                "refusing to derive a model: `{}` does not typecheck,                  so its model is not a truthful description of any                  program. Fix the {} first.",
+                target.display(),
+                d.kind_str()
+            );
+            return 1;
+        }
+        let model =
+            hale_types::model_builder::derive_application_model(&bundle);
+        if let Err(e) = model.validate() {
+            // A builder bug, never user error: the derivation
+            // produced a value that is not a model. Loud, named, and
+            // fatal — an invalid model must not print as one.
+            eprintln!(
+                "internal error: derived model violates a model law:                  {:?} (this is a hale bug — please report it)",
+                e
+            );
+            return 2;
+        }
+        print!(
+            "{}",
+            hale_types::model_builder::render_internal(&model)
+        );
     }
     // P2 from the devex review: `--check-topology` compares the
     // ENTIRE artifact text, so a claim rename or a comment-only edit
