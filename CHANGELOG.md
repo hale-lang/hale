@@ -8,6 +8,26 @@ behavior.
 
 ## Unreleased
 
+### `hale topology graph` - deterministic visuals from the artifact (GH #476 Track A)
+
+A committed `--dump-topology` artifact can now be rendered:
+`hale topology graph <artifact> [--view system|code|bus|claim|residue]
+[--format svg|mermaid|dot] [--claim NAME] [--config file.json] [-o out]`.
+An ARTIFACT CLIENT by construction - it reads exactly the JSON a third
+party reads, never Hale source, and has no dependency on the future
+canonical-model crate (its input adapter swaps later without changing
+output). Deterministic by design: fixed character-cell text metrics
+(no font measurement - byte-stable across machines), stable IDs from
+artifact names, no timestamps; rendering twice is byte-identical and
+moving source lines does not move a pixel (spans change, the model
+shape does not - pinned by test). The claim view highlights the named
+claim's groups and states its verdict on a card; the residue view
+renders unresolved holes as first-class nodes, and every other view
+notes them on a card rather than omitting them. Experimental surface
+pre-1.0. Pinned by `topology_graph_cli.rs` (7 tests incl. checked-in
+mermaid/SVG goldens for a pinned fixture); docs claims chapter gains
+the rendering section.
+
 ### Listen-binding ingest no longer loses messages at the edges (GH #468)
 
 Three defects, one delivery contract. The issue's two observed

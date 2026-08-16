@@ -1,0 +1,42 @@
+// The pinned renderer fixture: two loci, two topics, a keyed
+// subscription, a cross-locus call, one indirect call (the model
+// hole), a group, and two claims — every view has something to show.
+type Reading { sensor: Int = 0; v: Int = 0; }
+type Cmd { op: Int = 0; }
+topic Readings { payload: Reading; subject: "sense.reading"; keyed_by sensor; }
+topic Cmds { payload: Cmd; subject: "ctl.cmd"; }
+
+fn double(v: Int) -> Int { return v * 2; }
+
+fn call_it(f: fn (Int) -> Int, v: Int) -> Int {
+    return f(v);
+}
+
+locus Worker {
+    params { seen: Int = 0; }
+    bus { subscribe Readings as on_r where key == replica; publish Cmds; }
+    fn on_r(r: Reading) {
+        self.seen = self.seen + 1;
+        if r.v > 100 { Cmds <- Cmd { op: call_it(double, r.v) }; }
+    }
+}
+
+locus Store {
+    params { total: Int = 0; }
+    bus { subscribe Cmds as on_c; }
+    fn on_c(c: Cmd) { self.total = self.total + double(c.op); }
+}
+
+group stores = { Store };
+group workers = { Worker };
+
+main locus App {
+    params { w: Worker = Worker { }; s: Store = Store { }; }
+    bus { publish Readings; }
+    claims {
+        apart: forbid reaches(stores, workers) via { calls };
+        one_writer: count publishers(topic Readings) <= 1;
+    }
+    run() { Readings <- Reading { sensor: 1, v: 10 }; }
+}
+fn main() { App { }; }

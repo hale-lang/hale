@@ -821,6 +821,41 @@ Dumping does **not** change what the command means: a program whose
 claims fail still exits non-zero with its witnesses, it just prints
 the artifact on the way.
 
+### Rendering the artifact
+
+A committed artifact can be drawn (experimental surface, pre-1.0):
+
+```text
+hale topology graph .hale.topology                          # SVG to stdout
+hale topology graph .hale.topology --format mermaid
+hale topology graph .hale.topology --view claim --claim apart -o claim.svg
+```
+
+Views: `system` (loci, functions with phase/effect chips, topics,
+publish/subscribe/call edges), `code` (functions and calls only),
+`bus` (endpoints only), `claim` (system view with the named claim's
+groups highlighted and its verdict on a card), `residue` (unresolved
+holes rendered as first-class nodes — never silently omitted; other
+views note them on a card). A `--config file.json` can retitle,
+`focus`, `hide`, or `highlight` — presentation choices only, never
+new semantics.
+
+The renderer admits before it draws, in the fleet loader's order:
+the whole-body `artifact_digest` must verify (a hand-edited
+artifact is refused, not rendered under a stale identity), the
+model `semantics` must match the build, and the schema minor must
+be one the adapter actually covers (1.4+). It does *not* require a
+clean verdict — violations are worth drawing.
+
+The renderer is an **artifact client**: it reads exactly the JSON a
+third party reads, never your source, and its output is
+deterministic by construction — fixed text metrics (no font
+measurement), stable IDs derived from artifact names, no
+timestamps. Rendering the same artifact twice is byte-identical,
+and *moving source lines doesn't move a pixel* (provenance spans
+change; the model shape doesn't) — which is what makes generated
+diagrams safe to commit and regression-test.
+
 ### One verdict vocabulary
 
 Bundle claims and fn-grained certificates (`@effects`, `@budget`,
