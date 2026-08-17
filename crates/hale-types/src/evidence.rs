@@ -17,78 +17,22 @@ use hale_model::{
 
 use crate::symbol::Bundle;
 
-/// Reconstruct the certificate form strings one ClaimIr row
-/// expects, in generation order — shared by the producer (matching)
-/// and nothing else: the judgment consumes ordinals only.
-pub(crate) fn expected_forms(row: &hale_model::ClaimRow) -> Vec<(String, String)> {
-    let subject_disp = |at: &(
-        Option<hale_model::FunctionId>,
-        hale_model::NameRef,
-    )| at.1.display.clone();
-    match &row.law {
-        ClaimIr::EffectForbid { at, classes } => classes
-            .iter()
-            .map(|c| {
-                (
-                    subject_disp(at),
-                    format!(
-                        "forbid reaches({{{}}}, effects({}))",
-                        at.1.display, c.name
-                    ),
-                )
-            })
-            .collect(),
-        ClaimIr::EffectOnly { at, classes } => {
-            let set = classes
-                .iter()
-                .map(|c| c.name.clone())
-                .collect::<Vec<_>>()
-                .join(", ");
-            vec![(
-                subject_disp(at),
-                format!(
-                    "only effects {{{}}} on {{{}}}",
-                    set, at.1.display
-                ),
-            )]
+/// Digest of the certificate engines' inputs OUTSIDE the model:
+/// the Hale-source stdlib the walks absorb, and the compiler
+/// version. `TopologyShapeV1` cannot cover these (review round 3);
+/// a judgment recomputes this and refuses evidence produced by a
+/// different toolchain.
+pub fn analysis_inputs_digest() -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |bytes: &[u8]| {
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x100_0000_01b3);
         }
-        ClaimIr::EffectPublishSet { at, entries } => {
-            let allowed = entries
-                .iter()
-                .map(|s| s.name.clone())
-                .collect::<Vec<_>>()
-                .join(", ");
-            vec![(
-                subject_disp(at),
-                format!(
-                    "only publishes {{{}}} from {{{}}}",
-                    allowed, at.1.display
-                ),
-            )]
-        }
-        ClaimIr::NoPanic { at } => vec![(
-            subject_disp(at),
-            format!("forbid reaches({{{}}}, panic)", at.1.display),
-        )],
-        ClaimIr::PhaseEffects { locus, phases } => phases
-            .iter()
-            .map(|(phase, allowed)| {
-                let set = allowed
-                    .iter()
-                    .map(|c| c.name.clone())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                (
-                    locus.1.display.clone(),
-                    format!(
-                        "only effects {{{}}} on {{{}}} during {}",
-                        set, locus.1.display, phase
-                    ),
-                )
-            })
-            .collect(),
-        _ => Vec::new(),
-    }
+    };
+    eat(hale_stdlib::AP_SOURCE.as_bytes());
+    eat(env!("CARGO_PKG_VERSION").as_bytes());
+    h
 }
 
 /// Derive the sidecar for one bundle's lowered law table.
@@ -108,6 +52,7 @@ pub fn derive_certificate_evidence(
             model,
         ),
         law_digest: table.semantic_digest(),
+        inputs_digest: analysis_inputs_digest(),
         ..EvidenceTable::default()
     };
     for sf in &bundle.sources {
@@ -155,7 +100,7 @@ pub fn derive_certificate_evidence(
     let mut cursor: BTreeMap<(String, String), usize> =
         BTreeMap::new();
     for row in &table.rows {
-        let forms = expected_forms(row);
+        let forms = row.certificate_forms();
         if forms.is_empty() {
             continue;
         }

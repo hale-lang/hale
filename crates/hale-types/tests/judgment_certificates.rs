@@ -462,7 +462,12 @@ fn derived_evidence_validates() {
     let shape =
         hale_types::topology_projection::project_shape_hash(&model);
     evidence
-        .validate(&model, shape, &table)
+        .validate(
+            &model,
+            shape,
+            &table,
+            hale_types::evidence::analysis_inputs_digest(),
+        )
         .expect("derived evidence satisfies the sidecar laws");
 }
 
@@ -712,4 +717,140 @@ fn main() { App { }; }
         "no post-merge symbol leaks into a public diagnostic: {:?}",
         issues
     );
+}
+
+/// Review pin (round 3): each evidence row's certificate payload
+/// is bound to the exact law it answers — two one-certificate laws
+/// on the same fn cannot exchange their certs and keep validating
+/// (ordinals, subjects, counts, digest, and provenance all stay
+/// intact under the swap; the per-row FORM binding is what
+/// refuses).
+#[test]
+fn swapped_certs_between_same_subject_laws_are_refused() {
+    let src = r#"
+@effects(none: { syscall }, publish: { })
+fn f(v: Int) -> Int { return v + 1; }
+main locus App {
+    run() { println(f(1)); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let evidence =
+        derive_certificate_evidence(&bundle, &table, &model);
+    let one_cert_rows: Vec<usize> = evidence
+        .rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.certs.len() == 1)
+        .map(|(i, _)| i)
+        .collect();
+    assert!(
+        one_cert_rows.len() >= 2,
+        "two one-certificate laws on `f`: {:?}",
+        evidence
+            .rows
+            .iter()
+            .map(|r| r.certs.len())
+            .collect::<Vec<_>>()
+    );
+    let judged = judge_certificates(&table, &model, &evidence, &[0]);
+    assert!(judged
+        .iter()
+        .all(|j| j.verdict == Verdict::Holds));
+    let mut swapped = evidence.clone();
+    let (a, b) = (one_cert_rows[0], one_cert_rows[1]);
+    let tmp = swapped.rows[a].certs.clone();
+    swapped.rows[a].certs = swapped.rows[b].certs.clone();
+    swapped.rows[b].certs = tmp;
+    let judged = judge_certificates(&table, &model, &swapped, &[0]);
+    assert!(
+        judged
+            .iter()
+            .filter(|j| {
+                evidence.rows.iter().any(|r| r.ordinal == j.ordinal)
+            })
+            .all(|j| j.verdict == Verdict::Invalid),
+        "exchanged certificate payloads must be refused: {:?}",
+        judged
+            .iter()
+            .map(|j| (j.ordinal, j.verdict))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Review pin (round 3): evidence is tied to the exact SOURCE
+/// snapshot — an edit that merely shifts the annotated site keeps
+/// the topology shape AND the law digest, but the source-unit
+/// digests disagree, so the stale offsets are refused instead of
+/// rendering against the new bases.
+#[test]
+fn edited_source_evidence_is_refused() {
+    let v1 = r#"
+@effects(none: { syscall })
+fn f(v: Int) -> Int { return v + 1; }
+main locus App {
+    run() { println(f(1)); }
+}
+fn main() { App { }; }
+"#;
+    let v2 = r#"
+// a comment that only shifts every later offset
+@effects(none: { syscall })
+fn f(v: Int) -> Int { return v + 1; }
+main locus App {
+    run() { println(f(1)); }
+}
+fn main() { App { }; }
+"#;
+    let p1 = hale_syntax::parse_source(v1).expect("parse v1");
+    let b1 = bundle_of(v1, &p1);
+    let m1 = derive_application_model(&b1);
+    let t1 = lower_claims(&b1, &m1);
+    let e1 = derive_certificate_evidence(&b1, &t1, &m1);
+    let p2 = hale_syntax::parse_source(v2).expect("parse v2");
+    let mut b2 = bundle_of(v2, &p2);
+    b2.sources[0].digest = "1".to_string();
+    let m2 = derive_application_model(&b2);
+    let t2 = lower_claims(&b2, &m2);
+    assert_eq!(
+        hale_types::topology_projection::project_shape_hash(&m1),
+        hale_types::topology_projection::project_shape_hash(&m2),
+        "source motion must not change the shape — that is why the \
+         snapshot tie exists"
+    );
+    let judged = judge_certificates(&t2, &m2, &e1, &[0]);
+    let forbid = t2
+        .rows
+        .iter()
+        .find(|r| matches!(r.law, ClaimIr::EffectForbid { .. }))
+        .expect("forbid row");
+    let j = judged
+        .iter()
+        .find(|j| j.ordinal == forbid.ordinal)
+        .expect("judged");
+    assert_eq!(
+        j.verdict,
+        Verdict::Invalid,
+        "evidence from an edited source must be refused"
+    );
+}
+
+/// Review pin (round 3): evidence produced by a different
+/// toolchain / stdlib snapshot is refused via the inputs digest.
+#[test]
+fn different_toolchain_evidence_is_refused() {
+    let program = hale_syntax::parse_source(HOLDS_SRC).expect("parse");
+    let bundle = bundle_of(HOLDS_SRC, &program);
+    let model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let mut evidence =
+        derive_certificate_evidence(&bundle, &table, &model);
+    evidence.inputs_digest ^= 1;
+    let judged = judge_certificates(&table, &model, &evidence, &[0]);
+    assert!(!judged.is_empty());
+    assert_eq!(judged[0].verdict, Verdict::Invalid);
 }

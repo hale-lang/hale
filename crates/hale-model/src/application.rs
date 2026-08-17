@@ -15,7 +15,7 @@ use crate::entity::{
 };
 use crate::hole::Hole;
 use crate::ids::{EntityRef, FunctionId, ProvenanceId, TopicId};
-use crate::claim_ir::{ClaimIrError, ClaimIrTable};
+use crate::claim_ir::{ClaimIrError, ClaimIrTable, ClaimRow};
 use crate::provenance::{Provenance, ProvenanceTable};
 use crate::relation::{
     AffinedTo, Call, DeadInterfaceCall, DeclaredIn, DeclaresPublish,
@@ -305,6 +305,13 @@ pub struct EvidenceTable {
     /// sidecar must also be tied to the LAW it certifies (review
     /// round 2).
     pub law_digest: u64,
+    /// Digest of the ANALYSIS INPUTS outside the model — the
+    /// stdlib source the certificate engines walk and the compiler
+    /// version that produced the evidence. Engine inputs not
+    /// represented in the topology hash cannot be covered by
+    /// `model_shape` (review round 3); the producer computes it,
+    /// and validation requires the judging toolchain to agree.
+    pub inputs_digest: u64,
     pub rows: Vec<EvidenceRow>,
     pub provenance: ProvenanceTable,
 }
@@ -320,15 +327,39 @@ impl EvidenceTable {
         model: &ApplicationModel,
         model_shape: u64,
         table: &ClaimIrTable,
+        inputs_digest: u64,
     ) -> Result<(), ClaimIrError> {
         if self.model_shape != model_shape
             || self.law_digest != table.semantic_digest()
+            || self.inputs_digest != inputs_digest
+        {
+            return Err(ClaimIrError::InvalidProvenanceRecord {
+                index: usize::MAX,
+            });
+        }
+        // Source-snapshot tie: the sidecar's source units (path +
+        // content digest) must be exactly the judged model's — a
+        // source edit that merely shifts an offending site changes
+        // neither shape nor law, but its old local offsets would
+        // render against the new source (review round 3).
+        if self.provenance.sources.len()
+            != model.provenance.sources.len()
+            || self
+                .provenance
+                .sources
+                .iter()
+                .zip(model.provenance.sources.iter())
+                .any(|(a, b)| {
+                    a.path != b.path || a.digest != b.digest
+                })
         {
             return Err(ClaimIrError::InvalidProvenanceRecord {
                 index: usize::MAX,
             });
         }
         let law_rows = table.rows.len();
+        let by_ordinal: std::collections::BTreeMap<u32, &ClaimRow> =
+            table.rows.iter().map(|r| (r.ordinal, r)).collect();
         let mut seen = std::collections::BTreeSet::new();
         for (i, row) in self.rows.iter().enumerate() {
             if row.ordinal as usize >= law_rows
@@ -345,6 +376,30 @@ impl EvidenceTable {
                 return Err(ClaimIrError::DanglingId {
                     index: i,
                     what: "evidence subject",
+                });
+            }
+            // Per-row law binding (review round 3): each stored
+            // certificate's form must agree POSITIONALLY with the
+            // exact forms its ClaimIr row produces — a table-wide
+            // digest cannot see two same-subject rows exchanging
+            // their certificate payloads. A SHORT row (an
+            // unresolved subject the engines never saw) stays a
+            // per-row judgment concern; a LONGER row or any form
+            // disagreement is a malformed sidecar.
+            let expected = by_ordinal
+                .get(&row.ordinal)
+                .map(|r| r.certificate_forms())
+                .unwrap_or_default();
+            if row.certs.len() > expected.len()
+                || row
+                    .certs
+                    .iter()
+                    .zip(expected.iter())
+                    .any(|(c, (_, form))| c.form != *form)
+            {
+                return Err(ClaimIrError::NameDisagreement {
+                    index: i,
+                    what: "evidence certificate form",
                 });
             }
             for c in &row.certs {

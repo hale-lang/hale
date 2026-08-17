@@ -413,6 +413,89 @@ pub struct ClaimIrTable {
     pub provenance: ProvenanceTable,
 }
 
+impl ClaimRow {
+    /// The certificate forms this row's engines produce, in
+    /// generation order — `(subject display, form display)` pairs.
+    /// One authority for three consumers: the evidence PRODUCER
+    /// matches engine rows against these strings, `EvidenceTable::
+    /// validate` requires each evidence row's certificates to agree
+    /// with them (binding the certificate payload to the exact law
+    /// it answers — review round 3: a table-wide digest cannot see
+    /// two same-subject rows exchanging their certs), and a
+    /// renderer may display them.
+    pub fn certificate_forms(&self) -> Vec<(String, String)> {
+        let subject_disp =
+            |at: &(Option<FunctionId>, NameRef)| at.1.display.clone();
+        match &self.law {
+            ClaimIr::EffectForbid { at, classes } => classes
+                .iter()
+                .map(|c| {
+                    (
+                        subject_disp(at),
+                        format!(
+                            "forbid reaches({{{}}}, effects({}))",
+                            at.1.display, c.name
+                        ),
+                    )
+                })
+                .collect(),
+            ClaimIr::EffectOnly { at, classes } => {
+                let set = classes
+                    .iter()
+                    .map(|c| c.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                vec![(
+                    subject_disp(at),
+                    format!(
+                        "only effects {{{}}} on {{{}}}",
+                        set, at.1.display
+                    ),
+                )]
+            }
+            ClaimIr::EffectPublishSet { at, entries } => {
+                let allowed = entries
+                    .iter()
+                    .map(|s| s.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                vec![(
+                    subject_disp(at),
+                    format!(
+                        "only publishes {{{}}} from {{{}}}",
+                        allowed, at.1.display
+                    ),
+                )]
+            }
+            ClaimIr::NoPanic { at } => vec![(
+                subject_disp(at),
+                format!(
+                    "forbid reaches({{{}}}, panic)",
+                    at.1.display
+                ),
+            )],
+            ClaimIr::PhaseEffects { locus, phases } => phases
+                .iter()
+                .map(|(phase, allowed)| {
+                    let set = allowed
+                        .iter()
+                        .map(|c| c.name.clone())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    (
+                        locus.1.display.clone(),
+                        format!(
+                            "only effects {{{}}} on {{{}}} during {}",
+                            set, locus.1.display, phase
+                        ),
+                    )
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
 impl ClaimIrTable {
     /// A canonical semantic digest of the complete law table —
     /// FNV-1a/64 over every row's `Hash` image (ordinal, name,

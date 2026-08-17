@@ -3979,6 +3979,7 @@ pub fn judge_certificates(
             model,
             crate::topology_projection::project_shape_hash(model),
             table,
+            crate::evidence::analysis_inputs_digest(),
         )
         .is_err();
     let ev_rows: BTreeMap<u32, &hale_model::EvidenceRow> =
