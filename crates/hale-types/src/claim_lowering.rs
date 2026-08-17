@@ -496,7 +496,9 @@ pub fn lower_claims(
                 n: *n,
             },
         };
-        rows.push((c.name.name.clone(), origin, law, c.span));
+        // Anchor at the claim NAME, exactly where the evaluator
+        // anchors its diagnostics (review: 5a span parity).
+        rows.push((c.name.name.clone(), origin, law, c.name.span));
     }
 
     // ---- 2. annotation surfaces, in declaration order ----

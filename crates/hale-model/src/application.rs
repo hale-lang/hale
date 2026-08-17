@@ -263,6 +263,16 @@ impl ApplicationModel {
 
         // --- canonical order: entity tables sort by canonical name.
         check_sorted_keys("functions", e.functions.iter().map(|f| &f.name))?;
+        for (i, f) in e.functions.iter().enumerate() {
+            // direct_effects is a sorted set (unlike `effects`,
+            // whose declaration order is semantic in the artifact).
+            if f.direct_effects.windows(2).any(|w| w[0] >= w[1]) {
+                return Err(ModelError::NotCanonical {
+                    table: "functions.direct_effects",
+                    index: i,
+                });
+            }
+        }
         check_sorted_keys("loci", e.loci.iter().map(|l| &l.name))?;
         check_sorted_keys("locus_instances", e.locus_instances.iter().map(|i| &i.path))?;
         check_sorted_keys("topics", e.topics.iter().map(|t| &t.name))?;
