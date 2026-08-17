@@ -1,0 +1,250 @@
+//! GH #476 Change 5e — the certificate-evidence sidecar.
+//!
+//! `derive_certificate_evidence` runs the certificate engines (the
+//! one analysis authority — the grouped report is the same pass
+//! `hale check` consumes) and keys each certificate's outcome +
+//! diagnostics BY THE ClaimIr ORDINAL it answers. The sidecar
+//! lives OUTSIDE the model (a model must not carry a cached prior
+//! judgment of itself), and carries the model's `TopologyShapeV1`
+//! so a judgment structurally refuses stale evidence.
+
+use std::collections::BTreeMap;
+
+use hale_model::{
+    ApplicationModel, CertificateEvidence, ClaimIr, ClaimIrTable,
+    EvidenceRow, EvidenceTable, Provenance, ProvenanceId, VerdictIr,
+};
+
+use crate::symbol::Bundle;
+
+/// Reconstruct the certificate form strings one ClaimIr row
+/// expects, in generation order — shared by the producer (matching)
+/// and nothing else: the judgment consumes ordinals only.
+pub(crate) fn expected_forms(row: &hale_model::ClaimRow) -> Vec<(String, String)> {
+    let subject_disp = |at: &(
+        Option<hale_model::FunctionId>,
+        hale_model::NameRef,
+    )| at.1.display.clone();
+    match &row.law {
+        ClaimIr::EffectForbid { at, classes } => classes
+            .iter()
+            .map(|c| {
+                (
+                    subject_disp(at),
+                    format!(
+                        "forbid reaches({{{}}}, effects({}))",
+                        at.1.display, c.name
+                    ),
+                )
+            })
+            .collect(),
+        ClaimIr::EffectOnly { at, classes } => {
+            let set = classes
+                .iter()
+                .map(|c| c.name.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            vec![(
+                subject_disp(at),
+                format!(
+                    "only effects {{{}}} on {{{}}}",
+                    set, at.1.display
+                ),
+            )]
+        }
+        ClaimIr::EffectPublishSet { at, entries } => {
+            let allowed = entries
+                .iter()
+                .map(|s| s.name.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            vec![(
+                subject_disp(at),
+                format!(
+                    "only publishes {{{}}} from {{{}}}",
+                    allowed, at.1.display
+                ),
+            )]
+        }
+        ClaimIr::NoPanic { at } => vec![(
+            subject_disp(at),
+            format!("forbid reaches({{{}}}, panic)", at.1.display),
+        )],
+        ClaimIr::PhaseEffects { locus, phases } => phases
+            .iter()
+            .map(|(phase, allowed)| {
+                let set = allowed
+                    .iter()
+                    .map(|c| c.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                (
+                    locus.1.display.clone(),
+                    format!(
+                        "only effects {{{}}} on {{{}}} during {}",
+                        set, locus.1.display, phase
+                    ),
+                )
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Derive the sidecar for one bundle's lowered law table.
+pub fn derive_certificate_evidence(
+    bundle: &Bundle<'_>,
+    table: &ClaimIrTable,
+    model: &ApplicationModel,
+) -> EvidenceTable {
+    let programs: Vec<&hale_syntax::ast::Program> =
+        bundle.programs.values().copied().collect();
+    let (_flat, groups) = crate::effects::effect_report_grouped(
+        &programs,
+        &bundle.import_renames,
+    );
+    let mut out = EvidenceTable {
+        model_shape: crate::topology_projection::project_shape_hash(
+            model,
+        ),
+        ..EvidenceTable::default()
+    };
+    for sf in &bundle.sources {
+        out.provenance.sources.push(
+            hale_model::provenance::SourceUnit {
+                path: sf.path.clone(),
+                digest: u64::from_str_radix(&sf.digest, 16)
+                    .unwrap_or(0),
+            },
+        );
+    }
+    let sources = bundle.sources.clone();
+    let loc = move |pos: u32| -> Option<(u32, u32)> {
+        sources
+            .iter()
+            .filter(|f| {
+                pos >= f.base && pos < f.base.saturating_add(f.len + 1)
+            })
+            .max_by_key(|f| f.base)
+            .map(|f| (f.id, pos - f.base))
+    };
+    // Evidence multimap (subject display, form) → group indices,
+    // consumed in generation order — the ONE place string matching
+    // happens; rows key by ordinal from here on.
+    let mut by_key: BTreeMap<(String, String), Vec<usize>> =
+        BTreeMap::new();
+    let demangled: Vec<(String, String)> = groups
+        .iter()
+        .map(|(row, _)| {
+            (
+                crate::stdlib_bodies::demangle_str(
+                    &row.subject,
+                    &bundle.import_renames,
+                ),
+                crate::stdlib_bodies::demangle_str(
+                    &row.form,
+                    &bundle.import_renames,
+                ),
+            )
+        })
+        .collect();
+    for (i, key) in demangled.iter().enumerate() {
+        by_key.entry(key.clone()).or_default().push(i);
+    }
+    let mut cursor: BTreeMap<(String, String), usize> =
+        BTreeMap::new();
+    for row in &table.rows {
+        let forms = expected_forms(row);
+        if forms.is_empty() {
+            continue;
+        }
+        let subject = match &row.law {
+            ClaimIr::EffectForbid { at, .. }
+            | ClaimIr::EffectOnly { at, .. }
+            | ClaimIr::EffectPublishSet { at, .. }
+            | ClaimIr::NoPanic { at } => at.0,
+            _ => None,
+        };
+        let mut certs: Vec<CertificateEvidence> = Vec::new();
+        for key in forms {
+            let idx = by_key.get(&key).and_then(|list| {
+                let c = cursor.entry(key.clone()).or_insert(0);
+                let i = list.get(*c).copied();
+                *c += 1;
+                i
+            });
+            let Some(i) = idx else { continue };
+            let (cert, ds) = &groups[i];
+            let mut diags_out: Vec<(String, ProvenanceId)> =
+                Vec::new();
+            // The origin flag is authoritative: the emitters tag
+            // each diagnostic from the witness step's owning fn
+            // (stdlib parses at base 0, so a stdlib span cannot be
+            // told from a user span numerically).
+            let (mut only_diags, flags): (Vec<_>, Vec<bool>) =
+                ds.iter().cloned().unzip();
+            crate::stdlib_bodies::demangle_imports(
+                &mut only_diags,
+                &bundle.import_renames,
+            );
+            for (d, foreign) in
+                only_diags.into_iter().zip(flags)
+            {
+                let s0 = d.span.start.as_usize() as u32;
+                let e0 = d.span.end.as_usize() as u32;
+                let pid = ProvenanceId(
+                    out.provenance.records.len() as u32,
+                );
+                let user = if foreign { None } else { loc(s0) };
+                match user {
+                    Some((src, local)) => {
+                        out.provenance.records.push(
+                            Provenance::Source {
+                                source: hale_model::SourceId(src),
+                                span: (
+                                    local,
+                                    local + e0.saturating_sub(s0),
+                                ),
+                            },
+                        );
+                    }
+                    None => {
+                        // Stdlib parse space (or a sourceless test
+                        // bundle) — preserve the span verbatim,
+                        // normalized non-inverted.
+                        out.provenance.records.push(
+                            Provenance::ForeignSpan {
+                                span: (s0, e0.max(s0)),
+                            },
+                        );
+                    }
+                }
+                diags_out.push((d.message, pid));
+            }
+            certs.push(CertificateEvidence {
+                form: demangled[i].1.clone(),
+                result: match cert.result {
+                    crate::verdict::Verdict::Holds => {
+                        VerdictIr::Holds
+                    }
+                    crate::verdict::Verdict::Violated => {
+                        VerdictIr::Violated
+                    }
+                    crate::verdict::Verdict::Uncertified => {
+                        VerdictIr::Uncertified
+                    }
+                    crate::verdict::Verdict::Invalid => {
+                        VerdictIr::Invalid
+                    }
+                },
+                diags: diags_out,
+            });
+        }
+        out.rows.push(EvidenceRow {
+            ordinal: row.ordinal,
+            subject,
+            certs,
+        });
+    }
+    out
+}

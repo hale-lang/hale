@@ -135,7 +135,8 @@ pub mod relation;
 
 pub use application::{
     AbsorbedEvent, AbsorbedHoleKind, AbsorbedNode, AbsorbedTarget,
-    ApplicationModel, Entities, CertificateEvidence, LabelRow, LegacyProjection, StdlibAbsorption,
+    ApplicationModel, Entities, CertificateEvidence, EvidenceRow, EvidenceTable, LabelRow,
+    LegacyProjection, StdlibAbsorption,
     VerdictIr, ModelError, ModelHashKind, ModelHeader,
     Relations, WeightRow, MODEL_SEMANTICS_V1,
 };

@@ -3926,217 +3926,162 @@ pub fn judge_bound(
 }
 
 /// Judge the pointwise-certificate family (GH #476 Change 5e):
-/// `@effects(none/only/publish)` and `@no_panic` on fns, and
-/// `@phase_effects` on loci. The certificate ENGINES stay the one
-/// analysis authority — the builder runs them and stores each
-/// certificate's outcome and diagnostics as
-/// [`hale_model::CertificateEvidence`] (the artifact's `lowered`
-/// rows, with their diags); this judgment renders verdicts and
-/// diagnostics from that model data, plus the undeclared-class
-/// validation over the typed effect-class table.
+/// `@effects(...)`, `@no_panic`, `@budget(...)` on fns, and
+/// `@phase_effects` / `@effects(depends:)` on loci. The certificate
+/// ENGINES stay the one analysis authority — the producer
+/// ([`crate::evidence::derive_certificate_evidence`]) runs them and
+/// keys each certificate's outcome + diagnostics by the ClaimIr
+/// ordinal in an [`hale_model::EvidenceTable`] SIDECAR (outside the
+/// model: a model must not carry a cached prior judgment of
+/// itself). This judgment:
+///
+/// - refuses stale evidence structurally (`model_shape` must equal
+///   the judged model's `TopologyShapeV1`) — every certificate row
+///   goes `Invalid` rather than replaying another model's outcomes;
+/// - consumes evidence rows by ORDINAL and typed subject — no
+///   string matching here; a missing / short / subject-disagreeing
+///   row is `Invalid`;
+/// - emits exactly ONE `Judged` row per certificate-family ClaimIr
+///   row, including the families whose engines run elsewhere
+///   (`causes:` in the bus-graph pass, `depends:` / `@budget` in
+///   their own passes) — those judge to at-minimum `Uncertified`
+///   until their engines are migrated, so no lowered law can
+///   silently drop out of the verdict stream;
+/// - forces `Invalid` (never a vacuous `Holds`) when a row asserts
+///   about an effect class that is never declared. The DIAGNOSTIC
+///   for that (with the evaluator's per-annotated-root dedup across
+///   `none:`/`causes:`/`is:` lists) is the LOWERING's — it lands in
+///   `ClaimIrTable::issues`, because `is:` produces no row at all
+///   and one authority must own the dedup.
 pub fn judge_certificates(
     table: &ClaimIrTable,
     model: &ApplicationModel,
+    evidence: &hale_model::EvidenceTable,
     source_bases: &[u32],
 ) -> Vec<Judged> {
     let e = &model.entities;
     let claim_span = |pid: ProvenanceId| -> Span {
         span_of(&table.provenance, source_bases, pid)
     };
-    let model_span = |pid: ProvenanceId| -> Span {
-        span_of(&model.provenance, source_bases, pid)
+    let ev_span = |pid: ProvenanceId| -> Span {
+        span_of(&evidence.provenance, source_bases, pid)
     };
-    // Evidence multimap keyed (subject display, form), consumed in
-    // order — duplicate identical certificates on one fn pair up by
-    // generation order.
-    let mut evidence: BTreeMap<(String, String), Vec<usize>> =
-        BTreeMap::new();
-    for (i, ev) in model.evidence.iter().enumerate() {
-        evidence
-            .entry((ev.subject_display.clone(), ev.form.clone()))
-            .or_default()
-            .push(i);
-    }
-    let mut cursor: BTreeMap<(String, String), usize> = BTreeMap::new();
-    let mut take = |key: (String, String)| -> Option<usize> {
-        let list = evidence.get(&key)?;
-        let c = cursor.entry(key).or_insert(0);
-        let i = list.get(*c).copied();
-        *c += 1;
-        i
-    };
+    let stale = evidence.model_shape
+        != crate::topology_projection::project_shape_hash(model);
+    let ev_rows: BTreeMap<u32, &hale_model::EvidenceRow> =
+        evidence.rows.iter().map(|r| (r.ordinal, r)).collect();
     let verdict_of = |v: hale_model::VerdictIr| match v {
         hale_model::VerdictIr::Holds => Verdict::Holds,
         hale_model::VerdictIr::Violated => Verdict::Violated,
         hale_model::VerdictIr::Uncertified => Verdict::Uncertified,
         hale_model::VerdictIr::Invalid => Verdict::Invalid,
     };
-    let undeclared = |c: &EffectClassRefLite| -> bool {
+    let undeclared = |c: &hale_model::EffectClassRef| -> bool {
         !c.builtin
             && c.class.map_or(true, |id| {
                 !e.effect_classes[id.index()].declared
             })
     };
-    struct EffectClassRefLite {
-        builtin: bool,
-        class: Option<hale_model::EffectClassId>,
-    }
-    let lite = |c: &hale_model::EffectClassRef| EffectClassRefLite {
-        builtin: c.builtin,
-        class: c.class,
+    // A row asserting about a class that is never declared is not
+    // a checkable law. The diagnostic (per-root dedup across the
+    // root's class lists) is emitted by the LOWERING as a table
+    // issue; here the consequence is the verdict.
+    let any_undeclared = |classes: &[hale_model::EffectClassRef]| {
+        classes.iter().any(undeclared)
     };
     let mut out = Vec::new();
     for row in &table.rows {
-        let subject_disp = |at: &(
+        // Structural shape of the row: how many certificates the
+        // engines produce for it, and the typed subject the
+        // evidence row must agree with. `None` count = a family
+        // whose engine has not migrated — judged Uncertified.
+        let (expected, subject, classes): (
+            Option<usize>,
             Option<FunctionId>,
-            hale_model::NameRef,
-        )| at.1.display.clone();
-        let mut diags: Vec<Diag> = Vec::new();
-        // Per-root undeclared-class validation (the evaluator's
-        // pass 1 covers Forbid/Causes lists; dedup is per root and
-        // handled here per row, matching the per-assert lowering).
-        let mut p1 =
-            |classes: &[hale_model::EffectClassRef],
-             subj: &str,
-             diags: &mut Vec<Diag>| {
-                let mut seen: BTreeSet<&str> = BTreeSet::new();
-                for c in classes {
-                    if undeclared(&lite(c))
-                        && seen.insert(c.name.as_str())
-                    {
-                        let mut near: Vec<&String> = e
-                            .effect_classes
-                            .iter()
-                            .filter(|ec| ec.declared)
-                            .map(|ec| &ec.name)
-                            .filter(|n| {
-                                crate::effects::close(n, &c.name)
-                            })
-                            .collect();
-                        near.sort();
-                        let hint = match near.first() {
-                            Some(n) => {
-                                format!(" Did you mean `{}`?", n)
-                            }
-                            None => String::new(),
-                        };
-                        diags.push(Diag::ty(
-                            claim_span(c.provenance),
-                            format!(
-                                "`{}` asserts about effect class `{}`, \
-                                 which is never declared. Add `effect {};` \
-                                 at the top level.{}",
-                                subj, c.name, c.name, hint
-                            ),
-                        ));
-                    }
-                }
-            };
-        let (keys, verdict_src): (
-            Vec<(String, String)>,
-            Option<&(Option<FunctionId>, hale_model::NameRef)>,
+            &[hale_model::EffectClassRef],
         ) = match &row.law {
             ClaimIr::EffectForbid { at, classes } => {
-                p1(classes, &at.1.display, &mut diags);
-                (
-                    classes
-                        .iter()
-                        .map(|c| {
-                            (
-                                subject_disp(at),
-                                format!(
-                                    "forbid reaches({{{}}}, effects({}))",
-                                    at.1.display, c.name
-                                ),
-                            )
-                        })
-                        .collect(),
-                    Some(at),
-                )
+                (Some(classes.len()), at.0, classes.as_slice())
             }
-            ClaimIr::EffectOnly { at, classes } => {
-                let set = classes
-                    .iter()
-                    .map(|c| c.name.clone())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                (
-                    vec![(
-                        subject_disp(at),
-                        format!(
-                            "only effects {{{}}} on {{{}}}",
-                            set, at.1.display
-                        ),
-                    )],
-                    Some(at),
-                )
+            ClaimIr::EffectOnly { at, .. } => (Some(1), at.0, &[]),
+            ClaimIr::EffectPublishSet { at, .. } => {
+                (Some(1), at.0, &[])
             }
-            ClaimIr::EffectPublishSet { at, entries } => {
-                let allowed = entries
-                    .iter()
-                    .map(|s| s.name.clone())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                (
-                    vec![(
-                        subject_disp(at),
-                        format!(
-                            "only publishes {{{}}} from {{{}}}",
-                            allowed, at.1.display
-                        ),
-                    )],
-                    Some(at),
-                )
+            ClaimIr::NoPanic { at } => (Some(1), at.0, &[]),
+            ClaimIr::PhaseEffects { phases, .. } => {
+                (Some(phases.len()), None, &[])
             }
-            ClaimIr::NoPanic { at } => (
-                vec![(
-                    subject_disp(at),
-                    format!(
-                        "forbid reaches({{{}}}, panic)",
-                        at.1.display
-                    ),
-                )],
-                Some(at),
-            ),
-            ClaimIr::PhaseEffects { locus, phases } => {
-                let keys = phases
-                    .iter()
-                    .map(|(phase, allowed)| {
-                        let set = allowed
-                            .iter()
-                            .map(|c| c.name.clone())
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        (
-                            locus.1.display.clone(),
-                            format!(
-                                "only effects {{{}}} on {{{}}} during {}",
-                                set, locus.1.display, phase
-                            ),
-                        )
-                    })
-                    .collect();
-                (keys, None)
+            ClaimIr::EffectCauses { at, classes } => {
+                (None, at.0, classes.as_slice())
             }
+            ClaimIr::DependsSet { .. } => (None, None, &[]),
+            ClaimIr::AllocBudget { at, .. } => (None, at.0, &[]),
+            ClaimIr::QuantBudget { at, .. } => (None, at.0, &[]),
             _ => continue,
         };
-        let _ = verdict_src;
+        let mut diags: Vec<Diag> = Vec::new();
+        // Invalid, never a vacuous Holds (review) — the diagnostic
+        // itself is a lowering issue, not a judgment diag.
+        let invalid_class = any_undeclared(classes);
+        let Some(expected) = expected else {
+            // Engine not migrated (causes / depends / budgets):
+            // still exactly one Judged row, at minimum Uncertified.
+            out.push(Judged {
+                ordinal: row.ordinal,
+                verdict: if invalid_class {
+                    Verdict::Invalid
+                } else {
+                    Verdict::Uncertified
+                },
+                diags,
+            });
+            continue;
+        };
+        if stale {
+            diags.push(Diag::ty(
+                claim_span(row.provenance),
+                format!(
+                    "claim `{}`: certificate evidence was derived \
+                     from a different model (shape mismatch) — \
+                     re-derive evidence for this model",
+                    row.name
+                ),
+            ));
+            out.push(Judged {
+                ordinal: row.ordinal,
+                verdict: Verdict::Invalid,
+                diags,
+            });
+            continue;
+        }
+        let ev = ev_rows.get(&row.ordinal).copied();
+        let usable = ev.filter(|r| {
+            r.subject == subject && r.certs.len() >= expected
+        });
+        let Some(ev) = usable else {
+            // No evidence row for this ordinal, a subject
+            // disagreement, or fewer certificates than the row's
+            // shape demands (an unresolved subject the engines
+            // never saw) — Invalid.
+            out.push(Judged {
+                ordinal: row.ordinal,
+                verdict: Verdict::Invalid,
+                diags,
+            });
+            continue;
+        };
         let mut verdict = Verdict::Holds;
-        for key in keys {
-            let Some(i) = take(key) else {
-                // No evidence row — the engines never saw this
-                // certificate (an unresolved subject); Invalid.
-                verdict = Verdict::Invalid;
-                continue;
-            };
-            let ev = &model.evidence[i];
-            let v = verdict_of(ev.result);
+        for cert in ev.certs.iter().take(expected) {
+            let v = verdict_of(cert.result);
             if severity(v) > severity(verdict) {
                 verdict = v;
             }
-            for (msg, pid) in &ev.diags {
-                diags.push(Diag::ty(model_span(*pid), msg.clone()));
+            for (msg, pid) in &cert.diags {
+                diags.push(Diag::ty(ev_span(*pid), msg.clone()));
             }
+        }
+        if invalid_class {
+            verdict = Verdict::Invalid;
         }
         out.push(Judged {
             ordinal: row.ordinal,

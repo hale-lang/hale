@@ -15,6 +15,7 @@ use crate::entity::{
 };
 use crate::hole::Hole;
 use crate::ids::{EntityRef, FunctionId, ProvenanceId, TopicId};
+use crate::claim_ir::ClaimIrError;
 use crate::provenance::{Provenance, ProvenanceTable};
 use crate::relation::{
     AffinedTo, Call, DeadInterfaceCall, DeclaredIn, DeclaresPublish,
@@ -271,17 +272,11 @@ pub enum VerdictIr {
 /// GH #476 Change 5e: one pointwise certificate's EVIDENCE — the
 /// fn-grained outcome the existing certificate engines produce
 /// (the artifact has carried these as lowered claim rows since
-/// #392 §8), stored on the model so the judgment renders verdicts
-/// and diagnostics from model data alone. The engines stay the one
-/// analysis authority (extract-and-call, like `direct_effects`);
-/// Change 6 formalizes this into the typed evidence artifact rows.
+/// #392 §8). The engines stay the one analysis authority
+/// (extract-and-call, like `direct_effects`); Change 6 formalizes
+/// this into the typed evidence artifact rows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CertificateEvidence {
-    /// The annotated fn, when it resolves in the universe.
-    pub subject: Option<FunctionId>,
-    /// The subject's canonical display (the certificate row's
-    /// spelling).
-    pub subject_display: String,
     /// The lowered claim form, display voice — the artifact's
     /// `lowered` row spelling.
     pub form: String,
@@ -291,6 +286,108 @@ pub struct CertificateEvidence {
     pub diags: Vec<(String, ProvenanceId)>,
 }
 
+/// The evidence SIDECAR for one lowered law table — deliberately
+/// OUTSIDE [`ApplicationModel`] (review: the model must not carry a
+/// cached prior judgment of itself). Rows key by the ClaimIr
+/// ordinal and typed subject; `model_shape` ties the sidecar to the
+/// exact model it was derived beside, so stale evidence is
+/// structurally refusable.
+#[derive(Clone, Debug, Default)]
+pub struct EvidenceTable {
+    /// `TopologyShapeV1` of the model this evidence was derived
+    /// with — a judgment refuses evidence whose shape disagrees
+    /// with the model it is asked to judge.
+    pub model_shape: u64,
+    pub rows: Vec<EvidenceRow>,
+    pub provenance: ProvenanceTable,
+}
+
+impl EvidenceTable {
+    /// Structural laws against the judged pair: the shape must
+    /// match the model, ordinals must be unique and in the law
+    /// table's range, subjects must agree with the ClaimIr row's
+    /// resolution, and diagnostic provenance must resolve.
+    pub fn validate(
+        &self,
+        model: &ApplicationModel,
+        model_shape: u64,
+        law_rows: usize,
+    ) -> Result<(), ClaimIrError> {
+        if self.model_shape != model_shape {
+            return Err(ClaimIrError::InvalidProvenanceRecord {
+                index: usize::MAX,
+            });
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for (i, row) in self.rows.iter().enumerate() {
+            if row.ordinal as usize >= law_rows
+                || !seen.insert(row.ordinal)
+            {
+                return Err(ClaimIrError::NonContiguousOrdinal {
+                    index: i,
+                });
+            }
+            if row
+                .subject
+                .is_some_and(|f| f.index() >= model.entities.functions.len())
+            {
+                return Err(ClaimIrError::DanglingId {
+                    index: i,
+                    what: "evidence subject",
+                });
+            }
+            for c in &row.certs {
+                for (_, pid) in &c.diags {
+                    if pid.index() >= self.provenance.records.len() {
+                        return Err(
+                            ClaimIrError::DanglingProvenance {
+                                index: i,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        // Record contents resolve (incl. inverted ForeignSpan).
+        let src_len = self.provenance.sources.len();
+        for (i, r) in self.provenance.records.iter().enumerate() {
+            match r {
+                Provenance::Source { source, span } => {
+                    if source.index() >= src_len || span.0 > span.1 {
+                        return Err(
+                            ClaimIrError::InvalidProvenanceRecord {
+                                index: i,
+                            },
+                        );
+                    }
+                }
+                Provenance::ForeignSpan { span } => {
+                    if span.0 > span.1 {
+                        return Err(
+                            ClaimIrError::InvalidProvenanceRecord {
+                                index: i,
+                            },
+                        );
+                    }
+                }
+                Provenance::Synthetic { .. } => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The certificates of ONE ClaimIr row (a multi-class assert has
+/// one certificate per class, in class order).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvidenceRow {
+    /// The ClaimIr ordinal this evidence answers.
+    pub ordinal: u32,
+    /// The annotated fn, as the ClaimIr row resolves it.
+    pub subject: Option<FunctionId>,
+    pub certs: Vec<CertificateEvidence>,
+}
+
 #[derive(Clone, Debug)]
 pub struct ApplicationModel {
     pub header: ModelHeader,
@@ -298,8 +395,6 @@ pub struct ApplicationModel {
     pub relations: Relations,
     pub labels: Vec<LabelRow>,
     pub weights: Vec<WeightRow>,
-    /// Pointwise certificate evidence (GH #476 Change 5e).
-    pub evidence: Vec<CertificateEvidence>,
     pub holes: Vec<Hole>,
     pub capabilities: Capabilities,
     pub provenance: ProvenanceTable,
@@ -1096,19 +1191,6 @@ impl ApplicationModel {
                 });
             }
             prov("holes", i, h.provenance)?;
-        }
-
-        // --- certificate evidence: subject + provenance in range.
-        for (i, ev) in self.evidence.iter().enumerate() {
-            if ev.subject.is_some_and(|f| f.index() >= fns) {
-                return Err(ModelError::DanglingId {
-                    table: "evidence",
-                    index: i,
-                });
-            }
-            for (_, pid) in &ev.diags {
-                prov("evidence.diags", i, *pid)?;
-            }
         }
 
         // --- legacy projection: sorted ids, all in range.

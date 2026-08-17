@@ -542,7 +542,6 @@ fn labels_and_effects_are_restricted_to_the_v1_universe() {
             ..Entities::default()
         },
         relations: Relations::default(),
-        evidence: Vec::new(),
         labels: vec![
             LabelRow {
                 at: EntityRef::Function(FunctionId(0)),

@@ -524,6 +524,8 @@ pub fn lower_claims(
         walk_decls(&p.items, &mut sites);
     }
     let mut ann_issues: Vec<(String, hale_syntax::Span)> = Vec::new();
+    let effect_names = crate::effects::effect_names_of(&programs);
+    let declared_classes = crate::effects::declared_of(&programs);
     let lower_fn_anns = |recs: &mut Vec<Provenance>,
                          rows: &mut Vec<(
         String,
@@ -537,6 +539,60 @@ pub fn lower_claims(
     )>,
                          raw: &str,
                          f: &hale_syntax::ast::FnDecl| {
+        // The undeclared-class validation (#345) — the evaluator's
+        // pass 1 over this root's Forbid/Causes/Carries lists, with
+        // its per-ROOT dedup across the three surfaces. It lives in
+        // the LOWERING because `is:` (carries) produces no ClaimIr
+        // row at all — validated here or nowhere — and because one
+        // authority must own the dedup: a root writing
+        // `is: {money}, none: {money}` gets ONE diagnostic. The
+        // judgment keeps only the verdict consequence (a row
+        // asserting about an undeclared class judges Invalid).
+        let mut seen_undeclared: Vec<u16> = Vec::new();
+        for a in &f.effects {
+            let cs: &[EffectClass] = match a {
+                EffectAssert::Forbid(cs)
+                | EffectAssert::Causes(cs)
+                | EffectAssert::Carries(cs) => cs,
+                _ => &[],
+            };
+            for c in cs {
+                let EffectClass::User(i) = c else { continue };
+                if declared_classes.contains(i)
+                    || seen_undeclared.contains(i)
+                {
+                    continue;
+                }
+                seen_undeclared.push(*i);
+                let bad = effect_names
+                    .get(*i as usize)
+                    .cloned()
+                    .unwrap_or_default();
+                let mut near: Vec<&String> = effect_names
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| {
+                        declared_classes.contains(&(*j as u16))
+                    })
+                    .map(|(_, n)| n)
+                    .filter(|n| crate::effects::close(n, &bad))
+                    .collect();
+                near.sort();
+                let hint = match near.first() {
+                    Some(n) => format!(" Did you mean `{}`?", n),
+                    None => String::new(),
+                };
+                issues_out.push((
+                    format!(
+                        "`{}` asserts about effect class `{}`, \
+                         which is never declared. Add `effect {};` \
+                         at the top level.{}",
+                        raw, bad, bad, hint
+                    ),
+                    f.name.span,
+                ));
+            }
+        }
         for a in &f.effects {
             let at = fn_at(raw);
             let law = match a {
