@@ -3966,8 +3966,21 @@ pub fn judge_certificates(
     let ev_span = |pid: ProvenanceId| -> Span {
         span_of(&evidence.provenance, source_bases, pid)
     };
-    let stale = evidence.model_shape
-        != crate::topology_projection::project_shape_hash(model);
+    // MANDATORY validation, performed by the judgment itself
+    // (review round 2): the sidecar must tie to BOTH the model
+    // (TopologyShapeV1) and the LAW TABLE it answers (semantic
+    // digest — topology does not hash annotation laws), and must be
+    // structurally well-formed (unique in-range ordinals, resolvable
+    // diagnostic provenance). A malformed or mis-tied sidecar
+    // invalidates every certificate row rather than being
+    // replayed, partially consumed, or silently collapsed.
+    let stale = evidence
+        .validate(
+            model,
+            crate::topology_projection::project_shape_hash(model),
+            table,
+        )
+        .is_err();
     let ev_rows: BTreeMap<u32, &hale_model::EvidenceRow> =
         evidence.rows.iter().map(|r| (r.ordinal, r)).collect();
     let verdict_of = |v: hale_model::VerdictIr| match v {
@@ -4041,9 +4054,9 @@ pub fn judge_certificates(
             diags.push(Diag::ty(
                 claim_span(row.provenance),
                 format!(
-                    "claim `{}`: certificate evidence was derived \
-                     from a different model (shape mismatch) — \
-                     re-derive evidence for this model",
+                    "claim `{}`: certificate evidence does not \
+                     tie to this model and law table (stale or \
+                     malformed sidecar) — re-derive evidence",
                     row.name
                 ),
             ));
@@ -4056,13 +4069,14 @@ pub fn judge_certificates(
         }
         let ev = ev_rows.get(&row.ordinal).copied();
         let usable = ev.filter(|r| {
-            r.subject == subject && r.certs.len() >= expected
+            r.subject == subject && r.certs.len() == expected
         });
         let Some(ev) = usable else {
             // No evidence row for this ordinal, a subject
-            // disagreement, or fewer certificates than the row's
-            // shape demands (an unresolved subject the engines
-            // never saw) — Invalid.
+            // disagreement, or a certificate count that differs
+            // from the row's shape (fewer = an unresolved subject
+            // the engines never saw; more = evidence that answers
+            // some other law) — Invalid.
             out.push(Judged {
                 ordinal: row.ordinal,
                 verdict: Verdict::Invalid,
@@ -4071,7 +4085,7 @@ pub fn judge_certificates(
             continue;
         };
         let mut verdict = Verdict::Holds;
-        for cert in ev.certs.iter().take(expected) {
+        for cert in ev.certs.iter() {
             let v = verdict_of(cert.result);
             if severity(v) > severity(verdict) {
                 verdict = v;

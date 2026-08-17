@@ -549,6 +549,11 @@ pub fn lower_claims(
         // judgment keeps only the verdict consequence (a row
         // asserting about an undeclared class judges Invalid).
         let mut seen_undeclared: Vec<u16> = Vec::new();
+        // The subject renders as the RESOLVED display spelling —
+        // for an imported fn or method, `raw` is the post-merge
+        // canonical symbol (`__lib_…`), which appears nowhere in
+        // the author's source (review round 2).
+        let subj_display = fn_at(raw).1.display;
         for a in &f.effects {
             let cs: &[EffectClass] = match a {
                 EffectAssert::Forbid(cs)
@@ -587,7 +592,7 @@ pub fn lower_claims(
                         "`{}` asserts about effect class `{}`, \
                          which is never declared. Add `effect {};` \
                          at the top level.{}",
-                        raw, bad, bad, hint
+                        subj_display, bad, bad, hint
                     ),
                     f.name.span,
                 ));

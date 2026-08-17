@@ -341,7 +341,7 @@ fn stale_evidence_is_refused() {
         judged[0]
             .diags
             .iter()
-            .any(|d| d.message.contains("different model")),
+            .any(|d| d.message.contains("does not tie")),
         "the refusal names its cause"
     );
 }
@@ -462,7 +462,7 @@ fn derived_evidence_validates() {
     let shape =
         hale_types::topology_projection::project_shape_hash(&model);
     evidence
-        .validate(&model, shape, table.rows.len())
+        .validate(&model, shape, &table)
         .expect("derived evidence satisfies the sidecar laws");
 }
 
@@ -542,5 +542,174 @@ fn main() { App { }; }
         still_foreign,
         "origin must come from the emitter's flag, not from \
          numeric overlap with the user file's range"
+    );
+}
+
+/// Review pin (round 2): evidence ties to the LAW, not just the
+/// topology — `TopologyShapeV1` does not hash annotation classes,
+/// so two programs with the same shape but different `@effects`
+/// laws must refuse each other's evidence via the semantic digest.
+#[test]
+fn same_shape_different_law_evidence_is_refused() {
+    let src_a = r#"
+@effects(none: { syscall })
+fn f(v: Int) -> Int { return v + 1; }
+main locus App {
+    run() { println(f(1)); }
+}
+fn main() { App { }; }
+"#;
+    let src_b = r#"
+@effects(none: { alloc })
+fn f(v: Int) -> Int { return v + 1; }
+main locus App {
+    run() { println(f(1)); }
+}
+fn main() { App { }; }
+"#;
+    let pa = hale_syntax::parse_source(src_a).expect("parse a");
+    let ba = bundle_of(src_a, &pa);
+    let ma = derive_application_model(&ba);
+    let ta = lower_claims(&ba, &ma);
+    let ea = derive_certificate_evidence(&ba, &ta, &ma);
+    let pb = hale_syntax::parse_source(src_b).expect("parse b");
+    let bb = bundle_of(src_b, &pb);
+    let mb = derive_application_model(&bb);
+    let tb = lower_claims(&bb, &mb);
+    // The trap the digest closes: identical topology shape.
+    assert_eq!(
+        hale_types::topology_projection::project_shape_hash(&ma),
+        hale_types::topology_projection::project_shape_hash(&mb),
+        "the fixtures must share a topology shape for this pin to \
+         bite"
+    );
+    let judged = judge_certificates(&tb, &mb, &ea, &[0]);
+    let forbid = tb
+        .rows
+        .iter()
+        .find(|r| matches!(r.law, ClaimIr::EffectForbid { .. }))
+        .expect("forbid row");
+    let j = judged
+        .iter()
+        .find(|j| j.ordinal == forbid.ordinal)
+        .expect("judged");
+    assert_eq!(
+        j.verdict,
+        Verdict::Invalid,
+        "another law's evidence must be refused, not replayed"
+    );
+}
+
+/// Malformed sidecars are refused by the judgment's own mandatory
+/// validation: duplicate ordinals, a certificate count that
+/// disagrees with the row's shape, and dangling diagnostic
+/// provenance each invalidate rather than being silently
+/// collapsed, over-consumed, or mis-spanned.
+#[test]
+fn malformed_evidence_is_refused() {
+    let src = HOLDS_SRC;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let evidence =
+        derive_certificate_evidence(&bundle, &table, &model);
+    let forbid_ordinal = table
+        .rows
+        .iter()
+        .find(|r| matches!(r.law, ClaimIr::EffectForbid { .. }))
+        .expect("forbid row")
+        .ordinal;
+    let verdict_of = |ev: &hale_model::EvidenceTable| {
+        judge_certificates(&table, &model, ev, &[0])
+            .into_iter()
+            .find(|j| j.ordinal == forbid_ordinal)
+            .expect("judged")
+            .verdict
+    };
+    assert_eq!(verdict_of(&evidence), Verdict::Holds);
+    // Duplicate ordinal: BTreeMap-collapse would silently keep one.
+    let mut dup = evidence.clone();
+    let row = dup.rows[0].clone();
+    dup.rows.push(row);
+    assert_eq!(verdict_of(&dup), Verdict::Invalid);
+    // Extra certificate: `>=` would consume a prefix and accept.
+    let mut extra = evidence.clone();
+    let c = extra.rows[0].certs[0].clone();
+    extra.rows[0].certs.push(c);
+    assert_eq!(verdict_of(&extra), Verdict::Invalid);
+    // Dangling diagnostic provenance: span-zero rendering hid it.
+    let mut dangling = evidence.clone();
+    dangling.rows[0].certs[0].diags.push((
+        "phantom".to_string(),
+        hale_model::ProvenanceId(9999),
+    ));
+    assert_eq!(verdict_of(&dangling), Verdict::Invalid);
+}
+
+/// Review pin (round 2): the undeclared-class diagnostic renders
+/// the AUTHOR-FACING spelling for imported subjects — a library
+/// annotation must name `kv::helper` / `kv::Store::bump`, never
+/// the post-merge `__lib_…` symbol.
+#[test]
+fn imported_undeclared_class_issue_renders_display() {
+    let lib = r#"
+@effects(none: { money })
+fn __lib_x_kv_helper(v: Int) -> Int { return v; }
+locus __lib_x_kv_Store {
+    params { n: Int = 0; }
+    @effects(none: { money })
+    fn bump() { self.n = self.n + 1; }
+}
+"#;
+    let main_src = r#"
+main locus App {
+    params { s: __lib_x_kv_Store = __lib_x_kv_Store { }; }
+    run() { self.s.bump(); println(__lib_x_kv_helper(1)); }
+}
+fn main() { App { }; }
+"#;
+    let main_p =
+        hale_syntax::parse_source(main_src).expect("parse main");
+    let lib_p = hale_syntax::parse_source(lib).expect("parse lib");
+    let mut programs = BTreeMap::new();
+    programs.insert("app/main.hl".to_string(), &main_p);
+    programs.insert("lib/kv.hl".to_string(), &lib_p);
+    let mut bundle = Bundle::new(programs);
+    bundle.import_renames = vec![
+        (
+            vec!["kv".to_string(), "helper".to_string()],
+            "__lib_x_kv_helper".to_string(),
+        ),
+        (
+            vec!["kv".to_string(), "Store".to_string()],
+            "__lib_x_kv_Store".to_string(),
+        ),
+    ];
+    let model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let issues: Vec<&str> = table
+        .issues
+        .iter()
+        .filter(|i| i.message.contains("never declared"))
+        .map(|i| i.message.as_str())
+        .collect();
+    assert_eq!(issues.len(), 2, "one issue per annotated root");
+    assert!(
+        issues.iter().any(|m| m.contains("`kv::helper`")),
+        "the imported FREE fn renders its alias spelling: {:?}",
+        issues
+    );
+    assert!(
+        issues
+            .iter()
+            .any(|m| m.contains("`kv::Store::bump`")),
+        "the imported METHOD renders its alias spelling: {:?}",
+        issues
+    );
+    assert!(
+        !issues.iter().any(|m| m.contains("__lib_")),
+        "no post-merge symbol leaks into a public diagnostic: {:?}",
+        issues
     );
 }

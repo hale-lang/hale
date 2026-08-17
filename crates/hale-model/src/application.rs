@@ -15,7 +15,7 @@ use crate::entity::{
 };
 use crate::hole::Hole;
 use crate::ids::{EntityRef, FunctionId, ProvenanceId, TopicId};
-use crate::claim_ir::ClaimIrError;
+use crate::claim_ir::{ClaimIrError, ClaimIrTable};
 use crate::provenance::{Provenance, ProvenanceTable};
 use crate::relation::{
     AffinedTo, Call, DeadInterfaceCall, DeclaredIn, DeclaresPublish,
@@ -298,26 +298,37 @@ pub struct EvidenceTable {
     /// with — a judgment refuses evidence whose shape disagrees
     /// with the model it is asked to judge.
     pub model_shape: u64,
+    /// [`ClaimIrTable::semantic_digest`] of the law table this
+    /// evidence answers. The topology shape does NOT hash
+    /// annotation laws — two programs with identical topology but
+    /// different `@effects` classes share a `model_shape`, so the
+    /// sidecar must also be tied to the LAW it certifies (review
+    /// round 2).
+    pub law_digest: u64,
     pub rows: Vec<EvidenceRow>,
     pub provenance: ProvenanceTable,
 }
 
 impl EvidenceTable {
     /// Structural laws against the judged pair: the shape must
-    /// match the model, ordinals must be unique and in the law
-    /// table's range, subjects must agree with the ClaimIr row's
-    /// resolution, and diagnostic provenance must resolve.
+    /// match the model, the law digest must match the table, and
+    /// ordinals must be unique and in the law table's range,
+    /// subjects must agree with the ClaimIr row's resolution, and
+    /// diagnostic provenance must resolve.
     pub fn validate(
         &self,
         model: &ApplicationModel,
         model_shape: u64,
-        law_rows: usize,
+        table: &ClaimIrTable,
     ) -> Result<(), ClaimIrError> {
-        if self.model_shape != model_shape {
+        if self.model_shape != model_shape
+            || self.law_digest != table.semantic_digest()
+        {
             return Err(ClaimIrError::InvalidProvenanceRecord {
                 index: usize::MAX,
             });
         }
+        let law_rows = table.rows.len();
         let mut seen = std::collections::BTreeSet::new();
         for (i, row) in self.rows.iter().enumerate() {
             if row.ordinal as usize >= law_rows

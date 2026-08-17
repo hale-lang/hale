@@ -106,7 +106,7 @@ pub fn is_builtin_effect_class(name: &str) -> bool {
 
 /// A name in claim position: raw canonical spelling + author
 /// display. Two spellings, same doctrine as every entity table.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct NameRef {
     pub raw: String,
     pub display: String,
@@ -117,7 +117,7 @@ pub struct NameRef {
 /// provenance — the evaluator anchors "unknown group" at the
 /// reference, not at the clause (review round 15), and Change 5
 /// must preserve those primary spans without reopening the AST.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct GroupRef {
     pub group: Option<GroupId>,
     pub name: NameRef,
@@ -125,7 +125,7 @@ pub struct GroupRef {
 }
 
 /// A topic reference (`T` / `alias::T`, canonicalized at mangle).
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct TopicIrRef {
     pub topic: Option<TopicId>,
     pub name: NameRef,
@@ -133,7 +133,7 @@ pub struct TopicIrRef {
 }
 
 /// A phase reference (`during P`).
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct PhaseIrRef {
     pub phase: Option<PhaseId>,
     pub name: String,
@@ -141,7 +141,7 @@ pub struct PhaseIrRef {
 }
 
 /// A seed reference (`in seed(a)`).
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct SeedIrRef {
     pub seed: Option<SeedId>,
     pub name: String,
@@ -163,7 +163,7 @@ pub struct SeedIrRef {
 /// in `subjects`; two same-tailed imports both land in `topics`
 /// ("the permissiveness the author asked for"); both empty =
 /// resolves to nothing (Change 5's residue).
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct BusSelector {
     pub name: String,
     pub topics: Vec<TopicId>,
@@ -178,7 +178,7 @@ pub struct BusSelector {
 /// composition — so an IR consumer can distinguish a declared
 /// class from an interned typo and expand `effect io = {…}`
 /// without the AST.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct EffectClassRef {
     /// `Some` iff the name resolves to a user-class table row.
     pub class: Option<EffectClassId>,
@@ -189,7 +189,7 @@ pub struct EffectClassRef {
 }
 
 /// A set expression in claim-argument position.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum SetIr {
     Group(GroupRef),
     /// `effects(money)` — declared carriers of the class.
@@ -197,7 +197,7 @@ pub enum SetIr {
 }
 
 /// One granted edge inside `only edges { … }`.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct GrantIr {
     /// `publish T` when true, `subscribe T` when false — both admit
     /// the same edge; the verb names the reviewable declaration.
@@ -205,7 +205,7 @@ pub struct GrantIr {
     pub topic: TopicIrRef,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum CountCmpIr {
     Eq,
     Le,
@@ -213,7 +213,7 @@ pub enum CountCmpIr {
 }
 
 /// A quantitative budget dimension (`@budget(<dim> = N)`).
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum QuantDimIr {
     StackBytes,
     BlockPoints,
@@ -226,7 +226,7 @@ pub enum QuantDimIr {
 /// Where a law came from. Origin is provenance at the law grain —
 /// the same clause text means different lifetimes depending on
 /// whether it was authored here, adopted, or shipped with a seed.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum ClaimOrigin {
     /// Authored in this main's `claims { }` block.
     Main,
@@ -245,7 +245,7 @@ pub enum ClaimOrigin {
 }
 
 /// One law form. ONE variant per form, across every surface.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum ClaimIr {
     // ---------- claims-block forms (#382) ----------
     /// `forbid reaches(SRC, DST) [via { … }] [during P] [avoiding G]`.
@@ -374,7 +374,7 @@ pub enum ClaimIr {
 }
 
 /// One lowered law row.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct ClaimRow {
     /// Authored position (see module docs) — the canonical order.
     pub ordinal: u32,
@@ -395,7 +395,7 @@ pub struct ClaimRow {
 /// (Change 5) observes the invalidity instead of "no law"
 /// (review round 15) — the lowering never silently drops law-shaped
 /// source.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct LoweringIssue {
     pub message: String,
     pub provenance: ProvenanceId,
@@ -413,8 +413,48 @@ pub struct ClaimIrTable {
     pub provenance: ProvenanceTable,
 }
 
+impl ClaimIrTable {
+    /// A canonical semantic digest of the complete law table —
+    /// FNV-1a/64 over every row's `Hash` image (ordinal, name,
+    /// origin, and the full typed law with its references). The
+    /// evidence sidecar records it at derivation and a judgment
+    /// refuses evidence whose digest disagrees with the table it is
+    /// asked to judge: `TopologyShapeV1` hashes the topology model
+    /// half, NOT annotation laws, so two programs with identical
+    /// topology but different `@effects` classes would otherwise
+    /// accept each other's evidence (review round 2).
+    ///
+    /// Stability: this uses the crate's own FNV-1a hasher, not
+    /// `DefaultHasher` (whose algorithm is unspecified and may
+    /// change between Rust releases).
+    pub fn semantic_digest(&self) -> u64 {
+        use core::hash::{Hash, Hasher};
+        struct Fnv64(u64);
+        impl Hasher for Fnv64 {
+            fn finish(&self) -> u64 {
+                self.0
+            }
+            fn write(&mut self, bytes: &[u8]) {
+                for b in bytes {
+                    self.0 ^= u64::from(*b);
+                    self.0 = self.0.wrapping_mul(0x100_0000_01b3);
+                }
+            }
+        }
+        let mut h = Fnv64(0xcbf2_9ce4_8422_2325);
+        (self.rows.len() as u64).hash(&mut h);
+        for row in &self.rows {
+            row.ordinal.hash(&mut h);
+            row.name.hash(&mut h);
+            row.origin.hash(&mut h);
+            row.law.hash(&mut h);
+        }
+        h.finish()
+    }
+}
+
 /// A violated `ClaimIr` law.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum ClaimIrError {
     /// `rows[i].ordinal != i` — authored order is the canonical
     /// order and must be contiguous from zero.

@@ -107,6 +107,7 @@ pub fn derive_certificate_evidence(
         model_shape: crate::topology_projection::project_shape_hash(
             model,
         ),
+        law_digest: table.semantic_digest(),
         ..EvidenceTable::default()
     };
     for sf in &bundle.sources {
