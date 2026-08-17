@@ -338,3 +338,280 @@ fn main() {
         "the alloc happens inside the stdlib body"
     );
 }
+
+/// Review pin (round 2): EVERY publish effect site consumes one
+/// source-order ordinal — a computed-subject publish authored
+/// before a known publish keeps its earlier position, so consumers
+/// interleaving rows and holes by site see authored order.
+#[test]
+fn every_publish_site_consumes_an_ordinal() {
+    let src = r#"
+topic Sig { payload: Int; subject: "app.sig"; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) {
+        self.n <- v;
+        Sig <- v;
+    }
+}
+main locus App {
+    params { a: A = A { }; }
+    run() { self.a.go(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let model = derive_application_model(&bundle);
+    let go = model
+        .entities
+        .functions
+        .iter()
+        .position(|f| f.display == "A::go")
+        .expect("A::go");
+    let hole = model
+        .holes
+        .iter()
+        .find(|h| {
+            matches!(h.kind, hale_model::HoleKind::ComputedSubject)
+                && h.at
+                    == hale_model::EntityRef::Function(
+                        hale_model::FunctionId(go as u32),
+                    )
+        })
+        .expect("computed-subject hole");
+    assert_eq!(
+        hole.authored_site,
+        Some(0),
+        "the computed publish is authored first"
+    );
+    let known = model
+        .relations
+        .publishes
+        .iter()
+        .find(|p| p.function.index() == go)
+        .expect("known publish row");
+    assert_eq!(
+        known.site, 1,
+        "the known publish consumed the SECOND ordinal — a computed \
+         publish must not leave the counter untouched"
+    );
+}
+
+/// Review pin (round 2): a `via {{ bus }}` walk consults EVERY hole
+/// whose hides-mask intersects PUBLISHES — an unanalyzed body says
+/// "my publishes are unknown", so exhausting the known publish rows
+/// must not conclude Holds.
+#[test]
+fn bus_walk_fails_closed_on_publishes_hiding_hole() {
+    let src = r#"
+topic Sig { payload: Int; subject: "app.sig"; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) { Sig <- v; }
+}
+fn quiet(v: Int) -> Int { return v; }
+group a_side = { A };
+group b_side = { quiet };
+main locus App {
+    params { a: A = A { }; }
+    claims { iso: forbid reaches(a_side, b_side) via { bus }; }
+    run() { self.a.go(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds,
+        "no subscriber reaches b_side"
+    );
+    let go = model
+        .entities
+        .functions
+        .iter()
+        .position(|f| f.display == "A::go")
+        .expect("A::go");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Function(hale_model::FunctionId(
+            go as u32,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::CALLS
+            .union(hale_model::RelationSet::PUBLISHES)
+            .union(hale_model::RelationSet::EFFECTS),
+        authored_site: None,
+        reason: "body not analyzed".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "a PUBLISHES-hiding hole must fail the bus walk closed"
+    );
+}
+
+/// The converse pin: a PUBLISHES-only hole must NOT poison a
+/// `via {{ calls }}` walk — relevance is the hides-mask against the
+/// families this row walks, not the hole's existence.
+#[test]
+fn publishes_only_hole_does_not_poison_a_calls_walk() {
+    let src = r#"
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) -> Int { return leak(v); }
+}
+fn leak(v: Int) -> Int { return v; }
+group a_side = { A };
+group b_side = { leak };
+main locus App {
+    params { a: A = A { }; }
+    claims { iso: forbid reaches(a_side, b_side) via { calls }; }
+    run() { println(self.a.go(1)); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let go = model
+        .entities
+        .functions
+        .iter()
+        .position(|f| f.display == "A::go")
+        .expect("A::go");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Function(hale_model::FunctionId(
+            go as u32,
+        )),
+        kind: hale_model::HoleKind::ComputedSubject,
+        hides: hale_model::RelationSet::PUBLISHES,
+        authored_site: Some(0),
+        reason: "publish with computed subject".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "the calls walk still finds the concrete violation — a \
+         PUBLISHES-only hole is irrelevant to it"
+    );
+}
+
+/// Review pin (round 2): an `effects(C)` destination NEEDS each
+/// visited fn's EFFECTS rows — a hole hiding EFFECTS means the
+/// known rows are not the whole story, so the claim is Uncertified
+/// even when no known row carries the class.
+#[test]
+fn effects_destination_fails_closed_on_effects_hiding_hole() {
+    let src = r#"
+effect money;
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) -> Int { return v; }
+}
+group a_side = { A };
+main locus App {
+    params { a: A = A { }; }
+    claims { pure: forbid reaches(a_side, effects(money)); }
+    run() { println(self.a.go(1)); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds,
+        "nothing carries `money`"
+    );
+    let go = model
+        .entities
+        .functions
+        .iter()
+        .position(|f| f.display == "A::go")
+        .expect("A::go");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Function(hale_model::FunctionId(
+            go as u32,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::EFFECTS,
+        authored_site: None,
+        reason: "body not analyzed".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "unknown effects on a reachable fn must fail closed"
+    );
+}
+
+/// Review pin (round 2): absorption TRUNCATION is saturation, not
+/// an ordinary hole — the evaluator maps step-ceiling exhaustion to
+/// Violated, and the verdict must match even though the message is
+/// already byte-identical.
+#[test]
+fn absorption_truncation_is_violated_not_uncertified() {
+    let src = r#"
+locus Gate {
+    fn probe(r: std::http::Router, req: std::http::Request) -> Int {
+        let resp = r.dispatch(req);
+        return resp.status;
+    }
+}
+group gates = { Gate };
+main locus App {
+    claims { pure: forbid reaches(gates, effects(alloc)); }
+}
+fn main() {
+    let r = std::http::Router { };
+    let req = std::http::Request { method: "GET", path: "/", body: "" };
+    println(Gate { }.probe(r, req));
+}
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    // Truncate the absorption: interior knowledge stops at the
+    // entry, so the walk must report the step ceiling — Violated.
+    for a in &mut model.legacy.stdlib_absorption {
+        for n in &mut a.nodes {
+            n.direct_effects.clear();
+            n.events.clear();
+        }
+        a.nodes[0]
+            .events
+            .push(hale_model::AbsorbedEvent::Truncated);
+    }
+    assert!(
+        !model.legacy.stdlib_absorption.is_empty(),
+        "the fixture absorbs a stdlib call"
+    );
+    let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "step-ceiling truncation is Violated, like Saturated"
+    );
+    assert!(
+        judged[0]
+            .diags
+            .iter()
+            .any(|d| d.message.contains("exceeded")),
+        "the step-ceiling diagnostic is emitted"
+    );
+}

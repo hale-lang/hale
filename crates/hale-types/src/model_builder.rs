@@ -1432,8 +1432,18 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             continue;
         }
         let from = fn_id[&fn_name(k)];
+        // EVERY publish effect site consumes one source-order
+        // ordinal — known-subject rows and computed-subject holes
+        // share the space, so a consumer interleaving them by site
+        // sees authored order (review round 2: a computed publish
+        // used to leave `site` unchanged, giving the NEXT known
+        // publish the same ordinal and reordering the pair).
         let mut site: u32 = 0;
         for s in &fs.effect_sites {
+            let authored_site = site;
+            if matches!(s.kind, EffectSiteKind::Publish(_)) {
+                site += 1;
+            }
             match &s.kind {
                 EffectSiteKind::Publish(Some(subj)) => {
                     let display = subj.text.clone();
@@ -1475,7 +1485,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                             ),
                         };
                     publishes.insert(
-                        (from, subject_id[&subject_str], site),
+                        (from, subject_id[&subject_str], authored_site),
                         (
                             declared,
                             payload,
@@ -1486,7 +1496,6 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                             pid,
                         ),
                     );
-                    site += 1;
                 }
                 EffectSiteKind::Publish(None) => {
                     let pid = intern_span(&mut records, s.span);
@@ -1499,7 +1508,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                         ))
                         .or_insert((
                             hale_model::RelationSet::PUBLISHES,
-                            Some(site),
+                            Some(authored_site),
                             pid,
                         ));
                 }

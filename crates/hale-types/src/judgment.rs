@@ -260,26 +260,31 @@ pub fn judge_forbid_reaches(
     for v in pubs_of.values_mut() {
         v.sort_by_key(|(site, ..)| *site);
     }
-    // fn → fail-closed holes.
+    // fn → fail-closed holes. Each retains its ORIGINAL `hides`
+    // mask: relevance is decided per consultation site against the
+    // relation family that site walks (via_calls → CALLS, via_bus →
+    // PUBLISHES, an effects(C) destination → EFFECTS); the KIND
+    // only selects the diagnostic wording — a new hole species
+    // cannot be silently ignored, and a family the walk does not
+    // need cannot poison it (review round 2).
     #[derive(Clone)]
     enum FnHole {
         Indirect,
         Untyped { callee: String },
         Computed,
-        /// Any other species hiding a walked family (e.g. an
-        /// unanalyzed body) — fails closed with its recorded reason.
-        Other { reason: String, kind: String },
+        /// Any other species (e.g. an unanalyzed body) — fails
+        /// closed with its recorded reason.
+        Other { reason: String },
     }
-    // Holes trigger by RELATION FAMILY (`hides` intersects the
-    // families this judgment walks); the KIND only selects the
-    // diagnostic wording — a new hole species cannot be silently
-    // ignored (review: family-mask consumption).
-    let mut holes_of: BTreeMap<FunctionId, Vec<FnHole>> =
-        BTreeMap::new();
+    let mut holes_of: BTreeMap<
+        FunctionId,
+        Vec<(hale_model::RelationSet, FnHole)>,
+    > = BTreeMap::new();
     for h in &model.holes {
         let EntityRef::Function(f) = h.at else { continue };
         let walk_families = hale_model::RelationSet::CALLS
-            .union(hale_model::RelationSet::PUBLISHES);
+            .union(hale_model::RelationSet::PUBLISHES)
+            .union(hale_model::RelationSet::EFFECTS);
         if !h.hides.intersects(walk_families) {
             continue;
         }
@@ -289,12 +294,11 @@ pub fn judge_forbid_reaches(
                 callee: callee.clone(),
             },
             HoleKind::ComputedSubject => FnHole::Computed,
-            other => FnHole::Other {
+            _ => FnHole::Other {
                 reason: h.reason.clone(),
-                kind: format!("{:?}", other),
             },
         };
-        holes_of.entry(f).or_default().push(hole);
+        holes_of.entry(f).or_default().push((h.hides, hole));
     }
     // fn → phase name (during filter).
     let mut phase_of: BTreeMap<FunctionId, &str> = BTreeMap::new();
@@ -626,6 +630,11 @@ pub fn judge_forbid_reaches(
         }
         let row_span = claim_span(row.provenance);
         // ---- the walk ----
+        // Absorption truncation is SATURATION, not an ordinary
+        // hole: the evaluator maps step-ceiling exhaustion to
+        // Violated, so the distinct signal must survive the search
+        // (review round 2: byte-identical message, wrong verdict).
+        let mut truncated = false;
         let ordered_roots = fnkey_sorted(&roots);
         let search = model_graph::search(
             ordered_roots.iter().map(|f| V::User(*f)),
@@ -634,9 +643,14 @@ pub fn judge_forbid_reaches(
                 match v {
                     V::User(f) => {
                         if *via_calls {
-                            for h in
+                            for (hides, h) in
                                 holes_of.get(f).into_iter().flatten()
                             {
+                                if !hides.intersects(
+                                    hale_model::RelationSet::CALLS,
+                                ) {
+                                    continue;
+                                }
                                 match h {
                                     FnHole::Indirect => {
                                         diags.push(Diag::ty(
@@ -675,10 +689,23 @@ pub fn judge_forbid_reaches(
                                         ));
                                         return Visit::hole(());
                                     }
-                                    FnHole::Computed => {}
-                                    FnHole::Other {
-                                        reason, ..
-                                    } => {
+                                    FnHole::Computed => {
+                                        diags.push(Diag::ty(
+                                            row_span,
+                                            format!(
+                                                "claim `{}` cannot be certified: `{}` \
+                                                 (reachable from `{}`) publishes to a \
+                                                 computed subject, which could route to \
+                                                 any subscriber. An unresolvable edge \
+                                                 fails closed",
+                                                row.name,
+                                                display(*v),
+                                                src_ref.name.display
+                                            ),
+                                        ));
+                                        return Visit::hole(());
+                                    }
+                                    FnHole::Other { reason } => {
                                         diags.push(Diag::ty(
                                             row_span,
                                             format!(
@@ -748,15 +775,16 @@ pub fn judge_forbid_reaches(
                             }
                         }
                         if *via_bus {
-                            if holes_of
-                                .get(f)
-                                .into_iter()
-                                .flatten()
-                                .any(|h| matches!(h, FnHole::Computed))
+                            for (hides, h) in
+                                holes_of.get(f).into_iter().flatten()
                             {
-                                diags.push(Diag::ty(
-                                    row_span,
-                                    format!(
+                                if !hides.intersects(
+                                    hale_model::RelationSet::PUBLISHES,
+                                ) {
+                                    continue;
+                                }
+                                let msg = match h {
+                                    FnHole::Computed => format!(
                                         "claim `{}` cannot be certified: `{}` \
                                          (reachable from `{}`) publishes to a \
                                          computed subject, which could route to \
@@ -766,7 +794,42 @@ pub fn judge_forbid_reaches(
                                         display(*v),
                                         src_ref.name.display
                                     ),
-                                ));
+                                    FnHole::Untyped { callee } => format!(
+                                        "claim `{}` cannot be certified: \
+                                         `{}` (reachable from `{}`) calls \
+                                         `{}` on a receiver the compiler \
+                                         cannot type, so the walk cannot \
+                                         follow the edge. An unresolvable \
+                                         edge fails closed — bind the \
+                                         receiver to a typed field or \
+                                         local so the call resolves",
+                                        row.name,
+                                        display(*v),
+                                        src_ref.name.display,
+                                        callee
+                                    ),
+                                    FnHole::Indirect => format!(
+                                        "claim `{}` cannot be certified: \
+                                         `{}` (reachable from `{}`) calls \
+                                         through a function-typed \
+                                         parameter, whose target is not \
+                                         knowable statically. An \
+                                         unresolvable edge fails closed",
+                                        row.name,
+                                        display(*v),
+                                        src_ref.name.display
+                                    ),
+                                    FnHole::Other { reason } => format!(
+                                        "claim `{}` cannot be certified: \
+                                         `{}` (reachable from `{}`) — {}. \
+                                         An unresolvable edge fails closed",
+                                        row.name,
+                                        display(*v),
+                                        src_ref.name.display,
+                                        reason
+                                    ),
+                                };
+                                diags.push(Diag::ty(row_span, msg));
                                 return Visit::hole(());
                             }
                             for (_, sid, written, ppid) in
@@ -790,6 +853,59 @@ pub fn judge_forbid_reaches(
                                         },
                                     ));
                                 }
+                            }
+                        }
+                        // An effects(C) destination NEEDS this
+                        // vertex's EFFECTS rows — a hole hiding
+                        // them means the known rows are not the
+                        // whole story, so exhausting them must not
+                        // conclude Holds (review round 2).
+                        if matches!(dst_test, DstIr::Effects(_)) {
+                            for (hides, h) in
+                                holes_of.get(f).into_iter().flatten()
+                            {
+                                if !hides.intersects(
+                                    hale_model::RelationSet::EFFECTS,
+                                ) {
+                                    continue;
+                                }
+                                let why = match h {
+                                    FnHole::Other { reason } => {
+                                        reason.clone()
+                                    }
+                                    FnHole::Untyped { callee } => {
+                                        format!(
+                                            "calls `{}` on a receiver \
+                                             the compiler cannot type",
+                                            callee
+                                        )
+                                    }
+                                    FnHole::Indirect => {
+                                        "calls through a \
+                                         function-typed parameter"
+                                            .to_string()
+                                    }
+                                    FnHole::Computed => {
+                                        "publishes to a computed \
+                                         subject"
+                                            .to_string()
+                                    }
+                                };
+                                diags.push(Diag::ty(
+                                    row_span,
+                                    format!(
+                                        "claim `{}` cannot be certified: \
+                                         the effects of `{}` (reachable \
+                                         from `{}`) are not fully \
+                                         analyzable — {}. Unknown effects \
+                                         fail closed",
+                                        row.name,
+                                        display(*v),
+                                        src_ref.name.display,
+                                        why
+                                    ),
+                                ));
+                                return Visit::hole(());
                             }
                         }
                         Visit::edges(edges)
@@ -928,6 +1044,7 @@ pub fn judge_forbid_reaches(
                                             crate::callgraph::MAX_STEPS
                                         ),
                                     ));
+                                    truncated = true;
                                     return Visit::hole(());
                                 }
                             }
@@ -980,7 +1097,14 @@ pub fn judge_forbid_reaches(
                 Verdict::Violated
             }
             model_graph::Search::Uncertified { .. } => {
-                Verdict::Uncertified
+                // A halt caused by absorption truncation is the
+                // step ceiling wearing a hole's clothes — same
+                // verdict as Saturated.
+                if truncated {
+                    Verdict::Violated
+                } else {
+                    Verdict::Uncertified
+                }
             }
             model_graph::Search::Saturated { .. } => {
                 diags.push(Diag::ty(
