@@ -192,6 +192,7 @@ fn tiny_model() -> ApplicationModel {
             }],
             ..Relations::default()
         },
+        evidence: Vec::new(),
         labels: vec![],
         weights: vec![],
         holes: vec![],

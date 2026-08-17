@@ -291,6 +291,7 @@ fn phase_effects_diags(
     summary: &AllocSummary,
     ffi: &BTreeSet<String>,
     rows: &mut Vec<LoweredCertificate>,
+    ranges: &mut Vec<(usize, usize, usize)>,
 ) -> Vec<Diag> {
     let mut out = Vec::new();
     let names = &effect_names_of(programs);
@@ -416,6 +417,7 @@ fn phase_effects_diags(
                     }
                 }));
                 let phase_before = out.len();
+                let cert_start = out.len();
                 for class in classes {
                     if allowed.contains(&class) {
                         continue;
@@ -430,6 +432,7 @@ fn phase_effects_diags(
                         );
                     }
                 }
+                ranges.push((rows.len(), cert_start, out.len()));
                 rows.push(LoweredCertificate {
                     subject: l.name.name.clone(),
                     form: format!(
@@ -659,6 +662,44 @@ fn effect_report_inner(
     programs: &[&Program],
     import_renames: &[(Vec<String>, String)],
 ) -> (Vec<Diag>, Vec<LoweredCertificate>) {
+    let (d, certs) = effect_report_grouped(programs, import_renames);
+    (d, certs.into_iter().map(|(row, _)| row).collect())
+}
+
+/// GH #476 Change 5e: the same report with each certificate's own
+/// diagnostics attached — the evidence rows the model builder
+/// stores, produced by the ONE pass that also feeds `hale check`
+/// (`effect_diags_with_renames` reassembles the flat stream from
+/// this, so the two can never disagree).
+pub(crate) fn effect_report_grouped(
+    programs: &[&Program],
+    import_renames: &[(Vec<String>, String)],
+) -> (Vec<Diag>, Vec<(LoweredCertificate, Vec<Diag>)>) {
+    let (pre, p1, tail, groups) =
+        effect_report_three_way(programs, import_renames);
+    let mut flat = pre;
+    flat.extend(p1);
+    flat.extend(tail);
+    (flat, groups)
+}
+
+/// The same report with the three diagnostic strata separated:
+/// non-law diagnostics (placement-implied + cyclic class defs),
+/// the undeclared-class validation pass (law-row validation, in
+/// root order), and the per-certificate groups. The judgment
+/// consumes the last two; `hale check`'s flat stream is their
+/// concatenation in this order.
+#[doc(hidden)]
+pub fn effect_report_three_way(
+    programs: &[&Program],
+    import_renames: &[(Vec<String>, String)],
+) -> (
+    Vec<Diag>,
+    Vec<Diag>,
+    Vec<Diag>,
+    Vec<(LoweredCertificate, Vec<Diag>)>,
+) {
+    let mut ranges: Vec<(usize, usize, usize)> = Vec::new();
     let mut rows: Vec<LoweredCertificate> = Vec::new();
     let mut roots: Vec<(FnKey, Vec<EffectAssert>, Span)> = Vec::new();
     for program in programs {
@@ -698,11 +739,26 @@ fn effect_report_inner(
     let mut placement = placement_implied_diags(programs, &summary);
     // #265 step 6: phase-indexed effect contracts on loci.
     let ffi_all = ffi_names(programs);
+    let phase_base = placement.len();
+    let mut phase_ranges: Vec<(usize, usize, usize)> = Vec::new();
     placement.extend(phase_effects_diags(
-        programs, &summary, &ffi_all, &mut rows,
+        programs,
+        &summary,
+        &ffi_all,
+        &mut rows,
+        &mut phase_ranges,
     ));
+    // Phase ranges are relative to phase_effects_diags' own vec —
+    // rebase onto the placement prefix of the final stream.
+    for (ri, a, b) in phase_ranges {
+        ranges.push((ri, phase_base + a, phase_base + b));
+    }
     if roots.is_empty() {
-        return (placement, rows);
+        // Phase certificates' diags live inside `placement` here —
+        // the flat stream is exactly placement, so pre carries it
+        // all and the tail is empty.
+        let groups = assemble_groups(&placement, rows, ranges);
+        return (placement, Vec::new(), Vec::new(), groups);
     }
     let ffi = ffi_names(programs);
     let names = effect_names_of(programs);
@@ -763,6 +819,7 @@ fn effect_report_inner(
         }
     }
     let mut diags = std::mem::take(&mut placement);
+    let pre_len = diags.len();
     for (key, asserts, span) in &roots {
         let mut seen: Vec<u16> = Vec::new();
         for a in *&asserts {
@@ -809,6 +866,7 @@ fn effect_report_inner(
             }
         }
     }
+    let p1_len = diags.len();
     for (key, asserts, span) in &roots {
         for a in asserts {
             match a {
@@ -822,6 +880,7 @@ fn effect_report_inner(
                             &summary, key, *span, *c, &ffi, &names, &defs_v,
                             &mut diags,
                         );
+                        ranges.push((rows.len(), before, diags.len()));
                         rows.push(LoweredCertificate {
                             subject: key.display(),
                             form: format!(
@@ -900,6 +959,7 @@ fn effect_report_inner(
                             );
                         }
                     }
+                    ranges.push((rows.len(), only_before, diags.len()));
                     rows.push(LoweredCertificate {
                         subject: key.display(),
                         form: format!(
@@ -917,6 +977,7 @@ fn effect_report_inner(
                 EffectAssert::PublishSet(allowed) => {
                     let before = diags.len();
                     check_publish_set(&summary, key, *span, allowed, &mut diags);
+                    ranges.push((rows.len(), before, diags.len()));
                     rows.push(LoweredCertificate {
                         subject: key.display(),
                         form: format!(
@@ -934,6 +995,7 @@ fn effect_report_inner(
                 EffectAssert::NoPanic => {
                     let before = diags.len();
                     check_no_panic(programs, key, *span, &mut diags);
+                    ranges.push((rows.len(), before, diags.len()));
                     rows.push(LoweredCertificate {
                         subject: key.display(),
                         form: format!(
@@ -959,7 +1021,42 @@ fn effect_report_inner(
             }
         }
     }
-    (diags, rows)
+    let groups = assemble_groups(&diags, rows, ranges);
+    // Strata: [0, pre_len) = non-law (placement + cyclic),
+    // [pre_len, p1_len) = the undeclared-class validation pass,
+    // [p1_len, ..) = the per-certificate evaluation stream.
+    let pre: Vec<Diag> = diags[..pre_len].to_vec();
+    let p1: Vec<Diag> = diags[pre_len..p1_len].to_vec();
+    let tail: Vec<Diag> = diags[p1_len..].to_vec();
+    (pre, p1, tail, groups)
+}
+
+/// Attach each certificate's diagnostics: phase rows range into the
+/// placement stream, assert rows into the post-validation stream.
+fn assemble_groups(
+    stream: &[Diag],
+    rows: Vec<LoweredCertificate>,
+    ranges: Vec<(usize, usize, usize)>,
+) -> Vec<(LoweredCertificate, Vec<Diag>)> {
+    // Every range indexes into the ONE final diag stream: the
+    // placement diags become its prefix (`mem::take`), so phase
+    // ranges (recorded placement-relative, offset by phase_base)
+    // and assert ranges (recorded post-take) share the space.
+    let by_row: BTreeMap<usize, (usize, usize)> = ranges
+        .into_iter()
+        .map(|(ri, a, b)| (ri, (a, b)))
+        .collect();
+    rows.into_iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let ds = by_row
+                .get(&i)
+                .and_then(|(a, b)| stream.get(*a..*b))
+                .map(|x| x.to_vec())
+                .unwrap_or_default();
+            (row, ds)
+        })
+        .collect()
 }
 
 /// GH #265 coherence: ONE dispatcher over the effect classes. Every

@@ -2722,6 +2722,89 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     }
     stdlib_absorption.sort_by_key(|a| (a.from, a.site));
 
+    // GH #476 Change 5e: pointwise certificate evidence — the
+    // fn-grained outcomes the certificate engines produce (the
+    // artifact's `lowered` rows), with each certificate's own
+    // diagnostics, demangled like every witness spelling.
+    let evidence: Vec<hale_model::CertificateEvidence> = {
+        let (_flat, groups) = crate::effects::effect_report_grouped(
+            &programs,
+            &bundle.import_renames,
+        );
+        groups
+            .into_iter()
+            .map(|(row, mut ds)| {
+                crate::stdlib_bodies::demangle_imports(
+                    &mut ds,
+                    &bundle.import_renames,
+                );
+                let subject_display =
+                    crate::stdlib_bodies::demangle_str(
+                        &row.subject,
+                        &bundle.import_renames,
+                    );
+                let diags = ds
+                    .into_iter()
+                    .map(|d| {
+                        let s0 = d.span.start.as_usize() as u32;
+                        let e0 = d.span.end.as_usize() as u32;
+                        let pid = if bundle
+                            .sources
+                            .iter()
+                            .any(|f| {
+                                s0 >= f.base
+                                    && s0 < f
+                                        .base
+                                        .saturating_add(f.len + 1)
+                            })
+                            || bundle.sources.is_empty()
+                        {
+                            intern_span(&mut records, d.span)
+                        } else {
+                            // Out-of-bundle offset space (stdlib
+                            // parse space) — preserve verbatim.
+                            let id = hale_model::ProvenanceId(
+                                records.len() as u32,
+                            );
+                            records.push(
+                                hale_model::Provenance::ForeignSpan {
+                                    span: (s0, e0),
+                                },
+                            );
+                            id
+                        };
+                        (d.message, pid)
+                    })
+                    .collect();
+                hale_model::CertificateEvidence {
+                    subject: fn_id
+                        .get(&row.subject)
+                        .copied(),
+                    subject_display,
+                    form: crate::stdlib_bodies::demangle_str(
+                        &row.form,
+                        &bundle.import_renames,
+                    ),
+                    result: match row.result {
+                        crate::verdict::Verdict::Holds => {
+                            hale_model::VerdictIr::Holds
+                        }
+                        crate::verdict::Verdict::Violated => {
+                            hale_model::VerdictIr::Violated
+                        }
+                        crate::verdict::Verdict::Uncertified => {
+                            hale_model::VerdictIr::Uncertified
+                        }
+                        crate::verdict::Verdict::Invalid => {
+                            hale_model::VerdictIr::Invalid
+                        }
+                    },
+                    diags,
+                }
+            })
+            .collect()
+    };
+
     // holes, canonically ordered.
     let mut hole_rows: Vec<Hole> = holes
         .into_iter()
@@ -2820,6 +2903,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         relations: r,
         labels,
         weights: Vec::new(),
+        evidence,
         holes: hole_rows,
         capabilities,
         provenance: prov,

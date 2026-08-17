@@ -2576,7 +2576,6 @@ fn evaluate_require_attributed(
     let ClaimForm::RequireAttributed { class_name } = &c.form else {
         unreachable!("dispatched on form")
     };
-    use crate::stdlib_surface::EffectSet;
     let Some(mask) = attributed_mask(&class_name.name) else {
         unreachable!("validated against the same predicate")
     };

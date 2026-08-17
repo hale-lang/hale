@@ -24,6 +24,12 @@ pub enum Provenance {
     /// names the introducing rule so a witness can still say
     /// something true ("synthetic: main-arrangement root").
     Synthetic { origin: String },
+    /// A span in an offset space OUTSIDE the recorded sources —
+    /// stdlib bodies parse in their own space, and the evaluator's
+    /// certificate diagnostics carry those offsets verbatim
+    /// (GH #476 Change 5e). Preserved as-is so evidence rendering
+    /// is byte-identical; never resolvable to a recorded source.
+    ForeignSpan { span: (u32, u32) },
 }
 
 /// One source unit provenance points into. `path` is as-authored

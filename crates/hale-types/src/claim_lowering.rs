@@ -523,11 +523,16 @@ pub fn lower_claims(
     for p in &programs {
         walk_decls(&p.items, &mut sites);
     }
+    let mut ann_issues: Vec<(String, hale_syntax::Span)> = Vec::new();
     let lower_fn_anns = |recs: &mut Vec<Provenance>,
                          rows: &mut Vec<(
         String,
         ClaimOrigin,
         ClaimIr,
+        hale_syntax::Span,
+    )>,
+                         issues_out: &mut Vec<(
+        String,
         hale_syntax::Span,
     )>,
                          raw: &str,
@@ -626,9 +631,13 @@ pub fn lower_claims(
     };
     for site in &sites {
         match site {
-            AnnSite::Free(f) => {
-                lower_fn_anns(recs, &mut rows, &f.name.name, f)
-            }
+            AnnSite::Free(f) => lower_fn_anns(
+                recs,
+                &mut rows,
+                &mut ann_issues,
+                &f.name.name,
+                f,
+            ),
             AnnSite::Locus(l) => {
                 let lname = &l.name.name;
                 if let Some(pe) = &l.phase_effects {
@@ -677,11 +686,25 @@ pub fn lower_claims(
                     if let LocusMember::Fn(f) = m {
                         let raw =
                             format!("{}::{}", lname, f.name.name);
-                        lower_fn_anns(recs, &mut rows, &raw, f);
+                        lower_fn_anns(
+                            recs,
+                            &mut rows,
+                            &mut ann_issues,
+                            &raw,
+                            f,
+                        );
                     }
                 }
             }
         }
+    }
+
+    for (message, span) in ann_issues {
+        let pid = intern(recs, span);
+        table.issues.push(LoweringIssue {
+            message,
+            provenance: pid,
+        });
     }
 
     // ---- finalize: authored ordinals + row provenance ----

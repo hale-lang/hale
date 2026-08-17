@@ -257,6 +257,40 @@ pub enum AbsorbedHoleKind {
     OpaqueCall { callee: String },
 }
 
+/// The verdict vocabulary, mirrored from the evaluator's
+/// (`hale-types::verdict::Verdict`) — a conformance test pins the
+/// two, since this crate cannot depend on it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VerdictIr {
+    Holds,
+    Violated,
+    Uncertified,
+    Invalid,
+}
+
+/// GH #476 Change 5e: one pointwise certificate's EVIDENCE — the
+/// fn-grained outcome the existing certificate engines produce
+/// (the artifact has carried these as lowered claim rows since
+/// #392 §8), stored on the model so the judgment renders verdicts
+/// and diagnostics from model data alone. The engines stay the one
+/// analysis authority (extract-and-call, like `direct_effects`);
+/// Change 6 formalizes this into the typed evidence artifact rows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CertificateEvidence {
+    /// The annotated fn, when it resolves in the universe.
+    pub subject: Option<FunctionId>,
+    /// The subject's canonical display (the certificate row's
+    /// spelling).
+    pub subject_display: String,
+    /// The lowered claim form, display voice — the artifact's
+    /// `lowered` row spelling.
+    pub form: String,
+    pub result: VerdictIr,
+    /// The engine's diagnostics for this certificate, in emission
+    /// order: (message, span provenance).
+    pub diags: Vec<(String, ProvenanceId)>,
+}
+
 #[derive(Clone, Debug)]
 pub struct ApplicationModel {
     pub header: ModelHeader,
@@ -264,6 +298,8 @@ pub struct ApplicationModel {
     pub relations: Relations,
     pub labels: Vec<LabelRow>,
     pub weights: Vec<WeightRow>,
+    /// Pointwise certificate evidence (GH #476 Change 5e).
+    pub evidence: Vec<CertificateEvidence>,
     pub holes: Vec<Hole>,
     pub capabilities: Capabilities,
     pub provenance: ProvenanceTable,
@@ -1060,6 +1096,19 @@ impl ApplicationModel {
                 });
             }
             prov("holes", i, h.provenance)?;
+        }
+
+        // --- certificate evidence: subject + provenance in range.
+        for (i, ev) in self.evidence.iter().enumerate() {
+            if ev.subject.is_some_and(|f| f.index() >= fns) {
+                return Err(ModelError::DanglingId {
+                    table: "evidence",
+                    index: i,
+                });
+            }
+            for (_, pid) in &ev.diags {
+                prov("evidence.diags", i, *pid)?;
+            }
         }
 
         // --- legacy projection: sorted ids, all in range.
