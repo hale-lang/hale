@@ -102,30 +102,25 @@ pub struct SeedIrRef {
 
 
 /// A bus selector for annotation surfaces (`@effects(publish:)`,
-/// `@effects(depends:)`) — review rounds 16/17. The authoritative
-/// evaluator compares each entry against RESOLVED bus subjects with
-/// `topic_ref_matches` (exact string, or trailing-name), and the
-/// entry list admits identifiers AND string literals — so one
-/// spelling can legitimately denote a literal wire subject
-/// (`"audit.log"`), a declared topic, or an unqualified cross-seed
-/// name matching several same-tailed merged topics ("the
-/// permissiveness the author asked for"). The selector represents
-/// all three; only an explicit alias path is a single exact
-/// reference.
+/// `@effects(depends:)`) — review rounds 16/17/18. The entry list
+/// admits identifiers AND string literals, and the parser collapses
+/// both to a plain string — so a spelling containing `::` can be an
+/// alias path OR a literal wire subject (`"audit::log"`), and the
+/// syntax cannot be recovered from the AST. The authoritative
+/// evaluator never needs to: `topic_ref_matches` tests exact string
+/// equality first and trailing-name equality second for EVERY
+/// spelling, qualified or not. The selector therefore has exactly
+/// one shape — the candidate sets that rule produces over declared
+/// TOPICS and wire SUBJECTS, sorted. A literal wire subject lands
+/// in `subjects`; two same-tailed imports both land in `topics`
+/// ("the permissiveness the author asked for"); both empty =
+/// resolves to nothing (Change 5's residue).
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub enum BusSelector {
-    /// A qualified alias path — the author named one topic.
-    Exact(TopicIrRef),
-    /// Any other spelling: matched exact-or-trailing-name against
-    /// declared TOPICS and wire SUBJECTS — both candidate sets,
-    /// sorted. A literal wire subject lands in `subjects`; both
-    /// empty = resolves to nothing (Change 5's residue).
-    Match {
-        name: String,
-        topics: Vec<TopicId>,
-        subjects: Vec<SubjectId>,
-        provenance: ProvenanceId,
-    },
+pub struct BusSelector {
+    pub name: String,
+    pub topics: Vec<TopicId>,
+    pub subjects: Vec<SubjectId>,
+    pub provenance: ProvenanceId,
 }
 
 /// An effect class reference. The class universe is TYPED
@@ -544,36 +539,31 @@ impl ClaimIrTable {
             };
             let sel_ok =
                 |sel: &BusSelector| -> Result<(), ClaimIrError> {
-                    match sel {
-                        BusSelector::Exact(t) => topic_ok(t),
-                        BusSelector::Match {
-                            topics,
-                            subjects,
-                            provenance,
-                            ..
-                        } => {
-                            if !pr(*provenance) {
-                                return Err(ClaimIrError::DanglingProvenance { index: i });
-                            }
-                            if topics
-                                .windows(2)
-                                .any(|w| w[0] >= w[1])
-                                || subjects
-                                    .windows(2)
-                                    .any(|w| w[0] >= w[1])
-                            {
-                                return Err(bad("selector candidates"));
-                            }
-                            if topics.iter().any(|c| {
-                                c.index() >= e.topics.len()
-                            }) || subjects.iter().any(|c| {
-                                c.index() >= e.subjects.len()
-                            }) {
-                                return Err(bad("selector candidate"));
-                            }
-                            Ok(())
-                        }
+                    if !pr(sel.provenance) {
+                        return Err(ClaimIrError::DanglingProvenance {
+                            index: i,
+                        });
                     }
+                    if sel.topics.windows(2).any(|w| w[0] >= w[1])
+                        || sel
+                            .subjects
+                            .windows(2)
+                            .any(|w| w[0] >= w[1])
+                    {
+                        return Err(bad("selector candidates"));
+                    }
+                    if sel
+                        .topics
+                        .iter()
+                        .any(|c| c.index() >= e.topics.len())
+                        || sel
+                            .subjects
+                            .iter()
+                            .any(|c| c.index() >= e.subjects.len())
+                    {
+                        return Err(bad("selector candidate"));
+                    }
+                    Ok(())
                 };
             match &row.law {
                 ClaimIr::ForbidReaches {

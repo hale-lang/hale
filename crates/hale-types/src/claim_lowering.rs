@@ -246,28 +246,26 @@ pub fn lower_claims(
         let segs: Vec<&str> = s.split("::").collect();
         topic_ref_parts(recs, s, &segs, span)
     };
-    // The ONE bus selector for annotation entries (rounds 16/17):
-    // a qualified alias path is exact; any other spelling matches
-    // exact-or-trailing-name against declared topics AND wire
-    // subjects — mirroring `effects::topic_ref_matches`, which is
-    // how the evaluator admits a literal wire subject
-    // (`"audit.log"`), a local topic, and an imported unqualified
-    // name alike.
+    // The ONE bus selector for annotation entries (rounds 16-18):
+    // EVERY spelling — identifier, alias path, string literal —
+    // gets its candidate sets from `effects::topic_ref_matches`
+    // DIRECTLY (exact string equality first, trailing-name second).
+    // The parser collapses literals and paths to plain strings, so
+    // `"audit::log"` cannot be told from `alias::Topic`
+    // syntactically — and the evaluator never tells them apart
+    // either: a qualified path also tail-matches every same-tailed
+    // import. One rule, shared, no guessing from string contents.
     let bus_selector = |recs: &mut Vec<Provenance>,
                         s: &str,
                         span: hale_syntax::Span|
      -> BusSelector {
-        if s.contains("::") {
-            return BusSelector::Exact(topic_ref_str(recs, s, span));
-        }
-        let tail = crate::effects::topic_tail(s);
-        let matches =
-            |x: &str| x == s || crate::effects::topic_tail(x) == tail;
         let mut topics: Vec<hale_model::TopicId> = e
             .topics
             .iter()
             .enumerate()
-            .filter(|(_, t)| matches(&t.name))
+            .filter(|(_, t)| {
+                crate::effects::topic_ref_matches(s, &t.name)
+            })
             .map(|(i, _)| hale_model::TopicId(i as u32))
             .collect();
         topics.sort();
@@ -276,12 +274,14 @@ pub fn lower_claims(
             .subjects
             .iter()
             .enumerate()
-            .filter(|(_, su)| matches(&su.pattern))
+            .filter(|(_, su)| {
+                crate::effects::topic_ref_matches(s, &su.pattern)
+            })
             .map(|(i, _)| hale_model::SubjectId(i as u32))
             .collect();
         subjects.sort();
         subjects.dedup();
-        BusSelector::Match {
+        BusSelector {
             name: s.to_string(),
             topics,
             subjects,

@@ -211,10 +211,7 @@ fn main() { App { }; }
         unreachable!()
     };
     assert!(locus.0.is_some());
-    let hale_model::BusSelector::Match { subjects, .. } = &entries[0]
-    else {
-        panic!("unqualified depends entry is a selector")
-    };
+    let hale_model::BusSelector { subjects, .. } = &entries[0];
     assert!(!subjects.is_empty(), "subject `evt` resolves");
     let pe = by("Worker", &|l| {
         matches!(l, ClaimIr::PhaseEffects { .. })
@@ -462,11 +459,7 @@ fn main() { App { }; }
     else {
         unreachable!()
     };
-    let hale_model::BusSelector::Match { name, topics, .. } =
-        &entries[0]
-    else {
-        panic!("unqualified spelling is a candidate-set selector")
-    };
+    let hale_model::BusSelector { name, topics, .. } = &entries[0];
     assert_eq!(name, "Orders");
     assert_eq!(topics.len(), 1, "the local topic is the candidate");
     assert_eq!(m.entities.topics[topics[0].index()].name, "Orders");
@@ -640,11 +633,7 @@ fn main() { App { }; }
     else {
         unreachable!()
     };
-    let hale_model::BusSelector::Match { name, topics, .. } =
-        &entries[0]
-    else {
-        panic!("unqualified library spelling is a candidate set")
-    };
+    let hale_model::BusSelector { name, topics, .. } = &entries[0];
     assert_eq!(name, "Recalled");
     assert_eq!(topics.len(), 1);
     assert_eq!(
@@ -680,12 +669,9 @@ fn main() { App { }; }
     else {
         unreachable!()
     };
-    let hale_model::BusSelector::Match {
+    let hale_model::BusSelector {
         subjects, topics, ..
-    } = &entries[0]
-    else {
-        panic!("literal entry is a selector")
-    };
+    } = &entries[0];
     assert!(topics.is_empty());
     assert_eq!(subjects.len(), 1, "the literal wire subject resolves");
     assert_eq!(
@@ -749,15 +735,12 @@ fn main() { App { }; }
     else {
         unreachable!()
     };
-    let hale_model::BusSelector::Match {
+    let hale_model::BusSelector {
         name,
         topics,
         subjects,
         ..
-    } = &entries[0]
-    else {
-        panic!("unqualified depends entry is a selector")
-    };
+    } = &entries[0];
     assert_eq!(name, "Recalled");
     assert!(
         !topics.is_empty() || !subjects.is_empty(),
@@ -769,5 +752,127 @@ fn main() { App { }; }
             .any(|t| model.entities.topics[t.index()].name
                 == "__lib_r_main_Recalled"),
         "the merged topic is a candidate"
+    );
+}
+
+/// P1 (round 18): a LITERAL wire subject containing `::`
+/// (`"audit::log"`) cannot be told from an alias path
+/// syntactically — and the evaluator never tells them apart. Both
+/// surfaces resolve it as a subject candidate through
+/// `topic_ref_matches`, never as an unresolved "qualified topic".
+#[test]
+fn double_colon_literal_subject_resolves_on_both_surfaces() {
+    let src = r#"
+type Event { n: Int = 0; }
+@effects(depends: { "audit::log" })
+locus Sink {
+    bus { subscribe "audit::log" as on_e of type Event; }
+    fn on_e(v: Event) { }
+}
+main locus App {
+    params { s: Sink = Sink { }; }
+    bus { publish "audit::log" of type Event; }
+    @effects(publish: { "audit::log" })
+    fn emit(v: Int) { "audit::log" <- Event { }; }
+    run() { self.emit(1); }
+}
+fn main() { App { }; }
+"#;
+    let (t, m) = lower(src);
+    let ClaimIr::EffectPublishSet { entries, .. } = &t
+        .rows
+        .iter()
+        .find(|r| matches!(r.law, ClaimIr::EffectPublishSet { .. }))
+        .expect("publish-set row")
+        .law
+    else {
+        unreachable!()
+    };
+    let sel = &entries[0];
+    assert_eq!(
+        sel.subjects.len(),
+        1,
+        "the ::-literal resolves as a SUBJECT candidate: {:?}",
+        sel
+    );
+    assert_eq!(
+        m.entities.subjects[sel.subjects[0].index()].pattern,
+        "audit::log"
+    );
+    let ClaimIr::DependsSet { entries, .. } = &t
+        .rows
+        .iter()
+        .find(|r| matches!(r.law, ClaimIr::DependsSet { .. }))
+        .expect("depends row")
+        .law
+    else {
+        unreachable!()
+    };
+    assert!(
+        !entries[0].subjects.is_empty(),
+        "same on depends:: {:?}",
+        entries[0]
+    );
+}
+
+/// P1 (round 18): a QUALIFIED path tail-matches every same-tailed
+/// import — `topic_ref_matches` compares trailing names after exact
+/// equality, so `a::Recalled` covers both `__lib_a_x_Recalled` and
+/// `__lib_b_y_Recalled` (the evaluator's current behavior, pinned
+/// as-is; making paths exact would be an evaluator change).
+#[test]
+fn qualified_path_tail_matches_same_tailed_imports() {
+    let lib_a = r#"
+type __lib_a_x_Item { n: Int = 0; }
+topic __lib_a_x_Recalled { payload: __lib_a_x_Item; }
+"#;
+    let lib_b = r#"
+type __lib_b_y_Item { n: Int = 0; }
+topic __lib_b_y_Recalled { payload: __lib_b_y_Item; }
+"#;
+    let main_src = r#"
+@effects(publish: { "a::Recalled" })
+fn emit(v: Int) { __lib_a_x_Recalled <- __lib_a_x_Item { }; }
+main locus App {
+    bus { publish __lib_a_x_Recalled; }
+    run() { emit(1); }
+}
+fn main() { App { }; }
+"#;
+    let main_p = hale_syntax::parse_source(main_src).expect("parse");
+    let a_p = hale_syntax::parse_source(lib_a).expect("parse a");
+    let b_p = hale_syntax::parse_source(lib_b).expect("parse b");
+    let mut programs = BTreeMap::new();
+    programs.insert("app/main.hl".to_string(), &main_p);
+    programs.insert("lib/a.hl".to_string(), &a_p);
+    programs.insert("lib/b.hl".to_string(), &b_p);
+    let mut bundle = Bundle::new(programs);
+    bundle.import_renames = vec![
+        (
+            vec!["a".to_string(), "Recalled".to_string()],
+            "__lib_a_x_Recalled".to_string(),
+        ),
+        (
+            vec!["b".to_string(), "Recalled".to_string()],
+            "__lib_b_y_Recalled".to_string(),
+        ),
+    ];
+    let model = derive_application_model(&bundle);
+    let t = lower_claims(&bundle, &model);
+    t.validate(&model).expect("lawful");
+    let ClaimIr::EffectPublishSet { entries, .. } = &t
+        .rows
+        .iter()
+        .find(|r| matches!(r.law, ClaimIr::EffectPublishSet { .. }))
+        .expect("row")
+        .law
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        entries[0].topics.len(),
+        2,
+        "both same-tailed imports are candidates: {:?}",
+        entries[0]
     );
 }
