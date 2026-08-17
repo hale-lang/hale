@@ -1565,9 +1565,8 @@ pub fn judge_only_edges(
                     }
                 }
                 EntityRef::Function(f) => {
-                    if v1.contains(&f) {
-                        set.insert(f);
-                    }
+                    // Declaration-only free fns are still decls.
+                    set.insert(f);
                 }
                 _ => {}
             }
@@ -1658,25 +1657,41 @@ pub fn judge_only_edges(
         }
         out
     };
+    // Holes trigger by relation family; the kind picks wording.
+    // `authored_site` (first occurrence) lets the boundary check
+    // interleave holes with known edges as authored — the evaluator
+    // walks fs.calls in source order and refuses at the hole's
+    // authored position, BEFORE any later crossing is reported.
     #[derive(Clone)]
     enum FnHole {
         Indirect,
         Untyped { callee: String },
         Computed,
+        Other { reason: String },
     }
-    let mut holes_of: BTreeMap<FunctionId, Vec<FnHole>> =
+    let mut holes_of: BTreeMap<FunctionId, Vec<(Option<u32>, FnHole)>> =
         BTreeMap::new();
     for h in &model.holes {
         let EntityRef::Function(f) = h.at else { continue };
+        let families = hale_model::RelationSet::CALLS
+            .union(hale_model::RelationSet::PUBLISHES);
+        if !h.hides.intersects(families) {
+            continue;
+        }
         let hole = match &h.kind {
             HoleKind::IndirectCall => FnHole::Indirect,
             HoleKind::UntypedReceiver { callee } => FnHole::Untyped {
                 callee: callee.clone(),
             },
             HoleKind::ComputedSubject => FnHole::Computed,
-            _ => continue,
+            _ => FnHole::Other {
+                reason: h.reason.clone(),
+            },
         };
-        holes_of.entry(f).or_default().push(hole);
+        holes_of
+            .entry(f)
+            .or_default()
+            .push((h.authored_site, hole));
     }
 
     let mut out = Vec::new();
@@ -1785,47 +1800,31 @@ pub fn judge_only_edges(
         let mut verdict = Verdict::Holds;
         let mut reported: BTreeSet<String> = BTreeSet::new();
         'fns: for f in &src_fns {
-            for (_, to, cprov) in
+            // The evaluator walks fs.calls in SOURCE order and
+            // refuses at an unfollowable edge's authored position —
+            // a crossing AFTER the hole is never reported.
+            // Interleave known call rows and call-space holes by
+            // authored site (review: ordered event streams).
+            enum CallEv<'x> {
+                Edge(FunctionId, ProvenanceId),
+                Hole(&'x FnHole),
+            }
+            let mut evs: Vec<(u32, u8, CallEv)> = Vec::new();
+            for (site, to, cprov) in
                 calls_of.get(f).into_iter().flatten()
             {
-                if dst_fn_set.contains(to) {
-                    let key =
-                        format!("{}->{}", fn_disp(*f), fn_disp(*to));
-                    if reported.insert(key) {
-                        diags.push(Diag::ty(
-                            row_span,
-                            format!(
-                                "claim `{}` violated: un-granted \
-                                 edge `{}` -> `{}` — call edges \
-                                 are not grantable; the boundary \
-                                 between `{}` and `{}` must be a \
-                                 bus edge named in the grant list",
-                                row.name,
-                                fn_disp(*f),
-                                fn_disp(*to),
-                                src.name.display,
-                                dst.name.display
-                            ),
-                        ));
-                        diags.push(Diag::ty(
-                            model_span(*cprov),
-                            format!(
-                                "claim `{}`: this call \
-                                 crosses the boundary. A \
-                                 call cannot be granted — \
-                                 route it through a topic \
-                                 named in the grant list, or \
-                                 move the callee out of `{}`",
-                                row.name, dst.name.display
-                            ),
-                        ));
-                        verdict = Verdict::Violated;
-                    }
-                }
+                evs.push((*site, 0, CallEv::Edge(*to, *cprov)));
             }
-            for h in holes_of.get(f).into_iter().flatten() {
-                match h {
-                    FnHole::Indirect => {
+            for (site, h) in holes_of.get(f).into_iter().flatten() {
+                if matches!(h, FnHole::Computed) {
+                    continue;
+                }
+                evs.push((site.unwrap_or(u32::MAX), 1, CallEv::Hole(h)));
+            }
+            evs.sort_by_key(|(site, tie, _)| (*site, *tie));
+            for (_, _, ev) in evs {
+                let (to, cprov) = match ev {
+                    CallEv::Hole(FnHole::Indirect) => {
                         diags.push(Diag::ty(
                             row_span,
                             format!(
@@ -1841,7 +1840,7 @@ pub fn judge_only_edges(
                         verdict = Verdict::Uncertified;
                         break 'fns;
                     }
-                    FnHole::Untyped { callee } => {
+                    CallEv::Hole(FnHole::Untyped { callee }) => {
                         diags.push(Diag::ty(
                             row_span,
                             format!(
@@ -1860,14 +1859,66 @@ pub fn judge_only_edges(
                         verdict = Verdict::Uncertified;
                         break 'fns;
                     }
-                    FnHole::Computed => {}
+                    CallEv::Hole(FnHole::Other { reason }) => {
+                        diags.push(Diag::ty(
+                            row_span,
+                            format!(
+                                "claim `{}` cannot be certified: `{}` \
+                                 — {}. An unresolvable edge fails \
+                                 closed",
+                                row.name,
+                                fn_disp(*f),
+                                reason
+                            ),
+                        ));
+                        verdict = Verdict::Uncertified;
+                        break 'fns;
+                    }
+                    CallEv::Hole(FnHole::Computed) => continue,
+                    CallEv::Edge(to, cprov) => (to, cprov),
+                };
+                {
+                if dst_fn_set.contains(&to) {
+                    let key =
+                        format!("{}->{}", fn_disp(*f), fn_disp(to));
+                    if reported.insert(key) {
+                        diags.push(Diag::ty(
+                            row_span,
+                            format!(
+                                "claim `{}` violated: un-granted \
+                                 edge `{}` -> `{}` — call edges \
+                                 are not grantable; the boundary \
+                                 between `{}` and `{}` must be a \
+                                 bus edge named in the grant list",
+                                row.name,
+                                fn_disp(*f),
+                                fn_disp(to),
+                                src.name.display,
+                                dst.name.display
+                            ),
+                        ));
+                        diags.push(Diag::ty(
+                            model_span(cprov),
+                            format!(
+                                "claim `{}`: this call \
+                                 crosses the boundary. A \
+                                 call cannot be granted — \
+                                 route it through a topic \
+                                 named in the grant list, or \
+                                 move the callee out of `{}`",
+                                row.name, dst.name.display
+                            ),
+                        ));
+                        verdict = Verdict::Violated;
+                    }
+                }
                 }
             }
             if holes_of
                 .get(f)
                 .into_iter()
                 .flatten()
-                .any(|h| matches!(h, FnHole::Computed))
+                .any(|(_, h)| matches!(h, FnHole::Computed))
             {
                 diags.push(Diag::ty(
                     row_span,

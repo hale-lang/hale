@@ -350,6 +350,9 @@ fn main() {
         judged[0].verdict,
         hale_types::verdict::Verdict::Violated,
         "the alloc happens inside the stdlib body"
+    );
+}
+
 /// Negative control (5b): the boundary judgment reads the
 /// subscribe relation — clearing it removes the un-granted bus
 /// edge and flips the verdict.
@@ -392,6 +395,52 @@ fn main() { App { }; }
         judged[0].verdict,
         hale_types::verdict::Verdict::Holds,
         "the judgment reads relations.subscribes"
+    );
+}
+
+/// Review pin (5b): an indirect call BEFORE a boundary-crossing
+/// call refuses at its authored position — only the Uncertified
+/// diagnostic, never violation-then-refusal.
+#[test]
+fn hole_before_crossing_refuses_first() {
+    let src = r#"
+fn leak(v: Int) -> Int { return v; }
+locus A {
+    params { n: Int = 0; }
+    fn go(f: fn (Int) -> Int, v: Int) -> Int {
+        let x = f(v);
+        return leak(x);
+    }
+}
+group a_side = { A };
+group b_side = { leak };
+main locus App {
+    params { a: A = A { }; }
+    claims { boundary: only edges a_side -> b_side { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let out = diff_one(src, "hole before crossing");
+    assert!(out.is_ok(), "old/new agree: {:?}", out);
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified
+    );
+    assert_eq!(
+        judged[0].diags.len(),
+        1,
+        "only the refusal — no violation before it: {:?}",
+        judged[0]
+            .diags
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
