@@ -286,19 +286,147 @@ pub fn judge_forbid_reaches(
             continue;
         };
         let mut diags: Vec<Diag> = Vec::new();
-        // Phase-1 grammar: src is always a group.
+        // ---- the evaluator's validation pass (validate_claim's
+        // ForbidReaches arm): unknown names, effects-in-source,
+        // undeclared classes, and the avoiding-overlap guard. Any
+        // failure = Invalid, evaluation skipped. ----
+        let mut ok = true;
+        let group_decl_names: Vec<&str> =
+            e.groups.iter().map(|g| g.display.as_str()).collect();
+        let mut check_group =
+            |gref: &hale_model::GroupRef, diags: &mut Vec<Diag>| -> bool {
+                if gref.group.is_some() {
+                    return true;
+                }
+                let mut near: Vec<&&str> = group_decl_names
+                    .iter()
+                    .filter(|g| crate::effects::close(g, &gref.name.display))
+                    .collect();
+                near.sort();
+                let hint = match near.first() {
+                    Some(n) => format!(" Did you mean `{}`?", n),
+                    None => String::new(),
+                };
+                diags.push(Diag::ty(
+                    claim_span(gref.provenance),
+                    format!(
+                        "claim `{}` names group `{}`, which is never declared. \
+                         Add `group {} = {{ … }};` at the top level.{}",
+                        row.name,
+                        gref.name.display,
+                        gref.name.display,
+                        hint
+                    ),
+                ));
+                false
+            };
         let SetIr::Group(src_ref) = src else {
-            continue;
-        };
-        let Some(src_gid) = src_ref.group else {
-            // Unresolved group: the evaluator refused earlier
-            // (unknown-name diag at group resolution) — Invalid.
+            // `effects(...)` in source position: rejected by the
+            // evaluator's validation with its exact spelling.
+            if let SetIr::EffectCarriers(c) = src {
+                diags.push(Diag::ty(
+                    claim_span(c.provenance),
+                    format!(
+                        "claim `{}`: `effects(...)` is only valid \
+                         in target position — sources must be \
+                         declared groups",
+                        row.name
+                    ),
+                ));
+            }
             out.push(Judged {
                 ordinal: row.ordinal,
                 verdict: Verdict::Invalid,
                 diags,
             });
             continue;
+        };
+        ok &= check_group(src_ref, &mut diags);
+        match dst {
+            SetIr::Group(g) => {
+                ok &= check_group(g, &mut diags);
+            }
+            SetIr::EffectCarriers(c) => {
+                // check_class: a USER class must be declared.
+                if !c.builtin && c.class.map_or(true, |id| {
+                    !e.effect_classes[id.index()].declared
+                }) {
+                    let mut near: Vec<&String> = e
+                        .effect_classes
+                        .iter()
+                        .filter(|ec| ec.declared)
+                        .map(|ec| &ec.name)
+                        .filter(|n| crate::effects::close(n, &c.name))
+                        .collect();
+                    near.sort();
+                    let hint = match near.first() {
+                        Some(n) => format!(" Did you mean `{}`?", n),
+                        None => String::new(),
+                    };
+                    diags.push(Diag::ty(
+                        claim_span(c.provenance),
+                        format!(
+                            "claim `{}` names effect class `{}`, which is never \
+                             declared. Add `effect {};` at the top level.{}",
+                            row.name, c.name, c.name, hint
+                        ),
+                    ));
+                    ok = false;
+                }
+            }
+        }
+        if let Some(a) = avoiding {
+            ok &= check_group(a, &mut diags);
+            // The overlap guard: DECL-grain member intersection
+            // between the mask and each endpoint.
+            if let Some(av_gid) = a.group {
+                let members = |g: GroupId| -> BTreeSet<&EntityRef> {
+                    r.group_members
+                        .iter()
+                        .filter(|gm| gm.group == g)
+                        .filter(|gm| {
+                            matches!(
+                                gm.member,
+                                EntityRef::LocusDecl(_)
+                                    | EntityRef::Function(_)
+                            )
+                        })
+                        .map(|gm| &gm.member)
+                        .collect()
+                };
+                let av_members = members(av_gid);
+                for set in [src, dst] {
+                    let SetIr::Group(n) = set else { continue };
+                    let Some(gid) = n.group else { continue };
+                    if !av_members.is_disjoint(&members(gid)) {
+                        diags.push(Diag::ty(
+                            claim_span(a.provenance),
+                            format!(
+                                "claim `{}`: `avoiding {}` overlaps \
+                                 `{}` — masking an endpoint makes \
+                                 the claim weaker than it reads (a \
+                                 masked target holds vacuously; a \
+                                 masked source drops roots). Make \
+                                 the gate disjoint from the \
+                                 endpoints",
+                                row.name, a.name.display, n.name.display
+                            ),
+                        ));
+                        ok = false;
+                    }
+                }
+            }
+        }
+        if !ok {
+            out.push(Judged {
+                ordinal: row.ordinal,
+                verdict: Verdict::Invalid,
+                diags,
+            });
+            continue;
+        }
+        let Some(src_gid) = src_ref.group else {
+            unreachable!("refused by the validation pass above")
         };
         // Projection vacuity (the evaluator's guard): a group whose
         // declarations project to no executable vertices proves
