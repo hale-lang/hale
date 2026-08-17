@@ -125,6 +125,7 @@
 
 pub mod application;
 pub mod capability;
+pub mod claim_ir;
 pub mod entity;
 pub mod hole;
 pub mod ids;
@@ -137,14 +138,20 @@ pub use application::{
     Relations, WeightRow, MODEL_SEMANTICS_V1,
 };
 pub use capability::Capabilities;
+pub use claim_ir::{
+    bus_ref_matches, bus_topic_tail, is_builtin_effect_class, ClaimIr, ClaimIrError, ClaimIrTable, ClaimOrigin, ClaimRow,
+    CountCmpIr, EffectClassRef, GrantIr, GroupRef, LoweringIssue,
+    NameRef, PhaseIrRef, QuantDimIr, SeedIrRef, SetIr,
+    BusSelector, TopicIrRef,
+};
 pub use entity::{
-    Binding, BindingRole, DeclKind, Declaration, Function, FunctionKind, Group, InterfaceDecl,
+    Binding, BindingRole, DeclKind, Declaration, EffectClassDecl, EffectClassDefinition, Function, FunctionKind, Group, InterfaceDecl,
     LocusDecl, LocusInstance, PayloadContract, Phase, Seed, Subject, ThreadDomain, Topic,
     TransportKind, TypeDecl,
 };
 pub use hole::{Hole, HoleKind, RelationSet};
 pub use ids::{
-    BindingId, DeclarationId, EntityRef, FunctionId, GroupId, InterfaceDeclId, LocusDeclId,
+    BindingId, DeclarationId, EffectClassId, EntityRef, FunctionId, GroupId, InterfaceDeclId, LocusDeclId,
     LocusInstanceId, PayloadContractId, PhaseId, ProvenanceId, SeedId, SourceId, SubjectId,
     ThreadDomainId, TopicId, TypeDeclId,
 };

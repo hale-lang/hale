@@ -604,11 +604,29 @@ fn expand_adoptions(
     origins
 }
 
-fn claims_report_inner(
-    programs: &[&Program],
-    graph: &BusGraph,
+/// The clause universe — the ONE enumeration of every claims-block
+/// law the evaluator sees: this main's world tier, adopted
+/// constitution clauses (#409), and library-tier top-level blocks
+/// (#392 thread 2), plus the group declarations and adoption info
+/// the evaluation needs. Extracted from `claims_report_inner` so
+/// the `ClaimIr` lowering (GH #476 Change 4) walks EXACTLY the
+/// clauses the evaluator walks — two enumerations would drift.
+pub(crate) struct ClauseUniverse<'a> {
+    pub claims: Vec<ClaimDecl>,
+    /// claim name → originating constitution (adopted clauses).
+    pub origins: BTreeMap<String, String>,
+    /// claim name → attribution alias (library-tier clauses).
+    pub library: BTreeMap<String, Option<String>>,
+    pub group_decls: Vec<&'a GroupDecl>,
+    pub adoption: AdoptionInfo,
+    pub diags: Vec<Diag>,
+}
+
+pub(crate) fn enumerate_clauses<'a>(
+    programs: &[&'a Program],
     import_renames: &[(Vec<String>, String)],
-) -> (Vec<Diag>, Vec<ClaimOutcome>, AdoptionInfo) {
+) -> ClauseUniverse<'a> {
+    let mut library: BTreeMap<String, Option<String>> = BTreeMap::new();
     // ---- collect group decls + claims blocks (modules included) ----
     //
     // #392 thread 2 — two tiers. Main-locus blocks are the WORLD
@@ -747,9 +765,37 @@ fn claims_report_inner(
             if let Some(a) = alias {
                 c.name.name = format!("{}::{}", a, c.name.name);
             }
+            library.insert(
+                c.name.name.clone(),
+                alias.map(|a| a.to_string()),
+            );
             claims.push(c);
         }
     }
+    ClauseUniverse {
+        claims,
+        origins,
+        library,
+        group_decls,
+        adoption,
+        diags,
+    }
+}
+
+fn claims_report_inner(
+    programs: &[&Program],
+    graph: &BusGraph,
+    import_renames: &[(Vec<String>, String)],
+) -> (Vec<Diag>, Vec<ClaimOutcome>, AdoptionInfo) {
+    let ClauseUniverse {
+        claims,
+        origins,
+        library: _,
+        group_decls,
+        adoption,
+        diags,
+    } = enumerate_clauses(programs, import_renames);
+    let mut diags = diags;
     if group_decls.is_empty() && claims.is_empty() {
         return (diags, Vec::new(), adoption);
     }

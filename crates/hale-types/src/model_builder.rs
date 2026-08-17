@@ -1878,6 +1878,93 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
 
     // ---- assemble, in canonical order ----
     let mut e = Entities::default();
+    // Effect classes (GH #476 Change 4): the USER class vocabulary,
+    // with declaration status and NORMALIZED atomic composition —
+    // the evaluators' declared_of / defs_of facts, made model rows
+    // so a ClaimIr consumer can tell a declared class from an
+    // interned typo and expand `effect io = {…}` without the AST.
+    {
+        let names = crate::effects::effect_names_of(&programs);
+        let defs = crate::effects::defs_of(&programs);
+        let declared: BTreeSet<u16> =
+            crate::effects::declared_of(&programs);
+        // Returns true iff the expansion re-entered a class on the
+        // current path — a CYCLE, which resolves to no effect and
+        // must stay distinguishable from an atomic class (review
+        // round 16; the checker rejects it at the declaration).
+        fn expand(
+            i: u16,
+            names: &[String],
+            defs: &[Option<Vec<hale_syntax::ast::EffectClass>>],
+            out: &mut BTreeSet<String>,
+            stack: &mut Vec<u16>,
+        ) -> bool {
+            if stack.contains(&i) {
+                return true;
+            }
+            stack.push(i);
+            let mut cyclic = false;
+            match defs.get(i as usize).and_then(|d| d.as_ref()) {
+                Some(members) => {
+                    for m in members {
+                        match m {
+                            hale_syntax::ast::EffectClass::User(j) => {
+                                cyclic |= expand(
+                                    *j, names, defs, out, stack,
+                                );
+                            }
+                            b => {
+                                out.insert(b.as_str().to_string());
+                            }
+                        }
+                    }
+                }
+                None => {
+                    if let Some(n) = names.get(i as usize) {
+                        out.insert(n.clone());
+                    }
+                }
+            }
+            stack.pop();
+            cyclic
+        }
+        let mut rows: Vec<hale_model::EffectClassDecl> = Vec::new();
+        for (i, n) in names.iter().enumerate() {
+            let composed =
+                defs.get(i).map(|d| d.is_some()).unwrap_or(false);
+            let definition = if composed {
+                let mut atoms = BTreeSet::new();
+                let cyclic = expand(
+                    i as u16,
+                    &names,
+                    &defs,
+                    &mut atoms,
+                    &mut Vec::new(),
+                );
+                if cyclic {
+                    hale_model::EffectClassDefinition::InvalidCycle
+                } else {
+                    hale_model::EffectClassDefinition::Composed {
+                        atoms: atoms.into_iter().collect(),
+                    }
+                }
+            } else {
+                hale_model::EffectClassDefinition::Atomic
+            };
+            let pid = intern_synth(
+                &mut records,
+                "effect class declaration",
+            );
+            rows.push(hale_model::EffectClassDecl {
+                name: n.clone(),
+                declared: declared.contains(&(i as u16)),
+                definition,
+                provenance: pid,
+            });
+        }
+        rows.sort_by(|a, b| a.name.cmp(&b.name));
+        e.effect_classes = rows;
+    }
     for (n, (sealed, sp)) in &locus_rows {
         let pid = intern_span(&mut records, *sp);
         e.loci.push(LocusDecl {

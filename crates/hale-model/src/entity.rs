@@ -181,6 +181,43 @@ pub struct Phase {
     pub provenance: ProvenanceId,
 }
 
+/// A declared USER effect class (`effect NAME;` /
+/// `effect io = { syscall, block };`) — the vocabulary
+/// `@effects` contracts and `bound`/`effects(...)` claims speak
+/// (GH #476 Change 4). The interner also creates entries for BARE
+/// references in `@effects(...)` clauses, and the evaluators
+/// distinguish a declared class from an interned typo — so the
+/// model must too: `declared: false` is exactly "referenced,
+/// never declared".
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct EffectClassDecl {
+    pub name: String,
+    /// `effect NAME;` exists (false = bare reference only).
+    pub declared: bool,
+    pub definition: EffectClassDefinition,
+    pub provenance: ProvenanceId,
+}
+
+/// How a user effect class is defined. An EXPLICIT shape (review
+/// round 16): a cyclic definition (`effect a = { b }; effect b =
+/// { a };`) expands to nothing and would otherwise be
+/// indistinguishable from an atomic class — the evaluator rejects
+/// cycles at the declaration precisely because they make contracts
+/// vacuous, and the model must preserve that invalidity.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum EffectClassDefinition {
+    /// `effect money;` — the class is its own atom.
+    Atomic,
+    /// `effect io = { syscall, block };` — the NORMALIZED atomic
+    /// expansion, sorted and deduplicated; the class owns no bit of
+    /// its own and means its expansion.
+    Composed { atoms: Vec<String> },
+    /// The definition participates in a cycle: it resolves to no
+    /// effect, and every contract naming it is vacuous. Diagnosed
+    /// at the declaration by the checker.
+    InvalidCycle,
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Seed {
     pub name: String,
