@@ -8,6 +8,21 @@ behavior.
 
 ## Unreleased
 
+### The boundary-grant judgment - family 5b (GH #476 Change 5b)
+
+`judgment::judge_only_edges` - the `only edges` family on the
+canonical model, direct-edge law with no walk: call edges into the
+destination group are never grantable; bus edges match grants by
+the subscription's canonical spelling (topic name for declared
+subscriptions, authored pattern for literal/wildcard ones - the
+same graph keying `subscribers_of` iterates, wildcards included).
+Fail-closed holes, projection vacuity, unknown-group validation,
+and the full three-diagnostic violation rendering (claim line,
+un-granted publish site, delivered-at subscription) are ported
+with the evaluator's exact spellings, held by the same corpus
+differential as 5a. Negative control: dropping subscribe rows
+flips the verdict.
+
 ### The reachability judgment - family 5a on the canonical model (GH #476 Change 5a)
 
 `hale_types::judgment::judge_forbid_reaches(&ClaimIrTable,

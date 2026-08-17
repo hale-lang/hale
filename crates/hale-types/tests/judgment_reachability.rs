@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 
 use hale_model::ClaimIr;
 use hale_types::claim_lowering::lower_claims;
-use hale_types::judgment::judge_forbid_reaches;
+use hale_types::judgment::{judge_forbid_reaches, judge_only_edges};
 use hale_types::model_builder::derive_application_model;
 use hale_types::symbol::SourceFile;
 use hale_types::Bundle;
@@ -44,7 +44,13 @@ fn family_names(
     table
         .rows
         .iter()
-        .filter(|r| matches!(r.law, ClaimIr::ForbidReaches { .. }))
+        .filter(|r| {
+            matches!(
+                r.law,
+                ClaimIr::ForbidReaches { .. }
+                    | ClaimIr::OnlyEdges { .. }
+            )
+        })
         .map(|r| r.name.clone())
         .collect()
 }
@@ -74,8 +80,16 @@ fn diff_one(
             &graph,
             &[],
         );
-    // New: engine over the lowered rows.
-    let (pre_diags, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    // New: engine over the lowered rows — both migrated families,
+    // merged back into ordinal order (the evaluator's claim order).
+    let (pre_diags, judged_fr) =
+        judge_forbid_reaches(&table, &model, &[0]);
+    let judged_oe = judge_only_edges(&table, &model, &[0]);
+    let mut judged: Vec<hale_types::judgment::Judged> = judged_fr
+        .into_iter()
+        .chain(judged_oe.into_iter())
+        .collect();
+    judged.sort_by_key(|j| j.ordinal);
     // Verdict parity, matched by claim name.
     let old_verdicts: BTreeMap<&str, &hale_types::verdict::Verdict> =
         outcomes
@@ -336,6 +350,48 @@ fn main() {
         judged[0].verdict,
         hale_types::verdict::Verdict::Violated,
         "the alloc happens inside the stdlib body"
+/// Negative control (5b): the boundary judgment reads the
+/// subscribe relation — clearing it removes the un-granted bus
+/// edge and flips the verdict.
+#[test]
+fn dropping_subscribe_rows_changes_the_only_edges_verdict() {
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic Sneaky { payload: Cmd; subject: "app.sneaky"; }
+locus Ops {
+    params { n: Int = 0; }
+    bus { publish Sneaky; }
+    fn act() { Sneaky <- Cmd { }; }
+}
+locus Core {
+    params { n: Int = 0; }
+    bus { subscribe Sneaky as on_sneaky; }
+    fn on_sneaky(c: Cmd) { self.n = c.v; }
+}
+group ops = { Ops };
+group core = { Core };
+main locus App {
+    params { o: Ops = Ops { }; c: Core = Core { }; }
+    claims { boundary: only edges ops -> core { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated
+    );
+    model.relations.subscribes.clear();
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds,
+        "the judgment reads relations.subscribes"
     );
 }
 
