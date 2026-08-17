@@ -53,6 +53,12 @@ enum StepIr {
         /// inside a non-bundle body, so the evaluator's
         /// `is_bundle_fn` gate suppresses the crossing-edge diag.
         via_stdlib: bool,
+        /// Interior stdlib path (display, dispatch) between the
+        /// caller and the target, for witness rendering — absorbed
+        /// edges only.
+        interior: Vec<(String, Option<(String, String)>)>,
+        /// Dispatch rendering of the final step INTO the target.
+        into_to: Option<(String, String)>,
     },
     Bus {
         subject: String,
@@ -162,6 +168,8 @@ pub fn judge_forbid_reaches(
                 via_interface: None,
                 provenance: c.provenance,
                 via_stdlib: false,
+                interior: Vec::new(),
+                into_to: None,
             },
             DispatchKind::Interface { interface } => StepIr::Call {
                 via_interface: Some(
@@ -173,12 +181,14 @@ pub fn judge_forbid_reaches(
                 ),
                 provenance: c.provenance,
                 via_stdlib: false,
+                interior: Vec::new(),
+                into_to: None,
             },
-            DispatchKind::ViaStdlib => StepIr::Call {
-                via_interface: None,
-                provenance: c.provenance,
-                via_stdlib: true,
-            },
+            // ViaStdlib rows are the LEGACY contraction — the
+            // absorption sidecar replaces them for judgment (it
+            // carries interior witnesses and holes); skip to avoid
+            // double edges.
+            DispatchKind::ViaStdlib => continue,
         };
         calls_of
             .entry(c.from)
@@ -220,6 +230,14 @@ pub fn judge_forbid_reaches(
     }
     for v in pubs_of.values_mut() {
         v.sort_by_key(|(site, ..)| *site);
+    }
+    // (from, site) → absorption entries.
+    let mut absorb_of: BTreeMap<
+        FunctionId,
+        Vec<&hale_model::StdlibAbsorption>,
+    > = BTreeMap::new();
+    for a in &model.legacy.stdlib_absorption {
+        absorb_of.entry(a.from).or_default().push(a);
     }
     // fn → fail-closed holes, for the visitor.
     #[derive(Clone)]
@@ -589,10 +607,103 @@ pub fn judge_forbid_reaches(
                             FnHole::Computed => {}
                         }
                     }
-                    for (_, to, step) in
-                        calls_of.get(f).into_iter().flatten()
+                    // Interleave model call rows and absorbed
+                    // stdlib consequences by authored site — the
+                    // evaluator's BFS position.
+                    let mut items: Vec<(u32, u8, usize)> = Vec::new();
+                    let direct =
+                        calls_of.get(f).map(|v| v.as_slice()).unwrap_or(&[]);
+                    for (i, (site, _, _)) in
+                        direct.iter().enumerate()
                     {
-                        edges.push((*to, step.clone()));
+                        items.push((*site, 0, i));
+                    }
+                    let absorbed = absorb_of
+                        .get(f)
+                        .map(|v| v.as_slice())
+                        .unwrap_or(&[]);
+                    for (i, a) in absorbed.iter().enumerate() {
+                        items.push((a.site, 1, i));
+                    }
+                    items.sort();
+                    for (_, kind, i) in items {
+                        if kind == 0 {
+                            let (_, to, step) = &direct[i];
+                            edges.push((*to, step.clone()));
+                        } else {
+                            let a = absorbed[i];
+                            for h in &a.holes {
+                                match &h.kind {
+                                    hale_model::AbsorbedHoleKind::IndirectCall => {
+                                        diags.push(Diag::ty(
+                                            row_span,
+                                            format!(
+                                                "claim `{}` cannot be certified: \
+                                                 `{}` (reachable from `{}`) calls \
+                                                 through a function-typed \
+                                                 parameter, whose target is not \
+                                                 knowable statically. An \
+                                                 unresolvable edge fails closed",
+                                                row.name,
+                                                h.at_display,
+                                                src_ref.name.display
+                                            ),
+                                        ));
+                                        return Visit::hole(());
+                                    }
+                                    hale_model::AbsorbedHoleKind::OpaqueCall { callee } => {
+                                        diags.push(Diag::ty(
+                                            row_span,
+                                            format!(
+                                                "claim `{}` cannot be certified: \
+                                                 `{}` (reachable from `{}`) calls \
+                                                 `{}` on a receiver the compiler \
+                                                 cannot type, so the walk cannot \
+                                                 follow the edge. An unresolvable \
+                                                 edge fails closed — bind the \
+                                                 receiver to a typed field or \
+                                                 local so the call resolves",
+                                                row.name,
+                                                h.at_display,
+                                                src_ref.name.display,
+                                                callee
+                                            ),
+                                        ));
+                                        return Visit::hole(());
+                                    }
+                                    hale_model::AbsorbedHoleKind::ComputedPublish => {
+                                        if *via_bus {
+                                            diags.push(Diag::ty(
+                                                row_span,
+                                                format!(
+                                                    "claim `{}` cannot be certified: `{}` \
+                                                     (reachable from `{}`) publishes to a \
+                                                     computed subject, which could route to \
+                                                     any subscriber. An unresolvable edge \
+                                                     fails closed",
+                                                    row.name,
+                                                    h.at_display,
+                                                    src_ref.name.display
+                                                ),
+                                            ));
+                                            return Visit::hole(());
+                                        }
+                                    }
+                                }
+                            }
+                            for ae in &a.edges {
+                                edges.push((
+                                    ae.to,
+                                    StepIr::Call {
+                                        via_interface: None,
+                                        provenance: ProvenanceId(0),
+                                        via_stdlib: true,
+                                        interior: ae.interior.clone(),
+                                        into_to: ae.into_to.clone(),
+                                    },
+                                ));
+                            }
+                        }
                     }
                 }
                 if *via_bus {
@@ -748,11 +859,35 @@ fn render_violation_ir(
                     fn_display(*node)
                 ));
             }
-            Some(StepIr::Call { .. }) => {
-                path.push_str(&format!(
-                    " -> `{}`",
-                    fn_display(*node)
-                ));
+            Some(StepIr::Call {
+                interior, into_to, ..
+            }) => {
+                for (d, dsp) in interior {
+                    match dsp {
+                        Some((iface, method)) => {
+                            path.push_str(&format!(
+                                " -(dispatches {}.{})-> `{}`",
+                                iface, method, d
+                            ));
+                        }
+                        None => path
+                            .push_str(&format!(" -> `{}`", d)),
+                    }
+                }
+                match into_to {
+                    Some((iface, method)) => {
+                        path.push_str(&format!(
+                            " -(dispatches {}.{})-> `{}`",
+                            iface,
+                            method,
+                            fn_display(*node)
+                        ));
+                    }
+                    None => path.push_str(&format!(
+                        " -> `{}`",
+                        fn_display(*node)
+                    )),
+                }
             }
             Some(StepIr::Bus { subject, .. }) => {
                 path.push_str(&format!(
@@ -780,6 +915,7 @@ fn render_violation_ir(
                 provenance,
                 via_interface,
                 via_stdlib,
+                ..
             } => {
                 if !via_stdlib {
                     let msg = match via_interface {

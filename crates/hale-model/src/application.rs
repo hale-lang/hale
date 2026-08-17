@@ -138,6 +138,63 @@ pub struct LegacyProjection {
     /// unchanged source. Both endpoints are legacy fns
     /// (∈ `topology_v1_fns`).
     pub topology_v1_calls_via_stdlib: Vec<(FunctionId, FunctionId, bool)>,
+    /// GH #476 Change 5a: what the evaluator's merged-summary walk
+    /// sees INSIDE stdlib bodies reachable from a user fn — interior
+    /// fail-closed holes (with the stdlib fn's display for the
+    /// diagnostic), and user→user re-emergence edges with their
+    /// interior witness path. The reachability judgment consumes
+    /// this to reproduce the evaluator byte-for-byte; deleted at
+    /// Change 9 with the rest of the projection. Sorted by
+    /// (from, site).
+    pub stdlib_absorption: Vec<StdlibAbsorption>,
+}
+
+/// One user call site whose callee is a stdlib body (or a stdlib
+/// conformer alternative of an interface dispatch): the absorbed
+/// consequences of walking through it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StdlibAbsorption {
+    pub from: FunctionId,
+    /// The authored site ordinal within `from` (stdlib calls consume
+    /// ordinals like every authored site), so the judgment can
+    /// interleave absorbed edges at the evaluator's BFS position.
+    pub site: u32,
+    /// Interior holes, in walk order: the display name of the stdlib
+    /// fn that owns the unfollowable edge, and its kind.
+    pub holes: Vec<AbsorbedHole>,
+    /// Re-emergent edges to user fns, in walk order, with the
+    /// interior path (display names between `from` and `to`,
+    /// exclusive) and the dispatch rendering of each interior step.
+    pub edges: Vec<AbsorbedEdge>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AbsorbedHole {
+    /// Display of the stdlib fn whose body holds the edge
+    /// (e.g. `std::io::tcp::Stream::send`).
+    pub at_display: String,
+    pub kind: AbsorbedHoleKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AbsorbedHoleKind {
+    /// A publish to a computed subject.
+    ComputedPublish,
+    /// An indirect call (fn-typed value).
+    IndirectCall,
+    /// A method call on an untypable receiver.
+    OpaqueCall { callee: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AbsorbedEdge {
+    pub to: FunctionId,
+    /// Interior steps between `from` and `to`, exclusive, in path
+    /// order: (display, Some(interface display + method) when the
+    /// step is a dispatch alternative).
+    pub interior: Vec<(String, Option<(String, String)>)>,
+    /// The final step INTO `to`: dispatch rendering when it is one.
+    pub into_to: Option<(String, String)>,
 }
 
 #[derive(Clone, Debug)]

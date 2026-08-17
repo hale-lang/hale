@@ -2397,6 +2397,150 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         rows.into_iter().map(|((f, t), l)| (f, t, l)).collect()
     };
 
+    // GH #476 Change 5a: the stdlib-absorption sidecar — what the
+    // evaluator's merged-summary walk sees inside stdlib bodies
+    // reachable from each user call site. Site ordinals replicate
+    // the call-loop's allocation (dispatch_group shared), so the
+    // judgment can interleave absorbed edges at the evaluator's
+    // position. Per-entry BFS over the merged summary; holes and
+    // re-emergences recorded in walk order.
+    let mut stdlib_absorption: Vec<hale_model::StdlibAbsorption> =
+        Vec::new();
+    // MERGED summary: the evaluator's Cx.summary — stdlib conformer
+    // alternatives and resolved stdlib methods only exist there.
+    for (k, fs) in &merged.fns {
+        if !user_key(k) {
+            continue;
+        }
+        let from = fn_id[&fn_name(k)];
+        let mut next_ordinal: u32 = 0;
+        let mut group_site: BTreeMap<u32, u32> = BTreeMap::new();
+        let mut site_of = |group: Option<u32>| -> u32 {
+            match group {
+                Some(g) => *group_site.entry(g).or_insert_with(|| {
+                    let o = next_ordinal;
+                    next_ordinal += 1;
+                    o
+                }),
+                None => {
+                    let o = next_ordinal;
+                    next_ordinal += 1;
+                    o
+                }
+            }
+        };
+        for edge in &fs.calls {
+            let site = site_of(edge.dispatch_group);
+            let Callee::Resolved(next) = &edge.callee else {
+                continue;
+            };
+            if user_key(next) {
+                continue;
+            }
+            // Entry into a stdlib body (direct call, or a stdlib
+            // conformer alternative of a dispatch). Walk it.
+            let entry_iface = edge.via_interface.clone();
+            let mut holes: Vec<hale_model::AbsorbedHole> = Vec::new();
+            let mut edges: Vec<hale_model::AbsorbedEdge> = Vec::new();
+            let disp = |kk: &FnKey| -> String { kk.display() };
+            let mut seen: BTreeSet<FnKey> = BTreeSet::new();
+            // (node, interior path so far: (display, dispatch))
+            let mut queue: std::collections::VecDeque<(
+                FnKey,
+                Vec<(String, Option<(String, String)>)>,
+            )> = std::collections::VecDeque::new();
+            seen.insert(next.clone());
+            let entry_step = entry_iface
+                .as_ref()
+                .map(|i| (i.clone(), next.fn_name.clone()));
+            queue.push_back((
+                next.clone(),
+                vec![(disp(next), entry_step.clone())],
+            ));
+            let mut steps = 0u32;
+            while let Some((n, path)) = queue.pop_front() {
+                steps += 1;
+                if steps > crate::callgraph::MAX_STEPS {
+                    break;
+                }
+                let Some(nfs) = merged.fns.get(&n) else {
+                    continue;
+                };
+                for e2 in &nfs.calls {
+                    match &e2.callee {
+                        Callee::Resolved(nn) => {
+                            let dsp = e2
+                                .via_interface
+                                .as_ref()
+                                .map(|i| {
+                                    (i.clone(), nn.fn_name.clone())
+                                });
+                            if user_key(nn) {
+                                edges.push(
+                                    hale_model::AbsorbedEdge {
+                                        to: fn_id[&fn_name(nn)],
+                                        interior: path.clone(),
+                                        into_to: dsp,
+                                    },
+                                );
+                            } else if seen.insert(nn.clone()) {
+                                let mut p2 = path.clone();
+                                p2.push((disp(nn), dsp));
+                                queue.push_back((nn.clone(), p2));
+                            }
+                        }
+                        Callee::Unresolved(un) => {
+                            if e2.indirect
+                                || nfs
+                                    .fn_params
+                                    .iter()
+                                    .any(|pp| pp == un)
+                            {
+                                holes.push(
+                                    hale_model::AbsorbedHole {
+                                        at_display: disp(&n),
+                                        kind: hale_model::AbsorbedHoleKind::IndirectCall,
+                                    },
+                                );
+                            } else if e2.opaque_method_call() {
+                                holes.push(
+                                    hale_model::AbsorbedHole {
+                                        at_display: disp(&n),
+                                        kind: hale_model::AbsorbedHoleKind::OpaqueCall {
+                                            callee: un.clone(),
+                                        },
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
+                for site2 in &nfs.effect_sites {
+                    if matches!(
+                        site2.kind,
+                        alloc_summary::EffectSiteKind::Publish(None)
+                    ) {
+                        holes.push(hale_model::AbsorbedHole {
+                            at_display: disp(&n),
+                            kind: hale_model::AbsorbedHoleKind::ComputedPublish,
+                        });
+                    }
+                }
+            }
+            if !holes.is_empty() || !edges.is_empty() {
+                stdlib_absorption.push(
+                    hale_model::StdlibAbsorption {
+                        from,
+                        site,
+                        holes,
+                        edges,
+                    },
+                );
+            }
+        }
+    }
+    stdlib_absorption.sort_by_key(|a| (a.from, a.site));
+
     // holes, canonically ordered.
     let mut hole_rows: Vec<Hole> = holes
         .into_iter()
@@ -2445,6 +2589,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         legacy: hale_model::LegacyProjection {
             topology_v1_fns: legacy_fns,
             topology_v1_calls_via_stdlib: legacy_via,
+            stdlib_absorption,
         },
         header: ModelHeader {
             semantics: MODEL_SEMANTICS_V1,
