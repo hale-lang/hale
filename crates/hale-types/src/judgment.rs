@@ -3036,24 +3036,32 @@ pub fn judge_bound(
             labels_of.entry(f).or_default().push(l.label.as_str());
         }
     }
+    // Holes trigger by relation family and carry their authored
+    // site, so the count walk consumes them at the evaluator's
+    // source position (an unfollowable edge AFTER a recursive call
+    // classifies as the cycle, not the hole).
     #[derive(Clone)]
     enum FnHole {
-        Unfollowable(ProvenanceId),
-        Computed(ProvenanceId),
+        Unfollowable(Option<u32>, ProvenanceId),
+        Computed(Option<u32>, ProvenanceId),
     }
     let mut holes_of: BTreeMap<FunctionId, Vec<FnHole>> =
         BTreeMap::new();
     for h in &model.holes {
         let EntityRef::Function(f) = h.at else { continue };
+        let families = hale_model::RelationSet::CALLS
+            .union(hale_model::RelationSet::PUBLISHES);
+        if !h.hides.intersects(families) {
+            continue;
+        }
         let hole = match &h.kind {
-            HoleKind::IndirectCall
-            | HoleKind::UntypedReceiver { .. } => {
-                FnHole::Unfollowable(h.provenance)
-            }
             HoleKind::ComputedSubject => {
-                FnHole::Computed(h.provenance)
+                FnHole::Computed(h.authored_site, h.provenance)
             }
-            _ => continue,
+            _ => FnHole::Unfollowable(
+                h.authored_site,
+                h.provenance,
+            ),
         };
         holes_of.entry(f).or_default().push(hole);
     }
@@ -3273,16 +3281,6 @@ pub fn judge_bound(
             let mut evs: Vec<Ev> = Vec::new();
             match v {
                 V::User(f) => {
-                    for h in
-                        cx.holes_of.get(&f).into_iter().flatten()
-                    {
-                        match h {
-                            FnHole::Unfollowable(p) => {
-                                evs.push(Ev::Unfollowable(Some(*p)))
-                            }
-                            FnHole::Computed(_) => {}
-                        }
-                    }
                     let direct = cx
                         .calls_of
                         .get(&f)
@@ -3290,6 +3288,11 @@ pub fn judge_bound(
                         .unwrap_or(&[]);
                     let absorbed = cx
                         .absorb_of
+                        .get(&f)
+                        .map(|x| x.as_slice())
+                        .unwrap_or(&[]);
+                    let holes = cx
+                        .holes_of
                         .get(&f)
                         .map(|x| x.as_slice())
                         .unwrap_or(&[]);
@@ -3302,9 +3305,28 @@ pub fn judge_bound(
                     {
                         items.push((*site, 1, i));
                     }
+                    // Call-space holes interleave at their authored
+                    // sites (kind 2).
+                    for (i, h) in holes.iter().enumerate() {
+                        if let FnHole::Unfollowable(site, _) = h {
+                            items.push((
+                                site.unwrap_or(u32::MAX),
+                                2,
+                                i,
+                            ));
+                        }
+                    }
                     items.sort();
                     for (site, kind, i) in items {
-                        if kind == 0 {
+                        if kind == 2 {
+                            if let FnHole::Unfollowable(_, p) =
+                                &holes[i]
+                            {
+                                evs.push(Ev::Unfollowable(Some(
+                                    *p,
+                                )));
+                            }
+                        } else if kind == 0 {
                             let cr = &direct[i];
                             evs.push(Ev::Call {
                                 to: V::User(cr.to),
@@ -3328,21 +3350,41 @@ pub fn judge_bound(
                             });
                         }
                     }
-                    for h in
-                        cx.holes_of.get(&f).into_iter().flatten()
-                    {
-                        if let FnHole::Computed(p) = h {
-                            evs.push(Ev::Computed(Some(*p)));
+                    let pubs = cx
+                        .pubs_of
+                        .get(&f)
+                        .map(|x| x.as_slice())
+                        .unwrap_or(&[]);
+                    let mut pitems: Vec<(u32, u8, usize)> =
+                        Vec::new();
+                    for (i, (site, ..)) in pubs.iter().enumerate() {
+                        pitems.push((*site, 0, i));
+                    }
+                    for (i, h) in holes.iter().enumerate() {
+                        if let FnHole::Computed(site, _) = h {
+                            pitems.push((
+                                site.unwrap_or(u32::MAX),
+                                1,
+                                i,
+                            ));
                         }
                     }
-                    for (_, written, in_loop, pprov) in
-                        cx.pubs_of.get(&f).into_iter().flatten()
-                    {
-                        evs.push(Ev::Publish {
-                            subject: written.clone(),
-                            in_loop: *in_loop,
-                            prov: Some(*pprov),
-                        });
+                    pitems.sort();
+                    for (_, kind, i) in pitems {
+                        if kind == 1 {
+                            if let FnHole::Computed(_, p) = &holes[i]
+                            {
+                                evs.push(Ev::Computed(Some(*p)));
+                            }
+                        } else {
+                            let (_, written, in_loop, pprov) =
+                                &pubs[i];
+                            evs.push(Ev::Publish {
+                                subject: written.clone(),
+                                in_loop: *in_loop,
+                                prov: Some(*pprov),
+                            });
+                        }
                     }
                 }
                 V::Interior(ai, ni) => {
