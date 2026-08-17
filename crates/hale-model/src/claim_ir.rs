@@ -79,6 +79,31 @@ pub fn bus_topic_tail(s: &str) -> &str {
     }
 }
 
+/// The language's built-in effect classes — the CANONICAL
+/// vocabulary (review round 20), mirrored from the compiler's
+/// `EffectClass` (a conformance test in `hale-types` pins the two
+/// lists to each other, since this crate cannot depend on the
+/// AST). `validate` holds every [`EffectClassRef::builtin`] flag to
+/// exactly this list.
+pub const BUILTIN_EFFECT_CLASSES: [&str; 11] = [
+    "syscall",
+    "block",
+    "time",
+    "entropy",
+    "env",
+    "ffi",
+    "publish",
+    "spawn",
+    "recursion",
+    "alloc",
+    "secret_use",
+];
+
+/// Is `name` a language built-in effect class?
+pub fn is_builtin_effect_class(name: &str) -> bool {
+    BUILTIN_EFFECT_CLASSES.contains(&name)
+}
+
 /// A name in claim position: raw canonical spelling + author
 /// display. Two spellings, same doctrine as every entity table.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -526,6 +551,14 @@ impl ClaimIrTable {
                             index: i,
                         });
                     }
+                    // The discriminator is DERIVED from the name:
+                    // `builtin` must agree with the canonical
+                    // vocabulary exactly (review round 20) — a
+                    // judgment branching on the flag and a renderer
+                    // reading the name must describe one law.
+                    if c.builtin != is_builtin_effect_class(&c.name) {
+                        return Err(dis("effect class builtin"));
+                    }
                     match c.class {
                         None => Ok(()),
                         Some(id) => {
@@ -714,6 +747,14 @@ impl ClaimIrTable {
                     fn_ok(at)?;
                     if let QuantDimIr::UserClass(c) = dim {
                         class_ok(c)?;
+                        // The variant specifically means a USER
+                        // class budget (built-ins have their own
+                        // dimensions).
+                        if c.builtin {
+                            return Err(dis(
+                                "quant budget user class",
+                            ));
+                        }
                     }
                 }
                 ClaimIr::DependsSet { locus, entries } => {

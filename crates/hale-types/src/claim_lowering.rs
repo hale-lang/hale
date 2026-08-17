@@ -239,13 +239,6 @@ pub fn lower_claims(
             t.segments.iter().map(|s| s.name.as_str()).collect();
         topic_ref_parts(recs, &t.display(), &segs, t.span)
     };
-    let topic_ref_str = |recs: &mut Vec<Provenance>,
-                         s: &str,
-                         span: hale_syntax::Span|
-     -> TopicIrRef {
-        let segs: Vec<&str> = s.split("::").collect();
-        topic_ref_parts(recs, s, &segs, span)
-    };
     // The ONE bus selector for annotation entries (rounds 16-18):
     // EVERY spelling — identifier, alias path, string literal —
     // gets its candidate sets from `effects::topic_ref_matches`
@@ -294,9 +287,7 @@ pub fn lower_claims(
                            span: hale_syntax::Span|
      -> EffectClassRef {
         let pid = intern(recs, span);
-        let builtin = EffectClass::from_ident(name)
-            .map(|c| !matches!(c, EffectClass::User(_)))
-            .unwrap_or(false);
+        let builtin = hale_model::is_builtin_effect_class(name);
         EffectClassRef {
             class: if builtin {
                 None

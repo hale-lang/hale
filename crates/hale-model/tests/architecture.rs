@@ -1607,3 +1607,78 @@ fn claim_table_provenance_records_must_resolve() {
         Err(ClaimIrError::InvalidProvenanceRecord { .. })
     ));
 }
+
+/// Round 20: `EffectClassRef.builtin` is DERIVED from the name via
+/// the canonical vocabulary — both mismatch directions are
+/// rejected, and `QuantDimIr::UserClass` never holds a built-in.
+#[test]
+fn effect_class_builtin_flag_must_agree_with_the_name() {
+    use hale_model::{
+        ClaimIr, ClaimIrError, ClaimIrTable, ClaimOrigin, ClaimRow,
+        EffectClassRef, NameRef, QuantDimIr,
+    };
+    let m = tiny_model();
+    let class = |builtin: bool, name: &str| EffectClassRef {
+        class: None,
+        builtin,
+        name: name.to_string(),
+        provenance: ProvenanceId(0),
+    };
+    let table = |law: ClaimIr| {
+        let mut t = ClaimIrTable::default();
+        t.provenance.records.push(Provenance::Synthetic {
+            origin: "test".to_string(),
+        });
+        t.rows.push(ClaimRow {
+            ordinal: 0,
+            name: "tagged".to_string(),
+            origin: ClaimOrigin::Main,
+            law,
+            provenance: ProvenanceId(0),
+        });
+        t
+    };
+    // A user name marked builtin: rejected.
+    let t = table(ClaimIr::RequireAttributed {
+        class: class(true, "money"),
+    });
+    assert!(matches!(
+        t.validate(&m),
+        Err(ClaimIrError::NameDisagreement { .. })
+    ));
+    // A builtin name marked user: rejected.
+    let t = table(ClaimIr::RequireAttributed {
+        class: class(false, "syscall"),
+    });
+    assert!(matches!(
+        t.validate(&m),
+        Err(ClaimIrError::NameDisagreement { .. })
+    ));
+    // The agreeing forms: lawful.
+    table(ClaimIr::RequireAttributed {
+        class: class(true, "syscall"),
+    })
+    .validate(&m)
+    .expect("builtin agrees");
+    table(ClaimIr::RequireAttributed {
+        class: class(false, "money"),
+    })
+    .validate(&m)
+    .expect("user agrees");
+    // A built-in inside a USER-class budget dimension: rejected.
+    let t = table(ClaimIr::QuantBudget {
+        at: (
+            None,
+            NameRef {
+                raw: "f".to_string(),
+                display: "f".to_string(),
+            },
+        ),
+        dim: QuantDimIr::UserClass(class(true, "syscall")),
+        limit: 1,
+    });
+    assert!(matches!(
+        t.validate(&m),
+        Err(ClaimIrError::NameDisagreement { .. })
+    ));
+}

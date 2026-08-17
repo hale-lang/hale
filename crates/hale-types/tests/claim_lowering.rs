@@ -876,3 +876,42 @@ fn main() { App { }; }
         entries[0]
     );
 }
+
+/// P1 (round 20): the canonical built-in vocabulary in hale-model
+/// must mirror the compiler's `EffectClass` exactly — this is the
+/// drift seam between the dependency-free schema and the AST, and
+/// this test IS the pin.
+#[test]
+fn builtin_vocabulary_mirrors_the_compiler() {
+    use hale_syntax::ast::EffectClass;
+    for name in hale_model::claim_ir::BUILTIN_EFFECT_CLASSES {
+        let c = EffectClass::from_ident(name)
+            .unwrap_or_else(|| panic!("`{}` is a compiler builtin", name));
+        assert!(
+            !matches!(c, EffectClass::User(_)),
+            "`{}` must not be a user class",
+            name
+        );
+        assert_eq!(c.as_str(), name);
+    }
+    // …and every compiler builtin is in the model's list.
+    for c in [
+        EffectClass::Syscall,
+        EffectClass::Block,
+        EffectClass::Time,
+        EffectClass::Entropy,
+        EffectClass::Env,
+        EffectClass::Ffi,
+        EffectClass::Publish,
+        EffectClass::Spawn,
+        EffectClass::Recursion,
+        EffectClass::Alloc,
+        EffectClass::SecretUse,
+    ] {
+        assert!(
+            hale_model::is_builtin_effect_class(c.as_str()),
+            "compiler builtin `{}` missing from the model vocabulary",
+            c.as_str()
+        );
+    }
+}

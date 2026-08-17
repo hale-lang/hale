@@ -1351,26 +1351,6 @@ pub(crate) fn topic_ref_matches(declared: &str, resolved: &str) -> bool {
     hale_model::bus_ref_matches(declared, resolved)
 }
 
-/// The bare topic name, whichever spelling reached us.
-///
-/// Subjects arrive in three shapes depending on the phase that
-/// produced them, which is the trap this exists to absorb:
-///   - `Recalled`                        bus-graph subject key
-///   - `relay::Recalled`                 what the author wrote
-///   - `__lib_lib_relay_main_Recalled`   merged publish site
-///
-/// The merged form embeds the LIBRARY PATH, not the import alias, so
-/// the qualifier can never be matched against it — `relay` and
-/// `lib_relay_main` are different strings and only the resolver knows
-/// they correspond. Comparing trailing names is what works for every
-/// pair.
-///
-/// Known limitation: two topics with the same trailing name from
-/// different seeds are indistinguishable here. Disambiguating them
-/// needs the resolver's alias table, which this layer does not have.
-pub(crate) fn topic_tail(s: &str) -> &str {
-    hale_model::bus_topic_tail(s)
-}
 
 
 /// `@effects(publish: {A, B})` — the allowed publish set. A publish
