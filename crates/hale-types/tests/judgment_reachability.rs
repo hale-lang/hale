@@ -108,6 +108,10 @@ fn diff_one(
             .collect();
     let by_ordinal: BTreeMap<u32, &hale_model::ClaimRow> =
         table.rows.iter().map(|r| (r.ordinal, r)).collect();
+    // Rows under the documented 5c divergence: their (new-only)
+    // diagnostics are excluded from the byte comparison too.
+    let mut carved_out: std::collections::BTreeSet<u32> =
+        std::collections::BTreeSet::new();
     for j in &judged {
         let row = by_ordinal[&j.ordinal];
         let Some(old) = old_verdicts.get(row.name.as_str()) else {
@@ -116,7 +120,23 @@ fn diff_one(
                 origin, row.name
             ));
         };
-        if **old != j.verdict {
+        // Documented divergence (5c round 2): the evaluator never
+        // sees unanalyzed bodies (module fns, on_failure hooks), so
+        // `require attributed` fail-opens to Holds where the model
+        // records an EFFECTS-hiding hole and the judgment refuses.
+        let attributed_hole_carveout = matches!(
+            row.law,
+            ClaimIr::RequireAttributed { .. }
+        ) && **old == hale_types::verdict::Verdict::Holds
+            && j.verdict == hale_types::verdict::Verdict::Uncertified
+            && model.holes.iter().any(|h| {
+                h.hides
+                    .intersects(hale_model::RelationSet::EFFECTS)
+            });
+        if attributed_hole_carveout {
+            carved_out.insert(j.ordinal);
+        }
+        if **old != j.verdict && !attributed_hole_carveout {
             return Err(format!(
                 "{}: claim `{}` verdict diverges: old {:?}, new {:?}",
                 origin, row.name, old, j.verdict
@@ -161,7 +181,12 @@ fn diff_one(
         .chain(
             pre_diags
                 .iter()
-                .chain(judged.iter().flat_map(|j| j.diags.iter()))
+                .chain(
+                    judged
+                        .iter()
+                        .filter(|j| !carved_out.contains(&j.ordinal))
+                        .flat_map(|j| j.diags.iter()),
+                )
                 .map(|d| (d.message.clone(), d.span)),
         )
         .collect();
@@ -2290,5 +2315,59 @@ fn main() { App { }; }
         judged[0].verdict,
         hale_types::verdict::Verdict::Uncertified,
         "an unknown publisher may create an ungranted edge"
+    );
+}
+
+/// Review pin (round 2): `require attributed` consults the model's
+/// HOLES, not only `Function.opaque_call` — an on_failure handler
+/// enters the universe with an UnanalyzedBody hole hiding EFFECTS,
+/// so it may perform the class without an authored purpose and the
+/// claim must be Uncertified, never a fail-open Holds.
+#[test]
+fn attributed_fails_closed_on_unanalyzed_bodies() {
+    let held = r#"
+main locus App {
+    params { n: Int = 0; }
+    claims { tagged: require attributed(all syscall); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(held).expect("parse");
+    let bundle = bundle_of(held, &program);
+    let model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_endpoints(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds,
+        "nothing is unattributed or unanalyzed"
+    );
+    let src = r#"
+type Violation { code: Int = 0; }
+locus Sup {
+    params { n: Int = 0; }
+    on_failure(e: Violation) { }
+}
+main locus App {
+    params { s: Sup = Sup { }; }
+    claims { tagged: require attributed(all syscall); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let model = derive_application_model(&bundle);
+    assert!(
+        model.holes.iter().any(|h| h
+            .hides
+            .intersects(hale_model::RelationSet::EFFECTS)),
+        "the on_failure body arrives as an EFFECTS-hiding hole"
+    );
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_endpoints(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "an unanalyzed application-owned body blocks certification"
     );
 }

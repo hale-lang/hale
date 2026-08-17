@@ -2496,12 +2496,34 @@ pub fn judge_endpoints(
                     .map(|(_, f)| f.display.clone())
                     .collect();
                 if unattributed.is_empty() {
+                    // A fn whose EFFECTS the model declares hidden
+                    // (an unanalyzed body) may perform the class
+                    // without an authored purpose — same unknown as
+                    // an opaque call, same fallback (review round
+                    // 2: `require attributed` must consult holes,
+                    // not only Function.opaque_call).
+                    let effects_holed: BTreeSet<FunctionId> = model
+                        .holes
+                        .iter()
+                        .filter(|h| {
+                            h.hides.intersects(
+                                hale_model::RelationSet::EFFECTS,
+                            )
+                        })
+                        .filter_map(|h| match h.at {
+                            EntityRef::Function(f) => Some(f),
+                            _ => None,
+                        })
+                        .collect();
                     let mut opaque: Vec<String> = e
                         .functions
                         .iter()
                         .enumerate()
                         .filter(|(i, f)| {
-                            f.opaque_call
+                            (f.opaque_call
+                                || effects_holed.contains(
+                                    &FunctionId(*i as u32),
+                                ))
                                 && !carries_user.contains(
                                     &FunctionId(*i as u32),
                                 )
