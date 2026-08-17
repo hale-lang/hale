@@ -2936,6 +2936,12 @@ pub fn judge_bound(
     for mo in &r.member_of {
         by_locus.entry(mo.locus.0).or_default().push(mo.function);
     }
+    // The 5a projection: member loci project through the summary
+    // universe (v1), but a member FREE fn enters unconditionally —
+    // the evaluator's fn_set inserts every named free fn, including
+    // declaration-only ones with no summary row (review round 2:
+    // bound did not inherit this and rejected such groups as
+    // projection-vacuous where the evaluator counts them as zero).
     let group_fns = |g: GroupId| -> BTreeSet<FunctionId> {
         let mut set: BTreeSet<FunctionId> = BTreeSet::new();
         for gm in r.group_members.iter().filter(|gm| gm.group == g) {
@@ -2948,14 +2954,26 @@ pub fn judge_bound(
                     }
                 }
                 EntityRef::Function(f) => {
-                    if v1.contains(&f) {
-                        set.insert(f);
-                    }
+                    set.insert(f);
                 }
                 _ => {}
             }
         }
         set
+    };
+    // The evaluator iterates fn sets in FnKey order — free fns
+    // (locus: None) BEFORE methods — and stops at the first
+    // unbounded root, so seeding order selects the reported reason.
+    let fnkey_sorted = |set: &BTreeSet<FunctionId>| -> Vec<FunctionId> {
+        let mut vv: Vec<FunctionId> = set.iter().copied().collect();
+        vv.sort_by_key(|f| {
+            let raw = &e.functions[f.index()].name;
+            match raw.rsplit_once("::") {
+                Some((l, m)) => (1u8, l.to_string(), m.to_string()),
+                None => (0u8, String::new(), raw.clone()),
+            }
+        });
+        vv
     };
     // Adjacency (calls with loop/group, publishes, subscriptions by
     // canonical spelling), and per-fn labels for the carrier test.
@@ -3138,6 +3156,26 @@ pub fn judge_bound(
                      and a second way to write one contract is \
                      what this rejects",
                     row.name
+                ),
+            ));
+            ok = false;
+        } else if class.class.is_some_and(|id| {
+            matches!(
+                e.effect_classes[id.index()].definition,
+                hale_model::EffectClassDefinition::InvalidCycle
+            )
+        }) {
+            // A cyclic definition resolves to no effect — a bound
+            // over it would hold by counting zero. Invalid BEFORE
+            // evaluation, same rule as 5a (review round 2).
+            diags.push(Diag::ty(
+                claim_span(class.provenance),
+                format!(
+                    "claim `{}`: effect class `{}` is defined in \
+                     terms of itself. A cyclic definition resolves \
+                     to no effect at all, so every contract naming \
+                     it would hold vacuously.",
+                    row.name, class.name
                 ),
             ));
             ok = false;
@@ -3340,12 +3378,18 @@ pub fn judge_bound(
                             // The REAL entry edge: its loop nesting
                             // and span come from the authored call
                             // (review: looped stdlib entries).
+                            // The alternatives of ONE authored
+                            // dispatch share the LOCAL site as
+                            // their group, whether the target is a
+                            // user fn or an absorption entry —
+                            // entry_group is summary-global and
+                            // would split the dispatch in two,
+                            // summing what must max (review
+                            // round 2).
                             evs.push(Ev::Call {
                                 to: V::Interior(ai, 0),
                                 in_loop: a.entry_in_loop,
-                                group: a
-                                    .entry_group
-                                    .or(Some(site)),
+                                group: Some(site),
                                 prov: Some(a.entry_provenance),
                             });
                         }
@@ -3573,7 +3617,7 @@ pub fn judge_bound(
         };
         let mut worst: (u64, Vec<V>) = (0, Vec::new());
         let mut why: Option<UnboundedIr> = None;
-        for root in &fns {
+        for root in &fnkey_sorted(&fns) {
             let mut stack = Vec::new();
             let mut memo: BTreeMap<V, (u64, Vec<V>)> = BTreeMap::new();
             let mut steps = 0u32;

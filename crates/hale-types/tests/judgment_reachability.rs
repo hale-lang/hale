@@ -2787,3 +2787,210 @@ fn main() { App { }; }
         "the topic's real wire subject IS its delivery identity"
     );
 }
+
+/// Review pin (round 2): a DECLARATION-ONLY free fn in a `bound`
+/// source group contributes zero — the evaluator's fn_set inserts
+/// every named free fn, so the group is not projection-vacuous.
+#[test]
+fn declaration_only_free_fn_bound_counts_zero() {
+    let src = r#"
+effect money;
+fn audit() { }
+group auditors = { audit };
+main locus App {
+    params { n: Int = 0; }
+    claims { cap: bound money <= 1 on paths from auditors; }
+}
+fn main() { App { }; }
+"#;
+    let out = diff_one(src, "declaration-only bound root");
+    assert!(out.is_ok(), "old/new agree: {:?}", out);
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds,
+        "the empty free fn evaluates with contribution zero"
+    );
+}
+
+/// Review pin (round 2): user and stdlib ALTERNATIVES of one
+/// authored dispatch share the LOCAL site group — one runtime
+/// dispatch folds with MAX, never a phantom sum across the local
+/// ordinal and the summary-global dispatch-group id.
+#[test]
+fn mixed_dispatch_alternatives_share_one_group() {
+    use hale_model::*;
+    let mut prov = ProvenanceTable::default();
+    prov.records.push(Provenance::Synthetic {
+        origin: "test".to_string(),
+    });
+    let p = ProvenanceId(0);
+    let f = |name: &str| Function {
+        name: name.to_string(),
+        display: name.to_string(),
+        kind: FunctionKind::Free,
+        effects: Vec::new(),
+        direct_effects: Vec::new(),
+        attribution: Vec::new(),
+        opaque_call: false,
+        carries_user_class: false,
+        provenance: p,
+    };
+    let mut m = ApplicationModel {
+        header: ModelHeader {
+            semantics: MODEL_SEMANTICS_V1,
+            entrypoint: "main".to_string(),
+        },
+        entities: Entities {
+            functions: vec![f("caller"), f("UserConf::pay")],
+            groups: vec![Group {
+                name: "roots".to_string(),
+                display: "roots".to_string(),
+                may_be_empty: false,
+                provenance: p,
+            }],
+            effect_classes: vec![EffectClassDecl {
+                name: "money".to_string(),
+                declared: true,
+                definition: EffectClassDefinition::Atomic,
+                provenance: p,
+            }],
+            ..Entities::default()
+        },
+        relations: Relations::default(),
+        labels: vec![LabelRow {
+            at: EntityRef::Function(FunctionId(1)),
+            label: "money".to_string(),
+            provenance: p,
+        }],
+        weights: Vec::new(),
+        holes: Vec::new(),
+        capabilities: Capabilities::default(),
+        provenance: prov,
+        legacy: LegacyProjection {
+            topology_v1_fns: vec![FunctionId(0), FunctionId(1)],
+            topology_v1_calls_via_stdlib: Vec::new(),
+            // The stdlib alternative of the SAME authored dispatch
+            // (site 0), carrying a summary-global group id that
+            // differs from the local ordinal.
+            stdlib_absorption: vec![StdlibAbsorption {
+                from: FunctionId(0),
+                site: 0,
+                entry_dispatch: Some((
+                    "Payer".to_string(),
+                    "pay".to_string(),
+                )),
+                entry_in_loop: false,
+                entry_group: Some(7),
+                entry_provenance: p,
+                nodes: vec![AbsorbedNode {
+                    display: "std::pay::charge".to_string(),
+                    carries: vec!["money".to_string()],
+                    direct_effects: Vec::new(),
+                    events: Vec::new(),
+                }],
+            }],
+        },
+    };
+    m.relations.group_members.push(GroupMember {
+        group: GroupId(0),
+        member: EntityRef::Function(FunctionId(0)),
+        provenance: p,
+    });
+    // The user alternative at the same site 0.
+    m.relations.calls.push(Call {
+        from: FunctionId(0),
+        to: FunctionId(1),
+        dispatch: DispatchKind::Interface {
+            interface: "Payer".to_string(),
+        },
+        site: 0,
+        in_loop: false,
+        unbounded: false,
+        provenance: p,
+    });
+    let mut t = ClaimIrTable::default();
+    t.provenance.records.push(Provenance::Synthetic {
+        origin: "test".to_string(),
+    });
+    t.rows.push(ClaimRow {
+        ordinal: 0,
+        name: "cap".to_string(),
+        origin: ClaimOrigin::Main,
+        law: ClaimIr::Bound {
+            class: EffectClassRef {
+                class: Some(EffectClassId(0)),
+                builtin: false,
+                name: "money".to_string(),
+                provenance: ProvenanceId(0),
+            },
+            limit: 1,
+            from: GroupRef {
+                group: Some(GroupId(0)),
+                name: NameRef {
+                    raw: "roots".to_string(),
+                    display: "roots".to_string(),
+                },
+                provenance: ProvenanceId(0),
+            },
+        },
+        provenance: ProvenanceId(0),
+    });
+    let judged = judge_bound(&t, &m, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds,
+        "one dispatch = one group: max(1, 1) = 1, within the \
+         limit — a sum would report a phantom 2: {:?}",
+        judged[0]
+            .diags
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Review pin (round 2): a `bound` over a cyclically-defined class
+/// is Invalid before evaluation — never Holds by counting zero.
+#[test]
+fn cyclic_bound_class_is_invalid() {
+    let src = r#"
+effect money;
+fn audit() { }
+group auditors = { audit };
+main locus App {
+    params { n: Int = 0; }
+    claims { cap: bound money <= 1 on paths from auditors; }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let money = model
+        .entities
+        .effect_classes
+        .iter()
+        .position(|c| c.name == "money")
+        .expect("money class");
+    model.entities.effect_classes[money].definition =
+        hale_model::EffectClassDefinition::InvalidCycle;
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Invalid,
+        "a cyclic class is not a countable law"
+    );
+    assert!(
+        judged[0]
+            .diags
+            .iter()
+            .any(|d| d.message.contains("defined in terms of itself")),
+        "the refusal names the cycle"
+    );
+}
