@@ -207,11 +207,15 @@ fn main() { App { }; }
     let dep = by("Worker", &|l| {
         matches!(l, ClaimIr::DependsSet { .. })
     });
-    let ClaimIr::DependsSet { locus, subjects } = &dep.law else {
+    let ClaimIr::DependsSet { locus, entries } = &dep.law else {
         unreachable!()
     };
     assert!(locus.0.is_some());
-    assert!(subjects[0].subject.is_some(), "subject `evt` resolves");
+    let hale_model::BusSelector::Match { subjects, .. } = &entries[0]
+    else {
+        panic!("unqualified depends entry is a selector")
+    };
+    assert!(!subjects.is_empty(), "subject `evt` resolves");
     let pe = by("Worker", &|l| {
         matches!(l, ClaimIr::PhaseEffects { .. })
     });
@@ -449,7 +453,7 @@ main locus App {
 fn main() { App { }; }
 "#;
     let (t, m) = lower(src);
-    let ClaimIr::EffectPublishSet { topics, .. } = &t
+    let ClaimIr::EffectPublishSet { entries, .. } = &t
         .rows
         .iter()
         .find(|r| matches!(r.law, ClaimIr::EffectPublishSet { .. }))
@@ -458,18 +462,14 @@ fn main() { App { }; }
     else {
         unreachable!()
     };
-    let hale_model::TopicSelector::Unqualified {
-        name, candidates, ..
-    } = &topics[0]
+    let hale_model::BusSelector::Match { name, topics, .. } =
+        &entries[0]
     else {
         panic!("unqualified spelling is a candidate-set selector")
     };
     assert_eq!(name, "Orders");
-    assert_eq!(candidates.len(), 1, "the local topic is the candidate");
-    assert_eq!(
-        m.entities.topics[candidates[0].index()].name,
-        "Orders"
-    );
+    assert_eq!(topics.len(), 1, "the local topic is the candidate");
+    assert_eq!(m.entities.topics[topics[0].index()].name, "Orders");
 }
 
 /// P1 (round 15): a resolved reference takes its name/display from
@@ -631,7 +631,7 @@ fn main() { App { }; }
     let model = derive_application_model(&bundle);
     let t = lower_claims(&bundle, &model);
     t.validate(&model).expect("lawful");
-    let ClaimIr::EffectPublishSet { topics, .. } = &t
+    let ClaimIr::EffectPublishSet { entries, .. } = &t
         .rows
         .iter()
         .find(|r| matches!(r.law, ClaimIr::EffectPublishSet { .. }))
@@ -640,17 +640,134 @@ fn main() { App { }; }
     else {
         unreachable!()
     };
-    let hale_model::TopicSelector::Unqualified {
-        name, candidates, ..
-    } = &topics[0]
+    let hale_model::BusSelector::Match { name, topics, .. } =
+        &entries[0]
     else {
         panic!("unqualified library spelling is a candidate set")
     };
     assert_eq!(name, "Recalled");
-    assert_eq!(candidates.len(), 1);
+    assert_eq!(topics.len(), 1);
     assert_eq!(
-        model.entities.topics[candidates[0].index()].name,
+        model.entities.topics[topics[0].index()].name,
         "__lib_r_main_Recalled",
         "trailing-name match reaches the merged topic"
+    );
+}
+
+/// P1 (round 17): a LITERAL wire subject in `@effects(publish:)` is
+/// a valid certificate the evaluator accepts — the selector must
+/// resolve it (as a subject candidate), never document it as
+/// unresolved residue.
+#[test]
+fn literal_publish_subject_resolves_as_subject_candidate() {
+    let src = r#"
+type Event { n: Int = 0; }
+main locus App {
+    bus { publish "audit.log" of type Event; }
+    @effects(publish: { "audit.log" })
+    fn emit(v: Int) { "audit.log" <- Event { }; }
+    run() { self.emit(1); }
+}
+fn main() { App { }; }
+"#;
+    let (t, m) = lower(src);
+    let ClaimIr::EffectPublishSet { entries, .. } = &t
+        .rows
+        .iter()
+        .find(|r| matches!(r.law, ClaimIr::EffectPublishSet { .. }))
+        .expect("publish-set row")
+        .law
+    else {
+        unreachable!()
+    };
+    let hale_model::BusSelector::Match {
+        subjects, topics, ..
+    } = &entries[0]
+    else {
+        panic!("literal entry is a selector")
+    };
+    assert!(topics.is_empty());
+    assert_eq!(subjects.len(), 1, "the literal wire subject resolves");
+    assert_eq!(
+        m.entities.subjects[subjects[0].index()].pattern,
+        "audit.log"
+    );
+}
+
+/// P1 (round 17): an UNQUALIFIED `@effects(depends:)` entry authored
+/// in an imported seed tail-matches the merged wire subject — the
+/// evaluator's `topic_ref_matches` rule, now shared by both bus-set
+/// surfaces.
+#[test]
+fn unqualified_imported_depends_entry_resolves() {
+    let lib = r#"
+type __lib_r_main_Alert { n: Int = 0; }
+topic __lib_r_main_Recalled { payload: __lib_r_main_Alert; }
+@effects(depends: { "Recalled" })
+locus __lib_r_main_Sink {
+    params { n: Int = 0; }
+    bus { subscribe __lib_r_main_Recalled as on_r; }
+    fn on_r(a: __lib_r_main_Alert) { }
+}
+"#;
+    let main_src = r#"
+main locus App {
+    params { s: __lib_r_main_Sink = __lib_r_main_Sink { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let main_p = hale_syntax::parse_source(main_src).expect("parse");
+    let lib_p = hale_syntax::parse_source(lib).expect("parse lib");
+    let mut programs = BTreeMap::new();
+    programs.insert("app/main.hl".to_string(), &main_p);
+    programs.insert("lib/relay.hl".to_string(), &lib_p);
+    let mut bundle = Bundle::new(programs);
+    bundle.import_renames = vec![
+        (
+            vec!["relay".to_string(), "Alert".to_string()],
+            "__lib_r_main_Alert".to_string(),
+        ),
+        (
+            vec!["relay".to_string(), "Recalled".to_string()],
+            "__lib_r_main_Recalled".to_string(),
+        ),
+        (
+            vec!["relay".to_string(), "Sink".to_string()],
+            "__lib_r_main_Sink".to_string(),
+        ),
+    ];
+    let model = derive_application_model(&bundle);
+    let t = lower_claims(&bundle, &model);
+    t.validate(&model).expect("lawful");
+    let ClaimIr::DependsSet { entries, .. } = &t
+        .rows
+        .iter()
+        .find(|r| matches!(r.law, ClaimIr::DependsSet { .. }))
+        .expect("the imported seed's depends lowers")
+        .law
+    else {
+        unreachable!()
+    };
+    let hale_model::BusSelector::Match {
+        name,
+        topics,
+        subjects,
+        ..
+    } = &entries[0]
+    else {
+        panic!("unqualified depends entry is a selector")
+    };
+    assert_eq!(name, "Recalled");
+    assert!(
+        !topics.is_empty() || !subjects.is_empty(),
+        "trailing-name match reaches the merged topic/subject"
+    );
+    assert!(
+        topics
+            .iter()
+            .any(|t| model.entities.topics[t.index()].name
+                == "__lib_r_main_Recalled"),
+        "the merged topic is a candidate"
     );
 }

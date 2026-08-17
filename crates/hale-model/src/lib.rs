@@ -141,8 +141,8 @@ pub use capability::Capabilities;
 pub use claim_ir::{
     ClaimIr, ClaimIrError, ClaimIrTable, ClaimOrigin, ClaimRow,
     CountCmpIr, EffectClassRef, GrantIr, GroupRef, LoweringIssue,
-    NameRef, PhaseIrRef, QuantDimIr, SeedIrRef, SetIr, SubjectIrRef,
-    TopicIrRef, TopicSelector,
+    NameRef, PhaseIrRef, QuantDimIr, SeedIrRef, SetIr,
+    BusSelector, TopicIrRef,
 };
 pub use entity::{
     Binding, BindingRole, DeclKind, Declaration, EffectClassDecl, EffectClassDefinition, Function, FunctionKind, Group, InterfaceDecl,

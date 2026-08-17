@@ -38,7 +38,7 @@ use hale_model::{
     ApplicationModel, ClaimIr, ClaimIrTable, ClaimOrigin, ClaimRow,
     CountCmpIr, EffectClassRef, GrantIr, GroupRef, LoweringIssue,
     NameRef, PhaseIrRef, Provenance, ProvenanceId, QuantDimIr,
-    SeedIrRef, SetIr, SubjectIrRef, TopicIrRef, TopicSelector,
+    SeedIrRef, BusSelector, SetIr, TopicIrRef,
 };
 use hale_syntax::ast::{
     ClaimForm, ClaimSet, CountCmp, EffectAssert, EffectClass,
@@ -105,12 +105,6 @@ pub fn lower_claims(
         .iter()
         .enumerate()
         .map(|(i, s)| (s.name.as_str(), i as u32))
-        .collect();
-    let subject_id: BTreeMap<&str, u32> = e
-        .subjects
-        .iter()
-        .enumerate()
-        .map(|(i, s)| (s.pattern.as_str(), i as u32))
         .collect();
     let class_id: BTreeMap<&str, u32> = e
         .effect_classes
@@ -252,59 +246,46 @@ pub fn lower_claims(
         let segs: Vec<&str> = s.split("::").collect();
         topic_ref_parts(recs, s, &segs, span)
     };
-    let topic_selector = |recs: &mut Vec<Provenance>,
-                          s: &str,
-                          span: hale_syntax::Span|
-     -> TopicSelector {
+    // The ONE bus selector for annotation entries (rounds 16/17):
+    // a qualified alias path is exact; any other spelling matches
+    // exact-or-trailing-name against declared topics AND wire
+    // subjects — mirroring `effects::topic_ref_matches`, which is
+    // how the evaluator admits a literal wire subject
+    // (`"audit.log"`), a local topic, and an imported unqualified
+    // name alike.
+    let bus_selector = |recs: &mut Vec<Provenance>,
+                        s: &str,
+                        span: hale_syntax::Span|
+     -> BusSelector {
         if s.contains("::") {
-            // Qualified — the author named one topic through an
-            // alias path.
-            return TopicSelector::Exact(topic_ref_str(recs, s, span));
+            return BusSelector::Exact(topic_ref_str(recs, s, span));
         }
-        // Unqualified: ALWAYS the tail-match candidate set,
-        // mirroring `effects::topic_ref_matches` — the evaluator
-        // never privileges an exact hit for an unqualified
-        // spelling, so a local topic and a same-tailed import both
-        // match (the documented permissiveness).
-        let mut candidates: Vec<hale_model::TopicId> = e
+        let tail = crate::effects::topic_tail(s);
+        let matches =
+            |x: &str| x == s || crate::effects::topic_tail(x) == tail;
+        let mut topics: Vec<hale_model::TopicId> = e
             .topics
             .iter()
             .enumerate()
-            .filter(|(_, t)| {
-                crate::effects::topic_tail(&t.name) == s
-            })
+            .filter(|(_, t)| matches(&t.name))
             .map(|(i, _)| hale_model::TopicId(i as u32))
             .collect();
-        candidates.sort();
-        candidates.dedup();
-        TopicSelector::Unqualified {
+        topics.sort();
+        topics.dedup();
+        let mut subjects: Vec<hale_model::SubjectId> = e
+            .subjects
+            .iter()
+            .enumerate()
+            .filter(|(_, su)| matches(&su.pattern))
+            .map(|(i, _)| hale_model::SubjectId(i as u32))
+            .collect();
+        subjects.sort();
+        subjects.dedup();
+        BusSelector::Match {
             name: s.to_string(),
-            candidates,
+            topics,
+            subjects,
             provenance: intern(recs, span),
-        }
-    };
-    let subject_ref = |recs: &mut Vec<Provenance>,
-                       s: &str,
-                       span: hale_syntax::Span|
-     -> SubjectIrRef {
-        let pid = intern(recs, span);
-        match subject_id.get(s) {
-            Some(i) => SubjectIrRef {
-                subject: Some(hale_model::SubjectId(*i)),
-                name: NameRef {
-                    raw: e.subjects[*i as usize].pattern.clone(),
-                    display: e.subjects[*i as usize].pattern.clone(),
-                },
-                provenance: pid,
-            },
-            None => SubjectIrRef {
-                subject: None,
-                name: NameRef {
-                    raw: s.to_string(),
-                    display: display_of(s),
-                },
-                provenance: pid,
-            },
         }
     };
     let effect_names = crate::effects::effect_names_of(&programs);
@@ -575,13 +556,13 @@ pub fn lower_claims(
                 // cannot know the consumer's alias, so the name
                 // matches merged topics by TRAILING name, possibly
                 // several.
-                EffectAssert::PublishSet(topics) => {
+                EffectAssert::PublishSet(entries) => {
                     ClaimIr::EffectPublishSet {
                         at,
-                        topics: topics
+                        entries: entries
                             .iter()
                             .map(|t| {
-                                topic_selector(recs, t, f.name.span)
+                                bus_selector(recs, t, f.name.span)
                             })
                             .collect(),
                     }
@@ -688,11 +669,11 @@ pub fn lower_claims(
                         ClaimOrigin::Annotation,
                         ClaimIr::DependsSet {
                             locus: locus_at(lname),
-                            subjects: ds
+                            entries: ds
                                 .subjects
                                 .iter()
                                 .map(|s| {
-                                    subject_ref(recs, s, ds.span)
+                                    bus_selector(recs, s, ds.span)
                                 })
                                 .collect(),
                         },

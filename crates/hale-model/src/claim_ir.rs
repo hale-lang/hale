@@ -100,31 +100,30 @@ pub struct SeedIrRef {
     pub provenance: ProvenanceId,
 }
 
-/// A wire-subject reference (`@effects(depends: {"evt"})`).
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct SubjectIrRef {
-    pub subject: Option<SubjectId>,
-    pub name: NameRef,
-    pub provenance: ProvenanceId,
-}
 
-/// A topic selector for annotation surfaces (review round 16). The
-/// evaluator's documented cross-seed rule: a library author writes
-/// an UNQUALIFIED topic name (they cannot know the consumer's
-/// alias), and it matches merged topics by TRAILING name — possibly
-/// several same-tailed topics, "the permissiveness the author asked
-/// for". A qualified/canonical spelling stays an exact reference.
+/// A bus selector for annotation surfaces (`@effects(publish:)`,
+/// `@effects(depends:)`) — review rounds 16/17. The authoritative
+/// evaluator compares each entry against RESOLVED bus subjects with
+/// `topic_ref_matches` (exact string, or trailing-name), and the
+/// entry list admits identifiers AND string literals — so one
+/// spelling can legitimately denote a literal wire subject
+/// (`"audit.log"`), a declared topic, or an unqualified cross-seed
+/// name matching several same-tailed merged topics ("the
+/// permissiveness the author asked for"). The selector represents
+/// all three; only an explicit alias path is a single exact
+/// reference.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub enum TopicSelector {
-    /// A qualified or canonical spelling — one topic (or an
-    /// unresolved reference).
+pub enum BusSelector {
+    /// A qualified alias path — the author named one topic.
     Exact(TopicIrRef),
-    /// An unqualified spelling: the candidate set of merged topics
-    /// whose trailing name matches, sorted. Empty = resolves to
-    /// nothing (Change 5's residue).
-    Unqualified {
+    /// Any other spelling: matched exact-or-trailing-name against
+    /// declared TOPICS and wire SUBJECTS — both candidate sets,
+    /// sorted. A literal wire subject lands in `subjects`; both
+    /// empty = resolves to nothing (Change 5's residue).
+    Match {
         name: String,
-        candidates: Vec<TopicId>,
+        topics: Vec<TopicId>,
+        subjects: Vec<SubjectId>,
         provenance: ProvenanceId,
     },
 }
@@ -260,7 +259,7 @@ pub enum ClaimIr {
     /// declared topic must never masquerade as its wire subject.
     EffectPublishSet {
         at: (Option<FunctionId>, NameRef),
-        topics: Vec<TopicSelector>,
+        entries: Vec<BusSelector>,
     },
     /// `@effects(causes: {…})` — transitive through bus edges.
     EffectCauses {
@@ -278,7 +277,7 @@ pub enum ClaimIr {
     /// COMPLETE backward-reachable subject set.
     DependsSet {
         locus: (Option<LocusDeclId>, NameRef),
-        subjects: Vec<SubjectIrRef>,
+        entries: Vec<BusSelector>,
     },
     /// `@phase_effects(birth: {alloc}, run: {})` on a locus.
     PhaseEffects {
@@ -543,23 +542,34 @@ impl ClaimIrTable {
                     }
                 }
             };
-            let subj_ok =
-                |s: &SubjectIrRef| -> Result<(), ClaimIrError> {
-                    if !pr(s.provenance) {
-                        return Err(ClaimIrError::DanglingProvenance {
-                            index: i,
-                        });
-                    }
-                    match s.subject {
-                        None => Ok(()),
-                        Some(id) => {
-                            let Some(row) =
-                                e.subjects.get(id.index())
-                            else {
-                                return Err(bad("subject"));
-                            };
-                            if row.pattern != s.name.raw {
-                                return Err(dis("subject"));
+            let sel_ok =
+                |sel: &BusSelector| -> Result<(), ClaimIrError> {
+                    match sel {
+                        BusSelector::Exact(t) => topic_ok(t),
+                        BusSelector::Match {
+                            topics,
+                            subjects,
+                            provenance,
+                            ..
+                        } => {
+                            if !pr(*provenance) {
+                                return Err(ClaimIrError::DanglingProvenance { index: i });
+                            }
+                            if topics
+                                .windows(2)
+                                .any(|w| w[0] >= w[1])
+                                || subjects
+                                    .windows(2)
+                                    .any(|w| w[0] >= w[1])
+                            {
+                                return Err(bad("selector candidates"));
+                            }
+                            if topics.iter().any(|c| {
+                                c.index() >= e.topics.len()
+                            }) || subjects.iter().any(|c| {
+                                c.index() >= e.subjects.len()
+                            }) {
+                                return Err(bad("selector candidate"));
                             }
                             Ok(())
                         }
@@ -643,36 +653,10 @@ impl ClaimIrTable {
                         class_ok(c)?;
                     }
                 }
-                ClaimIr::EffectPublishSet { at, topics } => {
+                ClaimIr::EffectPublishSet { at, entries } => {
                     fn_ok(at)?;
-                    for t in topics {
-                        match t {
-                            TopicSelector::Exact(t) => topic_ok(t)?,
-                            TopicSelector::Unqualified {
-                                candidates,
-                                provenance,
-                                ..
-                            } => {
-                                if !pr(*provenance) {
-                                    return Err(ClaimIrError::DanglingProvenance { index: i });
-                                }
-                                if candidates
-                                    .windows(2)
-                                    .any(|w| w[0] >= w[1])
-                                {
-                                    return Err(bad(
-                                        "topic candidates",
-                                    ));
-                                }
-                                if candidates.iter().any(|c| {
-                                    c.index() >= e.topics.len()
-                                }) {
-                                    return Err(bad(
-                                        "topic candidate",
-                                    ));
-                                }
-                            }
-                        }
+                    for t in entries {
+                        sel_ok(t)?;
                     }
                 }
                 ClaimIr::NoPanic { at } => fn_ok(at)?,
@@ -683,10 +667,10 @@ impl ClaimIrTable {
                         class_ok(c)?;
                     }
                 }
-                ClaimIr::DependsSet { locus, subjects } => {
+                ClaimIr::DependsSet { locus, entries } => {
                     locus_ok(locus)?;
-                    for su in subjects {
-                        subj_ok(su)?;
+                    for t in entries {
+                        sel_ok(t)?;
                     }
                 }
                 ClaimIr::PhaseEffects { locus, phases } => {

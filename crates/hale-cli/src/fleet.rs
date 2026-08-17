@@ -1409,7 +1409,7 @@ pub fn lower_plan_claims(
         ClaimIr, ClaimIrTable, ClaimOrigin, ClaimRow, ProvenanceId,
     };
     let mut table = ClaimIrTable::default();
-    let mut prov = |table: &mut ClaimIrTable, name: &str| {
+    let prov = |table: &mut ClaimIrTable, name: &str| {
         let pid = ProvenanceId(table.provenance.records.len() as u32);
         table.provenance.records.push(
             hale_model::Provenance::Synthetic {
