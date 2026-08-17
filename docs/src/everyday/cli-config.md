@@ -33,19 +33,24 @@ if given, else an environment variable, else a built-in default.
 
 ```hale
 fn main() {
-    let cfg = std::cli::Resolver { prefix: "MYAPP" };
+    let cfg = std::cli::Resolver {
+        env_prefix: "MYAPP_",
+        argv_keys:  "host\nport\n",
+    };
 
-    // argv positional "port", else $MYAPP_PORT, else "8080"
-    let port = cfg.get("port", "8080");
+    // argv positional "host", else $MYAPP_HOST, else the default
     let host = cfg.get("host", "127.0.0.1");
+    let port = cfg.get_int("port", 8080);
 
     println("listening on ", host, ":", port);
 }
 ```
 
-The resolver checks the argument, then the prefixed environment
-variable (`MYAPP_PORT`), then the supplied default. Empty values
-fall through to the next layer rather than counting as "set."
+The resolver checks the argument (positions come from `argv_keys`,
+one key per line, first line mapping to argv[1]), then the prefixed
+environment variable (`MYAPP_HOST`), then the supplied default —
+`get` for strings, `get_int` for numbers. Empty values fall through
+to the next layer rather than counting as "set."
 
 ## Interactive terminal I/O
 
