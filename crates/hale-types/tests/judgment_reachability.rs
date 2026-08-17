@@ -13,7 +13,9 @@ use std::collections::BTreeMap;
 
 use hale_model::ClaimIr;
 use hale_types::claim_lowering::lower_claims;
-use hale_types::judgment::{judge_forbid_reaches, judge_only_edges};
+use hale_types::judgment::{
+    judge_endpoints, judge_forbid_reaches, judge_only_edges,
+};
 use hale_types::model_builder::derive_application_model;
 use hale_types::symbol::SourceFile;
 use hale_types::Bundle;
@@ -49,6 +51,11 @@ fn family_names(
                 r.law,
                 ClaimIr::ForbidReaches { .. }
                     | ClaimIr::OnlyEdges { .. }
+                    | ClaimIr::RequireEndpoint { .. }
+                    | ClaimIr::RequireSealed { .. }
+                    | ClaimIr::RequireAttributed { .. }
+                    | ClaimIr::Cover { .. }
+                    | ClaimIr::Count { .. }
             )
         })
         .map(|r| r.name.clone())
@@ -85,9 +92,11 @@ fn diff_one(
     let (pre_diags, judged_fr) =
         judge_forbid_reaches(&table, &model, &[0]);
     let judged_oe = judge_only_edges(&table, &model, &[0]);
+    let judged_ep = judge_endpoints(&table, &model, &[0]);
     let mut judged: Vec<hale_types::judgment::Judged> = judged_fr
         .into_iter()
         .chain(judged_oe.into_iter())
+        .chain(judged_ep.into_iter())
         .collect();
     judged.sort_by_key(|j| j.ordinal);
     // Verdict parity, matched by claim name.
@@ -126,10 +135,35 @@ fn diff_one(
         })
         .map(|d| (d.message.clone(), d.span))
         .collect();
-    let new_family: Vec<(String, hale_syntax::Span)> = pre_diags
+    // The evaluator's stream: enumeration diagnostics first (the
+    // lowering preserves them as table ISSUES), then the dup
+    // pre-pass, then per-row validation+evaluation.
+    let issue_span = |pid: hale_model::ProvenanceId| {
+        match table.provenance.records.get(pid.index()) {
+            Some(hale_model::Provenance::Source { span, .. }) => {
+                hale_syntax::Span::new(
+                    span.0 as usize,
+                    span.1 as usize,
+                )
+            }
+            _ => hale_syntax::Span::new(0, 0),
+        }
+    };
+    let new_family: Vec<(String, hale_syntax::Span)> = table
+        .issues
         .iter()
-        .chain(judged.iter().flat_map(|j| j.diags.iter()))
-        .map(|d| (d.message.clone(), d.span))
+        .filter(|i| {
+            names.iter().any(|n| {
+                i.message.contains(&format!("claim `{}`", n))
+            })
+        })
+        .map(|i| (i.message.clone(), issue_span(i.provenance)))
+        .chain(
+            pre_diags
+                .iter()
+                .chain(judged.iter().flat_map(|j| j.diags.iter()))
+                .map(|d| (d.message.clone(), d.span)),
+        )
         .collect();
     if old_family != new_family {
         let first = old_family
@@ -417,6 +451,23 @@ group b_side = { leak };
 main locus App {
     params { a: A = A { }; }
     claims { boundary: only edges a_side -> b_side { }; }
+/// Negative control (5c): the endpoint judgment reads DECLARED
+/// publisher ends — clearing declares_publish flips a holding
+/// `require publishes` to Violated.
+#[test]
+fn dropping_declared_ends_changes_the_require_verdict() {
+    let src = r#"
+type T { n: Int = 0; }
+topic Orders { payload: T; subject: "orders"; }
+locus Gw {
+    params { n: Int = 0; }
+    bus { publish Orders; }
+    fn send(v: Int) { Orders <- T { }; }
+}
+group gws = { Gw };
+main locus App {
+    params { g: Gw = Gw { }; }
+    claims { writer: require publishes(some gws, topic Orders); }
     run() { println(1); }
 }
 fn main() { App { }; }
@@ -441,6 +492,18 @@ fn main() { App { }; }
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_endpoints(&table, &model, &[0]);
+    assert_eq!(judged[0].verdict, hale_types::verdict::Verdict::Holds);
+    model.relations.declares_publish.clear();
+    let judged = judge_endpoints(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "the judgment reads relations.declares_publish"
     );
 }
 

@@ -2167,3 +2167,575 @@ pub fn judge_only_edges(
     }
     out
 }
+
+/// Judge the endpoint/coverage/count family (GH #476 Change 5c):
+/// `require publishes/subscribes`, `require sealed`,
+/// `require attributed`, `cover`, and `count` rows.
+pub fn judge_endpoints(
+    table: &ClaimIrTable,
+    model: &ApplicationModel,
+    source_bases: &[u32],
+) -> Vec<Judged> {
+    let e = &model.entities;
+    let r = &model.relations;
+    let claim_span = |pid: ProvenanceId| -> Span {
+        span_of(&table.provenance, source_bases, pid)
+    };
+    // Group decl-grain projections.
+    let group_loci = |g: GroupId| -> BTreeSet<u32> {
+        r.group_members
+            .iter()
+            .filter(|gm| gm.group == g)
+            .filter_map(|gm| match gm.member {
+                EntityRef::LocusDecl(l) => Some(l.0),
+                _ => None,
+            })
+            .collect()
+    };
+    let locus_of: BTreeMap<FunctionId, u32> = r
+        .member_of
+        .iter()
+        .map(|mo| (mo.function, mo.locus.0))
+        .collect();
+    // Canonical-spelling endpoint maps: publisher loci come from
+    // DECLARED ends (`bus { publish T; }` — the graph's publisher
+    // rows), subscriber loci from subscription rows.
+    let mut publishers_at: BTreeMap<&str, BTreeSet<u32>> =
+        BTreeMap::new();
+    for dp in &r.declares_publish {
+        let key = match dp.declared_topic {
+            Some(t) => e.topics[t.index()].name.as_str(),
+            None => e.subjects[dp.subject.index()].pattern.as_str(),
+        };
+        publishers_at.entry(key).or_default().insert(dp.locus.0);
+    }
+    let mut subscribers_at: BTreeMap<&str, BTreeSet<u32>> =
+        BTreeMap::new();
+    for su in &r.subscribes {
+        let key = match su.declared_topic {
+            Some(t) => e.topics[t.index()].name.as_str(),
+            None => e.subjects[su.subject.index()].pattern.as_str(),
+        };
+        if let Some(l) = locus_of.get(&su.handler) {
+            subscribers_at.entry(key).or_default().insert(*l);
+        }
+    }
+    // The declared-topic name universe (validation) + seed topics.
+    let topic_names: BTreeSet<&str> =
+        e.topics.iter().map(|t| t.name.as_str()).collect();
+    let mut seed_topics: BTreeMap<&str, Vec<u32>> = BTreeMap::new();
+    for di in &r.declared_in {
+        if let EntityRef::Topic(t) = di.entity {
+            seed_topics
+                .entry(e.seeds[di.seed.index()].name.as_str())
+                .or_default()
+                .push(t.0);
+        }
+    }
+    // User-class carriers: a labels row whose class is not builtin.
+    let carries_user: BTreeSet<FunctionId> = model
+        .labels
+        .iter()
+        .filter_map(|l| match l.at {
+            EntityRef::Function(f)
+                if !hale_model::is_builtin_effect_class(&l.label) =>
+            {
+                Some(f)
+            }
+            _ => None,
+        })
+        .collect();
+    let fn_raw = |f: FunctionId| e.functions[f.index()].name.clone();
+    let fn_disp =
+        |f: FunctionId| e.functions[f.index()].display.clone();
+    let fnkey_order = |raw: &str| -> (u8, String, String) {
+        match raw.rsplit_once("::") {
+            Some((l, m)) => (1, l.to_string(), m.to_string()),
+            None => (0, String::new(), raw.to_string()),
+        }
+    };
+
+    let mut out = Vec::new();
+    for row in &table.rows {
+        let mut diags: Vec<Diag> = Vec::new();
+        let row_span = claim_span(row.provenance);
+        // Shared validation helpers over ClaimIr refs.
+        let group_decl_names: Vec<&str> =
+            e.groups.iter().map(|g| g.display.as_str()).collect();
+        let check_group = |gref: &hale_model::GroupRef,
+                           diags: &mut Vec<Diag>|
+         -> bool {
+            if gref.group.is_some() {
+                return true;
+            }
+            let mut near: Vec<&&str> = group_decl_names
+                .iter()
+                .filter(|g| {
+                    crate::effects::close(g, &gref.name.display)
+                })
+                .collect();
+            near.sort();
+            let hint = match near.first() {
+                Some(n) => format!(" Did you mean `{}`?", n),
+                None => String::new(),
+            };
+            diags.push(Diag::ty(
+                claim_span(gref.provenance),
+                format!(
+                    "claim `{}` names group `{}`, which is never declared. \
+                     Add `group {} = {{ … }};` at the top level.{}",
+                    row.name,
+                    gref.name.display,
+                    gref.name.display,
+                    hint
+                ),
+            ));
+            false
+        };
+        let check_topic = |t: &hale_model::TopicIrRef,
+                           diags: &mut Vec<Diag>|
+         -> bool {
+            if !t.name.raw.contains("::")
+                && topic_names.contains(t.name.raw.as_str())
+            {
+                return true;
+            }
+            if t.name.raw.contains("::") {
+                diags.push(Diag::ty(
+                    claim_span(t.provenance),
+                    format!(
+                        "claim `{}`: topic reference `{}` does not \
+                         resolve — no imported topic matches this \
+                         path. Unknown names are errors, never empty \
+                         sets",
+                        row.name, t.name.display
+                    ),
+                ));
+                return false;
+            }
+            let mut near: Vec<&&str> = topic_names
+                .iter()
+                .filter(|n| crate::effects::close(n, &t.name.raw))
+                .collect();
+            near.sort();
+            let hint = match near.first() {
+                Some(n) => format!(" Did you mean `{}`?", n),
+                None => String::new(),
+            };
+            diags.push(Diag::ty(
+                claim_span(t.provenance),
+                format!(
+                    "claim `{}` names topic `{}`, which is never \
+                     declared.{}",
+                    row.name, t.name.raw, hint
+                ),
+            ));
+            false
+        };
+        match &row.law {
+            ClaimIr::RequireEndpoint {
+                publishers,
+                group,
+                topic,
+            } => {
+                let mut ok = check_group(group, &mut diags);
+                ok &= check_topic(topic, &mut diags);
+                if !ok {
+                    out.push(Judged {
+                        ordinal: row.ordinal,
+                        verdict: Verdict::Invalid,
+                        diags,
+                    });
+                    continue;
+                }
+                let g_loci = group_loci(group.group.unwrap());
+                let ends = if *publishers {
+                    publishers_at.get(topic.name.raw.as_str())
+                } else {
+                    subscribers_at.get(topic.name.raw.as_str())
+                };
+                let hit = ends.is_some_and(|loci| {
+                    loci.iter().any(|l| g_loci.contains(l))
+                });
+                if hit {
+                    out.push(Judged {
+                        ordinal: row.ordinal,
+                        verdict: Verdict::Holds,
+                        diags,
+                    });
+                    continue;
+                }
+                diags.push(Diag::ty(
+                    row_span,
+                    format!(
+                        "claim `{}` violated: no member of `{}` {} `{}`",
+                        row.name,
+                        group.name.display,
+                        if *publishers {
+                            "publishes"
+                        } else {
+                            "subscribes"
+                        },
+                        topic.name.display
+                    ),
+                ));
+                out.push(Judged {
+                    ordinal: row.ordinal,
+                    verdict: Verdict::Violated,
+                    diags,
+                });
+            }
+            ClaimIr::RequireSealed { group } => {
+                if !check_group(group, &mut diags) {
+                    out.push(Judged {
+                        ordinal: row.ordinal,
+                        verdict: Verdict::Invalid,
+                        diags,
+                    });
+                    continue;
+                }
+                let g_loci = group_loci(group.group.unwrap());
+                if g_loci.is_empty() {
+                    diags.push(Diag::ty(
+                        row_span,
+                        format!(
+                            "claim `{}`: group `{}` contains no loci, so \
+                             `require sealed` would quantify over an empty set and \
+                             hold while confining nothing. Sealing is a property of \
+                             loci — name a group of them.",
+                            row.name, group.name.display
+                        ),
+                    ));
+                    out.push(Judged {
+                        ordinal: row.ordinal,
+                        verdict: Verdict::Invalid,
+                        diags,
+                    });
+                    continue;
+                }
+                // Raw-sorted, display-rendered — the evaluator lists
+                // raw names and demangles the whole message after.
+                let mut unsealed: Vec<(String, String)> = g_loci
+                    .iter()
+                    .map(|l| &e.loci[*l as usize])
+                    .filter(|l| !l.sealed)
+                    .map(|l| (l.name.clone(), l.display.clone()))
+                    .collect();
+                unsealed.sort();
+                if unsealed.is_empty() {
+                    out.push(Judged {
+                        ordinal: row.ordinal,
+                        verdict: Verdict::Holds,
+                        diags,
+                    });
+                    continue;
+                }
+                let one = unsealed.len() == 1;
+                diags.push(Diag::ty(
+                    row_span,
+                    format!(
+                        "claim `{}` violated: {} in `{}` {} not `@sealed`, so {} \
+                         state is readable by anything holding {} — {}",
+                        row.name,
+                        if one { "a locus" } else { "loci" },
+                        group.name.display,
+                        if one { "is" } else { "are" },
+                        if one { "its" } else { "their" },
+                        if one { "it" } else { "them" },
+                        unsealed
+                            .iter()
+                            .map(|(_, d)| d.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                ));
+                out.push(Judged {
+                    ordinal: row.ordinal,
+                    verdict: Verdict::Violated,
+                    diags,
+                });
+            }
+            ClaimIr::RequireAttributed { class } => {
+                if crate::claims::attributed_mask(&class.name)
+                    .is_none()
+                {
+                    diags.push(Diag::ty(
+                        claim_span(class.provenance),
+                        format!(
+                            "claim `{}`: `require attributed` takes a \
+                             built-in class with countable DIRECT sites — \
+                             `syscall`, `block`, `publish`, `time`, \
+                             `entropy`, `env`, `alloc`, `secret_use`. `{}` \
+                             is not one of those: a user class would be \
+                             trivially true, and `ffi` / `spawn` / \
+                             `recursion` are structural properties with no \
+                             site to attribute.",
+                            row.name, class.name
+                        ),
+                    ));
+                    out.push(Judged {
+                        ordinal: row.ordinal,
+                        verdict: Verdict::Invalid,
+                        diags,
+                    });
+                    continue;
+                }
+                let mut unattributed: Vec<String> = e
+                    .functions
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| {
+                        f.attribution
+                            .iter()
+                            .any(|c| *c == class.name)
+                    })
+                    .filter(|(i, _)| {
+                        !carries_user
+                            .contains(&FunctionId(*i as u32))
+                    })
+                    .map(|(_, f)| f.display.clone())
+                    .collect();
+                if unattributed.is_empty() {
+                    let mut opaque: Vec<String> = e
+                        .functions
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, f)| {
+                            f.opaque_call
+                                && !carries_user.contains(
+                                    &FunctionId(*i as u32),
+                                )
+                        })
+                        .map(|(_, f)| f.display.clone())
+                        .collect();
+                    if !opaque.is_empty() {
+                        opaque.sort();
+                        diags.push(Diag::ty(
+                            row_span,
+                            format!(
+                                "claim `{}` uncertified: {} an indirect or opaque \
+                                 call whose target this check cannot resolve, and \
+                                 names no purpose of its own — so whether a `{}` \
+                                 boundary is crossed there is unknown. Classify \
+                                 the caller (`@effects(is: {{...}})`) or bind the \
+                                 callee so it resolves: {}",
+                                row.name,
+                                if opaque.len() == 1 {
+                                    "a fn makes"
+                                } else {
+                                    "fns make"
+                                },
+                                class.name,
+                                opaque.join(", ")
+                            ),
+                        ));
+                        out.push(Judged {
+                            ordinal: row.ordinal,
+                            verdict: Verdict::Uncertified,
+                            diags,
+                        });
+                        continue;
+                    }
+                    out.push(Judged {
+                        ordinal: row.ordinal,
+                        verdict: Verdict::Holds,
+                        diags,
+                    });
+                    continue;
+                }
+                unattributed.sort();
+                diags.push(Diag::ty(
+                    row_span,
+                    format!(
+                        "claim `{}` violated: {} `{}` with no declared purpose — \
+                         classify {} (`@effects(is: {{...}})`) with a user effect \
+                         class so the operation is attributable: {}",
+                        row.name,
+                        if unattributed.len() == 1 {
+                            "a fn performs"
+                        } else {
+                            "fns perform"
+                        },
+                        class.name,
+                        if unattributed.len() == 1 {
+                            "it"
+                        } else {
+                            "them"
+                        },
+                        unattributed.join(", ")
+                    ),
+                ));
+                out.push(Judged {
+                    ordinal: row.ordinal,
+                    verdict: Verdict::Violated,
+                    diags,
+                });
+            }
+            ClaimIr::Cover { seed, group } => {
+                let mut ok = check_group(group, &mut diags);
+                if !seed_topics.contains_key(seed.name.as_str()) {
+                    diags.push(Diag::ty(
+                        claim_span(seed.provenance),
+                        format!(
+                            "claim `{}`: `seed({})` names no import alias \
+                             with declared topics — the coverage domain \
+                             would be empty, and a universal over an \
+                             empty domain holds vacuously",
+                            row.name, seed.name
+                        ),
+                    ));
+                    ok = false;
+                }
+                if !ok {
+                    out.push(Judged {
+                        ordinal: row.ordinal,
+                        verdict: Verdict::Invalid,
+                        diags,
+                    });
+                    continue;
+                }
+                let g_loci = group_loci(group.group.unwrap());
+                let mut uncovered: Vec<(String, String)> =
+                    Vec::new();
+                let mut tids: Vec<u32> =
+                    seed_topics[seed.name.as_str()].clone();
+                tids.sort_by_key(|t| {
+                    e.topics[*t as usize].name.clone()
+                });
+                for t in tids {
+                    let topic = &e.topics[t as usize];
+                    let covered = subscribers_at
+                        .get(topic.name.as_str())
+                        .is_some_and(|loci| {
+                            loci.iter().any(|l| g_loci.contains(l))
+                        });
+                    if !covered {
+                        uncovered.push((
+                            topic.name.clone(),
+                            topic.display.clone(),
+                        ));
+                    }
+                }
+                if uncovered.is_empty() {
+                    out.push(Judged {
+                        ordinal: row.ordinal,
+                        verdict: Verdict::Holds,
+                        diags,
+                    });
+                    continue;
+                }
+                let list = uncovered
+                    .iter()
+                    .map(|(_, d)| format!("`{}`", d))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                diags.push(Diag::ty(
+                    row_span,
+                    format!(
+                        "claim `{}` violated: {} topic(s) declared in seed `{}` \
+                         have no subscriber in `{}`: {}",
+                        row.name,
+                        uncovered.len(),
+                        seed.name,
+                        group.name.display,
+                        list
+                    ),
+                ));
+                out.push(Judged {
+                    ordinal: row.ordinal,
+                    verdict: Verdict::Violated,
+                    diags,
+                });
+            }
+            ClaimIr::Count {
+                publishers,
+                topic,
+                cmp,
+                n,
+            } => {
+                if !check_topic(topic, &mut diags) {
+                    out.push(Judged {
+                        ordinal: row.ordinal,
+                        verdict: Verdict::Invalid,
+                        diags,
+                    });
+                    continue;
+                }
+                let ends = if *publishers {
+                    publishers_at.get(topic.name.raw.as_str())
+                } else {
+                    subscribers_at.get(topic.name.raw.as_str())
+                };
+                let loci: Vec<(String, String)> = ends
+                    .map(|set| {
+                        let mut v: Vec<(String, String)> = set
+                            .iter()
+                            .map(|l| {
+                                let ld = &e.loci[*l as usize];
+                                (ld.name.clone(), ld.display.clone())
+                            })
+                            .collect();
+                        v.sort();
+                        v
+                    })
+                    .unwrap_or_default();
+                let actual = loci.len() as u64;
+                let holds = match cmp {
+                    hale_model::CountCmpIr::Eq => actual == *n,
+                    hale_model::CountCmpIr::Le => actual <= *n,
+                    hale_model::CountCmpIr::Ge => actual >= *n,
+                };
+                if holds {
+                    out.push(Judged {
+                        ordinal: row.ordinal,
+                        verdict: Verdict::Holds,
+                        diags,
+                    });
+                    continue;
+                }
+                let who = if loci.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " ({})",
+                        loci.iter()
+                            .map(|(_, d)| format!("`{}`", d))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                };
+                let cmp_str = match cmp {
+                    hale_model::CountCmpIr::Eq => "==",
+                    hale_model::CountCmpIr::Le => "<=",
+                    hale_model::CountCmpIr::Ge => ">=",
+                };
+                diags.push(Diag::ty(
+                    row_span,
+                    format!(
+                        "claim `{}` violated: counted {} {}{} of `{}`, claim \
+                         requires {} {}",
+                        row.name,
+                        actual,
+                        if *publishers {
+                            "publisher(s)"
+                        } else {
+                            "subscriber(s)"
+                        },
+                        who,
+                        topic.name.display,
+                        cmp_str,
+                        n
+                    ),
+                ));
+                out.push(Judged {
+                    ordinal: row.ordinal,
+                    verdict: Verdict::Violated,
+                    diags,
+                });
+            }
+            _ => continue,
+        }
+        let _ = (&fn_raw, &fn_disp, &fnkey_order);
+    }
+    out
+}

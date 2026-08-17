@@ -49,6 +49,13 @@ pub struct Function {
     /// classified leaf would match, making the sink set nearly
     /// vacuous (GH #476 Change 5a).
     pub direct_effects: Vec<String>,
+    /// Built-in classes for which this fn PERFORMS a direct site
+    /// (`require attributed`'s predicate, computed by the
+    /// evaluator's own rule). Sorted.
+    pub attribution: Vec<String>,
+    /// Has an unresolved call that is not a frontier path — the
+    /// `require attributed` opaque fallback (GH #476 Change 5c).
+    pub opaque_call: bool,
     pub provenance: ProvenanceId,
 }
 

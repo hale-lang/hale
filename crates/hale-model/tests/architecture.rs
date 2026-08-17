@@ -70,6 +70,8 @@ fn tiny_model() -> ApplicationModel {
                     kind: FunctionKind::Hook,
                     effects: vec!["publish".to_string()],
                     direct_effects: Vec::new(),
+                    attribution: Vec::new(),
+                    opaque_call: false,
                     provenance: p,
                 },
                 Function {
@@ -78,6 +80,8 @@ fn tiny_model() -> ApplicationModel {
                     kind: FunctionKind::Method,
                     effects: vec![],
                     direct_effects: Vec::new(),
+                    attribution: Vec::new(),
+                    opaque_call: false,
                     provenance: p,
                 },
             ],
