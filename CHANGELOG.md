@@ -8,6 +8,20 @@ behavior.
 
 ## Unreleased
 
+### The quantitative-bound judgment - family 5d (GH #476 Change 5d)
+
+`judgment::judge_bound` - `bound C <= N on paths from G` on the
+canonical model: call-tree SUM of carrier sites with MAX over
+dispatch alternatives (shared site ordinals ARE the dispatch
+groups), unbounded on recursion cycles, loop-nested carriers,
+unfollowable calls, and computed subjects - the evaluator's
+site_count ported over both vertex kinds. The absorption sidecar
+gained count-grade facts (per-node carrier classes, loop bits and
+dispatch groups on interior events) and Publish rows gained
+in_loop, so a carrier inside a stdlib body or behind a loop-nested
+send counts exactly as the evaluator counts it. Same corpus
+differential (now five families); negative control drops labels.
+
 ### The endpoint/coverage/count judgment - family 5c (GH #476 Change 5c)
 
 `judgment::judge_endpoints` - `require publishes/subscribes`

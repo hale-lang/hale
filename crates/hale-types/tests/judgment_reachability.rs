@@ -14,7 +14,8 @@ use std::collections::BTreeMap;
 use hale_model::ClaimIr;
 use hale_types::claim_lowering::lower_claims;
 use hale_types::judgment::{
-    judge_endpoints, judge_forbid_reaches, judge_only_edges,
+    judge_bound, judge_endpoints, judge_forbid_reaches,
+    judge_only_edges,
 };
 use hale_types::model_builder::derive_application_model;
 use hale_types::symbol::SourceFile;
@@ -56,6 +57,7 @@ fn family_names(
                     | ClaimIr::RequireAttributed { .. }
                     | ClaimIr::Cover { .. }
                     | ClaimIr::Count { .. }
+                    | ClaimIr::Bound { .. }
             )
         })
         .map(|r| r.name.clone())
@@ -93,10 +95,12 @@ fn diff_one(
         judge_forbid_reaches(&table, &model, &[0]);
     let judged_oe = judge_only_edges(&table, &model, &[0]);
     let judged_ep = judge_endpoints(&table, &model, &[0]);
+    let judged_bd = judge_bound(&table, &model, &[0]);
     let mut judged: Vec<hale_types::judgment::Judged> = judged_fr
         .into_iter()
         .chain(judged_oe.into_iter())
         .chain(judged_ep.into_iter())
+        .chain(judged_bd.into_iter())
         .collect();
     judged.sort_by_key(|j| j.ordinal);
     // Verdict parity, matched by claim name.
@@ -573,6 +577,42 @@ fn main() { App { }; }
         !msg.contains("make"),
         "the composed `io` IS an authored purpose: {}",
         msg
+/// Negative control (5d): the bound judgment reads carrier LABELS —
+/// clearing them zeroes the count and flips the verdict.
+#[test]
+fn dropping_labels_changes_the_bound_verdict() {
+    let src = r#"
+effect money;
+@effects(is: { money })
+fn spend(v: Int) -> Int { return v; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) -> Int { return spend(v) + spend(v); }
+}
+group gates = { A };
+main locus App {
+    params { a: A = A { }; }
+    claims { cap: bound money <= 1 on paths from gates; }
+    run() { println(self.a.go(1)); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "two carrier calls exceed limit 1"
+    );
+    model.labels.clear();
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds,
+        "the judgment reads model.labels"
     );
 }
 

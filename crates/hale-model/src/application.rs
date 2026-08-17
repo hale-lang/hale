@@ -189,6 +189,10 @@ pub struct AbsorbedNode {
     /// e.g. `std::io::tcp::Stream::send` (demangled like every
     /// witness spelling).
     pub display: String,
+    /// The stdlib fn's declared carrier classes (rendered) — the
+    /// `bound` count's per-node contribution (GH #476 Change 5d;
+    /// `std::secret` bodies carry `secret_use`).
+    pub carries: Vec<String>,
     /// The stdlib fn's DIRECT effect classes (the evaluator applies
     /// `direct_effects` to every visited FnKey, stdlib included —
     /// an `effects(C)` destination can be satisfied INSIDE a
@@ -205,6 +209,12 @@ pub enum AbsorbedEvent {
         /// (interface display, method) when the edge is a dispatch
         /// alternative.
         dispatch: Option<(String, String)>,
+        /// Loop-nested at the call site (a carrier past it repeats
+        /// per iteration — `bound`'s unbounded rule).
+        in_loop: bool,
+        /// Dispatch-group id: alternatives of ONE dispatch site
+        /// share it, and a `bound` count takes their MAX, not sum.
+        group: Option<u32>,
     },
     /// An unfollowable call edge (fires under `via { calls }`).
     CallHole(AbsorbedHoleKind),
@@ -219,6 +229,8 @@ pub enum AbsorbedEvent {
         /// coverage must not re-conflate the identities the model
         /// keeps apart).
         declared_topic: Option<TopicId>,
+        /// The publish sits inside a loop (5d bound walks).
+        in_loop: bool,
     },
     /// A publish to a computed subject (fires under `via { bus }`).
     PublishHole,
