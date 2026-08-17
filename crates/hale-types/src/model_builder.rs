@@ -2595,9 +2595,21 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                 });
             }
             if truncated {
-                if let Some(n0) = nodes.first_mut() {
-                    n0.events
-                        .push(hale_model::AbsorbedEvent::Truncated);
+                // Truncation lands at the actual UNEXPANDED
+                // frontier (review round 3): every discovered-but-
+                // unwalked node materializes with a lone Truncated
+                // event, so (a) interior targets referencing it stay
+                // in range, (b) the known prefix keeps its complete
+                // event lists, and (c) a walk surfaces saturation
+                // exactly where knowledge ends — not on entry.
+                for k in order.iter().skip(nodes.len()) {
+                    nodes.push(hale_model::AbsorbedNode {
+                        display: disp(k),
+                        direct_effects: Vec::new(),
+                        events: vec![
+                            hale_model::AbsorbedEvent::Truncated,
+                        ],
+                    });
                 }
             }
             // Keep every entry that can matter to ANY judgment:

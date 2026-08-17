@@ -278,28 +278,67 @@ pub fn judge_forbid_reaches(
     }
     let mut holes_of: BTreeMap<
         FunctionId,
-        Vec<(hale_model::RelationSet, FnHole)>,
+        Vec<(hale_model::RelationSet, Option<u32>, FnHole)>,
     > = BTreeMap::new();
+    // Holes anchored at NON-function entities participate too: a
+    // hole at Subject(S) hiding SUBSCRIBES means S's subscriber set
+    // is incomplete, so bus composition through S must not certify
+    // absence from the known rows (review round 3: the model
+    // defines SUBSCRIBES as independently hideable at subject
+    // grain).
+    let mut subject_hides: BTreeMap<u32, hale_model::RelationSet> =
+        BTreeMap::new();
     for h in &model.holes {
-        let EntityRef::Function(f) = h.at else { continue };
-        let walk_families = hale_model::RelationSet::CALLS
-            .union(hale_model::RelationSet::PUBLISHES)
-            .union(hale_model::RelationSet::EFFECTS);
-        if !h.hides.intersects(walk_families) {
-            continue;
+        match h.at {
+            EntityRef::Function(f) => {
+                let walk_families = hale_model::RelationSet::CALLS
+                    .union(hale_model::RelationSet::PUBLISHES)
+                    .union(hale_model::RelationSet::EFFECTS);
+                if !h.hides.intersects(walk_families) {
+                    continue;
+                }
+                let hole = match &h.kind {
+                    HoleKind::IndirectCall => FnHole::Indirect,
+                    HoleKind::UntypedReceiver { callee } => {
+                        FnHole::Untyped {
+                            callee: callee.clone(),
+                        }
+                    }
+                    HoleKind::ComputedSubject => FnHole::Computed,
+                    _ => FnHole::Other {
+                        reason: h.reason.clone(),
+                    },
+                };
+                holes_of.entry(f).or_default().push((
+                    h.hides,
+                    h.authored_site,
+                    hole,
+                ));
+            }
+            EntityRef::Subject(sid) => {
+                let e2 = subject_hides
+                    .entry(sid.0)
+                    .or_insert(hale_model::RelationSet(0));
+                *e2 = e2.union(h.hides);
+            }
+            _ => {}
         }
-        let hole = match &h.kind {
-            HoleKind::IndirectCall => FnHole::Indirect,
-            HoleKind::UntypedReceiver { callee } => FnHole::Untyped {
-                callee: callee.clone(),
-            },
-            HoleKind::ComputedSubject => FnHole::Computed,
-            _ => FnHole::Other {
-                reason: h.reason.clone(),
-            },
-        };
-        holes_of.entry(f).or_default().push((h.hides, hole));
     }
+    // The evaluator refuses at the FIRST unresolved site in source
+    // order — hole selection within a space is by authored site,
+    // never by the model's canonical (kind, reason) sort (review
+    // round 3).
+    let earliest_hole = |f: &FunctionId,
+                         mask: hale_model::RelationSet|
+     -> Option<&FnHole> {
+        holes_of
+            .get(f)
+            .into_iter()
+            .flatten()
+            .filter(|(hides, _, _)| hides.intersects(mask))
+            .min_by_key(|(_, site, _)| site.unwrap_or(u32::MAX))
+            .map(|(_, _, h)| h)
+    };
     // fn → phase name (during filter).
     let mut phase_of: BTreeMap<FunctionId, &str> = BTreeMap::new();
     for po in &r.phase_of {
@@ -643,14 +682,10 @@ pub fn judge_forbid_reaches(
                 match v {
                     V::User(f) => {
                         if *via_calls {
-                            for (hides, h) in
-                                holes_of.get(f).into_iter().flatten()
-                            {
-                                if !hides.intersects(
-                                    hale_model::RelationSet::CALLS,
-                                ) {
-                                    continue;
-                                }
+                            if let Some(h) = earliest_hole(
+                                f,
+                                hale_model::RelationSet::CALLS,
+                            ) {
                                 match h {
                                     FnHole::Indirect => {
                                         diags.push(Diag::ty(
@@ -775,14 +810,10 @@ pub fn judge_forbid_reaches(
                             }
                         }
                         if *via_bus {
-                            for (hides, h) in
-                                holes_of.get(f).into_iter().flatten()
-                            {
-                                if !hides.intersects(
-                                    hale_model::RelationSet::PUBLISHES,
-                                ) {
-                                    continue;
-                                }
+                            if let Some(h) = earliest_hole(
+                                f,
+                                hale_model::RelationSet::PUBLISHES,
+                            ) {
                                 let msg = match h {
                                     FnHole::Computed => format!(
                                         "claim `{}` cannot be certified: `{}` \
@@ -835,6 +866,35 @@ pub fn judge_forbid_reaches(
                             for (_, sid, written, ppid) in
                                 pubs_of.get(f).into_iter().flatten()
                             {
+                                // A hole at the SUBJECT hiding
+                                // SUBSCRIBES: the known subscriber
+                                // rows are not the whole story, so
+                                // fan-out must not certify absence
+                                // (review round 3).
+                                if subject_hides
+                                    .get(sid)
+                                    .is_some_and(|m| {
+                                        m.intersects(
+                                            hale_model::RelationSet::SUBSCRIBES,
+                                        )
+                                    })
+                                {
+                                    diags.push(Diag::ty(
+                                        row_span,
+                                        format!(
+                                            "claim `{}` cannot be certified: `{}` \
+                                             (reachable from `{}`) publishes to \
+                                             \"{}\", whose subscribers are not \
+                                             fully modeled. An unresolvable edge \
+                                             fails closed",
+                                            row.name,
+                                            display(*v),
+                                            src_ref.name.display,
+                                            written
+                                        ),
+                                    ));
+                                    return Visit::hole(());
+                                }
                                 for (handler, spid) in subs_of
                                     .get(sid)
                                     .into_iter()
@@ -861,14 +921,10 @@ pub fn judge_forbid_reaches(
                         // whole story, so exhausting them must not
                         // conclude Holds (review round 2).
                         if matches!(dst_test, DstIr::Effects(_)) {
-                            for (hides, h) in
-                                holes_of.get(f).into_iter().flatten()
-                            {
-                                if !hides.intersects(
-                                    hale_model::RelationSet::EFFECTS,
-                                ) {
-                                    continue;
-                                }
+                            if let Some(h) = earliest_hole(
+                                f,
+                                hale_model::RelationSet::EFFECTS,
+                            ) {
                                 let why = match h {
                                     FnHole::Other { reason } => {
                                         reason.clone()
@@ -994,6 +1050,30 @@ pub fn judge_forbid_reaches(
                                     if let Some(sid) = subject_by_text
                                         .get(subject.as_str())
                                     {
+                                        if subject_hides
+                                            .get(sid)
+                                            .is_some_and(|m| {
+                                                m.intersects(
+                                                    hale_model::RelationSet::SUBSCRIBES,
+                                                )
+                                            })
+                                        {
+                                            diags.push(Diag::ty(
+                                                row_span,
+                                                format!(
+                                                    "claim `{}` cannot be certified: `{}` \
+                                                     (reachable from `{}`) publishes to \
+                                                     \"{}\", whose subscribers are not \
+                                                     fully modeled. An unresolvable edge \
+                                                     fails closed",
+                                                    row.name,
+                                                    display(*v),
+                                                    src_ref.name.display,
+                                                    subject
+                                                ),
+                                            ));
+                                            return Visit::hole(());
+                                        }
                                         for (handler, spid) in
                                             subs_of
                                                 .get(sid)
@@ -1035,17 +1115,16 @@ pub fn judge_forbid_reaches(
                                     return Visit::hole(());
                                 }
                                 AbsorbedEvent::Truncated => {
-                                    diags.push(Diag::ty(
-                                        row_span,
-                                        format!(
-                                            "claim `{}`: reachability walk exceeded {} steps \
-                                             — cannot certify",
-                                            row.name,
-                                            crate::callgraph::MAX_STEPS
-                                        ),
-                                    ));
+                                    // Saturation at the unexpanded
+                                    // frontier — do NOT halt: the
+                                    // known prefix may still hold a
+                                    // concrete witness, and the
+                                    // evaluator's BFS finds it
+                                    // before the ceiling verdict
+                                    // (review round 3). Surfaced
+                                    // after the search when nothing
+                                    // known was found.
                                     truncated = true;
-                                    return Visit::hole(());
                                 }
                             }
                         }
@@ -1097,14 +1176,7 @@ pub fn judge_forbid_reaches(
                 Verdict::Violated
             }
             model_graph::Search::Uncertified { .. } => {
-                // A halt caused by absorption truncation is the
-                // step ceiling wearing a hole's clothes — same
-                // verdict as Saturated.
-                if truncated {
-                    Verdict::Violated
-                } else {
-                    Verdict::Uncertified
-                }
+                Verdict::Uncertified
             }
             model_graph::Search::Saturated { .. } => {
                 diags.push(Diag::ty(
@@ -1118,7 +1190,25 @@ pub fn judge_forbid_reaches(
                 ));
                 Verdict::Violated
             }
-            model_graph::Search::NotFound => Verdict::Holds,
+            model_graph::Search::NotFound => {
+                if truncated {
+                    // The known prefix held no witness and the
+                    // interior was cut at the ceiling — the
+                    // evaluator's saturation verdict.
+                    diags.push(Diag::ty(
+                        row_span,
+                        format!(
+                            "claim `{}`: reachability walk exceeded {} steps \
+                             — cannot certify",
+                            row.name,
+                            crate::callgraph::MAX_STEPS
+                        ),
+                    ));
+                    Verdict::Violated
+                } else {
+                    Verdict::Holds
+                }
+            }
         };
         out.push(Judged {
             ordinal: row.ordinal,

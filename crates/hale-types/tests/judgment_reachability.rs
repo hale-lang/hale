@@ -615,3 +615,193 @@ fn main() {
         "the step-ceiling diagnostic is emitted"
     );
 }
+
+/// Review pin (round 3): hole selection within a space is by
+/// AUTHORED site, not the model's canonical (kind, reason) sort —
+/// an untyped-receiver hole authored before an indirect-call hole
+/// reports first even though IndirectCall sorts first canonically.
+#[test]
+fn call_holes_refuse_in_authored_order() {
+    let src = r#"
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) -> Int { return v; }
+}
+fn leak(v: Int) -> Int { return v; }
+group a_side = { A };
+group b_side = { leak };
+main locus App {
+    params { a: A = A { }; }
+    claims { iso: forbid reaches(a_side, b_side); }
+    run() { println(self.a.go(1)); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let go = model
+        .entities
+        .functions
+        .iter()
+        .position(|f| f.display == "A::go")
+        .expect("A::go");
+    let at = hale_model::EntityRef::Function(hale_model::FunctionId(
+        go as u32,
+    ));
+    // Authored FIRST: an untyped receiver. Canonically LAST (the
+    // model sorts IndirectCall before UntypedReceiver).
+    model.holes.push(hale_model::Hole {
+        at,
+        kind: hale_model::HoleKind::UntypedReceiver {
+            callee: "helper".to_string(),
+        },
+        hides: hale_model::RelationSet::CALLS,
+        authored_site: Some(0),
+        reason: "untyped receiver".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    model.holes.push(hale_model::Hole {
+        at,
+        kind: hale_model::HoleKind::IndirectCall,
+        hides: hale_model::RelationSet::CALLS,
+        authored_site: Some(1),
+        reason: "call through fn param".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified
+    );
+    assert!(
+        judged[0].diags[0].message.contains("cannot type"),
+        "the AUTHORED-first hole selects the diagnostic: {}",
+        judged[0].diags[0].message
+    );
+}
+
+/// Review pin (round 3): a hole at SUBJECT grain hiding SUBSCRIBES
+/// refuses bus composition — known subscriber rows are not the
+/// whole story, so exhausting them must not certify absence.
+#[test]
+fn subject_subscribes_hole_fails_bus_walk_closed() {
+    let src = r#"
+topic Sig { payload: Int; subject: "app.sig"; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) { Sig <- v; }
+}
+fn quiet(v: Int) -> Int { return v; }
+group a_side = { A };
+group b_side = { quiet };
+main locus App {
+    params { a: A = A { }; }
+    claims { iso: forbid reaches(a_side, b_side) via { bus }; }
+    run() { self.a.go(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds,
+        "no known subscriber reaches b_side"
+    );
+    let sid = model
+        .entities
+        .subjects
+        .iter()
+        .position(|su| su.pattern == "app.sig")
+        .expect("subject");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            sid as u32,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "unknown subscribers must fail the bus walk closed"
+    );
+}
+
+/// Review pin (round 3): truncation is recorded at the unexpanded
+/// FRONTIER and the known prefix stays searchable — a concrete
+/// witness inside it wins over the step-ceiling verdict.
+#[test]
+fn truncation_does_not_hide_a_known_witness() {
+    let src = r#"
+locus Gate {
+    fn probe(r: std::http::Router, req: std::http::Request) -> Int {
+        let resp = r.dispatch(req);
+        return resp.status;
+    }
+}
+group gates = { Gate };
+main locus App {
+    claims { pure: forbid reaches(gates, effects(alloc)); }
+}
+fn main() {
+    let r = std::http::Router { };
+    let req = std::http::Request { method: "GET", path: "/", body: "" };
+    println(Gate { }.probe(r, req));
+}
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    // Append a truncated frontier node beside the intact interior
+    // (which still holds the alloc witness) and wire an edge to it.
+    let a = model
+        .legacy
+        .stdlib_absorption
+        .first_mut()
+        .expect("absorption");
+    let frontier = a.nodes.len() as u32;
+    a.nodes.push(hale_model::AbsorbedNode {
+        display: "std::deep::beyond".to_string(),
+        direct_effects: Vec::new(),
+        events: vec![hale_model::AbsorbedEvent::Truncated],
+    });
+    a.nodes[0].events.push(hale_model::AbsorbedEvent::Call {
+        target: hale_model::AbsorbedTarget::Interior(frontier),
+        dispatch: None,
+    });
+    let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated
+    );
+    assert!(
+        !judged[0]
+            .diags
+            .iter()
+            .any(|d| d.message.contains("exceeded")),
+        "the concrete witness wins — no step-ceiling verdict: {:?}",
+        judged[0]
+            .diags
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        judged[0]
+            .diags
+            .iter()
+            .any(|d| d.message.contains("violated")),
+        "the known-prefix witness is reported"
+    );
+}
