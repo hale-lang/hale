@@ -1974,8 +1974,14 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             provenance: pid,
         });
     }
-    // Effects per fn (the derived classes the artifact exports).
+    // Effects per fn (the derived classes the artifact exports),
+    // and the DIRECT sets the reachability judgment's `effects(C)`
+    // destination test reads (GH #476 Change 5a) — computed by the
+    // evaluator's own `claims::direct_effects`, called rather than
+    // approximated.
     let mut derived_effects: BTreeMap<String, Vec<String>> =
+        BTreeMap::new();
+    let mut direct_effects: BTreeMap<String, Vec<String>> =
         BTreeMap::new();
     for k in merged.fns.keys() {
         if !user_key(k) {
@@ -1988,6 +1994,21 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             derived_effects.insert(fn_name(k), classes);
         }
     }
+    for k in summary.fns.keys() {
+        if !user_key(k) {
+            continue;
+        }
+        let d = crate::claims::direct_effects(&summary, k, &ffi);
+        if !d.is_unclassified() && d != crate::stdlib_surface::EffectSet::PURE {
+            let mut classes = crate::frontier::render_effects_named(
+                d,
+                &effect_names,
+            );
+            classes.sort();
+            classes.dedup();
+            direct_effects.insert(fn_name(k), classes);
+        }
+    }
     for (n, info) in &fn_rows {
         let pid = match info.span {
             Some(sp) => intern_span(&mut records, sp),
@@ -1998,6 +2019,10 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             display: info.display.clone(),
             kind: info.kind,
             effects: derived_effects.get(n).cloned().unwrap_or_default(),
+            direct_effects: direct_effects
+                .get(n)
+                .cloned()
+                .unwrap_or_default(),
             provenance: pid,
         });
     }

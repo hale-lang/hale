@@ -37,9 +37,18 @@ pub struct Function {
     /// their `std::…` path, never the mangled name).
     pub display: String,
     pub kind: FunctionKind,
-    /// Effect labels in declaration order (order is semantic in the
-    /// existing artifact and is preserved).
+    /// DERIVED effect classes in declaration order (the stdlib-merged
+    /// transitive walk; order is semantic in the existing artifact
+    /// and is preserved).
     pub effects: Vec<String>,
+    /// DIRECT effect classes, sorted — what this body itself
+    /// performs (carriers, own alloc/publish/spawn sites, ffi and
+    /// classified stdlib callees), before propagation. The
+    /// reachability judgment's `effects(C)` destination test is
+    /// DIRECT on purpose: transitively every caller downstream of a
+    /// classified leaf would match, making the sink set nearly
+    /// vacuous (GH #476 Change 5a).
+    pub direct_effects: Vec<String>,
     pub provenance: ProvenanceId,
 }
 

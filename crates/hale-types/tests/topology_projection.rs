@@ -523,6 +523,7 @@ fn labels_and_effects_are_restricted_to_the_v1_universe() {
         display: name.to_string(),
         kind: FunctionKind::Free,
         effects: effects.into_iter().map(String::from).collect(),
+        direct_effects: Vec::new(),
         provenance: p,
     };
     let mut m = ApplicationModel {

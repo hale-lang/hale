@@ -69,6 +69,7 @@ fn tiny_model() -> ApplicationModel {
                     display: "App::run".to_string(),
                     kind: FunctionKind::Hook,
                     effects: vec!["publish".to_string()],
+                    direct_effects: Vec::new(),
                     provenance: p,
                 },
                 Function {
@@ -76,6 +77,7 @@ fn tiny_model() -> ApplicationModel {
                     display: "Worker::on_r".to_string(),
                     kind: FunctionKind::Method,
                     effects: vec![],
+                    direct_effects: Vec::new(),
                     provenance: p,
                 },
             ],
