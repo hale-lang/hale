@@ -1,9 +1,16 @@
 # Introduction
 
-**A concurrent systems language with a GC-free runtime — typed
+**A general-purpose language with a GC-free native runtime — typed
 message-bus concurrency, data-race-free by design.**
 
 *Write the system, not the lore.*
+
+A complete Hale program can be three lines — a `fn main()` that
+reads an argument and prints. You can write useful Hale — CLI
+tools, file and JSON work, HTTP clients and servers — without
+declaring a lifecycle, a topic, a placement, or a claim. Those
+constructs arrive when the program's growth earns them, and
+nothing you wrote earlier changes when they do.
 
 Most languages pick a level and live there. Python and
 JavaScript sit high — fast to write, far from the metal. Go
