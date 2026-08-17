@@ -577,6 +577,9 @@ fn main() { App { }; }
         !msg.contains("make"),
         "the composed `io` IS an authored purpose: {}",
         msg
+    );
+}
+
 /// Negative control (5d): the bound judgment reads carrier LABELS —
 /// clearing them zeroes the count and flips the verdict.
 #[test]
@@ -613,6 +616,126 @@ fn main() { App { }; }
         judged[0].verdict,
         hale_types::verdict::Verdict::Holds,
         "the judgment reads model.labels"
+    );
+}
+
+/// Review pin (5d): a carrier-bearing stdlib wrapper called from
+/// inside a LOOP is unbounded — the entry edge's loop nesting is a
+/// real model fact (StdlibAbsorption.entry_in_loop), not a
+/// synthesized false. Hand-built: the builder cannot yet produce a
+/// carrier-bearing stdlib interior from a simple fixture, and the
+/// judgment must hold as coverage grows.
+#[test]
+fn looped_stdlib_entry_with_carrier_is_unbounded() {
+    use hale_model::*;
+    let mut prov = ProvenanceTable::default();
+    prov.records.push(Provenance::Synthetic {
+        origin: "test".to_string(),
+    });
+    let p = ProvenanceId(0);
+    let f = |name: &str| Function {
+        name: name.to_string(),
+        display: name.to_string(),
+        kind: FunctionKind::Free,
+        effects: Vec::new(),
+        direct_effects: Vec::new(),
+        attribution: Vec::new(),
+        opaque_call: false,
+        carries_user_class: false,
+        provenance: p,
+    };
+    let mut m = ApplicationModel {
+        header: ModelHeader {
+            semantics: MODEL_SEMANTICS_V1,
+            entrypoint: "main".to_string(),
+        },
+        entities: Entities {
+            functions: vec![f("caller")],
+            groups: vec![Group {
+                name: "roots".to_string(),
+                display: "roots".to_string(),
+                may_be_empty: false,
+                provenance: p,
+            }],
+            effect_classes: vec![EffectClassDecl {
+                name: "money".to_string(),
+                declared: true,
+                definition: EffectClassDefinition::Atomic,
+                provenance: p,
+            }],
+            ..Entities::default()
+        },
+        relations: Relations::default(),
+        labels: Vec::new(),
+        weights: Vec::new(),
+        holes: Vec::new(),
+        capabilities: Capabilities::default(),
+        provenance: prov,
+        legacy: LegacyProjection {
+            topology_v1_fns: vec![FunctionId(0)],
+            topology_v1_calls_via_stdlib: Vec::new(),
+            stdlib_absorption: vec![StdlibAbsorption {
+                from: FunctionId(0),
+                site: 0,
+                entry_dispatch: None,
+                entry_in_loop: true,
+                entry_group: None,
+                entry_provenance: p,
+                nodes: vec![AbsorbedNode {
+                    display: "std::pay::charge".to_string(),
+                    carries: vec!["money".to_string()],
+                    direct_effects: Vec::new(),
+                    events: Vec::new(),
+                }],
+            }],
+        },
+    };
+    m.relations.group_members.push(GroupMember {
+        group: GroupId(0),
+        member: EntityRef::Function(FunctionId(0)),
+        provenance: p,
+    });
+    // Lower a `bound money <= 5 on paths from roots` row by hand.
+    let mut t = ClaimIrTable::default();
+    t.provenance.records.push(Provenance::Synthetic {
+        origin: "test".to_string(),
+    });
+    t.rows.push(ClaimRow {
+        ordinal: 0,
+        name: "cap".to_string(),
+        origin: ClaimOrigin::Main,
+        law: ClaimIr::Bound {
+            class: EffectClassRef {
+                class: Some(EffectClassId(0)),
+                builtin: false,
+                name: "money".to_string(),
+                provenance: ProvenanceId(0),
+            },
+            limit: 5,
+            from: GroupRef {
+                group: Some(GroupId(0)),
+                name: NameRef {
+                    raw: "roots".to_string(),
+                    display: "roots".to_string(),
+                },
+                provenance: ProvenanceId(0),
+            },
+        },
+        provenance: ProvenanceId(0),
+    });
+    let judged =
+        hale_types::judgment::judge_bound(&t, &m, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "loop-nested carrier entry is unbounded"
+    );
+    assert!(
+        judged[0].diags[0]
+            .message
+            .contains("reached from inside a loop"),
+        "classified as LoopCarrier: {}",
+        judged[0].diags[0].message
     );
 }
 

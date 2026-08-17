@@ -3268,6 +3268,7 @@ pub fn judge_bound(
                     prov: Option<ProvenanceId>,
                 },
                 Computed(Option<ProvenanceId>),
+                Truncated,
             }
             let mut evs: Vec<Ev> = Vec::new();
             match v {
@@ -3313,11 +3314,17 @@ pub fn judge_bound(
                             });
                         } else {
                             let (_, ai) = absorbed[i];
+                            let a = &cx.absorption[ai as usize];
+                            // The REAL entry edge: its loop nesting
+                            // and span come from the authored call
+                            // (review: looped stdlib entries).
                             evs.push(Ev::Call {
                                 to: V::Interior(ai, 0),
-                                in_loop: false,
-                                group: Some(site),
-                                prov: None,
+                                in_loop: a.entry_in_loop,
+                                group: a
+                                    .entry_group
+                                    .or(Some(site)),
+                                prov: Some(a.entry_provenance),
                             });
                         }
                     }
@@ -3379,6 +3386,9 @@ pub fn judge_bound(
                             AbsorbedEvent::PublishHole => {
                                 evs.push(Ev::Computed(None))
                             }
+                            AbsorbedEvent::Truncated => {
+                                evs.push(Ev::Truncated)
+                            }
                         }
                     }
                 }
@@ -3398,6 +3408,10 @@ pub fn judge_bound(
                                 at: v,
                                 prov: p,
                             });
+                        break;
+                    }
+                    Ev::Truncated => {
+                        unbounded = Some(UnboundedIr::StepCeiling);
                         break;
                     }
                     Ev::Call {
