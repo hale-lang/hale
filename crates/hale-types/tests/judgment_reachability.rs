@@ -451,23 +451,6 @@ group b_side = { leak };
 main locus App {
     params { a: A = A { }; }
     claims { boundary: only edges a_side -> b_side { }; }
-/// Negative control (5c): the endpoint judgment reads DECLARED
-/// publisher ends — clearing declares_publish flips a holding
-/// `require publishes` to Violated.
-#[test]
-fn dropping_declared_ends_changes_the_require_verdict() {
-    let src = r#"
-type T { n: Int = 0; }
-topic Orders { payload: T; subject: "orders"; }
-locus Gw {
-    params { n: Int = 0; }
-    bus { publish Orders; }
-    fn send(v: Int) { Orders <- T { }; }
-}
-group gws = { Gw };
-main locus App {
-    params { g: Gw = Gw { }; }
-    claims { writer: require publishes(some gws, topic Orders); }
     run() { println(1); }
 }
 fn main() { App { }; }
@@ -492,6 +475,30 @@ fn main() { App { }; }
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
+    );
+}
+
+/// Negative control (5c): the endpoint judgment reads DECLARED
+/// publisher ends — clearing declares_publish flips a holding
+/// `require publishes` to Violated.
+#[test]
+fn dropping_declared_ends_changes_the_require_verdict() {
+    let src = r#"
+type T { n: Int = 0; }
+topic Orders { payload: T; subject: "orders"; }
+locus Gw {
+    params { n: Int = 0; }
+    bus { publish Orders; }
+    fn send(v: Int) { Orders <- T { }; }
+}
+group gws = { Gw };
+main locus App {
+    params { g: Gw = Gw { }; }
+    claims { writer: require publishes(some gws, topic Orders); }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let bundle = bundle_of(src, &program);
     let mut model = derive_application_model(&bundle);
@@ -504,6 +511,43 @@ fn main() { App { }; }
         judged[0].verdict,
         hale_types::verdict::Verdict::Violated,
         "the judgment reads relations.declares_publish"
+    );
+}
+
+/// Review pin (5c): a COMPOSED user class in `@effects(is:)` is
+/// authored purpose — the expanded label set (its atoms) must not
+/// hide it from `require attributed`.
+#[test]
+fn composed_class_counts_as_authored_attribution() {
+    let src = r#"
+effect io = { syscall, alloc };
+type Buf { n: Int = 0; }
+@effects(is: { io })
+fn make(v: Int) -> Int { let b = Buf { }; return v; }
+main locus App {
+    claims { tagged: require attributed(all alloc); }
+    run() { println(make(1)); }
+}
+fn main() { App { }; }
+"#;
+    let out = diff_one(src, "composed attribution");
+    assert!(out.is_ok(), "old/new agree: {:?}", out);
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_endpoints(&table, &model, &[0]);
+    // `main`/`run` alloc without purpose — the claim violates, but
+    // `make` (authored composed purpose) must NOT be in the list.
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated
+    );
+    let msg = &judged[0].diags[0].message;
+    assert!(
+        !msg.contains("make"),
+        "the composed `io` IS an authored purpose: {}",
+        msg
     );
 }
 

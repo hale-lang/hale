@@ -2232,18 +2232,18 @@ pub fn judge_endpoints(
                 .push(t.0);
         }
     }
-    // User-class carriers: a labels row whose class is not builtin.
-    let carries_user: BTreeSet<FunctionId> = model
-        .labels
+    // AUTHORED user-class carriage — the labels table holds the
+    // EXPANDED class set (a composed `effect io = {syscall, block}`
+    // labels its atoms), but `require attributed` asks whether the
+    // author wrote a user class, composed or atomic
+    // (Function.carries_user_class, computed by the evaluator's own
+    // fns_carrying_a_user_class).
+    let carries_user: BTreeSet<FunctionId> = e
+        .functions
         .iter()
-        .filter_map(|l| match l.at {
-            EntityRef::Function(f)
-                if !hale_model::is_builtin_effect_class(&l.label) =>
-            {
-                Some(f)
-            }
-            _ => None,
-        })
+        .enumerate()
+        .filter(|(_, f)| f.carries_user_class)
+        .map(|(i, _)| FunctionId(i as u32))
         .collect();
     let fn_raw = |f: FunctionId| e.functions[f.index()].name.clone();
     let fn_disp =

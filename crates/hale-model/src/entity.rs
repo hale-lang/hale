@@ -56,6 +56,12 @@ pub struct Function {
     /// Has an unresolved call that is not a frontier path — the
     /// `require attributed` opaque fallback (GH #476 Change 5c).
     pub opaque_call: bool,
+    /// The author wrote `@effects(is: { <user class> })` on this fn
+    /// — AUTHORED classification, distinct from the expanded label
+    /// set (a composed class labels its atomic members, but the
+    /// purpose the author supplied is the composed NAME; review:
+    /// composed attribution classes).
+    pub carries_user_class: bool,
     pub provenance: ProvenanceId,
 }
 

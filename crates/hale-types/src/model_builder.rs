@@ -2007,6 +2007,11 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             derived_effects.insert(fn_name(k), classes);
         }
     }
+    let authored_user_class: BTreeSet<String> =
+        crate::effects::fns_carrying_a_user_class(&programs)
+            .into_iter()
+            .map(|k| fn_name(&k))
+            .collect();
     let mut attribution: BTreeMap<String, Vec<String>> =
         BTreeMap::new();
     let mut opaque_calls: BTreeSet<String> = BTreeSet::new();
@@ -2075,6 +2080,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                 .cloned()
                 .unwrap_or_default(),
             opaque_call: opaque_calls.contains(n),
+            carries_user_class: authored_user_class.contains(n),
             provenance: pid,
         });
     }
