@@ -1675,27 +1675,46 @@ pub fn judge_only_edges(
         FunctionId,
         Vec<(hale_model::RelationSet, Option<u32>, FnHole)>,
     > = BTreeMap::new();
+    // Subject-grain holes: a hole at Subject(S) hiding SUBSCRIBES
+    // means S's subscriber set is incomplete — boundary composition
+    // through S must not certify absence from the known rows
+    // (review round 3: bus composition needs PUBLISHES ∪
+    // SUBSCRIBES, at the hole's entity grain).
+    let mut subject_hides: BTreeMap<u32, hale_model::RelationSet> =
+        BTreeMap::new();
     for h in &model.holes {
-        let EntityRef::Function(f) = h.at else { continue };
-        let families = hale_model::RelationSet::CALLS
-            .union(hale_model::RelationSet::PUBLISHES);
-        if !h.hides.intersects(families) {
-            continue;
+        match h.at {
+            EntityRef::Function(f) => {
+                let families = hale_model::RelationSet::CALLS
+                    .union(hale_model::RelationSet::PUBLISHES);
+                if !h.hides.intersects(families) {
+                    continue;
+                }
+                let hole = match &h.kind {
+                    HoleKind::IndirectCall => FnHole::Indirect,
+                    HoleKind::UntypedReceiver { callee } => {
+                        FnHole::Untyped {
+                            callee: callee.clone(),
+                        }
+                    }
+                    HoleKind::ComputedSubject => FnHole::Computed,
+                    _ => FnHole::Other {
+                        reason: h.reason.clone(),
+                    },
+                };
+                holes_of
+                    .entry(f)
+                    .or_default()
+                    .push((h.hides, h.authored_site, hole));
+            }
+            EntityRef::Subject(sid) => {
+                let e2 = subject_hides
+                    .entry(sid.0)
+                    .or_insert(hale_model::RelationSet(0));
+                *e2 = e2.union(h.hides);
+            }
+            _ => {}
         }
-        let hole = match &h.kind {
-            HoleKind::IndirectCall => FnHole::Indirect,
-            HoleKind::UntypedReceiver { callee } => FnHole::Untyped {
-                callee: callee.clone(),
-            },
-            HoleKind::ComputedSubject => FnHole::Computed,
-            _ => FnHole::Other {
-                reason: h.reason.clone(),
-            },
-        };
-        holes_of
-            .entry(f)
-            .or_default()
-            .push((h.hides, h.authored_site, hole));
     }
 
     let mut out = Vec::new();
@@ -1935,17 +1954,17 @@ pub fn judge_only_edges(
                 }
             }
             enum PubEv<'x> {
-                Row(&'x str, ProvenanceId),
+                Row(u32, &'x str, ProvenanceId),
                 Hole(&'x FnHole),
             }
             let mut pevs: Vec<(u32, u8, PubEv)> = Vec::new();
-            for (site, _sid, written, pprov) in
+            for (site, sid, written, pprov) in
                 pubs_of.get(f).into_iter().flatten()
             {
                 pevs.push((
                     *site,
                     0,
-                    PubEv::Row(written.as_str(), *pprov),
+                    PubEv::Row(*sid, written.as_str(), *pprov),
                 ));
             }
             for (hides, site, h) in
@@ -2009,7 +2028,29 @@ pub fn judge_only_edges(
                         verdict = Verdict::Uncertified;
                         break 'fns;
                     }
-                    PubEv::Row(w, p) => (w, p),
+                    PubEv::Row(sid, w, p) => {
+                        if subject_hides.get(&sid).is_some_and(|m| {
+                            m.intersects(
+                                hale_model::RelationSet::SUBSCRIBES,
+                            )
+                        }) {
+                            diags.push(Diag::ty(
+                                row_span,
+                                format!(
+                                    "claim `{}` cannot be certified: `{}` \
+                                     publishes to \"{}\", whose subscribers \
+                                     are not fully modeled. An unresolvable \
+                                     edge fails closed",
+                                    row.name,
+                                    fn_disp(*f),
+                                    w
+                                ),
+                            ));
+                            verdict = Verdict::Uncertified;
+                            break 'fns;
+                        }
+                        (w, p)
+                    }
                 };
                 let pprov = &pprov;
                 let written = &written.to_string();

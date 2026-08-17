@@ -1835,3 +1835,63 @@ fn main() { App { }; }
         msgs
     );
 }
+
+/// Review pin (round 3): the boundary check consults SUBJECT-grain
+/// SUBSCRIBES holes — an ungranted edge cannot be ruled out when
+/// the subject's subscriber set is incomplete.
+#[test]
+fn subject_subscribes_hole_fails_only_edges_closed() {
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic Sneaky { payload: Cmd; subject: "app.sneaky"; }
+locus Ops {
+    params { n: Int = 0; }
+    bus { publish Sneaky; }
+    fn act() { Sneaky <- Cmd { }; }
+}
+locus Core {
+    params { n: Int = 0; }
+    fn idle() { }
+}
+group ops = { Ops };
+group core = { Core };
+main locus App {
+    params { o: Ops = Ops { }; c: Core = Core { }; }
+    claims { boundary: only edges ops -> core { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds,
+        "no known subscriber crosses the boundary"
+    );
+    let sid = model
+        .entities
+        .subjects
+        .iter()
+        .position(|su| su.pattern == "app.sneaky")
+        .expect("subject");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            sid as u32,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "unknown subscribers must fail the boundary closed"
+    );
+}
