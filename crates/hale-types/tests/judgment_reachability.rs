@@ -2997,3 +2997,113 @@ fn main() { App { }; }
         "the refusal names the cycle"
     );
 }
+
+/// Review pin (round 3): a fn whose EFFECTS rows are hidden has an
+/// UNKNOWN own-count — `bound` must not count zero and certify.
+#[test]
+fn effects_hole_makes_bound_uncertified() {
+    let src = r#"
+effect money;
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) -> Int { return v; }
+}
+group roots = { A };
+main locus App {
+    params { a: A = A { }; }
+    claims { cap: bound money <= 1 on paths from roots; }
+    run() { println(self.a.go(1)); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds,
+        "nothing carries `money`"
+    );
+    let go = model
+        .entities
+        .functions
+        .iter()
+        .position(|f| f.display == "A::go")
+        .expect("A::go");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Function(hale_model::FunctionId(
+            go as u32,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::EFFECTS,
+        authored_site: None,
+        reason: "carrier facts incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "hidden carrier facts must fail the count closed"
+    );
+    assert!(
+        judged[0].diags[0].message.contains("unknown"),
+        "{}",
+        judged[0].diags[0].message
+    );
+}
+
+/// Review pin (round 3): a publish whose subject's subscriber set
+/// is incomplete makes the fan-out's contribution unknown — the
+/// bound is Uncertified, never certified from the known rows.
+#[test]
+fn subject_subscribes_hole_makes_bound_uncertified() {
+    let src = r#"
+effect money;
+topic Sig { payload: Int; subject: "app.sig"; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) { Sig <- v; }
+}
+group roots = { A };
+main locus App {
+    params { a: A = A { }; }
+    claims { cap: bound money <= 1 on paths from roots; }
+    run() { self.a.go(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds
+    );
+    let sid = model
+        .entities
+        .subjects
+        .iter()
+        .position(|su| su.pattern == "app.sig")
+        .expect("subject");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            sid as u32,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "unknown subscribers must fail the count closed"
+    );
+}

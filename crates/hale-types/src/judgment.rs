@@ -3065,24 +3065,66 @@ pub fn judge_bound(
     }
     let mut holes_of: BTreeMap<FunctionId, Vec<FnHole>> =
         BTreeMap::new();
+    // Carrier counting needs EFFECTS beside the traversal families
+    // (review round 3): a fn whose EFFECTS rows are hidden has an
+    // UNKNOWN own-count — counting zero and certifying the bound
+    // would fail open. Bus traversal likewise needs subject-grain
+    // SUBSCRIBES: a hole at Subject(S) means fan-out through S is
+    // not fully modeled.
+    let mut effects_holed: BTreeSet<FunctionId> = BTreeSet::new();
+    let mut subject_hides: BTreeMap<u32, hale_model::RelationSet> =
+        BTreeMap::new();
     for h in &model.holes {
-        let EntityRef::Function(f) = h.at else { continue };
-        let families = hale_model::RelationSet::CALLS
-            .union(hale_model::RelationSet::PUBLISHES);
-        if !h.hides.intersects(families) {
-            continue;
-        }
-        let hole = match &h.kind {
-            HoleKind::ComputedSubject => {
-                FnHole::Computed(h.authored_site, h.provenance)
+        match h.at {
+            EntityRef::Function(f) => {
+                if h.hides
+                    .intersects(hale_model::RelationSet::EFFECTS)
+                {
+                    effects_holed.insert(f);
+                }
+                let families = hale_model::RelationSet::CALLS
+                    .union(hale_model::RelationSet::PUBLISHES);
+                if !h.hides.intersects(families) {
+                    continue;
+                }
+                let hole = match &h.kind {
+                    HoleKind::ComputedSubject => FnHole::Computed(
+                        h.authored_site,
+                        h.provenance,
+                    ),
+                    _ => FnHole::Unfollowable(
+                        h.authored_site,
+                        h.provenance,
+                    ),
+                };
+                holes_of.entry(f).or_default().push(hole);
             }
-            _ => FnHole::Unfollowable(
-                h.authored_site,
-                h.provenance,
-            ),
-        };
-        holes_of.entry(f).or_default().push(hole);
+            EntityRef::Subject(sid) => {
+                let e2 = subject_hides
+                    .entry(sid.0)
+                    .or_insert(hale_model::RelationSet(0));
+                *e2 = e2.union(h.hides);
+            }
+            _ => {}
+        }
     }
+    let subject_hides_text: BTreeMap<&str, hale_model::RelationSet> = {
+        let mut t: BTreeMap<&str, hale_model::RelationSet> =
+            subject_hides
+                .iter()
+                .map(|(sid, m)| {
+                    (e.subjects[*sid as usize].pattern.as_str(), *m)
+                })
+                .collect();
+        // Publish rows for DECLARED topics carry the topic NAME,
+        // not the wire pattern — index both spellings.
+        for tp in &e.topics {
+            if let Some(m) = subject_hides.get(&tp.subject.0) {
+                t.insert(tp.name.as_str(), *m);
+            }
+        }
+        t
+    };
     let class_atoms = |name: &str| -> BTreeSet<String> {
         match e.effect_classes.iter().find(|c| c.name == name) {
             Some(c) => match &c.definition {
@@ -3107,6 +3149,12 @@ pub fn judge_bound(
         Unfollowable { at: V, prov: Option<ProvenanceId> },
         ComputedSubject { at: V, prov: Option<ProvenanceId> },
         StepCeiling,
+        /// The vertex's own carrier facts are hidden — the count
+        /// is UNKNOWN, not unbounded (verdict: Uncertified).
+        UnknownEffects { at: V },
+        /// A publish whose subject's subscriber set is incomplete
+        /// — fan-out is unknown (verdict: Uncertified).
+        UnknownSubscribers { at: V, subject: String },
     }
 
     let mut out = Vec::new();
@@ -3270,6 +3318,9 @@ pub fn judge_bound(
             >,
             holes_of: &'x BTreeMap<FunctionId, Vec<FnHole>>,
             absorption: &'x [hale_model::StdlibAbsorption],
+            effects_holed: &'x BTreeSet<FunctionId>,
+            subject_hides_text:
+                &'x BTreeMap<&'x str, hale_model::RelationSet>,
         }
         fn site_count_ir(
             v: V,
@@ -3289,6 +3340,16 @@ pub fn judge_bound(
             *steps += 1;
             if *steps > crate::callgraph::MAX_STEPS {
                 return Err(UnboundedIr::StepCeiling);
+            }
+            if let V::User(f) = v {
+                if cx.effects_holed.contains(&f) {
+                    // Hidden carrier facts: the own-count is
+                    // unknown, so no certified total can include
+                    // this vertex (review round 3).
+                    return Err(UnboundedIr::UnknownEffects {
+                        at: v,
+                    });
+                }
             }
             let own_n = own(v);
             stack.push(v);
@@ -3552,6 +3613,24 @@ pub fn judge_bound(
                         in_loop,
                         prov,
                     } => {
+                        if cx
+                            .subject_hides_text
+                            .get(subject.as_str())
+                            .is_some_and(|m| {
+                                m.intersects(
+                                    hale_model::RelationSet::SUBSCRIBES,
+                                )
+                            })
+                        {
+                            unbounded = Some(
+                                UnboundedIr::UnknownSubscribers {
+                                    at: v,
+                                    subject: subject.clone(),
+                                },
+                            );
+                            break;
+                        }
+                        let _ = &prov;
                         for handler in subs_for(&subject) {
                             match site_count_ir(
                                 V::User(handler),
@@ -3614,6 +3693,8 @@ pub fn judge_bound(
             pubs_of: &pubs_of,
             holes_of: &holes_of,
             absorption,
+            effects_holed: &effects_holed,
+            subject_hides_text: &subject_hides_text,
         };
         let mut worst: (u64, Vec<V>) = (0, Vec::new());
         let mut why: Option<UnboundedIr> = None;
@@ -3642,6 +3723,57 @@ pub fn judge_bound(
             }
         }
         if let Some(u) = why {
+            // The UNKNOWN shapes are not "unbounded" — the count
+            // simply cannot be certified; verdict Uncertified with
+            // its own wording (review round 3; no evaluator analog:
+            // the old engine cannot see these model facts).
+            match &u {
+                UnboundedIr::UnknownEffects { at } => {
+                    diags.push(Diag::ty(
+                        row_span,
+                        format!(
+                            "claim `{}` cannot be certified: the \
+                             `{}` carrier facts of `{}` are not \
+                             fully analyzable, so its contribution \
+                             to the count is unknown",
+                            row.name,
+                            class.name,
+                            display(*at)
+                        ),
+                    ));
+                    out.push(Judged {
+                        ordinal: row.ordinal,
+                        verdict: Verdict::Uncertified,
+                        diags,
+                    });
+                    continue;
+                }
+                UnboundedIr::UnknownSubscribers {
+                    at,
+                    subject,
+                } => {
+                    diags.push(Diag::ty(
+                        row_span,
+                        format!(
+                            "claim `{}` cannot be certified: `{}` \
+                             publishes to \"{}\", whose \
+                             subscribers are not fully modeled — \
+                             the fan-out's contribution to the \
+                             count is unknown",
+                            row.name,
+                            display(*at),
+                            subject
+                        ),
+                    ));
+                    out.push(Judged {
+                        ordinal: row.ordinal,
+                        verdict: Verdict::Uncertified,
+                        diags,
+                    });
+                    continue;
+                }
+                _ => {}
+            }
             let why_str = match &u {
                 UnboundedIr::Cycle(k) => format!(
                     "`{}` is reachable from itself, so the count repeats \
@@ -3666,6 +3798,10 @@ pub fn judge_bound(
                 UnboundedIr::StepCeiling => {
                     "the walk hit its step ceiling before settling"
                         .into()
+                }
+                UnboundedIr::UnknownEffects { .. }
+                | UnboundedIr::UnknownSubscribers { .. } => {
+                    unreachable!("handled above")
                 }
             };
             diags.push(Diag::ty(
