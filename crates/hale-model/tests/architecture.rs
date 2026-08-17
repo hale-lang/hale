@@ -252,6 +252,7 @@ fn an_empty_hole_is_not_a_hole() {
         kind: HoleKind::IndirectCall,
         hides: RelationSet(0),
         reason: "hides nothing".to_string(),
+        authored_site: None,
         provenance: ProvenanceId(0),
     });
     assert_eq!(m.validate(), Err(ModelError::EmptyHole { index: 0 }));
@@ -271,6 +272,7 @@ fn a_capability_cannot_claim_exactness_over_a_hole() {
         kind: HoleKind::IndirectCall,
         hides: RelationSet::CALLS,
         reason: "call through fn param `f`".to_string(),
+        authored_site: None,
         provenance: ProvenanceId(0),
     });
     assert_eq!(
@@ -416,6 +418,7 @@ fn inline_unknown_key_domain_requires_a_hole() {
         kind: HoleKind::UnknownKeyDomain,
         hides: RelationSet::KEY_FILTERS,
         reason: "computed shard key".to_string(),
+        authored_site: None,
         provenance: ProvenanceId(0),
     });
     assert_eq!(

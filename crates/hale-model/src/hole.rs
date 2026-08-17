@@ -89,7 +89,8 @@ pub enum HoleKind {
     UnanalyzedBody,
 }
 
-/// One hole: where, why, and — critically — which relation families
+/// One hole: where, why, at which authored position, and —
+/// critically — which relation families
 /// it hides from judgments.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Hole {
@@ -100,6 +101,13 @@ pub struct Hole {
     ///
     /// [`ApplicationModel::validate`]: crate::application::ApplicationModel::validate
     pub hides: RelationSet,
+    /// The authored site ordinal of the hole's FIRST occurrence, in
+    /// its site space (call-site ordinals for call holes,
+    /// publish-site ordinals for computed subjects). Judgments
+    /// interleave holes with known edges by this position — the
+    /// evaluator walks bodies in source order and halts at the
+    /// first unfollowable edge, so position is verdict-relevant.
+    pub authored_site: Option<u32>,
     /// Human-readable reason for witnesses ("call through fn param
     /// `f`").
     pub reason: String,

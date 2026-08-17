@@ -126,7 +126,12 @@ pub fn judge_forbid_reaches(
     let v1: BTreeSet<FunctionId> =
         model.legacy.topology_v1_fns.iter().copied().collect();
 
-    // Group → fn-grain projection (the evaluator's `fn_set`).
+    // Group → fn-grain projection (the evaluator's `fn_set`):
+    // member loci project through the SUMMARY universe (v1), but a
+    // member FREE fn enters unconditionally — an empty free fn with
+    // no summary row still exists as a source/sink decl (the
+    // evaluator inserts every named free fn after the summary
+    // loop; review: declaration-only free functions).
     let mut group_fns: BTreeMap<GroupId, BTreeSet<FunctionId>> =
         BTreeMap::new();
     {
@@ -146,9 +151,7 @@ pub fn judge_forbid_reaches(
                     }
                 }
                 EntityRef::Function(f) => {
-                    if v1.contains(&f) {
-                        set.insert(f);
-                    }
+                    set.insert(f);
                 }
                 _ => {}
             }
@@ -157,6 +160,20 @@ pub fn judge_forbid_reaches(
             group_fns.entry(GroupId(gi as u32)).or_default();
         }
     }
+    // The evaluator iterates fn sets in FnKey order — free fns
+    // (locus: None) BEFORE methods — and search halts at the first
+    // hole, so seeding order is verdict-relevant.
+    let fnkey_sorted = |set: &BTreeSet<FunctionId>| -> Vec<FunctionId> {
+        let mut v: Vec<FunctionId> = set.iter().copied().collect();
+        v.sort_by_key(|f| {
+            let raw = &e.functions[f.index()].name;
+            match raw.rsplit_once("::") {
+                Some((l, m)) => (1u8, l.to_string(), m.to_string()),
+                None => (0u8, String::new(), raw.clone()),
+            }
+        });
+        v
+    };
 
     // Per-fn direct call rows by authored site (ViaStdlib rows are
     // the legacy contraction — the absorption replaces them here).
@@ -249,18 +266,33 @@ pub fn judge_forbid_reaches(
         Indirect,
         Untyped { callee: String },
         Computed,
+        /// Any other species hiding a walked family (e.g. an
+        /// unanalyzed body) — fails closed with its recorded reason.
+        Other { reason: String, kind: String },
     }
+    // Holes trigger by RELATION FAMILY (`hides` intersects the
+    // families this judgment walks); the KIND only selects the
+    // diagnostic wording — a new hole species cannot be silently
+    // ignored (review: family-mask consumption).
     let mut holes_of: BTreeMap<FunctionId, Vec<FnHole>> =
         BTreeMap::new();
     for h in &model.holes {
         let EntityRef::Function(f) = h.at else { continue };
+        let walk_families = hale_model::RelationSet::CALLS
+            .union(hale_model::RelationSet::PUBLISHES);
+        if !h.hides.intersects(walk_families) {
+            continue;
+        }
         let hole = match &h.kind {
             HoleKind::IndirectCall => FnHole::Indirect,
             HoleKind::UntypedReceiver { callee } => FnHole::Untyped {
                 callee: callee.clone(),
             },
             HoleKind::ComputedSubject => FnHole::Computed,
-            _ => continue,
+            other => FnHole::Other {
+                reason: h.reason.clone(),
+                kind: format!("{:?}", other),
+            },
         };
         holes_of.entry(f).or_default().push(hole);
     }
@@ -394,6 +426,27 @@ pub fn judge_forbid_reaches(
                 ok &= check_group(g, &mut diags);
             }
             SetIr::EffectCarriers(c) => {
+                // A cyclic definition resolves to no effect — a
+                // prohibition over it would hold vacuously. Invalid
+                // BEFORE evaluation (review: invalid cycles).
+                if let Some(id) = c.class {
+                    if matches!(
+                        e.effect_classes[id.index()].definition,
+                        hale_model::EffectClassDefinition::InvalidCycle
+                    ) {
+                        diags.push(Diag::ty(
+                            claim_span(c.provenance),
+                            format!(
+                                "claim `{}`: effect class `{}` is defined in \
+                                 terms of itself. A cyclic definition resolves \
+                                 to no effect at all, so every contract naming \
+                                 it would hold vacuously.",
+                                row.name, c.name
+                            ),
+                        ));
+                        ok = false;
+                    }
+                }
                 if !c.builtin
                     && c.class.map_or(true, |id| {
                         !e.effect_classes[id.index()].declared
@@ -573,8 +626,9 @@ pub fn judge_forbid_reaches(
         }
         let row_span = claim_span(row.provenance);
         // ---- the walk ----
+        let ordered_roots = fnkey_sorted(&roots);
         let search = model_graph::search(
-            roots.iter().map(|f| V::User(*f)),
+            ordered_roots.iter().map(|f| V::User(*f)),
             |v: &V| {
                 let mut edges: Vec<(V, StepIr)> = Vec::new();
                 match v {
@@ -622,6 +676,23 @@ pub fn judge_forbid_reaches(
                                         return Visit::hole(());
                                     }
                                     FnHole::Computed => {}
+                                    FnHole::Other {
+                                        reason, ..
+                                    } => {
+                                        diags.push(Diag::ty(
+                                            row_span,
+                                            format!(
+                                                "claim `{}` cannot be certified: \
+                                                 `{}` (reachable from `{}`) — {}. \
+                                                 An unresolvable edge fails closed",
+                                                row.name,
+                                                display(*v),
+                                                src_ref.name.display,
+                                                reason
+                                            ),
+                                        ));
+                                        return Visit::hole(());
+                                    }
                                 }
                             }
                             let direct = calls_of
@@ -661,7 +732,15 @@ pub fn judge_forbid_reaches(
                                             dispatch: a
                                                 .entry_dispatch
                                                 .clone(),
-                                            provenance: None,
+                                            // The AUTHORED entry
+                                            // call — a hit at an
+                                            // interior node crosses
+                                            // here, and the
+                                            // evaluator points at
+                                            // it.
+                                            provenance: Some(
+                                                a.entry_provenance,
+                                            ),
                                             from_stdlib: false,
                                         },
                                     ));
@@ -839,6 +918,18 @@ pub fn judge_forbid_reaches(
                                     ));
                                     return Visit::hole(());
                                 }
+                                AbsorbedEvent::Truncated => {
+                                    diags.push(Diag::ty(
+                                        row_span,
+                                        format!(
+                                            "claim `{}`: reachability walk exceeded {} steps \
+                                             — cannot certify",
+                                            row.name,
+                                            crate::callgraph::MAX_STEPS
+                                        ),
+                                    ));
+                                    return Visit::hole(());
+                                }
                             }
                         }
                         Visit::edges(edges)
@@ -852,7 +943,18 @@ pub fn judge_forbid_reaches(
                         .iter()
                         .any(|c| atoms.contains(c)),
                 },
-                V::Interior(..) => false,
+                // The evaluator applies direct_effects to EVERY
+                // visited FnKey, stdlib included — an effects(C)
+                // destination can be satisfied inside a stdlib body
+                // (review: stdlib effect sinks).
+                V::Interior(a, n) => match &dst_test {
+                    DstIr::Group(_) => false,
+                    DstIr::Effects(atoms) => absorption[*a as usize]
+                        .nodes[*n as usize]
+                        .direct_effects
+                        .iter()
+                        .any(|c| atoms.contains(c)),
+                },
             },
             |v: &V| match v {
                 V::User(f) => mask.is_some_and(|m| m.contains(f)),

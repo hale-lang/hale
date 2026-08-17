@@ -245,3 +245,96 @@ fn main() { App { }; }
         "the engine reads model.holes"
     );
 }
+
+/// Review pin: a DECLARATION-ONLY free fn (empty body, no summary
+/// row) is still a source/sink decl — the evaluator's fn_set
+/// inserts every named free fn, and the judgment universe must
+/// match (a group naming it must not become projection-vacuous).
+#[test]
+fn declaration_only_free_fns_stay_in_the_universe() {
+    let src = r#"
+fn sink() { }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) { sink(); }
+}
+group a_side = { A };
+group b_side = { sink };
+main locus App {
+    params { a: A = A { }; }
+    claims { iso: forbid reaches(a_side, b_side); }
+    run() { self.a.go(1); }
+}
+fn main() { App { }; }
+"#;
+    let legacy = {
+        let program = hale_syntax::parse_source(src).expect("parse");
+        let bundle = bundle_of(src, &program);
+        let out = diff_one(src, "declaration-only free fn");
+        let _ = bundle;
+        let _ = program;
+        out
+    };
+    assert!(legacy.is_ok(), "old/new agree: {:?}", legacy);
+    // …and the verdict is the evaluator's, not vacuous-Invalid.
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "the empty free fn is a reachable destination"
+    );
+}
+
+/// Review pin: an `effects(C)` destination satisfied INSIDE a
+/// stdlib body — the evaluator applies direct_effects to every
+/// visited FnKey, and interior nodes must answer the test.
+#[test]
+fn stdlib_interior_effect_sink_is_found() {
+    // The #392 Router recipe: Gate::probe's ALLOC evidence lives
+    // inside std::http::Router::dispatch's body — the user fn's own
+    // direct effects are clean, so only an interior node can
+    // satisfy the destination.
+    let src = r#"
+locus Hello {
+    fn handle(ctx: std::http::Context) -> std::http::Response {
+        return std::http::Response {
+            status: 200,
+            content_type: "text/plain",
+            body: "hi"
+        };
+    }
+}
+locus Gate {
+    fn probe(r: std::http::Router, req: std::http::Request) -> Int {
+        let resp = r.dispatch(req);
+        return resp.status;
+    }
+}
+group gates = { Gate };
+main locus App {
+    claims { pure: forbid reaches(gates, effects(alloc)); }
+}
+fn main() {
+    let r = std::http::Router { };
+    r.add("GET", "/", Hello { });
+    let req = std::http::Request { method: "GET", path: "/", body: "" };
+    println(Gate { }.probe(r, req));
+}
+"#;
+    let out = diff_one(src, "stdlib effect sink");
+    assert!(out.is_ok(), "old/new agree: {:?}", out);
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "the alloc happens inside the stdlib body"
+    );
+}

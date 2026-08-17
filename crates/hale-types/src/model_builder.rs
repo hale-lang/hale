@@ -1017,7 +1017,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         BTreeMap::new();
     let mut holes: BTreeMap<
         (EntityRef, HoleKind, String),
-        (hale_model::RelationSet, ProvenanceId),
+        (hale_model::RelationSet, Option<u32>, ProvenanceId),
     > = BTreeMap::new();
     for (k, fs) in &summary.fns {
         if !user_key(k) {
@@ -1086,6 +1086,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                                 hale_model::RelationSet::CALLS.union(
                                     hale_model::RelationSet::EFFECTS,
                                 ),
+                                Some(site),
                                 pid,
                             ));
                     } else if let Some(iface) = &edge.via_interface {
@@ -1112,6 +1113,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                                 hale_model::RelationSet::CALLS.union(
                                     hale_model::RelationSet::EFFECTS,
                                 ),
+                                Some(site),
                                 pid,
                             ));
                     } else if edge.receiver_present {
@@ -1497,6 +1499,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                         ))
                         .or_insert((
                             hale_model::RelationSet::PUBLISHES,
+                            Some(site),
                             pid,
                         ));
                 }
@@ -1617,6 +1620,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                         ))
                         .or_insert((
                             hale_model::RelationSet::KEY_FILTERS,
+                            None,
                             pid,
                         ));
                 }
@@ -2280,6 +2284,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                     hale_model::RelationSet::CALLS
                         .union(hale_model::RelationSet::PUBLISHES)
                         .union(hale_model::RelationSet::EFFECTS),
+                    None,
                     pid,
                 ));
         }
@@ -2453,6 +2458,10 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                         next.fn_name.clone(),
                     )
                 });
+            let entry_in_loop = edge.loop_depth > 0;
+            let entry_group = edge.dispatch_group;
+            let entry_provenance =
+                intern_span(&mut records, edge.span);
             let disp = |kk: &FnKey| -> String {
                 crate::stdlib_bodies::demangle_str(
                     &kk.display(),
@@ -2465,14 +2474,35 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             index.insert(next.clone(), 0);
             order.push(next.clone());
             let mut cursor = 0usize;
+            let mut truncated = false;
             while cursor < order.len() {
                 if order.len() as u32 > crate::callgraph::MAX_STEPS {
+                    // Explicit residue: a judgment must not treat a
+                    // truncated interior as fully explored.
+                    truncated = true;
                     break;
                 }
                 let n = order[cursor].clone();
                 cursor += 1;
                 let mut events: Vec<hale_model::AbsorbedEvent> =
                     Vec::new();
+                let node_direct = {
+                    let d = crate::claims::direct_effects(
+                        &merged, &n, &ffi,
+                    );
+                    if d.is_unclassified() {
+                        Vec::new()
+                    } else {
+                        let mut c =
+                            crate::frontier::render_effects_named(
+                                d,
+                                &effect_names,
+                            );
+                        c.sort();
+                        c.dedup();
+                        c
+                    }
+                };
                 if let Some(nfs) = merged.fns.get(&n) {
                     for e2 in &nfs.calls {
                         match &e2.callee {
@@ -2551,18 +2581,35 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                 }
                 nodes.push(hale_model::AbsorbedNode {
                     display: disp(&n),
+                    direct_effects: node_direct,
                     events,
                 });
             }
-            // An interior graph with no walk-relevant consequence
-            // (no events anywhere) still changes nothing — keep only
-            // entries that can matter.
-            if nodes.iter().any(|nd| !nd.events.is_empty()) {
+            if truncated {
+                if let Some(n0) = nodes.first_mut() {
+                    n0.events
+                        .push(hale_model::AbsorbedEvent::Truncated);
+                }
+            }
+            // Keep every entry that can matter to ANY judgment:
+            // events (walks), carriers (counts), or direct effects
+            // (effect sinks) — an effect-bearing leaf with no
+            // outgoing events is still a countable destination.
+            // Keep every entry that can matter: events (walks) or
+            // direct effects (an effect-bearing leaf with no
+            // outgoing events is still a destination).
+            if nodes.iter().any(|nd| {
+                !nd.events.is_empty()
+                    || !nd.direct_effects.is_empty()
+            }) {
                 stdlib_absorption.push(
                     hale_model::StdlibAbsorption {
                         from,
                         site,
                         entry_dispatch,
+                        entry_in_loop,
+                        entry_group,
+                        entry_provenance,
                         nodes,
                     },
                 );
@@ -2574,11 +2621,12 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     // holes, canonically ordered.
     let mut hole_rows: Vec<Hole> = holes
         .into_iter()
-        .map(|((at, kind, reason), (hides, pid))| Hole {
+        .map(|((at, kind, reason), (hides, site, pid))| Hole {
             at,
             kind,
             hides,
             reason,
+            authored_site: site,
             provenance: pid,
         })
         .collect();

@@ -165,6 +165,16 @@ pub struct StdlibAbsorption {
     /// Dispatch rendering of the ENTRY step (a stdlib conformer
     /// alternative of an interface dispatch), when it is one.
     pub entry_dispatch: Option<(String, String)>,
+    /// The entry call's loop nesting — a carrier reached through a
+    /// loop-nested stdlib entry repeats per iteration, and the
+    /// evaluator reads it off the real edge (review: looped stdlib
+    /// entries).
+    pub entry_in_loop: bool,
+    /// The entry call's dispatch group (shared by the alternatives
+    /// of one dispatch site — `bound` folds them with MAX).
+    pub entry_group: Option<u32>,
+    /// The entry call's authored span.
+    pub entry_provenance: ProvenanceId,
     /// Interior vertices, discovery order; node 0 is the entry.
     pub nodes: Vec<AbsorbedNode>,
 }
@@ -179,6 +189,11 @@ pub struct AbsorbedNode {
     /// e.g. `std::io::tcp::Stream::send` (demangled like every
     /// witness spelling).
     pub display: String,
+    /// The stdlib fn's DIRECT effect classes (the evaluator applies
+    /// `direct_effects` to every visited FnKey, stdlib included —
+    /// an `effects(C)` destination can be satisfied INSIDE a
+    /// stdlib body; review: stdlib effect sinks).
+    pub direct_effects: Vec<String>,
     pub events: Vec<AbsorbedEvent>,
 }
 
@@ -197,6 +212,11 @@ pub enum AbsorbedEvent {
     Publish { subject: String },
     /// A publish to a computed subject (fires under `via { bus }`).
     PublishHole,
+    /// The absorption walk hit its step ceiling before settling —
+    /// explicit residue, never silent exhaustion (a judgment
+    /// treating a truncated interior as fully explored would
+    /// certify an absence it cannot see).
+    Truncated,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
