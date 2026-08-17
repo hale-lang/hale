@@ -139,7 +139,7 @@ pub use application::{
 };
 pub use capability::Capabilities;
 pub use claim_ir::{
-    ClaimIr, ClaimIrError, ClaimIrTable, ClaimOrigin, ClaimRow,
+    bus_ref_matches, bus_topic_tail, ClaimIr, ClaimIrError, ClaimIrTable, ClaimOrigin, ClaimRow,
     CountCmpIr, EffectClassRef, GrantIr, GroupRef, LoweringIssue,
     NameRef, PhaseIrRef, QuantDimIr, SeedIrRef, SetIr,
     BusSelector, TopicIrRef,

@@ -56,6 +56,29 @@ use crate::ids::{
 use crate::provenance::ProvenanceTable;
 use crate::ApplicationModel;
 
+/// The CANONICAL bus-set matching rule (review round 19): exact
+/// string equality first, trailing-name equality second — the same
+/// `topic_ref_matches` the authoritative evaluator applies
+/// (`hale-types::effects` delegates HERE, so there is exactly one
+/// definition and the dependency-free schema can validate candidate
+/// sets against it).
+pub fn bus_ref_matches(declared: &str, resolved: &str) -> bool {
+    if declared == resolved {
+        return true;
+    }
+    bus_topic_tail(declared) == bus_topic_tail(resolved)
+}
+
+/// The bare topic name, whichever spelling reached us: the last
+/// `::` segment; for a merged `__lib_…` symbol, the last `_` token.
+pub fn bus_topic_tail(s: &str) -> &str {
+    let s = s.rsplit("::").next().unwrap_or(s);
+    match s.strip_prefix("__lib_") {
+        Some(rest) => rest.rsplit('_').next().unwrap_or(rest),
+        None => s,
+    }
+}
+
 /// A name in claim position: raw canonical spelling + author
 /// display. Two spellings, same doctrine as every entity table.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -381,6 +404,9 @@ pub enum ClaimIrError {
     /// duplicated name/display fields — an evaluator using the id
     /// and a renderer using the name would describe different laws.
     NameDisagreement { index: usize, what: &'static str },
+    /// A provenance record's contents are unresolvable: a dangling
+    /// `SourceId` or an inverted span.
+    InvalidProvenanceRecord { index: usize },
 }
 
 impl ClaimIrTable {
@@ -397,6 +423,27 @@ impl ClaimIrTable {
     ) -> Result<(), ClaimIrError> {
         let e = &model.entities;
         let prov_len = self.provenance.records.len();
+        // The records themselves must resolve — the same boundary
+        // ApplicationModel::validate draws (review round 19): a
+        // dangling SourceId or inverted span is a primary
+        // diagnostic location Change 5 could not resolve without
+        // reopening the AST.
+        let src_len = self.provenance.sources.len();
+        for (i, r) in self.provenance.records.iter().enumerate() {
+            if let crate::provenance::Provenance::Source {
+                source,
+                span,
+            } = r
+            {
+                if source.index() >= src_len || span.0 > span.1 {
+                    return Err(
+                        ClaimIrError::InvalidProvenanceRecord {
+                            index: i,
+                        },
+                    );
+                }
+            }
+        }
         for (i, issue) in self.issues.iter().enumerate() {
             if issue.provenance.index() >= prov_len {
                 return Err(ClaimIrError::DanglingProvenance {
@@ -544,24 +591,36 @@ impl ClaimIrTable {
                             index: i,
                         });
                     }
-                    if sel.topics.windows(2).any(|w| w[0] >= w[1])
-                        || sel
-                            .subjects
-                            .windows(2)
-                            .any(|w| w[0] >= w[1])
-                    {
-                        return Err(bad("selector candidates"));
-                    }
-                    if sel
+                    // The candidate sets are DERIVED data: exactly
+                    // what `bus_ref_matches(name, …)` produces over
+                    // the model's topic and subject tables — an
+                    // unrelated candidate widens the law a renderer
+                    // reads from `name`, an omitted same-tailed
+                    // candidate silently narrows it (review
+                    // round 19; the same machine/display-agreement
+                    // doctrine as NameDisagreement).
+                    let want_topics: Vec<TopicId> = e
                         .topics
                         .iter()
-                        .any(|c| c.index() >= e.topics.len())
-                        || sel
-                            .subjects
-                            .iter()
-                            .any(|c| c.index() >= e.subjects.len())
+                        .enumerate()
+                        .filter(|(_, t)| {
+                            bus_ref_matches(&sel.name, &t.name)
+                        })
+                        .map(|(k, _)| TopicId(k as u32))
+                        .collect();
+                    let want_subjects: Vec<SubjectId> = e
+                        .subjects
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, su)| {
+                            bus_ref_matches(&sel.name, &su.pattern)
+                        })
+                        .map(|(k, _)| SubjectId(k as u32))
+                        .collect();
+                    if sel.topics != want_topics
+                        || sel.subjects != want_subjects
                     {
-                        return Err(bad("selector candidate"));
+                        return Err(dis("bus selector"));
                     }
                     Ok(())
                 };

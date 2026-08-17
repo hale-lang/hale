@@ -1469,3 +1469,141 @@ fn claim_ref_name_disagreement_is_rejected() {
     ));
     let _ = &mut m;
 }
+
+/// Round 19: BusSelector candidate sets are DERIVED data — validate
+/// recomputes them with the canonical matching rule and requires
+/// exact equality. An unrelated candidate (widens) and an omitted
+/// same-tailed candidate (narrows) are both rejected.
+#[test]
+fn bus_selector_candidates_must_match_the_name() {
+    use hale_model::{
+        BusSelector, ClaimIr, ClaimIrError, ClaimIrTable, ClaimOrigin,
+        ClaimRow, NameRef, Topic,
+    };
+    let mut m = tiny_model();
+    let p = ProvenanceId(0);
+    m.entities.topics = vec![
+        Topic {
+            name: "__lib_a_x_Recalled".to_string(),
+            display: "a::Recalled".to_string(),
+            subject: SubjectId(0),
+            payload: PayloadContractId(0),
+            key: None,
+            bound: None,
+            provenance: p,
+        },
+        Topic {
+            name: "__lib_b_y_Recalled".to_string(),
+            display: "b::Recalled".to_string(),
+            subject: SubjectId(0),
+            payload: PayloadContractId(0),
+            key: None,
+            bound: None,
+            provenance: p,
+        },
+        Topic {
+            name: "payments".to_string(),
+            display: "payments".to_string(),
+            subject: SubjectId(0),
+            payload: PayloadContractId(0),
+            key: None,
+            bound: None,
+            provenance: p,
+        },
+    ];
+    let mut t = ClaimIrTable::default();
+    t.provenance.records.push(Provenance::Synthetic {
+        origin: "test".to_string(),
+    });
+    let row = |topics: Vec<hale_model::TopicId>| ClaimRow {
+        ordinal: 0,
+        name: "emit".to_string(),
+        origin: ClaimOrigin::Annotation,
+        law: ClaimIr::EffectPublishSet {
+            at: (
+                None,
+                NameRef {
+                    raw: "emit".to_string(),
+                    display: "emit".to_string(),
+                },
+            ),
+            entries: vec![BusSelector {
+                name: "Recalled".to_string(),
+                topics,
+                subjects: Vec::new(),
+                provenance: ProvenanceId(0),
+            }],
+        },
+        provenance: ProvenanceId(0),
+    };
+    // The full same-tailed set: lawful.
+    t.rows = vec![row(vec![
+        hale_model::TopicId(0),
+        hale_model::TopicId(1),
+    ])];
+    t.validate(&m).expect("the derived candidate set is lawful");
+    // An unrelated candidate widens the law: rejected.
+    t.rows = vec![row(vec![
+        hale_model::TopicId(0),
+        hale_model::TopicId(1),
+        hale_model::TopicId(2),
+    ])];
+    assert!(matches!(
+        t.validate(&m),
+        Err(ClaimIrError::NameDisagreement { .. })
+    ));
+    // An omitted same-tailed candidate narrows it: rejected.
+    t.rows = vec![row(vec![hale_model::TopicId(0)])];
+    assert!(matches!(
+        t.validate(&m),
+        Err(ClaimIrError::NameDisagreement { .. })
+    ));
+}
+
+/// Round 19: the claim table's OWN provenance records must resolve
+/// — the same boundary `ApplicationModel::validate` draws.
+#[test]
+fn claim_table_provenance_records_must_resolve() {
+    use hale_model::{
+        ClaimIr, ClaimIrError, ClaimIrTable, ClaimOrigin, ClaimRow,
+        EffectClassRef,
+    };
+    let m = tiny_model();
+    let row = ClaimRow {
+        ordinal: 0,
+        name: "tagged".to_string(),
+        origin: ClaimOrigin::Main,
+        law: ClaimIr::RequireAttributed {
+            class: EffectClassRef {
+                class: None,
+                builtin: true,
+                name: "syscall".to_string(),
+                provenance: ProvenanceId(0),
+            },
+        },
+        provenance: ProvenanceId(0),
+    };
+    // Dangling SourceId: rejected.
+    let mut t = ClaimIrTable::default();
+    t.provenance.records.push(Provenance::Source {
+        source: SourceId(999),
+        span: (0, 10),
+    });
+    t.rows = vec![row.clone()];
+    assert!(matches!(
+        t.validate(&m),
+        Err(ClaimIrError::InvalidProvenanceRecord { .. })
+    ));
+    // Inverted span: rejected.
+    let mut t = ClaimIrTable::default();
+    t.provenance.sources.push(provenance_source());
+    t.provenance.records.push(Provenance::Source {
+        source: SourceId(0),
+        span: (10, 4),
+    });
+    t.rows = vec![row];
+    assert!(matches!(
+        t.validate(&m),
+        Err(ClaimIrError::InvalidProvenanceRecord { .. })
+    ));
+}
