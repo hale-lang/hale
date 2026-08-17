@@ -1173,12 +1173,15 @@ fn main() {
     let frontier = a.nodes.len() as u32;
     a.nodes.push(hale_model::AbsorbedNode {
         display: "std::deep::beyond".to_string(),
+        carries: Vec::new(),
         direct_effects: Vec::new(),
         events: vec![hale_model::AbsorbedEvent::Truncated],
     });
     a.nodes[0].events.push(hale_model::AbsorbedEvent::Call {
         target: hale_model::AbsorbedTarget::Interior(frontier),
         dispatch: None,
+        in_loop: false,
+        group: None,
     });
     let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
     assert_eq!(
