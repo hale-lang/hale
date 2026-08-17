@@ -2438,102 +2438,132 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                 continue;
             }
             // Entry into a stdlib body (direct call, or a stdlib
-            // conformer alternative of a dispatch). Walk it.
-            let entry_iface = edge.via_interface.clone();
-            let mut holes: Vec<hale_model::AbsorbedHole> = Vec::new();
-            let mut edges: Vec<hale_model::AbsorbedEdge> = Vec::new();
-            let disp = |kk: &FnKey| -> String { kk.display() };
-            let mut seen: BTreeSet<FnKey> = BTreeSet::new();
-            // (node, interior path so far: (display, dispatch))
-            let mut queue: std::collections::VecDeque<(
-                FnKey,
-                Vec<(String, Option<(String, String)>)>,
-            )> = std::collections::VecDeque::new();
-            seen.insert(next.clone());
-            let entry_step = entry_iface
-                .as_ref()
-                .map(|i| (i.clone(), next.fn_name.clone()));
-            queue.push_back((
-                next.clone(),
-                vec![(disp(next), entry_step.clone())],
-            ));
-            let mut steps = 0u32;
-            while let Some((n, path)) = queue.pop_front() {
-                steps += 1;
-                if steps > crate::callgraph::MAX_STEPS {
+            // conformer alternative of a dispatch): capture the
+            // interior GRAPH the evaluator would traverse — vertices
+            // in discovery order, each body's events in body order —
+            // so the judgment replays BFS layering (and therefore
+            // hole-vs-hit timing) exactly.
+            let entry_dispatch =
+                edge.via_interface.as_ref().map(|i| {
+                    (
+                        crate::stdlib_bodies::demangle_str(
+                            i,
+                            &bundle.import_renames,
+                        ),
+                        next.fn_name.clone(),
+                    )
+                });
+            let disp = |kk: &FnKey| -> String {
+                crate::stdlib_bodies::demangle_str(
+                    &kk.display(),
+                    &bundle.import_renames,
+                )
+            };
+            let mut nodes: Vec<hale_model::AbsorbedNode> = Vec::new();
+            let mut index: BTreeMap<FnKey, u32> = BTreeMap::new();
+            let mut order: Vec<FnKey> = Vec::new();
+            index.insert(next.clone(), 0);
+            order.push(next.clone());
+            let mut cursor = 0usize;
+            while cursor < order.len() {
+                if order.len() as u32 > crate::callgraph::MAX_STEPS {
                     break;
                 }
-                let Some(nfs) = merged.fns.get(&n) else {
-                    continue;
-                };
-                for e2 in &nfs.calls {
-                    match &e2.callee {
-                        Callee::Resolved(nn) => {
-                            let dsp = e2
-                                .via_interface
-                                .as_ref()
-                                .map(|i| {
-                                    (i.clone(), nn.fn_name.clone())
-                                });
-                            if user_key(nn) {
-                                edges.push(
-                                    hale_model::AbsorbedEdge {
-                                        to: fn_id[&fn_name(nn)],
-                                        interior: path.clone(),
-                                        into_to: dsp,
+                let n = order[cursor].clone();
+                cursor += 1;
+                let mut events: Vec<hale_model::AbsorbedEvent> =
+                    Vec::new();
+                if let Some(nfs) = merged.fns.get(&n) {
+                    for e2 in &nfs.calls {
+                        match &e2.callee {
+                            Callee::Resolved(nn) => {
+                                let dsp = e2
+                                    .via_interface
+                                    .as_ref()
+                                    .map(|i| {
+                                        (
+                                            crate::stdlib_bodies::demangle_str(
+                                                i,
+                                                &bundle.import_renames,
+                                            ),
+                                            nn.fn_name.clone(),
+                                        )
+                                    });
+                                let target = if user_key(nn) {
+                                    hale_model::AbsorbedTarget::User(
+                                        fn_id[&fn_name(nn)],
+                                    )
+                                } else {
+                                    let idx = *index
+                                        .entry(nn.clone())
+                                        .or_insert_with(|| {
+                                            order.push(nn.clone());
+                                            (order.len() - 1) as u32
+                                        });
+                                    hale_model::AbsorbedTarget::Interior(idx)
+                                };
+                                events.push(
+                                    hale_model::AbsorbedEvent::Call {
+                                        target,
+                                        dispatch: dsp,
                                     },
                                 );
-                            } else if seen.insert(nn.clone()) {
-                                let mut p2 = path.clone();
-                                p2.push((disp(nn), dsp));
-                                queue.push_back((nn.clone(), p2));
                             }
-                        }
-                        Callee::Unresolved(un) => {
-                            if e2.indirect
-                                || nfs
-                                    .fn_params
-                                    .iter()
-                                    .any(|pp| pp == un)
-                            {
-                                holes.push(
-                                    hale_model::AbsorbedHole {
-                                        at_display: disp(&n),
-                                        kind: hale_model::AbsorbedHoleKind::IndirectCall,
-                                    },
-                                );
-                            } else if e2.opaque_method_call() {
-                                holes.push(
-                                    hale_model::AbsorbedHole {
-                                        at_display: disp(&n),
-                                        kind: hale_model::AbsorbedHoleKind::OpaqueCall {
+                            Callee::Unresolved(un) => {
+                                if e2.indirect
+                                    || nfs
+                                        .fn_params
+                                        .iter()
+                                        .any(|pp| pp == un)
+                                {
+                                    events.push(hale_model::AbsorbedEvent::CallHole(
+                                        hale_model::AbsorbedHoleKind::IndirectCall,
+                                    ));
+                                } else if e2.opaque_method_call() {
+                                    events.push(hale_model::AbsorbedEvent::CallHole(
+                                        hale_model::AbsorbedHoleKind::OpaqueCall {
                                             callee: un.clone(),
                                         },
-                                    },
-                                );
+                                    ));
+                                }
                             }
                         }
                     }
-                }
-                for site2 in &nfs.effect_sites {
-                    if matches!(
-                        site2.kind,
-                        alloc_summary::EffectSiteKind::Publish(None)
-                    ) {
-                        holes.push(hale_model::AbsorbedHole {
-                            at_display: disp(&n),
-                            kind: hale_model::AbsorbedHoleKind::ComputedPublish,
-                        });
+                    for site2 in &nfs.effect_sites {
+                        match &site2.kind {
+                            alloc_summary::EffectSiteKind::Publish(
+                                None,
+                            ) => {
+                                events.push(hale_model::AbsorbedEvent::PublishHole);
+                            }
+                            alloc_summary::EffectSiteKind::Publish(
+                                Some(subj),
+                            ) => {
+                                events.push(
+                                    hale_model::AbsorbedEvent::Publish {
+                                        subject: subj.text.clone(),
+                                    },
+                                );
+                            }
+                            _ => {}
+                        }
                     }
                 }
+                nodes.push(hale_model::AbsorbedNode {
+                    display: disp(&n),
+                    events,
+                });
             }
-            if !holes.is_empty() || !edges.is_empty() {
+            // An interior graph with no walk-relevant consequence
+            // (no events anywhere) still changes nothing — keep only
+            // entries that can matter.
+            if nodes.iter().any(|nd| !nd.events.is_empty()) {
                 stdlib_absorption.push(
                     hale_model::StdlibAbsorption {
                         from,
                         site,
-                        holes,
-                        edges,
+                        entry_dispatch,
+                        nodes,
                     },
                 );
             }

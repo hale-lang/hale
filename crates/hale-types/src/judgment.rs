@@ -12,20 +12,21 @@
 //! the duplicate authorities.
 //!
 //! 5a: reachability (`forbid reaches`) + holes. The walk reuses
-//! `model_graph::search` — the same engine both existing tiers
-//! share — with `FunctionId` vertices over model rows: `calls`
-//! (Direct/Interface site rows plus the ViaStdlib contraction),
-//! the publish × subscribe composition per subject, `member_of` ∩
-//! the summary universe for group projection, `phase_of` for
-//! `during`, and typed holes (`IndirectCall` /
-//! `UntypedReceiver { callee }` / `ComputedSubject`) for the
-//! fail-closed edges.
+//! `model_graph::search` with a two-kind vertex: user functions
+//! (model rows — `calls` at site grain, publish × subscribe
+//! composition, `member_of` ∩ the summary universe for groups,
+//! `phase_of` for `during`, typed holes for the fail-closed edges)
+//! and INTERIOR stdlib vertices from the legacy absorption sidecar
+//! (`LegacyProjection::stdlib_absorption`), which preserves the
+//! evaluator's BFS layering through stdlib bodies — hole-vs-hit
+//! timing and interior witness spellings included.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_model::{
-    ApplicationModel, ClaimIr, ClaimIrTable, DispatchKind, EntityRef,
-    FunctionId, GroupId, HoleKind, Provenance, ProvenanceId, SetIr,
+    AbsorbedEvent, AbsorbedHoleKind, AbsorbedTarget, ApplicationModel,
+    ClaimIr, ClaimIrTable, DispatchKind, EntityRef, FunctionId,
+    GroupId, HoleKind, Provenance, ProvenanceId, SetIr,
 };
 use hale_syntax::{Diag, Span};
 
@@ -33,8 +34,9 @@ use crate::model_graph::{self, HolePolicy, Visit};
 use crate::verdict::Verdict;
 
 /// One judged law row: the ClaimIr ordinal, the verdict, and the
-/// diagnostics — byte-compatible with the authoritative
-/// evaluator's for the migrated family.
+/// row's diagnostics (validation + evaluation, in the evaluator's
+/// per-claim order). Table-level pre-pass diagnostics (duplicate
+/// claim names) are returned separately, before every row's.
 #[derive(Debug)]
 pub struct Judged {
     pub ordinal: u32,
@@ -42,45 +44,46 @@ pub struct Judged {
     pub diags: Vec<Diag>,
 }
 
-/// One walk step, mirroring the evaluator's `Step` — enough to
-/// render the witness identically.
+/// A walk vertex: a user function, or an interior stdlib vertex of
+/// one absorption entry.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum V {
+    User(FunctionId),
+    /// (absorption entry index, node index within it)
+    Interior(u32, u32),
+}
+
+/// One walk step — enough to render the witness and the related
+/// spans identically to the evaluator.
 #[derive(Clone, Debug)]
 enum StepIr {
     Call {
-        via_interface: Option<String>,
-        provenance: ProvenanceId,
-        /// A contracted through-stdlib edge: the crossing happens
-        /// inside a non-bundle body, so the evaluator's
-        /// `is_bundle_fn` gate suppresses the crossing-edge diag.
-        via_stdlib: bool,
-        /// Interior stdlib path (display, dispatch) between the
-        /// caller and the target, for witness rendering — absorbed
-        /// edges only.
-        interior: Vec<(String, Option<(String, String)>)>,
-        /// Dispatch rendering of the final step INTO the target.
-        into_to: Option<(String, String)>,
+        /// (interface display, method) when the edge is a dispatch
+        /// alternative.
+        dispatch: Option<(String, String)>,
+        /// The call row's provenance — absent for interior edges,
+        /// whose spans the evaluator suppresses anyway
+        /// (`is_bundle_fn` gate).
+        provenance: Option<ProvenanceId>,
+        /// The edge leaves a stdlib body.
+        from_stdlib: bool,
     },
     Bus {
         subject: String,
-        publish_provenance: ProvenanceId,
+        publish_provenance: Option<ProvenanceId>,
         subscribe_provenance: ProvenanceId,
+        from_stdlib: bool,
     },
 }
 
-/// Resolve a model provenance record back to the evaluator's
-/// bundle-global span. `source_bases[id]` is the base offset of
-/// provenance source `id` (derived from `Bundle::sources` by the
-/// caller). Synthetic records resolve to a zero span — parity for
-/// them is settled by the differential.
 fn span_of(
-    model_prov: &hale_model::ProvenanceTable,
+    prov: &hale_model::ProvenanceTable,
     bases: &[u32],
     pid: ProvenanceId,
 ) -> Span {
-    match model_prov.records.get(pid.index()) {
+    match prov.records.get(pid.index()) {
         Some(Provenance::Source { source, span }) => {
-            let base =
-                bases.get(source.index()).copied().unwrap_or(0);
+            let base = bases.get(source.index()).copied().unwrap_or(0);
             Span::new(
                 (base + span.0) as usize,
                 (base + span.1) as usize,
@@ -91,12 +94,15 @@ fn span_of(
 }
 
 /// Judge every `forbid reaches` row of one lowered law table
-/// against its model (GH #476 Change 5a).
+/// against its model (GH #476 Change 5a). Returns the table-level
+/// pre-pass diagnostics (duplicate claim names — the evaluator
+/// emits them before any validation or evaluation) and the judged
+/// rows.
 pub fn judge_forbid_reaches(
     table: &ClaimIrTable,
     model: &ApplicationModel,
     source_bases: &[u32],
-) -> Vec<Judged> {
+) -> (Vec<Diag>, Vec<Judged>) {
     let e = &model.entities;
     let r = &model.relations;
     let claim_span = |pid: ProvenanceId| -> Span {
@@ -105,12 +111,18 @@ pub fn judge_forbid_reaches(
     let model_span = |pid: ProvenanceId| -> Span {
         span_of(&model.provenance, source_bases, pid)
     };
-    let fn_display =
-        |f: FunctionId| e.functions[f.index()].display.clone();
+    let absorption = &model.legacy.stdlib_absorption;
+    let display = |v: V| -> String {
+        match v {
+            V::User(f) => e.functions[f.index()].display.clone(),
+            V::Interior(a, n) => absorption[a as usize].nodes
+                [n as usize]
+                .display
+                .clone(),
+        }
+    };
 
-    // The summary universe: only these functions are walk vertices
-    // (the evaluator walks summary keys; module-scoped declarations
-    // hole out separately).
+    // The summary universe: only these functions are walk vertices.
     let v1: BTreeSet<FunctionId> =
         model.legacy.topology_v1_fns.iter().copied().collect();
 
@@ -121,18 +133,13 @@ pub fn judge_forbid_reaches(
         let mut by_locus: BTreeMap<u32, Vec<FunctionId>> =
             BTreeMap::new();
         for mo in &r.member_of {
-            by_locus
-                .entry(mo.locus.0)
-                .or_default()
-                .push(mo.function);
+            by_locus.entry(mo.locus.0).or_default().push(mo.function);
         }
         for gm in &r.group_members {
             let set = group_fns.entry(gm.group).or_default();
             match gm.member {
                 EntityRef::LocusDecl(l) => {
-                    for f in
-                        by_locus.get(&l.0).into_iter().flatten()
-                    {
+                    for f in by_locus.get(&l.0).into_iter().flatten() {
                         if v1.contains(f) {
                             set.insert(*f);
                         }
@@ -146,18 +153,13 @@ pub fn judge_forbid_reaches(
                 _ => {}
             }
         }
-        // A group with declared members and no summary projection
-        // still needs an entry (vacuity fires elsewhere).
         for (gi, _) in e.groups.iter().enumerate() {
-            group_fns
-                .entry(GroupId(gi as u32))
-                .or_default();
+            group_fns.entry(GroupId(gi as u32)).or_default();
         }
     }
 
-    // Per-fn adjacency, in the evaluator's edge order: direct
-    // calls by authored site, then the ViaStdlib contraction, then
-    // publish sites by authored site fanned out to subscribers.
+    // Per-fn direct call rows by authored site (ViaStdlib rows are
+    // the legacy contraction — the absorption replaces them here).
     let mut calls_of: BTreeMap<
         FunctionId,
         Vec<(u32, FunctionId, StepIr)>,
@@ -165,41 +167,46 @@ pub fn judge_forbid_reaches(
     for c in &r.calls {
         let step = match &c.dispatch {
             DispatchKind::Direct => StepIr::Call {
-                via_interface: None,
-                provenance: c.provenance,
-                via_stdlib: false,
-                interior: Vec::new(),
-                into_to: None,
+                dispatch: None,
+                provenance: Some(c.provenance),
+                from_stdlib: false,
             },
-            DispatchKind::Interface { interface } => StepIr::Call {
-                via_interface: Some(
-                    e.interfaces
-                        .iter()
-                        .find(|i| i.name == *interface)
-                        .map(|i| i.display.clone())
-                        .unwrap_or_else(|| interface.clone()),
-                ),
-                provenance: c.provenance,
-                via_stdlib: false,
-                interior: Vec::new(),
-                into_to: None,
-            },
-            // ViaStdlib rows are the LEGACY contraction — the
-            // absorption sidecar replaces them for judgment (it
-            // carries interior witnesses and holes); skip to avoid
-            // double edges.
+            DispatchKind::Interface { interface } => {
+                let iface_disp = e
+                    .interfaces
+                    .iter()
+                    .find(|i| i.name == *interface)
+                    .map(|i| i.display.clone())
+                    .unwrap_or_else(|| interface.clone());
+                let method = e.functions[c.to.index()]
+                    .name
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                StepIr::Call {
+                    dispatch: Some((iface_disp, method)),
+                    provenance: Some(c.provenance),
+                    from_stdlib: false,
+                }
+            }
             DispatchKind::ViaStdlib => continue,
         };
-        calls_of
-            .entry(c.from)
-            .or_default()
-            .push((c.site, c.to, step));
+        calls_of.entry(c.from).or_default().push((c.site, c.to, step));
     }
     for v in calls_of.values_mut() {
         v.sort_by_key(|(site, to, _)| (*site, *to));
     }
-    // subject → subscriber handler rows (handler fn + provenance),
-    // canonical order.
+    // (from fn) → absorption entries (site, index).
+    let mut absorb_of: BTreeMap<FunctionId, Vec<(u32, u32)>> =
+        BTreeMap::new();
+    for (ai, a) in absorption.iter().enumerate() {
+        absorb_of
+            .entry(a.from)
+            .or_default()
+            .push((a.site, ai as u32));
+    }
+    // subject id → subscriber rows.
     let mut subs_of: BTreeMap<u32, Vec<(FunctionId, ProvenanceId)>> =
         BTreeMap::new();
     for su in &r.subscribes {
@@ -208,15 +215,20 @@ pub fn judge_forbid_reaches(
             .or_default()
             .push((su.handler, su.provenance));
     }
-    // fn → publish rows (site, subject id, display subject, prov).
+    // written publish text → subject id (topic name or pattern).
+    let mut subject_by_text: BTreeMap<&str, u32> = BTreeMap::new();
+    for (i, su) in e.subjects.iter().enumerate() {
+        subject_by_text.insert(su.pattern.as_str(), i as u32);
+    }
+    for t in &e.topics {
+        subject_by_text.insert(t.name.as_str(), t.subject.0);
+    }
+    // fn → publish rows (site, subject id, written text, prov).
     let mut pubs_of: BTreeMap<
         FunctionId,
         Vec<(u32, u32, String, ProvenanceId)>,
     > = BTreeMap::new();
     for p in &r.publishes {
-        // The evaluator's Step::Bus subject is the site's WRITTEN
-        // text: the topic name for declared sends, the literal for
-        // literal sends — the display projection of the row.
         let written = match p.declared_topic {
             Some(t) => e.topics[t.index()].name.clone(),
             None => e.subjects[p.subject.index()].pattern.clone(),
@@ -231,15 +243,7 @@ pub fn judge_forbid_reaches(
     for v in pubs_of.values_mut() {
         v.sort_by_key(|(site, ..)| *site);
     }
-    // (from, site) → absorption entries.
-    let mut absorb_of: BTreeMap<
-        FunctionId,
-        Vec<&hale_model::StdlibAbsorption>,
-    > = BTreeMap::new();
-    for a in &model.legacy.stdlib_absorption {
-        absorb_of.entry(a.from).or_default().push(a);
-    }
-    // fn → fail-closed holes, for the visitor.
+    // fn → fail-closed holes.
     #[derive(Clone)]
     enum FnHole {
         Indirect,
@@ -252,11 +256,9 @@ pub fn judge_forbid_reaches(
         let EntityRef::Function(f) = h.at else { continue };
         let hole = match &h.kind {
             HoleKind::IndirectCall => FnHole::Indirect,
-            HoleKind::UntypedReceiver { callee } => {
-                FnHole::Untyped {
-                    callee: callee.clone(),
-                }
-            }
+            HoleKind::UntypedReceiver { callee } => FnHole::Untyped {
+                callee: callee.clone(),
+            },
             HoleKind::ComputedSubject => FnHole::Computed,
             _ => continue,
         };
@@ -265,14 +267,14 @@ pub fn judge_forbid_reaches(
     // fn → phase name (during filter).
     let mut phase_of: BTreeMap<FunctionId, &str> = BTreeMap::new();
     for po in &r.phase_of {
-        phase_of
-            .insert(po.function, e.phases[po.phase.index()].name.as_str());
+        phase_of.insert(
+            po.function,
+            e.phases[po.phase.index()].name.as_str(),
+        );
     }
-    // fn → direct effect classes (effects(C) destination test).
     let direct_of = |f: FunctionId| -> &[String] {
         &e.functions[f.index()].direct_effects
     };
-    // Composed-class expansion for the destination mask.
     let class_atoms = |name: &str| -> BTreeSet<String> {
         match e.effect_classes.iter().find(|c| c.name == name) {
             Some(c) => match &c.definition {
@@ -290,6 +292,35 @@ pub fn judge_forbid_reaches(
         }
     };
 
+    // ---- claim names are the contract-of-record (pre-pass over
+    // every claims-block row, ALL families — the evaluator checks
+    // before any validation or evaluation). Dup rows still
+    // evaluate. ----
+    let mut pre: Vec<Diag> = Vec::new();
+    {
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        for row in &table.rows {
+            if !matches!(
+                row.origin,
+                hale_model::ClaimOrigin::Main
+                    | hale_model::ClaimOrigin::Constitution { .. }
+                    | hale_model::ClaimOrigin::Library { .. }
+            ) {
+                continue;
+            }
+            if !seen.insert(row.name.as_str()) {
+                pre.push(Diag::ty(
+                    claim_span(row.provenance),
+                    format!(
+                        "claim `{}` is declared more than once — the name \
+                         is the contract-of-record and must be unique",
+                        row.name
+                    ),
+                ));
+            }
+        }
+    }
+
     let mut out = Vec::new();
     for row in &table.rows {
         let ClaimIr::ForbidReaches {
@@ -304,43 +335,41 @@ pub fn judge_forbid_reaches(
             continue;
         };
         let mut diags: Vec<Diag> = Vec::new();
-        // ---- the evaluator's validation pass (validate_claim's
-        // ForbidReaches arm): unknown names, effects-in-source,
-        // undeclared classes, and the avoiding-overlap guard. Any
-        // failure = Invalid, evaluation skipped. ----
+        // ---- the evaluator's validation pass ----
         let mut ok = true;
         let group_decl_names: Vec<&str> =
             e.groups.iter().map(|g| g.display.as_str()).collect();
-        let mut check_group =
-            |gref: &hale_model::GroupRef, diags: &mut Vec<Diag>| -> bool {
-                if gref.group.is_some() {
-                    return true;
-                }
-                let mut near: Vec<&&str> = group_decl_names
-                    .iter()
-                    .filter(|g| crate::effects::close(g, &gref.name.display))
-                    .collect();
-                near.sort();
-                let hint = match near.first() {
-                    Some(n) => format!(" Did you mean `{}`?", n),
-                    None => String::new(),
-                };
-                diags.push(Diag::ty(
-                    claim_span(gref.provenance),
-                    format!(
-                        "claim `{}` names group `{}`, which is never declared. \
-                         Add `group {} = {{ … }};` at the top level.{}",
-                        row.name,
-                        gref.name.display,
-                        gref.name.display,
-                        hint
-                    ),
-                ));
-                false
+        let check_group = |gref: &hale_model::GroupRef,
+                               diags: &mut Vec<Diag>|
+         -> bool {
+            if gref.group.is_some() {
+                return true;
+            }
+            let mut near: Vec<&&str> = group_decl_names
+                .iter()
+                .filter(|g| {
+                    crate::effects::close(g, &gref.name.display)
+                })
+                .collect();
+            near.sort();
+            let hint = match near.first() {
+                Some(n) => format!(" Did you mean `{}`?", n),
+                None => String::new(),
             };
+            diags.push(Diag::ty(
+                claim_span(gref.provenance),
+                format!(
+                    "claim `{}` names group `{}`, which is never declared. \
+                     Add `group {} = {{ … }};` at the top level.{}",
+                    row.name,
+                    gref.name.display,
+                    gref.name.display,
+                    hint
+                ),
+            ));
+            false
+        };
         let SetIr::Group(src_ref) = src else {
-            // `effects(...)` in source position: rejected by the
-            // evaluator's validation with its exact spelling.
             if let SetIr::EffectCarriers(c) = src {
                 diags.push(Diag::ty(
                     claim_span(c.provenance),
@@ -365,10 +394,11 @@ pub fn judge_forbid_reaches(
                 ok &= check_group(g, &mut diags);
             }
             SetIr::EffectCarriers(c) => {
-                // check_class: a USER class must be declared.
-                if !c.builtin && c.class.map_or(true, |id| {
-                    !e.effect_classes[id.index()].declared
-                }) {
+                if !c.builtin
+                    && c.class.map_or(true, |id| {
+                        !e.effect_classes[id.index()].declared
+                    })
+                {
                     let mut near: Vec<&String> = e
                         .effect_classes
                         .iter()
@@ -395,8 +425,6 @@ pub fn judge_forbid_reaches(
         }
         if let Some(a) = avoiding {
             ok &= check_group(a, &mut diags);
-            // The overlap guard: DECL-grain member intersection
-            // between the mask and each endpoint.
             if let Some(av_gid) = a.group {
                 let members = |g: GroupId| -> BTreeSet<&EntityRef> {
                     r.group_members
@@ -427,7 +455,9 @@ pub fn judge_forbid_reaches(
                                  masked source drops roots). Make \
                                  the gate disjoint from the \
                                  endpoints",
-                                row.name, a.name.display, n.name.display
+                                row.name,
+                                a.name.display,
+                                n.name.display
                             ),
                         ));
                         ok = false;
@@ -446,36 +476,31 @@ pub fn judge_forbid_reaches(
         let Some(src_gid) = src_ref.group else {
             unreachable!("refused by the validation pass above")
         };
-        // Projection vacuity (the evaluator's guard): a group whose
-        // declarations project to no executable vertices proves
-        // nothing while reading as law. Fail closed.
+        // ---- projection vacuity ----
         let decl_count = |g: GroupId| {
             r.group_members.iter().filter(|gm| gm.group == g).count()
         };
-        let mut vacuous =
-            |gid: GroupId,
-             gref: &hale_model::GroupRef,
-             which: &str,
-             diags: &mut Vec<Diag>|
-             -> bool {
-                if decl_count(gid) == 0
-                    || !group_fns[&gid].is_empty()
-                {
-                    return false;
-                }
-                diags.push(Diag::ty(
-                    claim_span(gref.provenance),
-                    format!(
-                        "claim `{}`: group `{}` projects to no executable {} \
-                         vertices — its declarations have no fns, so the claim \
-                         proves nothing about them. The fn-grained walk cannot \
-                         see pure-data access; name the loci that HOLD the \
-                         behavior, or drop the claim",
-                        row.name, gref.name.display, which
-                    ),
-                ));
-                true
-            };
+        let vacuous = |gid: GroupId,
+                           gref: &hale_model::GroupRef,
+                           which: &str,
+                           diags: &mut Vec<Diag>|
+         -> bool {
+            if decl_count(gid) == 0 || !group_fns[&gid].is_empty() {
+                return false;
+            }
+            diags.push(Diag::ty(
+                claim_span(gref.provenance),
+                format!(
+                    "claim `{}`: group `{}` projects to no executable {} \
+                     vertices — its declarations have no fns, so the claim \
+                     proves nothing about them. The fn-grained walk cannot \
+                     see pure-data access; name the loci that HOLD the \
+                     behavior, or drop the claim",
+                    row.name, gref.name.display, which
+                ),
+            ));
+            true
+        };
         if vacuous(src_gid, src_ref, "source", &mut diags) {
             out.push(Judged {
                 ordinal: row.ordinal,
@@ -496,6 +521,7 @@ pub fn judge_forbid_reaches(
                 }
             }
         }
+        // ---- roots, during, mask, dst ----
         let mut roots: BTreeSet<FunctionId> =
             group_fns[&src_gid].clone();
         if let Some(p) = during {
@@ -520,29 +546,17 @@ pub fn judge_forbid_reaches(
                 continue;
             }
         }
-        let mask: Option<&BTreeSet<FunctionId>> = match avoiding {
-            Some(a) => match a.group {
-                Some(g) => Some(&group_fns[&g]),
-                None => None,
-            },
-            None => None,
-        };
+        let mask: Option<&BTreeSet<FunctionId>> = avoiding
+            .as_ref()
+            .and_then(|a| a.group.map(|g| &group_fns[&g]));
         enum DstIr<'x> {
             Group(&'x BTreeSet<FunctionId>),
             Effects(BTreeSet<String>),
         }
         let dst_test = match dst {
-            SetIr::Group(g) => match g.group {
-                Some(gid) => DstIr::Group(&group_fns[&gid]),
-                None => {
-                    out.push(Judged {
-                        ordinal: row.ordinal,
-                        verdict: Verdict::Invalid,
-                        diags,
-                    });
-                    continue;
-                }
-            },
+            SetIr::Group(g) => DstIr::Group(
+                &group_fns[&g.group.expect("validated above")],
+            ),
             SetIr::EffectCarriers(c) => {
                 DstIr::Effects(class_atoms(&c.name))
             }
@@ -558,83 +572,19 @@ pub fn judge_forbid_reaches(
             }
         }
         let row_span = claim_span(row.provenance);
+        // ---- the walk ----
         let search = model_graph::search(
-            roots.iter().cloned(),
-            |f: &FunctionId| {
-                let mut edges: Vec<(FunctionId, StepIr)> = Vec::new();
-                if *via_calls {
-                    for h in
-                        holes_of.get(f).into_iter().flatten()
-                    {
-                        match h {
-                            FnHole::Indirect => {
-                                diags.push(Diag::ty(
-                                    row_span,
-                                    format!(
-                                        "claim `{}` cannot be certified: \
-                                         `{}` (reachable from `{}`) calls \
-                                         through a function-typed \
-                                         parameter, whose target is not \
-                                         knowable statically. An \
-                                         unresolvable edge fails closed",
-                                        row.name,
-                                        fn_display(*f),
-                                        src_ref.name.display
-                                    ),
-                                ));
-                                return Visit::hole(());
-                            }
-                            FnHole::Untyped { callee } => {
-                                diags.push(Diag::ty(
-                                    row_span,
-                                    format!(
-                                        "claim `{}` cannot be certified: \
-                                         `{}` (reachable from `{}`) calls \
-                                         `{}` on a receiver the compiler \
-                                         cannot type, so the walk cannot \
-                                         follow the edge. An unresolvable \
-                                         edge fails closed — bind the \
-                                         receiver to a typed field or \
-                                         local so the call resolves",
-                                        row.name,
-                                        fn_display(*f),
-                                        src_ref.name.display,
-                                        callee
-                                    ),
-                                ));
-                                return Visit::hole(());
-                            }
-                            FnHole::Computed => {}
-                        }
-                    }
-                    // Interleave model call rows and absorbed
-                    // stdlib consequences by authored site — the
-                    // evaluator's BFS position.
-                    let mut items: Vec<(u32, u8, usize)> = Vec::new();
-                    let direct =
-                        calls_of.get(f).map(|v| v.as_slice()).unwrap_or(&[]);
-                    for (i, (site, _, _)) in
-                        direct.iter().enumerate()
-                    {
-                        items.push((*site, 0, i));
-                    }
-                    let absorbed = absorb_of
-                        .get(f)
-                        .map(|v| v.as_slice())
-                        .unwrap_or(&[]);
-                    for (i, a) in absorbed.iter().enumerate() {
-                        items.push((a.site, 1, i));
-                    }
-                    items.sort();
-                    for (_, kind, i) in items {
-                        if kind == 0 {
-                            let (_, to, step) = &direct[i];
-                            edges.push((*to, step.clone()));
-                        } else {
-                            let a = absorbed[i];
-                            for h in &a.holes {
-                                match &h.kind {
-                                    hale_model::AbsorbedHoleKind::IndirectCall => {
+            roots.iter().map(|f| V::User(*f)),
+            |v: &V| {
+                let mut edges: Vec<(V, StepIr)> = Vec::new();
+                match v {
+                    V::User(f) => {
+                        if *via_calls {
+                            for h in
+                                holes_of.get(f).into_iter().flatten()
+                            {
+                                match h {
+                                    FnHole::Indirect => {
                                         diags.push(Diag::ty(
                                             row_span,
                                             format!(
@@ -645,13 +595,13 @@ pub fn judge_forbid_reaches(
                                                  knowable statically. An \
                                                  unresolvable edge fails closed",
                                                 row.name,
-                                                h.at_display,
+                                                display(*v),
                                                 src_ref.name.display
                                             ),
                                         ));
                                         return Visit::hole(());
                                     }
-                                    hale_model::AbsorbedHoleKind::OpaqueCall { callee } => {
+                                    FnHole::Untyped { callee } => {
                                         diags.push(Diag::ty(
                                             row_span,
                                             format!(
@@ -664,97 +614,249 @@ pub fn judge_forbid_reaches(
                                                  receiver to a typed field or \
                                                  local so the call resolves",
                                                 row.name,
-                                                h.at_display,
+                                                display(*v),
                                                 src_ref.name.display,
                                                 callee
                                             ),
                                         ));
                                         return Visit::hole(());
                                     }
-                                    hale_model::AbsorbedHoleKind::ComputedPublish => {
-                                        if *via_bus {
+                                    FnHole::Computed => {}
+                                }
+                            }
+                            let direct = calls_of
+                                .get(f)
+                                .map(|x| x.as_slice())
+                                .unwrap_or(&[]);
+                            let absorbed = absorb_of
+                                .get(f)
+                                .map(|x| x.as_slice())
+                                .unwrap_or(&[]);
+                            let mut items: Vec<(u32, u8, usize)> =
+                                Vec::new();
+                            for (i, (site, _, _)) in
+                                direct.iter().enumerate()
+                            {
+                                items.push((*site, 0, i));
+                            }
+                            for (i, (site, _)) in
+                                absorbed.iter().enumerate()
+                            {
+                                items.push((*site, 1, i));
+                            }
+                            items.sort();
+                            for (_, kind, i) in items {
+                                if kind == 0 {
+                                    let (_, to, step) = &direct[i];
+                                    edges.push((
+                                        V::User(*to),
+                                        step.clone(),
+                                    ));
+                                } else {
+                                    let (_, ai) = absorbed[i];
+                                    let a = &absorption[ai as usize];
+                                    edges.push((
+                                        V::Interior(ai, 0),
+                                        StepIr::Call {
+                                            dispatch: a
+                                                .entry_dispatch
+                                                .clone(),
+                                            provenance: None,
+                                            from_stdlib: false,
+                                        },
+                                    ));
+                                }
+                            }
+                        }
+                        if *via_bus {
+                            if holes_of
+                                .get(f)
+                                .into_iter()
+                                .flatten()
+                                .any(|h| matches!(h, FnHole::Computed))
+                            {
+                                diags.push(Diag::ty(
+                                    row_span,
+                                    format!(
+                                        "claim `{}` cannot be certified: `{}` \
+                                         (reachable from `{}`) publishes to a \
+                                         computed subject, which could route to \
+                                         any subscriber. An unresolvable edge \
+                                         fails closed",
+                                        row.name,
+                                        display(*v),
+                                        src_ref.name.display
+                                    ),
+                                ));
+                                return Visit::hole(());
+                            }
+                            for (_, sid, written, ppid) in
+                                pubs_of.get(f).into_iter().flatten()
+                            {
+                                for (handler, spid) in subs_of
+                                    .get(sid)
+                                    .into_iter()
+                                    .flatten()
+                                {
+                                    edges.push((
+                                        V::User(*handler),
+                                        StepIr::Bus {
+                                            subject: written.clone(),
+                                            publish_provenance: Some(
+                                                *ppid,
+                                            ),
+                                            subscribe_provenance:
+                                                *spid,
+                                            from_stdlib: false,
+                                        },
+                                    ));
+                                }
+                            }
+                        }
+                        Visit::edges(edges)
+                    }
+                    V::Interior(ai, ni) => {
+                        let node = &absorption[*ai as usize].nodes
+                            [*ni as usize];
+                        for ev in &node.events {
+                            match ev {
+                                AbsorbedEvent::Call {
+                                    target,
+                                    dispatch,
+                                } => {
+                                    if !*via_calls {
+                                        continue;
+                                    }
+                                    let tv = match target {
+                                        AbsorbedTarget::Interior(
+                                            n2,
+                                        ) => V::Interior(*ai, *n2),
+                                        AbsorbedTarget::User(f2) => {
+                                            V::User(*f2)
+                                        }
+                                    };
+                                    edges.push((
+                                        tv,
+                                        StepIr::Call {
+                                            dispatch: dispatch
+                                                .clone(),
+                                            provenance: None,
+                                            from_stdlib: true,
+                                        },
+                                    ));
+                                }
+                                AbsorbedEvent::CallHole(k) => {
+                                    if !*via_calls {
+                                        continue;
+                                    }
+                                    match k {
+                                        AbsorbedHoleKind::IndirectCall => {
                                             diags.push(Diag::ty(
                                                 row_span,
                                                 format!(
-                                                    "claim `{}` cannot be certified: `{}` \
-                                                     (reachable from `{}`) publishes to a \
-                                                     computed subject, which could route to \
-                                                     any subscriber. An unresolvable edge \
-                                                     fails closed",
+                                                    "claim `{}` cannot be certified: \
+                                                     `{}` (reachable from `{}`) calls \
+                                                     through a function-typed \
+                                                     parameter, whose target is not \
+                                                     knowable statically. An \
+                                                     unresolvable edge fails closed",
                                                     row.name,
-                                                    h.at_display,
-                                                    src_ref.name.display
+                                                    display(*v),
+                                                    src_ref
+                                                        .name
+                                                        .display
                                                 ),
                                             ));
-                                            return Visit::hole(());
+                                        }
+                                        AbsorbedHoleKind::OpaqueCall { callee } => {
+                                            diags.push(Diag::ty(
+                                                row_span,
+                                                format!(
+                                                    "claim `{}` cannot be certified: \
+                                                     `{}` (reachable from `{}`) calls \
+                                                     `{}` on a receiver the compiler \
+                                                     cannot type, so the walk cannot \
+                                                     follow the edge. An unresolvable \
+                                                     edge fails closed — bind the \
+                                                     receiver to a typed field or \
+                                                     local so the call resolves",
+                                                    row.name,
+                                                    display(*v),
+                                                    src_ref
+                                                        .name
+                                                        .display,
+                                                    callee
+                                                ),
+                                            ));
+                                        }
+                                    }
+                                    return Visit::hole(());
+                                }
+                                AbsorbedEvent::Publish { subject } => {
+                                    if !*via_bus {
+                                        continue;
+                                    }
+                                    if let Some(sid) = subject_by_text
+                                        .get(subject.as_str())
+                                    {
+                                        for (handler, spid) in
+                                            subs_of
+                                                .get(sid)
+                                                .into_iter()
+                                                .flatten()
+                                        {
+                                            edges.push((
+                                                V::User(*handler),
+                                                StepIr::Bus {
+                                                    subject: subject
+                                                        .clone(),
+                                                    publish_provenance:
+                                                        None,
+                                                    subscribe_provenance:
+                                                        *spid,
+                                                    from_stdlib: true,
+                                                },
+                                            ));
                                         }
                                     }
                                 }
-                            }
-                            for ae in &a.edges {
-                                edges.push((
-                                    ae.to,
-                                    StepIr::Call {
-                                        via_interface: None,
-                                        provenance: ProvenanceId(0),
-                                        via_stdlib: true,
-                                        interior: ae.interior.clone(),
-                                        into_to: ae.into_to.clone(),
-                                    },
-                                ));
+                                AbsorbedEvent::PublishHole => {
+                                    if !*via_bus {
+                                        continue;
+                                    }
+                                    diags.push(Diag::ty(
+                                        row_span,
+                                        format!(
+                                            "claim `{}` cannot be certified: `{}` \
+                                             (reachable from `{}`) publishes to a \
+                                             computed subject, which could route to \
+                                             any subscriber. An unresolvable edge \
+                                             fails closed",
+                                            row.name,
+                                            display(*v),
+                                            src_ref.name.display
+                                        ),
+                                    ));
+                                    return Visit::hole(());
+                                }
                             }
                         }
+                        Visit::edges(edges)
                     }
                 }
-                if *via_bus {
-                    if holes_of
-                        .get(f)
-                        .into_iter()
-                        .flatten()
-                        .any(|h| matches!(h, FnHole::Computed))
-                    {
-                        diags.push(Diag::ty(
-                            row_span,
-                            format!(
-                                "claim `{}` cannot be certified: `{}` \
-                                 (reachable from `{}`) publishes to a \
-                                 computed subject, which could route to \
-                                 any subscriber. An unresolvable edge \
-                                 fails closed",
-                                row.name,
-                                fn_display(*f),
-                                src_ref.name.display
-                            ),
-                        ));
-                        return Visit::hole(());
-                    }
-                    for (_, sid, written, ppid) in
-                        pubs_of.get(f).into_iter().flatten()
-                    {
-                        for (handler, spid) in
-                            subs_of.get(sid).into_iter().flatten()
-                        {
-                            edges.push((
-                                *handler,
-                                StepIr::Bus {
-                                    subject: written.clone(),
-                                    publish_provenance: *ppid,
-                                    subscribe_provenance: *spid,
-                                },
-                            ));
-                        }
-                    }
-                }
-                Visit::edges(edges)
             },
-            |f: &FunctionId| match &dst_test {
-                DstIr::Group(g) => g.contains(f),
-                DstIr::Effects(atoms) => direct_of(*f)
-                    .iter()
-                    .any(|c| atoms.contains(c)),
+            |v: &V| match v {
+                V::User(f) => match &dst_test {
+                    DstIr::Group(g) => g.contains(f),
+                    DstIr::Effects(atoms) => direct_of(*f)
+                        .iter()
+                        .any(|c| atoms.contains(c)),
+                },
+                V::Interior(..) => false,
             },
-            |f: &FunctionId| {
-                mask.is_some_and(|m| m.contains(f))
+            |v: &V| match v {
+                V::User(f) => mask.is_some_and(|m| m.contains(f)),
+                V::Interior(..) => false,
             },
             Some(crate::callgraph::MAX_STEPS),
             HolePolicy::Halt,
@@ -767,11 +869,11 @@ pub fn judge_forbid_reaches(
                     &dst_display(dst),
                     hit,
                     &parent,
-                    e,
-                    &fn_display,
+                    &display,
                     row_span,
                     &mut diags,
                     &model_span,
+                    e,
                 );
                 Verdict::Violated
             }
@@ -798,7 +900,7 @@ pub fn judge_forbid_reaches(
             diags,
         });
     }
-    out
+    (pre, out)
 }
 
 fn dst_display(dst: &SetIr) -> String {
@@ -813,15 +915,15 @@ fn render_violation_ir(
     row: &hale_model::ClaimRow,
     src_disp: &str,
     dst_disp: &str,
-    hit: FunctionId,
-    parent: &BTreeMap<FunctionId, (FunctionId, StepIr)>,
-    e: &hale_model::Entities,
-    fn_display: &dyn Fn(FunctionId) -> String,
+    hit: V,
+    parent: &BTreeMap<V, (V, StepIr)>,
+    display: &dyn Fn(V) -> String,
     row_span: Span,
     diags: &mut Vec<Diag>,
     model_span: &dyn Fn(ProvenanceId) -> Span,
+    e: &hale_model::Entities,
 ) {
-    let mut rev: Vec<(FunctionId, Option<&StepIr>)> = Vec::new();
+    let mut rev: Vec<(V, Option<&StepIr>)> = Vec::new();
     let mut cur = hit;
     loop {
         match parent.get(&cur) {
@@ -839,61 +941,26 @@ fn render_violation_ir(
     let mut path = String::new();
     for (node, incoming) in &rev {
         match incoming {
-            None => {
-                path.push_str(&format!("`{}`", fn_display(*node)))
-            }
+            None => path.push_str(&format!("`{}`", display(*node))),
             Some(StepIr::Call {
-                via_interface: Some(iface),
+                dispatch: Some((iface, method)),
                 ..
             }) => {
-                let method = e.functions[node.index()]
-                    .name
-                    .rsplit("::")
-                    .next()
-                    .unwrap_or_default()
-                    .to_string();
                 path.push_str(&format!(
                     " -(dispatches {}.{})-> `{}`",
                     iface,
                     method,
-                    fn_display(*node)
+                    display(*node)
                 ));
             }
-            Some(StepIr::Call {
-                interior, into_to, ..
-            }) => {
-                for (d, dsp) in interior {
-                    match dsp {
-                        Some((iface, method)) => {
-                            path.push_str(&format!(
-                                " -(dispatches {}.{})-> `{}`",
-                                iface, method, d
-                            ));
-                        }
-                        None => path
-                            .push_str(&format!(" -> `{}`", d)),
-                    }
-                }
-                match into_to {
-                    Some((iface, method)) => {
-                        path.push_str(&format!(
-                            " -(dispatches {}.{})-> `{}`",
-                            iface,
-                            method,
-                            fn_display(*node)
-                        ));
-                    }
-                    None => path.push_str(&format!(
-                        " -> `{}`",
-                        fn_display(*node)
-                    )),
-                }
+            Some(StepIr::Call { .. }) => {
+                path.push_str(&format!(" -> `{}`", display(*node)));
             }
             Some(StepIr::Bus { subject, .. }) => {
                 path.push_str(&format!(
                     " -(publishes \"{}\")-> `{}`",
                     subject,
-                    fn_display(*node)
+                    display(*node)
                 ));
             }
         }
@@ -905,53 +972,58 @@ fn render_violation_ir(
             row.name, src_disp, dst_disp, path,
         ),
     ));
-    // #392 provenance: WHERE to edit — the crossing edge and the
-    // destination's declaration, mirroring the evaluator's
-    // `is_bundle_fn` gating (a ViaStdlib crossing lives in a
-    // non-bundle body, so its span is suppressed).
+    // Related spans: the crossing edge, gated exactly like the
+    // evaluator's `is_bundle_fn` (a crossing out of a stdlib body
+    // has no bundle span).
     if let Some((_, Some(step))) = rev.last() {
         match step {
             StepIr::Call {
                 provenance,
-                via_interface,
-                via_stdlib,
-                ..
+                dispatch,
+                from_stdlib,
             } => {
-                if !via_stdlib {
-                    let msg = match via_interface {
-                        Some(iface) => format!(
-                            "claim `{}`: the boundary into `{}` is \
-                             crossed by this dispatch through `{}`. \
-                             A call on an interface reaches EVERY \
-                             conforming locus, whatever this \
-                             expression happens to construct — so the \
-                             witness names one the claim forbids. \
-                             Narrow the receiver's type, or exclude \
-                             the conformer from the group",
-                            row.name, dst_disp, iface
-                        ),
-                        None => format!(
-                            "claim `{}`: the boundary into `{}` is \
-                             crossed by this call",
-                            row.name, dst_disp
-                        ),
-                    };
-                    diags.push(Diag::ty(model_span(*provenance), msg));
+                if !from_stdlib {
+                    if let Some(pid) = provenance {
+                        let msg = match dispatch {
+                            Some((iface, _)) => format!(
+                                "claim `{}`: the boundary into `{}` is \
+                                 crossed by this dispatch through `{}`. \
+                                 A call on an interface reaches EVERY \
+                                 conforming locus, whatever this \
+                                 expression happens to construct — so the \
+                                 witness names one the claim forbids. \
+                                 Narrow the receiver's type, or exclude \
+                                 the conformer from the group",
+                                row.name, dst_disp, iface
+                            ),
+                            None => format!(
+                                "claim `{}`: the boundary into `{}` is \
+                                 crossed by this call",
+                                row.name, dst_disp
+                            ),
+                        };
+                        diags.push(Diag::ty(model_span(*pid), msg));
+                    }
                 }
             }
             StepIr::Bus {
                 publish_provenance,
                 subscribe_provenance,
+                from_stdlib,
                 ..
             } => {
-                diags.push(Diag::ty(
-                    model_span(*publish_provenance),
-                    format!(
-                        "claim `{}`: the crossing publish \
-                         happens here",
-                        row.name
-                    ),
-                ));
+                if !from_stdlib {
+                    if let Some(pid) = publish_provenance {
+                        diags.push(Diag::ty(
+                            model_span(*pid),
+                            format!(
+                                "claim `{}`: the crossing publish \
+                                 happens here",
+                                row.name
+                            ),
+                        ));
+                    }
+                }
                 diags.push(Diag::ty(
                     model_span(*subscribe_provenance),
                     format!(
@@ -963,17 +1035,13 @@ fn render_violation_ir(
             }
         }
     }
-    // The destination's declaration: the hit's locus (or the free
-    // fn itself), by display spelling — the evaluator renders the
-    // raw decl and demangles afterwards, which lands on the same
-    // string.
-    let hit_fn = &e.functions[hit.index()];
+    // The destination's declaration.
+    let V::User(hit_fn_id) = hit else { return };
+    let hit_fn = &e.functions[hit_fn_id.index()];
     let (decl_disp, decl_prov) = match hit_fn.name.rsplit_once("::") {
         Some((locus_raw, _)) => {
             match e.loci.iter().find(|l| l.name == locus_raw) {
-                Some(l) => {
-                    (l.display.clone(), Some(l.provenance))
-                }
+                Some(l) => (l.display.clone(), Some(l.provenance)),
                 None => (hit_fn.display.clone(), None),
             }
         }

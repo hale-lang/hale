@@ -75,7 +75,7 @@ fn diff_one(
             &[],
         );
     // New: engine over the lowered rows.
-    let judged = judge_forbid_reaches(&table, &model, &[0]);
+    let (pre_diags, judged) = judge_forbid_reaches(&table, &model, &[0]);
     // Verdict parity, matched by claim name.
     let old_verdicts: BTreeMap<&str, &hale_types::verdict::Verdict> =
         outcomes
@@ -112,9 +112,9 @@ fn diff_one(
         })
         .map(|d| (d.message.clone(), d.span))
         .collect();
-    let new_family: Vec<(String, hale_syntax::Span)> = judged
+    let new_family: Vec<(String, hale_syntax::Span)> = pre_diags
         .iter()
-        .flat_map(|j| j.diags.iter())
+        .chain(judged.iter().flat_map(|j| j.diags.iter()))
         .map(|d| (d.message.clone(), d.span))
         .collect();
     if old_family != new_family {
@@ -194,15 +194,54 @@ fn main() { App { }; }
     let bundle = bundle_of(src, &program);
     let mut model = derive_application_model(&bundle);
     let table = lower_claims(&bundle, &model);
-    let judged = judge_forbid_reaches(&table, &model, &[0]);
+    let (_pre, judged) = judge_forbid_reaches(&table, &model, &[0]);
     assert_eq!(judged.len(), 1);
     assert_eq!(judged[0].verdict, hale_types::verdict::Verdict::Violated);
     // Drop the relation: the violation must disappear.
     model.relations.calls.clear();
-    let judged = judge_forbid_reaches(&table, &model, &[0]);
+    let (_pre, judged) = judge_forbid_reaches(&table, &model, &[0]);
     assert_eq!(
         judged[0].verdict,
         hale_types::verdict::Verdict::Holds,
         "the engine reads relations.calls"
+    );
+}
+
+/// Negative control: the engine reads typed HOLES — clearing them
+/// flips an uncertified claim to Holds, proving the fail-closed
+/// verdicts derive from the model's hole rows.
+#[test]
+fn dropping_holes_changes_the_verdict() {
+    let src = r#"
+locus A {
+    params { n: Int = 0; }
+    fn go(f: fn (Int) -> Int, v: Int) -> Int { return f(v); }
+}
+fn leak(v: Int) -> Int { return v; }
+group a_side = { A };
+group b_side = { leak };
+main locus App {
+    params { a: A = A { }; }
+    claims { iso: forbid reaches(a_side, b_side); }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "the fn-typed param fails closed"
+    );
+    model.holes.clear();
+    let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds,
+        "the engine reads model.holes"
     );
 }

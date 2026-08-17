@@ -558,6 +558,7 @@ fn labels_and_effects_are_restricted_to_the_v1_universe() {
         legacy: LegacyProjection {
             topology_v1_fns: vec![FunctionId(0)],
             topology_v1_calls_via_stdlib: Vec::new(),
+            stdlib_absorption: Vec::new(),
         },
     };
     let out = project_model_half(&m);

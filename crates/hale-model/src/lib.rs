@@ -134,7 +134,8 @@ pub mod provenance;
 pub mod relation;
 
 pub use application::{
-    AbsorbedEdge, AbsorbedHole, AbsorbedHoleKind, ApplicationModel, Entities, LabelRow, LegacyProjection, StdlibAbsorption, ModelError, ModelHashKind, ModelHeader,
+    AbsorbedEvent, AbsorbedHoleKind, AbsorbedNode, AbsorbedTarget,
+    ApplicationModel, Entities, LabelRow, LegacyProjection, StdlibAbsorption, ModelError, ModelHashKind, ModelHeader,
     Relations, WeightRow, MODEL_SEMANTICS_V1,
 };
 pub use capability::Capabilities;

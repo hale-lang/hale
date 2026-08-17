@@ -150,51 +150,69 @@ pub struct LegacyProjection {
 }
 
 /// One user call site whose callee is a stdlib body (or a stdlib
-/// conformer alternative of an interface dispatch): the absorbed
-/// consequences of walking through it.
+/// conformer alternative of an interface dispatch): the interior
+/// GRAPH the evaluator's merged-summary walk would traverse. Kept
+/// as a graph — not a flattened summary — because BFS layering
+/// decides which of a hole and a hit fires first, and the judgment
+/// must replay the evaluator's order exactly.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StdlibAbsorption {
     pub from: FunctionId,
     /// The authored site ordinal within `from` (stdlib calls consume
     /// ordinals like every authored site), so the judgment can
-    /// interleave absorbed edges at the evaluator's BFS position.
+    /// interleave the entry edge at the evaluator's BFS position.
     pub site: u32,
-    /// Interior holes, in walk order: the display name of the stdlib
-    /// fn that owns the unfollowable edge, and its kind.
-    pub holes: Vec<AbsorbedHole>,
-    /// Re-emergent edges to user fns, in walk order, with the
-    /// interior path (display names between `from` and `to`,
-    /// exclusive) and the dispatch rendering of each interior step.
-    pub edges: Vec<AbsorbedEdge>,
+    /// Dispatch rendering of the ENTRY step (a stdlib conformer
+    /// alternative of an interface dispatch), when it is one.
+    pub entry_dispatch: Option<(String, String)>,
+    /// Interior vertices, discovery order; node 0 is the entry.
+    pub nodes: Vec<AbsorbedNode>,
+}
+
+/// One interior stdlib vertex: its display spelling and its body's
+/// walk-relevant events, in body order (the evaluator collects call
+/// edges and returns at the FIRST unfollowable one, then scans
+/// publish sites — the judgment replays this sequence under the
+/// claim's via masks).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AbsorbedNode {
+    /// e.g. `std::io::tcp::Stream::send` (demangled like every
+    /// witness spelling).
+    pub display: String,
+    pub events: Vec<AbsorbedEvent>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AbsorbedHole {
-    /// Display of the stdlib fn whose body holds the edge
-    /// (e.g. `std::io::tcp::Stream::send`).
-    pub at_display: String,
-    pub kind: AbsorbedHoleKind,
+pub enum AbsorbedEvent {
+    /// A resolved call edge — interior or re-emergent.
+    Call {
+        target: AbsorbedTarget,
+        /// (interface display, method) when the edge is a dispatch
+        /// alternative.
+        dispatch: Option<(String, String)>,
+    },
+    /// An unfollowable call edge (fires under `via { calls }`).
+    CallHole(AbsorbedHoleKind),
+    /// A publish to a known subject (fans out under `via { bus }`).
+    Publish { subject: String },
+    /// A publish to a computed subject (fires under `via { bus }`).
+    PublishHole,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AbsorbedTarget {
+    /// Another interior vertex (index into `nodes`).
+    Interior(u32),
+    /// Re-emergence at a user fn.
+    User(FunctionId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AbsorbedHoleKind {
-    /// A publish to a computed subject.
-    ComputedPublish,
     /// An indirect call (fn-typed value).
     IndirectCall,
     /// A method call on an untypable receiver.
     OpaqueCall { callee: String },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AbsorbedEdge {
-    pub to: FunctionId,
-    /// Interior steps between `from` and `to`, exclusive, in path
-    /// order: (display, Some(interface display + method) when the
-    /// step is a dispatch alternative).
-    pub interior: Vec<(String, Option<(String, String)>)>,
-    /// The final step INTO `to`: dispatch rendering when it is one.
-    pub into_to: Option<(String, String)>,
 }
 
 #[derive(Clone, Debug)]
@@ -970,6 +988,51 @@ impl ApplicationModel {
                     table: "legacy.topology_v1_fns",
                     index: i,
                 });
+            }
+        }
+        // NON-strict ordering: one dispatch site can fan out to
+        // SEVERAL stdlib conformers — multiple entries legitimately
+        // share (from, site).
+        for (i, w) in
+            self.legacy.stdlib_absorption.windows(2).enumerate()
+        {
+            if (w[0].from, w[0].site) > (w[1].from, w[1].site) {
+                return Err(ModelError::NotCanonical {
+                    table: "legacy.stdlib_absorption",
+                    index: i + 1,
+                });
+            }
+        }
+        for (i, a) in self.legacy.stdlib_absorption.iter().enumerate()
+        {
+            if a.from.index() >= fns || a.nodes.is_empty() {
+                return Err(ModelError::DanglingId {
+                    table: "legacy.stdlib_absorption",
+                    index: i,
+                });
+            }
+            for n in &a.nodes {
+                for ev in &n.events {
+                    if let crate::AbsorbedEvent::Call {
+                        target, ..
+                    } = ev
+                    {
+                        let ok = match target {
+                            crate::AbsorbedTarget::Interior(k) => {
+                                (*k as usize) < a.nodes.len()
+                            }
+                            crate::AbsorbedTarget::User(f) => {
+                                f.index() < fns
+                            }
+                        };
+                        if !ok {
+                            return Err(ModelError::DanglingId {
+                                table: "legacy.stdlib_absorption",
+                                index: i,
+                            });
+                        }
+                    }
+                }
             }
         }
         check_sorted_keys(
