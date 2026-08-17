@@ -1732,3 +1732,106 @@ fn main() {
         "a re-emergence must have its contracted row"
     );
 }
+
+/// Review pin (round 2): the publish space is ONE ordered stream —
+/// a computed-subject publish authored BEFORE an ungranted known
+/// publish refuses at its position (only the refusal diagnostic).
+#[test]
+fn computed_publish_before_known_refuses_first() {
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic Sneaky { payload: Cmd; subject: "app.sneaky"; }
+locus Ops {
+    params { n: Int = 0; }
+    bus { publish Sneaky; }
+    fn act() {
+        self.n <- 1;
+        Sneaky <- Cmd { };
+    }
+}
+locus Core {
+    params { n: Int = 0; }
+    bus { subscribe Sneaky as on_sneaky; }
+    fn on_sneaky(c: Cmd) { self.n = c.v; }
+}
+group ops = { Ops };
+group core = { Core };
+main locus App {
+    params { o: Ops = Ops { }; c: Core = Core { }; }
+    claims { boundary: only edges ops -> core { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let out = diff_one(src, "computed publish first");
+    assert!(out.is_ok(), "old/new agree: {:?}", out);
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified
+    );
+    assert_eq!(
+        judged[0].diags.len(),
+        1,
+        "only the refusal — the later crossing is never reported: {:?}",
+        judged[0]
+            .diags
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// …and the converse: an ungranted known publish authored BEFORE
+/// the computed one reports its violation first, THEN refuses.
+#[test]
+fn known_violation_before_computed_publish_reports_then_refuses() {
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic Sneaky { payload: Cmd; subject: "app.sneaky"; }
+locus Ops {
+    params { n: Int = 0; }
+    bus { publish Sneaky; }
+    fn act() {
+        Sneaky <- Cmd { };
+        self.n <- 1;
+    }
+}
+locus Core {
+    params { n: Int = 0; }
+    bus { subscribe Sneaky as on_sneaky; }
+    fn on_sneaky(c: Cmd) { self.n = c.v; }
+}
+group ops = { Ops };
+group core = { Core };
+main locus App {
+    params { o: Ops = Ops { }; c: Core = Core { }; }
+    claims { boundary: only edges ops -> core { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let out = diff_one(src, "known violation first");
+    assert!(out.is_ok(), "old/new agree: {:?}", out);
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_only_edges(&table, &model, &[0]);
+    let msgs: Vec<&String> =
+        judged[0].diags.iter().map(|d| &d.message).collect();
+    assert!(
+        msgs.first().is_some_and(|m| m.contains("violated")),
+        "the earlier crossing reports first: {:?}",
+        msgs
+    );
+    assert!(
+        msgs.last().is_some_and(|m| m.contains("computed subject")),
+        "the refusal follows at its authored position: {:?}",
+        msgs
+    );
+}

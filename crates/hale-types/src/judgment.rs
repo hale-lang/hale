@@ -1657,11 +1657,13 @@ pub fn judge_only_edges(
         }
         out
     };
-    // Holes trigger by relation family; the kind picks wording.
-    // `authored_site` (first occurrence) lets the boundary check
-    // interleave holes with known edges as authored — the evaluator
-    // walks fs.calls in source order and refuses at the hole's
-    // authored position, BEFORE any later crossing is reported.
+    // Holes retain their hides-mask; each event space consults the
+    // family IT walks (call space → CALLS, publish space →
+    // PUBLISHES) and the kind picks wording only. `authored_site`
+    // (first occurrence) lets the boundary check interleave holes
+    // with known edges as authored — the evaluator walks bodies in
+    // source order and refuses at the hole's authored position,
+    // BEFORE any later crossing is reported.
     #[derive(Clone)]
     enum FnHole {
         Indirect,
@@ -1669,8 +1671,10 @@ pub fn judge_only_edges(
         Computed,
         Other { reason: String },
     }
-    let mut holes_of: BTreeMap<FunctionId, Vec<(Option<u32>, FnHole)>> =
-        BTreeMap::new();
+    let mut holes_of: BTreeMap<
+        FunctionId,
+        Vec<(hale_model::RelationSet, Option<u32>, FnHole)>,
+    > = BTreeMap::new();
     for h in &model.holes {
         let EntityRef::Function(f) = h.at else { continue };
         let families = hale_model::RelationSet::CALLS
@@ -1691,7 +1695,7 @@ pub fn judge_only_edges(
         holes_of
             .entry(f)
             .or_default()
-            .push((h.authored_site, hole));
+            .push((h.hides, h.authored_site, hole));
     }
 
     let mut out = Vec::new();
@@ -1815,8 +1819,10 @@ pub fn judge_only_edges(
             {
                 evs.push((*site, 0, CallEv::Edge(*to, *cprov)));
             }
-            for (site, h) in holes_of.get(f).into_iter().flatten() {
-                if matches!(h, FnHole::Computed) {
+            for (hides, site, h) in
+                holes_of.get(f).into_iter().flatten()
+            {
+                if !hides.intersects(hale_model::RelationSet::CALLS) {
                     continue;
                 }
                 evs.push((site.unwrap_or(u32::MAX), 1, CallEv::Hole(h)));
@@ -1874,7 +1880,21 @@ pub fn judge_only_edges(
                         verdict = Verdict::Uncertified;
                         break 'fns;
                     }
-                    CallEv::Hole(FnHole::Computed) => continue,
+                    CallEv::Hole(FnHole::Computed) => {
+                        diags.push(Diag::ty(
+                            row_span,
+                            format!(
+                                "claim `{}` cannot be certified: `{}` \
+                                 publishes to a computed subject, which could \
+                                 route to any subscriber. An unresolvable \
+                                 edge fails closed",
+                                row.name,
+                                fn_disp(*f)
+                            ),
+                        ));
+                        verdict = Verdict::Uncertified;
+                        break 'fns;
+                    }
                     CallEv::Edge(to, cprov) => (to, cprov),
                 };
                 {
@@ -1914,29 +1934,86 @@ pub fn judge_only_edges(
                 }
                 }
             }
-            if holes_of
-                .get(f)
-                .into_iter()
-                .flatten()
-                .any(|(_, h)| matches!(h, FnHole::Computed))
-            {
-                diags.push(Diag::ty(
-                    row_span,
-                    format!(
-                        "claim `{}` cannot be certified: `{}` \
-                         publishes to a computed subject, which could \
-                         route to any subscriber. An unresolvable \
-                         edge fails closed",
-                        row.name,
-                        fn_disp(*f)
-                    ),
-                ));
-                verdict = Verdict::Uncertified;
-                break 'fns;
+            enum PubEv<'x> {
+                Row(&'x str, ProvenanceId),
+                Hole(&'x FnHole),
             }
-            for (_, _sid, written, pprov) in
+            let mut pevs: Vec<(u32, u8, PubEv)> = Vec::new();
+            for (site, _sid, written, pprov) in
                 pubs_of.get(f).into_iter().flatten()
             {
+                pevs.push((
+                    *site,
+                    0,
+                    PubEv::Row(written.as_str(), *pprov),
+                ));
+            }
+            for (hides, site, h) in
+                holes_of.get(f).into_iter().flatten()
+            {
+                if !hides
+                    .intersects(hale_model::RelationSet::PUBLISHES)
+                {
+                    continue;
+                }
+                pevs.push((
+                    site.unwrap_or(u32::MAX),
+                    1,
+                    PubEv::Hole(h),
+                ));
+            }
+            pevs.sort_by_key(|(site, tie, _)| (*site, *tie));
+            for (_, _, pev) in pevs {
+                let (written, pprov) = match pev {
+                    PubEv::Hole(h) => {
+                        let msg = match h {
+                            FnHole::Computed => format!(
+                                "claim `{}` cannot be certified: `{}` \
+                                 publishes to a computed subject, which could \
+                                 route to any subscriber. An unresolvable \
+                                 edge fails closed",
+                                row.name,
+                                fn_disp(*f)
+                            ),
+                            FnHole::Indirect => format!(
+                                "claim `{}` cannot be certified: `{}` \
+                                 calls through a function-typed \
+                                 parameter, whose target is not \
+                                 knowable statically. An unresolvable \
+                                 edge fails closed",
+                                row.name,
+                                fn_disp(*f)
+                            ),
+                            FnHole::Untyped { callee } => format!(
+                                "claim `{}` cannot be certified: `{}` \
+                                 calls `{}` on a receiver the \
+                                 compiler cannot type, so the walk \
+                                 cannot follow the edge. An \
+                                 unresolvable edge fails closed — \
+                                 bind the receiver to a typed field \
+                                 or local so the call resolves",
+                                row.name,
+                                fn_disp(*f),
+                                callee
+                            ),
+                            FnHole::Other { reason } => format!(
+                                "claim `{}` cannot be certified: `{}` \
+                                 — {}. An unresolvable edge fails \
+                                 closed",
+                                row.name,
+                                fn_disp(*f),
+                                reason
+                            ),
+                        };
+                        diags.push(Diag::ty(row_span, msg));
+                        verdict = Verdict::Uncertified;
+                        break 'fns;
+                    }
+                    PubEv::Row(w, p) => (w, p),
+                };
+                let pprov = &pprov;
+                let written = &written.to_string();
+                {
                 for (handler, sprov) in subs_for(written) {
                     let Some(hl) = locus_of.get(&handler) else {
                         continue;
@@ -2002,6 +2079,7 @@ pub fn judge_only_edges(
                         ));
                         verdict = Verdict::Violated;
                     }
+                }
                 }
             }
         }
