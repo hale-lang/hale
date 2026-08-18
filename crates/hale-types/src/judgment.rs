@@ -2138,6 +2138,25 @@ pub fn judge_only_edges(
                     ),
                 ));
                 verdict = Verdict::Uncertified;
+            } else if let Some(subj) =
+                &bus_holes.publishers_incomplete
+            {
+                // Round 8: an unknown PUBLISHER — possibly a src
+                // fn — may create an ungranted crossing the known
+                // rows cannot show. A known counterexample above
+                // still wins.
+                diags.push(Diag::ty(
+                    row_span,
+                    format!(
+                        "claim `{}` cannot be certified: the \
+                         publisher set of \"{}\" is not fully \
+                         modeled — an unknown publisher may create \
+                         an ungranted edge. An unresolvable edge \
+                         fails closed",
+                        row.name, subj
+                    ),
+                ));
+                verdict = Verdict::Uncertified;
             }
         }
         out.push(Judged {

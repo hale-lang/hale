@@ -2126,3 +2126,62 @@ fn main() { App { }; }
         "the literal wire address is not the topic"
     );
 }
+
+/// Review pin (round 8): a set-level PUBLISHES hole poisons the
+/// boundary — an unknown publisher may create an ungranted edge —
+/// while a known crossing still proves Violated.
+#[test]
+fn publisher_hole_fails_only_edges_closed() {
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic Sig { payload: Cmd; subject: "app.sig"; }
+locus Ops {
+    params { n: Int = 0; }
+    bus { publish Sig; }
+    fn act() { Sig <- Cmd { }; }
+}
+locus Core {
+    params { n: Int = 0; }
+    fn idle() { }
+}
+group ops = { Ops };
+group core = { Core };
+main locus App {
+    params { o: Ops = Ops { }; c: Core = Core { }; }
+    claims { boundary: only edges ops -> core { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds
+    );
+    let sid = model
+        .entities
+        .subjects
+        .iter()
+        .position(|su| su.pattern == "app.sig")
+        .expect("subject");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            sid as u32,
+        )),
+        kind: hale_model::HoleKind::DynamicEndpoint,
+        hides: hale_model::RelationSet::PUBLISHES,
+        authored_site: None,
+        reason: "publisher set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "an unknown publisher may create an ungranted edge"
+    );
+}
