@@ -1678,10 +1678,10 @@ pub fn judge_only_edges(
     // Subject-grain holes: a hole at Subject(S) hiding SUBSCRIBES
     // means S's subscriber set is incomplete — boundary composition
     // through S must not certify absence from the known rows
-    // (review round 3: bus composition needs PUBLISHES ∪
-    // SUBSCRIBES, at the hole's entity grain).
-    let mut subject_hides: BTreeMap<u32, hale_model::RelationSet> =
-        BTreeMap::new();
+    // (round 3), and coverage uses the delivery predicate so a
+    // wildcard hole covers the subjects it matches (round 4).
+    let mut subject_hole_pats: Vec<(String, hale_model::RelationSet)> =
+        Vec::new();
     for h in &model.holes {
         match h.at {
             EntityRef::Function(f) => {
@@ -1708,10 +1708,10 @@ pub fn judge_only_edges(
                     .push((h.hides, h.authored_site, hole));
             }
             EntityRef::Subject(sid) => {
-                let e2 = subject_hides
-                    .entry(sid.0)
-                    .or_insert(hale_model::RelationSet(0));
-                *e2 = e2.union(h.hides);
+                subject_hole_pats.push((
+                    e.subjects[sid.index()].pattern.clone(),
+                    h.hides,
+                ));
             }
             _ => {}
         }
@@ -2029,11 +2029,16 @@ pub fn judge_only_edges(
                         break 'fns;
                     }
                     PubEv::Row(sid, w, p) => {
-                        if subject_hides.get(&sid).is_some_and(|m| {
-                            m.intersects(
-                                hale_model::RelationSet::SUBSCRIBES,
-                            )
-                        }) {
+                        if subject_hole_covers(
+                            &subject_hole_pats,
+                            hale_model::RelationSet::SUBSCRIBES,
+                            &[
+                                w,
+                                e.subjects[sid as usize]
+                                    .pattern
+                                    .as_str(),
+                            ],
+                        ) {
                             diags.push(Diag::ty(
                                 row_span,
                                 format!(

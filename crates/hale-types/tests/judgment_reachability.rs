@@ -1895,3 +1895,63 @@ fn main() { App { }; }
         "unknown subscribers must fail the boundary closed"
     );
 }
+
+/// Review pin (round 4): the boundary check applies the delivery
+/// predicate to subscriber holes — a wildcard hole at `audit.**`
+/// covers a publish to `audit.event`.
+#[test]
+fn wildcard_subscriber_hole_fails_only_edges_closed() {
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic Ev { payload: Cmd; subject: "audit.event"; }
+locus Ops {
+    params { n: Int = 0; }
+    bus { publish Ev; }
+    fn act() { Ev <- Cmd { }; }
+}
+locus Core {
+    params { n: Int = 0; }
+    fn idle() { }
+}
+group ops = { Ops };
+group core = { Core };
+main locus App {
+    params { o: Ops = Ops { }; c: Core = Core { }; }
+    claims { boundary: only edges ops -> core { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds
+    );
+    model.entities.subjects.push(hale_model::Subject {
+        pattern: "audit.**".to_string(),
+        exact: false,
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let wild = (model.entities.subjects.len() - 1) as u32;
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            wild,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "`audit.**` may cover `audit.event` — the boundary must \
+         fail closed"
+    );
+}
