@@ -2436,7 +2436,7 @@ fn main() { App { }; }
         at: hale_model::EntityRef::Subject(hale_model::SubjectId(
             sid as u32,
         )),
-        kind: hale_model::HoleKind::UnanalyzedBody,
+        kind: hale_model::HoleKind::DynamicEndpoint,
         hides: hale_model::RelationSet::SUBSCRIBES
             .union(hale_model::RelationSet::CARDINALITY),
         authored_site: None,
@@ -2460,7 +2460,7 @@ fn main() { App { }; }
         at: hale_model::EntityRef::Subject(hale_model::SubjectId(
             sid as u32,
         )),
-        kind: hale_model::HoleKind::UnanalyzedBody,
+        kind: hale_model::HoleKind::DynamicEndpoint,
         hides: hale_model::RelationSet::PUBLISHES,
         authored_site: None,
         reason: "publisher set incomplete".to_string(),
@@ -2531,7 +2531,7 @@ fn main() { App { }; }
         at: hale_model::EntityRef::Subject(hale_model::SubjectId(
             sid as u32,
         )),
-        kind: hale_model::HoleKind::UnanalyzedBody,
+        kind: hale_model::HoleKind::DynamicEndpoint,
         hides: hale_model::RelationSet::SUBSCRIBES,
         authored_site: None,
         reason: "subscriber set incomplete".to_string(),
@@ -2587,7 +2587,7 @@ fn main() { App { }; }
         at: hale_model::EntityRef::Subject(hale_model::SubjectId(
             collider,
         )),
-        kind: hale_model::HoleKind::UnanalyzedBody,
+        kind: hale_model::HoleKind::DynamicEndpoint,
         hides: hale_model::RelationSet::SUBSCRIBES,
         authored_site: None,
         reason: "subscriber set incomplete".to_string(),
@@ -2611,7 +2611,7 @@ fn main() { App { }; }
         at: hale_model::EntityRef::Subject(hale_model::SubjectId(
             real as u32,
         )),
-        kind: hale_model::HoleKind::UnanalyzedBody,
+        kind: hale_model::HoleKind::DynamicEndpoint,
         hides: hale_model::RelationSet::SUBSCRIBES,
         authored_site: None,
         reason: "subscriber set incomplete".to_string(),
