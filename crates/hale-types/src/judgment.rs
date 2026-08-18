@@ -314,23 +314,39 @@ pub fn judge_forbid_reaches(
             .or_default()
             .push((a.site, ai as u32));
     }
-    // subject id → subscriber rows.
-    let mut subs_of: BTreeMap<u32, Vec<(FunctionId, ProvenanceId)>> =
-        BTreeMap::new();
+    // Subscription rows grouped by their subject PATTERN, sorted —
+    // the evaluator's subscribers_of iterates the graph's subject
+    // map in key order and matches exact-or-wildcard.
+    // Keyed by the subscription's CANONICAL spelling — the topic
+    // NAME for declared subscriptions, the authored pattern for
+    // literal/wildcard ones — exactly the graph keying the
+    // evaluator's subscribers_of iterates.
+    let mut subs_by_pattern: BTreeMap<
+        &str,
+        Vec<(FunctionId, ProvenanceId)>,
+    > = BTreeMap::new();
     for su in &r.subscribes {
-        subs_of
-            .entry(su.subject.0)
+        let key = match su.declared_topic {
+            Some(t) => e.topics[t.index()].name.as_str(),
+            None => e.subjects[su.subject.index()].pattern.as_str(),
+        };
+        subs_by_pattern
+            .entry(key)
             .or_default()
             .push((su.handler, su.provenance));
     }
-    // written publish text → subject id (topic name or pattern).
-    let mut subject_by_text: BTreeMap<&str, u32> = BTreeMap::new();
-    for (i, su) in e.subjects.iter().enumerate() {
-        subject_by_text.insert(su.pattern.as_str(), i as u32);
-    }
-    for t in &e.topics {
-        subject_by_text.insert(t.name.as_str(), t.subject.0);
-    }
+    let subs_for = |written: &str| -> Vec<(FunctionId, ProvenanceId)> {
+        let mut out = Vec::new();
+        for (pattern, subs) in &subs_by_pattern {
+            let covers = *pattern == written
+                || (pattern.contains("**")
+                    && crate::wildcard_match(pattern, written));
+            if covers {
+                out.extend(subs.iter().cloned());
+            }
+        }
+        out
+    };
     // fn → publish rows (site, subject id, written text, prov).
     let mut pubs_of: BTreeMap<
         FunctionId,
@@ -978,20 +994,18 @@ pub fn judge_forbid_reaches(
                                         written.clone(),
                                     ));
                                 }
-                                for (handler, spid) in subs_of
-                                    .get(sid)
-                                    .into_iter()
-                                    .flatten()
+                                for (handler, spid) in
+                                    subs_for(written)
                                 {
                                     edges.push((
-                                        V::User(*handler),
+                                        V::User(handler),
                                         StepIr::Bus {
                                             subject: written.clone(),
                                             publish_provenance: Some(
                                                 *ppid,
                                             ),
                                             subscribe_provenance:
-                                                *spid,
+                                                spid,
                                             from_stdlib: false,
                                         },
                                     ));
@@ -1162,23 +1176,17 @@ pub fn judge_forbid_reaches(
                                             ));
                                         }
                                         for (handler, spid) in
-                                            subject_by_text
-                                                .get(subject.as_str())
-                                                .and_then(|sid| {
-                                                    subs_of.get(sid)
-                                                })
-                                                .into_iter()
-                                                .flatten()
+                                            subs_for(subject)
                                         {
                                             edges.push((
-                                                V::User(*handler),
+                                                V::User(handler),
                                                 StepIr::Bus {
                                                     subject: subject
                                                         .clone(),
                                                     publish_provenance:
                                                         None,
                                                     subscribe_provenance:
-                                                        *spid,
+                                                        spid,
                                                     from_stdlib: true,
                                                 },
                                             ));
@@ -1508,4 +1516,654 @@ fn render_violation_ir(
             ));
         }
     }
+}
+
+/// Judge every `only edges` row of one lowered law table against
+/// its model (GH #476 Change 5b). Boundary grants are DIRECT-edge
+/// law — no walk: every direct call or bus edge from the source
+/// group into the destination group must match a granted line
+/// (call edges are never grantable).
+pub fn judge_only_edges(
+    table: &ClaimIrTable,
+    model: &ApplicationModel,
+    source_bases: &[u32],
+) -> Vec<Judged> {
+    let e = &model.entities;
+    let r = &model.relations;
+    let claim_span = |pid: ProvenanceId| -> Span {
+        span_of(&table.provenance, source_bases, pid)
+    };
+    let model_span = |pid: ProvenanceId| -> Span {
+        span_of(&model.provenance, source_bases, pid)
+    };
+    let fn_disp = |f: FunctionId| e.functions[f.index()].display.clone();
+    let v1: BTreeSet<FunctionId> =
+        model.legacy.topology_v1_fns.iter().copied().collect();
+
+    // Group projections (fn grain + locus decl grain), evaluator
+    // iteration order: FnKey Ord = (locus: None < Some, name) —
+    // free fns first, then methods grouped by locus.
+    let fnkey_order = |raw: &str| -> (u8, String, String) {
+        match raw.rsplit_once("::") {
+            Some((l, m)) => (1, l.to_string(), m.to_string()),
+            None => (0, String::new(), raw.to_string()),
+        }
+    };
+    let mut by_locus: BTreeMap<u32, Vec<FunctionId>> = BTreeMap::new();
+    for mo in &r.member_of {
+        by_locus.entry(mo.locus.0).or_default().push(mo.function);
+    }
+    let group_fns = |g: GroupId| -> Vec<FunctionId> {
+        let mut set: BTreeSet<FunctionId> = BTreeSet::new();
+        for gm in r.group_members.iter().filter(|gm| gm.group == g) {
+            match gm.member {
+                EntityRef::LocusDecl(l) => {
+                    for f in by_locus.get(&l.0).into_iter().flatten() {
+                        if v1.contains(f) {
+                            set.insert(*f);
+                        }
+                    }
+                }
+                EntityRef::Function(f) => {
+                    // Declaration-only free fns are still decls.
+                    set.insert(f);
+                }
+                _ => {}
+            }
+        }
+        let mut v: Vec<FunctionId> = set.into_iter().collect();
+        v.sort_by_key(|f| fnkey_order(&e.functions[f.index()].name));
+        v
+    };
+    let group_loci = |g: GroupId| -> BTreeSet<u32> {
+        r.group_members
+            .iter()
+            .filter(|gm| gm.group == g)
+            .filter_map(|gm| match gm.member {
+                EntityRef::LocusDecl(l) => Some(l.0),
+                _ => None,
+            })
+            .collect()
+    };
+    // fn → its locus id.
+    let locus_of: BTreeMap<FunctionId, u32> = r
+        .member_of
+        .iter()
+        .map(|mo| (mo.function, mo.locus.0))
+        .collect();
+    // Per-fn call rows / publish rows by site; holes.
+    let mut calls_of: BTreeMap<
+        FunctionId,
+        Vec<(u32, FunctionId, ProvenanceId)>,
+    > = BTreeMap::new();
+    for c in &r.calls {
+        if matches!(c.dispatch, DispatchKind::ViaStdlib) {
+            continue;
+        }
+        calls_of
+            .entry(c.from)
+            .or_default()
+            .push((c.site, c.to, c.provenance));
+    }
+    for v in calls_of.values_mut() {
+        v.sort_by_key(|(site, to, _)| (*site, *to));
+    }
+    let mut pubs_of: BTreeMap<
+        FunctionId,
+        Vec<(u32, u32, Option<u32>, String, ProvenanceId)>,
+    > = BTreeMap::new();
+    for p in &r.publishes {
+        let written = match p.declared_topic {
+            Some(t) => e.topics[t.index()].name.clone(),
+            None => e.subjects[p.subject.index()].pattern.clone(),
+        };
+        pubs_of.entry(p.function).or_default().push((
+            p.site,
+            p.subject.0,
+            p.declared_topic.map(|t| t.0),
+            written,
+            p.provenance,
+        ));
+    }
+    for v in pubs_of.values_mut() {
+        v.sort_by_key(|(site, ..)| *site);
+    }
+    // Keyed by the subscription's CANONICAL spelling — the topic
+    // NAME for declared subscriptions, the authored pattern for
+    // literal/wildcard ones — exactly the graph keying the
+    // evaluator's subscribers_of iterates.
+    let mut subs_by_pattern: BTreeMap<
+        &str,
+        Vec<(FunctionId, ProvenanceId)>,
+    > = BTreeMap::new();
+    for su in &r.subscribes {
+        let key = match su.declared_topic {
+            Some(t) => e.topics[t.index()].name.as_str(),
+            None => e.subjects[su.subject.index()].pattern.as_str(),
+        };
+        subs_by_pattern
+            .entry(key)
+            .or_default()
+            .push((su.handler, su.provenance));
+    }
+    let subs_for = |written: &str| -> Vec<(FunctionId, ProvenanceId)> {
+        let mut out = Vec::new();
+        for (pattern, subs) in &subs_by_pattern {
+            let covers = *pattern == written
+                || (pattern.contains("**")
+                    && crate::wildcard_match(pattern, written));
+            if covers {
+                out.extend(subs.iter().cloned());
+            }
+        }
+        out
+    };
+    // Holes retain their hides-mask; each event space consults the
+    // family IT walks (call space → CALLS, publish space →
+    // PUBLISHES) and the kind picks wording only. `authored_site`
+    // (first occurrence) lets the boundary check interleave holes
+    // with known edges as authored — the evaluator walks bodies in
+    // source order and refuses at the hole's authored position,
+    // BEFORE any later crossing is reported.
+    #[derive(Clone)]
+    enum FnHole {
+        Indirect,
+        Untyped { callee: String },
+        Computed,
+        Other { reason: String },
+    }
+    let mut holes_of: BTreeMap<
+        FunctionId,
+        Vec<(hale_model::RelationSet, Option<u32>, FnHole)>,
+    > = BTreeMap::new();
+    // Non-function holes participate through the shared two-grain
+    // BusHoles index (subject patterns + topic names, rounds 4–5).
+    let bus_holes = BusHoles::build(model);
+    for h in &model.holes {
+        match h.at {
+            EntityRef::Function(f) => {
+                let families = hale_model::RelationSet::CALLS
+                    .union(hale_model::RelationSet::PUBLISHES);
+                if !h.hides.intersects(families) {
+                    continue;
+                }
+                let hole = match &h.kind {
+                    HoleKind::IndirectCall => FnHole::Indirect,
+                    HoleKind::UntypedReceiver { callee } => {
+                        FnHole::Untyped {
+                            callee: callee.clone(),
+                        }
+                    }
+                    HoleKind::ComputedSubject => FnHole::Computed,
+                    _ => FnHole::Other {
+                        reason: h.reason.clone(),
+                    },
+                };
+                holes_of
+                    .entry(f)
+                    .or_default()
+                    .push((h.hides, h.authored_site, hole));
+            }
+            _ => {}
+        }
+    }
+
+    let mut out = Vec::new();
+    for row in &table.rows {
+        let ClaimIr::OnlyEdges { src, dst, grants } = &row.law else {
+            continue;
+        };
+        let mut diags: Vec<Diag> = Vec::new();
+        let row_span = claim_span(row.provenance);
+        // Validation (unknown groups) — Invalid without evaluation.
+        let group_decl_names: Vec<&str> =
+            e.groups.iter().map(|g| g.display.as_str()).collect();
+        let mut ok = true;
+        for gref in [src, dst] {
+            if gref.group.is_none() {
+                let mut near: Vec<&&str> = group_decl_names
+                    .iter()
+                    .filter(|g| {
+                        crate::effects::close(g, &gref.name.display)
+                    })
+                    .collect();
+                near.sort();
+                let hint = match near.first() {
+                    Some(n) => format!(" Did you mean `{}`?", n),
+                    None => String::new(),
+                };
+                diags.push(Diag::ty(
+                    claim_span(gref.provenance),
+                    format!(
+                        "claim `{}` names group `{}`, which is never declared. \
+                         Add `group {} = {{ … }};` at the top level.{}",
+                        row.name,
+                        gref.name.display,
+                        gref.name.display,
+                        hint
+                    ),
+                ));
+                ok = false;
+            }
+        }
+        if !ok {
+            out.push(Judged {
+                ordinal: row.ordinal,
+                verdict: Verdict::Invalid,
+                diags,
+            });
+            continue;
+        }
+        let (src_gid, dst_gid) =
+            (src.group.unwrap(), dst.group.unwrap());
+        // Projection vacuity, source then target.
+        let decl_count = |g: GroupId| {
+            r.group_members.iter().filter(|gm| gm.group == g).count()
+        };
+        let src_fns = group_fns(src_gid);
+        let dst_fns_v = group_fns(dst_gid);
+        let mut vacuous = |gref: &hale_model::GroupRef,
+                           fns: &[FunctionId],
+                           which: &str,
+                           diags: &mut Vec<Diag>|
+         -> bool {
+            let gid = gref.group.unwrap();
+            if decl_count(gid) == 0 || !fns.is_empty() {
+                return false;
+            }
+            diags.push(Diag::ty(
+                claim_span(gref.provenance),
+                format!(
+                    "claim `{}`: group `{}` projects to no executable {} \
+                     vertices — its declarations have no fns, so the claim \
+                     proves nothing about them. The fn-grained walk cannot \
+                     see pure-data access; name the loci that HOLD the \
+                     behavior, or drop the claim",
+                    row.name, gref.name.display, which
+                ),
+            ));
+            true
+        };
+        if vacuous(src, &src_fns, "source", &mut diags)
+            || vacuous(dst, &dst_fns_v, "target", &mut diags)
+        {
+            out.push(Judged {
+                ordinal: row.ordinal,
+                verdict: Verdict::Invalid,
+                diags,
+            });
+            continue;
+        }
+        let dst_fn_set: BTreeSet<FunctionId> =
+            dst_fns_v.iter().copied().collect();
+        let dst_loci = group_loci(dst_gid);
+        // The grant set: first-segment topic spellings as written.
+        let granted: BTreeSet<&str> = grants
+            .iter()
+            .map(|g| g.topic.name.raw.as_str())
+            .collect();
+        let granted_disp = if granted.is_empty() {
+            "none".to_string()
+        } else {
+            granted
+                .iter()
+                .map(|s| format!("`{}`", s))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut verdict = Verdict::Holds;
+        let mut bus_unknown: Option<(String, String)> = None;
+        let mut reported: BTreeSet<String> = BTreeSet::new();
+        'fns: for f in &src_fns {
+            // The evaluator walks fs.calls in SOURCE order and
+            // refuses at an unfollowable edge's authored position —
+            // a crossing AFTER the hole is never reported.
+            // Interleave known call rows and call-space holes by
+            // authored site (review: ordered event streams).
+            enum CallEv<'x> {
+                Edge(FunctionId, ProvenanceId),
+                Hole(&'x FnHole),
+            }
+            let mut evs: Vec<(u32, u8, CallEv)> = Vec::new();
+            for (site, to, cprov) in
+                calls_of.get(f).into_iter().flatten()
+            {
+                evs.push((*site, 0, CallEv::Edge(*to, *cprov)));
+            }
+            for (hides, site, h) in
+                holes_of.get(f).into_iter().flatten()
+            {
+                if !hides.intersects(hale_model::RelationSet::CALLS) {
+                    continue;
+                }
+                evs.push((site.unwrap_or(u32::MAX), 1, CallEv::Hole(h)));
+            }
+            evs.sort_by_key(|(site, tie, _)| (*site, *tie));
+            for (_, _, ev) in evs {
+                let (to, cprov) = match ev {
+                    CallEv::Hole(FnHole::Indirect) => {
+                        diags.push(Diag::ty(
+                            row_span,
+                            format!(
+                                "claim `{}` cannot be certified: `{}` \
+                                 calls through a function-typed \
+                                 parameter, whose target is not \
+                                 knowable statically. An unresolvable \
+                                 edge fails closed",
+                                row.name,
+                                fn_disp(*f)
+                            ),
+                        ));
+                        verdict = Verdict::Uncertified;
+                        break 'fns;
+                    }
+                    CallEv::Hole(FnHole::Untyped { callee }) => {
+                        diags.push(Diag::ty(
+                            row_span,
+                            format!(
+                                "claim `{}` cannot be certified: `{}` \
+                                 calls `{}` on a receiver the \
+                                 compiler cannot type, so the walk \
+                                 cannot follow the edge. An \
+                                 unresolvable edge fails closed — \
+                                 bind the receiver to a typed field \
+                                 or local so the call resolves",
+                                row.name,
+                                fn_disp(*f),
+                                callee
+                            ),
+                        ));
+                        verdict = Verdict::Uncertified;
+                        break 'fns;
+                    }
+                    CallEv::Hole(FnHole::Other { reason }) => {
+                        diags.push(Diag::ty(
+                            row_span,
+                            format!(
+                                "claim `{}` cannot be certified: `{}` \
+                                 — {}. An unresolvable edge fails \
+                                 closed",
+                                row.name,
+                                fn_disp(*f),
+                                reason
+                            ),
+                        ));
+                        verdict = Verdict::Uncertified;
+                        break 'fns;
+                    }
+                    CallEv::Hole(FnHole::Computed) => {
+                        diags.push(Diag::ty(
+                            row_span,
+                            format!(
+                                "claim `{}` cannot be certified: `{}` \
+                                 publishes to a computed subject, which could \
+                                 route to any subscriber. An unresolvable \
+                                 edge fails closed",
+                                row.name,
+                                fn_disp(*f)
+                            ),
+                        ));
+                        verdict = Verdict::Uncertified;
+                        break 'fns;
+                    }
+                    CallEv::Edge(to, cprov) => (to, cprov),
+                };
+                {
+                if dst_fn_set.contains(&to) {
+                    let key =
+                        format!("{}->{}", fn_disp(*f), fn_disp(to));
+                    if reported.insert(key) {
+                        diags.push(Diag::ty(
+                            row_span,
+                            format!(
+                                "claim `{}` violated: un-granted \
+                                 edge `{}` -> `{}` — call edges \
+                                 are not grantable; the boundary \
+                                 between `{}` and `{}` must be a \
+                                 bus edge named in the grant list",
+                                row.name,
+                                fn_disp(*f),
+                                fn_disp(to),
+                                src.name.display,
+                                dst.name.display
+                            ),
+                        ));
+                        diags.push(Diag::ty(
+                            model_span(cprov),
+                            format!(
+                                "claim `{}`: this call \
+                                 crosses the boundary. A \
+                                 call cannot be granted — \
+                                 route it through a topic \
+                                 named in the grant list, or \
+                                 move the callee out of `{}`",
+                                row.name, dst.name.display
+                            ),
+                        ));
+                        verdict = Verdict::Violated;
+                    }
+                }
+                }
+            }
+            enum PubEv<'x> {
+                Row(u32, Option<u32>, &'x str, ProvenanceId),
+                Hole(&'x FnHole),
+            }
+            let mut pevs: Vec<(u32, u8, PubEv)> = Vec::new();
+            for (site, sid, topic, written, pprov) in
+                pubs_of.get(f).into_iter().flatten()
+            {
+                pevs.push((
+                    *site,
+                    0,
+                    PubEv::Row(
+                        *sid,
+                        *topic,
+                        written.as_str(),
+                        *pprov,
+                    ),
+                ));
+            }
+            for (hides, site, h) in
+                holes_of.get(f).into_iter().flatten()
+            {
+                if !hides
+                    .intersects(hale_model::RelationSet::PUBLISHES)
+                {
+                    continue;
+                }
+                pevs.push((
+                    site.unwrap_or(u32::MAX),
+                    1,
+                    PubEv::Hole(h),
+                ));
+            }
+            pevs.sort_by_key(|(site, tie, _)| (*site, *tie));
+            for (_, _, pev) in pevs {
+                let (written, pprov) = match pev {
+                    PubEv::Hole(h) => {
+                        let msg = match h {
+                            FnHole::Computed => format!(
+                                "claim `{}` cannot be certified: `{}` \
+                                 publishes to a computed subject, which could \
+                                 route to any subscriber. An unresolvable \
+                                 edge fails closed",
+                                row.name,
+                                fn_disp(*f)
+                            ),
+                            FnHole::Indirect => format!(
+                                "claim `{}` cannot be certified: `{}` \
+                                 calls through a function-typed \
+                                 parameter, whose target is not \
+                                 knowable statically. An unresolvable \
+                                 edge fails closed",
+                                row.name,
+                                fn_disp(*f)
+                            ),
+                            FnHole::Untyped { callee } => format!(
+                                "claim `{}` cannot be certified: `{}` \
+                                 calls `{}` on a receiver the \
+                                 compiler cannot type, so the walk \
+                                 cannot follow the edge. An \
+                                 unresolvable edge fails closed — \
+                                 bind the receiver to a typed field \
+                                 or local so the call resolves",
+                                row.name,
+                                fn_disp(*f),
+                                callee
+                            ),
+                            FnHole::Other { reason } => format!(
+                                "claim `{}` cannot be certified: `{}` \
+                                 — {}. An unresolvable edge fails \
+                                 closed",
+                                row.name,
+                                fn_disp(*f),
+                                reason
+                            ),
+                        };
+                        diags.push(Diag::ty(row_span, msg));
+                        verdict = Verdict::Uncertified;
+                        break 'fns;
+                    }
+                    PubEv::Row(sid, topic, w, p) => {
+                        // A set-level subscriber hole has no
+                        // authored position relative to the known
+                        // rows, so it DEFERS: the known rows below
+                        // are still checked — a known ungranted
+                        // crossing stays Violated — and the flag
+                        // downgrades only a would-be Holds
+                        // (round 6). TYPED identities: the topic
+                        // id and the wire pattern, never text
+                        // collisions.
+                        if bus_holes.blocks(
+                            hale_model::RelationSet::SUBSCRIBES,
+                            topic,
+                            Some(
+                                e.subjects[sid as usize]
+                                    .pattern
+                                    .as_str(),
+                            ),
+                        ) && bus_unknown.is_none()
+                        {
+                            bus_unknown = Some((
+                                fn_disp(*f),
+                                w.to_string(),
+                            ));
+                        }
+                        (w, p)
+                    }
+                };
+                let pprov = &pprov;
+                let written = &written.to_string();
+                {
+                for (handler, sprov) in subs_for(written) {
+                    let Some(hl) = locus_of.get(&handler) else {
+                        continue;
+                    };
+                    if !dst_loci.contains(hl) {
+                        continue;
+                    }
+                    if granted.contains(written.as_str()) {
+                        continue;
+                    }
+                    let handler_fn = &e.functions[handler.index()];
+                    let sprov = &sprov;
+                    let (sub_locus_disp, sub_handler) =
+                        match handler_fn.display.rsplit_once("::") {
+                            Some((l, m)) => {
+                                (l.to_string(), m.to_string())
+                            }
+                            None => (
+                                String::new(),
+                                handler_fn.display.clone(),
+                            ),
+                        };
+                    let key = format!(
+                        "{}-({})->{}::{}",
+                        fn_disp(*f),
+                        written,
+                        sub_locus_disp,
+                        sub_handler
+                    );
+                    if reported.insert(key) {
+                        diags.push(Diag::ty(
+                            row_span,
+                            format!(
+                                "claim `{}` violated: un-granted edge \
+                                 `{}` -(publishes \"{}\")-> `{}::{}`. \
+                                 Granted: {}. If this edge is intended, \
+                                 name it in the grant list — a grant is \
+                                 a reviewable line",
+                                row.name,
+                                fn_disp(*f),
+                                written,
+                                sub_locus_disp,
+                                sub_handler,
+                                granted_disp
+                            ),
+                        ));
+                        diags.push(Diag::ty(
+                            model_span(*pprov),
+                            format!(
+                                "claim `{}`: the un-granted publish \
+                                 happens here",
+                                row.name
+                            ),
+                        ));
+                        diags.push(Diag::ty(
+                            model_span(*sprov),
+                            format!(
+                                "claim `{}`: received here. Grant this \
+                                 edge with `publish {};` if it is \
+                                 intended",
+                                row.name, written
+                            ),
+                        ));
+                        verdict = Verdict::Violated;
+                    }
+                }
+                }
+            }
+        }
+        if verdict == Verdict::Holds {
+            if let Some((fd, w)) = &bus_unknown {
+                diags.push(Diag::ty(
+                    row_span,
+                    format!(
+                        "claim `{}` cannot be certified: `{}` \
+                         publishes to \"{}\", whose subscribers \
+                         are not fully modeled. An unresolvable \
+                         edge fails closed",
+                        row.name, fd, w
+                    ),
+                ));
+                verdict = Verdict::Uncertified;
+            } else if let Some(subj) =
+                &bus_holes.publishers_incomplete
+            {
+                // Round 8: an unknown PUBLISHER — possibly a src
+                // fn — may create an ungranted crossing the known
+                // rows cannot show. A known counterexample above
+                // still wins.
+                diags.push(Diag::ty(
+                    row_span,
+                    format!(
+                        "claim `{}` cannot be certified: the \
+                         publisher set of \"{}\" is not fully \
+                         modeled — an unknown publisher may create \
+                         an ungranted edge. An unresolvable edge \
+                         fails closed",
+                        row.name, subj
+                    ),
+                ));
+                verdict = Verdict::Uncertified;
+            }
+        }
+        out.push(Judged {
+            ordinal: row.ordinal,
+            verdict,
+            diags,
+        });
+    }
+    out
 }

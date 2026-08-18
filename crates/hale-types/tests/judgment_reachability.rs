@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 
 use hale_model::ClaimIr;
 use hale_types::claim_lowering::lower_claims;
-use hale_types::judgment::judge_forbid_reaches;
+use hale_types::judgment::{judge_forbid_reaches, judge_only_edges};
 use hale_types::model_builder::derive_application_model;
 use hale_types::symbol::SourceFile;
 use hale_types::Bundle;
@@ -44,7 +44,13 @@ fn family_names(
     table
         .rows
         .iter()
-        .filter(|r| matches!(r.law, ClaimIr::ForbidReaches { .. }))
+        .filter(|r| {
+            matches!(
+                r.law,
+                ClaimIr::ForbidReaches { .. }
+                    | ClaimIr::OnlyEdges { .. }
+            )
+        })
         .map(|r| r.name.clone())
         .collect()
 }
@@ -74,8 +80,16 @@ fn diff_one(
             &graph,
             &[],
         );
-    // New: engine over the lowered rows.
-    let (pre_diags, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    // New: engine over the lowered rows — both migrated families,
+    // merged back into ordinal order (the evaluator's claim order).
+    let (pre_diags, judged_fr) =
+        judge_forbid_reaches(&table, &model, &[0]);
+    let judged_oe = judge_only_edges(&table, &model, &[0]);
+    let mut judged: Vec<hale_types::judgment::Judged> = judged_fr
+        .into_iter()
+        .chain(judged_oe.into_iter())
+        .collect();
+    judged.sort_by_key(|j| j.ordinal);
     // Verdict parity, matched by claim name.
     let old_verdicts: BTreeMap<&str, &hale_types::verdict::Verdict> =
         outcomes
@@ -336,6 +350,97 @@ fn main() {
         judged[0].verdict,
         hale_types::verdict::Verdict::Violated,
         "the alloc happens inside the stdlib body"
+    );
+}
+
+/// Negative control (5b): the boundary judgment reads the
+/// subscribe relation — clearing it removes the un-granted bus
+/// edge and flips the verdict.
+#[test]
+fn dropping_subscribe_rows_changes_the_only_edges_verdict() {
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic Sneaky { payload: Cmd; subject: "app.sneaky"; }
+locus Ops {
+    params { n: Int = 0; }
+    bus { publish Sneaky; }
+    fn act() { Sneaky <- Cmd { }; }
+}
+locus Core {
+    params { n: Int = 0; }
+    bus { subscribe Sneaky as on_sneaky; }
+    fn on_sneaky(c: Cmd) { self.n = c.v; }
+}
+group ops = { Ops };
+group core = { Core };
+main locus App {
+    params { o: Ops = Ops { }; c: Core = Core { }; }
+    claims { boundary: only edges ops -> core { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated
+    );
+    model.relations.subscribes.clear();
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds,
+        "the judgment reads relations.subscribes"
+    );
+}
+
+/// Review pin (5b): an indirect call BEFORE a boundary-crossing
+/// call refuses at its authored position — only the Uncertified
+/// diagnostic, never violation-then-refusal.
+#[test]
+fn hole_before_crossing_refuses_first() {
+    let src = r#"
+fn leak(v: Int) -> Int { return v; }
+locus A {
+    params { n: Int = 0; }
+    fn go(f: fn (Int) -> Int, v: Int) -> Int {
+        let x = f(v);
+        return leak(x);
+    }
+}
+group a_side = { A };
+group b_side = { leak };
+main locus App {
+    params { a: A = A { }; }
+    claims { boundary: only edges a_side -> b_side { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let out = diff_one(src, "hole before crossing");
+    assert!(out.is_ok(), "old/new agree: {:?}", out);
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified
+    );
+    assert_eq!(
+        judged[0].diags.len(),
+        1,
+        "only the refusal — no violation before it: {:?}",
+        judged[0]
+            .diags
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1625,5 +1730,458 @@ fn main() {
     assert!(
         m.validate().is_err(),
         "a re-emergence must have its contracted row"
+    );
+}
+
+/// Review pin (round 2): the publish space is ONE ordered stream —
+/// a computed-subject publish authored BEFORE an ungranted known
+/// publish refuses at its position (only the refusal diagnostic).
+#[test]
+fn computed_publish_before_known_refuses_first() {
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic Sneaky { payload: Cmd; subject: "app.sneaky"; }
+locus Ops {
+    params { n: Int = 0; }
+    bus { publish Sneaky; }
+    fn act() {
+        self.n <- 1;
+        Sneaky <- Cmd { };
+    }
+}
+locus Core {
+    params { n: Int = 0; }
+    bus { subscribe Sneaky as on_sneaky; }
+    fn on_sneaky(c: Cmd) { self.n = c.v; }
+}
+group ops = { Ops };
+group core = { Core };
+main locus App {
+    params { o: Ops = Ops { }; c: Core = Core { }; }
+    claims { boundary: only edges ops -> core { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let out = diff_one(src, "computed publish first");
+    assert!(out.is_ok(), "old/new agree: {:?}", out);
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified
+    );
+    assert_eq!(
+        judged[0].diags.len(),
+        1,
+        "only the refusal — the later crossing is never reported: {:?}",
+        judged[0]
+            .diags
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// …and the converse: an ungranted known publish authored BEFORE
+/// the computed one reports its violation first, THEN refuses.
+#[test]
+fn known_violation_before_computed_publish_reports_then_refuses() {
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic Sneaky { payload: Cmd; subject: "app.sneaky"; }
+locus Ops {
+    params { n: Int = 0; }
+    bus { publish Sneaky; }
+    fn act() {
+        Sneaky <- Cmd { };
+        self.n <- 1;
+    }
+}
+locus Core {
+    params { n: Int = 0; }
+    bus { subscribe Sneaky as on_sneaky; }
+    fn on_sneaky(c: Cmd) { self.n = c.v; }
+}
+group ops = { Ops };
+group core = { Core };
+main locus App {
+    params { o: Ops = Ops { }; c: Core = Core { }; }
+    claims { boundary: only edges ops -> core { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let out = diff_one(src, "known violation first");
+    assert!(out.is_ok(), "old/new agree: {:?}", out);
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_only_edges(&table, &model, &[0]);
+    let msgs: Vec<&String> =
+        judged[0].diags.iter().map(|d| &d.message).collect();
+    assert!(
+        msgs.first().is_some_and(|m| m.contains("violated")),
+        "the earlier crossing reports first: {:?}",
+        msgs
+    );
+    assert!(
+        msgs.last().is_some_and(|m| m.contains("computed subject")),
+        "the refusal follows at its authored position: {:?}",
+        msgs
+    );
+}
+
+/// Review pin (round 3): the boundary check consults SUBJECT-grain
+/// SUBSCRIBES holes — an ungranted edge cannot be ruled out when
+/// the subject's subscriber set is incomplete.
+#[test]
+fn subject_subscribes_hole_fails_only_edges_closed() {
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic Sneaky { payload: Cmd; subject: "app.sneaky"; }
+locus Ops {
+    params { n: Int = 0; }
+    bus { publish Sneaky; }
+    fn act() { Sneaky <- Cmd { }; }
+}
+locus Core {
+    params { n: Int = 0; }
+    fn idle() { }
+}
+group ops = { Ops };
+group core = { Core };
+main locus App {
+    params { o: Ops = Ops { }; c: Core = Core { }; }
+    claims { boundary: only edges ops -> core { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds,
+        "no known subscriber crosses the boundary"
+    );
+    let sid = model
+        .entities
+        .subjects
+        .iter()
+        .position(|su| su.pattern == "app.sneaky")
+        .expect("subject");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            sid as u32,
+        )),
+        kind: hale_model::HoleKind::DynamicEndpoint,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "unknown subscribers must fail the boundary closed"
+    );
+}
+
+/// Review pin (round 4): the boundary check applies the delivery
+/// predicate to subscriber holes — a wildcard hole at `audit.**`
+/// covers a publish to `audit.event`.
+#[test]
+fn wildcard_subscriber_hole_fails_only_edges_closed() {
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic Ev { payload: Cmd; subject: "audit.event"; }
+locus Ops {
+    params { n: Int = 0; }
+    bus { publish Ev; }
+    fn act() { Ev <- Cmd { }; }
+}
+locus Core {
+    params { n: Int = 0; }
+    fn idle() { }
+}
+group ops = { Ops };
+group core = { Core };
+main locus App {
+    params { o: Ops = Ops { }; c: Core = Core { }; }
+    claims { boundary: only edges ops -> core { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds
+    );
+    model.entities.subjects.push(hale_model::Subject {
+        pattern: "audit.**".to_string(),
+        exact: false,
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let wild = (model.entities.subjects.len() - 1) as u32;
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            wild,
+        )),
+        kind: hale_model::HoleKind::DynamicEndpoint,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "`audit.**` may cover `audit.event` — the boundary must \
+         fail closed"
+    );
+}
+
+/// Review pin (round 5): topic-grain holes reach the boundary
+/// check identically to subject-grain ones.
+#[test]
+fn topic_grain_subscriber_hole_fails_only_edges_closed() {
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic Sneaky { payload: Cmd; subject: "app.sneaky"; }
+locus Ops {
+    params { n: Int = 0; }
+    bus { publish Sneaky; }
+    fn act() { Sneaky <- Cmd { }; }
+}
+locus Core {
+    params { n: Int = 0; }
+    fn idle() { }
+}
+group ops = { Ops };
+group core = { Core };
+main locus App {
+    params { o: Ops = Ops { }; c: Core = Core { }; }
+    claims { boundary: only edges ops -> core { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds
+    );
+    let tid = model
+        .entities
+        .topics
+        .iter()
+        .position(|t| t.name == "Sneaky")
+        .expect("topic");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Topic(hale_model::TopicId(
+            tid as u32,
+        )),
+        kind: hale_model::HoleKind::DynamicEndpoint,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "a topic-grain hole must reach the boundary check"
+    );
+}
+
+/// Review pin (round 6): a set-level subscriber hole cannot erase
+/// a known ungranted boundary crossing.
+#[test]
+fn known_boundary_violation_survives_subscriber_hole() {
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic Sneaky { payload: Cmd; subject: "app.sneaky"; }
+locus Ops {
+    params { n: Int = 0; }
+    bus { publish Sneaky; }
+    fn act() { Sneaky <- Cmd { }; }
+}
+locus Core {
+    params { n: Int = 0; }
+    bus { subscribe Sneaky as on_sneaky; }
+    fn on_sneaky(c: Cmd) { self.n = c.v; }
+}
+group ops = { Ops };
+group core = { Core };
+main locus App {
+    params { o: Ops = Ops { }; c: Core = Core { }; }
+    claims { boundary: only edges ops -> core { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "the known subscriber row is an ungranted crossing"
+    );
+    let sid = model
+        .entities
+        .subjects
+        .iter()
+        .position(|su| su.pattern == "app.sneaky")
+        .expect("subject");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            sid as u32,
+        )),
+        kind: hale_model::HoleKind::DynamicEndpoint,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "unknown extra subscribers cannot un-prove the known \
+         crossing"
+    );
+}
+
+/// …typed identity in the boundary check: a topic hole does not
+/// block a literal publish whose text collides with the name.
+#[test]
+fn topic_hole_does_not_block_literal_publish_in_only_edges() {
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic Orders { payload: Cmd; subject: "wire.orders"; }
+locus Ops {
+    params { n: Int = 0; }
+    fn act(v: Int) { "Orders" <- v; }
+}
+locus Core {
+    params { n: Int = 0; }
+    fn idle() { }
+}
+group ops = { Ops };
+group core = { Core };
+main locus App {
+    params { o: Ops = Ops { }; c: Core = Core { }; }
+    claims { boundary: only edges ops -> core { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let tid = model
+        .entities
+        .topics
+        .iter()
+        .position(|t| t.name == "Orders")
+        .expect("topic");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Topic(hale_model::TopicId(
+            tid as u32,
+        )),
+        kind: hale_model::HoleKind::DynamicEndpoint,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds,
+        "the literal wire address is not the topic"
+    );
+}
+
+/// Review pin (round 8): a set-level PUBLISHES hole poisons the
+/// boundary — an unknown publisher may create an ungranted edge —
+/// while a known crossing still proves Violated.
+#[test]
+fn publisher_hole_fails_only_edges_closed() {
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic Sig { payload: Cmd; subject: "app.sig"; }
+locus Ops {
+    params { n: Int = 0; }
+    bus { publish Sig; }
+    fn act() { Sig <- Cmd { }; }
+}
+locus Core {
+    params { n: Int = 0; }
+    fn idle() { }
+}
+group ops = { Ops };
+group core = { Core };
+main locus App {
+    params { o: Ops = Ops { }; c: Core = Core { }; }
+    claims { boundary: only edges ops -> core { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds
+    );
+    let sid = model
+        .entities
+        .subjects
+        .iter()
+        .position(|su| su.pattern == "app.sig")
+        .expect("subject");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            sid as u32,
+        )),
+        kind: hale_model::HoleKind::DynamicEndpoint,
+        hides: hale_model::RelationSet::PUBLISHES,
+        authored_site: None,
+        reason: "publisher set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "an unknown publisher may create an ungranted edge"
     );
 }
