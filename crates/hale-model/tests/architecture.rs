@@ -270,9 +270,12 @@ fn a_capability_cannot_claim_exactness_over_a_hole() {
     m.holes.push(Hole {
         at: EntityRef::Function(FunctionId(1)),
         kind: HoleKind::IndirectCall,
+        // Site-shaped holes carry their authored ordinal (the
+        // round-8 partition law) — and CALLS alone is the round-8
+        // matrix's subset for the kind.
         hides: RelationSet::CALLS,
         reason: "call through fn param `f`".to_string(),
-        authored_site: None,
+        authored_site: Some(0),
         provenance: ProvenanceId(0),
     });
     assert_eq!(
