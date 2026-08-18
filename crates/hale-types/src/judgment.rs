@@ -3072,8 +3072,7 @@ pub fn judge_bound(
     // SUBSCRIBES: a hole at Subject(S) means fan-out through S is
     // not fully modeled.
     let mut effects_holed: BTreeSet<FunctionId> = BTreeSet::new();
-    let mut subject_hole_pats: Vec<(String, hale_model::RelationSet)> =
-        Vec::new();
+    let bus_holes = BusHoles::build(model);
     for h in &model.holes {
         match h.at {
             EntityRef::Function(f) => {
@@ -3098,12 +3097,6 @@ pub fn judge_bound(
                     ),
                 };
                 holes_of.entry(f).or_default().push(hole);
-            }
-            EntityRef::Subject(sid) => {
-                subject_hole_pats.push((
-                    e.subjects[sid.index()].pattern.clone(),
-                    h.hides,
-                ));
             }
             _ => {}
         }
@@ -3145,12 +3138,18 @@ pub fn judge_bound(
         Unfollowable { at: V, prov: Option<ProvenanceId> },
         ComputedSubject { at: V, prov: Option<ProvenanceId> },
         StepCeiling,
-        /// The vertex's own carrier facts are hidden — the count
-        /// is UNKNOWN, not unbounded (verdict: Uncertified).
-        UnknownEffects { at: V },
-        /// A publish whose subject's subscriber set is incomplete
-        /// — fan-out is unknown (verdict: Uncertified).
-        UnknownSubscribers { at: V, subject: String },
+    }
+
+    /// Why a count is a LOWER BOUND rather than exact (review
+    /// round 5): unknowns no longer abort the walk — the known
+    /// contribution is still counted (a known count already over
+    /// the limit proves the violation regardless of what is
+    /// hidden), and the flag downgrades a would-be Holds to
+    /// Uncertified.
+    #[derive(Clone)]
+    enum UnknownCause {
+        Effects { at: V },
+        Subscribers { at: V, subject: String },
     }
 
     let mut out = Vec::new();
@@ -3315,8 +3314,7 @@ pub fn judge_bound(
             holes_of: &'x BTreeMap<FunctionId, Vec<FnHole>>,
             absorption: &'x [hale_model::StdlibAbsorption],
             effects_holed: &'x BTreeSet<FunctionId>,
-            subject_hole_pats:
-                &'x [(String, hale_model::RelationSet)],
+            bus_holes: &'x BusHoles,
             topic_wire: &'x BTreeMap<&'x str, &'x str>,
         }
         fn site_count_ir(
@@ -3327,6 +3325,7 @@ pub fn judge_bound(
             stack: &mut Vec<V>,
             memo: &mut BTreeMap<V, (u64, Vec<V>)>,
             steps: &mut u32,
+            unknown: &mut Option<UnknownCause>,
         ) -> Result<(u64, Vec<V>), UnboundedIr> {
             if let Some(hit) = memo.get(&v) {
                 return Ok(hit.clone());
@@ -3340,12 +3339,14 @@ pub fn judge_bound(
             }
             if let V::User(f) = v {
                 if cx.effects_holed.contains(&f) {
-                    // Hidden carrier facts: the own-count is
-                    // unknown, so no certified total can include
-                    // this vertex (review round 3).
-                    return Err(UnboundedIr::UnknownEffects {
-                        at: v,
-                    });
+                    // Hidden carrier facts: the KNOWN labels still
+                    // count (a lower bound already over the limit
+                    // proves the violation), and the flag keeps a
+                    // would-be Holds honest (review round 5).
+                    if unknown.is_none() {
+                        *unknown =
+                            Some(UnknownCause::Effects { at: v });
+                    }
                 }
             }
             let own_n = own(v);
@@ -3566,7 +3567,7 @@ pub fn judge_bound(
                     } => {
                         match site_count_ir(
                             to, cx, own, subs_for, stack, memo,
-                            steps,
+                            steps, unknown,
                         ) {
                             Err(u) => {
                                 unbounded = Some(u);
@@ -3617,18 +3618,19 @@ pub fn judge_bound(
                         {
                             texts.push(w);
                         }
-                        if subject_hole_covers(
-                            cx.subject_hole_pats,
+                        if cx.bus_holes.blocks(
                             hale_model::RelationSet::SUBSCRIBES,
                             &texts,
-                        ) {
-                            unbounded = Some(
-                                UnboundedIr::UnknownSubscribers {
+                        ) && unknown.is_none()
+                        {
+                            // Known handlers still count below —
+                            // the incomplete set only forbids
+                            // certifying a Holds (round 5).
+                            *unknown =
+                                Some(UnknownCause::Subscribers {
                                     at: v,
                                     subject: subject.clone(),
-                                },
-                            );
-                            break;
+                                });
                         }
                         let _ = &prov;
                         for handler in subs_for(&subject) {
@@ -3640,6 +3642,7 @@ pub fn judge_bound(
                                 stack,
                                 memo,
                                 steps,
+                                unknown,
                             ) {
                                 Err(u) => {
                                     unbounded = Some(u);
@@ -3694,11 +3697,12 @@ pub fn judge_bound(
             holes_of: &holes_of,
             absorption,
             effects_holed: &effects_holed,
-            subject_hole_pats: &subject_hole_pats,
+            bus_holes: &bus_holes,
             topic_wire: &topic_wire_b,
         };
         let mut worst: (u64, Vec<V>) = (0, Vec::new());
         let mut why: Option<UnboundedIr> = None;
+        let mut unknown_cause: Option<UnknownCause> = None;
         for root in &fnkey_sorted(&fns) {
             let mut stack = Vec::new();
             let mut memo: BTreeMap<V, (u64, Vec<V>)> = BTreeMap::new();
@@ -3711,6 +3715,7 @@ pub fn judge_bound(
                 &mut stack,
                 &mut memo,
                 &mut steps,
+                &mut unknown_cause,
             ) {
                 Err(u) => {
                     why = Some(u);
@@ -3724,57 +3729,6 @@ pub fn judge_bound(
             }
         }
         if let Some(u) = why {
-            // The UNKNOWN shapes are not "unbounded" — the count
-            // simply cannot be certified; verdict Uncertified with
-            // its own wording (review round 3; no evaluator analog:
-            // the old engine cannot see these model facts).
-            match &u {
-                UnboundedIr::UnknownEffects { at } => {
-                    diags.push(Diag::ty(
-                        row_span,
-                        format!(
-                            "claim `{}` cannot be certified: the \
-                             `{}` carrier facts of `{}` are not \
-                             fully analyzable, so its contribution \
-                             to the count is unknown",
-                            row.name,
-                            class.name,
-                            display(*at)
-                        ),
-                    ));
-                    out.push(Judged {
-                        ordinal: row.ordinal,
-                        verdict: Verdict::Uncertified,
-                        diags,
-                    });
-                    continue;
-                }
-                UnboundedIr::UnknownSubscribers {
-                    at,
-                    subject,
-                } => {
-                    diags.push(Diag::ty(
-                        row_span,
-                        format!(
-                            "claim `{}` cannot be certified: `{}` \
-                             publishes to \"{}\", whose \
-                             subscribers are not fully modeled — \
-                             the fan-out's contribution to the \
-                             count is unknown",
-                            row.name,
-                            display(*at),
-                            subject
-                        ),
-                    ));
-                    out.push(Judged {
-                        ordinal: row.ordinal,
-                        verdict: Verdict::Uncertified,
-                        diags,
-                    });
-                    continue;
-                }
-                _ => {}
-            }
             let why_str = match &u {
                 UnboundedIr::Cycle(k) => format!(
                     "`{}` is reachable from itself, so the count repeats \
@@ -3799,10 +3753,6 @@ pub fn judge_bound(
                 UnboundedIr::StepCeiling => {
                     "the walk hit its step ceiling before settling"
                         .into()
-                }
-                UnboundedIr::UnknownEffects { .. }
-                | UnboundedIr::UnknownSubscribers { .. } => {
-                    unreachable!("handled above")
                 }
             };
             diags.push(Diag::ty(
@@ -3858,6 +3808,41 @@ pub fn judge_bound(
         }
         let (w, path) = worst;
         if w <= *limit {
+            // The KNOWN lower bound is within the limit — but an
+            // incomplete model cannot certify Holds (round 5: the
+            // monotonic rule endpoint counts already follow).
+            if let Some(cause) = &unknown_cause {
+                let msg = match cause {
+                    UnknownCause::Effects { at } => format!(
+                        "claim `{}` cannot be certified: the `{}` \
+                         carrier facts of `{}` are not fully \
+                         analyzable, so its contribution to the \
+                         count is unknown",
+                        row.name,
+                        class.name,
+                        display(*at)
+                    ),
+                    UnknownCause::Subscribers { at, subject } => {
+                        format!(
+                            "claim `{}` cannot be certified: `{}` \
+                             publishes to \"{}\", whose \
+                             subscribers are not fully modeled — \
+                             the fan-out's contribution to the \
+                             count is unknown",
+                            row.name,
+                            display(*at),
+                            subject
+                        )
+                    }
+                };
+                diags.push(Diag::ty(row_span, msg));
+                out.push(Judged {
+                    ordinal: row.ordinal,
+                    verdict: Verdict::Uncertified,
+                    diags,
+                });
+                continue;
+            }
             out.push(Judged {
                 ordinal: row.ordinal,
                 verdict: Verdict::Holds,

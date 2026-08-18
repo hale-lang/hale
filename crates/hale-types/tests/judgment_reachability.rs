@@ -3161,3 +3161,171 @@ fn main() { App { }; }
          closed"
     );
 }
+
+/// Review pin (round 5): an incomplete count must not erase an
+/// already-proven violation — the KNOWN lower bound decides first,
+/// and the unknown flag only downgrades a would-be Holds.
+#[test]
+fn known_violation_survives_effects_hole() {
+    let src = r#"
+effect money;
+@effects(is: { money })
+fn charge(v: Int) -> Int { return v; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) -> Int { return charge(v); }
+}
+group roots = { A };
+main locus App {
+    params { a: A = A { }; }
+    claims { cap: bound money <= 0 on paths from roots; }
+    run() { println(self.a.go(1)); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "one known carrier over a limit of zero"
+    );
+    // Hiding MORE effects cannot un-prove the known violation.
+    let charge = model
+        .entities
+        .functions
+        .iter()
+        .position(|f| f.display == "charge")
+        .expect("charge");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Function(hale_model::FunctionId(
+            charge as u32,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::EFFECTS,
+        authored_site: None,
+        reason: "carrier facts incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "the known lower bound already proves the violation"
+    );
+}
+
+/// …and the fan-out equivalent: known subscriber paths already
+/// over the limit stay Violated under a subscriber hole.
+#[test]
+fn known_fanout_violation_survives_subscriber_hole() {
+    let src = r#"
+effect money;
+topic Sig { payload: Int; subject: "app.sig"; }
+@effects(is: { money })
+fn charge(v: Int) -> Int { return v; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) { Sig <- v; }
+}
+locus B {
+    params { n: Int = 0; }
+    bus { subscribe Sig as on_sig; }
+    fn on_sig(v: Int) { self.n = charge(v); }
+}
+group roots = { A };
+main locus App {
+    params { a: A = A { }; b: B = B { }; }
+    claims { cap: bound money <= 0 on paths from roots; }
+    run() { self.a.go(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "the known subscriber path already carries one site"
+    );
+    let sid = model
+        .entities
+        .subjects
+        .iter()
+        .position(|su| su.pattern == "app.sig")
+        .expect("subject");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            sid as u32,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "known contributions still count under the hole"
+    );
+}
+
+/// Review pin (round 5): topic-grain subscriber holes reach the
+/// count walk through the shared index.
+#[test]
+fn topic_grain_subscriber_hole_makes_bound_uncertified() {
+    let src = r#"
+effect money;
+topic Sig { payload: Int; subject: "app.sig"; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) { Sig <- v; }
+}
+group roots = { A };
+main locus App {
+    params { a: A = A { }; }
+    claims { cap: bound money <= 1 on paths from roots; }
+    run() { self.a.go(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds
+    );
+    let tid = model
+        .entities
+        .topics
+        .iter()
+        .position(|t| t.name == "Sig")
+        .expect("topic");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Topic(hale_model::TopicId(
+            tid as u32,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "a topic-grain hole must reach the count walk"
+    );
+}
