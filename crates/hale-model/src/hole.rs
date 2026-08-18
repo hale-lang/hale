@@ -39,6 +39,13 @@ impl RelationSet {
     /// Delivery-guarantee knowledge (the must-deliver side).
     pub const DELIVERY: RelationSet = RelationSet(1 << 11);
 
+    /// Every DEFINED family bit. A hides mask outside this set
+    /// names a family no judgment or capability knows — accepting
+    /// it would create a valid-but-invisible hole and defeat the
+    /// rule that adding a family is a reviewed schema change
+    /// (round 7).
+    pub const ALL_KNOWN: RelationSet = RelationSet((1 << 12) - 1);
+
     pub const fn union(self, other: RelationSet) -> RelationSet {
         RelationSet(self.0 | other.0)
     }
@@ -112,4 +119,65 @@ pub struct Hole {
     /// `f`").
     pub reason: String,
     pub provenance: ProvenanceId,
+}
+
+/// The CLOSED anchor/kind/family matrix (review round 7): for each
+/// (anchor grain, kind) pair, the families the hole may hide.
+/// `None` means the combination is not a defined hole shape and
+/// validation rejects it — a hole every judgment silently ignores
+/// is worse than no hole, because the model then CLAIMS its
+/// unknowns are accounted for. Extending this matrix is a reviewed
+/// schema change, made together with the judgment/BusHoles support
+/// that consumes the new shape.
+///
+/// Site rule (validated beside this): only Function-anchored holes
+/// carry `authored_site` — a set-level (subject/topic-grain) hole
+/// has no authored position relative to known rows, which is
+/// exactly why judgments DEFER on it instead of halting (round 6).
+pub fn allowed_hole_families(
+    at: &EntityRef,
+    kind: &HoleKind,
+) -> Option<RelationSet> {
+    use HoleKind as K;
+    let c = RelationSet::CALLS;
+    let p = RelationSet::PUBLISHES;
+    let sub = RelationSet::SUBSCRIBES;
+    let e = RelationSet::EFFECTS;
+    match (at, kind) {
+        // An unfollowable call also hides the EFFECTS beyond it —
+        // the builder emits CALLS ∪ EFFECTS for the call-hole
+        // kinds, and the effects(C)-destination scan consumes the
+        // EFFECTS bit (rounds 2–3).
+        (EntityRef::Function(_), K::IndirectCall) => {
+            Some(c.union(e))
+        }
+        (EntityRef::Function(_), K::UntypedReceiver { .. }) => {
+            Some(c.union(e))
+        }
+        (EntityRef::Function(_), K::OpenInterface) => {
+            Some(c.union(e))
+        }
+        (EntityRef::Function(_), K::ComputedSubject) => Some(p),
+        (EntityRef::Function(_), K::UnknownKeyDomain) => {
+            Some(RelationSet::KEY_FILTERS)
+        }
+        (EntityRef::Function(_), K::UnanalyzedBody) => {
+            Some(c.union(p).union(sub).union(e))
+        }
+        (
+            EntityRef::Subject(_) | EntityRef::Topic(_),
+            K::DynamicEndpoint,
+        ) => Some(
+            p.union(sub)
+                .union(RelationSet::CARDINALITY)
+                .union(RelationSet::DELIVERY),
+        ),
+        (
+            EntityRef::Subject(_) | EntityRef::Topic(_),
+            K::UnknownKeyDomain,
+        ) => Some(
+            RelationSet::KEY_FILTERS.union(RelationSet::ROUTES),
+        ),
+        _ => None,
+    }
 }

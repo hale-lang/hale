@@ -1004,6 +1004,34 @@ impl ApplicationModel {
             if h.hides.is_empty() {
                 return Err(ModelError::EmptyHole { index: i });
             }
+            // The closed shape matrix (round 7): only KNOWN family
+            // bits, only defined (anchor, kind, family)
+            // combinations, and authored positions only at fn
+            // grain — a hole every judgment silently ignores would
+            // let the model claim its unknowns are accounted for.
+            if !crate::hole::RelationSet::ALL_KNOWN
+                .contains(h.hides)
+            {
+                return Err(ModelError::EmptyHole { index: i });
+            }
+            match crate::hole::allowed_hole_families(&h.at, &h.kind)
+            {
+                Some(allowed) if allowed.contains(h.hides) => {}
+                _ => {
+                    return Err(ModelError::NotCanonical {
+                        table: "holes.shape",
+                        index: i,
+                    });
+                }
+            }
+            if !matches!(h.at, EntityRef::Function(_))
+                && h.authored_site.is_some()
+            {
+                return Err(ModelError::NotCanonical {
+                    table: "holes.shape",
+                    index: i,
+                });
+            }
             prov("holes", i, h.provenance)?;
         }
 
@@ -1054,24 +1082,55 @@ impl ApplicationModel {
             }
             for n in &a.nodes {
                 for ev in &n.events {
-                    if let crate::AbsorbedEvent::Call {
-                        target, ..
-                    } = ev
-                    {
-                        let ok = match target {
-                            crate::AbsorbedTarget::Interior(k) => {
-                                (*k as usize) < a.nodes.len()
+                    match ev {
+                        crate::AbsorbedEvent::Call {
+                            target, ..
+                        } => {
+                            let ok = match target {
+                                crate::AbsorbedTarget::Interior(
+                                    k,
+                                ) => (*k as usize) < a.nodes.len(),
+                                crate::AbsorbedTarget::User(f) => {
+                                    f.index() < fns
+                                }
+                            };
+                            if !ok {
+                                return Err(ModelError::DanglingId {
+                                    table:
+                                        "legacy.stdlib_absorption",
+                                    index: i,
+                                });
                             }
-                            crate::AbsorbedTarget::User(f) => {
-                                f.index() < fns
-                            }
-                        };
-                        if !ok {
-                            return Err(ModelError::DanglingId {
-                                table: "legacy.stdlib_absorption",
-                                index: i,
-                            });
                         }
+                        // The TYPED publish identity judgments
+                        // trust (round 7): a present TopicId must
+                        // be in range, and the delivery spelling
+                        // must be exactly that topic's name — a
+                        // disagreement would route hole coverage
+                        // as one topic while known delivery looks
+                        // up another.
+                        crate::AbsorbedEvent::Publish {
+                            subject,
+                            declared_topic,
+                            ..
+                        } => {
+                            if let Some(t) = declared_topic {
+                                let ok = t.index()
+                                    < e.topics.len()
+                                    && e.topics[t.index()].name
+                                        == *subject;
+                                if !ok {
+                                    return Err(
+                                        ModelError::DanglingId {
+                                            table:
+                                                "legacy.stdlib_absorption",
+                                            index: i,
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }

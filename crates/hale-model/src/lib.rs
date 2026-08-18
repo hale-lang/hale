@@ -150,7 +150,7 @@ pub use entity::{
     LocusDecl, LocusInstance, PayloadContract, Phase, Seed, Subject, ThreadDomain, Topic,
     TransportKind, TypeDecl,
 };
-pub use hole::{Hole, HoleKind, RelationSet};
+pub use hole::{allowed_hole_families, Hole, HoleKind, RelationSet};
 pub use ids::{
     BindingId, DeclarationId, EffectClassId, EntityRef, FunctionId, GroupId, InterfaceDeclId, LocusDeclId,
     LocusInstanceId, PayloadContractId, PhaseId, ProvenanceId, SeedId, SourceId, SubjectId,

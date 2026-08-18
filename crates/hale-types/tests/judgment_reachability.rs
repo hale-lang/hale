@@ -723,7 +723,7 @@ fn main() { App { }; }
         at: hale_model::EntityRef::Subject(hale_model::SubjectId(
             sid as u32,
         )),
-        kind: hale_model::HoleKind::UnanalyzedBody,
+        kind: hale_model::HoleKind::DynamicEndpoint,
         hides: hale_model::RelationSet::SUBSCRIBES,
         authored_site: None,
         reason: "subscriber set incomplete".to_string(),
@@ -848,7 +848,7 @@ fn main() { App { }; }
         at: hale_model::EntityRef::Subject(hale_model::SubjectId(
             wild,
         )),
-        kind: hale_model::HoleKind::UnanalyzedBody,
+        kind: hale_model::HoleKind::DynamicEndpoint,
         hides: hale_model::RelationSet::SUBSCRIBES,
         authored_site: None,
         reason: "subscriber set incomplete".to_string(),
@@ -903,7 +903,7 @@ fn main() { App { }; }
         at: hale_model::EntityRef::Topic(hale_model::TopicId(
             tid as u32,
         )),
-        kind: hale_model::HoleKind::UnanalyzedBody,
+        kind: hale_model::HoleKind::DynamicEndpoint,
         hides: hale_model::RelationSet::SUBSCRIBES,
         authored_site: None,
         reason: "subscriber set incomplete".to_string(),
@@ -959,7 +959,7 @@ fn main() { App { }; }
         at: hale_model::EntityRef::Topic(hale_model::TopicId(
             tid as u32,
         )),
-        kind: hale_model::HoleKind::UnanalyzedBody,
+        kind: hale_model::HoleKind::DynamicEndpoint,
         hides: hale_model::RelationSet::SUBSCRIBES,
         authored_site: None,
         reason: "subscriber set incomplete".to_string(),
@@ -1021,7 +1021,7 @@ fn main() { App { }; }
         at: hale_model::EntityRef::Subject(hale_model::SubjectId(
             sid as u32,
         )),
-        kind: hale_model::HoleKind::UnanalyzedBody,
+        kind: hale_model::HoleKind::DynamicEndpoint,
         hides: hale_model::RelationSet::SUBSCRIBES,
         authored_site: None,
         reason: "subscriber set incomplete".to_string(),
@@ -1033,5 +1033,145 @@ fn main() { App { }; }
         hale_types::verdict::Verdict::Violated,
         "additional unknown subscribers cannot un-prove the known \
          path"
+    );
+}
+
+/// Review pin (round 7): the hole shape matrix is CLOSED — an
+/// unknown family bit, an anchor grain no judgment consumes, and
+/// an authored site on a set-level hole are each rejected, so a
+/// valid model cannot carry holes every judgment silently ignores.
+#[test]
+fn hole_shape_matrix_is_closed() {
+    let src = r#"
+topic Sig { payload: Int; subject: "app.sig"; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) { Sig <- v; }
+}
+main locus App {
+    params { a: A = A { }; }
+    run() { self.a.go(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let base = derive_application_model(&bundle);
+    base.validate().expect("the built model is lawful");
+    let locus = hale_model::EntityRef::LocusDecl(
+        hale_model::LocusDeclId(0),
+    );
+    let subject = hale_model::EntityRef::Subject(
+        hale_model::SubjectId(0),
+    );
+    // (anchor, kind, hides, site, why-it-must-be-rejected)
+    let bad: Vec<(
+        hale_model::EntityRef,
+        hale_model::HoleKind,
+        hale_model::RelationSet,
+        Option<u32>,
+        &str,
+    )> = vec![
+        (
+            subject,
+            hale_model::HoleKind::DynamicEndpoint,
+            hale_model::RelationSet(1 << 31),
+            None,
+            "an unknown family bit is invisible to every judgment",
+        ),
+        (
+            locus,
+            hale_model::HoleKind::DynamicEndpoint,
+            hale_model::RelationSet::SUBSCRIBES
+                .union(hale_model::RelationSet::CARDINALITY),
+            None,
+            "no judgment consumes locus-grain endpoint holes",
+        ),
+        (
+            subject,
+            hale_model::HoleKind::DynamicEndpoint,
+            hale_model::RelationSet::SUBSCRIBES,
+            Some(0),
+            "a set-level hole has no authored position",
+        ),
+        (
+            subject,
+            hale_model::HoleKind::IndirectCall,
+            hale_model::RelationSet::CALLS,
+            None,
+            "a call hole is fn-grain knowledge",
+        ),
+    ];
+    for (at, kind, hides, site, why) in bad {
+        let mut m = base.clone();
+        m.holes.push(hale_model::Hole {
+            at,
+            kind,
+            hides,
+            authored_site: site,
+            reason: "test".to_string(),
+            provenance: hale_model::ProvenanceId(0),
+        });
+        assert!(m.validate().is_err(), "{}", why);
+    }
+    // …and the shapes the judgments DO consume stay lawful (an
+    // endpoint hole contradicts the exact-endpoints capability, so
+    // the honest model lowers the flag alongside — that law
+    // already existed and stays).
+    let mut m = base.clone();
+    m.capabilities.exact_bus_endpoints = false;
+    m.holes.push(hale_model::Hole {
+        at: subject,
+        kind: hale_model::HoleKind::DynamicEndpoint,
+        hides: hale_model::RelationSet::SUBSCRIBES
+            .union(hale_model::RelationSet::CARDINALITY),
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    m.validate()
+        .expect("subject-grain endpoint holes are a defined shape");
+}
+
+/// Review pin (round 7): the typed identity on absorbed publishes
+/// is validated — a dangling TopicId and a name disagreement are
+/// both refused, never trusted machine data.
+#[test]
+fn absorbed_publish_identity_is_validated() {
+    let src = r#"
+locus Gate {
+    fn probe(r: std::http::Router, req: std::http::Request) -> Int {
+        let resp = r.dispatch(req);
+        return resp.status;
+    }
+}
+main locus App {
+    params { n: Int = 0; }
+}
+fn main() {
+    let r = std::http::Router { };
+    let req = std::http::Request { method: "GET", path: "/", body: "" };
+    println(Gate { }.probe(r, req));
+}
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let base = derive_application_model(&bundle);
+    base.validate().expect("the built model is lawful");
+    assert!(
+        !base.legacy.stdlib_absorption.is_empty(),
+        "the fixture absorbs a stdlib call"
+    );
+    // Dangling topic id.
+    let mut m = base.clone();
+    m.legacy.stdlib_absorption[0].nodes[0].events.push(
+        hale_model::AbsorbedEvent::Publish {
+            subject: "Orders".to_string(),
+            declared_topic: Some(hale_model::TopicId(999)),
+        },
+    );
+    assert!(
+        m.validate().is_err(),
+        "a dangling TopicId can panic a judgment"
     );
 }
