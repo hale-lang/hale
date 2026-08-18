@@ -2371,3 +2371,176 @@ fn main() { App { }; }
         "an unanalyzed application-owned body blocks certification"
     );
 }
+
+/// Review pin (round 4): endpoint/count judgments consult
+/// PUBLISHES/SUBSCRIBES/CARDINALITY holes — known rows are a lower
+/// bound, never a proved absence, with monotone cases preserved.
+#[test]
+fn count_and_require_fail_closed_on_endpoint_holes() {
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic T { payload: Cmd; subject: "app.t"; }
+locus Pub {
+    params { n: Int = 0; }
+    bus { publish T; }
+    fn act() { T <- Cmd { }; }
+}
+group pubs = { Pub };
+main locus App {
+    params { p: Pub = Pub { }; }
+    claims {
+        none_yet: count subscribers(topic T) <= 0;
+        one_pub: count publishers(topic T) >= 1;
+        someone: require subscribes(some pubs, topic T);
+    }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let by_name = |judged: &[hale_types::judgment::Judged],
+                   name: &str|
+     -> hale_types::verdict::Verdict {
+        let row = table
+            .rows
+            .iter()
+            .find(|r| r.name == name)
+            .expect("row");
+        judged
+            .iter()
+            .find(|j| j.ordinal == row.ordinal)
+            .expect("judged")
+            .verdict
+    };
+    let judged = judge_endpoints(&table, &model, &[0]);
+    assert_eq!(
+        by_name(&judged, "none_yet"),
+        hale_types::verdict::Verdict::Holds
+    );
+    assert_eq!(
+        by_name(&judged, "someone"),
+        hale_types::verdict::Verdict::Violated
+    );
+    // The reviewer's shape: a hole at T's subject hiding
+    // SUBSCRIBES | CARDINALITY.
+    let sid = model
+        .entities
+        .subjects
+        .iter()
+        .position(|su| su.pattern == "app.t")
+        .expect("subject");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            sid as u32,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::SUBSCRIBES
+            .union(hale_model::RelationSet::CARDINALITY),
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_endpoints(&table, &model, &[0]);
+    assert_eq!(
+        by_name(&judged, "none_yet"),
+        hale_types::verdict::Verdict::Uncertified,
+        "count <= 0 cannot hold from an incomplete set"
+    );
+    assert_eq!(
+        by_name(&judged, "someone"),
+        hale_types::verdict::Verdict::Uncertified,
+        "an absent witness plus a relevant hole is not a violation"
+    );
+    // Monotone preserved: a known publisher still proves `>= 1`
+    // even when the publisher set is ALSO marked incomplete.
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            sid as u32,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::PUBLISHES,
+        authored_site: None,
+        reason: "publisher set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_endpoints(&table, &model, &[0]);
+    assert_eq!(
+        by_name(&judged, "one_pub"),
+        hale_types::verdict::Verdict::Holds,
+        "enough known rows still prove a lower bound"
+    );
+}
+
+/// …and `cover`: an apparently-uncovered topic with an incomplete
+/// subscriber set is Uncertified, while a concretely uncovered
+/// topic still proves the violation.
+#[test]
+fn cover_fails_closed_on_subscriber_holes() {
+    let lib = r#"
+type __lib_x_kv_Item { n: Int = 0; }
+topic __lib_x_kv_Changed { payload: __lib_x_kv_Item; subject: "kv.changed"; }
+"#;
+    let main_src = r#"
+locus Reader {
+    params { n: Int = 0; }
+    fn idle() { }
+}
+group readers = { Reader };
+main locus App {
+    params { r: Reader = Reader { }; }
+    claims { covered: cover topic in seed(kv): subscribed_by(some readers); }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let main_p =
+        hale_syntax::parse_source(main_src).expect("parse main");
+    let lib_p = hale_syntax::parse_source(lib).expect("parse lib");
+    let mut programs = BTreeMap::new();
+    programs.insert("app/main.hl".to_string(), &main_p);
+    programs.insert("lib/kv.hl".to_string(), &lib_p);
+    let mut bundle = Bundle::new(programs);
+    bundle.import_renames = vec![
+        (
+            vec!["kv".to_string(), "Item".to_string()],
+            "__lib_x_kv_Item".to_string(),
+        ),
+        (
+            vec!["kv".to_string(), "Changed".to_string()],
+            "__lib_x_kv_Changed".to_string(),
+        ),
+    ];
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_endpoints(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "concretely uncovered"
+    );
+    let sid = model
+        .entities
+        .subjects
+        .iter()
+        .position(|su| su.pattern == "kv.changed")
+        .expect("subject");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            sid as u32,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_endpoints(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "an incomplete subscriber set cannot prove the violation"
+    );
+}

@@ -2254,6 +2254,68 @@ pub fn judge_endpoints(
             None => (0, String::new(), raw.to_string()),
         }
     };
+    // Relation-aware endpoint holes (review round 4): PUBLISHES,
+    // SUBSCRIBES, and CARDINALITY are independently hideable at
+    // subject and topic grain, and a relevant hole means the known
+    // endpoint rows are a LOWER BOUND, never a proved absence.
+    // Monotone cases stay decidable: a known witness still proves
+    // an existential, and enough known rows still prove `>=`.
+    let subject_hole_pats: Vec<(String, hale_model::RelationSet)> =
+        model
+            .holes
+            .iter()
+            .filter_map(|h| match h.at {
+                EntityRef::Subject(sid) => Some((
+                    e.subjects[sid.index()].pattern.clone(),
+                    h.hides,
+                )),
+                _ => None,
+            })
+            .collect();
+    let topic_holes: BTreeMap<u32, hale_model::RelationSet> = {
+        let mut m: BTreeMap<u32, hale_model::RelationSet> =
+            BTreeMap::new();
+        for h in &model.holes {
+            if let EntityRef::Topic(t) = h.at {
+                let e2 = m
+                    .entry(t.0)
+                    .or_insert(hale_model::RelationSet(0));
+                *e2 = e2.union(h.hides);
+            }
+        }
+        m
+    };
+    let topic_by_name: BTreeMap<&str, u32> = e
+        .topics
+        .iter()
+        .enumerate()
+        .map(|(i, t)| (t.name.as_str(), i as u32))
+        .collect();
+    let endpoint_unknown = |topic_raw: &str, publishers: bool| {
+        let fam = if publishers {
+            hale_model::RelationSet::PUBLISHES
+        } else {
+            hale_model::RelationSet::SUBSCRIBES
+        };
+        let mask = fam.union(hale_model::RelationSet::CARDINALITY);
+        if topic_by_name
+            .get(topic_raw)
+            .and_then(|t| topic_holes.get(t))
+            .is_some_and(|m| m.intersects(mask))
+        {
+            return true;
+        }
+        let mut texts: Vec<&str> = vec![topic_raw];
+        if let Some(t) = topic_by_name.get(topic_raw) {
+            texts.push(
+                e.subjects
+                    [e.topics[*t as usize].subject.index()]
+                .pattern
+                .as_str(),
+            );
+        }
+        subject_hole_covers(&subject_hole_pats, mask, &texts)
+    };
 
     let mut out = Vec::new();
     for row in &table.rows {
@@ -2358,9 +2420,40 @@ pub fn judge_endpoints(
                     loci.iter().any(|l| g_loci.contains(l))
                 });
                 if hit {
+                    // A known witness proves the existential even
+                    // when the endpoint set is incomplete.
                     out.push(Judged {
                         ordinal: row.ordinal,
                         verdict: Verdict::Holds,
+                        diags,
+                    });
+                    continue;
+                }
+                if endpoint_unknown(&topic.name.raw, *publishers) {
+                    diags.push(Diag::ty(
+                        row_span,
+                        format!(
+                            "claim `{}` cannot be certified: the {} \
+                             set of `{}` is not fully modeled — a \
+                             member of `{}` may {} it",
+                            row.name,
+                            if *publishers {
+                                "publisher"
+                            } else {
+                                "subscriber"
+                            },
+                            topic.name.display,
+                            group.name.display,
+                            if *publishers {
+                                "publish"
+                            } else {
+                                "subscribe to"
+                            }
+                        ),
+                    ));
+                    out.push(Judged {
+                        ordinal: row.ordinal,
+                        verdict: Verdict::Uncertified,
                         diags,
                     });
                     continue;
@@ -2619,6 +2712,7 @@ pub fn judge_endpoints(
                 let g_loci = group_loci(group.group.unwrap());
                 let mut uncovered: Vec<(String, String)> =
                     Vec::new();
+                let mut unknown: Vec<String> = Vec::new();
                 let mut tids: Vec<u32> =
                     seed_topics[seed.name.as_str()].clone();
                 tids.sort_by_key(|t| {
@@ -2632,11 +2726,42 @@ pub fn judge_endpoints(
                             loci.iter().any(|l| g_loci.contains(l))
                         });
                     if !covered {
-                        uncovered.push((
-                            topic.name.clone(),
-                            topic.display.clone(),
-                        ));
+                        // An apparently-uncovered topic whose
+                        // subscriber set is incomplete cannot prove
+                        // the violation (round 4) — but neither can
+                        // it prove coverage.
+                        if endpoint_unknown(&topic.name, false) {
+                            unknown.push(topic.display.clone());
+                        } else {
+                            uncovered.push((
+                                topic.name.clone(),
+                                topic.display.clone(),
+                            ));
+                        }
                     }
+                }
+                if uncovered.is_empty() && !unknown.is_empty() {
+                    diags.push(Diag::ty(
+                        row_span,
+                        format!(
+                            "claim `{}` cannot be certified: the \
+                             subscriber set of {} is not fully \
+                             modeled, so coverage cannot be decided \
+                             from the known rows",
+                            row.name,
+                            unknown
+                                .iter()
+                                .map(|d| format!("`{}`", d))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    ));
+                    out.push(Judged {
+                        ordinal: row.ordinal,
+                        verdict: Verdict::Uncertified,
+                        diags,
+                    });
+                    continue;
                 }
                 if uncovered.is_empty() {
                     out.push(Judged {
@@ -2702,11 +2827,53 @@ pub fn judge_endpoints(
                     })
                     .unwrap_or_default();
                 let actual = loci.len() as u64;
+                let unknown =
+                    endpoint_unknown(&topic.name.raw, *publishers);
                 let holds = match cmp {
                     hale_model::CountCmpIr::Eq => actual == *n,
                     hale_model::CountCmpIr::Le => actual <= *n,
                     hale_model::CountCmpIr::Ge => actual >= *n,
                 };
+                if unknown {
+                    // The known rows are a LOWER BOUND (round 4):
+                    // `>=` can still hold from enough known rows,
+                    // and a lower bound already over an upper
+                    // bound still violates — everything else is
+                    // undecidable from an incomplete set.
+                    let lower_bound_decides = match cmp {
+                        hale_model::CountCmpIr::Ge => actual >= *n,
+                        hale_model::CountCmpIr::Le
+                        | hale_model::CountCmpIr::Eq => {
+                            actual > *n
+                        }
+                    };
+                    if !lower_bound_decides {
+                        diags.push(Diag::ty(
+                            row_span,
+                            format!(
+                                "claim `{}` cannot be certified: \
+                                 the {} set of `{}` is not fully \
+                                 modeled — {} known {} a lower \
+                                 bound, not a count",
+                                row.name,
+                                if *publishers {
+                                    "publisher"
+                                } else {
+                                    "subscriber"
+                                },
+                                topic.name.display,
+                                actual,
+                                if actual == 1 { "is" } else { "are" }
+                            ),
+                        ));
+                        out.push(Judged {
+                            ordinal: row.ordinal,
+                            verdict: Verdict::Uncertified,
+                            diags,
+                        });
+                        continue;
+                    }
+                }
                 if holds {
                     out.push(Judged {
                         ordinal: row.ordinal,
