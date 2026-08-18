@@ -523,6 +523,9 @@ pub fn lower_claims(
     for p in &programs {
         walk_decls(&p.items, &mut sites);
     }
+    let mut ann_issues: Vec<(String, hale_syntax::Span)> = Vec::new();
+    let effect_names = crate::effects::effect_names_of(&programs);
+    let declared_classes = crate::effects::declared_of(&programs);
     let lower_fn_anns = |recs: &mut Vec<Provenance>,
                          rows: &mut Vec<(
         String,
@@ -530,8 +533,71 @@ pub fn lower_claims(
         ClaimIr,
         hale_syntax::Span,
     )>,
+                         issues_out: &mut Vec<(
+        String,
+        hale_syntax::Span,
+    )>,
                          raw: &str,
                          f: &hale_syntax::ast::FnDecl| {
+        // The undeclared-class validation (#345) — the evaluator's
+        // pass 1 over this root's Forbid/Causes/Carries lists, with
+        // its per-ROOT dedup across the three surfaces. It lives in
+        // the LOWERING because `is:` (carries) produces no ClaimIr
+        // row at all — validated here or nowhere — and because one
+        // authority must own the dedup: a root writing
+        // `is: {money}, none: {money}` gets ONE diagnostic. The
+        // judgment keeps only the verdict consequence (a row
+        // asserting about an undeclared class judges Invalid).
+        let mut seen_undeclared: Vec<u16> = Vec::new();
+        // The subject renders as the RESOLVED display spelling —
+        // for an imported fn or method, `raw` is the post-merge
+        // canonical symbol (`__lib_…`), which appears nowhere in
+        // the author's source (review round 2).
+        let subj_display = fn_at(raw).1.display;
+        for a in &f.effects {
+            let cs: &[EffectClass] = match a {
+                EffectAssert::Forbid(cs)
+                | EffectAssert::Causes(cs)
+                | EffectAssert::Carries(cs) => cs,
+                _ => &[],
+            };
+            for c in cs {
+                let EffectClass::User(i) = c else { continue };
+                if declared_classes.contains(i)
+                    || seen_undeclared.contains(i)
+                {
+                    continue;
+                }
+                seen_undeclared.push(*i);
+                let bad = effect_names
+                    .get(*i as usize)
+                    .cloned()
+                    .unwrap_or_default();
+                let mut near: Vec<&String> = effect_names
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| {
+                        declared_classes.contains(&(*j as u16))
+                    })
+                    .map(|(_, n)| n)
+                    .filter(|n| crate::effects::close(n, &bad))
+                    .collect();
+                near.sort();
+                let hint = match near.first() {
+                    Some(n) => format!(" Did you mean `{}`?", n),
+                    None => String::new(),
+                };
+                issues_out.push((
+                    format!(
+                        "`{}` asserts about effect class `{}`, \
+                         which is never declared. Add `effect {};` \
+                         at the top level.{}",
+                        subj_display, bad, bad, hint
+                    ),
+                    f.name.span,
+                ));
+            }
+        }
         for a in &f.effects {
             let at = fn_at(raw);
             let law = match a {
@@ -598,6 +664,42 @@ pub fn lower_claims(
             ));
         }
         for (dim, limit) in &f.quantities {
+            // The quantitative evaluator refuses an undeclared
+            // user-class dimension with its own wording; the
+            // diagnostic is retained here as a lowering issue
+            // (review round 6), and the judgment carries the
+            // verdict consequence (Invalid).
+            if let QuantDim::UserClass(i) = dim {
+                if !declared_classes.contains(i) {
+                    let bad = effect_names
+                        .get(*i as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    let mut near: Vec<&String> = effect_names
+                        .iter()
+                        .enumerate()
+                        .filter(|(j, _)| {
+                            declared_classes.contains(&(*j as u16))
+                        })
+                        .map(|(_, n)| n)
+                        .filter(|n| crate::effects::close(n, &bad))
+                        .collect();
+                    near.sort();
+                    let hint = match near.first() {
+                        Some(n) => format!(" Did you mean `{}`?", n),
+                        None => String::new(),
+                    };
+                    issues_out.push((
+                        format!(
+                            "`{}` budgets effect class `{}`, which is \
+                             never declared. Add `effect {};` at the \
+                             top level.{}",
+                            subj_display, bad, bad, hint
+                        ),
+                        f.name.span,
+                    ));
+                }
+            }
             rows.push((
                 raw.to_string(),
                 ClaimOrigin::Annotation,
@@ -626,9 +728,13 @@ pub fn lower_claims(
     };
     for site in &sites {
         match site {
-            AnnSite::Free(f) => {
-                lower_fn_anns(recs, &mut rows, &f.name.name, f)
-            }
+            AnnSite::Free(f) => lower_fn_anns(
+                recs,
+                &mut rows,
+                &mut ann_issues,
+                &f.name.name,
+                f,
+            ),
             AnnSite::Locus(l) => {
                 let lname = &l.name.name;
                 if let Some(pe) = &l.phase_effects {
@@ -677,11 +783,25 @@ pub fn lower_claims(
                     if let LocusMember::Fn(f) = m {
                         let raw =
                             format!("{}::{}", lname, f.name.name);
-                        lower_fn_anns(recs, &mut rows, &raw, f);
+                        lower_fn_anns(
+                            recs,
+                            &mut rows,
+                            &mut ann_issues,
+                            &raw,
+                            f,
+                        );
                     }
                 }
             }
         }
+    }
+
+    for (message, span) in ann_issues {
+        let pid = intern(recs, span);
+        table.issues.push(LoweringIssue {
+            message,
+            provenance: pid,
+        });
     }
 
     // ---- finalize: authored ordinals + row provenance ----

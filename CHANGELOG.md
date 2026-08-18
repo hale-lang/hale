@@ -8,6 +8,28 @@ behavior.
 
 ## Unreleased
 
+### The pointwise-certificate judgment - family 5e (GH #476 Change 5e)
+
+`judgment::judge_certificates` - `@effects(none/only/publish)`,
+`@no_panic`, and `@phase_effects` on the canonical model. The
+certificate engines remain the one analysis authority: the builder
+runs them (the grouped report shares the exact pass `hale check`
+uses, split into strata) and stores each certificate's outcome and
+diagnostics as typed `CertificateEvidence` on the model - the
+artifact's #392 lowered rows, with their diags; the judgment
+renders verdicts and diagnostics from model data, adds the
+undeclared-class validation over the typed effect-class table, and
+the lowering emits undeclared `is:` classes as issues (carries has
+no law row). `Provenance::ForeignSpan` preserves stdlib-space
+diagnostic offsets verbatim. Corpus differential compares the
+evaluator's law strata as a multiset (cross-certificate stream
+order differs by design between `hale check` and ClaimIr ordinal
+order; within-certificate order is the evidence's own). Negative
+control: clearing model.evidence invalidates certificates.
+Remaining 5e surfaces (`@effects(causes/depends)` which live in
+the check.rs graph pass, and `@budget`/quantitative dims) follow
+in-review.
+
 ### The quantitative-bound judgment - family 5d (GH #476 Change 5d)
 
 `judgment::judge_bound` - `bound C <= N on paths from G` on the

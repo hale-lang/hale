@@ -180,6 +180,9 @@ fn span_of(
                 (base + span.1) as usize,
             )
         }
+        Some(Provenance::ForeignSpan { span }) => {
+            Span::new(span.0 as usize, span.1 as usize)
+        }
         _ => Span::new(0, 0),
     }
 }
@@ -3920,4 +3923,243 @@ pub fn judge_bound(
         });
     }
     out
+}
+
+/// Judge the pointwise-certificate family (GH #476 Change 5e):
+/// `@effects(...)`, `@no_panic`, `@budget(...)` on fns, and
+/// `@phase_effects` / `@effects(depends:)` on loci. The certificate
+/// ENGINES stay the one analysis authority — the producer
+/// ([`crate::evidence::derive_certificate_evidence`]) runs them and
+/// keys each certificate's outcome + diagnostics by the ClaimIr
+/// ordinal in an [`hale_model::EvidenceTable`] SIDECAR (outside the
+/// model: a model must not carry a cached prior judgment of
+/// itself). This judgment:
+///
+/// - refuses stale evidence structurally (`model_shape` must equal
+///   the judged model's `TopologyShapeV1`) — every certificate row
+///   goes `Invalid` rather than replaying another model's outcomes;
+/// - consumes evidence rows by ORDINAL and typed subject — no
+///   string matching here; a missing / short / subject-disagreeing
+///   row is `Invalid`;
+/// - emits exactly ONE `Judged` row per certificate-family ClaimIr
+///   row, including the families whose engines run elsewhere
+///   (`causes:` in the bus-graph pass, `depends:` / `@budget` in
+///   their own passes) — those judge to at-minimum `Uncertified`
+///   until their engines are migrated, so no lowered law can
+///   silently drop out of the verdict stream;
+/// - forces `Invalid` (never a vacuous `Holds`) when a row asserts
+///   about an effect class that is never declared. The DIAGNOSTIC
+///   for that (with the evaluator's per-annotated-root dedup across
+///   `none:`/`causes:`/`is:` lists) is the LOWERING's — it lands in
+///   `ClaimIrTable::issues`, because `is:` produces no row at all
+///   and one authority must own the dedup.
+pub fn judge_certificates(
+    table: &ClaimIrTable,
+    model: &ApplicationModel,
+    evidence: &hale_model::EvidenceTable,
+    source_bases: &[u32],
+) -> Vec<Judged> {
+    let e = &model.entities;
+    let claim_span = |pid: ProvenanceId| -> Span {
+        span_of(&table.provenance, source_bases, pid)
+    };
+    let ev_span = |pid: ProvenanceId| -> Span {
+        span_of(&evidence.provenance, source_bases, pid)
+    };
+    // MANDATORY validation, performed by the judgment itself
+    // (review round 2): the sidecar must tie to BOTH the model
+    // (TopologyShapeV1) and the LAW TABLE it answers (semantic
+    // digest — topology does not hash annotation laws), and must be
+    // structurally well-formed (unique in-range ordinals, resolvable
+    // diagnostic provenance). A malformed or mis-tied sidecar
+    // invalidates every certificate row rather than being
+    // replayed, partially consumed, or silently collapsed.
+    let stale = evidence
+        .validate(
+            model,
+            crate::topology_projection::project_shape_hash(model),
+            table,
+            crate::evidence::analysis_inputs_digest(),
+        )
+        .is_err();
+    let ev_rows: BTreeMap<u32, &hale_model::EvidenceRow> =
+        evidence.rows.iter().map(|r| (r.ordinal, r)).collect();
+    let verdict_of = |v: hale_model::VerdictIr| match v {
+        hale_model::VerdictIr::Holds => Verdict::Holds,
+        hale_model::VerdictIr::Violated => Verdict::Violated,
+        hale_model::VerdictIr::Uncertified => Verdict::Uncertified,
+        hale_model::VerdictIr::Invalid => Verdict::Invalid,
+    };
+    let undeclared = |c: &hale_model::EffectClassRef| -> bool {
+        !c.builtin
+            && c.class.map_or(true, |id| {
+                !e.effect_classes[id.index()].declared
+            })
+    };
+    // A row asserting about a class that is never declared is not
+    // a checkable law. The diagnostic (per-root dedup across the
+    // root's class lists) is emitted by the LOWERING as a table
+    // issue; here the consequence is the verdict.
+    let any_undeclared = |classes: &[hale_model::EffectClassRef]| {
+        classes.iter().any(undeclared)
+    };
+    // A cyclically-defined class resolves to no effect at all — a
+    // certificate naming it would hold vacuously. The shared
+    // class-validity rule reachability and bound already apply
+    // (review round 5): Invalid, never Holds. The legacy pass
+    // reports the cycle in its global pre-stratum; the machine
+    // verdict must agree.
+    let cyclic = |c: &hale_model::EffectClassRef| -> bool {
+        c.class.is_some_and(|id| {
+            matches!(
+                e.effect_classes[id.index()].definition,
+                hale_model::EffectClassDefinition::InvalidCycle
+            )
+        })
+    };
+    let mut out = Vec::new();
+    for row in &table.rows {
+        // Structural shape of the row: how many certificates the
+        // engines produce for it, and the typed subject the
+        // evidence row must agree with. `None` count = a family
+        // whose engine has not migrated — judged Uncertified.
+        let (expected, subject, classes): (
+            Option<usize>,
+            Option<FunctionId>,
+            &[hale_model::EffectClassRef],
+        ) = match &row.law {
+            ClaimIr::EffectForbid { at, classes } => {
+                (Some(classes.len()), at.0, classes.as_slice())
+            }
+            ClaimIr::EffectOnly { at, .. } => (Some(1), at.0, &[]),
+            ClaimIr::EffectPublishSet { at, .. } => {
+                (Some(1), at.0, &[])
+            }
+            ClaimIr::NoPanic { at } => (Some(1), at.0, &[]),
+            ClaimIr::PhaseEffects { phases, .. } => {
+                (Some(phases.len()), None, &[])
+            }
+            ClaimIr::EffectCauses { at, classes } => {
+                (None, at.0, classes.as_slice())
+            }
+            ClaimIr::DependsSet { .. } => (None, None, &[]),
+            ClaimIr::AllocBudget { at, .. } => (None, at.0, &[]),
+            ClaimIr::QuantBudget { at, dim, .. } => (
+                None,
+                at.0,
+                // A user-class budget dimension is a class
+                // reference like any other (review round 6): an
+                // undeclared class makes the row Invalid, never a
+                // fall-through Uncertified — the quantitative
+                // evaluator refuses it the same way.
+                match dim {
+                    hale_model::QuantDimIr::UserClass(c) => {
+                        std::slice::from_ref(c)
+                    }
+                    _ => &[],
+                },
+            ),
+            _ => continue,
+        };
+        let mut diags: Vec<Diag> = Vec::new();
+        // Invalid, never a vacuous Holds (review) — the diagnostic
+        // itself is a lowering issue, not a judgment diag.
+        // The cycle rule covers EVERY class-bearing form (Only and
+        // phase allow-lists included — a cyclic class is not a
+        // valid denotation anywhere), while the undeclared rule
+        // keeps the evaluator's pass-1 scope.
+        let any_cyclic = match &row.law {
+            ClaimIr::EffectForbid { classes, .. }
+            | ClaimIr::EffectOnly { classes, .. }
+            | ClaimIr::EffectCauses { classes, .. } => {
+                classes.iter().any(&cyclic)
+            }
+            ClaimIr::PhaseEffects { phases, .. } => phases
+                .iter()
+                .flat_map(|(_, allowed)| allowed.iter())
+                .any(&cyclic),
+            ClaimIr::QuantBudget {
+                dim: hale_model::QuantDimIr::UserClass(c),
+                ..
+            } => cyclic(c),
+            _ => false,
+        };
+        let invalid_class = any_undeclared(classes) || any_cyclic;
+        let Some(expected) = expected else {
+            // Engine not migrated (causes / depends / budgets):
+            // still exactly one Judged row, at minimum Uncertified.
+            out.push(Judged {
+                ordinal: row.ordinal,
+                verdict: if invalid_class {
+                    Verdict::Invalid
+                } else {
+                    Verdict::Uncertified
+                },
+                diags,
+            });
+            continue;
+        };
+        if stale {
+            diags.push(Diag::ty(
+                claim_span(row.provenance),
+                format!(
+                    "claim `{}`: certificate evidence does not \
+                     tie to this model and law table (stale or \
+                     malformed sidecar) — re-derive evidence",
+                    row.name
+                ),
+            ));
+            out.push(Judged {
+                ordinal: row.ordinal,
+                verdict: Verdict::Invalid,
+                diags,
+            });
+            continue;
+        }
+        let ev = ev_rows.get(&row.ordinal).copied();
+        let usable = ev.filter(|r| {
+            r.subject == subject && r.certs.len() == expected
+        });
+        let Some(ev) = usable else {
+            // No evidence row for this ordinal, a subject
+            // disagreement, or a certificate count that differs
+            // from the row's shape (fewer = an unresolved subject
+            // the engines never saw; more = evidence that answers
+            // some other law) — Invalid.
+            out.push(Judged {
+                ordinal: row.ordinal,
+                verdict: Verdict::Invalid,
+                diags,
+            });
+            continue;
+        };
+        let mut verdict = Verdict::Holds;
+        for cert in ev.certs.iter() {
+            let v = verdict_of(cert.result);
+            if severity(v) > severity(verdict) {
+                verdict = v;
+            }
+            for (msg, pid) in &cert.diags {
+                diags.push(Diag::ty(ev_span(*pid), msg.clone()));
+            }
+        }
+        if invalid_class {
+            verdict = Verdict::Invalid;
+        }
+        out.push(Judged {
+            ordinal: row.ordinal,
+            verdict,
+            diags,
+        });
+    }
+    out
+}
+
+fn severity(v: Verdict) -> u8 {
+    match v {
+        Verdict::Holds => 0,
+        Verdict::Uncertified => 1,
+        Verdict::Violated => 2,
+        Verdict::Invalid => 3,
+    }
 }

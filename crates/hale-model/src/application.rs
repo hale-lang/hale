@@ -15,6 +15,7 @@ use crate::entity::{
 };
 use crate::hole::Hole;
 use crate::ids::{EntityRef, FunctionId, ProvenanceId, TopicId};
+use crate::claim_ir::{ClaimIrError, ClaimIrTable, ClaimRow};
 use crate::provenance::{Provenance, ProvenanceTable};
 use crate::relation::{
     AffinedTo, Call, DeadInterfaceCall, DeclaredIn, DeclaresPublish,
@@ -257,6 +258,206 @@ pub enum AbsorbedHoleKind {
     OpaqueCall { callee: String },
 }
 
+/// The verdict vocabulary, mirrored from the evaluator's
+/// (`hale-types::verdict::Verdict`) — a conformance test pins the
+/// two, since this crate cannot depend on it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VerdictIr {
+    Holds,
+    Violated,
+    Uncertified,
+    Invalid,
+}
+
+/// GH #476 Change 5e: one pointwise certificate's EVIDENCE — the
+/// fn-grained outcome the existing certificate engines produce
+/// (the artifact has carried these as lowered claim rows since
+/// #392 §8). The engines stay the one analysis authority
+/// (extract-and-call, like `direct_effects`); Change 6 formalizes
+/// this into the typed evidence artifact rows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CertificateEvidence {
+    /// The lowered claim form, display voice — the artifact's
+    /// `lowered` row spelling.
+    pub form: String,
+    pub result: VerdictIr,
+    /// The engine's diagnostics for this certificate, in emission
+    /// order: (message, span provenance).
+    pub diags: Vec<(String, ProvenanceId)>,
+}
+
+/// The evidence SIDECAR for one lowered law table — deliberately
+/// OUTSIDE [`ApplicationModel`] (review: the model must not carry a
+/// cached prior judgment of itself). Rows key by the ClaimIr
+/// ordinal and typed subject; `model_shape` ties the sidecar to the
+/// exact model it was derived beside, so stale evidence is
+/// structurally refusable.
+#[derive(Clone, Debug, Default)]
+pub struct EvidenceTable {
+    /// `TopologyShapeV1` of the model this evidence was derived
+    /// with — a judgment refuses evidence whose shape disagrees
+    /// with the model it is asked to judge.
+    pub model_shape: u64,
+    /// [`ClaimIrTable::semantic_digest`] of the law table this
+    /// evidence answers. The topology shape does NOT hash
+    /// annotation laws — two programs with identical topology but
+    /// different `@effects` classes share a `model_shape`, so the
+    /// sidecar must also be tied to the LAW it certifies (review
+    /// round 2).
+    pub law_digest: u64,
+    /// Digest of the ANALYSIS INPUTS outside the model — the
+    /// stdlib source the certificate engines walk and the compiler
+    /// version that produced the evidence. Engine inputs not
+    /// represented in the topology hash cannot be covered by
+    /// `model_shape` (review round 3); the producer computes it,
+    /// and validation requires the judging toolchain to agree.
+    pub inputs_digest: u64,
+    pub rows: Vec<EvidenceRow>,
+    pub provenance: ProvenanceTable,
+}
+
+impl EvidenceTable {
+    /// Structural laws against the judged pair: the shape must
+    /// match the model, the law digest must match the table, and
+    /// ordinals must be unique and in the law table's range,
+    /// subjects must agree with the ClaimIr row's resolution, and
+    /// diagnostic provenance must resolve.
+    pub fn validate(
+        &self,
+        model: &ApplicationModel,
+        model_shape: u64,
+        table: &ClaimIrTable,
+        inputs_digest: u64,
+    ) -> Result<(), ClaimIrError> {
+        if self.model_shape != model_shape
+            || self.law_digest != table.semantic_digest()
+            || self.inputs_digest != inputs_digest
+        {
+            return Err(ClaimIrError::InvalidProvenanceRecord {
+                index: usize::MAX,
+            });
+        }
+        // Source-snapshot tie: the sidecar's source units (path +
+        // content digest) must exactly equal BOTH the judged
+        // model's and the law table's (review rounds 3–4) — the
+        // three artifacts must describe one snapshot, or stale
+        // offsets render against the wrong source bases.
+        let unit_mismatch =
+            |a: &[crate::provenance::SourceUnit],
+             b: &[crate::provenance::SourceUnit]| {
+                a.len() != b.len()
+                    || a.iter().zip(b.iter()).any(|(x, y)| {
+                        x.path != y.path || x.digest != y.digest
+                    })
+            };
+        if unit_mismatch(
+            &self.provenance.sources,
+            &model.provenance.sources,
+        ) || unit_mismatch(
+            &self.provenance.sources,
+            &table.provenance.sources,
+        ) {
+            return Err(ClaimIrError::InvalidProvenanceRecord {
+                index: usize::MAX,
+            });
+        }
+        let law_rows = table.rows.len();
+        let by_ordinal: std::collections::BTreeMap<u32, &ClaimRow> =
+            table.rows.iter().map(|r| (r.ordinal, r)).collect();
+        let mut seen = std::collections::BTreeSet::new();
+        for (i, row) in self.rows.iter().enumerate() {
+            if row.ordinal as usize >= law_rows
+                || !seen.insert(row.ordinal)
+            {
+                return Err(ClaimIrError::NonContiguousOrdinal {
+                    index: i,
+                });
+            }
+            if row
+                .subject
+                .is_some_and(|f| f.index() >= model.entities.functions.len())
+            {
+                return Err(ClaimIrError::DanglingId {
+                    index: i,
+                    what: "evidence subject",
+                });
+            }
+            // Per-row law binding (review round 3): each stored
+            // certificate's form must agree POSITIONALLY with the
+            // exact forms its ClaimIr row produces — a table-wide
+            // digest cannot see two same-subject rows exchanging
+            // their certificate payloads. A SHORT row (an
+            // unresolved subject the engines never saw) stays a
+            // per-row judgment concern; a LONGER row or any form
+            // disagreement is a malformed sidecar.
+            let expected = by_ordinal
+                .get(&row.ordinal)
+                .map(|r| r.certificate_forms())
+                .unwrap_or_default();
+            if row.certs.len() > expected.len()
+                || row
+                    .certs
+                    .iter()
+                    .zip(expected.iter())
+                    .any(|(c, (_, form))| c.form != *form)
+            {
+                return Err(ClaimIrError::NameDisagreement {
+                    index: i,
+                    what: "evidence certificate form",
+                });
+            }
+            for c in &row.certs {
+                for (_, pid) in &c.diags {
+                    if pid.index() >= self.provenance.records.len() {
+                        return Err(
+                            ClaimIrError::DanglingProvenance {
+                                index: i,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        // Record contents resolve (incl. inverted ForeignSpan).
+        let src_len = self.provenance.sources.len();
+        for (i, r) in self.provenance.records.iter().enumerate() {
+            match r {
+                Provenance::Source { source, span } => {
+                    if source.index() >= src_len || span.0 > span.1 {
+                        return Err(
+                            ClaimIrError::InvalidProvenanceRecord {
+                                index: i,
+                            },
+                        );
+                    }
+                }
+                Provenance::ForeignSpan { span } => {
+                    if span.0 > span.1 {
+                        return Err(
+                            ClaimIrError::InvalidProvenanceRecord {
+                                index: i,
+                            },
+                        );
+                    }
+                }
+                Provenance::Synthetic { .. } => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The certificates of ONE ClaimIr row (a multi-class assert has
+/// one certificate per class, in class order).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvidenceRow {
+    /// The ClaimIr ordinal this evidence answers.
+    pub ordinal: u32,
+    /// The annotated fn, as the ClaimIr row resolves it.
+    pub subject: Option<FunctionId>,
+    pub certs: Vec<CertificateEvidence>,
+}
+
 #[derive(Clone, Debug)]
 pub struct ApplicationModel {
     pub header: ModelHeader,
@@ -368,13 +569,23 @@ impl ApplicationModel {
         let e = &self.entities;
         let prov_len = self.provenance.records.len();
 
-        // --- provenance record contents resolve.
+        // --- provenance record contents resolve (incl. inverted
+        // ForeignSpan — an accepted-but-unrenderable record is the
+        // same defect as a dangling SourceId; review round 5).
         let src_len = self.provenance.sources.len();
         for (i, rec) in self.provenance.records.iter().enumerate() {
-            if let Provenance::Source { source, span } = rec {
-                if source.index() >= src_len || span.0 > span.1 {
-                    return Err(ModelError::InvalidProvenanceRecord { index: i });
+            match rec {
+                Provenance::Source { source, span } => {
+                    if source.index() >= src_len || span.0 > span.1 {
+                        return Err(ModelError::InvalidProvenanceRecord { index: i });
+                    }
                 }
+                Provenance::ForeignSpan { span } => {
+                    if span.0 > span.1 {
+                        return Err(ModelError::InvalidProvenanceRecord { index: i });
+                    }
+                }
+                Provenance::Synthetic { .. } => {}
             }
         }
 

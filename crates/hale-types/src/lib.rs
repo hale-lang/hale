@@ -26,6 +26,7 @@ pub mod budget_check;
 pub mod bus_graph;
 pub mod callgraph;
 pub mod effects;
+pub mod evidence;
 pub mod frontier;
 pub mod check;
 pub mod claim_lowering;

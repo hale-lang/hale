@@ -286,13 +286,91 @@ pub struct LoweredCertificate {
     pub result: Verdict,
 }
 
+/// The certificate engines' diagnostic stream with a per-diag
+/// ORIGIN flag: `true` when the diagnostic's span lives in the
+/// stdlib parse space (the walk emitted it from inside a stdlib fn
+/// body), `false` for bundle source. The flag is set at the emit
+/// site from the witness step's owning [`FnKey`] — the one place
+/// origin is a fact. It cannot be recovered from the span: the
+/// stdlib parses at base 0, so its spans numerically overlap the
+/// first user file's range (GH #476 Change 5e review).
+pub(crate) struct DiagSink {
+    pub diags: Vec<Diag>,
+    pub foreign: Vec<bool>,
+}
+
+impl DiagSink {
+    fn new() -> Self {
+        DiagSink { diags: Vec::new(), foreign: Vec::new() }
+    }
+
+    fn len(&self) -> usize {
+        self.diags.len()
+    }
+
+    fn push(&mut self, d: Diag) {
+        self.push_flagged(d, false);
+    }
+
+    fn push_flagged(&mut self, d: Diag, foreign: bool) {
+        self.diags.push(d);
+        self.foreign.push(foreign);
+    }
+}
+
+/// Is this fn declared by the Hale-source stdlib (and therefore in
+/// the stdlib parse space)? The stdlib program is the ONLY non-user
+/// program the summary merges, so membership here is exactly
+/// "span space is foreign". `__`-prefixed names are unspeakable in
+/// user source, so no user fn can collide into this set.
+fn is_stdlib_fn(key: &FnKey) -> bool {
+    use std::sync::OnceLock;
+    static KEYS: OnceLock<BTreeSet<FnKey>> = OnceLock::new();
+    KEYS.get_or_init(|| {
+        let mut set = BTreeSet::new();
+        let Some(p) = crate::stdlib_bodies::program() else {
+            return set;
+        };
+        for item in &p.items {
+            match item {
+                TopDecl::Fn(fd) => {
+                    set.insert(FnKey::free_fn(fd.name.name.clone()));
+                }
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        match m {
+                            LocusMember::Fn(fd) => {
+                                set.insert(FnKey::method(
+                                    l.name.name.clone(),
+                                    fd.name.name.clone(),
+                                ));
+                            }
+                            LocusMember::Lifecycle(lc) => {
+                                set.insert(FnKey::method(
+                                    l.name.name.clone(),
+                                    lifecycle_name(lc.kind),
+                                ));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        set
+    })
+    .contains(key)
+}
+
 fn phase_effects_diags(
     programs: &[&Program],
     summary: &AllocSummary,
     ffi: &BTreeSet<String>,
     rows: &mut Vec<LoweredCertificate>,
-) -> Vec<Diag> {
-    let mut out = Vec::new();
+    ranges: &mut Vec<(usize, usize, usize)>,
+    out: &mut DiagSink,
+) {
     let names = &effect_names_of(programs);
     let defs = &defs_of(programs);
     let declared = declared_of(programs);
@@ -416,20 +494,22 @@ fn phase_effects_diags(
                     }
                 }));
                 let phase_before = out.len();
+                let cert_start = out.len();
                 for class in classes {
                     if allowed.contains(&class) {
                         continue;
                     }
                     let before = out.len();
-                    check_class(summary, &key, span, class, ffi, names, defs, &mut out);
+                    check_class(summary, &key, span, class, ffi, names, defs, out);
                     // Re-label the generic message with the phase.
-                    for d in out.iter_mut().skip(before) {
+                    for d in out.diags.iter_mut().skip(before) {
                         d.message = format!(
                             "phase `{}`: {}",
                             phase, d.message
                         );
                     }
                 }
+                ranges.push((rows.len(), cert_start, out.len()));
                 rows.push(LoweredCertificate {
                     subject: l.name.name.clone(),
                     form: format!(
@@ -451,7 +531,6 @@ fn phase_effects_diags(
             }
         }
     }
-    out
 }
 
 /// Lifecycle hook → the name the summary keys it under.
@@ -659,6 +738,44 @@ fn effect_report_inner(
     programs: &[&Program],
     import_renames: &[(Vec<String>, String)],
 ) -> (Vec<Diag>, Vec<LoweredCertificate>) {
+    let (d, certs) = effect_report_grouped(programs, import_renames);
+    (d, certs.into_iter().map(|(row, _)| row).collect())
+}
+
+/// GH #476 Change 5e: the same report with each certificate's own
+/// diagnostics attached — the evidence rows the model builder
+/// stores, produced by the ONE pass that also feeds `hale check`
+/// (`effect_diags_with_renames` reassembles the flat stream from
+/// this, so the two can never disagree).
+pub(crate) fn effect_report_grouped(
+    programs: &[&Program],
+    import_renames: &[(Vec<String>, String)],
+) -> (Vec<Diag>, Vec<(LoweredCertificate, Vec<(Diag, bool)>)>) {
+    let (pre, p1, tail, groups) =
+        effect_report_three_way(programs, import_renames);
+    let mut flat = pre;
+    flat.extend(p1);
+    flat.extend(tail);
+    (flat, groups)
+}
+
+/// The same report with the three diagnostic strata separated:
+/// non-law diagnostics (placement-implied + cyclic class defs),
+/// the undeclared-class validation pass (law-row validation, in
+/// root order), and the per-certificate groups. The judgment
+/// consumes the last two; `hale check`'s flat stream is their
+/// concatenation in this order.
+#[doc(hidden)]
+pub fn effect_report_three_way(
+    programs: &[&Program],
+    import_renames: &[(Vec<String>, String)],
+) -> (
+    Vec<Diag>,
+    Vec<Diag>,
+    Vec<Diag>,
+    Vec<(LoweredCertificate, Vec<(Diag, bool)>)>,
+) {
+    let mut ranges: Vec<(usize, usize, usize)> = Vec::new();
     let mut rows: Vec<LoweredCertificate> = Vec::new();
     let mut roots: Vec<(FnKey, Vec<EffectAssert>, Span)> = Vec::new();
     for program in programs {
@@ -695,14 +812,28 @@ fn effect_report_inner(
         crate::stdlib_bodies::summarize_with_stdlib_and_renames(programs, import_renames);
     // The placement-implied pass runs whether or not anything is
     // annotated — that is its point.
-    let mut placement = placement_implied_diags(programs, &summary);
-    // #265 step 6: phase-indexed effect contracts on loci.
+    let mut sink = DiagSink::new();
+    for d in placement_implied_diags(programs, &summary) {
+        sink.push(d);
+    }
+    // #265 step 6: phase-indexed effect contracts on loci. Phase
+    // certificates emit into the shared sink, so their ranges are
+    // recorded directly in final-stream coordinates.
     let ffi_all = ffi_names(programs);
-    placement.extend(phase_effects_diags(
-        programs, &summary, &ffi_all, &mut rows,
-    ));
+    phase_effects_diags(
+        programs,
+        &summary,
+        &ffi_all,
+        &mut rows,
+        &mut ranges,
+        &mut sink,
+    );
     if roots.is_empty() {
-        return (placement, rows);
+        // Phase certificates' diags live inside the sink here —
+        // the flat stream is exactly the placement prefix, so pre
+        // carries it all and the tail is empty.
+        let groups = assemble_groups(&sink, rows, ranges);
+        return (sink.diags, Vec::new(), Vec::new(), groups);
     }
     let ffi = ffi_names(programs);
     let names = effect_names_of(programs);
@@ -738,7 +869,7 @@ fn effect_report_inner(
         }
         while let Some(j) = frontier_q.pop() {
             if j == i as u16 {
-                placement.push(Diag::ty(
+                sink.push(Diag::ty(
                     program_span,
                     format!(
                         "effect class `{}` is defined in terms of itself. \
@@ -762,7 +893,7 @@ fn effect_report_inner(
             }
         }
     }
-    let mut diags = std::mem::take(&mut placement);
+    let pre_len = sink.len();
     for (key, asserts, span) in &roots {
         let mut seen: Vec<u16> = Vec::new();
         for a in *&asserts {
@@ -792,7 +923,7 @@ fn effect_report_inner(
                             Some(n) => format!(" Did you mean `{}`?", n),
                             None => String::new(),
                         };
-                        diags.push(Diag::ty(
+                        sink.push(Diag::ty(
                             *span,
                             format!(
                                 "`{}` asserts about effect class `{}`, \
@@ -809,6 +940,7 @@ fn effect_report_inner(
             }
         }
     }
+    let p1_len = sink.len();
     for (key, asserts, span) in &roots {
         for a in asserts {
             match a {
@@ -817,11 +949,12 @@ fn effect_report_inner(
                 EffectAssert::Carries(_) => {}
                 EffectAssert::Forbid(classes) => {
                     for c in classes {
-                        let before = diags.len();
+                        let before = sink.len();
                         check_class(
                             &summary, key, *span, *c, &ffi, &names, &defs_v,
-                            &mut diags,
+                            &mut sink,
                         );
+                        ranges.push((rows.len(), before, sink.len()));
                         rows.push(LoweredCertificate {
                             subject: key.display(),
                             form: format!(
@@ -829,7 +962,7 @@ fn effect_report_inner(
                                 key.display(),
                                 cls_name(*c, &names)
                             ),
-                            result: if diags.len() > before {
+                            result: if sink.len() > before {
                         Verdict::Violated
                     } else {
                         Verdict::Holds
@@ -847,7 +980,7 @@ fn effect_report_inner(
                 EffectAssert::Only(allowed) => {
                     let set: Vec<String> =
                         allowed.iter().map(|c| cls_name(*c, &names)).collect();
-                    let only_before = diags.len();
+                    let only_before = sink.len();
                     for c in class_universe(&declared) {
                         if allowed.contains(&c) {
                             continue;
@@ -873,10 +1006,10 @@ fn effect_report_inner(
                                 continue;
                             }
                         }
-                        let before = diags.len();
+                        let before = sink.len();
                         check_class(
                             &summary, key, *span, c, &ffi, &names, &defs_v,
-                            &mut diags,
+                            &mut sink,
                         );
                         // Re-label with the contract that was actually
                         // violated. `check_class` phrases everything as
@@ -885,7 +1018,7 @@ fn effect_report_inner(
                         // the class is forbidden by omission, and the
                         // message has to say so. Same re-labelling the
                         // `@phase_effects` path does.
-                        for d in diags.iter_mut().skip(before) {
+                        for d in sink.diags.iter_mut().skip(before) {
                             let body = d
                                 .message
                                 .strip_prefix("effect assertion violated: ")
@@ -900,6 +1033,7 @@ fn effect_report_inner(
                             );
                         }
                     }
+                    ranges.push((rows.len(), only_before, sink.len()));
                     rows.push(LoweredCertificate {
                         subject: key.display(),
                         form: format!(
@@ -907,7 +1041,7 @@ fn effect_report_inner(
                             set.join(", "),
                             key.display()
                         ),
-                        result: if diags.len() > only_before {
+                        result: if sink.len() > only_before {
                         Verdict::Violated
                     } else {
                         Verdict::Holds
@@ -915,8 +1049,9 @@ fn effect_report_inner(
                     });
                 }
                 EffectAssert::PublishSet(allowed) => {
-                    let before = diags.len();
-                    check_publish_set(&summary, key, *span, allowed, &mut diags);
+                    let before = sink.len();
+                    check_publish_set(&summary, key, *span, allowed, &mut sink);
+                    ranges.push((rows.len(), before, sink.len()));
                     rows.push(LoweredCertificate {
                         subject: key.display(),
                         form: format!(
@@ -924,7 +1059,7 @@ fn effect_report_inner(
                             allowed.join(", "),
                             key.display()
                         ),
-                        result: if diags.len() > before {
+                        result: if sink.len() > before {
                         Verdict::Violated
                     } else {
                         Verdict::Holds
@@ -932,15 +1067,16 @@ fn effect_report_inner(
                     });
                 }
                 EffectAssert::NoPanic => {
-                    let before = diags.len();
-                    check_no_panic(programs, key, *span, &mut diags);
+                    let before = sink.len();
+                    check_no_panic(programs, key, *span, &mut sink);
+                    ranges.push((rows.len(), before, sink.len()));
                     rows.push(LoweredCertificate {
                         subject: key.display(),
                         form: format!(
                             "forbid reaches({{{}}}, panic)",
                             key.display()
                         ),
-                        result: if diags.len() > before {
+                        result: if sink.len() > before {
                         Verdict::Violated
                     } else {
                         Verdict::Holds
@@ -959,7 +1095,57 @@ fn effect_report_inner(
             }
         }
     }
-    (diags, rows)
+    let groups = assemble_groups(&sink, rows, ranges);
+    // Strata: [0, pre_len) = non-law (placement + cyclic),
+    // [pre_len, p1_len) = the undeclared-class validation pass,
+    // [p1_len, ..) = the per-certificate evaluation stream.
+    let pre: Vec<Diag> = sink.diags[..pre_len].to_vec();
+    let p1: Vec<Diag> = sink.diags[pre_len..p1_len].to_vec();
+    let tail: Vec<Diag> = sink.diags[p1_len..].to_vec();
+    (pre, p1, tail, groups)
+}
+
+/// Attach each certificate's diagnostics: phase rows range into the
+/// placement stream, assert rows into the post-validation stream.
+fn assemble_groups(
+    stream: &DiagSink,
+    rows: Vec<LoweredCertificate>,
+    ranges: Vec<(usize, usize, usize)>,
+) -> Vec<(LoweredCertificate, Vec<(Diag, bool)>)> {
+    // Every range indexes into the ONE final diag stream (phase and
+    // assert certificates both emit into the shared sink, so their
+    // ranges are already in final-stream coordinates). Each diag
+    // pairs with its origin flag — same index in the sink.
+    let by_row: BTreeMap<usize, (usize, usize)> = ranges
+        .into_iter()
+        .map(|(ri, a, b)| (ri, (a, b)))
+        .collect();
+    rows.into_iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let ds = by_row
+                .get(&i)
+                .and_then(|(a, b)| {
+                    Some(
+                        stream
+                            .diags
+                            .get(*a..*b)?
+                            .iter()
+                            .cloned()
+                            .zip(
+                                stream
+                                    .foreign
+                                    .get(*a..*b)?
+                                    .iter()
+                                    .copied(),
+                            )
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .unwrap_or_default();
+            (row, ds)
+        })
+        .collect()
 }
 
 /// GH #265 coherence: ONE dispatcher over the effect classes. Every
@@ -988,7 +1174,7 @@ fn check_class(
     ffi: &BTreeSet<String>,
     names: &[String],
     defs: &[Option<Vec<EffectClass>>],
-    diags: &mut Vec<Diag>,
+    diags: &mut DiagSink,
 ) {
     use crate::stdlib_surface::EffectSet;
     // The three classes that are NOT stdlib-frontier queries.
@@ -1048,6 +1234,9 @@ fn check_class(
                 },
             ) {
                 let leaf = path.last().map(|s| s.span).unwrap_or(span);
+                let leaf_foreign = path
+                    .last()
+                    .map_or(false, |s| is_stdlib_fn(&s.in_fn));
                 diags.push(Diag::ty(
                     span,
                     format!(
@@ -1058,17 +1247,20 @@ fn check_class(
                         callgraph::render_witness(key, &path)
                     ),
                 ));
-                diags.push(Diag::ty(
-                    leaf,
-                    "the `alloc` effect happens here".to_string(),
-                ));
+                diags.push_flagged(
+                    Diag::ty(
+                        leaf,
+                        "the `alloc` effect happens here".to_string(),
+                    ),
+                    leaf_foreign,
+                );
             }
             return;
         }
         EffectClass::Publish | EffectClass::Spawn => {
             // Syntactic effects: carried by `Topic <- v` / `Child { }`,
             // not by any call. Walk the effect-site vectors.
-            if let Some((chain_s, site_span)) =
+            if let Some((chain_s, site_span, site_fn)) =
                 find_effect_site(summary, key, |k| match (class, k) {
                     (
                         EffectClass::Publish,
@@ -1095,10 +1287,16 @@ fn check_class(
                         cls_name(class, names)
                     ),
                 ));
-                diags.push(Diag::ty(
-                    site_span,
-                    format!("the `{}` effect happens here", cls_name(class, names)),
-                ));
+                diags.push_flagged(
+                    Diag::ty(
+                        site_span,
+                        format!(
+                            "the `{}` effect happens here",
+                            cls_name(class, names)
+                        ),
+                    ),
+                    is_stdlib_fn(&site_fn),
+                );
             }
             return;
         }
@@ -1362,7 +1560,7 @@ fn check_publish_set(
     key: &FnKey,
     span: Span,
     allowed: &[String],
-    diags: &mut Vec<Diag>,
+    diags: &mut DiagSink,
 ) {
     let found = find_effect_site(summary, key, |k| match k {
         alloc_summary::EffectSiteKind::Publish(Some(subj)) => {
@@ -1379,7 +1577,7 @@ fn check_publish_set(
         ),
         _ => None,
     });
-    if let Some((chain_s, site_span)) = found {
+    if let Some((chain_s, site_span, site_fn)) = found {
         diags.push(Diag::ty(
             span,
             format!(
@@ -1391,7 +1589,10 @@ fn check_publish_set(
                 allowed.join(", ")
             ),
         ));
-        diags.push(Diag::ty(site_span, "the publish happens here".to_string()));
+        diags.push_flagged(
+            Diag::ty(site_span, "the publish happens here".to_string()),
+            is_stdlib_fn(&site_fn),
+        );
     }
 }
 
@@ -1402,7 +1603,7 @@ fn find_effect_site(
     summary: &AllocSummary,
     root: &FnKey,
     matches_kind: impl Fn(&alloc_summary::EffectSiteKind) -> Option<String> + Copy,
-) -> Option<(String, Span)> {
+) -> Option<(String, Span, FnKey)> {
     fn walk(
         summary: &AllocSummary,
         key: &FnKey,
@@ -1453,7 +1654,11 @@ fn find_effect_site(
     let mut steps = 0u32;
     let (steps_v, sp) =
         walk(summary, root, &mut path, &mut seen, &mut steps, matches_kind)?;
-    Some((callgraph::render_witness(root, &steps_v), sp))
+    let owner = steps_v
+        .last()
+        .map(|s| s.in_fn.clone())
+        .unwrap_or_else(|| root.clone());
+    Some((callgraph::render_witness(root, &steps_v), sp, owner))
 }
 
 /// Emit the two-diagnostic report (root + leaf) for a witness chain.
@@ -1463,13 +1668,15 @@ fn report(
     span: Span,
     class_name: &str,
     pred: &mut dyn FnMut(&Probe<'_>) -> Option<String>,
-    diags: &mut Vec<Diag>,
+    diags: &mut DiagSink,
     advice: &str,
 ) {
     let Some(path) = callgraph::witness_path(summary, key, pred) else {
         return;
     };
     let leaf_span = path.last().map(|s| s.span).unwrap_or(span);
+    let leaf_foreign =
+        path.last().map_or(false, |s| is_stdlib_fn(&s.in_fn));
     diags.push(Diag::ty(
         span,
         format!(
@@ -1481,10 +1688,13 @@ fn report(
             advice
         ),
     ));
-    diags.push(Diag::ty(
-        leaf_span,
-        format!("the `{}` effect is reached here", class_name),
-    ));
+    diags.push_flagged(
+        Diag::ty(
+            leaf_span,
+            format!("the `{}` effect is reached here", class_name),
+        ),
+        leaf_foreign,
+    );
 }
 
 /// Detect a cycle reachable from `root` (including a self-call),
@@ -1933,7 +2143,7 @@ fn check_no_panic(
     programs: &[&Program],
     key: &FnKey,
     span: Span,
-    diags: &mut Vec<Diag>,
+    diags: &mut DiagSink,
 ) {
     // Collect bodies by key so we can follow resolved callees.
     let mut bodies: BTreeMap<FnKey, &Block> = BTreeMap::new();
