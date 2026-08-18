@@ -8,6 +8,24 @@ behavior.
 
 ## Unreleased
 
+### The endpoint/coverage/count judgment - family 5c (GH #476 Change 5c)
+
+`judgment::judge_endpoints` - `require publishes/subscribes`
+(declared-end existence over `declares_publish` and the
+subscription rows, joined by canonical spelling), `require sealed`
+(universal over group loci with the empty-projection vacuity
+refusal), `require attributed` (the direct-site predicate computed
+by the evaluator's own extracted rule into new model facts
+`Function.attribution` + `Function.opaque_call`; the opaque-call
+Uncertified fallback included), `cover` (seed topic domain via
+`declared_in`), and `count` (distinct declared-end loci with the
+full who-list rendering). Validation ports: unknown topics with
+did-you-mean, unresolvable import paths, non-attributable classes,
+topicless seeds. Adoption-collision diagnostics from the clause
+enumeration surface as lowering issues at the head of the
+diagnostic stream, exactly where the evaluator emits them. Same
+corpus differential; negative control drops declares_publish.
+
 ### The boundary-grant judgment - family 5b (GH #476 Change 5b)
 
 `judgment::judge_only_edges` - the `only edges` family on the

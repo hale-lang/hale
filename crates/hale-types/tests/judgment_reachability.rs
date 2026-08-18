@@ -13,7 +13,9 @@ use std::collections::BTreeMap;
 
 use hale_model::ClaimIr;
 use hale_types::claim_lowering::lower_claims;
-use hale_types::judgment::{judge_forbid_reaches, judge_only_edges};
+use hale_types::judgment::{
+    judge_endpoints, judge_forbid_reaches, judge_only_edges,
+};
 use hale_types::model_builder::derive_application_model;
 use hale_types::symbol::SourceFile;
 use hale_types::Bundle;
@@ -49,6 +51,11 @@ fn family_names(
                 r.law,
                 ClaimIr::ForbidReaches { .. }
                     | ClaimIr::OnlyEdges { .. }
+                    | ClaimIr::RequireEndpoint { .. }
+                    | ClaimIr::RequireSealed { .. }
+                    | ClaimIr::RequireAttributed { .. }
+                    | ClaimIr::Cover { .. }
+                    | ClaimIr::Count { .. }
             )
         })
         .map(|r| r.name.clone())
@@ -85,9 +92,11 @@ fn diff_one(
     let (pre_diags, judged_fr) =
         judge_forbid_reaches(&table, &model, &[0]);
     let judged_oe = judge_only_edges(&table, &model, &[0]);
+    let judged_ep = judge_endpoints(&table, &model, &[0]);
     let mut judged: Vec<hale_types::judgment::Judged> = judged_fr
         .into_iter()
         .chain(judged_oe.into_iter())
+        .chain(judged_ep.into_iter())
         .collect();
     judged.sort_by_key(|j| j.ordinal);
     // Verdict parity, matched by claim name.
@@ -99,6 +108,10 @@ fn diff_one(
             .collect();
     let by_ordinal: BTreeMap<u32, &hale_model::ClaimRow> =
         table.rows.iter().map(|r| (r.ordinal, r)).collect();
+    // Rows under the documented 5c divergence: their (new-only)
+    // diagnostics are excluded from the byte comparison too.
+    let mut carved_out: std::collections::BTreeSet<u32> =
+        std::collections::BTreeSet::new();
     for j in &judged {
         let row = by_ordinal[&j.ordinal];
         let Some(old) = old_verdicts.get(row.name.as_str()) else {
@@ -107,7 +120,23 @@ fn diff_one(
                 origin, row.name
             ));
         };
-        if **old != j.verdict {
+        // Documented divergence (5c round 2): the evaluator never
+        // sees unanalyzed bodies (module fns, on_failure hooks), so
+        // `require attributed` fail-opens to Holds where the model
+        // records an EFFECTS-hiding hole and the judgment refuses.
+        let attributed_hole_carveout = matches!(
+            row.law,
+            ClaimIr::RequireAttributed { .. }
+        ) && **old == hale_types::verdict::Verdict::Holds
+            && j.verdict == hale_types::verdict::Verdict::Uncertified
+            && model.holes.iter().any(|h| {
+                h.hides
+                    .intersects(hale_model::RelationSet::EFFECTS)
+            });
+        if attributed_hole_carveout {
+            carved_out.insert(j.ordinal);
+        }
+        if **old != j.verdict && !attributed_hole_carveout {
             return Err(format!(
                 "{}: claim `{}` verdict diverges: old {:?}, new {:?}",
                 origin, row.name, old, j.verdict
@@ -126,10 +155,40 @@ fn diff_one(
         })
         .map(|d| (d.message.clone(), d.span))
         .collect();
-    let new_family: Vec<(String, hale_syntax::Span)> = pre_diags
+    // The evaluator's stream: enumeration diagnostics first (the
+    // lowering preserves them as table ISSUES), then the dup
+    // pre-pass, then per-row validation+evaluation.
+    let issue_span = |pid: hale_model::ProvenanceId| {
+        match table.provenance.records.get(pid.index()) {
+            Some(hale_model::Provenance::Source { span, .. }) => {
+                hale_syntax::Span::new(
+                    span.0 as usize,
+                    span.1 as usize,
+                )
+            }
+            _ => hale_syntax::Span::new(0, 0),
+        }
+    };
+    let new_family: Vec<(String, hale_syntax::Span)> = table
+        .issues
         .iter()
-        .chain(judged.iter().flat_map(|j| j.diags.iter()))
-        .map(|d| (d.message.clone(), d.span))
+        .filter(|i| {
+            names.iter().any(|n| {
+                i.message.contains(&format!("claim `{}`", n))
+            })
+        })
+        .map(|i| (i.message.clone(), issue_span(i.provenance)))
+        .chain(
+            pre_diags
+                .iter()
+                .chain(
+                    judged
+                        .iter()
+                        .filter(|j| !carved_out.contains(&j.ordinal))
+                        .flat_map(|j| j.diags.iter()),
+                )
+                .map(|d| (d.message.clone(), d.span)),
+        )
         .collect();
     if old_family != new_family {
         let first = old_family
@@ -441,6 +500,79 @@ fn main() { App { }; }
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
+    );
+}
+
+/// Negative control (5c): the endpoint judgment reads DECLARED
+/// publisher ends — clearing declares_publish flips a holding
+/// `require publishes` to Violated.
+#[test]
+fn dropping_declared_ends_changes_the_require_verdict() {
+    let src = r#"
+type T { n: Int = 0; }
+topic Orders { payload: T; subject: "orders"; }
+locus Gw {
+    params { n: Int = 0; }
+    bus { publish Orders; }
+    fn send(v: Int) { Orders <- T { }; }
+}
+group gws = { Gw };
+main locus App {
+    params { g: Gw = Gw { }; }
+    claims { writer: require publishes(some gws, topic Orders); }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_endpoints(&table, &model, &[0]);
+    assert_eq!(judged[0].verdict, hale_types::verdict::Verdict::Holds);
+    model.relations.declares_publish.clear();
+    let judged = judge_endpoints(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "the judgment reads relations.declares_publish"
+    );
+}
+
+/// Review pin (5c): a COMPOSED user class in `@effects(is:)` is
+/// authored purpose — the expanded label set (its atoms) must not
+/// hide it from `require attributed`.
+#[test]
+fn composed_class_counts_as_authored_attribution() {
+    let src = r#"
+effect io = { syscall, alloc };
+type Buf { n: Int = 0; }
+@effects(is: { io })
+fn make(v: Int) -> Int { let b = Buf { }; return v; }
+main locus App {
+    claims { tagged: require attributed(all alloc); }
+    run() { println(make(1)); }
+}
+fn main() { App { }; }
+"#;
+    let out = diff_one(src, "composed attribution");
+    assert!(out.is_ok(), "old/new agree: {:?}", out);
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_endpoints(&table, &model, &[0]);
+    // `main`/`run` alloc without purpose — the claim violates, but
+    // `make` (authored composed purpose) must NOT be in the list.
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated
+    );
+    let msg = &judged[0].diags[0].message;
+    assert!(
+        !msg.contains("make"),
+        "the composed `io` IS an authored purpose: {}",
+        msg
     );
 }
 
@@ -2183,5 +2315,312 @@ fn main() { App { }; }
         judged[0].verdict,
         hale_types::verdict::Verdict::Uncertified,
         "an unknown publisher may create an ungranted edge"
+    );
+}
+
+/// Review pin (round 2): `require attributed` consults the model's
+/// HOLES, not only `Function.opaque_call` — an on_failure handler
+/// enters the universe with an UnanalyzedBody hole hiding EFFECTS,
+/// so it may perform the class without an authored purpose and the
+/// claim must be Uncertified, never a fail-open Holds.
+#[test]
+fn attributed_fails_closed_on_unanalyzed_bodies() {
+    let held = r#"
+main locus App {
+    params { n: Int = 0; }
+    claims { tagged: require attributed(all syscall); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(held).expect("parse");
+    let bundle = bundle_of(held, &program);
+    let model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_endpoints(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds,
+        "nothing is unattributed or unanalyzed"
+    );
+    let src = r#"
+type Violation { code: Int = 0; }
+locus Sup {
+    params { n: Int = 0; }
+    on_failure(e: Violation) { }
+}
+main locus App {
+    params { s: Sup = Sup { }; }
+    claims { tagged: require attributed(all syscall); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let model = derive_application_model(&bundle);
+    assert!(
+        model.holes.iter().any(|h| h
+            .hides
+            .intersects(hale_model::RelationSet::EFFECTS)),
+        "the on_failure body arrives as an EFFECTS-hiding hole"
+    );
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_endpoints(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "an unanalyzed application-owned body blocks certification"
+    );
+}
+
+/// Review pin (round 4): endpoint/count judgments consult
+/// PUBLISHES/SUBSCRIBES/CARDINALITY holes — known rows are a lower
+/// bound, never a proved absence, with monotone cases preserved.
+#[test]
+fn count_and_require_fail_closed_on_endpoint_holes() {
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic T { payload: Cmd; subject: "app.t"; }
+locus Pub {
+    params { n: Int = 0; }
+    bus { publish T; }
+    fn act() { T <- Cmd { }; }
+}
+group pubs = { Pub };
+main locus App {
+    params { p: Pub = Pub { }; }
+    claims {
+        none_yet: count subscribers(topic T) <= 0;
+        one_pub: count publishers(topic T) >= 1;
+        someone: require subscribes(some pubs, topic T);
+    }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let by_name = |judged: &[hale_types::judgment::Judged],
+                   name: &str|
+     -> hale_types::verdict::Verdict {
+        let row = table
+            .rows
+            .iter()
+            .find(|r| r.name == name)
+            .expect("row");
+        judged
+            .iter()
+            .find(|j| j.ordinal == row.ordinal)
+            .expect("judged")
+            .verdict
+    };
+    let judged = judge_endpoints(&table, &model, &[0]);
+    assert_eq!(
+        by_name(&judged, "none_yet"),
+        hale_types::verdict::Verdict::Holds
+    );
+    assert_eq!(
+        by_name(&judged, "someone"),
+        hale_types::verdict::Verdict::Violated
+    );
+    // The reviewer's shape: a hole at T's subject hiding
+    // SUBSCRIBES | CARDINALITY.
+    let sid = model
+        .entities
+        .subjects
+        .iter()
+        .position(|su| su.pattern == "app.t")
+        .expect("subject");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            sid as u32,
+        )),
+        kind: hale_model::HoleKind::DynamicEndpoint,
+        hides: hale_model::RelationSet::SUBSCRIBES
+            .union(hale_model::RelationSet::CARDINALITY),
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_endpoints(&table, &model, &[0]);
+    assert_eq!(
+        by_name(&judged, "none_yet"),
+        hale_types::verdict::Verdict::Uncertified,
+        "count <= 0 cannot hold from an incomplete set"
+    );
+    assert_eq!(
+        by_name(&judged, "someone"),
+        hale_types::verdict::Verdict::Uncertified,
+        "an absent witness plus a relevant hole is not a violation"
+    );
+    // Monotone preserved: a known publisher still proves `>= 1`
+    // even when the publisher set is ALSO marked incomplete.
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            sid as u32,
+        )),
+        kind: hale_model::HoleKind::DynamicEndpoint,
+        hides: hale_model::RelationSet::PUBLISHES,
+        authored_site: None,
+        reason: "publisher set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_endpoints(&table, &model, &[0]);
+    assert_eq!(
+        by_name(&judged, "one_pub"),
+        hale_types::verdict::Verdict::Holds,
+        "enough known rows still prove a lower bound"
+    );
+}
+
+/// …and `cover`: an apparently-uncovered topic with an incomplete
+/// subscriber set is Uncertified, while a concretely uncovered
+/// topic still proves the violation.
+#[test]
+fn cover_fails_closed_on_subscriber_holes() {
+    let lib = r#"
+type __lib_x_kv_Item { n: Int = 0; }
+topic __lib_x_kv_Changed { payload: __lib_x_kv_Item; subject: "kv.changed"; }
+"#;
+    let main_src = r#"
+locus Reader {
+    params { n: Int = 0; }
+    fn idle() { }
+}
+group readers = { Reader };
+main locus App {
+    params { r: Reader = Reader { }; }
+    claims { covered: cover topic in seed(kv): subscribed_by(some readers); }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let main_p =
+        hale_syntax::parse_source(main_src).expect("parse main");
+    let lib_p = hale_syntax::parse_source(lib).expect("parse lib");
+    let mut programs = BTreeMap::new();
+    programs.insert("app/main.hl".to_string(), &main_p);
+    programs.insert("lib/kv.hl".to_string(), &lib_p);
+    let mut bundle = Bundle::new(programs);
+    bundle.import_renames = vec![
+        (
+            vec!["kv".to_string(), "Item".to_string()],
+            "__lib_x_kv_Item".to_string(),
+        ),
+        (
+            vec!["kv".to_string(), "Changed".to_string()],
+            "__lib_x_kv_Changed".to_string(),
+        ),
+    ];
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_endpoints(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "concretely uncovered"
+    );
+    let sid = model
+        .entities
+        .subjects
+        .iter()
+        .position(|su| su.pattern == "kv.changed")
+        .expect("subject");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            sid as u32,
+        )),
+        kind: hale_model::HoleKind::DynamicEndpoint,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_endpoints(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "an incomplete subscriber set cannot prove the violation"
+    );
+}
+
+/// Review pin (round 6): endpoint counts use TYPED identity — a
+/// subject hole whose wire pattern merely equals the topic's NAME
+/// does not make the topic's count incomplete (the topic's wire is
+/// different), while a hole at the topic's REAL wire still does.
+#[test]
+fn literal_collision_subject_hole_does_not_block_topic_count() {
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic Orders { payload: Cmd; subject: "wire.orders"; }
+locus Pub {
+    params { n: Int = 0; }
+    bus { publish Orders; }
+    fn act() { Orders <- Cmd { }; }
+}
+main locus App {
+    params { p: Pub = Pub { }; }
+    claims { none_yet: count subscribers(topic Orders) <= 0; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_endpoints(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds
+    );
+    // A subject whose WIRE ADDRESS text happens to be "Orders" —
+    // not the topic's wire subject "wire.orders".
+    model.entities.subjects.push(hale_model::Subject {
+        pattern: "Orders".to_string(),
+        exact: true,
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let collider = (model.entities.subjects.len() - 1) as u32;
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            collider,
+        )),
+        kind: hale_model::HoleKind::DynamicEndpoint,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_endpoints(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds,
+        "the literal wire address `Orders` is not topic Orders' \
+         wire — its hole must not touch the topic's count"
+    );
+    // Control: a hole at the topic's REAL wire flips it.
+    let real = model
+        .entities
+        .subjects
+        .iter()
+        .position(|su| su.pattern == "wire.orders")
+        .expect("real wire");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            real as u32,
+        )),
+        kind: hale_model::HoleKind::DynamicEndpoint,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_endpoints(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "the topic's real wire subject IS its delivery identity"
     );
 }

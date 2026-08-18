@@ -2007,6 +2007,45 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             derived_effects.insert(fn_name(k), classes);
         }
     }
+    let authored_user_class: BTreeSet<String> =
+        crate::effects::fns_carrying_a_user_class(&programs)
+            .into_iter()
+            .map(|k| fn_name(&k))
+            .collect();
+    let mut attribution: BTreeMap<String, Vec<String>> =
+        BTreeMap::new();
+    let mut opaque_calls: BTreeSet<String> = BTreeSet::new();
+    for (k, fs) in &merged.fns {
+        if !user_key(k) || !vmodel.is_bundle_fn(k) {
+            continue;
+        }
+        let mut classes: Vec<String> = Vec::new();
+        for name in [
+            "syscall",
+            "block",
+            "publish",
+            "time",
+            "entropy",
+            "env",
+            "alloc",
+            "secret_use",
+        ] {
+            let mask = crate::claims::attributed_mask(name)
+                .expect("builtin mask");
+            if crate::claims::performs_directly_for(
+                &merged, &vmodel, &ffi, k, fs, mask,
+            ) {
+                classes.push(name.to_string());
+            }
+        }
+        classes.sort();
+        if !classes.is_empty() {
+            attribution.insert(fn_name(k), classes);
+        }
+        if crate::claims::has_opaque_unresolved(fs) {
+            opaque_calls.insert(fn_name(k));
+        }
+    }
     for k in summary.fns.keys() {
         if !user_key(k) {
             continue;
@@ -2036,6 +2075,12 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                 .get(n)
                 .cloned()
                 .unwrap_or_default(),
+            attribution: attribution
+                .get(n)
+                .cloned()
+                .unwrap_or_default(),
+            opaque_call: opaque_calls.contains(n),
+            carries_user_class: authored_user_class.contains(n),
             provenance: pid,
         });
     }

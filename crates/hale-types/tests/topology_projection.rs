@@ -524,6 +524,9 @@ fn labels_and_effects_are_restricted_to_the_v1_universe() {
         kind: FunctionKind::Free,
         effects: effects.into_iter().map(String::from).collect(),
         direct_effects: Vec::new(),
+        attribution: Vec::new(),
+        opaque_call: false,
+        carries_user_class: false,
         provenance: p,
     };
     let mut m = ApplicationModel {

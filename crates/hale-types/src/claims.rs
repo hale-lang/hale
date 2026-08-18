@@ -2474,7 +2474,7 @@ fn evaluate_require_sealed(
 ///
 /// Validation and evaluation share this so a form the evaluator would
 /// answer with unconditional success can never be accepted.
-fn attributed_mask(
+pub(crate) fn attributed_mask(
     name: &str,
 ) -> Option<crate::stdlib_surface::EffectSet> {
     use crate::stdlib_surface::EffectSet;
@@ -2488,6 +2488,67 @@ fn attributed_mask(
         "alloc" => EffectSet::ALLOC,
         "secret_use" => EffectSet::SECRET_USE,
         _ => return None,
+    })
+}
+
+
+/// The `require attributed` DIRECT-site predicate, extracted so the
+/// model builder computes `Function.attribution` with the SAME rule
+/// (GH #476 Change 5c) — one definition, never approximated.
+pub(crate) fn performs_directly_for(
+    summary: &AllocSummary,
+    model: &crate::model::Model,
+    ffi: &BTreeSet<String>,
+    key: &FnKey,
+    fs: &crate::alloc_summary::FnSummary,
+    mask: crate::stdlib_surface::EffectSet,
+) -> bool {
+    use crate::stdlib_surface::EffectSet;
+    let direct_ffi = mask == EffectSet::SYSCALL
+        && key.locus.is_none()
+        && ffi.contains(&key.fn_name);
+    let directly_classified = summary
+        .carries
+        .get(key)
+        .map_or(false, |eff| eff.contains(mask));
+    direct_ffi
+        || directly_classified
+        || fs.calls.iter().any(|e| match &e.callee {
+            Callee::Unresolved(name) => {
+                let segs: Vec<&str> = name.split("::").collect();
+                crate::stdlib_surface::effects_for(&segs)
+                    .map_or(false, |eff| eff.contains(mask))
+            }
+            Callee::Resolved(callee) => {
+                if model.is_bundle_fn(callee) {
+                    return false;
+                }
+                crate::frontier::infer_effects(summary, callee, ffi)
+                    .contains(mask)
+            }
+        })
+        || (mask == EffectSet::ALLOC && !fs.sites.is_empty())
+        || (mask == EffectSet::PUBLISH
+            && fs.effect_sites.iter().any(|s| {
+                matches!(
+                    s.kind,
+                    crate::alloc_summary::EffectSiteKind::Publish(_)
+                )
+            }))
+}
+
+/// The `require attributed` opaque-call predicate (an unresolved
+/// callee that is not a frontier path), shared with the model
+/// builder for `Function.opaque_call`.
+pub(crate) fn has_opaque_unresolved(
+    fs: &crate::alloc_summary::FnSummary,
+) -> bool {
+    fs.calls.iter().any(|e| match &e.callee {
+        Callee::Unresolved(n) => {
+            let segs: Vec<&str> = n.split("::").collect();
+            crate::stdlib_surface::effects_for(&segs).is_none()
+        }
+        Callee::Resolved(_) => false,
     })
 }
 
@@ -2536,60 +2597,14 @@ fn evaluate_require_attributed(
         // secret_use at once. The declaration is application-owned
         // and can carry the purpose itself, which keeps ordinary
         // callers ordinary and attribution direct.
-        let direct_ffi = mask == EffectSet::SYSCALL
-            && key.locus.is_none()
-            && cx.ffi.contains(&key.fn_name);
-        // A fn that DECLARES it carries the class is a direct site by
-        // definition. Without this, `@effects(is: { secret_use }) fn
-        // sign(…)` — the whole shape the secrets architecture rests
-        // on — was invisible to `require attributed(all secret_use)`,
-        // because it calls nothing classified and allocates nothing.
-        // A built-in in `is:` establishes that the operation exists;
-        // it still is not its purpose, so a user class is required.
-        let directly_classified = cx
-            .summary
-            .carries
-            .get(key)
-            .map_or(false, |eff| eff.contains(mask));
-        let performs_directly = direct_ffi
-            || directly_classified
-            || fs.calls.iter().any(|e| match &e.callee {
-            Callee::Unresolved(name) => {
-                let segs: Vec<&str> = name.split("::").collect();
-                crate::stdlib_surface::effects_for(&segs)
-                    .map_or(false, |eff| eff.contains(mask))
-            }
-            Callee::Resolved(callee) => {
-                // A resolved BUNDLE fn is judged on its own row —
-                // that is what keeps attribution direct rather than
-                // transitive.
-                //
-                // A resolved callee the author does not own is a
-                // different case, and treating it like a bundle fn
-                // was a hole: `@ffi` declarations and Hale-source
-                // stdlib bodies both resolve, so
-                // `self.logger.info(m)` crossed a publish boundary
-                // and nothing owed a purpose, while the same
-                // operation written as a path call did. Attribution
-                // has to attach to the first APPLICATION-OWNED fn
-                // crossing out, or it depends on whether an API
-                // happens to be a frontier path or a Hale-source
-                // wrapper — not a stable boundary.
-                if cx.model.is_bundle_fn(callee) {
-                    return false;
-                }
-                crate::frontier::infer_effects(
-                    &cx.summary,
-                    callee,
-                    &cx.ffi,
-                )
-                .contains(mask)
-            }
-        }) || (mask == EffectSet::ALLOC && !fs.sites.is_empty())
-            || (mask == EffectSet::PUBLISH
-            && fs.effect_sites.iter().any(|s| {
-                matches!(s.kind, crate::alloc_summary::EffectSiteKind::Publish(_))
-            }));
+        let performs_directly = performs_directly_for(
+            &cx.summary,
+            &cx.model,
+            &cx.ffi,
+            key,
+            fs,
+            mask,
+        );
         if !performs_directly {
             continue;
         }
@@ -2617,16 +2632,7 @@ fn evaluate_require_attributed(
             .filter(|(key, _)| cx.model.is_bundle_fn(key))
             .filter(|(key, fs)| {
                 !fn_carries_a_user_class(key, cx)
-                    && fs.calls.iter().any(|e| match &e.callee {
-                        Callee::Unresolved(n) => {
-                            // A frontier path is classified, so it is
-                            // not a hole; anything else unresolved is.
-                            let segs: Vec<&str> = n.split("::").collect();
-                            crate::stdlib_surface::effects_for(&segs)
-                                .is_none()
-                        }
-                        Callee::Resolved(_) => false,
-                    })
+                    && has_opaque_unresolved(fs)
             })
             .map(|(key, _)| match &key.locus {
                 Some(l) => format!("{}::{}", l, key.fn_name),
