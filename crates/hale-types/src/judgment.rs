@@ -2260,31 +2260,7 @@ pub fn judge_endpoints(
     // endpoint rows are a LOWER BOUND, never a proved absence.
     // Monotone cases stay decidable: a known witness still proves
     // an existential, and enough known rows still prove `>=`.
-    let subject_hole_pats: Vec<(String, hale_model::RelationSet)> =
-        model
-            .holes
-            .iter()
-            .filter_map(|h| match h.at {
-                EntityRef::Subject(sid) => Some((
-                    e.subjects[sid.index()].pattern.clone(),
-                    h.hides,
-                )),
-                _ => None,
-            })
-            .collect();
-    let topic_holes: BTreeMap<u32, hale_model::RelationSet> = {
-        let mut m: BTreeMap<u32, hale_model::RelationSet> =
-            BTreeMap::new();
-        for h in &model.holes {
-            if let EntityRef::Topic(t) = h.at {
-                let e2 = m
-                    .entry(t.0)
-                    .or_insert(hale_model::RelationSet(0));
-                *e2 = e2.union(h.hides);
-            }
-        }
-        m
-    };
+    let bus_holes = BusHoles::build(model);
     let topic_by_name: BTreeMap<&str, u32> = e
         .topics
         .iter()
@@ -2298,13 +2274,6 @@ pub fn judge_endpoints(
             hale_model::RelationSet::SUBSCRIBES
         };
         let mask = fam.union(hale_model::RelationSet::CARDINALITY);
-        if topic_by_name
-            .get(topic_raw)
-            .and_then(|t| topic_holes.get(t))
-            .is_some_and(|m| m.intersects(mask))
-        {
-            return true;
-        }
         let mut texts: Vec<&str> = vec![topic_raw];
         if let Some(t) = topic_by_name.get(topic_raw) {
             texts.push(
@@ -2314,7 +2283,7 @@ pub fn judge_endpoints(
                 .as_str(),
             );
         }
-        subject_hole_covers(&subject_hole_pats, mask, &texts)
+        bus_holes.blocks(mask, &texts)
     };
 
     let mut out = Vec::new();
