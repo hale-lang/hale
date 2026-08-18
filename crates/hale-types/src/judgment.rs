@@ -3072,8 +3072,8 @@ pub fn judge_bound(
     // SUBSCRIBES: a hole at Subject(S) means fan-out through S is
     // not fully modeled.
     let mut effects_holed: BTreeSet<FunctionId> = BTreeSet::new();
-    let mut subject_hides: BTreeMap<u32, hale_model::RelationSet> =
-        BTreeMap::new();
+    let mut subject_hole_pats: Vec<(String, hale_model::RelationSet)> =
+        Vec::new();
     for h in &model.holes {
         match h.at {
             EntityRef::Function(f) => {
@@ -3100,31 +3100,27 @@ pub fn judge_bound(
                 holes_of.entry(f).or_default().push(hole);
             }
             EntityRef::Subject(sid) => {
-                let e2 = subject_hides
-                    .entry(sid.0)
-                    .or_insert(hale_model::RelationSet(0));
-                *e2 = e2.union(h.hides);
+                subject_hole_pats.push((
+                    e.subjects[sid.index()].pattern.clone(),
+                    h.hides,
+                ));
             }
             _ => {}
         }
     }
-    let subject_hides_text: BTreeMap<&str, hale_model::RelationSet> = {
-        let mut t: BTreeMap<&str, hale_model::RelationSet> =
-            subject_hides
-                .iter()
-                .map(|(sid, m)| {
-                    (e.subjects[*sid as usize].pattern.as_str(), *m)
-                })
-                .collect();
-        // Publish rows for DECLARED topics carry the topic NAME,
-        // not the wire pattern — index both spellings.
-        for tp in &e.topics {
-            if let Some(m) = subject_hides.get(&tp.subject.0) {
-                t.insert(tp.name.as_str(), *m);
-            }
-        }
-        t
-    };
+    // Publish events carry either the topic NAME or the wire
+    // subject — the covering check tests both spellings against
+    // each hole pattern (exact-or-wildcard, round 4).
+    let topic_wire_b: BTreeMap<&str, &str> = e
+        .topics
+        .iter()
+        .map(|t| {
+            (
+                t.name.as_str(),
+                e.subjects[t.subject.index()].pattern.as_str(),
+            )
+        })
+        .collect();
     let class_atoms = |name: &str| -> BTreeSet<String> {
         match e.effect_classes.iter().find(|c| c.name == name) {
             Some(c) => match &c.definition {
@@ -3319,8 +3315,9 @@ pub fn judge_bound(
             holes_of: &'x BTreeMap<FunctionId, Vec<FnHole>>,
             absorption: &'x [hale_model::StdlibAbsorption],
             effects_holed: &'x BTreeSet<FunctionId>,
-            subject_hides_text:
-                &'x BTreeMap<&'x str, hale_model::RelationSet>,
+            subject_hole_pats:
+                &'x [(String, hale_model::RelationSet)],
+            topic_wire: &'x BTreeMap<&'x str, &'x str>,
         }
         fn site_count_ir(
             v: V,
@@ -3613,15 +3610,18 @@ pub fn judge_bound(
                         in_loop,
                         prov,
                     } => {
-                        if cx
-                            .subject_hides_text
-                            .get(subject.as_str())
-                            .is_some_and(|m| {
-                                m.intersects(
-                                    hale_model::RelationSet::SUBSCRIBES,
-                                )
-                            })
+                        let mut texts: Vec<&str> =
+                            vec![subject.as_str()];
+                        if let Some(w) =
+                            cx.topic_wire.get(subject.as_str())
                         {
+                            texts.push(w);
+                        }
+                        if subject_hole_covers(
+                            cx.subject_hole_pats,
+                            hale_model::RelationSet::SUBSCRIBES,
+                            &texts,
+                        ) {
                             unbounded = Some(
                                 UnboundedIr::UnknownSubscribers {
                                     at: v,
@@ -3694,7 +3694,8 @@ pub fn judge_bound(
             holes_of: &holes_of,
             absorption,
             effects_holed: &effects_holed,
-            subject_hides_text: &subject_hides_text,
+            subject_hole_pats: &subject_hole_pats,
+            topic_wire: &topic_wire_b,
         };
         let mut worst: (u64, Vec<V>) = (0, Vec::new());
         let mut why: Option<UnboundedIr> = None;

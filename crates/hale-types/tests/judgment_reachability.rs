@@ -3107,3 +3107,57 @@ fn main() { App { }; }
         "unknown subscribers must fail the count closed"
     );
 }
+
+/// Review pin (round 4): `bound` applies the delivery predicate to
+/// subscriber holes — a wildcard hole at `audit.**` makes fan-out
+/// through `audit.event` unknown.
+#[test]
+fn wildcard_subscriber_hole_makes_bound_uncertified() {
+    let src = r#"
+effect money;
+topic Ev { payload: Int; subject: "audit.event"; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) { Ev <- v; }
+}
+group roots = { A };
+main locus App {
+    params { a: A = A { }; }
+    claims { cap: bound money <= 1 on paths from roots; }
+    run() { self.a.go(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds
+    );
+    model.entities.subjects.push(hale_model::Subject {
+        pattern: "audit.**".to_string(),
+        exact: false,
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let wild = (model.entities.subjects.len() - 1) as u32;
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            wild,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "`audit.**` may cover `audit.event` — the count must fail \
+         closed"
+    );
+}
