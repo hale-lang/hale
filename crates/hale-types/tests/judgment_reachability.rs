@@ -2013,3 +2013,116 @@ fn main() { App { }; }
         "a topic-grain hole must reach the boundary check"
     );
 }
+
+/// Review pin (round 6): a set-level subscriber hole cannot erase
+/// a known ungranted boundary crossing.
+#[test]
+fn known_boundary_violation_survives_subscriber_hole() {
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic Sneaky { payload: Cmd; subject: "app.sneaky"; }
+locus Ops {
+    params { n: Int = 0; }
+    bus { publish Sneaky; }
+    fn act() { Sneaky <- Cmd { }; }
+}
+locus Core {
+    params { n: Int = 0; }
+    bus { subscribe Sneaky as on_sneaky; }
+    fn on_sneaky(c: Cmd) { self.n = c.v; }
+}
+group ops = { Ops };
+group core = { Core };
+main locus App {
+    params { o: Ops = Ops { }; c: Core = Core { }; }
+    claims { boundary: only edges ops -> core { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "the known subscriber row is an ungranted crossing"
+    );
+    let sid = model
+        .entities
+        .subjects
+        .iter()
+        .position(|su| su.pattern == "app.sneaky")
+        .expect("subject");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            sid as u32,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "unknown extra subscribers cannot un-prove the known \
+         crossing"
+    );
+}
+
+/// …typed identity in the boundary check: a topic hole does not
+/// block a literal publish whose text collides with the name.
+#[test]
+fn topic_hole_does_not_block_literal_publish_in_only_edges() {
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic Orders { payload: Cmd; subject: "wire.orders"; }
+locus Ops {
+    params { n: Int = 0; }
+    fn act(v: Int) { "Orders" <- v; }
+}
+locus Core {
+    params { n: Int = 0; }
+    fn idle() { }
+}
+group ops = { Ops };
+group core = { Core };
+main locus App {
+    params { o: Ops = Ops { }; c: Core = Core { }; }
+    claims { boundary: only edges ops -> core { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let tid = model
+        .entities
+        .topics
+        .iter()
+        .position(|t| t.name == "Orders")
+        .expect("topic");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Topic(hale_model::TopicId(
+            tid as u32,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds,
+        "the literal wire address is not the topic"
+    );
+}

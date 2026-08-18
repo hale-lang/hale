@@ -1610,7 +1610,7 @@ pub fn judge_only_edges(
     }
     let mut pubs_of: BTreeMap<
         FunctionId,
-        Vec<(u32, u32, String, ProvenanceId)>,
+        Vec<(u32, u32, Option<u32>, String, ProvenanceId)>,
     > = BTreeMap::new();
     for p in &r.publishes {
         let written = match p.declared_topic {
@@ -1620,6 +1620,7 @@ pub fn judge_only_edges(
         pubs_of.entry(p.function).or_default().push((
             p.site,
             p.subject.0,
+            p.declared_topic.map(|t| t.0),
             written,
             p.provenance,
         ));
@@ -1811,6 +1812,7 @@ pub fn judge_only_edges(
                 .join(", ")
         };
         let mut verdict = Verdict::Holds;
+        let mut bus_unknown: Option<(String, String)> = None;
         let mut reported: BTreeSet<String> = BTreeSet::new();
         'fns: for f in &src_fns {
             // The evaluator walks fs.calls in SOURCE order and
@@ -1944,17 +1946,22 @@ pub fn judge_only_edges(
                 }
             }
             enum PubEv<'x> {
-                Row(u32, &'x str, ProvenanceId),
+                Row(u32, Option<u32>, &'x str, ProvenanceId),
                 Hole(&'x FnHole),
             }
             let mut pevs: Vec<(u32, u8, PubEv)> = Vec::new();
-            for (site, sid, written, pprov) in
+            for (site, sid, topic, written, pprov) in
                 pubs_of.get(f).into_iter().flatten()
             {
                 pevs.push((
                     *site,
                     0,
-                    PubEv::Row(*sid, written.as_str(), *pprov),
+                    PubEv::Row(
+                        *sid,
+                        *topic,
+                        written.as_str(),
+                        *pprov,
+                    ),
                 ));
             }
             for (hides, site, h) in
@@ -2018,30 +2025,30 @@ pub fn judge_only_edges(
                         verdict = Verdict::Uncertified;
                         break 'fns;
                     }
-                    PubEv::Row(sid, w, p) => {
+                    PubEv::Row(sid, topic, w, p) => {
+                        // A set-level subscriber hole has no
+                        // authored position relative to the known
+                        // rows, so it DEFERS: the known rows below
+                        // are still checked — a known ungranted
+                        // crossing stays Violated — and the flag
+                        // downgrades only a would-be Holds
+                        // (round 6). TYPED identities: the topic
+                        // id and the wire pattern, never text
+                        // collisions.
                         if bus_holes.blocks(
                             hale_model::RelationSet::SUBSCRIBES,
-                            &[
-                                w,
+                            topic,
+                            Some(
                                 e.subjects[sid as usize]
                                     .pattern
                                     .as_str(),
-                            ],
-                        ) {
-                            diags.push(Diag::ty(
-                                row_span,
-                                format!(
-                                    "claim `{}` cannot be certified: `{}` \
-                                     publishes to \"{}\", whose subscribers \
-                                     are not fully modeled. An unresolvable \
-                                     edge fails closed",
-                                    row.name,
-                                    fn_disp(*f),
-                                    w
-                                ),
+                            ),
+                        ) && bus_unknown.is_none()
+                        {
+                            bus_unknown = Some((
+                                fn_disp(*f),
+                                w.to_string(),
                             ));
-                            verdict = Verdict::Uncertified;
-                            break 'fns;
                         }
                         (w, p)
                     }
@@ -2116,6 +2123,21 @@ pub fn judge_only_edges(
                     }
                 }
                 }
+            }
+        }
+        if verdict == Verdict::Holds {
+            if let Some((fd, w)) = &bus_unknown {
+                diags.push(Diag::ty(
+                    row_span,
+                    format!(
+                        "claim `{}` cannot be certified: `{}` \
+                         publishes to \"{}\", whose subscribers \
+                         are not fully modeled. An unresolvable \
+                         edge fails closed",
+                        row.name, fd, w
+                    ),
+                ));
+                verdict = Verdict::Uncertified;
             }
         }
         out.push(Judged {
