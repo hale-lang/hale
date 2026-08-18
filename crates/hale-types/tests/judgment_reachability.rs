@@ -1800,6 +1800,7 @@ fn main() {
     m.legacy.stdlib_absorption[0].nodes.push(
         hale_model::AbsorbedNode {
             display: "std::x::Ledger::charge_a".to_string(),
+            carries: Vec::new(),
             direct_effects: Vec::new(),
             events: Vec::new(),
         },
@@ -1811,6 +1812,8 @@ fn main() {
                 "Payer".to_string(),
                 "pay".to_string(),
             )),
+            in_loop: false,
+            group: Some(9),
         },
     );
     assert!(
@@ -3415,11 +3418,12 @@ fn main() {
     let bundle = bundle_of(src, &program);
     let base = derive_application_model(&bundle);
     base.validate().expect("the built model is lawful");
-    let carrier = |m: &mut hale_model::ApplicationModel| {
+    let carrier = |m: &mut hale_model::ApplicationModel,
+                   display: &str| {
         let n = m.legacy.stdlib_absorption[0].nodes.len() as u32;
         m.legacy.stdlib_absorption[0].nodes.push(
             hale_model::AbsorbedNode {
-                display: "std::x::carrier".to_string(),
+                display: display.to_string(),
                 carries: vec!["money".to_string()],
                 direct_effects: Vec::new(),
                 events: Vec::new(),
@@ -3430,8 +3434,8 @@ fn main() {
     // The review's counterexample: two dispatch-less calls sharing
     // group 7.
     let mut m = base.clone();
-    let a = carrier(&mut m);
-    let b = carrier(&mut m);
+    let a = carrier(&mut m, "std::x::A::pay");
+    let b = carrier(&mut m, "std::x::B::pay");
     for t in [a, b] {
         m.legacy.stdlib_absorption[0].nodes[0].events.push(
             hale_model::AbsorbedEvent::Call {
@@ -3448,8 +3452,8 @@ fn main() {
     );
     // One group id, two DIFFERENT dispatch identities.
     let mut m = base.clone();
-    let a = carrier(&mut m);
-    let b = carrier(&mut m);
+    let a = carrier(&mut m, "std::x::A::pay");
+    let b = carrier(&mut m, "std::x::B::refund");
     for (t, method) in [(a, "pay"), (b, "refund")] {
         m.legacy.stdlib_absorption[0].nodes[0].events.push(
             hale_model::AbsorbedEvent::Call {
@@ -3469,8 +3473,8 @@ fn main() {
     );
     // Genuine alternatives of one dispatch stay lawful.
     let mut m = base.clone();
-    let a = carrier(&mut m);
-    let b = carrier(&mut m);
+    let a = carrier(&mut m, "std::x::A::pay");
+    let b = carrier(&mut m, "std::x::B::pay");
     for t in [a, b] {
         m.legacy.stdlib_absorption[0].nodes[0].events.push(
             hale_model::AbsorbedEvent::Call {
@@ -3486,4 +3490,57 @@ fn main() {
     }
     m.validate()
         .expect("conformer alternatives of one dispatch are lawful");
+}
+
+/// Review pin (round 8): a set-level PUBLISHES hole makes bound's
+/// fan-out a lower bound — Uncertified within the limit, while a
+/// known over-limit count still proves the violation.
+#[test]
+fn publisher_hole_makes_bound_uncertified() {
+    let src = r#"
+effect money;
+topic Sig { payload: Int; subject: "app.sig"; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) { Sig <- v; }
+}
+group roots = { A };
+main locus App {
+    params { a: A = A { }; }
+    claims { cap: bound money <= 1 on paths from roots; }
+    run() { self.a.go(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds
+    );
+    let sid = model
+        .entities
+        .subjects
+        .iter()
+        .position(|su| su.pattern == "app.sig")
+        .expect("subject");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            sid as u32,
+        )),
+        kind: hale_model::HoleKind::DynamicEndpoint,
+        hides: hale_model::RelationSet::PUBLISHES,
+        authored_site: None,
+        reason: "publisher set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "an unknown publisher may add fan-out"
+    );
 }

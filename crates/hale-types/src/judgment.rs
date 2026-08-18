@@ -3139,6 +3139,7 @@ pub fn judge_bound(
     enum UnknownCause {
         Effects { at: V },
         Subscribers { at: V, subject: String },
+        Publishers { subject: String },
     }
 
     let mut out = Vec::new();
@@ -3733,7 +3734,16 @@ pub fn judge_bound(
         };
         let mut worst: (u64, Vec<V>) = (0, Vec::new());
         let mut why: Option<UnboundedIr> = None;
-        let mut unknown_cause: Option<UnknownCause> = None;
+        // Round 8: an incomplete PUBLISHER set anywhere on the bus
+        // means the count's fan-out may be missing edges — the
+        // known lower bound still decides a violation; a would-be
+        // Holds downgrades.
+        let mut unknown_cause: Option<UnknownCause> = bus_holes
+            .publishers_incomplete
+            .as_ref()
+            .map(|s| UnknownCause::Publishers {
+                subject: s.clone(),
+            });
         for root in &fnkey_sorted(&fns) {
             let mut stack = Vec::new();
             let mut memo: BTreeMap<V, (u64, Vec<V>)> = BTreeMap::new();
@@ -3863,6 +3873,15 @@ pub fn judge_bound(
                             row.name,
                             display(*at),
                             subject
+                        )
+                    }
+                    UnknownCause::Publishers { subject } => {
+                        format!(
+                            "claim `{}` cannot be certified: the \
+                             publisher set of \"{}\" is not \
+                             fully modeled — an unknown publisher \
+                             may add fan-out the count cannot see",
+                            row.name, subject
                         )
                     }
                 };
