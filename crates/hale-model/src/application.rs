@@ -1016,7 +1016,9 @@ impl ApplicationModel {
             }
             match crate::hole::allowed_hole_families(&h.at, &h.kind)
             {
-                Some(allowed) if allowed.contains(h.hides) => {}
+                Some((required, allowed))
+                    if allowed.contains(h.hides)
+                        && h.hides.contains(required) => {}
                 _ => {
                     return Err(ModelError::NotCanonical {
                         table: "holes.shape",
@@ -1247,7 +1249,7 @@ impl ApplicationModel {
             struct Occ {
                 resolved: bool,
                 dead: bool,
-                hole: bool,
+                holes: u8,
             }
             let mut call_sites: std::collections::BTreeMap<
                 (u32, u32),
@@ -1278,7 +1280,7 @@ impl ApplicationModel {
                 u32,
                 u32,
             )> = std::collections::BTreeSet::new();
-            for h in &self.holes {
+            for (i, h) in self.holes.iter().enumerate() {
                 let EntityRef::Function(f) = h.at else {
                     continue;
                 };
@@ -1289,19 +1291,32 @@ impl ApplicationModel {
                     h.kind,
                     crate::hole::HoleKind::ComputedSubject
                 ) {
-                    pub_holes.insert((f.0, site));
+                    // Exactly ONE event per publish site (round
+                    // 9): a second computed-subject hole in the
+                    // same site is rejected, not collapsed.
+                    if !pub_holes.insert((f.0, site)) {
+                        return Err(ModelError::NotCanonical {
+                            table: "publishes.site_partition",
+                            index: i,
+                        });
+                    }
                 } else if crate::hole::hole_site_shaped(&h.kind) {
-                    call_sites
+                    let occ = call_sites
                         .entry((f.0, site))
-                        .or_default()
-                        .hole = true;
+                        .or_default();
+                    occ.holes = occ.holes.saturating_add(1);
                 }
             }
             for (i, (_, occ)) in call_sites.iter().enumerate() {
+                // Exactly ONE event, not one event category
+                // (round 9): two typed holes in one call site
+                // would leave the judgment picking a diagnostic by
+                // canonical kind order rather than by an authored
+                // event.
                 let cats = usize::from(occ.resolved)
                     + usize::from(occ.dead)
-                    + usize::from(occ.hole);
-                if cats > 1 {
+                    + usize::from(occ.holes > 0);
+                if cats > 1 || occ.holes > 1 {
                     return Err(ModelError::NotCanonical {
                         table: "calls.site_partition",
                         index: i,
@@ -1316,6 +1331,59 @@ impl ApplicationModel {
                         index: i,
                     });
                 }
+            }
+        }
+        // The contracted relation and the absorption sidecar are
+        // DUAL ACCOUNTS of the same through-stdlib paths (round 9)
+        // and may not disagree: every `ViaStdlib` call row must be
+        // realized by a re-emergent User target inside one of its
+        // fn's absorption entries, and every re-emergence must
+        // have its contracted row. The judgments walk the
+        // absorption and skip the contracted rows — a row without
+        // an interior would be an edge every judgment discards,
+        // and an interior re-emergence without its row would be an
+        // edge the legacy projection denies.
+        {
+            use crate::relation::DispatchKind;
+            let mut contracted: std::collections::BTreeMap<
+                u32,
+                std::collections::BTreeSet<u32>,
+            > = std::collections::BTreeMap::new();
+            for c in &self.relations.calls {
+                if matches!(c.dispatch, DispatchKind::ViaStdlib) {
+                    contracted
+                        .entry(c.from.0)
+                        .or_default()
+                        .insert(c.to.0);
+                }
+            }
+            let mut absorbed: std::collections::BTreeMap<
+                u32,
+                std::collections::BTreeSet<u32>,
+            > = std::collections::BTreeMap::new();
+            for a in &self.legacy.stdlib_absorption {
+                let set =
+                    absorbed.entry(a.from.0).or_default();
+                for n in &a.nodes {
+                    for ev in &n.events {
+                        if let crate::AbsorbedEvent::Call {
+                            target:
+                                crate::AbsorbedTarget::User(f2),
+                            ..
+                        } = ev
+                        {
+                            set.insert(f2.0);
+                        }
+                    }
+                }
+            }
+            absorbed.retain(|_, v| !v.is_empty());
+            contracted.retain(|_, v| !v.is_empty());
+            if contracted != absorbed {
+                return Err(ModelError::NotCanonical {
+                    table: "calls.via_stdlib_agreement",
+                    index: 0,
+                });
             }
         }
         // Unresolved residue INSIDE stdlib absorption participates

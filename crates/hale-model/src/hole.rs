@@ -121,14 +121,21 @@ pub struct Hole {
     pub provenance: ProvenanceId,
 }
 
-/// The CLOSED anchor/kind/family matrix (review round 7): for each
-/// (anchor grain, kind) pair, the families the hole may hide.
+/// The CLOSED anchor/kind/family matrix (review rounds 7–9): for
+/// each (anchor grain, kind) pair, the `(required, allowed)` family
+/// masks — validation demands `required ⊆ hides ⊆ allowed`.
 /// `None` means the combination is not a defined hole shape and
 /// validation rejects it — a hole every judgment silently ignores
 /// is worse than no hole, because the model then CLAIMS its
-/// unknowns are accounted for. Extending this matrix is a reviewed
-/// schema change, made together with the judgment/BusHoles support
-/// that consumes the new shape.
+/// unknowns are accounted for. The REQUIRED mask exists because
+/// judgments SELECT holes by family: an IndirectCall hiding only
+/// EFFECTS would be invisible to call traversal while still
+/// occupying its call site (round 9). For every fn-grain kind the
+/// two masks are equal — Hale has no mechanism for proving the
+/// effects of an unresolved call, so a call hole hides EFFECTS
+/// too, always. Extending this matrix is a reviewed schema change,
+/// made together with the judgment/BusHoles support that consumes
+/// the new shape.
 ///
 /// Site rule (validated beside this): only Function-anchored holes
 /// carry `authored_site` — a set-level (subject/topic-grain) hole
@@ -153,7 +160,7 @@ pub fn hole_site_shaped(kind: &HoleKind) -> bool {
 pub fn allowed_hole_families(
     at: &EntityRef,
     kind: &HoleKind,
-) -> Option<RelationSet> {
+) -> Option<(RelationSet, RelationSet)> {
     use HoleKind as K;
     let c = RelationSet::CALLS;
     let p = RelationSet::PUBLISHES;
@@ -162,42 +169,49 @@ pub fn allowed_hole_families(
     match (at, kind) {
         // An unfollowable call also hides the EFFECTS beyond it —
         // the builder emits CALLS ∪ EFFECTS for the call-hole
-        // kinds, and the effects(C)-destination scan consumes the
-        // EFFECTS bit (rounds 2–3).
-        (EntityRef::Function(_), K::IndirectCall) => {
-            Some(c.union(e))
+        // kinds, the call walks select by CALLS, and the
+        // effects(C)-destination scan consumes EFFECTS: both bits
+        // are REQUIRED (rounds 2–3, 9).
+        (EntityRef::Function(_), K::IndirectCall)
+        | (EntityRef::Function(_), K::UntypedReceiver { .. })
+        | (EntityRef::Function(_), K::OpenInterface) => {
+            Some((c.union(e), c.union(e)))
         }
-        (EntityRef::Function(_), K::UntypedReceiver { .. }) => {
-            Some(c.union(e))
+        (EntityRef::Function(_), K::ComputedSubject) => {
+            Some((p, p))
         }
-        (EntityRef::Function(_), K::OpenInterface) => {
-            Some(c.union(e))
-        }
-        (EntityRef::Function(_), K::ComputedSubject) => Some(p),
-        (EntityRef::Function(_), K::UnknownKeyDomain) => {
-            Some(RelationSet::KEY_FILTERS)
-        }
+        (EntityRef::Function(_), K::UnknownKeyDomain) => Some((
+            RelationSet::KEY_FILTERS,
+            RelationSet::KEY_FILTERS,
+        )),
         // No judgment consults fn-grain SUBSCRIBES holes (round
         // 8): subscription incompleteness is SET-level knowledge
         // (the subject's subscriber set), so the fn-grain shape
-        // stops at what the engines consume.
+        // stops at what the engines consume — and an unanalyzed
+        // body hides ALL of what it could contain (round 9).
         (EntityRef::Function(_), K::UnanalyzedBody) => {
-            Some(c.union(p).union(e))
+            Some((c.union(p).union(e), c.union(p).union(e)))
         }
+        // Set-level endpoint knowledge: each bit is independently
+        // meaningful (publisher-incomplete vs
+        // subscriber-incomplete are distinct facts), so nothing
+        // beyond non-emptiness is required.
         (
             EntityRef::Subject(_) | EntityRef::Topic(_),
             K::DynamicEndpoint,
-        ) => Some(
+        ) => Some((
+            RelationSet(0),
             p.union(sub)
                 .union(RelationSet::CARDINALITY)
                 .union(RelationSet::DELIVERY),
-        ),
+        )),
         (
             EntityRef::Subject(_) | EntityRef::Topic(_),
             K::UnknownKeyDomain,
-        ) => Some(
+        ) => Some((
+            RelationSet(0),
             RelationSet::KEY_FILTERS.union(RelationSet::ROUTES),
-        ),
+        )),
         _ => None,
     }
 }

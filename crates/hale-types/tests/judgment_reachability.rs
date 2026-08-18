@@ -1111,6 +1111,17 @@ fn main() { App { }; }
             "no judgment consults fn-grain SUBSCRIBES holes — the \
              shape would be a valid invisible hole (round 8)",
         ),
+        (
+            hale_model::EntityRef::Function(
+                hale_model::FunctionId(0),
+            ),
+            hale_model::HoleKind::IndirectCall,
+            hale_model::RelationSet::EFFECTS,
+            Some(0),
+            "a call hole that drops its REQUIRED CALLS bit is \
+             invisible to call traversal while still occupying \
+             its site (round 9)",
+        ),
     ];
     for (at, kind, hides, site, why) in bad {
         let mut m = base.clone();
@@ -1450,5 +1461,169 @@ fn main() {
     assert!(
         m.validate().is_err(),
         "an interior CallHole contradicts exact_calls"
+    );
+}
+
+/// Review pin (round 9): the site partition means exactly ONE
+/// event — a second typed hole in the same call or publish site is
+/// rejected, never left for the judgment to pick by canonical
+/// kind order.
+#[test]
+fn one_hole_per_authored_site() {
+    let src = r#"
+topic Sig { payload: Int; subject: "app.sig"; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) { Sig <- v; }
+}
+main locus App {
+    params { a: A = A { }; }
+    run() { self.a.go(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let base = derive_application_model(&bundle);
+    base.validate().expect("the built model is lawful");
+    let go = base
+        .entities
+        .functions
+        .iter()
+        .position(|f| f.display == "A::go")
+        .expect("A::go") as u32;
+    // Two distinct call holes at one site (distinct canonical rows
+    // — different kinds — same authored position).
+    let mut m = base.clone();
+    m.capabilities = hale_model::Capabilities::default();
+    for kind in [
+        hale_model::HoleKind::IndirectCall,
+        hale_model::HoleKind::UntypedReceiver {
+            callee: "tick".to_string(),
+        },
+    ] {
+        m.holes.push(hale_model::Hole {
+            at: hale_model::EntityRef::Function(
+                hale_model::FunctionId(go),
+            ),
+            kind,
+            hides: hale_model::RelationSet::CALLS
+                .union(hale_model::RelationSet::EFFECTS),
+            authored_site: Some(7),
+            reason: "test".to_string(),
+            provenance: hale_model::ProvenanceId(0),
+        });
+    }
+    m.holes.sort_by(|a, b| {
+        (&a.at, &a.kind, &a.reason).cmp(&(&b.at, &b.kind, &b.reason))
+    });
+    assert!(
+        m.validate().is_err(),
+        "two call holes cannot share one authored site"
+    );
+    // Two computed-subject holes at one publish site.
+    let mut m = base.clone();
+    m.capabilities = hale_model::Capabilities::default();
+    for reason in ["first", "second"] {
+        m.holes.push(hale_model::Hole {
+            at: hale_model::EntityRef::Function(
+                hale_model::FunctionId(go),
+            ),
+            kind: hale_model::HoleKind::ComputedSubject,
+            hides: hale_model::RelationSet::PUBLISHES,
+            authored_site: Some(9),
+            reason: reason.to_string(),
+            provenance: hale_model::ProvenanceId(0),
+        });
+    }
+    m.holes.sort_by(|a, b| {
+        (&a.at, &a.kind, &a.reason).cmp(&(&b.at, &b.kind, &b.reason))
+    });
+    assert!(
+        m.validate().is_err(),
+        "two computed-subject holes cannot share one publish site"
+    );
+}
+
+/// Review pin (round 9): the contracted ViaStdlib relation and the
+/// absorption sidecar are dual accounts — a contracted row with no
+/// realizing interior path, and a re-emergence with no contracted
+/// row, are both rejected.
+#[test]
+fn via_stdlib_rows_agree_with_absorption() {
+    let src = r#"
+locus Hello {
+    fn handle(ctx: std::http::Context) -> std::http::Response {
+        return std::http::Response {
+            status: 200,
+            content_type: "text/plain",
+            body: "hi"
+        };
+    }
+}
+locus Gate {
+    fn probe(r: std::http::Router, req: std::http::Request) -> Int {
+        let resp = r.dispatch(req);
+        return resp.status;
+    }
+}
+main locus App {
+    params { n: Int = 0; }
+}
+fn main() {
+    let r = std::http::Router { };
+    r.add("GET", "/", Hello { });
+    let req = std::http::Request { method: "GET", path: "/", body: "" };
+    println(Gate { }.probe(r, req));
+}
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let base = derive_application_model(&bundle);
+    base.validate().expect("the built model is lawful");
+    assert!(
+        base.relations.calls.iter().any(|c| matches!(
+            c.dispatch,
+            hale_model::DispatchKind::ViaStdlib
+        )),
+        "the fixture carries a contracted through-stdlib row"
+    );
+    // A contracted row whose interior is gone: every judgment
+    // would discard the only modeled edge.
+    let mut m = base.clone();
+    m.legacy.stdlib_absorption.clear();
+    m.capabilities = hale_model::Capabilities::default();
+    assert!(
+        m.validate().is_err(),
+        "a ViaStdlib row must be realized by an absorption path"
+    );
+    // A re-emergence the contracted relation denies.
+    let mut m = base.clone();
+    let hello = m
+        .entities
+        .functions
+        .iter()
+        .position(|f| f.display == "Hello::handle")
+        .expect("Hello::handle") as u32;
+    let probe_entry = m
+        .legacy
+        .stdlib_absorption
+        .iter()
+        .position(|a| {
+            m.entities.functions[a.from.index()].display
+                != "Gate::probe"
+        })
+        .unwrap_or(0);
+    m.legacy.stdlib_absorption[probe_entry].nodes[0]
+        .events
+        .push(hale_model::AbsorbedEvent::Call {
+            target: hale_model::AbsorbedTarget::User(
+                hale_model::FunctionId(hello),
+            ),
+            dispatch: None,
+        });
+    assert!(
+        m.validate().is_err(),
+        "a re-emergence must have its contracted row"
     );
 }
