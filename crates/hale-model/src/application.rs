@@ -1031,6 +1031,17 @@ impl ApplicationModel {
                     index: i,
                 });
             }
+            // The reachability judgment renders entry_provenance as
+            // the authored crossing span — a dangling id would
+            // silently render 0..0 (review round 5).
+            if a.entry_provenance.index()
+                >= self.provenance.records.len()
+            {
+                return Err(ModelError::DanglingId {
+                    table: "legacy.stdlib_absorption",
+                    index: i,
+                });
+            }
             for n in &a.nodes {
                 for ev in &n.events {
                     if let crate::AbsorbedEvent::Call {

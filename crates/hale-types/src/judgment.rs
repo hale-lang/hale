@@ -76,26 +76,74 @@ enum StepIr {
     },
 }
 
-/// Subject-grain hole coverage (GH #476 round 4): the SAME
-/// exact-or-wildcard predicate known delivery applies to
-/// subscription rows applies to SUBSCRIBES-hiding holes — a hole at
-/// `audit.**` covers a publish to `audit.event`. `texts` carries
-/// every spelling the publish is known by (topic name and wire
-/// subject), since holes anchor at subjects while publish rows may
-/// speak the topic name.
-fn subject_hole_covers(
-    pats: &[(String, hale_model::RelationSet)],
-    mask: hale_model::RelationSet,
-    texts: &[&str],
-) -> bool {
-    pats.iter().any(|(pat, m)| {
-        m.intersects(mask)
-            && texts.iter().any(|t| {
-                pat == t
-                    || (pat.contains("**")
-                        && crate::wildcard_match(pat, t))
-            })
-    })
+/// Bus-composition hole index (GH #476 rounds 4–5): ONE shared
+/// lookup for every judgment that composes publishes with
+/// subscribers. It carries BOTH anchor grains the model permits —
+/// subject-grain holes as covering PATTERNS (the same
+/// exact-or-wildcard predicate known delivery applies: a hole at
+/// `audit.**` covers a publish to `audit.event`) and TOPIC-grain
+/// holes keyed by topic name. A publish is projected through every
+/// spelling it is known by (topic name and wire subject), so the
+/// same canonical hole has the same reach in every judgment.
+struct BusHoles {
+    subject_pats: Vec<(String, hale_model::RelationSet)>,
+    topic_holes: BTreeMap<String, hale_model::RelationSet>,
+}
+
+impl BusHoles {
+    fn build(model: &ApplicationModel) -> Self {
+        let e = &model.entities;
+        let mut subject_pats: Vec<(
+            String,
+            hale_model::RelationSet,
+        )> = Vec::new();
+        let mut topic_holes: BTreeMap<
+            String,
+            hale_model::RelationSet,
+        > = BTreeMap::new();
+        for h in &model.holes {
+            match h.at {
+                EntityRef::Subject(sid) => {
+                    subject_pats.push((
+                        e.subjects[sid.index()].pattern.clone(),
+                        h.hides,
+                    ));
+                }
+                EntityRef::Topic(t) => {
+                    let e2 = topic_holes
+                        .entry(
+                            e.topics[t.index()].name.clone(),
+                        )
+                        .or_insert(hale_model::RelationSet(0));
+                    *e2 = e2.union(h.hides);
+                }
+                _ => {}
+            }
+        }
+        BusHoles {
+            subject_pats,
+            topic_holes,
+        }
+    }
+
+    fn blocks(
+        &self,
+        mask: hale_model::RelationSet,
+        texts: &[&str],
+    ) -> bool {
+        texts.iter().any(|t| {
+            self.topic_holes
+                .get(*t)
+                .is_some_and(|m| m.intersects(mask))
+        }) || self.subject_pats.iter().any(|(pat, m)| {
+            m.intersects(mask)
+                && texts.iter().any(|t| {
+                    pat == t
+                        || (pat.contains("**")
+                            && crate::wildcard_match(pat, t))
+                })
+        })
+    }
 }
 
 fn span_of(
@@ -302,14 +350,10 @@ pub fn judge_forbid_reaches(
         FunctionId,
         Vec<(hale_model::RelationSet, Option<u32>, FnHole)>,
     > = BTreeMap::new();
-    // Holes anchored at NON-function entities participate too: a
-    // hole at Subject(S) hiding SUBSCRIBES means S's subscriber set
-    // is incomplete, so bus composition through S must not certify
-    // absence from the known rows (review round 3). Kept as
-    // PATTERNS: the subject sort holds wildcards, and coverage uses
-    // the same predicate as known delivery (round 4).
-    let mut subject_hole_pats: Vec<(String, hale_model::RelationSet)> =
-        Vec::new();
+    // Holes anchored at NON-function entities participate too —
+    // subject grain (covering patterns, round 4) AND topic grain
+    // (round 5) — through the ONE shared BusHoles index.
+    let bus_holes = BusHoles::build(model);
     for h in &model.holes {
         match h.at {
             EntityRef::Function(f) => {
@@ -335,12 +379,6 @@ pub fn judge_forbid_reaches(
                     h.hides,
                     h.authored_site,
                     hole,
-                ));
-            }
-            EntityRef::Subject(sid) => {
-                subject_hole_pats.push((
-                    e.subjects[sid.index()].pattern.clone(),
-                    h.hides,
                 ));
             }
             _ => {}
@@ -905,8 +943,7 @@ pub fn judge_forbid_reaches(
                                 // rows are not the whole story, so
                                 // fan-out must not certify absence
                                 // (review round 3).
-                                if subject_hole_covers(
-                                    &subject_hole_pats,
+                                if bus_holes.blocks(
                                     hale_model::RelationSet::SUBSCRIBES,
                                     &[
                                         written.as_str(),
@@ -1091,8 +1128,7 @@ pub fn judge_forbid_reaches(
                                         {
                                             texts.push(w);
                                         }
-                                        if subject_hole_covers(
-                                            &subject_hole_pats,
+                                        if bus_holes.blocks(
                                             hale_model::RelationSet::SUBSCRIBES,
                                             &texts,
                                         ) {

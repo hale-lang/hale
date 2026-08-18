@@ -862,3 +862,58 @@ fn main() { App { }; }
          closed"
     );
 }
+
+/// Review pin (round 5): TOPIC-grain bus holes have the same reach
+/// as subject-grain ones — a hole at Topic(T) hiding SUBSCRIBES
+/// refuses a bus walk publishing T.
+#[test]
+fn topic_grain_subscriber_hole_fails_bus_walk_closed() {
+    let src = r#"
+topic Sig { payload: Int; subject: "app.sig"; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) { Sig <- v; }
+}
+fn quiet(v: Int) -> Int { return v; }
+group a_side = { A };
+group b_side = { quiet };
+main locus App {
+    params { a: A = A { }; }
+    claims { iso: forbid reaches(a_side, b_side) via { bus }; }
+    run() { self.a.go(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds
+    );
+    let tid = model
+        .entities
+        .topics
+        .iter()
+        .position(|t| t.name == "Sig")
+        .expect("topic");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Topic(hale_model::TopicId(
+            tid as u32,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "a topic-grain hole must have the same reach as a \
+         subject-grain one"
+    );
+}
