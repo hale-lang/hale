@@ -1592,6 +1592,7 @@ fn main() {
         hale_model::AbsorbedEvent::Publish {
             subject: "Orders".to_string(),
             declared_topic: Some(hale_model::TopicId(999)),
+            in_loop: false,
         },
     );
     assert!(
@@ -3094,7 +3095,7 @@ fn main() { App { }; }
         at: hale_model::EntityRef::Subject(hale_model::SubjectId(
             sid as u32,
         )),
-        kind: hale_model::HoleKind::UnanalyzedBody,
+        kind: hale_model::HoleKind::DynamicEndpoint,
         hides: hale_model::RelationSet::SUBSCRIBES,
         authored_site: None,
         reason: "subscriber set incomplete".to_string(),
@@ -3147,7 +3148,7 @@ fn main() { App { }; }
         at: hale_model::EntityRef::Subject(hale_model::SubjectId(
             wild,
         )),
-        kind: hale_model::HoleKind::UnanalyzedBody,
+        kind: hale_model::HoleKind::DynamicEndpoint,
         hides: hale_model::RelationSet::SUBSCRIBES,
         authored_site: None,
         reason: "subscriber set incomplete".to_string(),
@@ -3264,7 +3265,7 @@ fn main() { App { }; }
         at: hale_model::EntityRef::Subject(hale_model::SubjectId(
             sid as u32,
         )),
-        kind: hale_model::HoleKind::UnanalyzedBody,
+        kind: hale_model::HoleKind::DynamicEndpoint,
         hides: hale_model::RelationSet::SUBSCRIBES,
         authored_site: None,
         reason: "subscriber set incomplete".to_string(),
@@ -3316,7 +3317,7 @@ fn main() { App { }; }
         at: hale_model::EntityRef::Topic(hale_model::TopicId(
             tid as u32,
         )),
-        kind: hale_model::HoleKind::UnanalyzedBody,
+        kind: hale_model::HoleKind::DynamicEndpoint,
         hides: hale_model::RelationSet::SUBSCRIBES,
         authored_site: None,
         reason: "subscriber set incomplete".to_string(),
@@ -3385,4 +3386,104 @@ fn main() { App { }; }
         model.validate().is_err(),
         "two direct calls at one (from, site) must be rejected"
     );
+}
+
+/// Review pin (round 7): interior dispatch identity is validated —
+/// a group without a dispatch rendering, and one group id shared
+/// by two DIFFERENT dispatches, are both rejected (an arbitrary
+/// group bucket would let `bound`'s per-group MAX absorb what must
+/// sum).
+#[test]
+fn interior_dispatch_groups_are_validated() {
+    let src = r#"
+locus Gate {
+    fn probe(r: std::http::Router, req: std::http::Request) -> Int {
+        let resp = r.dispatch(req);
+        return resp.status;
+    }
+}
+main locus App {
+    params { n: Int = 0; }
+}
+fn main() {
+    let r = std::http::Router { };
+    let req = std::http::Request { method: "GET", path: "/", body: "" };
+    println(Gate { }.probe(r, req));
+}
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let base = derive_application_model(&bundle);
+    base.validate().expect("the built model is lawful");
+    let carrier = |m: &mut hale_model::ApplicationModel| {
+        let n = m.legacy.stdlib_absorption[0].nodes.len() as u32;
+        m.legacy.stdlib_absorption[0].nodes.push(
+            hale_model::AbsorbedNode {
+                display: "std::x::carrier".to_string(),
+                carries: vec!["money".to_string()],
+                direct_effects: Vec::new(),
+                events: Vec::new(),
+            },
+        );
+        n
+    };
+    // The review's counterexample: two dispatch-less calls sharing
+    // group 7.
+    let mut m = base.clone();
+    let a = carrier(&mut m);
+    let b = carrier(&mut m);
+    for t in [a, b] {
+        m.legacy.stdlib_absorption[0].nodes[0].events.push(
+            hale_model::AbsorbedEvent::Call {
+                target: hale_model::AbsorbedTarget::Interior(t),
+                dispatch: None,
+                in_loop: false,
+                group: Some(7),
+            },
+        );
+    }
+    assert!(
+        m.validate().is_err(),
+        "a group without a dispatch rendering is not a defined shape"
+    );
+    // One group id, two DIFFERENT dispatch identities.
+    let mut m = base.clone();
+    let a = carrier(&mut m);
+    let b = carrier(&mut m);
+    for (t, method) in [(a, "pay"), (b, "refund")] {
+        m.legacy.stdlib_absorption[0].nodes[0].events.push(
+            hale_model::AbsorbedEvent::Call {
+                target: hale_model::AbsorbedTarget::Interior(t),
+                dispatch: Some((
+                    "Payer".to_string(),
+                    method.to_string(),
+                )),
+                in_loop: false,
+                group: Some(7),
+            },
+        );
+    }
+    assert!(
+        m.validate().is_err(),
+        "one group id inside a node is ONE dispatch"
+    );
+    // Genuine alternatives of one dispatch stay lawful.
+    let mut m = base.clone();
+    let a = carrier(&mut m);
+    let b = carrier(&mut m);
+    for t in [a, b] {
+        m.legacy.stdlib_absorption[0].nodes[0].events.push(
+            hale_model::AbsorbedEvent::Call {
+                target: hale_model::AbsorbedTarget::Interior(t),
+                dispatch: Some((
+                    "Payer".to_string(),
+                    "pay".to_string(),
+                )),
+                in_loop: false,
+                group: Some(7),
+            },
+        );
+    }
+    m.validate()
+        .expect("conformer alternatives of one dispatch are lawful");
 }

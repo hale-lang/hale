@@ -1102,42 +1102,74 @@ impl ApplicationModel {
         // excluded from the count.
         {
             use crate::relation::DispatchKind;
+            // (member count, still-lawful, the ONE dispatch pair —
+            // interface DISPLAY + method — every member must share)
+            struct SiteClass {
+                n: usize,
+                ok: bool,
+                pair: Option<(String, String)>,
+            }
+            let iface_display = |raw: &str| -> String {
+                e.interfaces
+                    .iter()
+                    .find(|x| x.name == raw)
+                    .map(|x| x.display.clone())
+                    .unwrap_or_else(|| raw.to_string())
+            };
             let mut class: std::collections::BTreeMap<
                 (u32, u32),
-                (usize, bool, Option<&str>),
+                SiteClass,
             > = std::collections::BTreeMap::new();
+            let mut join = |key: (u32, u32),
+                            pair: Option<(String, String)>| {
+                let entry =
+                    class.entry(key).or_insert(SiteClass {
+                        n: 0,
+                        ok: true,
+                        pair: None,
+                    });
+                entry.n += 1;
+                match (pair, &entry.pair) {
+                    (None, _) => entry.ok = false,
+                    (Some(p), None) => entry.pair = Some(p),
+                    (Some(p), Some(prev)) => {
+                        if p != *prev {
+                            entry.ok = false;
+                        }
+                    }
+                }
+            };
             for c in &self.relations.calls {
                 if matches!(c.dispatch, DispatchKind::ViaStdlib) {
                     continue;
                 }
-                let entry = class
-                    .entry((c.from.0, c.site))
-                    .or_insert((0, true, None));
-                entry.0 += 1;
-                match &c.dispatch {
+                let pair = match &c.dispatch {
                     DispatchKind::Interface { interface } => {
-                        match entry.2 {
-                            None => entry.2 = Some(interface),
-                            Some(prev) if prev == interface => {}
-                            Some(_) => entry.1 = false,
-                        }
+                        let method = e.functions[c.to.index()]
+                            .name
+                            .rsplit("::")
+                            .next()
+                            .unwrap_or_default()
+                            .to_string();
+                        Some((iface_display(interface), method))
                     }
-                    _ => entry.1 = false,
-                }
+                    _ => None,
+                };
+                join((c.from.0, c.site), pair);
             }
             for a in &self.legacy.stdlib_absorption {
-                let entry = class
-                    .entry((a.from.0, a.site))
-                    .or_insert((0, true, None));
-                entry.0 += 1;
-                if a.entry_dispatch.is_none() {
-                    entry.1 = false;
-                }
+                join(
+                    (a.from.0, a.site),
+                    a.entry_dispatch.clone(),
+                );
             }
-            for (i, ((_, _), (n, all_iface, _))) in
-                class.iter().enumerate()
-            {
-                if *n > 1 && !all_iface {
+            for (i, (_, cl)) in class.iter().enumerate() {
+                // >1 member ⇒ the alternatives of ONE dispatch:
+                // interface rows with ONE (interface, method)
+                // identity, absorption entries carrying the SAME
+                // rendering (round 7: entry compatibility is
+                // identity agreement, never mere presence).
+                if cl.n > 1 && !cl.ok {
                     return Err(ModelError::NotCanonical {
                         table: "calls.dispatch_site",
                         index: i,
@@ -1184,11 +1216,20 @@ impl ApplicationModel {
                 });
             }
             for n in &a.nodes {
+                // Interior dispatch identity (round 7): one group
+                // id inside a node is ONE dispatch — `bound` folds
+                // same-group alternatives with MAX, so an
+                // arbitrary bucket would absorb what must sum.
+                let mut node_groups: std::collections::BTreeMap<
+                    u32,
+                    &(String, String),
+                > = std::collections::BTreeMap::new();
                 for ev in &n.events {
                     match ev {
                         crate::AbsorbedEvent::Call {
                             target,
                             dispatch,
+                            group,
                             ..
                         } => {
                             let ok = match target {
@@ -1238,6 +1279,33 @@ impl ApplicationModel {
                                         },
                                     );
                                 }
+                            }
+                            // group ⇔ dispatch, and same group ⇒
+                            // identical (interface, method)
+                            // (round 7).
+                            let lawful = match (group, dispatch) {
+                                (None, None) => true,
+                                (Some(g), Some(d)) => {
+                                    match node_groups.entry(*g) {
+                                        std::collections::btree_map::Entry::Vacant(v) => {
+                                            v.insert(d);
+                                            true
+                                        }
+                                        std::collections::btree_map::Entry::Occupied(o) => {
+                                            *o.get() == d
+                                        }
+                                    }
+                                }
+                                _ => false,
+                            };
+                            if !lawful {
+                                return Err(
+                                    ModelError::NotCanonical {
+                                        table:
+                                            "legacy.stdlib_absorption.dispatch",
+                                        index: i,
+                                    },
+                                );
                             }
                         }
                         // The TYPED publish identity judgments
