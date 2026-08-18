@@ -664,6 +664,42 @@ pub fn lower_claims(
             ));
         }
         for (dim, limit) in &f.quantities {
+            // The quantitative evaluator refuses an undeclared
+            // user-class dimension with its own wording; the
+            // diagnostic is retained here as a lowering issue
+            // (review round 6), and the judgment carries the
+            // verdict consequence (Invalid).
+            if let QuantDim::UserClass(i) = dim {
+                if !declared_classes.contains(i) {
+                    let bad = effect_names
+                        .get(*i as usize)
+                        .cloned()
+                        .unwrap_or_default();
+                    let mut near: Vec<&String> = effect_names
+                        .iter()
+                        .enumerate()
+                        .filter(|(j, _)| {
+                            declared_classes.contains(&(*j as u16))
+                        })
+                        .map(|(_, n)| n)
+                        .filter(|n| crate::effects::close(n, &bad))
+                        .collect();
+                    near.sort();
+                    let hint = match near.first() {
+                        Some(n) => format!(" Did you mean `{}`?", n),
+                        None => String::new(),
+                    };
+                    issues_out.push((
+                        format!(
+                            "`{}` budgets effect class `{}`, which is \
+                             never declared. Add `effect {};` at the \
+                             top level.{}",
+                            subj_display, bad, bad, hint
+                        ),
+                        f.name.span,
+                    ));
+                }
+            }
             rows.push((
                 raw.to_string(),
                 ClaimOrigin::Annotation,

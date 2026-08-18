@@ -969,3 +969,75 @@ fn main() { App { }; }
         "a cyclic class must not hold vacuously"
     );
 }
+
+/// Review pin (round 6): an undeclared user-class `@budget`
+/// dimension judges Invalid (the quantitative evaluator refuses
+/// it; the row must not fall through to Uncertified), the
+/// evaluator's diagnostic is retained as a lowering issue, and a
+/// VALID but unmigrated budget still judges Uncertified.
+#[test]
+fn undeclared_budget_class_is_invalid_not_uncertified() {
+    let src = r#"
+effect money;
+@budget(monye = 1)
+fn transfer(v: Int) -> Int { return v; }
+@budget(money = 1)
+fn charge(v: Int) -> Int { return v; }
+main locus App {
+    run() { println(transfer(1) + charge(1)); }
+}
+fn main() { App { }; }
+"#;
+    let (_model, table, _evidence, judged) = derive_all(src);
+    let budget_rows: Vec<&hale_model::ClaimRow> = table
+        .rows
+        .iter()
+        .filter(|r| {
+            matches!(
+                r.law,
+                ClaimIr::QuantBudget {
+                    dim: hale_model::QuantDimIr::UserClass(_),
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert_eq!(budget_rows.len(), 2, "both budgets lower");
+    let verdict_of = |name: &str| {
+        let row = budget_rows
+            .iter()
+            .find(|r| r.name == name)
+            .expect("row");
+        judged
+            .iter()
+            .find(|j| j.ordinal == row.ordinal)
+            .expect("judged")
+            .verdict
+    };
+    assert_eq!(
+        verdict_of("transfer"),
+        Verdict::Invalid,
+        "an undeclared class is not a valid budget dimension"
+    );
+    assert_eq!(
+        verdict_of("charge"),
+        Verdict::Uncertified,
+        "a valid class with an unmigrated engine stays Uncertified"
+    );
+    assert_eq!(
+        table
+            .issues
+            .iter()
+            .filter(|i| i.message.contains("budgets effect class"))
+            .count(),
+        1,
+        "the evaluator's diagnostic is retained as a lowering issue"
+    );
+    assert!(
+        table
+            .issues
+            .iter()
+            .any(|i| i.message.contains("Did you mean `money`?")),
+        "the near-miss hint survives"
+    );
+}

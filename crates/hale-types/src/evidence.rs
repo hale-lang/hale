@@ -33,7 +33,12 @@ use crate::symbol::Bundle;
 /// data (stdlib surface classification, path renames, stdlib
 /// source) are hashed in directly, so drifting them does not rely
 /// on anyone remembering this constant.
-pub const ANALYSIS_SEMANTICS_VERSION: u32 = 1;
+/// v2 (review round 6): cyclic-class certificates now judge
+/// Invalid instead of replaying a vacuous Holds, and an undeclared
+/// user-class `@budget` dimension judges Invalid instead of
+/// Uncertified — evidence produced under v1 semantics must not be
+/// replayed by a v2 judgment (or vice versa).
+pub const ANALYSIS_SEMANTICS_VERSION: u32 = 2;
 
 /// Digest of the certificate engines' inputs OUTSIDE the model:
 /// the analysis-semantics version above, the Hale-source stdlib

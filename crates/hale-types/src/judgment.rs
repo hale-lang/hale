@@ -4044,7 +4044,21 @@ pub fn judge_certificates(
             }
             ClaimIr::DependsSet { .. } => (None, None, &[]),
             ClaimIr::AllocBudget { at, .. } => (None, at.0, &[]),
-            ClaimIr::QuantBudget { at, .. } => (None, at.0, &[]),
+            ClaimIr::QuantBudget { at, dim, .. } => (
+                None,
+                at.0,
+                // A user-class budget dimension is a class
+                // reference like any other (review round 6): an
+                // undeclared class makes the row Invalid, never a
+                // fall-through Uncertified — the quantitative
+                // evaluator refuses it the same way.
+                match dim {
+                    hale_model::QuantDimIr::UserClass(c) => {
+                        std::slice::from_ref(c)
+                    }
+                    _ => &[],
+                },
+            ),
             _ => continue,
         };
         let mut diags: Vec<Diag> = Vec::new();
