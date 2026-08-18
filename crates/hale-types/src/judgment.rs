@@ -76,18 +76,19 @@ enum StepIr {
     },
 }
 
-/// Bus-composition hole index (GH #476 rounds 4–5): ONE shared
+/// Bus-composition hole index (GH #476 rounds 4–6): ONE shared
 /// lookup for every judgment that composes publishes with
-/// subscribers. It carries BOTH anchor grains the model permits —
-/// subject-grain holes as covering PATTERNS (the same
-/// exact-or-wildcard predicate known delivery applies: a hole at
-/// `audit.**` covers a publish to `audit.event`) and TOPIC-grain
-/// holes keyed by topic name. A publish is projected through every
-/// spelling it is known by (topic name and wire subject), so the
-/// same canonical hole has the same reach in every judgment.
+/// subscribers, over the model's TYPED identities. Topic-grain
+/// holes match only a publish's `declared_topic: Option<TopicId>`;
+/// subject-grain holes cover only the publish's WIRE pattern (the
+/// same exact-or-wildcard predicate known delivery applies: a hole
+/// at `audit.**` covers a wire subject `audit.event`). Strings
+/// never cross the divide — a literal wire address whose text
+/// collides with a topic name is not that topic, and a topic's
+/// NAME is not a wire spelling (round 6).
 struct BusHoles {
     subject_pats: Vec<(String, hale_model::RelationSet)>,
-    topic_holes: BTreeMap<String, hale_model::RelationSet>,
+    topic_holes: BTreeMap<u32, hale_model::RelationSet>,
 }
 
 impl BusHoles {
@@ -98,7 +99,7 @@ impl BusHoles {
             hale_model::RelationSet,
         )> = Vec::new();
         let mut topic_holes: BTreeMap<
-            String,
+            u32,
             hale_model::RelationSet,
         > = BTreeMap::new();
         for h in &model.holes {
@@ -111,9 +112,7 @@ impl BusHoles {
                 }
                 EntityRef::Topic(t) => {
                     let e2 = topic_holes
-                        .entry(
-                            e.topics[t.index()].name.clone(),
-                        )
+                        .entry(t.0)
                         .or_insert(hale_model::RelationSet(0));
                     *e2 = e2.union(h.hides);
                 }
@@ -129,19 +128,20 @@ impl BusHoles {
     fn blocks(
         &self,
         mask: hale_model::RelationSet,
-        texts: &[&str],
+        declared_topic: Option<u32>,
+        wire: Option<&str>,
     ) -> bool {
-        texts.iter().any(|t| {
+        declared_topic.is_some_and(|t| {
             self.topic_holes
-                .get(*t)
+                .get(&t)
                 .is_some_and(|m| m.intersects(mask))
-        }) || self.subject_pats.iter().any(|(pat, m)| {
-            m.intersects(mask)
-                && texts.iter().any(|t| {
-                    pat == t
+        }) || wire.is_some_and(|w| {
+            self.subject_pats.iter().any(|(pat, m)| {
+                m.intersects(mask)
+                    && (pat == w
                         || (pat.contains("**")
-                            && crate::wildcard_match(pat, t))
-                })
+                            && crate::wildcard_match(pat, w)))
+            })
         })
     }
 }
@@ -313,7 +313,7 @@ pub fn judge_forbid_reaches(
     // fn → publish rows (site, subject id, written text, prov).
     let mut pubs_of: BTreeMap<
         FunctionId,
-        Vec<(u32, u32, String, ProvenanceId)>,
+        Vec<(u32, u32, Option<u32>, String, ProvenanceId)>,
     > = BTreeMap::new();
     for p in &r.publishes {
         let written = match p.declared_topic {
@@ -323,6 +323,7 @@ pub fn judge_forbid_reaches(
         pubs_of.entry(p.function).or_default().push((
             p.site,
             p.subject.0,
+            p.declared_topic.map(|t| t.0),
             written,
             p.provenance,
         ));
@@ -384,18 +385,6 @@ pub fn judge_forbid_reaches(
             _ => {}
         }
     }
-    // Topic-name spelling → wire subject, for publish rows that
-    // speak the NAME.
-    let topic_wire: BTreeMap<&str, &str> = e
-        .topics
-        .iter()
-        .map(|t| {
-            (
-                t.name.as_str(),
-                e.subjects[t.subject.index()].pattern.as_str(),
-            )
-        })
-        .collect();
     // The evaluator refuses at the FIRST unresolved site in source
     // order — hole selection within a space is by authored site,
     // never by the model's canonical (kind, reason) sort (review
@@ -746,6 +735,13 @@ pub fn judge_forbid_reaches(
         // Violated, so the distinct signal must survive the search
         // (review round 2: byte-identical message, wrong verdict).
         let mut truncated = false;
+        // A SET-LEVEL subscriber hole has no authored position
+        // relative to the known subscriber rows, so it cannot
+        // preempt them (round 6): known edges still compose — a
+        // known counterexample stays Violated — and the flag only
+        // downgrades a would-be Holds to Uncertified after the
+        // search.
+        let mut bus_unknown: Option<(String, String)> = None;
         let ordered_roots = fnkey_sorted(&roots);
         let search = model_graph::search(
             ordered_roots.iter().map(|f| V::User(*f)),
@@ -935,38 +931,31 @@ pub fn judge_forbid_reaches(
                                 diags.push(Diag::ty(row_span, msg));
                                 return Visit::hole(());
                             }
-                            for (_, sid, written, ppid) in
+                            for (_, sid, topic, written, ppid) in
                                 pubs_of.get(f).into_iter().flatten()
                             {
-                                // A hole at the SUBJECT hiding
-                                // SUBSCRIBES: the known subscriber
-                                // rows are not the whole story, so
-                                // fan-out must not certify absence
-                                // (review round 3).
+                                // A hole covering this publish's
+                                // TYPED identity — its declared
+                                // topic or its wire subject — means
+                                // the known subscriber rows are a
+                                // lower bound. Set-level holes have
+                                // no authored position, so they
+                                // defer rather than halt
+                                // (rounds 3–6).
                                 if bus_holes.blocks(
                                     hale_model::RelationSet::SUBSCRIBES,
-                                    &[
-                                        written.as_str(),
+                                    *topic,
+                                    Some(
                                         e.subjects[*sid as usize]
                                             .pattern
                                             .as_str(),
-                                    ],
-                                ) {
-                                    diags.push(Diag::ty(
-                                        row_span,
-                                        format!(
-                                            "claim `{}` cannot be certified: `{}` \
-                                             (reachable from `{}`) publishes to \
-                                             \"{}\", whose subscribers are not \
-                                             fully modeled. An unresolvable edge \
-                                             fails closed",
-                                            row.name,
-                                            display(*v),
-                                            src_ref.name.display,
-                                            written
-                                        ),
+                                    ),
+                                ) && bus_unknown.is_none()
+                                {
+                                    bus_unknown = Some((
+                                        display(*v),
+                                        written.clone(),
                                     ));
-                                    return Visit::hole(());
                                 }
                                 for (handler, spid) in subs_of
                                     .get(sid)
@@ -1116,37 +1105,40 @@ pub fn judge_forbid_reaches(
                                     }
                                     return Visit::hole(());
                                 }
-                                AbsorbedEvent::Publish { subject } => {
+                                AbsorbedEvent::Publish {
+                                    subject,
+                                    declared_topic,
+                                } => {
                                     if !*via_bus {
                                         continue;
                                     }
                                     {
-                                        let mut texts: Vec<&str> =
-                                            vec![subject.as_str()];
-                                        if let Some(w) = topic_wire
-                                            .get(subject.as_str())
-                                        {
-                                            texts.push(w);
-                                        }
+                                        // Typed identity: a
+                                        // declared topic's wire is
+                                        // its subject's pattern; a
+                                        // literal's wire is its own
+                                        // text (round 6).
+                                        let wire = match declared_topic {
+                                            Some(t) => e.subjects
+                                                [e.topics
+                                                    [t.index()]
+                                                .subject
+                                                .index()]
+                                            .pattern
+                                            .as_str(),
+                                            None => subject.as_str(),
+                                        };
                                         if bus_holes.blocks(
                                             hale_model::RelationSet::SUBSCRIBES,
-                                            &texts,
-                                        ) {
-                                            diags.push(Diag::ty(
-                                                row_span,
-                                                format!(
-                                                    "claim `{}` cannot be certified: `{}` \
-                                                     (reachable from `{}`) publishes to \
-                                                     \"{}\", whose subscribers are not \
-                                                     fully modeled. An unresolvable edge \
-                                                     fails closed",
-                                                    row.name,
-                                                    display(*v),
-                                                    src_ref.name.display,
-                                                    subject
-                                                ),
+                                            declared_topic
+                                                .map(|t| t.0),
+                                            Some(wire),
+                                        ) && bus_unknown.is_none()
+                                        {
+                                            bus_unknown = Some((
+                                                display(*v),
+                                                subject.clone(),
                                             ));
-                                            return Visit::hole(());
                                         }
                                         for (handler, spid) in
                                             subject_by_text
@@ -1282,6 +1274,24 @@ pub fn judge_forbid_reaches(
                         ),
                     ));
                     Verdict::Violated
+                } else if let Some((vd, subj)) = &bus_unknown {
+                    // No known counterexample, but a subscriber set
+                    // in the composition is incomplete.
+                    diags.push(Diag::ty(
+                        row_span,
+                        format!(
+                            "claim `{}` cannot be certified: `{}` \
+                             (reachable from `{}`) publishes to \
+                             \"{}\", whose subscribers are not \
+                             fully modeled. An unresolvable edge \
+                             fails closed",
+                            row.name,
+                            vd,
+                            src_ref.name.display,
+                            subj
+                        ),
+                    ));
+                    Verdict::Uncertified
                 } else {
                     Verdict::Holds
                 }

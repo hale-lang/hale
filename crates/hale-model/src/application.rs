@@ -14,7 +14,7 @@ use crate::entity::{
     Seed, Subject, ThreadDomain, Topic, TypeDecl,
 };
 use crate::hole::Hole;
-use crate::ids::{EntityRef, FunctionId, ProvenanceId};
+use crate::ids::{EntityRef, FunctionId, ProvenanceId, TopicId};
 use crate::provenance::{Provenance, ProvenanceTable};
 use crate::relation::{
     AffinedTo, Call, DeadInterfaceCall, DeclaredIn, DeclaresPublish,
@@ -209,7 +209,17 @@ pub enum AbsorbedEvent {
     /// An unfollowable call edge (fires under `via { calls }`).
     CallHole(AbsorbedHoleKind),
     /// A publish to a known subject (fans out under `via { bus }`).
-    Publish { subject: String },
+    Publish {
+        /// Canonical spelling for delivery matching (topic name for
+        /// a declared-topic reference, wire text otherwise).
+        subject: String,
+        /// TYPED topic identity when the interior publish speaks a
+        /// declared topic — a literal wire address whose text
+        /// collides with a topic name stays `None` (round 6: hole
+        /// coverage must not re-conflate the identities the model
+        /// keeps apart).
+        declared_topic: Option<TopicId>,
+    },
     /// A publish to a computed subject (fires under `via { bus }`).
     PublishHole,
     /// The absorption walk hit its step ceiling before settling —

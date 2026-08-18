@@ -917,3 +917,121 @@ fn main() { App { }; }
          subject-grain one"
     );
 }
+
+/// Review pin (round 6): hole coverage is TYPED — a hole at
+/// Topic(Orders) does not block a LITERAL publish whose wire text
+/// merely collides with the topic's name.
+#[test]
+fn topic_hole_does_not_block_literal_publish() {
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic Orders { payload: Cmd; subject: "wire.orders"; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) { "Orders" <- v; }
+}
+fn quiet(v: Int) -> Int { return v; }
+group a_side = { A };
+group b_side = { quiet };
+main locus App {
+    params { a: A = A { }; }
+    claims { iso: forbid reaches(a_side, b_side) via { bus }; }
+    run() { self.a.go(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds
+    );
+    let tid = model
+        .entities
+        .topics
+        .iter()
+        .position(|t| t.name == "Orders")
+        .expect("topic");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Topic(hale_model::TopicId(
+            tid as u32,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds,
+        "the literal wire address `Orders` is not the topic Orders \
+         — a typed topic hole must not reach it"
+    );
+}
+
+/// Review pin (round 6): a set-level subscriber hole cannot erase
+/// an already-proven bus violation — the known F -> H path decides
+/// Violated regardless of additional unknown subscribers.
+#[test]
+fn known_bus_violation_survives_subscriber_hole() {
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic Sig { payload: Cmd; subject: "app.sig"; }
+locus A {
+    params { n: Int = 0; }
+    bus { publish Sig; }
+    fn go(v: Int) { Sig <- Cmd { }; }
+}
+locus B {
+    params { n: Int = 0; }
+    bus { subscribe Sig as on_sig; }
+    fn on_sig(c: Cmd) { self.n = c.v; }
+}
+group a_side = { A };
+group b_side = { B };
+main locus App {
+    params { a: A = A { }; b: B = B { }; }
+    claims { iso: forbid reaches(a_side, b_side) via { bus }; }
+    run() { self.a.go(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "the known subscriber path is a counterexample"
+    );
+    let sid = model
+        .entities
+        .subjects
+        .iter()
+        .position(|su| su.pattern == "app.sig")
+        .expect("subject");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            sid as u32,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "additional unknown subscribers cannot un-prove the known \
+         path"
+    );
+}

@@ -2578,9 +2578,23 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                             alloc_summary::EffectSiteKind::Publish(
                                 Some(subj),
                             ) => {
+                                // The SYNTACTIC form decides, same
+                                // rule as user publish rows: a
+                                // string literal is a wire address
+                                // even when its text collides with
+                                // a topic name (round 6).
+                                let declared_topic = if subj.literal
+                                {
+                                    None
+                                } else {
+                                    topic_id
+                                        .get(&subj.text)
+                                        .copied()
+                                };
                                 events.push(
                                     hale_model::AbsorbedEvent::Publish {
                                         subject: subj.text.clone(),
+                                        declared_topic,
                                     },
                                 );
                             }
