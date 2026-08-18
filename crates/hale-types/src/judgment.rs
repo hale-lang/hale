@@ -3009,7 +3009,7 @@ pub fn judge_bound(
     }
     let mut pubs_of: BTreeMap<
         FunctionId,
-        Vec<(u32, String, bool, ProvenanceId)>,
+        Vec<(u32, String, bool, ProvenanceId, Option<u32>, u32)>,
     > = BTreeMap::new();
     for p in &r.publishes {
         let written = match p.declared_topic {
@@ -3021,6 +3021,8 @@ pub fn judge_bound(
             written,
             p.in_loop,
             p.provenance,
+            p.declared_topic.map(|t| t.0),
+            p.subject.0,
         ));
     }
     for v in pubs_of.values_mut() {
@@ -3101,19 +3103,6 @@ pub fn judge_bound(
             _ => {}
         }
     }
-    // Publish events carry either the topic NAME or the wire
-    // subject — the covering check tests both spellings against
-    // each hole pattern (exact-or-wildcard, round 4).
-    let topic_wire_b: BTreeMap<&str, &str> = e
-        .topics
-        .iter()
-        .map(|t| {
-            (
-                t.name.as_str(),
-                e.subjects[t.subject.index()].pattern.as_str(),
-            )
-        })
-        .collect();
     let class_atoms = |name: &str| -> BTreeSet<String> {
         match e.effect_classes.iter().find(|c| c.name == name) {
             Some(c) => match &c.definition {
@@ -3309,13 +3298,41 @@ pub fn judge_bound(
             absorb_of: &'x BTreeMap<FunctionId, Vec<(u32, u32)>>,
             pubs_of: &'x BTreeMap<
                 FunctionId,
-                Vec<(u32, String, bool, ProvenanceId)>,
+                Vec<(
+                    u32,
+                    String,
+                    bool,
+                    ProvenanceId,
+                    Option<u32>,
+                    u32,
+                )>,
             >,
             holes_of: &'x BTreeMap<FunctionId, Vec<FnHole>>,
             absorption: &'x [hale_model::StdlibAbsorption],
             effects_holed: &'x BTreeSet<FunctionId>,
             bus_holes: &'x BusHoles,
-            topic_wire: &'x BTreeMap<&'x str, &'x str>,
+            subjects: &'x [hale_model::Subject],
+            topics: &'x [hale_model::Topic],
+        }
+        impl<'x> Ctx<'x> {
+            fn wire_of(&self, sid: u32) -> String {
+                self.subjects[sid as usize].pattern.clone()
+            }
+            fn wire_of_topic_or(
+                &self,
+                t: Option<hale_model::TopicId>,
+                text: &str,
+            ) -> String {
+                match t {
+                    Some(t) => self.subjects[self.topics
+                        [t.index()]
+                    .subject
+                    .index()]
+                    .pattern
+                    .clone(),
+                    None => text.to_string(),
+                }
+            }
         }
         fn site_count_ir(
             v: V,
@@ -3371,6 +3388,10 @@ pub fn judge_bound(
                     subject: String,
                     in_loop: bool,
                     prov: Option<ProvenanceId>,
+                    /// TYPED identity for hole coverage (round 6):
+                    /// the declared topic id and the wire pattern.
+                    topic: Option<u32>,
+                    wire: String,
                 },
                 Computed(Option<ProvenanceId>),
                 Truncated,
@@ -3480,12 +3501,20 @@ pub fn judge_bound(
                                 evs.push(Ev::Computed(Some(*p)));
                             }
                         } else {
-                            let (_, written, in_loop, pprov) =
-                                &pubs[i];
+                            let (
+                                _,
+                                written,
+                                in_loop,
+                                pprov,
+                                topic,
+                                sid,
+                            ) = &pubs[i];
                             evs.push(Ev::Publish {
                                 subject: written.clone(),
                                 in_loop: *in_loop,
                                 prov: Some(*pprov),
+                                topic: *topic,
+                                wire: cx.wire_of(*sid),
                             });
                         }
                     }
@@ -3522,11 +3551,16 @@ pub fn judge_bound(
                             AbsorbedEvent::Publish {
                                 subject,
                                 in_loop,
-                                ..
+                                declared_topic,
                             } => evs.push(Ev::Publish {
                                 subject: subject.clone(),
                                 in_loop: *in_loop,
                                 prov: None,
+                                topic: declared_topic.map(|t| t.0),
+                                wire: cx.wire_of_topic_or(
+                                    *declared_topic,
+                                    subject,
+                                ),
                             }),
                             AbsorbedEvent::PublishHole => {
                                 evs.push(Ev::Computed(None))
@@ -3610,17 +3644,13 @@ pub fn judge_bound(
                         subject,
                         in_loop,
                         prov,
+                        topic,
+                        wire,
                     } => {
-                        let mut texts: Vec<&str> =
-                            vec![subject.as_str()];
-                        if let Some(w) =
-                            cx.topic_wire.get(subject.as_str())
-                        {
-                            texts.push(w);
-                        }
                         if cx.bus_holes.blocks(
                             hale_model::RelationSet::SUBSCRIBES,
-                            &texts,
+                            topic,
+                            Some(wire.as_str()),
                         ) && unknown.is_none()
                         {
                             // Known handlers still count below —
@@ -3698,7 +3728,8 @@ pub fn judge_bound(
             absorption,
             effects_holed: &effects_holed,
             bus_holes: &bus_holes,
-            topic_wire: &topic_wire_b,
+            subjects: &e.subjects,
+            topics: &e.topics,
         };
         let mut worst: (u64, Vec<V>) = (0, Vec::new());
         let mut why: Option<UnboundedIr> = None;

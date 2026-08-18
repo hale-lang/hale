@@ -3329,3 +3329,60 @@ fn main() { App { }; }
         "a topic-grain hole must reach the count walk"
     );
 }
+
+/// Review pin (round 6): the model REJECTS two direct calls
+/// sharing one (from, site) — the schema's contract is that
+/// multiple rows at one site are conformer alternatives of one
+/// interface dispatch (`bound` folds them with MAX; two direct
+/// calls are two sites and must SUM), so the shape the fold relies
+/// on is validated, not assumed.
+#[test]
+fn two_direct_calls_cannot_share_a_site() {
+    let src = r#"
+fn charge_a(v: Int) -> Int { return v; }
+fn charge_b(v: Int) -> Int { return v; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) -> Int { return charge_a(v) + charge_b(v); }
+}
+main locus App {
+    params { a: A = A { }; }
+    run() { println(self.a.go(1)); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    model.validate().expect("the built model is lawful");
+    // Force the unlawful shape: both direct calls at one site.
+    let mut sites: Vec<u32> = model
+        .relations
+        .calls
+        .iter()
+        .filter(|c| {
+            matches!(c.dispatch, hale_model::DispatchKind::Direct)
+        })
+        .map(|c| c.site)
+        .collect();
+    sites.sort();
+    sites.dedup();
+    assert!(
+        sites.len() >= 2,
+        "two direct calls occupy two authored sites"
+    );
+    let target = sites[0];
+    for c in &mut model.relations.calls {
+        if matches!(c.dispatch, hale_model::DispatchKind::Direct) {
+            c.site = target;
+        }
+    }
+    model
+        .relations
+        .calls
+        .sort_by_key(|c| (c.from.0, c.to.0, c.site));
+    assert!(
+        model.validate().is_err(),
+        "two direct calls at one (from, site) must be rejected"
+    );
+}

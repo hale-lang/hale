@@ -1088,6 +1088,64 @@ impl ApplicationModel {
                 });
             }
         }
+        // One authored call site = ONE dispatch (review round 6).
+        // `bound` folds a (from, site) class with MAX because the
+        // schema's contract says multiple rows at one site are the
+        // conformer ALTERNATIVES of one interface dispatch; two
+        // direct calls are two authored sites and must SUM. Enforce
+        // the shape: a class with more than one member — counting
+        // non-ViaStdlib call rows and absorption entries together —
+        // must be all interface alternatives (call rows of ONE
+        // interface; absorption entries with a dispatch rendering).
+        // ViaStdlib rows are the legacy contraction of the same
+        // authored call an absorption entry represents, so they are
+        // excluded from the count.
+        {
+            use crate::relation::DispatchKind;
+            let mut class: std::collections::BTreeMap<
+                (u32, u32),
+                (usize, bool, Option<&str>),
+            > = std::collections::BTreeMap::new();
+            for c in &self.relations.calls {
+                if matches!(c.dispatch, DispatchKind::ViaStdlib) {
+                    continue;
+                }
+                let entry = class
+                    .entry((c.from.0, c.site))
+                    .or_insert((0, true, None));
+                entry.0 += 1;
+                match &c.dispatch {
+                    DispatchKind::Interface { interface } => {
+                        match entry.2 {
+                            None => entry.2 = Some(interface),
+                            Some(prev) if prev == interface => {}
+                            Some(_) => entry.1 = false,
+                        }
+                    }
+                    _ => entry.1 = false,
+                }
+            }
+            for a in &self.legacy.stdlib_absorption {
+                let entry = class
+                    .entry((a.from.0, a.site))
+                    .or_insert((0, true, None));
+                entry.0 += 1;
+                if a.entry_dispatch.is_none() {
+                    entry.1 = false;
+                }
+            }
+            for (i, ((_, _), (n, all_iface, _))) in
+                class.iter().enumerate()
+            {
+                if *n > 1 && !all_iface {
+                    return Err(ModelError::NotCanonical {
+                        table: "calls.dispatch_site",
+                        index: i,
+                    });
+                }
+            }
+        }
+
         for (i, a) in self.legacy.stdlib_absorption.iter().enumerate()
         {
             if a.from.index() >= fns || a.nodes.is_empty() {
