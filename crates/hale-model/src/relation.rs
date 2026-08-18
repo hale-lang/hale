@@ -126,6 +126,9 @@ pub struct Publish {
     pub payload: PayloadContractId,
     /// Source-order site ordinal within `function`.
     pub site: u32,
+    /// The send is loop-nested (GH #476 Change 5d — a bus carrier
+    /// reached from inside a loop repeats per iteration).
+    pub in_loop: bool,
     /// `Some` iff the declared topic is keyed (validated both
     /// ways) — an undeclared or unkeyed endpoint has no key domain
     /// to invent.

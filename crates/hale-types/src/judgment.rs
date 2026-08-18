@@ -1071,6 +1071,7 @@ pub fn judge_forbid_reaches(
                                 AbsorbedEvent::Call {
                                     target,
                                     dispatch,
+                                    ..
                                 } => {
                                     if !*via_calls {
                                         continue;
@@ -1143,6 +1144,7 @@ pub fn judge_forbid_reaches(
                                 AbsorbedEvent::Publish {
                                     subject,
                                     declared_topic,
+                                    ..
                                 } => {
                                     if !*via_bus {
                                         continue;
@@ -2896,6 +2898,1026 @@ pub fn judge_endpoints(
             _ => continue,
         }
         let _ = (&fn_raw, &fn_disp, &fnkey_order);
+    }
+    out
+}
+
+/// Judge the quantitative-bound family (GH #476 Change 5d):
+/// `bound C <= N on paths from G` — call-tree SUM of carrier
+/// sites, MAX over dispatch alternatives, unbounded on recursion,
+/// loop-nested carriers, unfollowable calls, and computed
+/// subjects, exactly the evaluator's `site_count`.
+pub fn judge_bound(
+    table: &ClaimIrTable,
+    model: &ApplicationModel,
+    source_bases: &[u32],
+) -> Vec<Judged> {
+    let e = &model.entities;
+    let r = &model.relations;
+    let claim_span = |pid: ProvenanceId| -> Span {
+        span_of(&table.provenance, source_bases, pid)
+    };
+    let model_span = |pid: ProvenanceId| -> Span {
+        span_of(&model.provenance, source_bases, pid)
+    };
+    let absorption = &model.legacy.stdlib_absorption;
+    let display = |v: V| -> String {
+        match v {
+            V::User(f) => e.functions[f.index()].display.clone(),
+            V::Interior(a, n) => absorption[a as usize].nodes
+                [n as usize]
+                .display
+                .clone(),
+        }
+    };
+    let v1: BTreeSet<FunctionId> =
+        model.legacy.topology_v1_fns.iter().copied().collect();
+    let mut by_locus: BTreeMap<u32, Vec<FunctionId>> = BTreeMap::new();
+    for mo in &r.member_of {
+        by_locus.entry(mo.locus.0).or_default().push(mo.function);
+    }
+    // The 5a projection: member loci project through the summary
+    // universe (v1), but a member FREE fn enters unconditionally —
+    // the evaluator's fn_set inserts every named free fn, including
+    // declaration-only ones with no summary row (review round 2:
+    // bound did not inherit this and rejected such groups as
+    // projection-vacuous where the evaluator counts them as zero).
+    let group_fns = |g: GroupId| -> BTreeSet<FunctionId> {
+        let mut set: BTreeSet<FunctionId> = BTreeSet::new();
+        for gm in r.group_members.iter().filter(|gm| gm.group == g) {
+            match gm.member {
+                EntityRef::LocusDecl(l) => {
+                    for f in by_locus.get(&l.0).into_iter().flatten() {
+                        if v1.contains(f) {
+                            set.insert(*f);
+                        }
+                    }
+                }
+                EntityRef::Function(f) => {
+                    set.insert(f);
+                }
+                _ => {}
+            }
+        }
+        set
+    };
+    // The evaluator iterates fn sets in FnKey order — free fns
+    // (locus: None) BEFORE methods — and stops at the first
+    // unbounded root, so seeding order selects the reported reason.
+    let fnkey_sorted = |set: &BTreeSet<FunctionId>| -> Vec<FunctionId> {
+        let mut vv: Vec<FunctionId> = set.iter().copied().collect();
+        vv.sort_by_key(|f| {
+            let raw = &e.functions[f.index()].name;
+            match raw.rsplit_once("::") {
+                Some((l, m)) => (1u8, l.to_string(), m.to_string()),
+                None => (0u8, String::new(), raw.clone()),
+            }
+        });
+        vv
+    };
+    // Adjacency (calls with loop/group, publishes, subscriptions by
+    // canonical spelling), and per-fn labels for the carrier test.
+    struct CallRow {
+        site: u32,
+        to: FunctionId,
+        in_loop: bool,
+        provenance: ProvenanceId,
+    }
+    let mut calls_of: BTreeMap<FunctionId, Vec<CallRow>> =
+        BTreeMap::new();
+    for c in &r.calls {
+        if matches!(c.dispatch, DispatchKind::ViaStdlib) {
+            continue;
+        }
+        calls_of.entry(c.from).or_default().push(CallRow {
+            site: c.site,
+            to: c.to,
+            in_loop: c.in_loop,
+            provenance: c.provenance,
+        });
+    }
+    for v in calls_of.values_mut() {
+        v.sort_by_key(|cr| (cr.site, cr.to));
+    }
+    let mut absorb_of: BTreeMap<FunctionId, Vec<(u32, u32)>> =
+        BTreeMap::new();
+    for (ai, a) in absorption.iter().enumerate() {
+        absorb_of
+            .entry(a.from)
+            .or_default()
+            .push((a.site, ai as u32));
+    }
+    let mut pubs_of: BTreeMap<
+        FunctionId,
+        Vec<(u32, String, bool, ProvenanceId, Option<u32>, u32)>,
+    > = BTreeMap::new();
+    for p in &r.publishes {
+        let written = match p.declared_topic {
+            Some(t) => e.topics[t.index()].name.clone(),
+            None => e.subjects[p.subject.index()].pattern.clone(),
+        };
+        pubs_of.entry(p.function).or_default().push((
+            p.site,
+            written,
+            p.in_loop,
+            p.provenance,
+            p.declared_topic.map(|t| t.0),
+            p.subject.0,
+        ));
+    }
+    for v in pubs_of.values_mut() {
+        v.sort_by_key(|(site, ..)| *site);
+    }
+    let mut subs_by_pattern: BTreeMap<&str, Vec<FunctionId>> =
+        BTreeMap::new();
+    for su in &r.subscribes {
+        let key = match su.declared_topic {
+            Some(t) => e.topics[t.index()].name.as_str(),
+            None => e.subjects[su.subject.index()].pattern.as_str(),
+        };
+        subs_by_pattern.entry(key).or_default().push(su.handler);
+    }
+    let subs_for = |written: &str| -> Vec<FunctionId> {
+        let mut out = Vec::new();
+        for (pattern, subs) in &subs_by_pattern {
+            let covers = *pattern == written
+                || (pattern.contains("**")
+                    && crate::wildcard_match(pattern, written));
+            if covers {
+                out.extend(subs.iter().copied());
+            }
+        }
+        out
+    };
+    let mut labels_of: BTreeMap<FunctionId, Vec<&str>> =
+        BTreeMap::new();
+    for l in &model.labels {
+        if let EntityRef::Function(f) = l.at {
+            labels_of.entry(f).or_default().push(l.label.as_str());
+        }
+    }
+    // Holes trigger by relation family and carry their authored
+    // site, so the count walk consumes them at the evaluator's
+    // source position (an unfollowable edge AFTER a recursive call
+    // classifies as the cycle, not the hole).
+    #[derive(Clone)]
+    enum FnHole {
+        Unfollowable(Option<u32>, ProvenanceId),
+        Computed(Option<u32>, ProvenanceId),
+    }
+    let mut holes_of: BTreeMap<FunctionId, Vec<FnHole>> =
+        BTreeMap::new();
+    // Carrier counting needs EFFECTS beside the traversal families
+    // (review round 3): a fn whose EFFECTS rows are hidden has an
+    // UNKNOWN own-count — counting zero and certifying the bound
+    // would fail open. Bus traversal likewise needs subject-grain
+    // SUBSCRIBES: a hole at Subject(S) means fan-out through S is
+    // not fully modeled.
+    let mut effects_holed: BTreeSet<FunctionId> = BTreeSet::new();
+    let bus_holes = BusHoles::build(model);
+    for h in &model.holes {
+        match h.at {
+            EntityRef::Function(f) => {
+                if h.hides
+                    .intersects(hale_model::RelationSet::EFFECTS)
+                {
+                    effects_holed.insert(f);
+                }
+                let families = hale_model::RelationSet::CALLS
+                    .union(hale_model::RelationSet::PUBLISHES);
+                if !h.hides.intersects(families) {
+                    continue;
+                }
+                let hole = match &h.kind {
+                    HoleKind::ComputedSubject => FnHole::Computed(
+                        h.authored_site,
+                        h.provenance,
+                    ),
+                    _ => FnHole::Unfollowable(
+                        h.authored_site,
+                        h.provenance,
+                    ),
+                };
+                holes_of.entry(f).or_default().push(hole);
+            }
+            _ => {}
+        }
+    }
+    let class_atoms = |name: &str| -> BTreeSet<String> {
+        match e.effect_classes.iter().find(|c| c.name == name) {
+            Some(c) => match &c.definition {
+                hale_model::EffectClassDefinition::Composed {
+                    atoms,
+                } => atoms.iter().cloned().collect(),
+                hale_model::EffectClassDefinition::Atomic => {
+                    [name.to_string()].into_iter().collect()
+                }
+                hale_model::EffectClassDefinition::InvalidCycle => {
+                    BTreeSet::new()
+                }
+            },
+            None => [name.to_string()].into_iter().collect(),
+        }
+    };
+
+    #[derive(Clone)]
+    enum UnboundedIr {
+        Cycle(V),
+        LoopCarrier { at: V, prov: Option<ProvenanceId> },
+        Unfollowable { at: V, prov: Option<ProvenanceId> },
+        ComputedSubject { at: V, prov: Option<ProvenanceId> },
+        StepCeiling,
+    }
+
+    /// Why a count is a LOWER BOUND rather than exact (review
+    /// round 5): unknowns no longer abort the walk — the known
+    /// contribution is still counted (a known count already over
+    /// the limit proves the violation regardless of what is
+    /// hidden), and the flag downgrades a would-be Holds to
+    /// Uncertified.
+    #[derive(Clone)]
+    enum UnknownCause {
+        Effects { at: V },
+        Subscribers { at: V, subject: String },
+        Publishers { subject: String },
+    }
+
+    let mut out = Vec::new();
+    for row in &table.rows {
+        let ClaimIr::Bound { class, limit, from } = &row.law else {
+            continue;
+        };
+        let mut diags: Vec<Diag> = Vec::new();
+        let row_span = claim_span(row.provenance);
+        // ---- validation: group + class rules ----
+        let group_decl_names: Vec<&str> =
+            e.groups.iter().map(|g| g.display.as_str()).collect();
+        let mut ok = true;
+        if from.group.is_none() {
+            let mut near: Vec<&&str> = group_decl_names
+                .iter()
+                .filter(|g| {
+                    crate::effects::close(g, &from.name.display)
+                })
+                .collect();
+            near.sort();
+            let hint = match near.first() {
+                Some(n) => format!(" Did you mean `{}`?", n),
+                None => String::new(),
+            };
+            diags.push(Diag::ty(
+                claim_span(from.provenance),
+                format!(
+                    "claim `{}` names group `{}`, which is never declared. \
+                     Add `group {} = {{ … }};` at the top level.{}",
+                    row.name,
+                    from.name.display,
+                    from.name.display,
+                    hint
+                ),
+            ));
+            ok = false;
+        }
+        if class.builtin && class.name != "secret_use" {
+            diags.push(Diag::ty(
+                claim_span(class.provenance),
+                format!(
+                    "claim `{}`: `bound` takes a user-declared \
+                     effect class (or `secret_use`) — the counted \
+                     built-ins keep their `@budget` spellings \
+                     (`publish`, `block_points`, `alloc_per_call`), \
+                     and a second way to write one contract is \
+                     what this rejects",
+                    row.name
+                ),
+            ));
+            ok = false;
+        } else if class.class.is_some_and(|id| {
+            matches!(
+                e.effect_classes[id.index()].definition,
+                hale_model::EffectClassDefinition::InvalidCycle
+            )
+        }) {
+            // A cyclic definition resolves to no effect — a bound
+            // over it would hold by counting zero. Invalid BEFORE
+            // evaluation, same rule as 5a (review round 2).
+            diags.push(Diag::ty(
+                claim_span(class.provenance),
+                format!(
+                    "claim `{}`: effect class `{}` is defined in \
+                     terms of itself. A cyclic definition resolves \
+                     to no effect at all, so every contract naming \
+                     it would hold vacuously.",
+                    row.name, class.name
+                ),
+            ));
+            ok = false;
+        } else if !class.builtin
+            && class.class.map_or(true, |id| {
+                !e.effect_classes[id.index()].declared
+            })
+        {
+            let mut near: Vec<&String> = e
+                .effect_classes
+                .iter()
+                .filter(|ec| ec.declared)
+                .map(|ec| &ec.name)
+                .filter(|n| crate::effects::close(n, &class.name))
+                .collect();
+            near.sort();
+            let hint = match near.first() {
+                Some(n) => format!(" Did you mean `{}`?", n),
+                None => String::new(),
+            };
+            diags.push(Diag::ty(
+                claim_span(class.provenance),
+                format!(
+                    "claim `{}` names effect class `{}`, which is never \
+                     declared. Add `effect {};` at the top level.{}",
+                    row.name, class.name, class.name, hint
+                ),
+            ));
+            ok = false;
+        }
+        if !ok {
+            out.push(Judged {
+                ordinal: row.ordinal,
+                verdict: Verdict::Invalid,
+                diags,
+            });
+            continue;
+        }
+        let gid = from.group.unwrap();
+        let fns = group_fns(gid);
+        let decl_count = r
+            .group_members
+            .iter()
+            .filter(|gm| gm.group == gid)
+            .count();
+        if decl_count > 0 && fns.is_empty() {
+            diags.push(Diag::ty(
+                claim_span(from.provenance),
+                format!(
+                    "claim `{}`: group `{}` projects to no executable {} \
+                     vertices — its declarations have no fns, so the claim \
+                     proves nothing about them. The fn-grained walk cannot \
+                     see pure-data access; name the loci that HOLD the \
+                     behavior, or drop the claim",
+                    row.name, from.name.display, "source"
+                ),
+            ));
+            out.push(Judged {
+                ordinal: row.ordinal,
+                verdict: Verdict::Invalid,
+                diags,
+            });
+            continue;
+        }
+        let atoms = class_atoms(&class.name);
+        let own_count = |v: V| -> u64 {
+            let carried = match v {
+                V::User(f) => labels_of
+                    .get(&f)
+                    .is_some_and(|ls| {
+                        ls.iter().any(|l| atoms.contains(*l))
+                    }),
+                V::Interior(a, n) => absorption[a as usize].nodes
+                    [n as usize]
+                    .carries
+                    .iter()
+                    .any(|l| atoms.contains(l)),
+            };
+            if carried {
+                1
+            } else {
+                0
+            }
+        };
+        // ---- the DFS (the evaluator's site_count, over V) ----
+        struct Ctx<'x> {
+            calls_of: &'x BTreeMap<FunctionId, Vec<CallRow>>,
+            absorb_of: &'x BTreeMap<FunctionId, Vec<(u32, u32)>>,
+            pubs_of: &'x BTreeMap<
+                FunctionId,
+                Vec<(
+                    u32,
+                    String,
+                    bool,
+                    ProvenanceId,
+                    Option<u32>,
+                    u32,
+                )>,
+            >,
+            holes_of: &'x BTreeMap<FunctionId, Vec<FnHole>>,
+            absorption: &'x [hale_model::StdlibAbsorption],
+            effects_holed: &'x BTreeSet<FunctionId>,
+            bus_holes: &'x BusHoles,
+            subjects: &'x [hale_model::Subject],
+            topics: &'x [hale_model::Topic],
+        }
+        impl<'x> Ctx<'x> {
+            fn wire_of(&self, sid: u32) -> String {
+                self.subjects[sid as usize].pattern.clone()
+            }
+            fn wire_of_topic_or(
+                &self,
+                t: Option<hale_model::TopicId>,
+                text: &str,
+            ) -> String {
+                match t {
+                    Some(t) => self.subjects[self.topics
+                        [t.index()]
+                    .subject
+                    .index()]
+                    .pattern
+                    .clone(),
+                    None => text.to_string(),
+                }
+            }
+        }
+        fn site_count_ir(
+            v: V,
+            cx: &Ctx,
+            own: &dyn Fn(V) -> u64,
+            subs_for: &dyn Fn(&str) -> Vec<FunctionId>,
+            stack: &mut Vec<V>,
+            memo: &mut BTreeMap<V, (u64, Vec<V>)>,
+            steps: &mut u32,
+            unknown: &mut Option<UnknownCause>,
+        ) -> Result<(u64, Vec<V>), UnboundedIr> {
+            if let Some(hit) = memo.get(&v) {
+                return Ok(hit.clone());
+            }
+            if stack.contains(&v) {
+                return Err(UnboundedIr::Cycle(v));
+            }
+            *steps += 1;
+            if *steps > crate::callgraph::MAX_STEPS {
+                return Err(UnboundedIr::StepCeiling);
+            }
+            if let V::User(f) = v {
+                if cx.effects_holed.contains(&f) {
+                    // Hidden carrier facts: the KNOWN labels still
+                    // count (a lower bound already over the limit
+                    // proves the violation), and the flag keeps a
+                    // would-be Holds honest (review round 5).
+                    if unknown.is_none() {
+                        *unknown =
+                            Some(UnknownCause::Effects { at: v });
+                    }
+                }
+            }
+            let own_n = own(v);
+            stack.push(v);
+            let mut total: u64 = 0;
+            let mut best_child: (u64, Vec<V>) = (0, Vec::new());
+            let mut group_best: BTreeMap<u32, (u64, Vec<V>)> =
+                BTreeMap::new();
+            let mut unbounded: Option<UnboundedIr> = None;
+            // Successor events for either vertex kind, in the
+            // evaluator's order: calls (with holes as unfollowable),
+            // then publishes.
+            enum Ev {
+                Call {
+                    to: V,
+                    in_loop: bool,
+                    group: Option<u32>,
+                    prov: Option<ProvenanceId>,
+                },
+                Unfollowable(Option<ProvenanceId>),
+                Publish {
+                    subject: String,
+                    in_loop: bool,
+                    prov: Option<ProvenanceId>,
+                    /// TYPED identity for hole coverage (round 6):
+                    /// the declared topic id and the wire pattern.
+                    topic: Option<u32>,
+                    wire: String,
+                },
+                Computed(Option<ProvenanceId>),
+                Truncated,
+            }
+            let mut evs: Vec<Ev> = Vec::new();
+            match v {
+                V::User(f) => {
+                    let direct = cx
+                        .calls_of
+                        .get(&f)
+                        .map(|x| x.as_slice())
+                        .unwrap_or(&[]);
+                    let absorbed = cx
+                        .absorb_of
+                        .get(&f)
+                        .map(|x| x.as_slice())
+                        .unwrap_or(&[]);
+                    let holes = cx
+                        .holes_of
+                        .get(&f)
+                        .map(|x| x.as_slice())
+                        .unwrap_or(&[]);
+                    let mut items: Vec<(u32, u8, usize)> = Vec::new();
+                    for (i, cr) in direct.iter().enumerate() {
+                        items.push((cr.site, 0, i));
+                    }
+                    for (i, (site, _)) in
+                        absorbed.iter().enumerate()
+                    {
+                        items.push((*site, 1, i));
+                    }
+                    // Call-space holes interleave at their authored
+                    // sites (kind 2).
+                    for (i, h) in holes.iter().enumerate() {
+                        if let FnHole::Unfollowable(site, _) = h {
+                            items.push((
+                                site.unwrap_or(u32::MAX),
+                                2,
+                                i,
+                            ));
+                        }
+                    }
+                    items.sort();
+                    for (site, kind, i) in items {
+                        if kind == 2 {
+                            if let FnHole::Unfollowable(_, p) =
+                                &holes[i]
+                            {
+                                evs.push(Ev::Unfollowable(Some(
+                                    *p,
+                                )));
+                            }
+                        } else if kind == 0 {
+                            let cr = &direct[i];
+                            evs.push(Ev::Call {
+                                to: V::User(cr.to),
+                                in_loop: cr.in_loop,
+                                group: Some(site),
+                                prov: Some(cr.provenance),
+                            });
+                        } else {
+                            let (_, ai) = absorbed[i];
+                            let a = &cx.absorption[ai as usize];
+                            // The REAL entry edge: its loop nesting
+                            // and span come from the authored call
+                            // (review: looped stdlib entries).
+                            // The alternatives of ONE authored
+                            // dispatch share the LOCAL site as
+                            // their group, whether the target is a
+                            // user fn or an absorption entry —
+                            // entry_group is summary-global and
+                            // would split the dispatch in two,
+                            // summing what must max (review
+                            // round 2).
+                            evs.push(Ev::Call {
+                                to: V::Interior(ai, 0),
+                                in_loop: a.entry_in_loop,
+                                group: Some(site),
+                                prov: Some(a.entry_provenance),
+                            });
+                        }
+                    }
+                    let pubs = cx
+                        .pubs_of
+                        .get(&f)
+                        .map(|x| x.as_slice())
+                        .unwrap_or(&[]);
+                    let mut pitems: Vec<(u32, u8, usize)> =
+                        Vec::new();
+                    for (i, (site, ..)) in pubs.iter().enumerate() {
+                        pitems.push((*site, 0, i));
+                    }
+                    for (i, h) in holes.iter().enumerate() {
+                        if let FnHole::Computed(site, _) = h {
+                            pitems.push((
+                                site.unwrap_or(u32::MAX),
+                                1,
+                                i,
+                            ));
+                        }
+                    }
+                    pitems.sort();
+                    for (_, kind, i) in pitems {
+                        if kind == 1 {
+                            if let FnHole::Computed(_, p) = &holes[i]
+                            {
+                                evs.push(Ev::Computed(Some(*p)));
+                            }
+                        } else {
+                            let (
+                                _,
+                                written,
+                                in_loop,
+                                pprov,
+                                topic,
+                                sid,
+                            ) = &pubs[i];
+                            evs.push(Ev::Publish {
+                                subject: written.clone(),
+                                in_loop: *in_loop,
+                                prov: Some(*pprov),
+                                topic: *topic,
+                                wire: cx.wire_of(*sid),
+                            });
+                        }
+                    }
+                }
+                V::Interior(ai, ni) => {
+                    let node = &cx.absorption[ai as usize].nodes
+                        [ni as usize];
+                    for ev in &node.events {
+                        match ev {
+                            AbsorbedEvent::Call {
+                                target,
+                                in_loop,
+                                group,
+                                ..
+                            } => {
+                                let to = match target {
+                                    AbsorbedTarget::Interior(n2) => {
+                                        V::Interior(ai, *n2)
+                                    }
+                                    AbsorbedTarget::User(f2) => {
+                                        V::User(*f2)
+                                    }
+                                };
+                                evs.push(Ev::Call {
+                                    to,
+                                    in_loop: *in_loop,
+                                    group: *group,
+                                    prov: None,
+                                });
+                            }
+                            AbsorbedEvent::CallHole(_) => {
+                                evs.push(Ev::Unfollowable(None))
+                            }
+                            AbsorbedEvent::Publish {
+                                subject,
+                                in_loop,
+                                declared_topic,
+                            } => evs.push(Ev::Publish {
+                                subject: subject.clone(),
+                                in_loop: *in_loop,
+                                prov: None,
+                                topic: declared_topic.map(|t| t.0),
+                                wire: cx.wire_of_topic_or(
+                                    *declared_topic,
+                                    subject,
+                                ),
+                            }),
+                            AbsorbedEvent::PublishHole => {
+                                evs.push(Ev::Computed(None))
+                            }
+                            AbsorbedEvent::Truncated => {
+                                evs.push(Ev::Truncated)
+                            }
+                        }
+                    }
+                }
+            }
+            for ev in evs {
+                match ev {
+                    Ev::Unfollowable(p) => {
+                        unbounded = Some(UnboundedIr::Unfollowable {
+                            at: v,
+                            prov: p,
+                        });
+                        break;
+                    }
+                    Ev::Computed(p) => {
+                        unbounded =
+                            Some(UnboundedIr::ComputedSubject {
+                                at: v,
+                                prov: p,
+                            });
+                        break;
+                    }
+                    Ev::Truncated => {
+                        unbounded = Some(UnboundedIr::StepCeiling);
+                        break;
+                    }
+                    Ev::Call {
+                        to,
+                        in_loop,
+                        group,
+                        prov,
+                    } => {
+                        match site_count_ir(
+                            to, cx, own, subs_for, stack, memo,
+                            steps, unknown,
+                        ) {
+                            Err(u) => {
+                                unbounded = Some(u);
+                                break;
+                            }
+                            Ok((w, p)) => {
+                                if in_loop && w > 0 {
+                                    unbounded = Some(
+                                        UnboundedIr::LoopCarrier {
+                                            at: v,
+                                            prov,
+                                        },
+                                    );
+                                    break;
+                                }
+                                match group {
+                                    Some(g) => {
+                                        let eb = group_best
+                                            .entry(g)
+                                            .or_insert((
+                                                0,
+                                                Vec::new(),
+                                            ));
+                                        if w > eb.0 {
+                                            *eb = (w, p);
+                                        }
+                                    }
+                                    None => {
+                                        total = total
+                                            .saturating_add(w);
+                                        if w > best_child.0 {
+                                            best_child = (w, p);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Ev::Publish {
+                        subject,
+                        in_loop,
+                        prov,
+                        topic,
+                        wire,
+                    } => {
+                        if cx.bus_holes.blocks(
+                            hale_model::RelationSet::SUBSCRIBES,
+                            topic,
+                            Some(wire.as_str()),
+                        ) && unknown.is_none()
+                        {
+                            // Known handlers still count below —
+                            // the incomplete set only forbids
+                            // certifying a Holds (round 5).
+                            *unknown =
+                                Some(UnknownCause::Subscribers {
+                                    at: v,
+                                    subject: subject.clone(),
+                                });
+                        }
+                        let _ = &prov;
+                        for handler in subs_for(&subject) {
+                            match site_count_ir(
+                                V::User(handler),
+                                cx,
+                                own,
+                                subs_for,
+                                stack,
+                                memo,
+                                steps,
+                                unknown,
+                            ) {
+                                Err(u) => {
+                                    unbounded = Some(u);
+                                    break;
+                                }
+                                Ok((w, p)) => {
+                                    if in_loop && w > 0 {
+                                        unbounded = Some(
+                                            UnboundedIr::LoopCarrier {
+                                                at: v,
+                                                prov,
+                                            },
+                                        );
+                                        break;
+                                    }
+                                    total =
+                                        total.saturating_add(w);
+                                    if w > best_child.0 {
+                                        best_child = (w, p);
+                                    }
+                                }
+                            }
+                        }
+                        if unbounded.is_some() {
+                            break;
+                        }
+                    }
+                }
+            }
+            if unbounded.is_none() {
+                for (w, p) in group_best.into_values() {
+                    total = total.saturating_add(w);
+                    if w > best_child.0 {
+                        best_child = (w, p);
+                    }
+                }
+            }
+            stack.pop();
+            if let Some(u) = unbounded {
+                return Err(u);
+            }
+            let mut path = vec![v];
+            path.extend(best_child.1);
+            let res = (own_n + total, path);
+            memo.insert(v, res.clone());
+            Ok(res)
+        }
+        let cx = Ctx {
+            calls_of: &calls_of,
+            absorb_of: &absorb_of,
+            pubs_of: &pubs_of,
+            holes_of: &holes_of,
+            absorption,
+            effects_holed: &effects_holed,
+            bus_holes: &bus_holes,
+            subjects: &e.subjects,
+            topics: &e.topics,
+        };
+        let mut worst: (u64, Vec<V>) = (0, Vec::new());
+        let mut why: Option<UnboundedIr> = None;
+        // Round 8: an incomplete PUBLISHER set anywhere on the bus
+        // means the count's fan-out may be missing edges — the
+        // known lower bound still decides a violation; a would-be
+        // Holds downgrades.
+        let mut unknown_cause: Option<UnknownCause> = bus_holes
+            .publishers_incomplete
+            .as_ref()
+            .map(|s| UnknownCause::Publishers {
+                subject: s.clone(),
+            });
+        for root in &fnkey_sorted(&fns) {
+            let mut stack = Vec::new();
+            let mut memo: BTreeMap<V, (u64, Vec<V>)> = BTreeMap::new();
+            let mut steps = 0u32;
+            match site_count_ir(
+                V::User(*root),
+                &cx,
+                &own_count,
+                &subs_for,
+                &mut stack,
+                &mut memo,
+                &mut steps,
+                &mut unknown_cause,
+            ) {
+                Err(u) => {
+                    why = Some(u);
+                    break;
+                }
+                Ok((w, p)) => {
+                    if w > worst.0 {
+                        worst = (w, p);
+                    }
+                }
+            }
+        }
+        if let Some(u) = why {
+            let why_str = match &u {
+                UnboundedIr::Cycle(k) => format!(
+                    "`{}` is reachable from itself, so the count repeats \
+                     per recursion",
+                    display(*k)
+                ),
+                UnboundedIr::LoopCarrier { at, .. } => format!(
+                    "a carrier is reached from inside a loop in `{}`, so \
+                     it repeats per iteration",
+                    display(*at)
+                ),
+                UnboundedIr::Unfollowable { at, .. } => format!(
+                    "`{}` makes a call the walk cannot follow, so the \
+                     contribution beyond it is unknown",
+                    display(*at)
+                ),
+                UnboundedIr::ComputedSubject { at, .. } => format!(
+                    "`{}` publishes to a computed subject, which could \
+                     route to any subscriber",
+                    display(*at)
+                ),
+                UnboundedIr::StepCeiling => {
+                    "the walk hit its step ceiling before settling"
+                        .into()
+                }
+            };
+            diags.push(Diag::ty(
+                row_span,
+                format!(
+                    "claim `{}` violated: paths from `{}` carry an \
+                     unbounded number of `{}` sites (limit {}) — {}",
+                    row.name,
+                    from.name.display,
+                    class.name,
+                    limit,
+                    why_str
+                ),
+            ));
+            let site = match &u {
+                UnboundedIr::LoopCarrier { at, prov } => prov
+                    .map(|p| {
+                        (*at, p, "this is the loop-nested carrier")
+                    }),
+                UnboundedIr::Unfollowable { at, prov } => {
+                    prov.map(|p| {
+                        (
+                            *at,
+                            p,
+                            "this is the call the walk cannot follow",
+                        )
+                    })
+                }
+                UnboundedIr::ComputedSubject { at, prov } => prov
+                    .map(|p| {
+                        (
+                            *at,
+                            p,
+                            "this is the computed publish subject",
+                        )
+                    }),
+                _ => None,
+            };
+            if let Some((at, p, label)) = site {
+                if matches!(at, V::User(_)) {
+                    diags.push(Diag::ty(
+                        model_span(p),
+                        format!("claim `{}`: {}", row.name, label),
+                    ));
+                }
+            }
+            out.push(Judged {
+                ordinal: row.ordinal,
+                verdict: Verdict::Violated,
+                diags,
+            });
+            continue;
+        }
+        let (w, path) = worst;
+        if w <= *limit {
+            // The KNOWN lower bound is within the limit — but an
+            // incomplete model cannot certify Holds (round 5: the
+            // monotonic rule endpoint counts already follow).
+            if let Some(cause) = &unknown_cause {
+                let msg = match cause {
+                    UnknownCause::Effects { at } => format!(
+                        "claim `{}` cannot be certified: the `{}` \
+                         carrier facts of `{}` are not fully \
+                         analyzable, so its contribution to the \
+                         count is unknown",
+                        row.name,
+                        class.name,
+                        display(*at)
+                    ),
+                    UnknownCause::Subscribers { at, subject } => {
+                        format!(
+                            "claim `{}` cannot be certified: `{}` \
+                             publishes to \"{}\", whose \
+                             subscribers are not fully modeled — \
+                             the fan-out's contribution to the \
+                             count is unknown",
+                            row.name,
+                            display(*at),
+                            subject
+                        )
+                    }
+                    UnknownCause::Publishers { subject } => {
+                        format!(
+                            "claim `{}` cannot be certified: the \
+                             publisher set of \"{}\" is not \
+                             fully modeled — an unknown publisher \
+                             may add fan-out the count cannot see",
+                            row.name, subject
+                        )
+                    }
+                };
+                diags.push(Diag::ty(row_span, msg));
+                out.push(Judged {
+                    ordinal: row.ordinal,
+                    verdict: Verdict::Uncertified,
+                    diags,
+                });
+                continue;
+            }
+            out.push(Judged {
+                ordinal: row.ordinal,
+                verdict: Verdict::Holds,
+                diags,
+            });
+            continue;
+        }
+        let chain = path
+            .iter()
+            .map(|k| format!("`{}`", display(*k)))
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        diags.push(Diag::ty(
+            row_span,
+            format!(
+                "claim `{}` violated: heaviest path from `{}` carries {} \
+                 `{}` sites, limit {} — path: {}",
+                row.name, from.name.display, w, class.name, limit, chain
+            ),
+        ));
+        out.push(Judged {
+            ordinal: row.ordinal,
+            verdict: Verdict::Violated,
+            diags,
+        });
     }
     out
 }

@@ -1424,6 +1424,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             PayloadContractId,
             Option<KeyDomain>,
             PublishDisposition,
+            bool,
             ProvenanceId,
         ),
     > = BTreeMap::new();
@@ -1493,6 +1494,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                             disposition_at(
                                 s.span.start.as_usize() as u32
                             ),
+                            s.loop_depth > 0,
                             pid,
                         ),
                     );
@@ -2222,8 +2224,10 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             provenance: *pid,
         });
     }
-    for ((f, s, site), (declared, payload, keyed, dispo, pid)) in
-        &publishes
+    for (
+        (f, s, site),
+        (declared, payload, keyed, dispo, in_loop, pid),
+    ) in &publishes
     {
         r.publishes.push(Publish {
             function: *f,
@@ -2231,6 +2235,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             declared_topic: *declared,
             payload: *payload,
             site: *site,
+            in_loop: *in_loop,
             key_domain: keyed.clone(),
             disposition: *dispo,
             provenance: *pid,
@@ -2557,6 +2562,20 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                         c
                     }
                 };
+                let carries = merged
+                    .carries
+                    .get(&n)
+                    .map(|set| {
+                        let mut c =
+                            crate::frontier::render_effects_named(
+                                *set,
+                                &effect_names,
+                            );
+                        c.sort();
+                        c.dedup();
+                        c
+                    })
+                    .unwrap_or_default();
                 if let Some(nfs) = merged.fns.get(&n) {
                     for e2 in &nfs.calls {
                         match &e2.callee {
@@ -2590,6 +2609,8 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                                     hale_model::AbsorbedEvent::Call {
                                         target,
                                         dispatch: dsp,
+                                        in_loop: e2.loop_depth > 0,
+                                        group: e2.dispatch_group,
                                     },
                                 );
                             }
@@ -2640,6 +2661,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                                     hale_model::AbsorbedEvent::Publish {
                                         subject: subj.text.clone(),
                                         declared_topic,
+                                        in_loop: site2.loop_depth > 0,
                                     },
                                 );
                             }
@@ -2650,6 +2672,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                 nodes.push(hale_model::AbsorbedNode {
                     display: disp(&n),
                     direct_effects: node_direct,
+                    carries,
                     events,
                 });
             }
@@ -2664,6 +2687,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                 for k in order.iter().skip(nodes.len()) {
                     nodes.push(hale_model::AbsorbedNode {
                         display: disp(k),
+                        carries: Vec::new(),
                         direct_effects: Vec::new(),
                         events: vec![
                             hale_model::AbsorbedEvent::Truncated,

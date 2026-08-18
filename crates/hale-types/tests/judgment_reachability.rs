@@ -14,7 +14,8 @@ use std::collections::BTreeMap;
 use hale_model::ClaimIr;
 use hale_types::claim_lowering::lower_claims;
 use hale_types::judgment::{
-    judge_endpoints, judge_forbid_reaches, judge_only_edges,
+    judge_bound, judge_endpoints, judge_forbid_reaches,
+    judge_only_edges,
 };
 use hale_types::model_builder::derive_application_model;
 use hale_types::symbol::SourceFile;
@@ -56,6 +57,7 @@ fn family_names(
                     | ClaimIr::RequireAttributed { .. }
                     | ClaimIr::Cover { .. }
                     | ClaimIr::Count { .. }
+                    | ClaimIr::Bound { .. }
             )
         })
         .map(|r| r.name.clone())
@@ -93,10 +95,12 @@ fn diff_one(
         judge_forbid_reaches(&table, &model, &[0]);
     let judged_oe = judge_only_edges(&table, &model, &[0]);
     let judged_ep = judge_endpoints(&table, &model, &[0]);
+    let judged_bd = judge_bound(&table, &model, &[0]);
     let mut judged: Vec<hale_types::judgment::Judged> = judged_fr
         .into_iter()
         .chain(judged_oe.into_iter())
         .chain(judged_ep.into_iter())
+        .chain(judged_bd.into_iter())
         .collect();
     judged.sort_by_key(|j| j.ordinal);
     // Verdict parity, matched by claim name.
@@ -576,6 +580,165 @@ fn main() { App { }; }
     );
 }
 
+/// Negative control (5d): the bound judgment reads carrier LABELS —
+/// clearing them zeroes the count and flips the verdict.
+#[test]
+fn dropping_labels_changes_the_bound_verdict() {
+    let src = r#"
+effect money;
+@effects(is: { money })
+fn spend(v: Int) -> Int { return v; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) -> Int { return spend(v) + spend(v); }
+}
+group gates = { A };
+main locus App {
+    params { a: A = A { }; }
+    claims { cap: bound money <= 1 on paths from gates; }
+    run() { println(self.a.go(1)); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "two carrier calls exceed limit 1"
+    );
+    model.labels.clear();
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds,
+        "the judgment reads model.labels"
+    );
+}
+
+/// Review pin (5d): a carrier-bearing stdlib wrapper called from
+/// inside a LOOP is unbounded — the entry edge's loop nesting is a
+/// real model fact (StdlibAbsorption.entry_in_loop), not a
+/// synthesized false. Hand-built: the builder cannot yet produce a
+/// carrier-bearing stdlib interior from a simple fixture, and the
+/// judgment must hold as coverage grows.
+#[test]
+fn looped_stdlib_entry_with_carrier_is_unbounded() {
+    use hale_model::*;
+    let mut prov = ProvenanceTable::default();
+    prov.records.push(Provenance::Synthetic {
+        origin: "test".to_string(),
+    });
+    let p = ProvenanceId(0);
+    let f = |name: &str| Function {
+        name: name.to_string(),
+        display: name.to_string(),
+        kind: FunctionKind::Free,
+        effects: Vec::new(),
+        direct_effects: Vec::new(),
+        attribution: Vec::new(),
+        opaque_call: false,
+        carries_user_class: false,
+        provenance: p,
+    };
+    let mut m = ApplicationModel {
+        header: ModelHeader {
+            semantics: MODEL_SEMANTICS_V1,
+            entrypoint: "main".to_string(),
+        },
+        entities: Entities {
+            functions: vec![f("caller")],
+            groups: vec![Group {
+                name: "roots".to_string(),
+                display: "roots".to_string(),
+                may_be_empty: false,
+                provenance: p,
+            }],
+            effect_classes: vec![EffectClassDecl {
+                name: "money".to_string(),
+                declared: true,
+                definition: EffectClassDefinition::Atomic,
+                provenance: p,
+            }],
+            ..Entities::default()
+        },
+        relations: Relations::default(),
+        labels: Vec::new(),
+        weights: Vec::new(),
+        holes: Vec::new(),
+        capabilities: Capabilities::default(),
+        provenance: prov,
+        legacy: LegacyProjection {
+            topology_v1_fns: vec![FunctionId(0)],
+            topology_v1_calls_via_stdlib: Vec::new(),
+            stdlib_absorption: vec![StdlibAbsorption {
+                from: FunctionId(0),
+                site: 0,
+                entry_dispatch: None,
+                entry_in_loop: true,
+                entry_group: None,
+                entry_provenance: p,
+                nodes: vec![AbsorbedNode {
+                    display: "std::pay::charge".to_string(),
+                    carries: vec!["money".to_string()],
+                    direct_effects: Vec::new(),
+                    events: Vec::new(),
+                }],
+            }],
+        },
+    };
+    m.relations.group_members.push(GroupMember {
+        group: GroupId(0),
+        member: EntityRef::Function(FunctionId(0)),
+        provenance: p,
+    });
+    // Lower a `bound money <= 5 on paths from roots` row by hand.
+    let mut t = ClaimIrTable::default();
+    t.provenance.records.push(Provenance::Synthetic {
+        origin: "test".to_string(),
+    });
+    t.rows.push(ClaimRow {
+        ordinal: 0,
+        name: "cap".to_string(),
+        origin: ClaimOrigin::Main,
+        law: ClaimIr::Bound {
+            class: EffectClassRef {
+                class: Some(EffectClassId(0)),
+                builtin: false,
+                name: "money".to_string(),
+                provenance: ProvenanceId(0),
+            },
+            limit: 5,
+            from: GroupRef {
+                group: Some(GroupId(0)),
+                name: NameRef {
+                    raw: "roots".to_string(),
+                    display: "roots".to_string(),
+                },
+                provenance: ProvenanceId(0),
+            },
+        },
+        provenance: ProvenanceId(0),
+    });
+    let judged =
+        hale_types::judgment::judge_bound(&t, &m, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "loop-nested carrier entry is unbounded"
+    );
+    assert!(
+        judged[0].diags[0]
+            .message
+            .contains("reached from inside a loop"),
+        "classified as LoopCarrier: {}",
+        judged[0].diags[0].message
+    );
+}
+
 /// Review pin (round 2): EVERY publish effect site consumes one
 /// source-order ordinal — a computed-subject publish authored
 /// before a known publish keeps its earlier position, so consumers
@@ -1010,12 +1173,15 @@ fn main() {
     let frontier = a.nodes.len() as u32;
     a.nodes.push(hale_model::AbsorbedNode {
         display: "std::deep::beyond".to_string(),
+        carries: Vec::new(),
         direct_effects: Vec::new(),
         events: vec![hale_model::AbsorbedEvent::Truncated],
     });
     a.nodes[0].events.push(hale_model::AbsorbedEvent::Call {
         target: hale_model::AbsorbedTarget::Interior(frontier),
         dispatch: None,
+        in_loop: false,
+        group: None,
     });
     let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
     assert_eq!(
@@ -1426,6 +1592,7 @@ fn main() {
         hale_model::AbsorbedEvent::Publish {
             subject: "Orders".to_string(),
             declared_topic: Some(hale_model::TopicId(999)),
+            in_loop: false,
         },
     );
     assert!(
@@ -1633,6 +1800,7 @@ fn main() {
     m.legacy.stdlib_absorption[0].nodes.push(
         hale_model::AbsorbedNode {
             display: "std::x::Ledger::charge_a".to_string(),
+            carries: Vec::new(),
             direct_effects: Vec::new(),
             events: Vec::new(),
         },
@@ -1644,6 +1812,8 @@ fn main() {
                 "Payer".to_string(),
                 "pay".to_string(),
             )),
+            in_loop: false,
+            group: Some(9),
         },
     );
     assert!(
@@ -1858,6 +2028,8 @@ fn main() {
                 hale_model::FunctionId(hello),
             ),
             dispatch: None,
+            in_loop: false,
+            group: None,
         });
     assert!(
         m.validate().is_err(),
@@ -2622,5 +2794,755 @@ fn main() { App { }; }
         judged[0].verdict,
         hale_types::verdict::Verdict::Uncertified,
         "the topic's real wire subject IS its delivery identity"
+    );
+}
+
+/// Review pin (round 2): a DECLARATION-ONLY free fn in a `bound`
+/// source group contributes zero — the evaluator's fn_set inserts
+/// every named free fn, so the group is not projection-vacuous.
+#[test]
+fn declaration_only_free_fn_bound_counts_zero() {
+    let src = r#"
+effect money;
+fn audit() { }
+group auditors = { audit };
+main locus App {
+    params { n: Int = 0; }
+    claims { cap: bound money <= 1 on paths from auditors; }
+}
+fn main() { App { }; }
+"#;
+    let out = diff_one(src, "declaration-only bound root");
+    assert!(out.is_ok(), "old/new agree: {:?}", out);
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds,
+        "the empty free fn evaluates with contribution zero"
+    );
+}
+
+/// Review pin (round 2): user and stdlib ALTERNATIVES of one
+/// authored dispatch share the LOCAL site group — one runtime
+/// dispatch folds with MAX, never a phantom sum across the local
+/// ordinal and the summary-global dispatch-group id.
+#[test]
+fn mixed_dispatch_alternatives_share_one_group() {
+    use hale_model::*;
+    let mut prov = ProvenanceTable::default();
+    prov.records.push(Provenance::Synthetic {
+        origin: "test".to_string(),
+    });
+    let p = ProvenanceId(0);
+    let f = |name: &str| Function {
+        name: name.to_string(),
+        display: name.to_string(),
+        kind: FunctionKind::Free,
+        effects: Vec::new(),
+        direct_effects: Vec::new(),
+        attribution: Vec::new(),
+        opaque_call: false,
+        carries_user_class: false,
+        provenance: p,
+    };
+    let mut m = ApplicationModel {
+        header: ModelHeader {
+            semantics: MODEL_SEMANTICS_V1,
+            entrypoint: "main".to_string(),
+        },
+        entities: Entities {
+            functions: vec![f("caller"), f("UserConf::pay")],
+            groups: vec![Group {
+                name: "roots".to_string(),
+                display: "roots".to_string(),
+                may_be_empty: false,
+                provenance: p,
+            }],
+            effect_classes: vec![EffectClassDecl {
+                name: "money".to_string(),
+                declared: true,
+                definition: EffectClassDefinition::Atomic,
+                provenance: p,
+            }],
+            ..Entities::default()
+        },
+        relations: Relations::default(),
+        labels: vec![LabelRow {
+            at: EntityRef::Function(FunctionId(1)),
+            label: "money".to_string(),
+            provenance: p,
+        }],
+        weights: Vec::new(),
+        holes: Vec::new(),
+        capabilities: Capabilities::default(),
+        provenance: prov,
+        legacy: LegacyProjection {
+            topology_v1_fns: vec![FunctionId(0), FunctionId(1)],
+            topology_v1_calls_via_stdlib: Vec::new(),
+            // The stdlib alternative of the SAME authored dispatch
+            // (site 0), carrying a summary-global group id that
+            // differs from the local ordinal.
+            stdlib_absorption: vec![StdlibAbsorption {
+                from: FunctionId(0),
+                site: 0,
+                entry_dispatch: Some((
+                    "Payer".to_string(),
+                    "pay".to_string(),
+                )),
+                entry_in_loop: false,
+                entry_group: Some(7),
+                entry_provenance: p,
+                nodes: vec![AbsorbedNode {
+                    display: "std::pay::charge".to_string(),
+                    carries: vec!["money".to_string()],
+                    direct_effects: Vec::new(),
+                    events: Vec::new(),
+                }],
+            }],
+        },
+    };
+    m.relations.group_members.push(GroupMember {
+        group: GroupId(0),
+        member: EntityRef::Function(FunctionId(0)),
+        provenance: p,
+    });
+    // The user alternative at the same site 0.
+    m.relations.calls.push(Call {
+        from: FunctionId(0),
+        to: FunctionId(1),
+        dispatch: DispatchKind::Interface {
+            interface: "Payer".to_string(),
+        },
+        site: 0,
+        in_loop: false,
+        unbounded: false,
+        provenance: p,
+    });
+    let mut t = ClaimIrTable::default();
+    t.provenance.records.push(Provenance::Synthetic {
+        origin: "test".to_string(),
+    });
+    t.rows.push(ClaimRow {
+        ordinal: 0,
+        name: "cap".to_string(),
+        origin: ClaimOrigin::Main,
+        law: ClaimIr::Bound {
+            class: EffectClassRef {
+                class: Some(EffectClassId(0)),
+                builtin: false,
+                name: "money".to_string(),
+                provenance: ProvenanceId(0),
+            },
+            limit: 1,
+            from: GroupRef {
+                group: Some(GroupId(0)),
+                name: NameRef {
+                    raw: "roots".to_string(),
+                    display: "roots".to_string(),
+                },
+                provenance: ProvenanceId(0),
+            },
+        },
+        provenance: ProvenanceId(0),
+    });
+    let judged = judge_bound(&t, &m, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds,
+        "one dispatch = one group: max(1, 1) = 1, within the \
+         limit — a sum would report a phantom 2: {:?}",
+        judged[0]
+            .diags
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Review pin (round 2): a `bound` over a cyclically-defined class
+/// is Invalid before evaluation — never Holds by counting zero.
+#[test]
+fn cyclic_bound_class_is_invalid() {
+    let src = r#"
+effect money;
+fn audit() { }
+group auditors = { audit };
+main locus App {
+    params { n: Int = 0; }
+    claims { cap: bound money <= 1 on paths from auditors; }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let money = model
+        .entities
+        .effect_classes
+        .iter()
+        .position(|c| c.name == "money")
+        .expect("money class");
+    model.entities.effect_classes[money].definition =
+        hale_model::EffectClassDefinition::InvalidCycle;
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Invalid,
+        "a cyclic class is not a countable law"
+    );
+    assert!(
+        judged[0]
+            .diags
+            .iter()
+            .any(|d| d.message.contains("defined in terms of itself")),
+        "the refusal names the cycle"
+    );
+}
+
+/// Review pin (round 3): a fn whose EFFECTS rows are hidden has an
+/// UNKNOWN own-count — `bound` must not count zero and certify.
+#[test]
+fn effects_hole_makes_bound_uncertified() {
+    let src = r#"
+effect money;
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) -> Int { return v; }
+}
+group roots = { A };
+main locus App {
+    params { a: A = A { }; }
+    claims { cap: bound money <= 1 on paths from roots; }
+    run() { println(self.a.go(1)); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds,
+        "nothing carries `money`"
+    );
+    let go = model
+        .entities
+        .functions
+        .iter()
+        .position(|f| f.display == "A::go")
+        .expect("A::go");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Function(hale_model::FunctionId(
+            go as u32,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::EFFECTS,
+        authored_site: None,
+        reason: "carrier facts incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "hidden carrier facts must fail the count closed"
+    );
+    assert!(
+        judged[0].diags[0].message.contains("unknown"),
+        "{}",
+        judged[0].diags[0].message
+    );
+}
+
+/// Review pin (round 3): a publish whose subject's subscriber set
+/// is incomplete makes the fan-out's contribution unknown — the
+/// bound is Uncertified, never certified from the known rows.
+#[test]
+fn subject_subscribes_hole_makes_bound_uncertified() {
+    let src = r#"
+effect money;
+topic Sig { payload: Int; subject: "app.sig"; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) { Sig <- v; }
+}
+group roots = { A };
+main locus App {
+    params { a: A = A { }; }
+    claims { cap: bound money <= 1 on paths from roots; }
+    run() { self.a.go(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds
+    );
+    let sid = model
+        .entities
+        .subjects
+        .iter()
+        .position(|su| su.pattern == "app.sig")
+        .expect("subject");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            sid as u32,
+        )),
+        kind: hale_model::HoleKind::DynamicEndpoint,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "unknown subscribers must fail the count closed"
+    );
+}
+
+/// Review pin (round 4): `bound` applies the delivery predicate to
+/// subscriber holes — a wildcard hole at `audit.**` makes fan-out
+/// through `audit.event` unknown.
+#[test]
+fn wildcard_subscriber_hole_makes_bound_uncertified() {
+    let src = r#"
+effect money;
+topic Ev { payload: Int; subject: "audit.event"; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) { Ev <- v; }
+}
+group roots = { A };
+main locus App {
+    params { a: A = A { }; }
+    claims { cap: bound money <= 1 on paths from roots; }
+    run() { self.a.go(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds
+    );
+    model.entities.subjects.push(hale_model::Subject {
+        pattern: "audit.**".to_string(),
+        exact: false,
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let wild = (model.entities.subjects.len() - 1) as u32;
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            wild,
+        )),
+        kind: hale_model::HoleKind::DynamicEndpoint,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "`audit.**` may cover `audit.event` — the count must fail \
+         closed"
+    );
+}
+
+/// Review pin (round 5): an incomplete count must not erase an
+/// already-proven violation — the KNOWN lower bound decides first,
+/// and the unknown flag only downgrades a would-be Holds.
+#[test]
+fn known_violation_survives_effects_hole() {
+    let src = r#"
+effect money;
+@effects(is: { money })
+fn charge(v: Int) -> Int { return v; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) -> Int { return charge(v); }
+}
+group roots = { A };
+main locus App {
+    params { a: A = A { }; }
+    claims { cap: bound money <= 0 on paths from roots; }
+    run() { println(self.a.go(1)); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "one known carrier over a limit of zero"
+    );
+    // Hiding MORE effects cannot un-prove the known violation.
+    let charge = model
+        .entities
+        .functions
+        .iter()
+        .position(|f| f.display == "charge")
+        .expect("charge");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Function(hale_model::FunctionId(
+            charge as u32,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::EFFECTS,
+        authored_site: None,
+        reason: "carrier facts incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "the known lower bound already proves the violation"
+    );
+}
+
+/// …and the fan-out equivalent: known subscriber paths already
+/// over the limit stay Violated under a subscriber hole.
+#[test]
+fn known_fanout_violation_survives_subscriber_hole() {
+    let src = r#"
+effect money;
+topic Sig { payload: Int; subject: "app.sig"; }
+@effects(is: { money })
+fn charge(v: Int) -> Int { return v; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) { Sig <- v; }
+}
+locus B {
+    params { n: Int = 0; }
+    bus { subscribe Sig as on_sig; }
+    fn on_sig(v: Int) { self.n = charge(v); }
+}
+group roots = { A };
+main locus App {
+    params { a: A = A { }; b: B = B { }; }
+    claims { cap: bound money <= 0 on paths from roots; }
+    run() { self.a.go(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "the known subscriber path already carries one site"
+    );
+    let sid = model
+        .entities
+        .subjects
+        .iter()
+        .position(|su| su.pattern == "app.sig")
+        .expect("subject");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            sid as u32,
+        )),
+        kind: hale_model::HoleKind::DynamicEndpoint,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Violated,
+        "known contributions still count under the hole"
+    );
+}
+
+/// Review pin (round 5): topic-grain subscriber holes reach the
+/// count walk through the shared index.
+#[test]
+fn topic_grain_subscriber_hole_makes_bound_uncertified() {
+    let src = r#"
+effect money;
+topic Sig { payload: Int; subject: "app.sig"; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) { Sig <- v; }
+}
+group roots = { A };
+main locus App {
+    params { a: A = A { }; }
+    claims { cap: bound money <= 1 on paths from roots; }
+    run() { self.a.go(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds
+    );
+    let tid = model
+        .entities
+        .topics
+        .iter()
+        .position(|t| t.name == "Sig")
+        .expect("topic");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Topic(hale_model::TopicId(
+            tid as u32,
+        )),
+        kind: hale_model::HoleKind::DynamicEndpoint,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "a topic-grain hole must reach the count walk"
+    );
+}
+
+/// Review pin (round 6): the model REJECTS two direct calls
+/// sharing one (from, site) — the schema's contract is that
+/// multiple rows at one site are conformer alternatives of one
+/// interface dispatch (`bound` folds them with MAX; two direct
+/// calls are two sites and must SUM), so the shape the fold relies
+/// on is validated, not assumed.
+#[test]
+fn two_direct_calls_cannot_share_a_site() {
+    let src = r#"
+fn charge_a(v: Int) -> Int { return v; }
+fn charge_b(v: Int) -> Int { return v; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) -> Int { return charge_a(v) + charge_b(v); }
+}
+main locus App {
+    params { a: A = A { }; }
+    run() { println(self.a.go(1)); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    model.validate().expect("the built model is lawful");
+    // Force the unlawful shape: both direct calls at one site.
+    let mut sites: Vec<u32> = model
+        .relations
+        .calls
+        .iter()
+        .filter(|c| {
+            matches!(c.dispatch, hale_model::DispatchKind::Direct)
+        })
+        .map(|c| c.site)
+        .collect();
+    sites.sort();
+    sites.dedup();
+    assert!(
+        sites.len() >= 2,
+        "two direct calls occupy two authored sites"
+    );
+    let target = sites[0];
+    for c in &mut model.relations.calls {
+        if matches!(c.dispatch, hale_model::DispatchKind::Direct) {
+            c.site = target;
+        }
+    }
+    model
+        .relations
+        .calls
+        .sort_by_key(|c| (c.from.0, c.to.0, c.site));
+    assert!(
+        model.validate().is_err(),
+        "two direct calls at one (from, site) must be rejected"
+    );
+}
+
+/// Review pin (round 7): interior dispatch identity is validated —
+/// a group without a dispatch rendering, and one group id shared
+/// by two DIFFERENT dispatches, are both rejected (an arbitrary
+/// group bucket would let `bound`'s per-group MAX absorb what must
+/// sum).
+#[test]
+fn interior_dispatch_groups_are_validated() {
+    let src = r#"
+locus Gate {
+    fn probe(r: std::http::Router, req: std::http::Request) -> Int {
+        let resp = r.dispatch(req);
+        return resp.status;
+    }
+}
+main locus App {
+    params { n: Int = 0; }
+}
+fn main() {
+    let r = std::http::Router { };
+    let req = std::http::Request { method: "GET", path: "/", body: "" };
+    println(Gate { }.probe(r, req));
+}
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let base = derive_application_model(&bundle);
+    base.validate().expect("the built model is lawful");
+    let carrier = |m: &mut hale_model::ApplicationModel,
+                   display: &str| {
+        let n = m.legacy.stdlib_absorption[0].nodes.len() as u32;
+        m.legacy.stdlib_absorption[0].nodes.push(
+            hale_model::AbsorbedNode {
+                display: display.to_string(),
+                carries: vec!["money".to_string()],
+                direct_effects: Vec::new(),
+                events: Vec::new(),
+            },
+        );
+        n
+    };
+    // The review's counterexample: two dispatch-less calls sharing
+    // group 7.
+    let mut m = base.clone();
+    let a = carrier(&mut m, "std::x::A::pay");
+    let b = carrier(&mut m, "std::x::B::pay");
+    for t in [a, b] {
+        m.legacy.stdlib_absorption[0].nodes[0].events.push(
+            hale_model::AbsorbedEvent::Call {
+                target: hale_model::AbsorbedTarget::Interior(t),
+                dispatch: None,
+                in_loop: false,
+                group: Some(7),
+            },
+        );
+    }
+    assert!(
+        m.validate().is_err(),
+        "a group without a dispatch rendering is not a defined shape"
+    );
+    // One group id, two DIFFERENT dispatch identities.
+    let mut m = base.clone();
+    let a = carrier(&mut m, "std::x::A::pay");
+    let b = carrier(&mut m, "std::x::B::refund");
+    for (t, method) in [(a, "pay"), (b, "refund")] {
+        m.legacy.stdlib_absorption[0].nodes[0].events.push(
+            hale_model::AbsorbedEvent::Call {
+                target: hale_model::AbsorbedTarget::Interior(t),
+                dispatch: Some((
+                    "Payer".to_string(),
+                    method.to_string(),
+                )),
+                in_loop: false,
+                group: Some(7),
+            },
+        );
+    }
+    assert!(
+        m.validate().is_err(),
+        "one group id inside a node is ONE dispatch"
+    );
+    // Genuine alternatives of one dispatch stay lawful.
+    let mut m = base.clone();
+    let a = carrier(&mut m, "std::x::A::pay");
+    let b = carrier(&mut m, "std::x::B::pay");
+    for t in [a, b] {
+        m.legacy.stdlib_absorption[0].nodes[0].events.push(
+            hale_model::AbsorbedEvent::Call {
+                target: hale_model::AbsorbedTarget::Interior(t),
+                dispatch: Some((
+                    "Payer".to_string(),
+                    "pay".to_string(),
+                )),
+                in_loop: false,
+                group: Some(7),
+            },
+        );
+    }
+    m.validate()
+        .expect("conformer alternatives of one dispatch are lawful");
+}
+
+/// Review pin (round 8): a set-level PUBLISHES hole makes bound's
+/// fan-out a lower bound — Uncertified within the limit, while a
+/// known over-limit count still proves the violation.
+#[test]
+fn publisher_hole_makes_bound_uncertified() {
+    let src = r#"
+effect money;
+topic Sig { payload: Int; subject: "app.sig"; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) { Sig <- v; }
+}
+group roots = { A };
+main locus App {
+    params { a: A = A { }; }
+    claims { cap: bound money <= 1 on paths from roots; }
+    run() { self.a.go(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds
+    );
+    let sid = model
+        .entities
+        .subjects
+        .iter()
+        .position(|su| su.pattern == "app.sig")
+        .expect("subject");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            sid as u32,
+        )),
+        kind: hale_model::HoleKind::DynamicEndpoint,
+        hides: hale_model::RelationSet::PUBLISHES,
+        authored_site: None,
+        reason: "publisher set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_bound(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "an unknown publisher may add fan-out"
     );
 }
