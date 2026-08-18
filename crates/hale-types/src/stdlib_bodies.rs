@@ -95,22 +95,45 @@ pub fn demangle_imports(
     // "Mystd::str::ParseError"). A `__` prefix is what makes a name
     // unspeakable in user source, and unspeakable names are the
     // entire reason this pass exists.
-    let mut table: Vec<(&str, String)> = import_renames
-        .iter()
-        .map(|(segs, mangled)| (mangled.as_str(), segs.join("::")))
-        .chain(
-            hale_stdlib::PATH_RENAMES
-                .iter()
-                .map(|(segs, mangled)| (*mangled, segs.join("::"))),
-        )
-        .filter(|(mangled, _)| mangled.starts_with("__"))
-        .collect();
-    table.sort_by_key(|(m, _)| std::cmp::Reverse(m.len()));
+    let table = demangle_table(import_renames);
     for d in diags.iter_mut() {
         for (mangled, public) in &table {
-            if d.message.contains(mangled) {
-                d.message = d.message.replace(mangled, public);
+            if d.message.contains(mangled.as_str()) {
+                d.message = d.message.replace(mangled.as_str(), public);
             }
         }
     }
+}
+
+/// The rename table `demangle_imports` applies (imports ∪ stdlib
+/// PATH_RENAMES, `__`-prefixed only, longest-mangled-first) —
+/// shared with the model builder's stdlib-absorption displays
+/// (GH #476 Change 5a) so witness spellings cannot drift.
+pub(crate) fn demangle_table(
+    import_renames: &[(Vec<String>, String)],
+) -> Vec<(String, String)> {
+    let mut table: Vec<(String, String)> = import_renames
+        .iter()
+        .map(|(segs, mangled)| (mangled.clone(), segs.join("::")))
+        .chain(hale_stdlib::PATH_RENAMES.iter().map(
+            |(segs, mangled)| (mangled.to_string(), segs.join("::")),
+        ))
+        .filter(|(mangled, _)| mangled.starts_with("__"))
+        .collect();
+    table.sort_by_key(|(m, _)| std::cmp::Reverse(m.len()));
+    table
+}
+
+/// Demangle ONE string through the same table.
+pub(crate) fn demangle_str(
+    s: &str,
+    import_renames: &[(Vec<String>, String)],
+) -> String {
+    let mut out = s.to_string();
+    for (mangled, public) in demangle_table(import_renames) {
+        if out.contains(&mangled) {
+            out = out.replace(&mangled, &public);
+        }
+    }
+    out
 }

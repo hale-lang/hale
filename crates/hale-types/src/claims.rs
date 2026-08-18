@@ -2828,7 +2828,7 @@ fn subscribers_of(
 /// A fn's DIRECT effect contribution — its own body only, no
 /// recursion (the BFS supplies transitivity). Mirrors the per-node
 /// arm of `frontier::infer_effects`.
-fn direct_effects(
+pub(crate) fn direct_effects(
     summary: &AllocSummary,
     key: &FnKey,
     ffi: &BTreeSet<String>,

@@ -1017,7 +1017,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         BTreeMap::new();
     let mut holes: BTreeMap<
         (EntityRef, HoleKind, String),
-        (hale_model::RelationSet, ProvenanceId),
+        (hale_model::RelationSet, Option<u32>, ProvenanceId),
     > = BTreeMap::new();
     for (k, fs) in &summary.fns {
         if !user_key(k) {
@@ -1086,6 +1086,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                                 hale_model::RelationSet::CALLS.union(
                                     hale_model::RelationSet::EFFECTS,
                                 ),
+                                Some(site),
                                 pid,
                             ));
                     } else if let Some(iface) = &edge.via_interface {
@@ -1112,6 +1113,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                                 hale_model::RelationSet::CALLS.union(
                                     hale_model::RelationSet::EFFECTS,
                                 ),
+                                Some(site),
                                 pid,
                             ));
                     } else if edge.receiver_present {
@@ -1430,8 +1432,18 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             continue;
         }
         let from = fn_id[&fn_name(k)];
+        // EVERY publish effect site consumes one source-order
+        // ordinal — known-subject rows and computed-subject holes
+        // share the space, so a consumer interleaving them by site
+        // sees authored order (review round 2: a computed publish
+        // used to leave `site` unchanged, giving the NEXT known
+        // publish the same ordinal and reordering the pair).
         let mut site: u32 = 0;
         for s in &fs.effect_sites {
+            let authored_site = site;
+            if matches!(s.kind, EffectSiteKind::Publish(_)) {
+                site += 1;
+            }
             match &s.kind {
                 EffectSiteKind::Publish(Some(subj)) => {
                     let display = subj.text.clone();
@@ -1473,7 +1485,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                             ),
                         };
                     publishes.insert(
-                        (from, subject_id[&subject_str], site),
+                        (from, subject_id[&subject_str], authored_site),
                         (
                             declared,
                             payload,
@@ -1484,7 +1496,6 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                             pid,
                         ),
                     );
-                    site += 1;
                 }
                 EffectSiteKind::Publish(None) => {
                     let pid = intern_span(&mut records, s.span);
@@ -1497,6 +1508,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                         ))
                         .or_insert((
                             hale_model::RelationSet::PUBLISHES,
+                            Some(authored_site),
                             pid,
                         ));
                 }
@@ -1617,6 +1629,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                         ))
                         .or_insert((
                             hale_model::RelationSet::KEY_FILTERS,
+                            None,
                             pid,
                         ));
                 }
@@ -1974,8 +1987,14 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             provenance: pid,
         });
     }
-    // Effects per fn (the derived classes the artifact exports).
+    // Effects per fn (the derived classes the artifact exports),
+    // and the DIRECT sets the reachability judgment's `effects(C)`
+    // destination test reads (GH #476 Change 5a) — computed by the
+    // evaluator's own `claims::direct_effects`, called rather than
+    // approximated.
     let mut derived_effects: BTreeMap<String, Vec<String>> =
+        BTreeMap::new();
+    let mut direct_effects: BTreeMap<String, Vec<String>> =
         BTreeMap::new();
     for k in merged.fns.keys() {
         if !user_key(k) {
@@ -1988,6 +2007,21 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             derived_effects.insert(fn_name(k), classes);
         }
     }
+    for k in summary.fns.keys() {
+        if !user_key(k) {
+            continue;
+        }
+        let d = crate::claims::direct_effects(&summary, k, &ffi);
+        if !d.is_unclassified() && d != crate::stdlib_surface::EffectSet::PURE {
+            let mut classes = crate::frontier::render_effects_named(
+                d,
+                &effect_names,
+            );
+            classes.sort();
+            classes.dedup();
+            direct_effects.insert(fn_name(k), classes);
+        }
+    }
     for (n, info) in &fn_rows {
         let pid = match info.span {
             Some(sp) => intern_span(&mut records, sp),
@@ -1998,6 +2032,10 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             display: info.display.clone(),
             kind: info.kind,
             effects: derived_effects.get(n).cloned().unwrap_or_default(),
+            direct_effects: direct_effects
+                .get(n)
+                .cloned()
+                .unwrap_or_default(),
             provenance: pid,
         });
     }
@@ -2255,6 +2293,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                     hale_model::RelationSet::CALLS
                         .union(hale_model::RelationSet::PUBLISHES)
                         .union(hale_model::RelationSet::EFFECTS),
+                    None,
                     pid,
                 ));
         }
@@ -2372,14 +2411,257 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         rows.into_iter().map(|((f, t), l)| (f, t, l)).collect()
     };
 
+    // GH #476 Change 5a: the stdlib-absorption sidecar — what the
+    // evaluator's merged-summary walk sees inside stdlib bodies
+    // reachable from each user call site. Site ordinals replicate
+    // the call-loop's allocation (dispatch_group shared), so the
+    // judgment can interleave absorbed edges at the evaluator's
+    // position. Per-entry BFS over the merged summary; holes and
+    // re-emergences recorded in walk order.
+    let mut stdlib_absorption: Vec<hale_model::StdlibAbsorption> =
+        Vec::new();
+    // MERGED summary: the evaluator's Cx.summary — stdlib conformer
+    // alternatives and resolved stdlib methods only exist there.
+    for (k, fs) in &merged.fns {
+        if !user_key(k) {
+            continue;
+        }
+        let from = fn_id[&fn_name(k)];
+        let mut next_ordinal: u32 = 0;
+        let mut group_site: BTreeMap<u32, u32> = BTreeMap::new();
+        let mut site_of = |group: Option<u32>| -> u32 {
+            match group {
+                Some(g) => *group_site.entry(g).or_insert_with(|| {
+                    let o = next_ordinal;
+                    next_ordinal += 1;
+                    o
+                }),
+                None => {
+                    let o = next_ordinal;
+                    next_ordinal += 1;
+                    o
+                }
+            }
+        };
+        for edge in &fs.calls {
+            let site = site_of(edge.dispatch_group);
+            let Callee::Resolved(next) = &edge.callee else {
+                continue;
+            };
+            if user_key(next) {
+                continue;
+            }
+            // Entry into a stdlib body (direct call, or a stdlib
+            // conformer alternative of a dispatch): capture the
+            // interior GRAPH the evaluator would traverse — vertices
+            // in discovery order, each body's events in body order —
+            // so the judgment replays BFS layering (and therefore
+            // hole-vs-hit timing) exactly.
+            let entry_dispatch =
+                edge.via_interface.as_ref().map(|i| {
+                    (
+                        crate::stdlib_bodies::demangle_str(
+                            i,
+                            &bundle.import_renames,
+                        ),
+                        next.fn_name.clone(),
+                    )
+                });
+            let entry_in_loop = edge.loop_depth > 0;
+            let entry_group = edge.dispatch_group;
+            let entry_provenance =
+                intern_span(&mut records, edge.span);
+            let disp = |kk: &FnKey| -> String {
+                crate::stdlib_bodies::demangle_str(
+                    &kk.display(),
+                    &bundle.import_renames,
+                )
+            };
+            let mut nodes: Vec<hale_model::AbsorbedNode> = Vec::new();
+            let mut index: BTreeMap<FnKey, u32> = BTreeMap::new();
+            let mut order: Vec<FnKey> = Vec::new();
+            index.insert(next.clone(), 0);
+            order.push(next.clone());
+            let mut cursor = 0usize;
+            let mut truncated = false;
+            while cursor < order.len() {
+                if order.len() as u32 > crate::callgraph::MAX_STEPS {
+                    // Explicit residue: a judgment must not treat a
+                    // truncated interior as fully explored.
+                    truncated = true;
+                    break;
+                }
+                let n = order[cursor].clone();
+                cursor += 1;
+                let mut events: Vec<hale_model::AbsorbedEvent> =
+                    Vec::new();
+                let node_direct = {
+                    let d = crate::claims::direct_effects(
+                        &merged, &n, &ffi,
+                    );
+                    if d.is_unclassified() {
+                        Vec::new()
+                    } else {
+                        let mut c =
+                            crate::frontier::render_effects_named(
+                                d,
+                                &effect_names,
+                            );
+                        c.sort();
+                        c.dedup();
+                        c
+                    }
+                };
+                if let Some(nfs) = merged.fns.get(&n) {
+                    for e2 in &nfs.calls {
+                        match &e2.callee {
+                            Callee::Resolved(nn) => {
+                                let dsp = e2
+                                    .via_interface
+                                    .as_ref()
+                                    .map(|i| {
+                                        (
+                                            crate::stdlib_bodies::demangle_str(
+                                                i,
+                                                &bundle.import_renames,
+                                            ),
+                                            nn.fn_name.clone(),
+                                        )
+                                    });
+                                let target = if user_key(nn) {
+                                    hale_model::AbsorbedTarget::User(
+                                        fn_id[&fn_name(nn)],
+                                    )
+                                } else {
+                                    let idx = *index
+                                        .entry(nn.clone())
+                                        .or_insert_with(|| {
+                                            order.push(nn.clone());
+                                            (order.len() - 1) as u32
+                                        });
+                                    hale_model::AbsorbedTarget::Interior(idx)
+                                };
+                                events.push(
+                                    hale_model::AbsorbedEvent::Call {
+                                        target,
+                                        dispatch: dsp,
+                                    },
+                                );
+                            }
+                            Callee::Unresolved(un) => {
+                                if e2.indirect
+                                    || nfs
+                                        .fn_params
+                                        .iter()
+                                        .any(|pp| pp == un)
+                                {
+                                    events.push(hale_model::AbsorbedEvent::CallHole(
+                                        hale_model::AbsorbedHoleKind::IndirectCall,
+                                    ));
+                                } else if e2.opaque_method_call() {
+                                    events.push(hale_model::AbsorbedEvent::CallHole(
+                                        hale_model::AbsorbedHoleKind::OpaqueCall {
+                                            callee: un.clone(),
+                                        },
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    for site2 in &nfs.effect_sites {
+                        match &site2.kind {
+                            alloc_summary::EffectSiteKind::Publish(
+                                None,
+                            ) => {
+                                events.push(hale_model::AbsorbedEvent::PublishHole);
+                            }
+                            alloc_summary::EffectSiteKind::Publish(
+                                Some(subj),
+                            ) => {
+                                // The SYNTACTIC form decides, same
+                                // rule as user publish rows: a
+                                // string literal is a wire address
+                                // even when its text collides with
+                                // a topic name (round 6).
+                                let declared_topic = if subj.literal
+                                {
+                                    None
+                                } else {
+                                    topic_id
+                                        .get(&subj.text)
+                                        .copied()
+                                };
+                                events.push(
+                                    hale_model::AbsorbedEvent::Publish {
+                                        subject: subj.text.clone(),
+                                        declared_topic,
+                                    },
+                                );
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                nodes.push(hale_model::AbsorbedNode {
+                    display: disp(&n),
+                    direct_effects: node_direct,
+                    events,
+                });
+            }
+            if truncated {
+                // Truncation lands at the actual UNEXPANDED
+                // frontier (review round 3): every discovered-but-
+                // unwalked node materializes with a lone Truncated
+                // event, so (a) interior targets referencing it stay
+                // in range, (b) the known prefix keeps its complete
+                // event lists, and (c) a walk surfaces saturation
+                // exactly where knowledge ends — not on entry.
+                for k in order.iter().skip(nodes.len()) {
+                    nodes.push(hale_model::AbsorbedNode {
+                        display: disp(k),
+                        direct_effects: Vec::new(),
+                        events: vec![
+                            hale_model::AbsorbedEvent::Truncated,
+                        ],
+                    });
+                }
+            }
+            // Keep every entry that can matter to ANY judgment:
+            // events (walks), carriers (counts), or direct effects
+            // (effect sinks) — an effect-bearing leaf with no
+            // outgoing events is still a countable destination.
+            // Keep every entry that can matter: events (walks) or
+            // direct effects (an effect-bearing leaf with no
+            // outgoing events is still a destination).
+            if nodes.iter().any(|nd| {
+                !nd.events.is_empty()
+                    || !nd.direct_effects.is_empty()
+            }) {
+                stdlib_absorption.push(
+                    hale_model::StdlibAbsorption {
+                        from,
+                        site,
+                        entry_dispatch,
+                        entry_in_loop,
+                        entry_group,
+                        entry_provenance,
+                        nodes,
+                    },
+                );
+            }
+        }
+    }
+    stdlib_absorption.sort_by_key(|a| (a.from, a.site));
+
     // holes, canonically ordered.
     let mut hole_rows: Vec<Hole> = holes
         .into_iter()
-        .map(|((at, kind, reason), (hides, pid))| Hole {
+        .map(|((at, kind, reason), (hides, site, pid))| Hole {
             at,
             kind,
             hides,
             reason,
+            authored_site: site,
             provenance: pid,
         })
         .collect();
@@ -2391,8 +2673,47 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     // capabilities: computed FROM the holes so the two accounts
     // cannot disagree by construction. The Change-2 scope leaves
     // ownership/placement/routes/cardinality/delivery unclaimed.
+    // Absorption residue participates (round 8): a CallHole /
+    // PublishHole / Truncated inside a stdlib interior is
+    // unresolved knowledge exactly like a top-level hole row.
+    let absorption_hides = {
+        let mut m = hale_model::RelationSet(0);
+        for a in &stdlib_absorption {
+            for n in &a.nodes {
+                for ev in &n.events {
+                    match ev {
+                        hale_model::AbsorbedEvent::CallHole(_) => {
+                            m = m
+                                .union(hale_model::RelationSet::CALLS)
+                                .union(
+                                    hale_model::RelationSet::EFFECTS,
+                                );
+                        }
+                        hale_model::AbsorbedEvent::PublishHole => {
+                            m = m.union(
+                                hale_model::RelationSet::PUBLISHES,
+                            );
+                        }
+                        hale_model::AbsorbedEvent::Truncated => {
+                            m = m
+                                .union(hale_model::RelationSet::CALLS)
+                                .union(
+                                    hale_model::RelationSet::PUBLISHES,
+                                )
+                                .union(
+                                    hale_model::RelationSet::EFFECTS,
+                                );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        m
+    };
     let hides_any = |fam: hale_model::RelationSet| {
         hole_rows.iter().any(|h| h.hides.intersects(fam))
+            || absorption_hides.intersects(fam)
     };
     let capabilities = Capabilities {
         exact_calls: !hides_any(hale_model::RelationSet::CALLS),
@@ -2420,6 +2741,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         legacy: hale_model::LegacyProjection {
             topology_v1_fns: legacy_fns,
             topology_v1_calls_via_stdlib: legacy_via,
+            stdlib_absorption,
         },
         header: ModelHeader {
             semantics: MODEL_SEMANTICS_V1,

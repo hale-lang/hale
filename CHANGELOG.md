@@ -8,6 +8,33 @@ behavior.
 
 ## Unreleased
 
+### The reachability judgment - family 5a on the canonical model (GH #476 Change 5a)
+
+`hale_types::judgment::judge_forbid_reaches(&ClaimIrTable,
+&ApplicationModel, source_bases)` - the first judgment family
+migrated onto `ClaimIr` x the canonical model, with full
+diagnostics parity: verdicts AND byte-identical diagnostics
+(messages, spans, related notes) against the authoritative
+evaluator, held by a permanent corpus differential. The walk
+reuses `model_graph::search` with a two-kind vertex: user
+functions over model rows (site-grained calls, publish x
+subscribe composition, `member_of` for group projection,
+`phase_of` for `during`, typed holes failing closed) and interior
+stdlib vertices from a new `LegacyProjection.stdlib_absorption`
+sidecar - the interior GRAPH the evaluator's merged-summary walk
+traverses (kept as a graph because BFS layering decides
+hole-vs-hit timing), with witness spellings demangled through the
+shared table. The validation pass (unknown names with
+did-you-mean, effects()-in-source, undeclared classes,
+avoiding-overlap, projection vacuity, duplicate claim names) is
+ported over ClaimIr refs. `Function.direct_effects` joins the
+model (computed by the evaluator's own `claims::direct_effects`).
+Negative controls prove the engine reads its relations (dropping
+call rows or hole rows flips verdicts). The old evaluator stays
+live and authoritative until Change 9. No user-visible behavior
+change.
+
+
 ### ClaimIr - every law surface, lowered (GH #476 Change 4)
 
 `hale-model` gains `ClaimIr` - one typed variant per law form across

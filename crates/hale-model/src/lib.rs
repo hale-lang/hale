@@ -134,7 +134,8 @@ pub mod provenance;
 pub mod relation;
 
 pub use application::{
-    ApplicationModel, Entities, LabelRow, LegacyProjection, ModelError, ModelHashKind, ModelHeader,
+    AbsorbedEvent, AbsorbedHoleKind, AbsorbedNode, AbsorbedTarget,
+    ApplicationModel, Entities, LabelRow, LegacyProjection, StdlibAbsorption, ModelError, ModelHashKind, ModelHeader,
     Relations, WeightRow, MODEL_SEMANTICS_V1,
 };
 pub use capability::Capabilities;
@@ -149,7 +150,7 @@ pub use entity::{
     LocusDecl, LocusInstance, PayloadContract, Phase, Seed, Subject, ThreadDomain, Topic,
     TransportKind, TypeDecl,
 };
-pub use hole::{Hole, HoleKind, RelationSet};
+pub use hole::{allowed_hole_families, hole_site_shaped, Hole, HoleKind, RelationSet};
 pub use ids::{
     BindingId, DeclarationId, EffectClassId, EntityRef, FunctionId, GroupId, InterfaceDeclId, LocusDeclId,
     LocusInstanceId, PayloadContractId, PhaseId, ProvenanceId, SeedId, SourceId, SubjectId,

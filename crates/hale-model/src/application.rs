@@ -14,7 +14,7 @@ use crate::entity::{
     Seed, Subject, ThreadDomain, Topic, TypeDecl,
 };
 use crate::hole::Hole;
-use crate::ids::{EntityRef, FunctionId, ProvenanceId};
+use crate::ids::{EntityRef, FunctionId, ProvenanceId, TopicId};
 use crate::provenance::{Provenance, ProvenanceTable};
 use crate::relation::{
     AffinedTo, Call, DeadInterfaceCall, DeclaredIn, DeclaresPublish,
@@ -138,6 +138,111 @@ pub struct LegacyProjection {
     /// unchanged source. Both endpoints are legacy fns
     /// (∈ `topology_v1_fns`).
     pub topology_v1_calls_via_stdlib: Vec<(FunctionId, FunctionId, bool)>,
+    /// GH #476 Change 5a: what the evaluator's merged-summary walk
+    /// sees INSIDE stdlib bodies reachable from a user fn — interior
+    /// fail-closed holes (with the stdlib fn's display for the
+    /// diagnostic), and user→user re-emergence edges with their
+    /// interior witness path. The reachability judgment consumes
+    /// this to reproduce the evaluator byte-for-byte; deleted at
+    /// Change 9 with the rest of the projection. Sorted by
+    /// (from, site).
+    pub stdlib_absorption: Vec<StdlibAbsorption>,
+}
+
+/// One user call site whose callee is a stdlib body (or a stdlib
+/// conformer alternative of an interface dispatch): the interior
+/// GRAPH the evaluator's merged-summary walk would traverse. Kept
+/// as a graph — not a flattened summary — because BFS layering
+/// decides which of a hole and a hit fires first, and the judgment
+/// must replay the evaluator's order exactly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StdlibAbsorption {
+    pub from: FunctionId,
+    /// The authored site ordinal within `from` (stdlib calls consume
+    /// ordinals like every authored site), so the judgment can
+    /// interleave the entry edge at the evaluator's BFS position.
+    pub site: u32,
+    /// Dispatch rendering of the ENTRY step (a stdlib conformer
+    /// alternative of an interface dispatch), when it is one.
+    pub entry_dispatch: Option<(String, String)>,
+    /// The entry call's loop nesting — a carrier reached through a
+    /// loop-nested stdlib entry repeats per iteration, and the
+    /// evaluator reads it off the real edge (review: looped stdlib
+    /// entries).
+    pub entry_in_loop: bool,
+    /// The entry call's dispatch group (shared by the alternatives
+    /// of one dispatch site — `bound` folds them with MAX).
+    pub entry_group: Option<u32>,
+    /// The entry call's authored span.
+    pub entry_provenance: ProvenanceId,
+    /// Interior vertices, discovery order; node 0 is the entry.
+    pub nodes: Vec<AbsorbedNode>,
+}
+
+/// One interior stdlib vertex: its display spelling and its body's
+/// walk-relevant events, in body order (the evaluator collects call
+/// edges and returns at the FIRST unfollowable one, then scans
+/// publish sites — the judgment replays this sequence under the
+/// claim's via masks).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AbsorbedNode {
+    /// e.g. `std::io::tcp::Stream::send` (demangled like every
+    /// witness spelling).
+    pub display: String,
+    /// The stdlib fn's DIRECT effect classes (the evaluator applies
+    /// `direct_effects` to every visited FnKey, stdlib included —
+    /// an `effects(C)` destination can be satisfied INSIDE a
+    /// stdlib body; review: stdlib effect sinks).
+    pub direct_effects: Vec<String>,
+    pub events: Vec<AbsorbedEvent>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AbsorbedEvent {
+    /// A resolved call edge — interior or re-emergent.
+    Call {
+        target: AbsorbedTarget,
+        /// (interface display, method) when the edge is a dispatch
+        /// alternative.
+        dispatch: Option<(String, String)>,
+    },
+    /// An unfollowable call edge (fires under `via { calls }`).
+    CallHole(AbsorbedHoleKind),
+    /// A publish to a known subject (fans out under `via { bus }`).
+    Publish {
+        /// Canonical spelling for delivery matching (topic name for
+        /// a declared-topic reference, wire text otherwise).
+        subject: String,
+        /// TYPED topic identity when the interior publish speaks a
+        /// declared topic — a literal wire address whose text
+        /// collides with a topic name stays `None` (round 6: hole
+        /// coverage must not re-conflate the identities the model
+        /// keeps apart).
+        declared_topic: Option<TopicId>,
+    },
+    /// A publish to a computed subject (fires under `via { bus }`).
+    PublishHole,
+    /// The absorption walk hit its step ceiling before settling —
+    /// explicit residue, never silent exhaustion (a judgment
+    /// treating a truncated interior as fully explored would
+    /// certify an absence it cannot see).
+    Truncated,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AbsorbedTarget {
+    /// Another interior vertex (index into `nodes`).
+    Interior(u32),
+    /// Re-emergence at a user fn.
+    User(FunctionId),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AbsorbedHoleKind {
+    /// An indirect call (fn-typed value).
+    IndirectCall,
+    /// A method call on an untypable receiver.
+    OpaqueCall { callee: String },
 }
 
 #[derive(Clone, Debug)]
@@ -263,6 +368,16 @@ impl ApplicationModel {
 
         // --- canonical order: entity tables sort by canonical name.
         check_sorted_keys("functions", e.functions.iter().map(|f| &f.name))?;
+        for (i, f) in e.functions.iter().enumerate() {
+            // direct_effects is a sorted set (unlike `effects`,
+            // whose declaration order is semantic in the artifact).
+            if f.direct_effects.windows(2).any(|w| w[0] >= w[1]) {
+                return Err(ModelError::NotCanonical {
+                    table: "functions.direct_effects",
+                    index: i,
+                });
+            }
+        }
         check_sorted_keys("loci", e.loci.iter().map(|l| &l.name))?;
         check_sorted_keys("locus_instances", e.locus_instances.iter().map(|i| &i.path))?;
         check_sorted_keys("topics", e.topics.iter().map(|t| &t.name))?;
@@ -889,6 +1004,49 @@ impl ApplicationModel {
             if h.hides.is_empty() {
                 return Err(ModelError::EmptyHole { index: i });
             }
+            // The closed shape matrix (round 7): only KNOWN family
+            // bits, only defined (anchor, kind, family)
+            // combinations, and authored positions only at fn
+            // grain — a hole every judgment silently ignores would
+            // let the model claim its unknowns are accounted for.
+            if !crate::hole::RelationSet::ALL_KNOWN
+                .contains(h.hides)
+            {
+                return Err(ModelError::EmptyHole { index: i });
+            }
+            match crate::hole::allowed_hole_families(&h.at, &h.kind)
+            {
+                Some((required, allowed))
+                    if allowed.contains(h.hides)
+                        && h.hides.contains(required) => {}
+                _ => {
+                    return Err(ModelError::NotCanonical {
+                        table: "holes.shape",
+                        index: i,
+                    });
+                }
+            }
+            if !matches!(h.at, EntityRef::Function(_))
+                && h.authored_site.is_some()
+            {
+                return Err(ModelError::NotCanonical {
+                    table: "holes.shape",
+                    index: i,
+                });
+            }
+            // Site identity is EXCLUSIVE, not optional (round 8):
+            // a site-shaped hole stands for one authored
+            // expression and requires its ordinal; a whole-body
+            // hole has no single position and must not carry one.
+            if matches!(h.at, EntityRef::Function(_))
+                && crate::hole::hole_site_shaped(&h.kind)
+                    != h.authored_site.is_some()
+            {
+                return Err(ModelError::NotCanonical {
+                    table: "holes.shape",
+                    index: i,
+                });
+            }
             prov("holes", i, h.provenance)?;
         }
 
@@ -903,6 +1061,146 @@ impl ApplicationModel {
                     table: "legacy.topology_v1_fns",
                     index: i,
                 });
+            }
+        }
+        // NON-strict ordering: one dispatch site can fan out to
+        // SEVERAL stdlib conformers — multiple entries legitimately
+        // share (from, site).
+        for (i, w) in
+            self.legacy.stdlib_absorption.windows(2).enumerate()
+        {
+            if (w[0].from, w[0].site) > (w[1].from, w[1].site) {
+                return Err(ModelError::NotCanonical {
+                    table: "legacy.stdlib_absorption",
+                    index: i + 1,
+                });
+            }
+        }
+        for (i, a) in self.legacy.stdlib_absorption.iter().enumerate()
+        {
+            if a.from.index() >= fns || a.nodes.is_empty() {
+                return Err(ModelError::DanglingId {
+                    table: "legacy.stdlib_absorption",
+                    index: i,
+                });
+            }
+            // The entry's dispatch label binds to the entry
+            // NODE's method identity (round 8) — textual agreement
+            // with user alternatives is not enough when node zero
+            // is an unrelated method.
+            if let Some((_, m)) = &a.entry_dispatch {
+                let tail = a.nodes[0]
+                    .display
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or_default();
+                if tail != m {
+                    return Err(ModelError::NotCanonical {
+                        table:
+                            "legacy.stdlib_absorption.dispatch",
+                        index: i,
+                    });
+                }
+            }
+            // The reachability judgment renders entry_provenance as
+            // the authored crossing span — a dangling id would
+            // silently render 0..0 (review round 5).
+            if a.entry_provenance.index()
+                >= self.provenance.records.len()
+            {
+                return Err(ModelError::DanglingId {
+                    table: "legacy.stdlib_absorption",
+                    index: i,
+                });
+            }
+            for n in &a.nodes {
+                for ev in &n.events {
+                    match ev {
+                        crate::AbsorbedEvent::Call {
+                            target,
+                            dispatch,
+                            ..
+                        } => {
+                            let ok = match target {
+                                crate::AbsorbedTarget::Interior(
+                                    k,
+                                ) => (*k as usize) < a.nodes.len(),
+                                crate::AbsorbedTarget::User(f) => {
+                                    f.index() < fns
+                                }
+                            };
+                            if !ok {
+                                return Err(ModelError::DanglingId {
+                                    table:
+                                        "legacy.stdlib_absorption",
+                                    index: i,
+                                });
+                            }
+                            // A dispatch label binds to its
+                            // TARGET (round 8): the rendered
+                            // method must be the target's own
+                            // method identity, so a group can
+                            // never collect calls to unrelated
+                            // functions under one label.
+                            if let Some((_, m)) = dispatch {
+                                let tail = match target {
+                                    crate::AbsorbedTarget::User(
+                                        f,
+                                    ) => e.functions[f.index()]
+                                        .name
+                                        .rsplit("::")
+                                        .next()
+                                        .unwrap_or_default(),
+                                    crate::AbsorbedTarget::Interior(
+                                        k,
+                                    ) => a.nodes[*k as usize]
+                                        .display
+                                        .rsplit("::")
+                                        .next()
+                                        .unwrap_or_default(),
+                                };
+                                if tail != m {
+                                    return Err(
+                                        ModelError::NotCanonical {
+                                            table:
+                                                "legacy.stdlib_absorption.dispatch",
+                                            index: i,
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                        // The TYPED publish identity judgments
+                        // trust (round 7): a present TopicId must
+                        // be in range, and the delivery spelling
+                        // must be exactly that topic's name — a
+                        // disagreement would route hole coverage
+                        // as one topic while known delivery looks
+                        // up another.
+                        crate::AbsorbedEvent::Publish {
+                            subject,
+                            declared_topic,
+                            ..
+                        } => {
+                            if let Some(t) = declared_topic {
+                                let ok = t.index()
+                                    < e.topics.len()
+                                    && e.topics[t.index()].name
+                                        == *subject;
+                                if !ok {
+                                    return Err(
+                                        ModelError::DanglingId {
+                                            table:
+                                                "legacy.stdlib_absorption",
+                                            index: i,
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
         check_sorted_keys(
@@ -936,11 +1234,208 @@ impl ApplicationModel {
         // --- capability/hole contradiction: exactness may not be
         // claimed for a family any hole hides. Every capability is
         // mapped (an unmapped flag would be unfalsifiable).
+        // The authored-site event partition (round 8): one
+        // (function, site) in CALL space is occupied by resolved
+        // alternatives (call rows and/or absorption entries — the
+        // dispatch-identity laws bind those), OR dead interface
+        // rows, OR one typed call hole — never a mixture; in
+        // PUBLISH space, a known publish row and a
+        // computed-subject hole are likewise exclusive. One
+        // authored expression cannot be two events, and a judgment
+        // must never have to invent which comes first.
+        {
+            use crate::relation::DispatchKind;
+            #[derive(Default)]
+            struct Occ {
+                resolved: bool,
+                dead: bool,
+                holes: u8,
+            }
+            let mut call_sites: std::collections::BTreeMap<
+                (u32, u32),
+                Occ,
+            > = std::collections::BTreeMap::new();
+            for c in &self.relations.calls {
+                if matches!(c.dispatch, DispatchKind::ViaStdlib) {
+                    continue;
+                }
+                call_sites
+                    .entry((c.from.0, c.site))
+                    .or_default()
+                    .resolved = true;
+            }
+            for a in &self.legacy.stdlib_absorption {
+                call_sites
+                    .entry((a.from.0, a.site))
+                    .or_default()
+                    .resolved = true;
+            }
+            for d in &self.relations.dead_interface_calls {
+                call_sites
+                    .entry((d.from.0, d.site))
+                    .or_default()
+                    .dead = true;
+            }
+            let mut pub_holes: std::collections::BTreeSet<(
+                u32,
+                u32,
+            )> = std::collections::BTreeSet::new();
+            for (i, h) in self.holes.iter().enumerate() {
+                let EntityRef::Function(f) = h.at else {
+                    continue;
+                };
+                let Some(site) = h.authored_site else {
+                    continue;
+                };
+                if matches!(
+                    h.kind,
+                    crate::hole::HoleKind::ComputedSubject
+                ) {
+                    // Exactly ONE event per publish site (round
+                    // 9): a second computed-subject hole in the
+                    // same site is rejected, not collapsed.
+                    if !pub_holes.insert((f.0, site)) {
+                        return Err(ModelError::NotCanonical {
+                            table: "publishes.site_partition",
+                            index: i,
+                        });
+                    }
+                } else if crate::hole::hole_site_shaped(&h.kind) {
+                    let occ = call_sites
+                        .entry((f.0, site))
+                        .or_default();
+                    occ.holes = occ.holes.saturating_add(1);
+                }
+            }
+            for (i, (_, occ)) in call_sites.iter().enumerate() {
+                // Exactly ONE event, not one event category
+                // (round 9): two typed holes in one call site
+                // would leave the judgment picking a diagnostic by
+                // canonical kind order rather than by an authored
+                // event.
+                let cats = usize::from(occ.resolved)
+                    + usize::from(occ.dead)
+                    + usize::from(occ.holes > 0);
+                if cats > 1 || occ.holes > 1 {
+                    return Err(ModelError::NotCanonical {
+                        table: "calls.site_partition",
+                        index: i,
+                    });
+                }
+            }
+            for (i, p) in self.relations.publishes.iter().enumerate()
+            {
+                if pub_holes.contains(&(p.function.0, p.site)) {
+                    return Err(ModelError::NotCanonical {
+                        table: "publishes.site_partition",
+                        index: i,
+                    });
+                }
+            }
+        }
+        // The contracted relation and the absorption sidecar are
+        // DUAL ACCOUNTS of the same through-stdlib paths (round 9)
+        // and may not disagree: every `ViaStdlib` call row must be
+        // realized by a re-emergent User target inside one of its
+        // fn's absorption entries, and every re-emergence must
+        // have its contracted row. The judgments walk the
+        // absorption and skip the contracted rows — a row without
+        // an interior would be an edge every judgment discards,
+        // and an interior re-emergence without its row would be an
+        // edge the legacy projection denies.
+        {
+            use crate::relation::DispatchKind;
+            let mut contracted: std::collections::BTreeMap<
+                u32,
+                std::collections::BTreeSet<u32>,
+            > = std::collections::BTreeMap::new();
+            for c in &self.relations.calls {
+                if matches!(c.dispatch, DispatchKind::ViaStdlib) {
+                    contracted
+                        .entry(c.from.0)
+                        .or_default()
+                        .insert(c.to.0);
+                }
+            }
+            let mut absorbed: std::collections::BTreeMap<
+                u32,
+                std::collections::BTreeSet<u32>,
+            > = std::collections::BTreeMap::new();
+            for a in &self.legacy.stdlib_absorption {
+                let set =
+                    absorbed.entry(a.from.0).or_default();
+                for n in &a.nodes {
+                    for ev in &n.events {
+                        if let crate::AbsorbedEvent::Call {
+                            target:
+                                crate::AbsorbedTarget::User(f2),
+                            ..
+                        } = ev
+                        {
+                            set.insert(f2.0);
+                        }
+                    }
+                }
+            }
+            absorbed.retain(|_, v| !v.is_empty());
+            contracted.retain(|_, v| !v.is_empty());
+            if contracted != absorbed {
+                return Err(ModelError::NotCanonical {
+                    table: "calls.via_stdlib_agreement",
+                    index: 0,
+                });
+            }
+        }
+        // Unresolved residue INSIDE stdlib absorption participates
+        // in the exactness account (round 8): a CallHole is an
+        // unfollowable call, a PublishHole an unprovable publish,
+        // and a Truncated frontier hides everything beyond it —
+        // exactness and holes are dual accounts that may not
+        // disagree, wherever the hole lives.
+        let mut absorption_hides = crate::hole::RelationSet(0);
+        for a in &self.legacy.stdlib_absorption {
+            for n in &a.nodes {
+                for ev in &n.events {
+                    match ev {
+                        crate::AbsorbedEvent::CallHole(_) => {
+                            absorption_hides = absorption_hides
+                                .union(
+                                    crate::hole::RelationSet::CALLS,
+                                )
+                                .union(
+                                    crate::hole::RelationSet::EFFECTS,
+                                );
+                        }
+                        crate::AbsorbedEvent::PublishHole => {
+                            absorption_hides = absorption_hides
+                                .union(
+                                    crate::hole::RelationSet::PUBLISHES,
+                                );
+                        }
+                        crate::AbsorbedEvent::Truncated => {
+                            absorption_hides = absorption_hides
+                                .union(
+                                    crate::hole::RelationSet::CALLS,
+                                )
+                                .union(
+                                    crate::hole::RelationSet::PUBLISHES,
+                                )
+                                .union(
+                                    crate::hole::RelationSet::EFFECTS,
+                                );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
         for (name, claimed, family) in self.capabilities.vouched_families() {
             if !claimed {
                 continue;
             }
-            if self.holes.iter().any(|h| h.hides.intersects(family)) {
+            if self.holes.iter().any(|h| h.hides.intersects(family))
+                || absorption_hides.intersects(family)
+            {
                 return Err(ModelError::CapabilityContradiction { capability: name });
             }
         }
