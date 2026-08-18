@@ -1882,7 +1882,7 @@ fn main() { App { }; }
         at: hale_model::EntityRef::Subject(hale_model::SubjectId(
             sid as u32,
         )),
-        kind: hale_model::HoleKind::UnanalyzedBody,
+        kind: hale_model::HoleKind::DynamicEndpoint,
         hides: hale_model::RelationSet::SUBSCRIBES,
         authored_site: None,
         reason: "subscriber set incomplete".to_string(),
@@ -1941,7 +1941,7 @@ fn main() { App { }; }
         at: hale_model::EntityRef::Subject(hale_model::SubjectId(
             wild,
         )),
-        kind: hale_model::HoleKind::UnanalyzedBody,
+        kind: hale_model::HoleKind::DynamicEndpoint,
         hides: hale_model::RelationSet::SUBSCRIBES,
         authored_site: None,
         reason: "subscriber set incomplete".to_string(),
@@ -2000,7 +2000,7 @@ fn main() { App { }; }
         at: hale_model::EntityRef::Topic(hale_model::TopicId(
             tid as u32,
         )),
-        kind: hale_model::HoleKind::UnanalyzedBody,
+        kind: hale_model::HoleKind::DynamicEndpoint,
         hides: hale_model::RelationSet::SUBSCRIBES,
         authored_site: None,
         reason: "subscriber set incomplete".to_string(),
@@ -2060,7 +2060,7 @@ fn main() { App { }; }
         at: hale_model::EntityRef::Subject(hale_model::SubjectId(
             sid as u32,
         )),
-        kind: hale_model::HoleKind::UnanalyzedBody,
+        kind: hale_model::HoleKind::DynamicEndpoint,
         hides: hale_model::RelationSet::SUBSCRIBES,
         authored_site: None,
         reason: "subscriber set incomplete".to_string(),
@@ -2113,7 +2113,7 @@ fn main() { App { }; }
         at: hale_model::EntityRef::Topic(hale_model::TopicId(
             tid as u32,
         )),
-        kind: hale_model::HoleKind::UnanalyzedBody,
+        kind: hale_model::HoleKind::DynamicEndpoint,
         hides: hale_model::RelationSet::SUBSCRIBES,
         authored_site: None,
         reason: "subscriber set incomplete".to_string(),
