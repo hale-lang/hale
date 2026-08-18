@@ -371,7 +371,13 @@ fn tampered_or_unverifiable_artifacts_are_refused() {
 
     // 3. Valid digest, WRONG SEMANTICS: rows may mean different
     //    things; refused past the integrity gate.
-    let body = strip_trailer(&raw).replace("\"semantics\": 1", "\"semantics\": 999");
+    let sem_key = format!(
+        "\"semantics\": {}",
+        hale_types::topology::MODEL_SEMANTICS
+    );
+    assert!(raw.contains(&sem_key), "test premise: current semantics");
+    let body =
+        strip_trailer(&raw).replace(&sem_key, "\"semantics\": 999");
     let wrong_sem = dir.join("semantics.topology");
     std::fs::write(&wrong_sem, restamp_digest(&body)).unwrap();
     let out = hale().arg("topology").arg("graph").arg(&wrong_sem).output().unwrap();
@@ -385,7 +391,13 @@ fn tampered_or_unverifiable_artifacts_are_refused() {
     // 4. Valid digest, unsupported OLD schema minor (pre-topics /
     //    pre-verdict): refused rather than rendered misleadingly
     //    empty.
-    let body = strip_trailer(&raw).replace("\"schema\": \"1.10\"", "\"schema\": \"1.3\"");
+    let schema_key = format!(
+        "\"schema\": \"{}\"",
+        hale_types::topology::TOPOLOGY_SCHEMA
+    );
+    assert!(raw.contains(&schema_key), "test premise: current schema");
+    let body =
+        strip_trailer(&raw).replace(&schema_key, "\"schema\": \"1.3\"");
     let old_schema = dir.join("oldschema.topology");
     std::fs::write(&old_schema, restamp_digest(&body)).unwrap();
     let out = hale().arg("topology").arg("graph").arg(&old_schema).output().unwrap();

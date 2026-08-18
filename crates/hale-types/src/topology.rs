@@ -116,7 +116,18 @@ use crate::symbol::Bundle;
 /// (everything they reach), and gains the `environment` label —
 /// identities now come from the adoption traversal, so a constitution
 /// contributing no clause of its own is no longer invisible.
-pub const TOPOLOGY_SCHEMA: &str = "1.10";
+/// 1.11 (GH #476 Change 6): three unhashed, digest-covered typed
+/// sections — `law` (every lowered ClaimIr row: ordinal, name,
+/// origin, judgment family, machine verdict, provenance; plus
+/// `law_digest` and `inputs_digest`, the sidecar ties a consumer
+/// checks before trusting external evidence against this
+/// artifact), `capabilities` (the model's positive completeness
+/// account, typed), and `adequacy` (per migrated judgment family:
+/// `exact` when capabilities vouch every relation family that
+/// judgment consumes, else `degraded`). The legacy `claims` /
+/// `lowered` string rows remain, now PROJECTED from the same
+/// canonical path.
+pub const TOPOLOGY_SCHEMA: &str = "1.11";
 
 /// GH #408 Phase 0: what the rows MEAN, as distinct from their shape.
 ///
@@ -130,7 +141,14 @@ pub const TOPOLOGY_SCHEMA: &str = "1.10";
 /// Bump whenever the interpretation of any row changes, even when its
 /// shape does not. A consumer that does not recognise the value must
 /// refuse rather than assume equivalence.
-pub const MODEL_SEMANTICS: u32 = 1;
+/// 2 (GH #476 Change 6): law verdicts come from the canonical
+/// judgments, whose interpretation is stricter in two documented
+/// places — a certificate naming a cyclically-defined or
+/// undeclared effect class reports `invalid` (previously a vacuous
+/// `holds`), and `require attributed` over a body the analysis
+/// could not walk reports `uncertified` (previously a fail-open
+/// `holds`).
+pub const MODEL_SEMANTICS: u32 = 2;
 
 /// The model identity alone (downstream handoff P26, 2026-08-12):
 /// the same `shape_hash` `dump_topology` stamps, for embedding in
@@ -649,12 +667,36 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     }
 
     // ---- claims ----
-    let (_diags, outcomes, identities) =
+    // GH #476 Change 6: the artifact's law rows are PROJECTED from
+    // the canonical path (ClaimIr renders the forms, the Change-5
+    // judgments produce the verdicts, the evidence sidecar carries
+    // the certificate results). The evaluator report is still run
+    // for the constitution identities — and it remains the CHECK
+    // authority until Change 9; the artifact_law_projection corpus
+    // differential holds the two row sets equal (modulo the
+    // Change-5 documented divergences, which the SEMANTICS bump
+    // records).
+    let (_diags, _old_outcomes, identities) =
         crate::claims::claims_report_with_identities(
         &programs,
         &graph,
         &bundle.import_renames,
     );
+    let vmodel = crate::model_builder::derive_application_model(bundle);
+    let law_table = crate::claim_lowering::lower_claims(bundle, &vmodel);
+    let law_evidence = crate::evidence::derive_certificate_evidence(
+        bundle, &law_table, &vmodel,
+    );
+    let source_bases: Vec<u32> =
+        bundle.sources.iter().map(|f| f.base).collect();
+    let (outcomes, projected_lowered, law_rows) =
+        crate::topology_projection::project_law_rows(
+            bundle,
+            &vmodel,
+            &law_table,
+            &law_evidence,
+            &source_bases,
+        );
     // Rendered forms carry post-mangle topic refs; rewrite them to
     // author spelling (longest-mangled-first, the demangle_imports
     // rule, so a prefix symbol cannot partially rewrite another).
@@ -1084,10 +1126,18 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     // record: the artifact carries ALL law, bundle-quantified and
     // fn-grained, in one place. Unhashed like the claim results —
     // rows are law + verdicts, not topology.
-    let mut lowered = crate::effects::certificate_rows(
-        &programs,
-        &bundle.import_renames,
-    );
+    // Effects-family certificates come from the evidence sidecar
+    // (Change 6); `@budget` rows keep their old producers until the
+    // quantitative engines migrate (JudgmentFamily::Unmigrated).
+    let mut lowered: Vec<crate::effects::LoweredCertificate> =
+        projected_lowered
+            .iter()
+            .map(|r| crate::effects::LoweredCertificate {
+                subject: r.subject.clone(),
+                form: r.form.clone(),
+                result: r.result,
+            })
+            .collect();
     lowered.extend(crate::budget_check::certificate_rows(
         &programs,
         &bundle.import_renames,
@@ -1119,6 +1169,82 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     }
     trim_trailing_comma(&mut out);
     out.push_str("  ]");
+
+    // GH #476 Change 6: the TYPED law section — every lowered
+    // ClaimIr row with its judgment family and machine verdict,
+    // addressable by ordinal, plus the two digests a consumer
+    // checks before trusting external evidence against this
+    // artifact. Unhashed by `shape_hash` (law rows are results,
+    // not topology), covered by `artifact_digest`.
+    out.push_str(",\n  \"law\": {\n");
+    out.push_str(&format!(
+        "    \"law_digest\": \"{:016x}\",\n",
+        law_table.semantic_digest()
+    ));
+    out.push_str(&format!(
+        "    \"inputs_digest\": \"{:016x}\",\n",
+        law_evidence.inputs_digest
+    ));
+    out.push_str("    \"rows\": [\n");
+    for r in &law_rows {
+        let prov = match &r.provenance {
+            Some((file, a, b)) => format!(
+                ", \"file\": {}, \"span\": [{}, {}]",
+                quote(file),
+                a,
+                b
+            ),
+            None => String::new(),
+        };
+        out.push_str(&format!(
+            "      {{\"ordinal\": {}, \"name\": {}, \"origin\": {}, \
+             \"family\": {}, \"verdict\": {}{}}},\n",
+            r.ordinal,
+            quote(&demangle_str(&r.name)),
+            quote(&r.origin),
+            quote(r.family.as_str()),
+            quote(r.verdict.as_str()),
+            prov
+        ));
+    }
+    trim_trailing_comma(&mut out);
+    out.push_str("    ]\n  }");
+
+    // The model's positive completeness account, typed — what the
+    // artifact can promise is exact, without reverse-engineering
+    // the `unknowns` strings.
+    out.push_str(",\n  \"capabilities\": {\n");
+    {
+        let caps = vmodel.capabilities.vouched_families();
+        for (i, (cname, claimed, _)) in caps.iter().enumerate() {
+            out.push_str(&format!(
+                "    \"{}\": {}{}\n",
+                cname,
+                claimed,
+                if i + 1 == caps.len() { "" } else { "," }
+            ));
+        }
+    }
+    out.push_str("  }");
+
+    // Per migrated judgment family: can this model support the
+    // family's judgment EXACTLY (`exact`), or do holes degrade it
+    // (`degraded` — judgments still run; reachable holes force
+    // `uncertified`)?
+    out.push_str(",\n  \"adequacy\": {\n");
+    {
+        let adequacy =
+            crate::topology_projection::family_adequacy(&vmodel);
+        for (i, (fam, exact)) in adequacy.iter().enumerate() {
+            out.push_str(&format!(
+                "    \"{}\": {}{}\n",
+                fam.as_str(),
+                quote(if *exact { "exact" } else { "degraded" }),
+                if i + 1 == adequacy.len() { "" } else { "," }
+            ));
+        }
+    }
+    out.push_str("  }");
 
     // GH #409 (review finding 5): WHICH evaluation this artifact
     // certifies. Per-claim `source` answers "where did this clause
@@ -1180,8 +1306,23 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     // Note this says nothing about whether the program TYPECHECKS.
     // It does not have to: an artifact is only emitted for a program
     // that does, so its existence already carries that.
+    // Change 6: the MACHINE verdicts join the pass condition. For
+    // the migrated families the law rows are the judgment's word —
+    // stricter than the engine replay in the two documented places
+    // (cyclic/undeclared classes ⇒ invalid; attributed-over-hole ⇒
+    // uncertified). Unmigrated families (budget/quant/causes) and
+    // fleet rows are excluded: their truth still comes from the old
+    // engines in `lowered`.
+    let law_pass = law_rows.iter().all(|r| {
+        matches!(
+            r.family,
+            hale_model::JudgmentFamily::Unmigrated
+                | hale_model::JudgmentFamily::Fleet
+        ) || r.verdict.passed()
+    });
     let all_pass = outcomes.iter().all(|o| o.result.passed())
-        && lowered.iter().all(|r| r.result.passed());
+        && lowered.iter().all(|r| r.result.passed())
+        && law_pass;
     out.push_str(&format!(
         ",\n  \"verdict\": {}",
         quote(if all_pass { "clean" } else { "law_failed" })

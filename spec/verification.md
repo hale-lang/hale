@@ -294,7 +294,7 @@ earlier in the same file as the family. Companion:
 class along any path, with the same loop/indirect unboundedness
 rules as every per-call dimension.
 
-**The topology artifact** (#382 phase 2; schema 1.10):
+**The topology artifact** (#382 phase 2; schema 1.11):
 `hale check <t> --dump-topology` emits the serialized model —
 sorts (loci, fns, topics), relations (calls with **weights**: loop
 nesting, unbounded-loop membership, interface-dispatch tags;
@@ -317,7 +317,27 @@ uninhabited-interface dispatch, or computed publish subjects), all
 in author spelling — plus every named claim's normalized form and
 result, under a schema version and a `shape_hash` (FNV-1a/64 over
 the canonical model half; claim RESULTS are excluded, so one
-topology under different law keeps one shape). A **provenance**
+topology under different law keeps one shape). Schema 1.11
+(GH #476 Change 6) adds three unhashed, digest-covered typed
+sections: **`law`** — every lowered `ClaimIr` row with its
+ordinal, origin (`main` / `constitution:<name>` / `library` /
+`annotation`), judgment **family** (`reachability` / `boundary` /
+`endpoint` / `bound` / `certificate` / `unmigrated` / `fleet`),
+machine **verdict**, and source provenance, plus `law_digest`
+(the law table's semantic digest) and `inputs_digest` (the
+analysis-inputs digest) — the ties a consumer checks before
+trusting external evidence against this artifact; **`capabilities`**
+— the model's positive completeness account, typed; and
+**`adequacy`** — per migrated judgment family, `exact` when
+capabilities vouch every relation family that judgment consumes,
+else `degraded`. The legacy `claims` / `lowered` string rows
+remain, now PROJECTED from the canonical model path; `semantics`
+bumps to 2 because the machine verdicts are stricter in two
+documented places (a certificate naming a cyclically-defined or
+undeclared effect class is `invalid`, never a vacuous `holds`;
+`require attributed` over an unanalyzable body is `uncertified`,
+never a fail-open `holds`), and the document `verdict` follows
+the machine. A **provenance**
 section carries per-edge and per-decl source spans as
 bundle-global byte offsets; it is excluded from the hash on
 purpose — moving code must not change the shape identity.

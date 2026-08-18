@@ -413,7 +413,233 @@ pub struct ClaimIrTable {
     pub provenance: ProvenanceTable,
 }
 
+/// The judgment family that owns a lowered row — the unit at which
+/// Change-5 migration, artifact adequacy, and the corpus
+/// differentials are organized (GH #476 Change 6).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum JudgmentFamily {
+    /// `forbid reaches` (Change 5a).
+    Reachability,
+    /// `only edges` (Change 5b).
+    Boundary,
+    /// `require` / `cover` / `count` / `sealed` / `attributed`
+    /// (Change 5c).
+    Endpoint,
+    /// `bound` (Change 5d).
+    Bound,
+    /// The pointwise `@effects` / `@no_panic` / `@phase_effects`
+    /// certificates (Change 5e).
+    Certificate,
+    /// Lowered but its engine has not migrated (`causes:`,
+    /// `depends:`, `@budget`) — judged at minimum `uncertified`.
+    Unmigrated,
+    /// Fleet plan rows — Change 7's `FleetModel`.
+    Fleet,
+}
+
+impl JudgmentFamily {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            JudgmentFamily::Reachability => "reachability",
+            JudgmentFamily::Boundary => "boundary",
+            JudgmentFamily::Endpoint => "endpoint",
+            JudgmentFamily::Bound => "bound",
+            JudgmentFamily::Certificate => "certificate",
+            JudgmentFamily::Unmigrated => "unmigrated",
+            JudgmentFamily::Fleet => "fleet",
+        }
+    }
+
+    /// The relation families this judgment's projection consumes —
+    /// the adequacy question "can this model support family X
+    /// exactly?" is `capabilities` vouching for every one of these
+    /// (GH #476 Change 6). Mirrors what the Change-5 engines
+    /// actually read; extending an engine's reads extends this row
+    /// in the same change.
+    pub fn required_relations(self) -> crate::hole::RelationSet {
+        use crate::hole::RelationSet as R;
+        match self {
+            JudgmentFamily::Reachability
+            | JudgmentFamily::Boundary
+            | JudgmentFamily::Bound => R::CALLS
+                .union(R::PUBLISHES)
+                .union(R::SUBSCRIBES)
+                .union(R::EFFECTS),
+            JudgmentFamily::Endpoint => R::PUBLISHES
+                .union(R::SUBSCRIBES)
+                .union(R::CARDINALITY)
+                .union(R::EFFECTS),
+            JudgmentFamily::Certificate => {
+                R::CALLS.union(R::EFFECTS)
+            }
+            JudgmentFamily::Unmigrated | JudgmentFamily::Fleet => {
+                crate::hole::RelationSet(0)
+            }
+        }
+    }
+}
+
 impl ClaimRow {
+    /// Which judgment family owns this row.
+    pub fn family(&self) -> JudgmentFamily {
+        match &self.law {
+            ClaimIr::ForbidReaches { .. } => {
+                JudgmentFamily::Reachability
+            }
+            ClaimIr::OnlyEdges { .. } => JudgmentFamily::Boundary,
+            ClaimIr::RequireEndpoint { .. }
+            | ClaimIr::RequireSealed { .. }
+            | ClaimIr::RequireAttributed { .. }
+            | ClaimIr::Cover { .. }
+            | ClaimIr::Count { .. } => JudgmentFamily::Endpoint,
+            ClaimIr::Bound { .. } => JudgmentFamily::Bound,
+            ClaimIr::EffectForbid { .. }
+            | ClaimIr::EffectOnly { .. }
+            | ClaimIr::EffectPublishSet { .. }
+            | ClaimIr::NoPanic { .. }
+            | ClaimIr::PhaseEffects { .. } => {
+                JudgmentFamily::Certificate
+            }
+            ClaimIr::EffectCauses { .. }
+            | ClaimIr::DependsSet { .. }
+            | ClaimIr::AllocBudget { .. }
+            | ClaimIr::QuantBudget { .. } => {
+                JudgmentFamily::Unmigrated
+            }
+            ClaimIr::FleetForbidReaches { .. }
+            | ClaimIr::FleetOnlyEdges { .. }
+            | ClaimIr::FleetRequireEndpoint { .. }
+            | ClaimIr::FleetCountInstances { .. } => JudgmentFamily::Fleet,
+        }
+    }
+
+    /// The claims-block form rendering — display voice, matching
+    /// the evaluator's `render_form` spelling byte-for-byte (the
+    /// artifact projection differential is the gate). `None` for
+    /// rows that are not claims-block forms (annotations render via
+    /// [`ClaimRow::certificate_forms`]; fleet rows via Change 7).
+    pub fn claims_form(&self) -> Option<String> {
+        let set = |s: &SetIr| -> String {
+            match s {
+                SetIr::Group(g) => g.name.display.clone(),
+                SetIr::EffectCarriers(c) => {
+                    format!("effects({})", c.name)
+                }
+            }
+        };
+        let cmp = |c: &CountCmpIr| match c {
+            CountCmpIr::Eq => "==",
+            CountCmpIr::Le => "<=",
+            CountCmpIr::Ge => ">=",
+        };
+        Some(match &self.law {
+            ClaimIr::RequireSealed { group } => format!(
+                "require sealed(all {})",
+                group.name.display
+            ),
+            ClaimIr::RequireAttributed { class } => format!(
+                "require attributed(all {})",
+                class.name
+            ),
+            ClaimIr::ForbidReaches {
+                src,
+                dst,
+                via_calls,
+                via_bus,
+                during,
+                avoiding,
+            } => {
+                let mut out = format!(
+                    "forbid reaches({}, {})",
+                    set(src),
+                    set(dst)
+                );
+                match (via_calls, via_bus) {
+                    (true, true) => {}
+                    (true, false) => {
+                        out.push_str(" via { calls }")
+                    }
+                    (false, true) => out.push_str(" via { bus }"),
+                    (false, false) => {}
+                }
+                if let Some(p) = during {
+                    out.push_str(&format!(
+                        " during {}",
+                        p.name
+                    ));
+                }
+                if let Some(a) = avoiding {
+                    out.push_str(&format!(
+                        " avoiding {}",
+                        a.name.display
+                    ));
+                }
+                out
+            }
+            ClaimIr::OnlyEdges { src, dst, grants } => {
+                let gs: Vec<String> = grants
+                    .iter()
+                    .map(|g| {
+                        format!(
+                            "{} {}",
+                            if g.publish {
+                                "publish"
+                            } else {
+                                "subscribe"
+                            },
+                            g.topic.name.display
+                        )
+                    })
+                    .collect();
+                format!(
+                    "only edges {} -> {} {{ {} }}",
+                    src.name.display,
+                    dst.name.display,
+                    gs.join("; ")
+                )
+            }
+            ClaimIr::Bound { class, limit, from } => format!(
+                "bound {} <= {} on paths from {}",
+                class.name, limit, from.name.display
+            ),
+            ClaimIr::RequireEndpoint {
+                publishers,
+                group,
+                topic,
+            } => format!(
+                "require {}(some {}, topic {})",
+                if *publishers {
+                    "publishes"
+                } else {
+                    "subscribes"
+                },
+                group.name.display,
+                topic.name.display
+            ),
+            ClaimIr::Cover { seed, group } => format!(
+                "cover topic in seed({}): subscribed_by(some {})",
+                seed.name, group.name.display
+            ),
+            ClaimIr::Count {
+                publishers,
+                topic,
+                cmp: c,
+                n,
+            } => format!(
+                "count {}(topic {}) {} {}",
+                if *publishers {
+                    "publishers"
+                } else {
+                    "subscribers"
+                },
+                topic.name.display,
+                cmp(c),
+                n
+            ),
+            _ => return None,
+        })
+    }
+
     /// The certificate forms this row's engines produce, in
     /// generation order — `(subject display, form display)` pairs.
     /// One authority for three consumers: the evidence PRODUCER

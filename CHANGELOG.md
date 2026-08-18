@@ -8,6 +8,32 @@ behavior.
 
 ## Unreleased
 
+### Typed law artifact rows + adequacy (GH #476 Change 6)
+
+The topology artifact's law rows are now PROJECTED from the
+canonical model path: `claims` rows render from `ClaimIr`
+(`ClaimRow::claims_form`, one authority) with verdicts from the
+Change-5 judgments, and the effects-family `lowered` rows come
+from the evidence sidecar (`@budget` rows keep their old producers
+until the quantitative engines migrate). A corpus differential
+holds the projection equal to the evaluator rows.
+
+Schema 1.11 adds three unhashed, digest-covered typed sections -
+`law` (every lowered ClaimIr row: ordinal, name, origin, judgment
+family, machine verdict, provenance; plus `law_digest` and
+`inputs_digest`), `capabilities` (typed positive completeness),
+and `adequacy` (per migrated family: `exact` | `degraded`).
+`shape_hash` is UNCHANGED - replay admission and recorded
+baselines survive.
+
+`semantics` bumps to 2: machine verdicts are stricter in two
+documented places (a certificate naming a cyclically-defined or
+undeclared effect class is `invalid`, never a vacuous `holds`;
+`require attributed` over an unanalyzable body is `uncertified`,
+never a fail-open `holds`), and the document `verdict` follows
+the machine. Artifact consumers reject unrecognized semantics by
+design; re-dump with the current compiler.
+
 ### The pointwise-certificate judgment - family 5e (GH #476 Change 5e)
 
 `judgment::judge_certificates` - `@effects(none/only/publish)`,

@@ -911,11 +911,11 @@ reports as *unverifiable* rather than as valid — a consumer may
 choose to accept it, but must never read "nothing to check" as
 "checked and intact".
 
-The artifact shape (schema `1.10`):
+The artifact shape (schema `1.11`):
 
 ```text
 {
-  "schema": "1.10",
+  "schema": "1.11",
   "shape_hash": "<fnv1a-64 over the model half>",
   "sorts":     { "loci": […], "fns": […], "topics": […] },
   "relations": {
@@ -943,6 +943,12 @@ The artifact shape (schema `1.10`):
   "topics":    [ {"name", "subject", "shape", "payload_hash"} ],
   "claims":    [ {"name", "form", "result": <verdict>, "source"?} ],
   "lowered":   [ {"subject", "form", "result": <verdict>} ],
+  "law":       { "law_digest", "inputs_digest",
+                 "rows": [ {"ordinal", "name", "origin",
+                            "family", "verdict",
+                            "file"?, "span"?} ] },
+  "capabilities": { "exact_calls": bool, … },
+  "adequacy":  { "<family>": "exact" | "degraded" },
   "verdict":   "clean" | "law_failed"
 }
 ```

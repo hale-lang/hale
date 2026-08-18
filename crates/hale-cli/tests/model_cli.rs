@@ -64,8 +64,10 @@ fn plain_check_never_builds_the_model() {
         err
     );
 
-    // The artifact dump path doesn't demand it either (it stays on
-    // its own gathering until the Change-3 projection).
+    // The artifact dump path DOES demand it (GH #476 Change 6:
+    // the artifact's law rows are projected from the model). The
+    // demand boundary this canary guards is the diagnostics-only
+    // path above — artifact emission is a legitimate consumer.
     let out = hale()
         .arg("check")
         .arg(&src)
@@ -75,8 +77,8 @@ fn plain_check_never_builds_the_model() {
         .unwrap();
     assert!(out.status.success());
     assert!(
-        !String::from_utf8_lossy(&out.stderr).contains("[hale-model]"),
-        "the legacy artifact path must not demand the model yet"
+        String::from_utf8_lossy(&out.stderr).contains("[hale-model]"),
+        "artifact emission projects the model (Change 6)"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
