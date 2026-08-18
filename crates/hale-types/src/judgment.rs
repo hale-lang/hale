@@ -76,6 +76,28 @@ enum StepIr {
     },
 }
 
+/// Subject-grain hole coverage (GH #476 round 4): the SAME
+/// exact-or-wildcard predicate known delivery applies to
+/// subscription rows applies to SUBSCRIBES-hiding holes — a hole at
+/// `audit.**` covers a publish to `audit.event`. `texts` carries
+/// every spelling the publish is known by (topic name and wire
+/// subject), since holes anchor at subjects while publish rows may
+/// speak the topic name.
+fn subject_hole_covers(
+    pats: &[(String, hale_model::RelationSet)],
+    mask: hale_model::RelationSet,
+    texts: &[&str],
+) -> bool {
+    pats.iter().any(|(pat, m)| {
+        m.intersects(mask)
+            && texts.iter().any(|t| {
+                pat == t
+                    || (pat.contains("**")
+                        && crate::wildcard_match(pat, t))
+            })
+    })
+}
+
 fn span_of(
     prov: &hale_model::ProvenanceTable,
     bases: &[u32],
@@ -283,11 +305,11 @@ pub fn judge_forbid_reaches(
     // Holes anchored at NON-function entities participate too: a
     // hole at Subject(S) hiding SUBSCRIBES means S's subscriber set
     // is incomplete, so bus composition through S must not certify
-    // absence from the known rows (review round 3: the model
-    // defines SUBSCRIBES as independently hideable at subject
-    // grain).
-    let mut subject_hides: BTreeMap<u32, hale_model::RelationSet> =
-        BTreeMap::new();
+    // absence from the known rows (review round 3). Kept as
+    // PATTERNS: the subject sort holds wildcards, and coverage uses
+    // the same predicate as known delivery (round 4).
+    let mut subject_hole_pats: Vec<(String, hale_model::RelationSet)> =
+        Vec::new();
     for h in &model.holes {
         match h.at {
             EntityRef::Function(f) => {
@@ -316,14 +338,26 @@ pub fn judge_forbid_reaches(
                 ));
             }
             EntityRef::Subject(sid) => {
-                let e2 = subject_hides
-                    .entry(sid.0)
-                    .or_insert(hale_model::RelationSet(0));
-                *e2 = e2.union(h.hides);
+                subject_hole_pats.push((
+                    e.subjects[sid.index()].pattern.clone(),
+                    h.hides,
+                ));
             }
             _ => {}
         }
     }
+    // Topic-name spelling → wire subject, for publish rows that
+    // speak the NAME.
+    let topic_wire: BTreeMap<&str, &str> = e
+        .topics
+        .iter()
+        .map(|t| {
+            (
+                t.name.as_str(),
+                e.subjects[t.subject.index()].pattern.as_str(),
+            )
+        })
+        .collect();
     // The evaluator refuses at the FIRST unresolved site in source
     // order — hole selection within a space is by authored site,
     // never by the model's canonical (kind, reason) sort (review
@@ -871,14 +905,16 @@ pub fn judge_forbid_reaches(
                                 // rows are not the whole story, so
                                 // fan-out must not certify absence
                                 // (review round 3).
-                                if subject_hides
-                                    .get(sid)
-                                    .is_some_and(|m| {
-                                        m.intersects(
-                                            hale_model::RelationSet::SUBSCRIBES,
-                                        )
-                                    })
-                                {
+                                if subject_hole_covers(
+                                    &subject_hole_pats,
+                                    hale_model::RelationSet::SUBSCRIBES,
+                                    &[
+                                        written.as_str(),
+                                        e.subjects[*sid as usize]
+                                            .pattern
+                                            .as_str(),
+                                    ],
+                                ) {
                                     diags.push(Diag::ty(
                                         row_span,
                                         format!(
@@ -1047,17 +1083,19 @@ pub fn judge_forbid_reaches(
                                     if !*via_bus {
                                         continue;
                                     }
-                                    if let Some(sid) = subject_by_text
-                                        .get(subject.as_str())
                                     {
-                                        if subject_hides
-                                            .get(sid)
-                                            .is_some_and(|m| {
-                                                m.intersects(
-                                                    hale_model::RelationSet::SUBSCRIBES,
-                                                )
-                                            })
+                                        let mut texts: Vec<&str> =
+                                            vec![subject.as_str()];
+                                        if let Some(w) = topic_wire
+                                            .get(subject.as_str())
                                         {
+                                            texts.push(w);
+                                        }
+                                        if subject_hole_covers(
+                                            &subject_hole_pats,
+                                            hale_model::RelationSet::SUBSCRIBES,
+                                            &texts,
+                                        ) {
                                             diags.push(Diag::ty(
                                                 row_span,
                                                 format!(
@@ -1075,8 +1113,11 @@ pub fn judge_forbid_reaches(
                                             return Visit::hole(());
                                         }
                                         for (handler, spid) in
-                                            subs_of
-                                                .get(sid)
+                                            subject_by_text
+                                                .get(subject.as_str())
+                                                .and_then(|sid| {
+                                                    subs_of.get(sid)
+                                                })
                                                 .into_iter()
                                                 .flatten()
                                         {

@@ -805,3 +805,60 @@ fn main() {
         "the known-prefix witness is reported"
     );
 }
+
+/// Review pin (round 4): a WILDCARD subscriber hole covers the
+/// subjects its pattern matches — a hole at `audit.**` hiding
+/// SUBSCRIBES refuses a bus walk publishing to `audit.event`,
+/// exactly as a known wildcard subscription would deliver it.
+#[test]
+fn wildcard_subscriber_hole_covers_matching_publishes() {
+    let src = r#"
+topic Ev { payload: Int; subject: "audit.event"; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) { Ev <- v; }
+}
+fn quiet(v: Int) -> Int { return v; }
+group a_side = { A };
+group b_side = { quiet };
+main locus App {
+    params { a: A = A { }; }
+    claims { iso: forbid reaches(a_side, b_side) via { bus }; }
+    run() { self.a.go(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds
+    );
+    // A wildcard subject with an incomplete subscriber set.
+    model.entities.subjects.push(hale_model::Subject {
+        pattern: "audit.**".to_string(),
+        exact: false,
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let wild = (model.entities.subjects.len() - 1) as u32;
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            wild,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "`audit.**` may cover `audit.event` — the walk must fail \
+         closed"
+    );
+}
