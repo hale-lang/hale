@@ -1675,13 +1675,9 @@ pub fn judge_only_edges(
         FunctionId,
         Vec<(hale_model::RelationSet, Option<u32>, FnHole)>,
     > = BTreeMap::new();
-    // Subject-grain holes: a hole at Subject(S) hiding SUBSCRIBES
-    // means S's subscriber set is incomplete — boundary composition
-    // through S must not certify absence from the known rows
-    // (round 3), and coverage uses the delivery predicate so a
-    // wildcard hole covers the subjects it matches (round 4).
-    let mut subject_hole_pats: Vec<(String, hale_model::RelationSet)> =
-        Vec::new();
+    // Non-function holes participate through the shared two-grain
+    // BusHoles index (subject patterns + topic names, rounds 4–5).
+    let bus_holes = BusHoles::build(model);
     for h in &model.holes {
         match h.at {
             EntityRef::Function(f) => {
@@ -1706,12 +1702,6 @@ pub fn judge_only_edges(
                     .entry(f)
                     .or_default()
                     .push((h.hides, h.authored_site, hole));
-            }
-            EntityRef::Subject(sid) => {
-                subject_hole_pats.push((
-                    e.subjects[sid.index()].pattern.clone(),
-                    h.hides,
-                ));
             }
             _ => {}
         }
@@ -2029,8 +2019,7 @@ pub fn judge_only_edges(
                         break 'fns;
                     }
                     PubEv::Row(sid, w, p) => {
-                        if subject_hole_covers(
-                            &subject_hole_pats,
+                        if bus_holes.blocks(
                             hale_model::RelationSet::SUBSCRIBES,
                             &[
                                 w,

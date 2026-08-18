@@ -1955,3 +1955,61 @@ fn main() { App { }; }
          fail closed"
     );
 }
+
+/// Review pin (round 5): topic-grain holes reach the boundary
+/// check identically to subject-grain ones.
+#[test]
+fn topic_grain_subscriber_hole_fails_only_edges_closed() {
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic Sneaky { payload: Cmd; subject: "app.sneaky"; }
+locus Ops {
+    params { n: Int = 0; }
+    bus { publish Sneaky; }
+    fn act() { Sneaky <- Cmd { }; }
+}
+locus Core {
+    params { n: Int = 0; }
+    fn idle() { }
+}
+group ops = { Ops };
+group core = { Core };
+main locus App {
+    params { o: Ops = Ops { }; c: Core = Core { }; }
+    claims { boundary: only edges ops -> core { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds
+    );
+    let tid = model
+        .entities
+        .topics
+        .iter()
+        .position(|t| t.name == "Sneaky")
+        .expect("topic");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Topic(hale_model::TopicId(
+            tid as u32,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_only_edges(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "a topic-grain hole must reach the boundary check"
+    );
+}
