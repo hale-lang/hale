@@ -17,11 +17,31 @@ use hale_model::{
 
 use crate::symbol::Bundle;
 
+/// The EVIDENCE-ENGINE SEMANTICS VERSION (review round 4). The
+/// package version does not change per commit, so it cannot
+/// identify the analysis: two builds can share `CARGO_PKG_VERSION`
+/// while differing in effect/witness traversal, allocation-summary
+/// behavior, stdlib classification, renaming, or certificate
+/// grouping and diagnostic rules.
+///
+/// CONTRACT: bump this constant in the SAME change as any
+/// result-affecting modification to the certificate engines or
+/// their inputs — `effects.rs` (grouping, strata, wording),
+/// `alloc_summary.rs` / `callgraph.rs` (traversal), `claims.rs`
+/// (clause enumeration the lowering shares), or the producer /
+/// judgment in this module. The static registries that ARE
+/// data (stdlib surface classification, path renames, stdlib
+/// source) are hashed in directly, so drifting them does not rely
+/// on anyone remembering this constant.
+pub const ANALYSIS_SEMANTICS_VERSION: u32 = 1;
+
 /// Digest of the certificate engines' inputs OUTSIDE the model:
-/// the Hale-source stdlib the walks absorb, and the compiler
-/// version. `TopologyShapeV1` cannot cover these (review round 3);
-/// a judgment recomputes this and refuses evidence produced by a
-/// different toolchain.
+/// the analysis-semantics version above, the Hale-source stdlib
+/// the walks absorb, the stdlib-surface classification registry,
+/// the path-rename table, and the compiler version.
+/// `TopologyShapeV1` cannot cover these (review rounds 3–4); a
+/// judgment recomputes this and refuses evidence produced by a
+/// different analysis.
 pub fn analysis_inputs_digest() -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     let mut eat = |bytes: &[u8]| {
@@ -30,8 +50,32 @@ pub fn analysis_inputs_digest() -> u64 {
             h = h.wrapping_mul(0x100_0000_01b3);
         }
     };
+    eat(&ANALYSIS_SEMANTICS_VERSION.to_le_bytes());
     eat(hale_stdlib::AP_SOURCE.as_bytes());
     eat(env!("CARGO_PKG_VERSION").as_bytes());
+    for (segs, mangled) in hale_stdlib::PATH_RENAMES {
+        for s in *segs {
+            eat(s.as_bytes());
+            eat(b"\x1f");
+        }
+        eat(mangled.as_bytes());
+        eat(b"\x1e");
+    }
+    for surface in crate::stdlib_surface::SURFACES {
+        for s in surface.ns {
+            eat(s.as_bytes());
+            eat(b"\x1f");
+        }
+        for f in surface.fns {
+            eat(f.name.as_bytes());
+            eat(&f.effects.0.to_le_bytes());
+        }
+        for p in surface.open_prefixes {
+            eat(p.as_bytes());
+            eat(b"\x1f");
+        }
+        eat(b"\x1e");
+    }
     h
 }
 

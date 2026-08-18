@@ -531,6 +531,20 @@ impl ClaimIrTable {
             row.name.hash(&mut h);
             row.origin.hash(&mut h);
             row.law.hash(&mut h);
+            row.provenance.hash(&mut h);
+        }
+        // The law's identity includes its provenance STORE (review
+        // round 4): rows reference records by numeric id, so a
+        // re-lowered table whose spans moved would otherwise share
+        // a digest with the original and render stale offsets
+        // against the new bases.
+        (self.provenance.sources.len() as u64).hash(&mut h);
+        for su in &self.provenance.sources {
+            su.hash(&mut h);
+        }
+        (self.provenance.records.len() as u64).hash(&mut h);
+        for rec in &self.provenance.records {
+            rec.hash(&mut h);
         }
         h.finish()
     }

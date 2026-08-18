@@ -854,3 +854,67 @@ fn different_toolchain_evidence_is_refused() {
     assert!(!judged.is_empty());
     assert_eq!(judged[0].verdict, Verdict::Invalid);
 }
+
+/// Review pin (round 4): the law table itself is bound to the
+/// source snapshot — a table re-lowered from an edited source
+/// (identical semantic annotations, shifted locations) has a
+/// different semantic digest AND different source units, so
+/// evidence derived beside the ORIGINAL model/table is refused
+/// when judged against the re-lowered table.
+#[test]
+fn relowered_table_from_edited_source_is_refused() {
+    let v1 = r#"
+@effects(none: { syscall })
+fn f(v: Int) -> Int { return v + 1; }
+main locus App {
+    run() { println(f(1)); }
+}
+fn main() { App { }; }
+"#;
+    let v2 = r#"
+// a comment that only shifts every later offset
+@effects(none: { syscall })
+fn f(v: Int) -> Int { return v + 1; }
+main locus App {
+    run() { println(f(1)); }
+}
+fn main() { App { }; }
+"#;
+    let p1 = hale_syntax::parse_source(v1).expect("parse v1");
+    let b1 = bundle_of(v1, &p1);
+    let m1 = derive_application_model(&b1);
+    let t1 = lower_claims(&b1, &m1);
+    let e1 = derive_certificate_evidence(&b1, &t1, &m1);
+    let p2 = hale_syntax::parse_source(v2).expect("parse v2");
+    let mut b2 = bundle_of(v2, &p2);
+    b2.sources[0].digest = "1".to_string();
+    let m2 = derive_application_model(&b2);
+    let t2 = lower_claims(&b2, &m2);
+    // The typed laws are identical; the provenance store is what
+    // distinguishes the snapshots in the digest.
+    assert_ne!(
+        t1.semantic_digest(),
+        t2.semantic_digest(),
+        "the law digest must cover the table's provenance store"
+    );
+    // The reviewer's mixed pairing: model + evidence from snapshot
+    // A, law table re-lowered from snapshot B. The evidence still
+    // matches the OLD model's source units — the table tie is what
+    // refuses.
+    let judged = judge_certificates(&t2, &m1, &e1, &[0]);
+    let forbid = t2
+        .rows
+        .iter()
+        .find(|r| matches!(r.law, ClaimIr::EffectForbid { .. }))
+        .expect("forbid row");
+    let j = judged
+        .iter()
+        .find(|j| j.ordinal == forbid.ordinal)
+        .expect("judged");
+    assert_eq!(
+        j.verdict,
+        Verdict::Invalid,
+        "a re-lowered table must not replay another snapshot's \
+         evidence"
+    );
+}

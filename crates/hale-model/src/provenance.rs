@@ -12,7 +12,7 @@
 use crate::ids::SourceId;
 
 /// One origin record.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Provenance {
     /// An authored fact: a byte span in a source unit.
     Source {
@@ -35,7 +35,7 @@ pub enum Provenance {
 /// One source unit provenance points into. `path` is as-authored
 /// (never absolutized — artifacts must not embed machine paths);
 /// `digest` pins the content the spans index.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct SourceUnit {
     pub path: String,
     pub digest: u64,

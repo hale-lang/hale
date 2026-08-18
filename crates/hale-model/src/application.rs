@@ -338,21 +338,25 @@ impl EvidenceTable {
             });
         }
         // Source-snapshot tie: the sidecar's source units (path +
-        // content digest) must be exactly the judged model's — a
-        // source edit that merely shifts an offending site changes
-        // neither shape nor law, but its old local offsets would
-        // render against the new source (review round 3).
-        if self.provenance.sources.len()
-            != model.provenance.sources.len()
-            || self
-                .provenance
-                .sources
-                .iter()
-                .zip(model.provenance.sources.iter())
-                .any(|(a, b)| {
-                    a.path != b.path || a.digest != b.digest
-                })
-        {
+        // content digest) must exactly equal BOTH the judged
+        // model's and the law table's (review rounds 3–4) — the
+        // three artifacts must describe one snapshot, or stale
+        // offsets render against the wrong source bases.
+        let unit_mismatch =
+            |a: &[crate::provenance::SourceUnit],
+             b: &[crate::provenance::SourceUnit]| {
+                a.len() != b.len()
+                    || a.iter().zip(b.iter()).any(|(x, y)| {
+                        x.path != y.path || x.digest != y.digest
+                    })
+            };
+        if unit_mismatch(
+            &self.provenance.sources,
+            &model.provenance.sources,
+        ) || unit_mismatch(
+            &self.provenance.sources,
+            &table.provenance.sources,
+        ) {
             return Err(ClaimIrError::InvalidProvenanceRecord {
                 index: usize::MAX,
             });
