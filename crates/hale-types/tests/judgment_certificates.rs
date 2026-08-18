@@ -165,11 +165,29 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
                     })
             })
         };
+        // Cyclic classes are the round-5 documented divergence: the
+        // evaluator's certificate holds vacuously while the
+        // judgment refuses the denotation.
+        let cyclic = |cs: &[hale_model::EffectClassRef]| {
+            cs.iter().any(|c| {
+                c.class.is_some_and(|id| {
+                    matches!(
+                        model.entities.effect_classes[id.index()]
+                            .definition,
+                        hale_model::EffectClassDefinition::InvalidCycle
+                    )
+                })
+            })
+        };
         let invalid_class = match &row.law {
             ClaimIr::EffectForbid { classes, .. }
-            | ClaimIr::EffectCauses { classes, .. } => {
-                undeclared(classes)
+            | ClaimIr::EffectCauses { classes, .. }
+            | ClaimIr::EffectOnly { classes, .. } => {
+                undeclared(classes) || cyclic(classes)
             }
+            ClaimIr::PhaseEffects { phases, .. } => phases
+                .iter()
+                .any(|(_, allowed)| cyclic(allowed)),
             _ => false,
         };
         if !invalid_class && sev(j.verdict) != replay {
@@ -916,5 +934,38 @@ fn main() { App { }; }
         Verdict::Invalid,
         "a re-lowered table must not replay another snapshot's \
          evidence"
+    );
+}
+
+/// Review pin (round 5): a certificate naming a cyclically-defined
+/// class judges Invalid — the class is not a valid denotation, and
+/// the legacy pre-stratum diagnostic does not make a vacuous Holds
+/// row truthful.
+#[test]
+fn cyclic_class_certificate_is_invalid_not_holds() {
+    let src = r#"
+effect a = { b };
+effect b = { a };
+@effects(none: { a })
+fn f(v: Int) -> Int { return v; }
+main locus App {
+    run() { println(f(1)); }
+}
+fn main() { App { }; }
+"#;
+    let (_model, table, _evidence, judged) = derive_all(src);
+    let row = table
+        .rows
+        .iter()
+        .find(|r| matches!(r.law, ClaimIr::EffectForbid { .. }))
+        .expect("forbid row");
+    let j = judged
+        .iter()
+        .find(|j| j.ordinal == row.ordinal)
+        .expect("judged");
+    assert_eq!(
+        j.verdict,
+        Verdict::Invalid,
+        "a cyclic class must not hold vacuously"
     );
 }

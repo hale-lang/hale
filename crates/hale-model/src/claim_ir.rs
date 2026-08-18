@@ -592,18 +592,35 @@ impl ClaimIrTable {
         // reopening the AST.
         let src_len = self.provenance.sources.len();
         for (i, r) in self.provenance.records.iter().enumerate() {
-            if let crate::provenance::Provenance::Source {
-                source,
-                span,
-            } = r
-            {
-                if source.index() >= src_len || span.0 > span.1 {
-                    return Err(
-                        ClaimIrError::InvalidProvenanceRecord {
-                            index: i,
-                        },
-                    );
+            match r {
+                crate::provenance::Provenance::Source {
+                    source,
+                    span,
+                } => {
+                    if source.index() >= src_len
+                        || span.0 > span.1
+                    {
+                        return Err(
+                            ClaimIrError::InvalidProvenanceRecord {
+                                index: i,
+                            },
+                        );
+                    }
                 }
+                crate::provenance::Provenance::ForeignSpan {
+                    span,
+                } => {
+                    if span.0 > span.1 {
+                        return Err(
+                            ClaimIrError::InvalidProvenanceRecord {
+                                index: i,
+                            },
+                        );
+                    }
+                }
+                crate::provenance::Provenance::Synthetic {
+                    ..
+                } => {}
             }
         }
         for (i, issue) in self.issues.iter().enumerate() {

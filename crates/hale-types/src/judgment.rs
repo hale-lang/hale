@@ -4003,6 +4003,20 @@ pub fn judge_certificates(
     let any_undeclared = |classes: &[hale_model::EffectClassRef]| {
         classes.iter().any(undeclared)
     };
+    // A cyclically-defined class resolves to no effect at all — a
+    // certificate naming it would hold vacuously. The shared
+    // class-validity rule reachability and bound already apply
+    // (review round 5): Invalid, never Holds. The legacy pass
+    // reports the cycle in its global pre-stratum; the machine
+    // verdict must agree.
+    let cyclic = |c: &hale_model::EffectClassRef| -> bool {
+        c.class.is_some_and(|id| {
+            matches!(
+                e.effect_classes[id.index()].definition,
+                hale_model::EffectClassDefinition::InvalidCycle
+            )
+        })
+    };
     let mut out = Vec::new();
     for row in &table.rows {
         // Structural shape of the row: how many certificates the
@@ -4036,7 +4050,27 @@ pub fn judge_certificates(
         let mut diags: Vec<Diag> = Vec::new();
         // Invalid, never a vacuous Holds (review) — the diagnostic
         // itself is a lowering issue, not a judgment diag.
-        let invalid_class = any_undeclared(classes);
+        // The cycle rule covers EVERY class-bearing form (Only and
+        // phase allow-lists included — a cyclic class is not a
+        // valid denotation anywhere), while the undeclared rule
+        // keeps the evaluator's pass-1 scope.
+        let any_cyclic = match &row.law {
+            ClaimIr::EffectForbid { classes, .. }
+            | ClaimIr::EffectOnly { classes, .. }
+            | ClaimIr::EffectCauses { classes, .. } => {
+                classes.iter().any(&cyclic)
+            }
+            ClaimIr::PhaseEffects { phases, .. } => phases
+                .iter()
+                .flat_map(|(_, allowed)| allowed.iter())
+                .any(&cyclic),
+            ClaimIr::QuantBudget {
+                dim: hale_model::QuantDimIr::UserClass(c),
+                ..
+            } => cyclic(c),
+            _ => false,
+        };
+        let invalid_class = any_undeclared(classes) || any_cyclic;
         let Some(expected) = expected else {
             // Engine not migrated (causes / depends / budgets):
             // still exactly one Judged row, at minimum Uncertified.

@@ -569,13 +569,23 @@ impl ApplicationModel {
         let e = &self.entities;
         let prov_len = self.provenance.records.len();
 
-        // --- provenance record contents resolve.
+        // --- provenance record contents resolve (incl. inverted
+        // ForeignSpan — an accepted-but-unrenderable record is the
+        // same defect as a dangling SourceId; review round 5).
         let src_len = self.provenance.sources.len();
         for (i, rec) in self.provenance.records.iter().enumerate() {
-            if let Provenance::Source { source, span } = rec {
-                if source.index() >= src_len || span.0 > span.1 {
-                    return Err(ModelError::InvalidProvenanceRecord { index: i });
+            match rec {
+                Provenance::Source { source, span } => {
+                    if source.index() >= src_len || span.0 > span.1 {
+                        return Err(ModelError::InvalidProvenanceRecord { index: i });
+                    }
                 }
+                Provenance::ForeignSpan { span } => {
+                    if span.0 > span.1 {
+                        return Err(ModelError::InvalidProvenanceRecord { index: i });
+                    }
+                }
+                Provenance::Synthetic { .. } => {}
             }
         }
 
