@@ -2274,16 +2274,18 @@ pub fn judge_endpoints(
             hale_model::RelationSet::SUBSCRIBES
         };
         let mask = fam.union(hale_model::RelationSet::CARDINALITY);
-        let mut texts: Vec<&str> = vec![topic_raw];
-        if let Some(t) = topic_by_name.get(topic_raw) {
-            texts.push(
-                e.subjects
-                    [e.topics[*t as usize].subject.index()]
+        // TYPED projection (round 6): the claim names a declared
+        // topic — its TopicId matches topic-grain holes, and its
+        // WIRE pattern (never its name) is what subject-grain
+        // holes cover. A subject hole whose pattern merely equals
+        // the topic's NAME is a different wire identity.
+        let topic = topic_by_name.get(topic_raw).copied();
+        let wire = topic.map(|t| {
+            e.subjects[e.topics[t as usize].subject.index()]
                 .pattern
-                .as_str(),
-            );
-        }
-        bus_holes.blocks(mask, &texts)
+                .as_str()
+        });
+        bus_holes.blocks(mask, topic, wire)
     };
 
     let mut out = Vec::new();

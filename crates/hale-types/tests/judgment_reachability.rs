@@ -2544,3 +2544,83 @@ fn main() { App { }; }
         "an incomplete subscriber set cannot prove the violation"
     );
 }
+
+/// Review pin (round 6): endpoint counts use TYPED identity — a
+/// subject hole whose wire pattern merely equals the topic's NAME
+/// does not make the topic's count incomplete (the topic's wire is
+/// different), while a hole at the topic's REAL wire still does.
+#[test]
+fn literal_collision_subject_hole_does_not_block_topic_count() {
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic Orders { payload: Cmd; subject: "wire.orders"; }
+locus Pub {
+    params { n: Int = 0; }
+    bus { publish Orders; }
+    fn act() { Orders <- Cmd { }; }
+}
+main locus App {
+    params { p: Pub = Pub { }; }
+    claims { none_yet: count subscribers(topic Orders) <= 0; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let judged = judge_endpoints(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds
+    );
+    // A subject whose WIRE ADDRESS text happens to be "Orders" —
+    // not the topic's wire subject "wire.orders".
+    model.entities.subjects.push(hale_model::Subject {
+        pattern: "Orders".to_string(),
+        exact: true,
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let collider = (model.entities.subjects.len() - 1) as u32;
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            collider,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_endpoints(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds,
+        "the literal wire address `Orders` is not topic Orders' \
+         wire — its hole must not touch the topic's count"
+    );
+    // Control: a hole at the topic's REAL wire flips it.
+    let real = model
+        .entities
+        .subjects
+        .iter()
+        .position(|su| su.pattern == "wire.orders")
+        .expect("real wire");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            real as u32,
+        )),
+        kind: hale_model::HoleKind::UnanalyzedBody,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let judged = judge_endpoints(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "the topic's real wire subject IS its delivery identity"
+    );
+}
