@@ -2028,6 +2028,8 @@ fn main() {
                 hale_model::FunctionId(hello),
             ),
             dispatch: None,
+            in_loop: false,
+            group: None,
         });
     assert!(
         m.validate().is_err(),
