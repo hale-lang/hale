@@ -2673,8 +2673,47 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     // capabilities: computed FROM the holes so the two accounts
     // cannot disagree by construction. The Change-2 scope leaves
     // ownership/placement/routes/cardinality/delivery unclaimed.
+    // Absorption residue participates (round 8): a CallHole /
+    // PublishHole / Truncated inside a stdlib interior is
+    // unresolved knowledge exactly like a top-level hole row.
+    let absorption_hides = {
+        let mut m = hale_model::RelationSet(0);
+        for a in &stdlib_absorption {
+            for n in &a.nodes {
+                for ev in &n.events {
+                    match ev {
+                        hale_model::AbsorbedEvent::CallHole(_) => {
+                            m = m
+                                .union(hale_model::RelationSet::CALLS)
+                                .union(
+                                    hale_model::RelationSet::EFFECTS,
+                                );
+                        }
+                        hale_model::AbsorbedEvent::PublishHole => {
+                            m = m.union(
+                                hale_model::RelationSet::PUBLISHES,
+                            );
+                        }
+                        hale_model::AbsorbedEvent::Truncated => {
+                            m = m
+                                .union(hale_model::RelationSet::CALLS)
+                                .union(
+                                    hale_model::RelationSet::PUBLISHES,
+                                )
+                                .union(
+                                    hale_model::RelationSet::EFFECTS,
+                                );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        m
+    };
     let hides_any = |fam: hale_model::RelationSet| {
         hole_rows.iter().any(|h| h.hides.intersects(fam))
+            || absorption_hides.intersects(fam)
     };
     let capabilities = Capabilities {
         exact_calls: !hides_any(hale_model::RelationSet::CALLS),

@@ -89,6 +89,12 @@ enum StepIr {
 struct BusHoles {
     subject_pats: Vec<(String, hale_model::RelationSet)>,
     topic_holes: BTreeMap<u32, hale_model::RelationSet>,
+    /// First set-level spelling whose holes hide PUBLISHES
+    /// (round 8): an unknown PUBLISHER can create a bus edge no
+    /// walk can see, so every judgment whose projection requires
+    /// publish completeness poisons on it — a known
+    /// counterexample still wins (the monotonic rule).
+    publishers_incomplete: Option<String>,
 }
 
 impl BusHoles {
@@ -102,15 +108,29 @@ impl BusHoles {
             u32,
             hale_model::RelationSet,
         > = BTreeMap::new();
+        let mut publishers_incomplete: Option<String> = None;
         for h in &model.holes {
             match h.at {
                 EntityRef::Subject(sid) => {
-                    subject_pats.push((
-                        e.subjects[sid.index()].pattern.clone(),
-                        h.hides,
-                    ));
+                    let pat =
+                        e.subjects[sid.index()].pattern.clone();
+                    if h.hides.intersects(
+                        hale_model::RelationSet::PUBLISHES,
+                    ) && publishers_incomplete.is_none()
+                    {
+                        publishers_incomplete = Some(pat.clone());
+                    }
+                    subject_pats.push((pat, h.hides));
                 }
                 EntityRef::Topic(t) => {
+                    if h.hides.intersects(
+                        hale_model::RelationSet::PUBLISHES,
+                    ) && publishers_incomplete.is_none()
+                    {
+                        publishers_incomplete = Some(
+                            e.topics[t.index()].name.clone(),
+                        );
+                    }
                     let e2 = topic_holes
                         .entry(t.0)
                         .or_insert(hale_model::RelationSet(0));
@@ -122,6 +142,7 @@ impl BusHoles {
         BusHoles {
             subject_pats,
             topic_holes,
+            publishers_incomplete,
         }
     }
 
@@ -1289,6 +1310,30 @@ pub fn judge_forbid_reaches(
                             vd,
                             src_ref.name.display,
                             subj
+                        ),
+                    ));
+                    Verdict::Uncertified
+                } else if *via_bus
+                    && bus_holes.publishers_incomplete.is_some()
+                {
+                    // The PUBLISHER set of some subject is
+                    // incomplete (round 8): an unknown publisher —
+                    // possibly a fn this walk visited — may create
+                    // a bus edge the composition cannot see.
+                    let subj = bus_holes
+                        .publishers_incomplete
+                        .as_deref()
+                        .unwrap_or_default();
+                    diags.push(Diag::ty(
+                        row_span,
+                        format!(
+                            "claim `{}` cannot be certified: the \
+                             publisher set of \"{}\" is not fully \
+                             modeled — an unknown publisher may \
+                             create a bus edge the walk cannot \
+                             see. An unresolvable edge fails \
+                             closed",
+                            row.name, subj
                         ),
                     ));
                     Verdict::Uncertified

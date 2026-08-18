@@ -1101,6 +1101,16 @@ fn main() { App { }; }
             None,
             "a call hole is fn-grain knowledge",
         ),
+        (
+            hale_model::EntityRef::Function(
+                hale_model::FunctionId(0),
+            ),
+            hale_model::HoleKind::UnanalyzedBody,
+            hale_model::RelationSet::SUBSCRIBES,
+            None,
+            "no judgment consults fn-grain SUBSCRIBES holes — the \
+             shape would be a valid invisible hole (round 8)",
+        ),
     ];
     for (at, kind, hides, site, why) in bad {
         let mut m = base.clone();
@@ -1173,5 +1183,272 @@ fn main() {
     assert!(
         m.validate().is_err(),
         "a dangling TopicId can panic a judgment"
+    );
+}
+
+/// Review pin (round 8): the authored-site event partition — one
+/// (function, site) is ONE event. A call hole colliding with a
+/// resolved call, a site-less site-shaped hole, a whole-body hole
+/// carrying a site, and a computed-subject hole colliding with a
+/// known publish are each rejected.
+#[test]
+fn authored_site_partition_is_validated() {
+    let src = r#"
+topic Sig { payload: Int; subject: "app.sig"; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) -> Int { Sig <- v; return leak(v); }
+}
+fn leak(v: Int) -> Int { return v; }
+main locus App {
+    params { a: A = A { }; }
+    run() { println(self.a.go(1)); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let base = derive_application_model(&bundle);
+    base.validate().expect("the built model is lawful");
+    let go = base
+        .entities
+        .functions
+        .iter()
+        .position(|f| f.display == "A::go")
+        .expect("A::go") as u32;
+    let call_site = base
+        .relations
+        .calls
+        .iter()
+        .find(|c| c.from.0 == go)
+        .expect("call row")
+        .site;
+    let mut with_hole = |kind: hale_model::HoleKind,
+                         hides: hale_model::RelationSet,
+                         site: Option<u32>|
+     -> hale_model::ApplicationModel {
+        let mut m = base.clone();
+        m.capabilities = hale_model::Capabilities::default();
+        m.holes.push(hale_model::Hole {
+            at: hale_model::EntityRef::Function(
+                hale_model::FunctionId(go),
+            ),
+            kind,
+            hides,
+            authored_site: site,
+            reason: "test".to_string(),
+            provenance: hale_model::ProvenanceId(0),
+        });
+        m
+    };
+    // A call hole sharing the resolved call's site.
+    assert!(
+        with_hole(
+            hale_model::HoleKind::IndirectCall,
+            hale_model::RelationSet::CALLS
+                .union(hale_model::RelationSet::EFFECTS),
+            Some(call_site),
+        )
+        .validate()
+        .is_err(),
+        "one authored expression cannot be both a resolved call \
+         and a hole"
+    );
+    // A site-shaped hole without its ordinal.
+    assert!(
+        with_hole(
+            hale_model::HoleKind::IndirectCall,
+            hale_model::RelationSet::CALLS
+                .union(hale_model::RelationSet::EFFECTS),
+            None,
+        )
+        .validate()
+        .is_err(),
+        "a site-shaped hole requires its authored position"
+    );
+    // A whole-body hole carrying a site.
+    assert!(
+        with_hole(
+            hale_model::HoleKind::UnanalyzedBody,
+            hale_model::RelationSet::CALLS
+                .union(hale_model::RelationSet::PUBLISHES)
+                .union(hale_model::RelationSet::EFFECTS),
+            Some(0),
+        )
+        .validate()
+        .is_err(),
+        "a whole-body hole has no single authored position"
+    );
+    // A computed-subject hole colliding with the known publish.
+    let pub_site = base
+        .relations
+        .publishes
+        .iter()
+        .find(|p| p.function.0 == go)
+        .expect("publish row")
+        .site;
+    assert!(
+        with_hole(
+            hale_model::HoleKind::ComputedSubject,
+            hale_model::RelationSet::PUBLISHES,
+            Some(pub_site),
+        )
+        .validate()
+        .is_err(),
+        "one authored expression cannot be both a known publish \
+         and a computed-subject hole"
+    );
+}
+
+/// Review pin (round 8): a set-level PUBLISHES hole poisons a bus
+/// walk — an unknown publisher may create an edge the composition
+/// cannot see — while a known counterexample still wins.
+#[test]
+fn publisher_hole_fails_bus_walk_closed() {
+    let src = r#"
+topic Sig { payload: Int; subject: "app.sig"; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) { Sig <- v; }
+}
+fn quiet(v: Int) -> Int { return v; }
+group a_side = { A };
+group b_side = { quiet };
+main locus App {
+    params { a: A = A { }; }
+    claims { iso: forbid reaches(a_side, b_side) via { bus }; }
+    run() { self.a.go(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Holds
+    );
+    let sid = model
+        .entities
+        .subjects
+        .iter()
+        .position(|su| su.pattern == "app.sig")
+        .expect("subject");
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            sid as u32,
+        )),
+        kind: hale_model::HoleKind::DynamicEndpoint,
+        hides: hale_model::RelationSet::PUBLISHES,
+        authored_site: None,
+        reason: "publisher set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        hale_types::verdict::Verdict::Uncertified,
+        "an unknown publisher may create the edge — fail closed"
+    );
+}
+
+/// Review pin (round 8): a dispatch label binds to its target — a
+/// rendered method that is not the target's own identity is
+/// rejected, at interior events and at the entry.
+#[test]
+fn absorbed_dispatch_binds_to_its_target() {
+    let src = r#"
+locus Gate {
+    fn probe(r: std::http::Router, req: std::http::Request) -> Int {
+        let resp = r.dispatch(req);
+        return resp.status;
+    }
+}
+main locus App {
+    params { n: Int = 0; }
+}
+fn main() {
+    let r = std::http::Router { };
+    let req = std::http::Request { method: "GET", path: "/", body: "" };
+    println(Gate { }.probe(r, req));
+}
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let base = derive_application_model(&bundle);
+    base.validate().expect("the built model is lawful");
+    // An interior call whose label names a method its target is not.
+    let mut m = base.clone();
+    let n = m.legacy.stdlib_absorption[0].nodes.len() as u32;
+    m.legacy.stdlib_absorption[0].nodes.push(
+        hale_model::AbsorbedNode {
+            display: "std::x::Ledger::charge_a".to_string(),
+            direct_effects: Vec::new(),
+            events: Vec::new(),
+        },
+    );
+    m.legacy.stdlib_absorption[0].nodes[0].events.push(
+        hale_model::AbsorbedEvent::Call {
+            target: hale_model::AbsorbedTarget::Interior(n),
+            dispatch: Some((
+                "Payer".to_string(),
+                "pay".to_string(),
+            )),
+        },
+    );
+    assert!(
+        m.validate().is_err(),
+        "the label says `pay`; the target is `charge_a`"
+    );
+    // An entry label that is not node zero's method.
+    let mut m = base.clone();
+    m.legacy.stdlib_absorption[0].entry_dispatch = Some((
+        "Payer".to_string(),
+        "pay".to_string(),
+    ));
+    assert!(
+        m.validate().is_err(),
+        "the entry label must be node zero's own method"
+    );
+}
+
+/// Review pin (round 8): unresolved residue INSIDE stdlib
+/// absorption participates in the exactness account — a CallHole
+/// contradicts `exact_calls`, and the builder derives the honest
+/// value from real source.
+#[test]
+fn absorption_residue_lowers_capabilities() {
+    let src = r#"
+locus Gate {
+    fn probe(r: std::http::Router, req: std::http::Request) -> Int {
+        let resp = r.dispatch(req);
+        return resp.status;
+    }
+}
+main locus App {
+    params { n: Int = 0; }
+}
+fn main() {
+    let r = std::http::Router { };
+    let req = std::http::Request { method: "GET", path: "/", body: "" };
+    println(Gate { }.probe(r, req));
+}
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let base = derive_application_model(&bundle);
+    base.validate().expect("the built model is lawful");
+    let mut m = base.clone();
+    m.legacy.stdlib_absorption[0].nodes[0].events.push(
+        hale_model::AbsorbedEvent::CallHole(
+            hale_model::AbsorbedHoleKind::IndirectCall,
+        ),
+    );
+    m.capabilities.exact_calls = true;
+    assert!(
+        m.validate().is_err(),
+        "an interior CallHole contradicts exact_calls"
     );
 }

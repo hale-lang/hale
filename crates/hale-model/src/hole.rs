@@ -134,6 +134,22 @@ pub struct Hole {
 /// carry `authored_site` — a set-level (subject/topic-grain) hole
 /// has no authored position relative to known rows, which is
 /// exactly why judgments DEFER on it instead of halting (round 6).
+/// Site shape per fn-anchored kind (round 8): a SITE-SHAPED hole
+/// stands for one authored call/publish expression and REQUIRES
+/// its ordinal (judgments interleave it with known events — a
+/// missing ordinal would invent an order); a whole-body /
+/// declaration-grain hole has no single position and must not
+/// carry one.
+pub fn hole_site_shaped(kind: &HoleKind) -> bool {
+    matches!(
+        kind,
+        HoleKind::IndirectCall
+            | HoleKind::UntypedReceiver { .. }
+            | HoleKind::OpenInterface
+            | HoleKind::ComputedSubject
+    )
+}
+
 pub fn allowed_hole_families(
     at: &EntityRef,
     kind: &HoleKind,
@@ -161,8 +177,12 @@ pub fn allowed_hole_families(
         (EntityRef::Function(_), K::UnknownKeyDomain) => {
             Some(RelationSet::KEY_FILTERS)
         }
+        // No judgment consults fn-grain SUBSCRIBES holes (round
+        // 8): subscription incompleteness is SET-level knowledge
+        // (the subject's subscriber set), so the fn-grain shape
+        // stops at what the engines consume.
         (EntityRef::Function(_), K::UnanalyzedBody) => {
-            Some(c.union(p).union(sub).union(e))
+            Some(c.union(p).union(e))
         }
         (
             EntityRef::Subject(_) | EntityRef::Topic(_),
