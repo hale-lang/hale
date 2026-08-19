@@ -911,6 +911,17 @@ reports as *unverifiable* rather than as valid — a consumer may
 choose to accept it, but must never read "nothing to check" as
 "checked and intact".
 
+The digest is only the integrity gate. Past it, every in-tree
+consumer — `hale topology graph` and `hale fleet check` alike —
+runs the same **law-account admission**: it decodes each law row's
+typed payload against a closed per-kind shape, resolves references
+against the artifact's own catalogs (including `law.fn_universe`
+and `law.effect_classes`), requires certificates and budget rows
+to match forms re-rendered from the typed operands, joins `claims`
+rows to law rows one-to-one in both directions, and recomputes the
+document verdict. A restamped artifact whose sections disagree
+with each other is refused even though its digest verifies.
+
 The artifact shape (schema `1.11`):
 
 ```text
@@ -945,6 +956,9 @@ The artifact shape (schema `1.11`):
                   "ordinal", "source"?} ],
   "lowered":   [ {"subject", "form", "result": <verdict>} ],
   "law":       { "law_digest", "inputs_digest",
+                 "fn_universe": [names],
+                 "effect_classes": [ {"name", "declared",
+                                      "cyclic"} ],
                  "rows": [ {"ordinal", "name", "origin",
                             "family", "verdict",
                             "law": {"kind", …typed operand refs,

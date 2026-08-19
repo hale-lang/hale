@@ -358,9 +358,19 @@ fn a_restamped_lying_verdict_is_refused() {
     let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
     let _ = std::fs::remove_dir_all(&r);
     assert_ne!(code, 0, "{}", out);
+    // The shared admission refuses BEFORE the verdict recompute:
+    // the injected row's payload is incomplete, and the deep
+    // decoder names it. Either refusal is the law account speaking
+    // — the digest gate was passed, and the lie did not survive.
     assert!(
-        out.contains("disagrees with its own law rows"),
-        "the refusal names the recompute, not the digest: {}",
+        out.contains("malformed artifact")
+            || out.contains("disagrees with its own law rows"),
+        "the refusal names the law account, not the digest: {}",
+        out
+    );
+    assert!(
+        !out.contains("artifact_digest"),
+        "integrity passed; the law account is what refused: {}",
         out
     );
 }
@@ -899,4 +909,117 @@ fn fleets_and_environments_are_independent_axes() {
         out2
     );
     assert!(out2.contains("pair(s) checked"), "{}", out2);
+}
+
+/// Round 5: DELETING a component's law rows must not pass
+/// vacuously. A claims-bearing prober artifact has its `law.rows`
+/// emptied (claims section intact) and is restamped; the shared
+/// admission's claims↔law join refuses it.
+#[test]
+fn deleted_law_rows_are_refused() {
+    fn fnv1a64(bytes: &[u8]) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+    let r = fleet("deletedlaw");
+    // Rebuild the prober WITH a claim so its law table is
+    // non-empty (the base prober's is empty — deleting nothing
+    // proves nothing).
+    write(
+        &r,
+        "prober/main.hl",
+        r#"
+import "../lib" as t;
+fn leak(v: Int) -> Int { return v; }
+fn safe(v: Int) -> Int { return v; }
+group a_side = { safe };
+group b_side = { leak };
+locus Probe {
+    params { n: Int = 0; }
+    bus { publish t::OrderIntent; }
+    fn submit() { let i = t::Intent { id: 1 }; t::OrderIntent <- i; }
+}
+main locus Prober {
+    params { p: Probe = Probe { }; }
+    claims { iso: forbid reaches(a_side, b_side); }
+}
+fn main() { Prober { }; }
+"#,
+    );
+    let p = r.join("artifacts/prober.json");
+    let (out, code) = hale(&[
+        "check",
+        r.join("prober").to_str().expect("utf8"),
+        &format!("--dump-topology={}", p.display()),
+    ]);
+    assert_eq!(code, 0, "claimed prober must check clean: {}", out);
+    let good = std::fs::read_to_string(&p).expect("read");
+
+    // Empty law.rows by bracket-matching from the `"rows": [`
+    // inside the `law` object.
+    let law_at = good.find("\"law\": {").expect("law section");
+    let rows_key = good[law_at..]
+        .find("\"rows\": [")
+        .map(|i| law_at + i)
+        .expect("law.rows");
+    let open = rows_key + "\"rows\": ".len();
+    let bytes = good.as_bytes();
+    let mut depth = 0usize;
+    let mut close = open;
+    let mut in_str = false;
+    let mut esc = false;
+    for (i, &b) in bytes.iter().enumerate().skip(open) {
+        if esc {
+            esc = false;
+            continue;
+        }
+        match b {
+            b'\\' if in_str => esc = true,
+            b'"' => in_str = !in_str,
+            b'[' if !in_str => depth += 1,
+            b']' if !in_str => {
+                depth -= 1;
+                if depth == 0 {
+                    close = i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(close > open, "bracket match");
+    let gutted =
+        format!("{}[]{}", &good[..open], &good[close + 1..]);
+    assert_ne!(gutted, good, "test premise: rows were deleted");
+    assert!(
+        gutted.contains("\"claims\""),
+        "test premise: the claims section survives"
+    );
+    let key = ",\n  \"artifact_digest\": \"";
+    let cut = gutted.rfind(key).expect("digest trailer");
+    let body = &gutted[..cut];
+    let restamped = format!(
+        "{}{}{:016x}\"\n}}\n",
+        body,
+        key,
+        fnv1a64(body.as_bytes())
+    );
+    std::fs::write(&p, restamped).expect("write");
+    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(
+        out.contains("does not project one-to-one from law"),
+        "the claims↔law join refuses the gutted account: {}",
+        out
+    );
+    assert!(
+        !out.contains("artifact_digest"),
+        "integrity passed; the law account is what refused: {}",
+        out
+    );
 }

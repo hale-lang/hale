@@ -81,6 +81,21 @@ never a fail-open `holds`), and the document `verdict` follows
 the machine. Artifact consumers reject unrecognized semantics by
 design; re-dump with the current compiler.
 
+Round 5: the `law` section carries a `fn_universe` catalog (the
+FULL model function universe - module-scoped annotation subjects
+admit) and an `effect_classes` catalog (declared/cyclic status);
+one shared admission (`validate_law_account`) runs for BOTH
+Track A and fleet composition - fleet no longer trusts a
+component's `verdict: clean` without decoding its law account,
+and deleting law rows is refused by the two-way claims join, not
+vacuously accepted; annotation laws bind to their evidence (a
+certificate-class swap fails the re-rendered expected form; a
+budget `per_call` mutation fails the lowered-row match; flipping
+`resolved` to false cannot rescue a `holds`); and evidence
+locations are source-space-honest - a foreign-space diagnostic
+(stdlib parse space) is never re-resolved against bundle sources,
+even when its offsets numerically fall inside a bundle file.
+
 ### The pointwise-certificate judgment - family 5e (GH #476 Change 5e)
 
 `judgment::judge_certificates` - `@effects(none/only/publish)`,

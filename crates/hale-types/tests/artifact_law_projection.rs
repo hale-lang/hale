@@ -1035,3 +1035,100 @@ fn main() { App { }; }
     );
     assert_eq!(dim["user_class"]["resolved"], true);
 }
+
+/// Review round 5: a FOREIGN-space certificate diagnostic (stdlib
+/// parse space) must never be re-resolved against bundle sources
+/// at the ARTIFACT level. Self-calibrating like the judgment-side
+/// pin: measure the stdlib offset, pad the user file until that
+/// offset falls numerically INSIDE it, and require the projected
+/// evidence entry to carry no location — a containment guess would
+/// misfile stdlib evidence as application code.
+#[test]
+fn foreign_cert_evidence_gets_no_guessed_location() {
+    let body = r#"
+@effects(none: { alloc })
+fn probe(r: std::http::Router, req: std::http::Request) -> Int {
+    let resp = r.dispatch(req);
+    return resp.status;
+}
+main locus App {
+    params { n: Int = 0; }
+    run() {
+        let r = std::http::Router { };
+        let req = std::http::Request { method: "GET", path: "/", body: "" };
+        println(probe(r, req));
+    }
+}
+fn main() { App { }; }
+"#;
+    // Measure the foreign offset from the evidence sidecar.
+    let offset = {
+        let program =
+            hale_syntax::parse_source(body).expect("parse");
+        let bundle = bundle_of(body, &program);
+        let model = derive_application_model(&bundle);
+        let table = lower_claims(&bundle, &model);
+        let evidence =
+            derive_certificate_evidence(&bundle, &table, &model);
+        let mut found = None;
+        for row in &evidence.rows {
+            for cert in &row.certs {
+                for (msg, pid) in &cert.diags {
+                    if !msg.contains("happens here") {
+                        continue;
+                    }
+                    if let hale_model::Provenance::ForeignSpan {
+                        span,
+                    } = evidence.provenance.records[pid.index()]
+                    {
+                        found = Some(span.0);
+                    }
+                }
+            }
+        }
+        found.expect("the stdlib alloc leaf must be foreign")
+    };
+    let mut padded = body.to_string();
+    while (padded.len() as u32) <= offset {
+        padded.push_str("// padding to swallow the stdlib offset\n");
+    }
+    let program =
+        hale_syntax::parse_source(&padded).expect("parse");
+    let bundle = bundle_of(&padded, &program);
+    let art = hale_types::topology::dump_topology(&bundle);
+    let v: serde_json::Value =
+        serde_json::from_str(&art).expect("valid JSON");
+    let rows = v["law"]["rows"].as_array().expect("law.rows");
+    let forbid = rows
+        .iter()
+        .find(|r| r["law"]["kind"] == "effect_forbid")
+        .expect("annotation row");
+    let mut saw_foreign = false;
+    for cert in forbid["certs"].as_array().expect("certs") {
+        for e in cert["evidence"].as_array().unwrap_or(&vec![]) {
+            let msg = e["message"].as_str().unwrap_or("");
+            if !msg.contains("happens here") {
+                continue;
+            }
+            saw_foreign = true;
+            assert!(
+                e.get("file").is_none_or(|f| f.is_null()),
+                "a stdlib-space diagnostic must not be attributed \
+                 to a bundle file, even when its offsets fall \
+                 inside one numerically: {}",
+                e
+            );
+            assert!(
+                e.get("span").is_none_or(|s| s.is_null()),
+                "no guessed span either: {}",
+                e
+            );
+        }
+    }
+    assert!(
+        saw_foreign,
+        "the stdlib alloc-leaf diagnostic must reach the \
+         artifact: {}",
+        forbid
+    );
+}

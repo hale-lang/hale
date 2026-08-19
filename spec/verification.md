@@ -359,11 +359,33 @@ consumes (holes are the validation cross-check, never a source of
 positive knowledge). A payload contract carries a structural
 `opaque` discriminant — `opaque` is not a reserved word, so a
 struct field literally named `opaque` keeps its structural shape.
-Legacy `claims` rows carry the law `ordinal` they project from;
-Track A joins by ordinal and admission enforces the closed law
-vocabulary, per-kind payload shapes, resolved-reference
-existence, contiguous unique ordinals, and the one-to-one
-claims-to-law projection. Unmigrated rows bridge to the old engines
+The `law` section also carries two catalogs: **`fn_universe`**
+(every function display the model knows, wider than the legacy
+`sorts.fns` — module-scoped annotation subjects resolve against
+it) and **`effect_classes`** (each class with its `declared` /
+`cyclic` status). Legacy `claims` rows carry the law `ordinal`
+they project from. **One shared admission**
+(`validate_law_account`) runs for Track A rendering AND fleet
+composition: it decodes every payload against the closed
+per-kind shape (unknown fields refused), resolves every
+`resolved: true` reference against the artifact's own catalogs
+(loci, groups, topics, phases, seeds, effect classes,
+`fn_universe`), refuses a `holds` verdict over any unresolved
+operand, re-renders each certificate's expected form from the
+typed operands and requires the row's `certs` to match it (an
+operand swap cannot keep the old certificates), requires each
+budget row to cite a `lowered` evidence row matching the form
+re-rendered from the typed payload (a `per_call` mutation cannot
+keep the old passing row), recomputes per-row and document
+verdicts from the evidence, checks the one-to-one claims-to-law
+projection in both directions (deleting law rows is refused, not
+vacuous), and recomputes `adequacy` from `capabilities`.
+Evidence locations are source-space-honest: a diagnostic whose
+span lives in a FOREIGN offset space (stdlib parse space, another
+seed) is never re-resolved against bundle sources — the
+projection carries a per-diagnostic discriminator, so numeric
+overlap with a bundle file cannot misfile stdlib evidence as
+application code. Unmigrated rows bridge to the old engines
 only where the old walk demonstrably enumerated the row
 (module-scoped annotations and ambiguous multi-assert anchors
 stay `uncertified`). The legacy `claims` / `lowered` string rows

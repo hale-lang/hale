@@ -675,7 +675,6 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     // byte-exact runtime/recording join key — deliberately RAW in
     // the artifact, never author-spelled).
     struct TInfo<'t> {
-        raw: String,
         decl: &'t TopicDecl,
         wire: String,
     }
@@ -710,7 +709,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             .cloned()
             .unwrap_or_else(|| raw.clone());
         topic_decl_by_name
-            .insert(raw.clone(), TInfo { raw, decl: t, wire });
+            .insert(raw, TInfo { decl: t, wire });
     }
 
     let mut subject_set: BTreeSet<String> = BTreeSet::new();

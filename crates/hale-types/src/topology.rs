@@ -1223,6 +1223,55 @@ pub fn dump_topology_parts(
         "    \"inputs_digest\": \"{:016x}\",\n",
         law_evidence.inputs_digest
     ));
+    // Round 5: the FULL law-subject catalog — annotation subjects
+    // resolve against the whole model function table (module fns
+    // included), which is wider than the legacy `sorts.fns`
+    // summary universe; a consumer validating resolved references
+    // needs the catalog the lowering actually resolved against.
+    {
+        let mut subjects: Vec<&str> = vmodel
+            .entities
+            .functions
+            .iter()
+            .map(|f| f.display.as_str())
+            .collect();
+        subjects.sort_unstable();
+        subjects.dedup();
+        out.push_str(&format!(
+            "    \"fn_universe\": [{}],\n",
+            subjects
+                .iter()
+                .map(|s| quote(s))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    // …and the effect-class catalog: which user classes are
+    // DECLARED and which are cyclic — the facts a consumer needs
+    // to independently justify an `invalid` certificate verdict.
+    {
+        let mut rows: Vec<String> = vmodel
+            .entities
+            .effect_classes
+            .iter()
+            .map(|c| {
+                format!(
+                    "{{\"name\": {}, \"declared\": {}, \"cyclic\": {}}}",
+                    quote(&c.name),
+                    c.declared,
+                    matches!(
+                        c.definition,
+                        hale_model::EffectClassDefinition::InvalidCycle
+                    )
+                )
+            })
+            .collect();
+        rows.sort();
+        out.push_str(&format!(
+            "    \"effect_classes\": [{}],\n",
+            rows.join(", ")
+        ));
+    }
     out.push_str("    \"rows\": [\n");
     for r in &law_rows {
         let prov = match &r.provenance {

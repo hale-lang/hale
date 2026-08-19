@@ -136,8 +136,6 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
         |id: hale_model::FunctionId| e.functions[id.index()].display.clone();
     let locus_display =
         |id: hale_model::LocusDeclId| e.loci[id.index()].display.clone();
-    let topic_display =
-        |id: hale_model::TopicId| e.topics[id.index()].display.clone();
     let iface_display = |raw: &str| -> String {
         e.interfaces
             .iter()
@@ -1184,8 +1182,26 @@ pub fn project_law_rows(
             .map(|j| {
                 j.diags
                     .iter()
-                    .map(|d| {
-                        (d.message.clone(), locate(d.span))
+                    .enumerate()
+                    .map(|(i, d)| {
+                        // A FOREIGN-space diag (round 5) is never
+                        // re-resolved against bundle sources — its
+                        // numbers can overlap a bundle file, and a
+                        // guessed location would attribute stdlib
+                        // evidence to application code.
+                        let is_foreign = j
+                            .foreign
+                            .get(i)
+                            .copied()
+                            .unwrap_or(false);
+                        (
+                            d.message.clone(),
+                            if is_foreign {
+                                None
+                            } else {
+                                locate(d.span)
+                            },
+                        )
                     })
                     .collect()
             })

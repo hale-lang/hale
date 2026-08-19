@@ -595,6 +595,120 @@ fn tampered_or_unverifiable_artifacts_are_refused() {
         String::from_utf8_lossy(&out.stderr)
     );
 
+    // 10. Round 5: flipping `resolved` to false to dodge the
+    //     existence check — a holds row cannot carry an
+    //     unresolved operand.
+    let unres = raw.replacen(
+        "\"name\": \"stores\", \"display\": \"stores\", \"resolved\": true",
+        "\"name\": \"ghost_x\", \"display\": \"stores\", \"resolved\": false",
+        1,
+    );
+    assert_ne!(unres, raw, "test premise: the flip landed");
+    let p3 = dir.join("unresolved.topology");
+    std::fs::write(
+        &p3,
+        restamp_digest(&strip_trailer(&unres)),
+    )
+    .unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p3)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("holds over an unresolved operand"),
+        "the resolution↔verdict binding refuses: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 5: a module-scoped annotation subject resolves against
+/// the FULL fn universe (`law.fn_universe`), wider than the legacy
+/// `sorts.fns` — the artifact must load through Track A.
+#[test]
+fn module_scoped_annotation_subject_admits() {
+    let dir = workdir("modscope");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+effect money;
+module billing {
+    @effects(causes: { money })
+    fn poke(v: Int) -> Int { return v; }
+}
+main locus App {
+    params { n: Int = 0; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&artifact)
+        .arg("--format")
+        .arg("mermaid")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "a compiler-emitted artifact with a module-scoped          annotation subject must admit: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 5: an annotation-operand swap — the law's forbidden
+/// (`@effects(none:)`) class changes while the certificates keep their original
+/// forms. The evidence binding must refuse: a `verdict` is only
+/// admissible when the certificates it cites are certificates
+/// FOR this law.
+#[test]
+fn annotation_class_swap_is_refused() {
+    let dir = workdir("classswap");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+@effects(none: { block })
+fn pure_math(v: Int) -> Int { return v + 1; }
+main locus App {
+    params { n: Int = 0; }
+    run() { println(pure_math(1)); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    let cls = raw.replacen("\"class\": \"block\"", "\"class\": \"alloc\"", 1);
+    assert_ne!(cls, raw, "test premise: the swap landed");
+    let p2 = dir.join("swapped.topology");
+    std::fs::write(&p2, restamp_digest(&strip_trailer(&cls))).unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p2)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("does not match its typed law")
+            || err.contains("certificate"),
+        "the certificate↔law binding refuses the swap: {}",
+        err
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -970,5 +1084,115 @@ fn dead_dispatches_are_not_rendered_as_unresolved() {
         residue
     );
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 5: a BUDGET-operand mutation — `per_call` 4 → 0 in the
+/// typed payload while the compatibility `lowered` row keeps the
+/// old passing form. The evidence binding must refuse: a budget
+/// verdict is only admissible with a lowered row matching the
+/// form RE-RENDERED from the typed operands.
+#[test]
+fn budget_operand_mutation_is_refused() {
+    let dir = workdir("budgetswap");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+@budget(alloc_per_call = 4)
+fn tight(v: Int) -> Int { return v + 1; }
+main locus App {
+    params { n: Int = 0; }
+    run() { println(tight(1)); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    let cut = raw.replacen("\"per_call\": 4", "\"per_call\": 0", 1);
+    assert_ne!(cut, raw, "test premise: the mutation landed");
+    assert!(
+        cut.contains("bound alloc <= 4 on paths from {tight}"),
+        "test premise: the lowered evidence row keeps the old form"
+    );
+    let p2 = dir.join("mutated.topology");
+    std::fs::write(&p2, restamp_digest(&strip_trailer(&cut))).unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p2)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("has no lowered evidence row matching"),
+        "the budget↔evidence binding refuses the mutation: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 5: the RAW half of a reference is the machine join key.
+/// Swapping one occurrence's `name` while keeping its `display`
+/// (which is what the catalogs and re-rendered forms check) must
+/// not survive — the admission holds raw<->display to one
+/// consistent pairing across the whole law section.
+#[test]
+fn raw_name_swap_under_unchanged_display_is_refused() {
+    let dir = workdir("nameswap");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+fn leak(v: Int) -> Int { return v; }
+fn safe(v: Int) -> Int { return v; }
+group a_side = { safe };
+group b_side = { leak };
+main locus App {
+    params { n: Int = 0; }
+    claims {
+        iso: forbid reaches(a_side, b_side);
+        iso2: forbid reaches(b_side, a_side);
+    }
+    run() { println(safe(1)); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    let needle = "\"name\": \"a_side\", \"display\": \"a_side\", \
+                  \"resolved\": true";
+    assert!(
+        raw.matches(needle).count() >= 2,
+        "test premise: the group ref appears in two law rows"
+    );
+    let swapped = raw.replacen(
+        needle,
+        "\"name\": \"zz_ghost\", \"display\": \"a_side\", \
+         \"resolved\": true",
+        1,
+    );
+    assert_ne!(swapped, raw, "test premise: the swap landed");
+    let p2 = dir.join("nameswap.topology");
+    std::fs::write(&p2, restamp_digest(&strip_trailer(&swapped)))
+        .unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p2)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("names two raw identities"),
+        "the raw<->display binding refuses the swap: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

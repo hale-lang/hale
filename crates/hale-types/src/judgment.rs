@@ -42,6 +42,14 @@ pub struct Judged {
     pub ordinal: u32,
     pub verdict: Verdict,
     pub diags: Vec<Diag>,
+    /// Per-diag SOURCE-SPACE discriminator (round 5): `true` when
+    /// the diag's span lives in the FOREIGN (stdlib) offset space,
+    /// whose numbers can overlap a bundle file — a consumer must
+    /// never re-resolve such a span against bundle sources. Empty
+    /// = every diag is bundle-space (the 5a–5d judgments only
+    /// speak claim/model spans); only `judge_certificates` fills
+    /// it, from the evidence records' own variants.
+    pub foreign: Vec<bool>,
 }
 
 /// A walk vertex: a user function, or an interior stdlib vertex of
@@ -561,6 +569,7 @@ pub fn judge_forbid_reaches(
                 ordinal: row.ordinal,
                 verdict: Verdict::Invalid,
                 diags,
+                foreign: Vec::new(),
             });
             continue;
         };
@@ -667,6 +676,7 @@ pub fn judge_forbid_reaches(
                 ordinal: row.ordinal,
                 verdict: Verdict::Invalid,
                 diags,
+                foreign: Vec::new(),
             });
             continue;
         }
@@ -703,6 +713,7 @@ pub fn judge_forbid_reaches(
                 ordinal: row.ordinal,
                 verdict: Verdict::Invalid,
                 diags,
+                foreign: Vec::new(),
             });
             continue;
         }
@@ -713,6 +724,7 @@ pub fn judge_forbid_reaches(
                         ordinal: row.ordinal,
                         verdict: Verdict::Invalid,
                         diags,
+                        foreign: Vec::new(),
                     });
                     continue;
                 }
@@ -739,6 +751,7 @@ pub fn judge_forbid_reaches(
                     ordinal: row.ordinal,
                     verdict: Verdict::Invalid,
                     diags,
+                    foreign: Vec::new(),
                 });
                 continue;
             }
@@ -764,6 +777,7 @@ pub fn judge_forbid_reaches(
                     ordinal: row.ordinal,
                     verdict: Verdict::Holds,
                     diags,
+                    foreign: Vec::new(),
                 });
                 continue;
             }
@@ -1359,6 +1373,7 @@ pub fn judge_forbid_reaches(
             ordinal: row.ordinal,
             verdict,
             diags,
+            foreign: Vec::new(),
         });
     }
     (pre, out)
@@ -1756,6 +1771,7 @@ pub fn judge_only_edges(
                 ordinal: row.ordinal,
                 verdict: Verdict::Invalid,
                 diags,
+                foreign: Vec::new(),
             });
             continue;
         }
@@ -1767,7 +1783,7 @@ pub fn judge_only_edges(
         };
         let src_fns = group_fns(src_gid);
         let dst_fns_v = group_fns(dst_gid);
-        let mut vacuous = |gref: &hale_model::GroupRef,
+        let vacuous = |gref: &hale_model::GroupRef,
                            fns: &[FunctionId],
                            which: &str,
                            diags: &mut Vec<Diag>|
@@ -1796,6 +1812,7 @@ pub fn judge_only_edges(
                 ordinal: row.ordinal,
                 verdict: Verdict::Invalid,
                 diags,
+                foreign: Vec::new(),
             });
             continue;
         }
@@ -2168,6 +2185,7 @@ pub fn judge_only_edges(
             ordinal: row.ordinal,
             verdict,
             diags,
+            foreign: Vec::new(),
         });
     }
     out
@@ -2383,6 +2401,7 @@ pub fn judge_endpoints(
                         ordinal: row.ordinal,
                         verdict: Verdict::Invalid,
                         diags,
+                        foreign: Vec::new(),
                     });
                     continue;
                 }
@@ -2402,6 +2421,7 @@ pub fn judge_endpoints(
                         ordinal: row.ordinal,
                         verdict: Verdict::Holds,
                         diags,
+                        foreign: Vec::new(),
                     });
                     continue;
                 }
@@ -2431,6 +2451,7 @@ pub fn judge_endpoints(
                         ordinal: row.ordinal,
                         verdict: Verdict::Uncertified,
                         diags,
+                        foreign: Vec::new(),
                     });
                     continue;
                 }
@@ -2452,6 +2473,7 @@ pub fn judge_endpoints(
                     ordinal: row.ordinal,
                     verdict: Verdict::Violated,
                     diags,
+                    foreign: Vec::new(),
                 });
             }
             ClaimIr::RequireSealed { group } => {
@@ -2460,6 +2482,7 @@ pub fn judge_endpoints(
                         ordinal: row.ordinal,
                         verdict: Verdict::Invalid,
                         diags,
+                        foreign: Vec::new(),
                     });
                     continue;
                 }
@@ -2479,6 +2502,7 @@ pub fn judge_endpoints(
                         ordinal: row.ordinal,
                         verdict: Verdict::Invalid,
                         diags,
+                        foreign: Vec::new(),
                     });
                     continue;
                 }
@@ -2496,6 +2520,7 @@ pub fn judge_endpoints(
                         ordinal: row.ordinal,
                         verdict: Verdict::Holds,
                         diags,
+                        foreign: Vec::new(),
                     });
                     continue;
                 }
@@ -2522,6 +2547,7 @@ pub fn judge_endpoints(
                     ordinal: row.ordinal,
                     verdict: Verdict::Violated,
                     diags,
+                    foreign: Vec::new(),
                 });
             }
             ClaimIr::RequireAttributed { class } => {
@@ -2546,6 +2572,7 @@ pub fn judge_endpoints(
                         ordinal: row.ordinal,
                         verdict: Verdict::Invalid,
                         diags,
+                        foreign: Vec::new(),
                     });
                     continue;
                 }
@@ -2624,6 +2651,7 @@ pub fn judge_endpoints(
                             ordinal: row.ordinal,
                             verdict: Verdict::Uncertified,
                             diags,
+                            foreign: Vec::new(),
                         });
                         continue;
                     }
@@ -2631,6 +2659,7 @@ pub fn judge_endpoints(
                         ordinal: row.ordinal,
                         verdict: Verdict::Holds,
                         diags,
+                        foreign: Vec::new(),
                     });
                     continue;
                 }
@@ -2660,6 +2689,7 @@ pub fn judge_endpoints(
                     ordinal: row.ordinal,
                     verdict: Verdict::Violated,
                     diags,
+                    foreign: Vec::new(),
                 });
             }
             ClaimIr::Cover { seed, group } => {
@@ -2682,6 +2712,7 @@ pub fn judge_endpoints(
                         ordinal: row.ordinal,
                         verdict: Verdict::Invalid,
                         diags,
+                        foreign: Vec::new(),
                     });
                     continue;
                 }
@@ -2736,6 +2767,7 @@ pub fn judge_endpoints(
                         ordinal: row.ordinal,
                         verdict: Verdict::Uncertified,
                         diags,
+                        foreign: Vec::new(),
                     });
                     continue;
                 }
@@ -2744,6 +2776,7 @@ pub fn judge_endpoints(
                         ordinal: row.ordinal,
                         verdict: Verdict::Holds,
                         diags,
+                        foreign: Vec::new(),
                     });
                     continue;
                 }
@@ -2768,6 +2801,7 @@ pub fn judge_endpoints(
                     ordinal: row.ordinal,
                     verdict: Verdict::Violated,
                     diags,
+                    foreign: Vec::new(),
                 });
             }
             ClaimIr::Count {
@@ -2781,6 +2815,7 @@ pub fn judge_endpoints(
                         ordinal: row.ordinal,
                         verdict: Verdict::Invalid,
                         diags,
+                        foreign: Vec::new(),
                     });
                     continue;
                 }
@@ -2846,6 +2881,7 @@ pub fn judge_endpoints(
                             ordinal: row.ordinal,
                             verdict: Verdict::Uncertified,
                             diags,
+                            foreign: Vec::new(),
                         });
                         continue;
                     }
@@ -2855,6 +2891,7 @@ pub fn judge_endpoints(
                         ordinal: row.ordinal,
                         verdict: Verdict::Holds,
                         diags,
+                        foreign: Vec::new(),
                     });
                     continue;
                 }
@@ -2896,6 +2933,7 @@ pub fn judge_endpoints(
                     ordinal: row.ordinal,
                     verdict: Verdict::Violated,
                     diags,
+                    foreign: Vec::new(),
                 });
             }
             _ => continue,
@@ -3247,6 +3285,7 @@ pub fn judge_bound(
                 ordinal: row.ordinal,
                 verdict: Verdict::Invalid,
                 diags,
+                foreign: Vec::new(),
             });
             continue;
         }
@@ -3273,6 +3312,7 @@ pub fn judge_bound(
                 ordinal: row.ordinal,
                 verdict: Verdict::Invalid,
                 diags,
+                foreign: Vec::new(),
             });
             continue;
         }
@@ -3847,6 +3887,7 @@ pub fn judge_bound(
                 ordinal: row.ordinal,
                 verdict: Verdict::Violated,
                 diags,
+                foreign: Vec::new(),
             });
             continue;
         }
@@ -3893,6 +3934,7 @@ pub fn judge_bound(
                     ordinal: row.ordinal,
                     verdict: Verdict::Uncertified,
                     diags,
+                    foreign: Vec::new(),
                 });
                 continue;
             }
@@ -3900,6 +3942,7 @@ pub fn judge_bound(
                 ordinal: row.ordinal,
                 verdict: Verdict::Holds,
                 diags,
+                foreign: Vec::new(),
             });
             continue;
         }
@@ -3920,6 +3963,7 @@ pub fn judge_bound(
             ordinal: row.ordinal,
             verdict: Verdict::Violated,
             diags,
+            foreign: Vec::new(),
         });
     }
     out
@@ -4096,6 +4140,7 @@ pub fn judge_certificates(
                     Verdict::Uncertified
                 },
                 diags,
+                foreign: Vec::new(),
             });
             continue;
         };
@@ -4113,6 +4158,7 @@ pub fn judge_certificates(
                 ordinal: row.ordinal,
                 verdict: Verdict::Invalid,
                 diags,
+                foreign: Vec::new(),
             });
             continue;
         }
@@ -4130,17 +4176,31 @@ pub fn judge_certificates(
                 ordinal: row.ordinal,
                 verdict: Verdict::Invalid,
                 diags,
+                foreign: Vec::new(),
             });
             continue;
         };
         let mut verdict = Verdict::Holds;
+        // The source-space discriminator (round 5): every diag
+        // accumulated BEFORE this loop is claim-space (bundle);
+        // evidence diags carry their record's own variant — a
+        // ForeignSpan lives in the stdlib offset space, and its
+        // numbers must never be re-resolved against bundle files.
+        let mut foreign: Vec<bool> = vec![false; diags.len()];
         for cert in ev.certs.iter() {
             let v = verdict_of(cert.result);
             if severity(v) > severity(verdict) {
                 verdict = v;
             }
             for (msg, pid) in &cert.diags {
+                let is_foreign = matches!(
+                    evidence.provenance.records.get(pid.index()),
+                    Some(hale_model::Provenance::ForeignSpan {
+                        ..
+                    })
+                );
                 diags.push(Diag::ty(ev_span(*pid), msg.clone()));
+                foreign.push(is_foreign);
             }
         }
         if invalid_class {
@@ -4150,6 +4210,7 @@ pub fn judge_certificates(
             ordinal: row.ordinal,
             verdict,
             diags,
+            foreign,
         });
     }
     out
