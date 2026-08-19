@@ -84,13 +84,13 @@ fn check_one(
             let mut programs = BTreeMap::new();
             programs.insert("app.hl".to_string(), program);
             let bundle = Bundle::new(programs);
-            let (art, legacy_half) =
+            let (art, legacy_half, legacy_tail) =
                 hale_types::topology::dump_topology_parts(&bundle);
             let model = derive_application_model(&bundle);
-            (art, legacy_half, model)
+            (art, legacy_half, legacy_tail, model)
         },
     ));
-    let Ok((art, legacy_half, model)) = caught else {
+    let Ok((art, legacy_half, legacy_tail, model)) = caught else {
         bad.push(format!("{}: PANIC", origin));
         return;
     };
@@ -119,6 +119,20 @@ fn check_one(
         bad.push(format!(
             "{}: byte-equal halves but hash mismatch (?)",
             origin
+        ));
+        return;
+    }
+    // Round 2: the UNHASHED tail (sources/provenance/topics) is
+    // projected too — same differential, same direction.
+    let projected_tail =
+        hale_types::topology_projection::project_unhashed_tail(
+            &model,
+        );
+    if legacy_tail != projected_tail {
+        bad.push(format!(
+            "{}: unhashed tail diverges.\n{}",
+            origin,
+            first_diff(&legacy_tail, &projected_tail)
         ));
     }
 }
@@ -225,7 +239,7 @@ fn main() { App { }; }
     let mut programs = BTreeMap::new();
     programs.insert("app.hl".to_string(), &program);
     let bundle = Bundle::new(programs);
-    let (art, legacy_half) =
+    let (art, legacy_half, _legacy_tail) =
         hale_types::topology::dump_topology_parts(&bundle);
     for needle in [
         "\"sealed\": [\"Vault\"]",
@@ -287,7 +301,7 @@ fn main() { App { }; }
             "__lib_x_kv_Store".to_string(),
         ),
     ];
-    let (art, legacy_half) =
+    let (art, legacy_half, _legacy_tail) =
         hale_types::topology::dump_topology_parts(&bundle);
     let model = derive_application_model(&bundle);
     let legacy = legacy_arm(&legacy_half);
@@ -314,7 +328,7 @@ fn assert_projection_matches(src: &str, label: &str) -> String {
     let mut programs = BTreeMap::new();
     programs.insert("app.hl".to_string(), &program);
     let bundle = Bundle::new(programs);
-    let (art, legacy_half) =
+    let (art, legacy_half, _legacy_tail) =
         hale_types::topology::dump_topology_parts(&bundle);
     let model = derive_application_model(&bundle);
     let legacy = legacy_arm(&legacy_half).to_string();
@@ -456,7 +470,7 @@ fn main() { App { }; }
         vec!["kv".to_string(), "Item".to_string()],
         "__lib_x_kv_Item".to_string(),
     )];
-    let (art, legacy_half) =
+    let (art, legacy_half, _legacy_tail) =
         hale_types::topology::dump_topology_parts(&bundle);
     let model = derive_application_model(&bundle);
     let legacy = legacy_arm(&legacy_half);
@@ -512,7 +526,7 @@ fn main() { App { }; }
             "__lib_x_kv_Store".to_string(),
         ),
     ];
-    let (art, legacy_half) =
+    let (art, legacy_half, _legacy_tail) =
         hale_types::topology::dump_topology_parts(&bundle);
     let model = derive_application_model(&bundle);
     let legacy = legacy_arm(&legacy_half);
@@ -650,7 +664,7 @@ fn main() { App { }; }
             "__lib_b_pack_A".to_string(),
         ),
     ];
-    let (art, legacy_half) =
+    let (art, legacy_half, _legacy_tail) =
         hale_types::topology::dump_topology_parts(&bundle);
     let model = derive_application_model(&bundle);
     let legacy = legacy_arm(&legacy_half);

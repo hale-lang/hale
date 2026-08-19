@@ -416,7 +416,7 @@ pub struct ClaimIrTable {
 /// The judgment family that owns a lowered row — the unit at which
 /// Change-5 migration, artifact adequacy, and the corpus
 /// differentials are organized (GH #476 Change 6).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum JudgmentFamily {
     /// `forbid reaches` (Change 5a).
     Reachability,
@@ -510,10 +510,19 @@ impl ClaimRow {
     /// what a consumer reads instead of parsing the rendered form
     /// string. References render as `{"name": raw, "display",
     /// "resolved": bool}`; class references as `{"class",
-    /// "builtin", "resolved"}`. One authority beside
+    /// "builtin", "resolved"}`; bus SELECTORS render their
+    /// resolved CANDIDATE sets — the canonical topic names and
+    /// wire-subject patterns the selector matched (round 2: the
+    /// candidate sets ARE the selector's meaning; a consumer must
+    /// never re-derive the compiler's matching rule) — plus the
+    /// selector's own source location. One authority beside
     /// [`ClaimRow::claims_form`] — the artifact serializes this
     /// verbatim, and Track A's claim view consumes it.
-    pub fn law_payload_json(&self) -> String {
+    pub fn law_payload_json(
+        &self,
+        e: &crate::application::Entities,
+        prov: &crate::provenance::ProvenanceTable,
+    ) -> String {
         let name_ref = |n: &NameRef, resolved: bool| -> String {
             format!(
                 "{{\"name\": {}, \"display\": {}, \"resolved\": {}}}",
@@ -557,13 +566,49 @@ impl ClaimRow {
                 }
             }
         };
-        let selector = |b: &BusSelector| -> String {
-            name_ref(
-                &NameRef {
-                    raw: b.name.clone(),
-                    display: b.name.clone(),
+        let loc = |pid: ProvenanceId| -> String {
+            match prov.records.get(pid.index()) {
+                Some(crate::provenance::Provenance::Source {
+                    source,
+                    span,
+                }) => match prov.sources.get(source.index()) {
+                    Some(su) => format!(
+                        ", \"file\": {}, \"span\": [{}, {}]",
+                        json_str(&su.path),
+                        span.0,
+                        span.1
+                    ),
+                    None => String::new(),
                 },
-                !b.topics.is_empty() || !b.subjects.is_empty(),
+                _ => String::new(),
+            }
+        };
+        let selector = |b: &BusSelector| -> String {
+            let topics: Vec<String> = b
+                .topics
+                .iter()
+                .filter_map(|t| e.topics.get(t.index()))
+                .map(|t| {
+                    format!(
+                        "{{\"name\": {}, \"display\": {}}}",
+                        json_str(&t.name),
+                        json_str(&t.display)
+                    )
+                })
+                .collect();
+            let subjects: Vec<String> = b
+                .subjects
+                .iter()
+                .filter_map(|sid| e.subjects.get(sid.index()))
+                .map(|su| json_str(&su.pattern))
+                .collect();
+            format!(
+                "{{\"name\": {}, \"topics\": [{}], \
+                 \"subjects\": [{}]{}}}",
+                json_str(&b.name),
+                topics.join(", "),
+                subjects.join(", "),
+                loc(b.provenance)
             )
         };
         match &self.law {

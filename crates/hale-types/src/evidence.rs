@@ -108,8 +108,7 @@ pub fn derive_certificate_evidence(
         out.provenance.sources.push(
             hale_model::provenance::SourceUnit {
                 path: sf.path.clone(),
-                digest: u64::from_str_radix(&sf.digest, 16)
-                    .unwrap_or(0),
+                digest: sf.digest.clone(),
             },
         );
     }

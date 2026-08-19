@@ -565,6 +565,54 @@ impl ApplicationModel {
     /// | `weights`        | (at, metric)                     |
     /// | `holes`          | (at, kind, reason)               |
     /// | nested key sets  | `KeyDomain::Exact`, `CoreSet`    |
+    /// EVERY relation family some unresolved residue hides —
+    /// typed hole rows AND stdlib-absorption residue (a CallHole
+    /// is an unfollowable call, a PublishHole an unprovable
+    /// publish, a Truncated frontier hides everything beyond it).
+    /// Exactness and holes are dual accounts that may not
+    /// disagree, wherever the hole lives; the capability law and
+    /// per-family adequacy both read this one mask (rounds 8, 2).
+    pub fn unresolved_relation_mask(
+        &self,
+    ) -> crate::hole::RelationSet {
+        let mut m = crate::hole::RelationSet(0);
+        for h in &self.holes {
+            m = m.union(h.hides);
+        }
+        for a in &self.legacy.stdlib_absorption {
+            for n in &a.nodes {
+                for ev in &n.events {
+                    match ev {
+                        crate::AbsorbedEvent::CallHole(_) => {
+                            m = m
+                                .union(crate::hole::RelationSet::CALLS)
+                                .union(
+                                    crate::hole::RelationSet::EFFECTS,
+                                );
+                        }
+                        crate::AbsorbedEvent::PublishHole => {
+                            m = m.union(
+                                crate::hole::RelationSet::PUBLISHES,
+                            );
+                        }
+                        crate::AbsorbedEvent::Truncated => {
+                            m = m
+                                .union(crate::hole::RelationSet::CALLS)
+                                .union(
+                                    crate::hole::RelationSet::PUBLISHES,
+                                )
+                                .union(
+                                    crate::hole::RelationSet::EFFECTS,
+                                );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        m
+    }
+
     pub fn validate(&self) -> Result<(), ModelError> {
         let e = &self.entities;
         let prov_len = self.provenance.records.len();
@@ -1735,56 +1783,11 @@ impl ApplicationModel {
                 });
             }
         }
-        // Unresolved residue INSIDE stdlib absorption participates
-        // in the exactness account (round 8): a CallHole is an
-        // unfollowable call, a PublishHole an unprovable publish,
-        // and a Truncated frontier hides everything beyond it —
-        // exactness and holes are dual accounts that may not
-        // disagree, wherever the hole lives.
-        let mut absorption_hides = crate::hole::RelationSet(0);
-        for a in &self.legacy.stdlib_absorption {
-            for n in &a.nodes {
-                for ev in &n.events {
-                    match ev {
-                        crate::AbsorbedEvent::CallHole(_) => {
-                            absorption_hides = absorption_hides
-                                .union(
-                                    crate::hole::RelationSet::CALLS,
-                                )
-                                .union(
-                                    crate::hole::RelationSet::EFFECTS,
-                                );
-                        }
-                        crate::AbsorbedEvent::PublishHole => {
-                            absorption_hides = absorption_hides
-                                .union(
-                                    crate::hole::RelationSet::PUBLISHES,
-                                );
-                        }
-                        crate::AbsorbedEvent::Truncated => {
-                            absorption_hides = absorption_hides
-                                .union(
-                                    crate::hole::RelationSet::CALLS,
-                                )
-                                .union(
-                                    crate::hole::RelationSet::PUBLISHES,
-                                )
-                                .union(
-                                    crate::hole::RelationSet::EFFECTS,
-                                );
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
         for (name, claimed, family) in self.capabilities.vouched_families() {
             if !claimed {
                 continue;
             }
-            if self.holes.iter().any(|h| h.hides.intersects(family))
-                || absorption_hides.intersects(family)
-            {
+            if self.unresolved_relation_mask().intersects(family) {
                 return Err(ModelError::CapabilityContradiction { capability: name });
             }
         }

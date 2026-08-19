@@ -407,6 +407,35 @@ fn tampered_or_unverifiable_artifacts_are_refused() {
         "refusal names the unsupported schema"
     );
 
+    // 5. Valid digest, DELETED law section (round 2): the claim
+    //    view consumes it — a restamped artifact without it must
+    //    refuse, never render with silently absent highlights.
+    let start = raw.find(",\n  \"law\": {").expect("law section");
+    let end = raw
+        .find(",\n  \"capabilities\": {")
+        .expect("capabilities section");
+    let mut lawless = String::new();
+    lawless.push_str(&raw[..start]);
+    lawless.push_str(&raw[end..]);
+    let no_law = dir.join("nolaw.topology");
+    std::fs::write(&no_law, restamp_digest(&strip_trailer(&lawless)))
+        .unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&no_law)
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "a restamped artifact without `law` must refuse"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("law"),
+        "the refusal names the missing section: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
     let _ = std::fs::remove_dir_all(&dir);
 }
 

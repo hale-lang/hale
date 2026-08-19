@@ -34,11 +34,14 @@ pub enum Provenance {
 
 /// One source unit provenance points into. `path` is as-authored
 /// (never absolutized — artifacts must not embed machine paths);
-/// `digest` pins the content the spans index.
+/// `digest` pins the content the spans index — kept as the
+/// producer's exact string (round 2: parsing it numerically lost
+/// non-canonical digests and made the artifact's `sources`
+/// section unprojectable from the model).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct SourceUnit {
     pub path: String,
-    pub digest: u64,
+    pub digest: String,
 }
 
 /// The provenance store: sources plus origin records, referenced by

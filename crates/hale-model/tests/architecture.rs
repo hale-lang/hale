@@ -208,7 +208,7 @@ fn tiny_model() -> ApplicationModel {
 fn provenance_source() -> hale_model::provenance::SourceUnit {
     hale_model::provenance::SourceUnit {
         path: "app.hl".to_string(),
-        digest: 0xec85,
+        digest: "ec85".to_string(),
     }
 }
 

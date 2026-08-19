@@ -384,7 +384,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     for sf in &bundle.sources {
         prov.sources.push(hale_model::provenance::SourceUnit {
             path: sf.path.clone(),
-            digest: u64::from_str_radix(&sf.digest, 16).unwrap_or(0),
+            digest: sf.digest.clone(),
         });
     }
     let mut prov_map: BTreeMap<(i64, u32, u32), ProvenanceId> =
@@ -423,8 +423,13 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                 span: (ls, le.max(ls)),
             }
         } else {
-            Provenance::Synthetic {
-                origin: "unplaceable span".to_string(),
+            // Round 2: an unplaceable span keeps its OFFSETS —
+            // `ForeignSpan` is verbatim offset-space; collapsing
+            // to Synthetic dropped the one thing the provenance
+            // section preserves (legacy renders source -1 with the
+            // global span).
+            Provenance::ForeignSpan {
+                span: (s, e.max(s)),
             }
         });
         prov_map.insert(key, id);

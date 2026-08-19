@@ -338,6 +338,90 @@ impl Artifact {
             &["name", "subject", "shape", "payload_hash"],
         )?;
         str_fields("claims", &["name", "form", "result"])?;
+        // Schema 1.11 (GH #476 Change 6, round 2): the typed
+        // sections this renderer CONSUMES are required and
+        // structurally validated — a missing or malformed `law`
+        // section must refuse, never render a valid-looking claim
+        // view with silently absent highlights.
+        need(art.v["law"].is_object(), "law must be an object")?;
+        need(
+            art.v["law"]["law_digest"].is_string(),
+            "law.law_digest must be a string",
+        )?;
+        need(
+            art.v["law"]["inputs_digest"].is_string(),
+            "law.inputs_digest must be a string",
+        )?;
+        need(
+            art.v["law"]["rows"].is_array(),
+            "law.rows must be an array",
+        )?;
+        need(
+            art.v["capabilities"].is_object(),
+            "capabilities must be an object",
+        )?;
+        need(
+            art.v["adequacy"].is_object(),
+            "adequacy must be an object",
+        )?;
+        const FAMILIES: &[&str] = &[
+            "reachability",
+            "boundary",
+            "endpoint",
+            "bound",
+            "certificate",
+            "unmigrated",
+            "fleet",
+        ];
+        const VERDICTS: &[&str] =
+            &["holds", "violated", "uncertified", "invalid"];
+        for (i, row) in art.v["law"]["rows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let ok = row["ordinal"].is_u64()
+                && row["name"].is_string()
+                && row["origin"].is_string()
+                && row["family"]
+                    .as_str()
+                    .is_some_and(|f| FAMILIES.contains(&f))
+                && row["verdict"]
+                    .as_str()
+                    .is_some_and(|v| VERDICTS.contains(&v))
+                && row["law"]["kind"].is_string();
+            if !ok {
+                return Err(format!(
+                    "{}: malformed artifact — law.rows[{}] must                      carry ordinal/name/origin/family/verdict and                      a tagged law payload",
+                    path.display(),
+                    i
+                ));
+            }
+        }
+        // Every legacy claim row projects from a law row — the
+        // claim view joins on the name.
+        for (i, c) in art.v["claims"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let name = c["name"].as_str().unwrap_or_default();
+            let found = art.v["law"]["rows"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|r| r["name"] == name);
+            if !found {
+                return Err(format!(
+                    "{}: malformed artifact — claims[{}] (`{}`)                      has no law row to project from",
+                    path.display(),
+                    i,
+                    name
+                ));
+            }
+        }
         for (i, row) in art.v["unknowns"]
             .as_array()
             .into_iter()

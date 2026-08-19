@@ -38,6 +38,16 @@ holds. Track A's claim view highlights from the typed payload
 instead of substring-matching form strings. `exact_cardinality`
 is now derived (closed-world endpoint counts).
 
+Round 2: the unhashed `sources` / `provenance` / `topics`
+sections project from the model too (`project_unhashed_tail`,
+byte-green over the corpus); unplaceable spans intern as
+`ForeignSpan` (offsets preserved); `SourceUnit.digest` keeps the
+producer's exact string; bus selectors serialize candidate sets +
+location; adequacy derives from the relation-level hole mask
+(publish/subscribe independent); the unmigrated bridge refuses
+rows the old engines never enumerated; Track A admission requires
+and validates the 1.11 sections and the claim-to-law join.
+
 `semantics` bumps to 2: machine verdicts are stricter in two
 documented places (a certificate naming a cyclically-defined or
 undeclared effect class is `invalid`, never a vacuous `holds`;

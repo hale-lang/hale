@@ -345,8 +345,18 @@ computed subject in-set). The UNMIGRATED families (`causes:`,
 results in their law rows, so no non-passing law row can coexist
 with a `clean` document verdict. The emitted model half — and
 `shape_hash` — come from the `ApplicationModel` projection
-(`project_model_half`); the legacy gathering survives only as the
-corpus differential's comparison arm until Change 9. The legacy `claims` / `lowered` string rows
+(`project_model_half`), and so do the unhashed `sources`,
+`provenance`, and `topics` sections (`project_unhashed_tail`);
+the legacy gathering survives only as the corpus differential's
+comparison arm until Change 9. Bus selectors in the `law` payload
+serialize their resolved CANDIDATE sets (the topic identities and
+wire patterns the selector matched) plus the selector's own
+source location; per-family `adequacy` derives from the
+relation-level hole mask, so publish and subscribe completeness
+count independently. Unmigrated rows bridge to the old engines
+only where the old walk demonstrably enumerated the row
+(module-scoped annotations and ambiguous multi-assert anchors
+stay `uncertified`). The legacy `claims` / `lowered` string rows
 remain, now PROJECTED from the canonical model path; `semantics`
 bumps to 2 because the machine verdicts are stricter in two
 documented places (a certificate naming a cyclically-defined or

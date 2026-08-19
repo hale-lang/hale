@@ -184,7 +184,7 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
 #[doc(hidden)]
 pub fn dump_topology_parts(
     bundle: &Bundle<'_>,
-) -> (String, String) {
+) -> (String, String, String) {
     let programs: Vec<&Program> =
         bundle.programs.values().copied().collect();
     let (top, _resolve_diags) = crate::resolve::build_top_scope(bundle);
@@ -961,9 +961,13 @@ pub fn dump_topology_parts(
     // carry a content digest, so an artifact stays comparable across
     // machines and a consumer can tell a stale pairing from a fresh
     // one.
-    out.push_str(",\n  \"sources\": [\n");
+    // GH #476 Change 6 (round 2): the UNHASHED tail — sources,
+    // provenance, topics — is PROJECTED from the model; the legacy
+    // gathering below feeds only the corpus differential.
+    let mut legacy_tail = String::new();
+    legacy_tail.push_str(",\n  \"sources\": [\n");
     for (i, sf) in bundle.sources.iter().enumerate() {
-        out.push_str(&format!(
+        legacy_tail.push_str(&format!(
             "    {{\"id\": {}, \"path\": {}, \"digest\": {}}}{}\n",
             sf.id,
             quote(&sf.path),
@@ -971,7 +975,7 @@ pub fn dump_topology_parts(
             if i + 1 == bundle.sources.len() { "" } else { "," }
         ));
     }
-    out.push_str("  ]");
+    legacy_tail.push_str("  ]");
 
     // Provenance (#392): source spans, now resolved to
     // `(source, [local_start, local_end])`. UNHASHED by `shape_hash`
@@ -991,9 +995,9 @@ pub fn dump_topology_parts(
             None => (-1, pos),
         }
     };
-    out.push_str(",\n  \"provenance\": {\n    \"calls\": [\n");
+    legacy_tail.push_str(",\n  \"provenance\": {\n    \"calls\": [\n");
     for (from, to, s, e) in &call_spans {
-        out.push_str(&format!(
+        legacy_tail.push_str(&format!(
             "      {{\"from\": {}, \"to\": {}, \"source\": {}, \"span\": [{}, {}]}},\n",
             quote(from),
             quote(to),
@@ -1002,10 +1006,10 @@ pub fn dump_topology_parts(
             loc(*e).1
         ));
     }
-    trim_trailing_comma(&mut out);
-    out.push_str("    ],\n    \"publishes\": [\n");
+    trim_trailing_comma(&mut legacy_tail);
+    legacy_tail.push_str("    ],\n    \"publishes\": [\n");
     for (f, subj, s, e) in &publish_spans {
-        out.push_str(&format!(
+        legacy_tail.push_str(&format!(
             "      {{\"fn\": {}, \"subject\": {}, \"source\": {}, \"span\": [{}, {}]}},\n",
             quote(f),
             quote(subj),
@@ -1022,10 +1026,10 @@ pub fn dump_topology_parts(
             loc(*e).1
         ));
     }
-    trim_trailing_comma(&mut out);
-    out.push_str("    ],\n    \"subscribes\": [\n");
+    trim_trailing_comma(&mut legacy_tail);
+    legacy_tail.push_str("    ],\n    \"subscribes\": [\n");
     for (subj, locus, handler, s, e) in &subscribe_spans {
-        out.push_str(&format!(
+        legacy_tail.push_str(&format!(
             "      {{\"subject\": {}, \"locus\": {}, \"handler\": {}, \
              \"source\": {}, \"span\": [{}, {}]}},\n",
             quote(subj),
@@ -1036,10 +1040,10 @@ pub fn dump_topology_parts(
             loc(*e).1
         ));
     }
-    trim_trailing_comma(&mut out);
-    out.push_str("    ],\n    \"decls\": {\n");
+    trim_trailing_comma(&mut legacy_tail);
+    legacy_tail.push_str("    ],\n    \"decls\": {\n");
     for (decl, (s, e)) in &decl_spans {
-        out.push_str(&format!(
+        legacy_tail.push_str(&format!(
             "      {}: {{\"source\": {}, \"span\": [{}, {}]}},\n",
             quote(decl),
             loc(*s).0,
@@ -1047,10 +1051,10 @@ pub fn dump_topology_parts(
             loc(*e).1
         ));
     }
-    trim_trailing_comma(&mut out);
-    out.push_str("    },\n    \"supervision\": [\n");
+    trim_trailing_comma(&mut legacy_tail);
+    legacy_tail.push_str("    },\n    \"supervision\": [\n");
     for r in &sup_rows {
-        out.push_str(&format!(
+        legacy_tail.push_str(&format!(
             "      {{\"locus\": {}, \"child\": {}, \"source\": {}, \"span\": [{}, {}]}},\n",
             quote(&r.locus),
             quote(&r.child),
@@ -1059,8 +1063,8 @@ pub fn dump_topology_parts(
             loc(r.span.1).1
         ));
     }
-    trim_trailing_comma(&mut out);
-    out.push_str("    ]\n  }");
+    trim_trailing_comma(&mut legacy_tail);
+    legacy_tail.push_str("    ]\n  }");
     // #399: the per-topic OBSERVATION identity — the join between
     // this artifact and a recording. The runtime manifest fuses
     // topics on (name, shape_hash) where shape_hash =
@@ -1072,7 +1076,7 @@ pub fn dump_topology_parts(
     // UNHASHED by ruling: payload field shape does not affect
     // claim evaluation, so it is not part of the model identity —
     // the artifact document is the reference, not the fusion.
-    out.push_str(",\n  \"topics\": [\n");
+    legacy_tail.push_str(",\n  \"topics\": [\n");
     {
         let mut rows: BTreeSet<(String, String, String, u64)> =
             BTreeSet::new();
@@ -1116,7 +1120,7 @@ pub fn dump_topology_parts(
             }
         }
         for (tname, subj, shape, h) in &rows {
-            out.push_str(&format!(
+            legacy_tail.push_str(&format!(
                 "    {{\"name\": {}, \"subject\": {}, \"shape\": {}, \
                  \"payload_hash\": \"{:016x}\"}},\n",
                 quote(tname),
@@ -1126,8 +1130,11 @@ pub fn dump_topology_parts(
             ));
         }
     }
-    trim_trailing_comma(&mut out);
-    out.push_str("  ]");
+    trim_trailing_comma(&mut legacy_tail);
+    legacy_tail.push_str("  ]");
+    out.push_str(
+        &crate::topology_projection::project_unhashed_tail(&vmodel),
+    );
     out.push_str(",\n  \"claims\": [\n");
     for o in &outcomes {
         // GH #409: `source` names the constitution an adopted clause
@@ -1403,7 +1410,7 @@ pub fn dump_topology_parts(
         "{}{:016x}\"\n}}\n",
         ARTIFACT_DIGEST_KEY, digest
     ));
-    (out, legacy_model)
+    (out, legacy_model, legacy_tail)
 }
 
 /// The exact byte sequence introducing the integrity digest. It is

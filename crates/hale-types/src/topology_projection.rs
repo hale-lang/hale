@@ -639,21 +639,32 @@ pub struct ProjectedLawRow {
 }
 
 /// The authoritative verdicts of the UNMIGRATED families (GH #476
-/// Change 6 round 1), from the old engines: `@budget` rows align
-/// by position within their variant (both sides walk declarations
-/// in source order — counts are asserted, and a mismatch fails
-/// closed to the judgment's `uncertified`); `causes:` and
-/// `depends:` attribute the old passes' diagnostics to rows by the
-/// exact span both anchor at (the fn name span / the depends
-/// declaration span). Without this, a law row for a surface with
-/// no other artifact evidence would say `uncertified` under a
-/// `clean` document verdict — an unwitnessed pass.
+/// Change 6): from the OLD engines, bridged only where the old
+/// engine DEMONSTRABLY enumerated the row (round 2 — the old
+/// walks are NONRECURSIVE: a module-scoped annotation is lowered
+/// but never evaluated, and treating its missing diagnostic as a
+/// pass would manufacture `holds`). Missing report evidence stays
+/// `uncertified`.
+///
+/// - `@budget` rows align POSITIONALLY against the old
+///   certificate rows, but only over the old-visible subsequence
+///   (top-level fns and locus members, in the old engines'
+///   declaration order); module-scoped rows are skipped and stay
+///   uncertified.
+/// - `causes:` / `depends:` attribute the old passes' diagnostics
+///   by the exact anchor span — and only for old-visible subjects
+///   carrying exactly ONE assert of the kind: the old engine
+///   anchors every assert of a fn at the same span, so with two
+///   asserts a diagnostic cannot be attributed and that subject's
+///   rows stay uncertified (a lone no-diagnostic subject is a
+///   real evaluation: holds).
 pub fn legacy_unmigrated_verdicts(
     bundle: &crate::symbol::Bundle<'_>,
     graph: &crate::bus_graph::BusGraph,
     table: &hale_model::ClaimIrTable,
 ) -> std::collections::BTreeMap<u32, crate::verdict::Verdict> {
     use hale_model::ClaimIr;
+    use hale_syntax::ast::{EffectAssert, LocusMember, TopDecl};
     let programs: Vec<&hale_syntax::ast::Program> =
         bundle.programs.values().copied().collect();
     let mut out: std::collections::BTreeMap<
@@ -661,28 +672,88 @@ pub fn legacy_unmigrated_verdicts(
         crate::verdict::Verdict,
     > = std::collections::BTreeMap::new();
 
-    // ---- budgets: position-aligned within each variant ----
-    let alloc_rows: Vec<u32> = table
-        .rows
-        .iter()
-        .filter(|r| matches!(r.law, ClaimIr::AllocBudget { .. }))
-        .map(|r| r.ordinal)
-        .collect();
+    // ---- the old engines' NONRECURSIVE enumeration ----
+    // (top-level fns, then locus members, per program in order —
+    // exactly the walk frontier/budget_check/quantitative run; no
+    // TopDecl::Module recursion.)
+    let mut vis_alloc: Vec<String> = Vec::new();
+    let mut vis_quant: Vec<String> = Vec::new();
+    let mut vis_causes: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    let mut vis_depends: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    {
+        let mut note_fn =
+            |raw: String, fd: &hale_syntax::ast::FnDecl| {
+                if fd.budget.is_some() {
+                    vis_alloc.push(raw.clone());
+                }
+                for _ in &fd.quantities {
+                    vis_quant.push(raw.clone());
+                }
+                let n = fd
+                    .effects
+                    .iter()
+                    .filter(|a| {
+                        matches!(a, EffectAssert::Causes(_))
+                    })
+                    .count();
+                if n > 0 {
+                    *vis_causes.entry(raw).or_insert(0) += n;
+                }
+            };
+        for p in &programs {
+            for item in &p.items {
+                match item {
+                    TopDecl::Fn(fd) => {
+                        note_fn(fd.name.name.clone(), fd)
+                    }
+                    TopDecl::Locus(l) => {
+                        if l.depends.is_some() {
+                            vis_depends
+                                .insert(l.name.name.clone());
+                        }
+                        for m in &l.members {
+                            if let LocusMember::Fn(fd) = m {
+                                note_fn(
+                                    format!(
+                                        "{}::{}",
+                                        l.name.name,
+                                        fd.name.name
+                                    ),
+                                    fd,
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // ---- budgets: positional alignment over the old-visible
+    // subsequence ----
     let old_alloc = crate::budget_check::certificate_rows(
         &programs,
         &bundle.import_renames,
     );
-    if alloc_rows.len() == old_alloc.len() {
-        for (ord, r) in alloc_rows.iter().zip(old_alloc.iter()) {
+    let visible_alloc: Vec<u32> = table
+        .rows
+        .iter()
+        .filter(|r| {
+            matches!(r.law, ClaimIr::AllocBudget { .. })
+                && vis_alloc.iter().any(|v| *v == r.name)
+        })
+        .map(|r| r.ordinal)
+        .collect();
+    if visible_alloc.len() == old_alloc.len() {
+        for (ord, r) in
+            visible_alloc.iter().zip(old_alloc.iter())
+        {
             out.insert(*ord, r.result);
         }
     }
-    let quant_rows: Vec<u32> = table
-        .rows
-        .iter()
-        .filter(|r| matches!(r.law, ClaimIr::QuantBudget { .. }))
-        .map(|r| r.ordinal)
-        .collect();
     let fanout = |subj: &str| -> u64 {
         graph
             .subjects
@@ -693,52 +764,83 @@ pub fn legacy_unmigrated_verdicts(
     let old_quant = crate::quantitative::certificate_rows(
         &programs, &fanout,
     );
-    if quant_rows.len() == old_quant.len() {
-        for (ord, r) in quant_rows.iter().zip(old_quant.iter()) {
+    let visible_quant: Vec<u32> = table
+        .rows
+        .iter()
+        .filter(|r| {
+            matches!(r.law, ClaimIr::QuantBudget { .. })
+                && vis_quant.iter().any(|v| *v == r.name)
+        })
+        .map(|r| r.ordinal)
+        .collect();
+    if visible_quant.len() == old_quant.len() {
+        for (ord, r) in
+            visible_quant.iter().zip(old_quant.iter())
+        {
             out.insert(*ord, r.result);
         }
     }
 
-    // ---- causes / depends: span-attributed diagnostics ----
-    let span_of_row = |ordinal: u32| -> Option<(usize, usize)> {
-        let row = table.rows.iter().find(|r| r.ordinal == ordinal)?;
-        match table.provenance.records.get(row.provenance.index())
-        {
-            Some(hale_model::Provenance::Source {
-                source,
-                span,
-            }) => {
-                let base = bundle
-                    .sources
-                    .iter()
-                    .find(|f| f.id == source.0)
-                    .map(|f| f.base)
-                    .unwrap_or(0);
-                Some((
-                    (base + span.0) as usize,
-                    (base + span.1) as usize,
-                ))
+    // ---- causes / depends: span-attributed, single-assert
+    // subjects only ----
+    let span_of_row =
+        |row: &hale_model::ClaimRow| -> Option<(usize, usize)> {
+            match table
+                .provenance
+                .records
+                .get(row.provenance.index())
+            {
+                Some(hale_model::Provenance::Source {
+                    source,
+                    span,
+                }) => {
+                    let base = bundle
+                        .sources
+                        .iter()
+                        .find(|f| f.id == source.0)
+                        .map(|f| f.base)
+                        .unwrap_or(0);
+                    Some((
+                        (base + span.0) as usize,
+                        (base + span.1) as usize,
+                    ))
+                }
+                _ => None,
             }
-            _ => None,
-        }
-    };
+        };
     let causes_diags =
         crate::frontier::causes_diags(&programs, graph);
     let depends_diags =
         crate::frontier::depends_diags(&programs, graph);
     for row in &table.rows {
-        let diags: &[hale_syntax::Diag] = match &row.law {
-            ClaimIr::EffectCauses { .. } => &causes_diags,
-            ClaimIr::DependsSet { .. } => &depends_diags,
+        let (diags, enumerated, unambiguous) = match &row.law {
+            ClaimIr::EffectCauses { .. } => (
+                &causes_diags,
+                vis_causes.contains_key(&row.name),
+                vis_causes.get(&row.name) == Some(&1),
+            ),
+            ClaimIr::DependsSet { .. } => (
+                &depends_diags,
+                vis_depends.contains(&row.name),
+                true,
+            ),
             _ => continue,
         };
-        let Some((a, b)) = span_of_row(row.ordinal) else {
+        if !enumerated {
+            continue; // never evaluated — stays uncertified
+        }
+        let Some((a, b)) = span_of_row(row) else {
             continue;
         };
         let hit = diags.iter().any(|d| {
             d.span.start.as_usize() == a
                 && d.span.end.as_usize() == b
         });
+        if hit && !unambiguous {
+            // Two asserts share one anchor — the diagnostic
+            // cannot be attributed to a row.
+            continue;
+        }
         out.insert(
             row.ordinal,
             if hit {
@@ -987,7 +1089,10 @@ pub fn project_law_rows(
             origin,
             family,
             verdict,
-            law: row.law_payload_json(),
+            law: row.law_payload_json(
+                &model.entities,
+                &table.provenance,
+            ),
             certs,
             provenance,
         });
@@ -1006,12 +1111,15 @@ pub fn family_adequacy(
     m: &ApplicationModel,
 ) -> Vec<(hale_model::JudgmentFamily, bool)> {
     use hale_model::JudgmentFamily as F;
-    let mut vouched = hale_model::RelationSet(0);
-    for (_, claimed, fam) in m.capabilities.vouched_families() {
-        if claimed {
-            vouched = vouched.union(fam);
-        }
-    }
+    // Relation-LEVEL exactness, derived from the validated holes
+    // directly (round 2): the coarse capability flags couple
+    // publish and subscribe completeness (`exact_bus_endpoints`),
+    // but the hole schema keeps them independent — a model with
+    // complete publishers and an incomplete subscriber set is
+    // still exact for every family that consumes PUBLISHES but
+    // not SUBSCRIBES. Absorption residue participates exactly as
+    // it does in the capability law.
+    let inexact = m.unresolved_relation_mask();
     [
         F::Reachability,
         F::Boundary,
@@ -1020,6 +1128,331 @@ pub fn family_adequacy(
         F::Certificate,
     ]
     .into_iter()
-    .map(|f| (f, vouched.contains(f.required_relations())))
+    .map(|f| (f, !f.required_relations().intersects(inexact)))
     .collect()
+}
+
+/// The artifact's UNHASHED tail — `sources`, `provenance`, and
+/// `topics` — projected from the model (GH #476 Change 6, review
+/// round 2: the legacy gathering must not supply ANY production
+/// section; every modeled fact renders from `ApplicationModel`).
+/// Byte-compatible with the legacy serialization; the corpus
+/// differential compares the two until Change 9 retires the
+/// legacy arm.
+pub fn project_unhashed_tail(m: &ApplicationModel) -> String {
+    let e = &m.entities;
+    let r = &m.relations;
+    let fn_display =
+        |id: hale_model::FunctionId| e.functions[id.index()].display.clone();
+    let locus_display =
+        |id: hale_model::LocusDeclId| e.loci[id.index()].display.clone();
+    // A provenance record as (source id, local start, local end);
+    // synthetic/foreign records render source -1, matching the
+    // legacy "unplaceable" rule.
+    let loc = |pid: hale_model::ProvenanceId| -> (i64, u32, u32) {
+        match m.provenance.records.get(pid.index()) {
+            Some(hale_model::Provenance::Source { source, span }) => {
+                (source.index() as i64, span.0, span.1)
+            }
+            Some(hale_model::Provenance::ForeignSpan { span }) => {
+                (-1, span.0, span.1)
+            }
+            _ => (-1, 0, 0),
+        }
+    };
+    let mut out = String::new();
+
+    // ---- sources ----
+    out.push_str(",\n  \"sources\": [\n");
+    let n = m.provenance.sources.len();
+    for (i, su) in m.provenance.sources.iter().enumerate() {
+        out.push_str(&format!(
+            "    {{\"id\": {}, \"path\": {}, \"digest\": {}}}{}\n",
+            i,
+            quote(&su.path),
+            quote(&su.digest),
+            if i + 1 == n { "" } else { "," }
+        ));
+    }
+    out.push_str("  ]");
+
+    // ---- provenance ----
+    // Legacy sorts each subsection by its BTreeSet key with
+    // BUNDLE-GLOBAL spans; (source, local) sorts identically
+    // because source ids ascend with file bases.
+    out.push_str(",\n  \"provenance\": {\n    \"calls\": [\n");
+    {
+        // Same universe filter as the hashed `calls` section: both
+        // endpoints in the summary (v1) universe — a
+        // declaration-universe-recovered edge (known edge + hole
+        // coexisting) has no legacy span row.
+        let v1: BTreeSet<u32> = m
+            .legacy
+            .topology_v1_fns
+            .iter()
+            .map(|f| f.0)
+            .collect();
+        let mut rows: BTreeSet<(String, String, i64, u32, u32)> =
+            BTreeSet::new();
+        for c in &r.calls {
+            if matches!(
+                c.dispatch,
+                hale_model::DispatchKind::ViaStdlib
+            ) {
+                continue;
+            }
+            if !v1.contains(&c.from.0) || !v1.contains(&c.to.0) {
+                continue;
+            }
+            let (src, a, b) = loc(c.provenance);
+            rows.insert((
+                fn_display(c.from),
+                fn_display(c.to),
+                src,
+                a,
+                b,
+            ));
+        }
+        for (from, to, src, a, b) in &rows {
+            out.push_str(&format!(
+                "      {{\"from\": {}, \"to\": {}, \"source\": {}, \"span\": [{}, {}]}},\n",
+                quote(from),
+                quote(to),
+                src,
+                a,
+                b
+            ));
+        }
+    }
+    trim_trailing_comma(&mut out);
+    out.push_str("    ],\n    \"publishes\": [\n");
+    {
+        let mut rows: BTreeSet<(String, String, i64, u32, u32)> =
+            BTreeSet::new();
+        for p in &r.publishes {
+            let written = match p.declared_topic {
+                Some(t) => e.topics[t.index()].display.clone(),
+                None => {
+                    e.subjects[p.subject.index()].pattern.clone()
+                }
+            };
+            let (src, a, b) = loc(p.provenance);
+            rows.insert((
+                fn_display(p.function),
+                written,
+                src,
+                a,
+                b,
+            ));
+        }
+        for (f, subj, src, a, b) in &rows {
+            out.push_str(&format!(
+                "      {{\"fn\": {}, \"subject\": {}, \"source\": {}, \"span\": [{}, {}]}},\n",
+                quote(f),
+                quote(subj),
+                src,
+                a,
+                b
+            ));
+        }
+    }
+    trim_trailing_comma(&mut out);
+    out.push_str("    ],\n    \"subscribes\": [\n");
+    {
+        let mut locus_of: BTreeMap<u32, String> = BTreeMap::new();
+        for mo in &r.member_of {
+            locus_of.insert(
+                mo.function.0,
+                locus_display(mo.locus),
+            );
+        }
+        let mut rows: BTreeSet<(String, String, String, i64, u32, u32)> =
+            BTreeSet::new();
+        for su in &r.subscribes {
+            let written = match su.declared_topic {
+                Some(t) => e.topics[t.index()].display.clone(),
+                None => {
+                    e.subjects[su.subject.index()].pattern.clone()
+                }
+            };
+            let handler_full =
+                e.functions[su.handler.index()].display.clone();
+            let handler_short = handler_full
+                .rsplit("::")
+                .next()
+                .unwrap_or(&handler_full)
+                .to_string();
+            let locus = locus_of
+                .get(&su.handler.0)
+                .cloned()
+                .unwrap_or_default();
+            let (src, a, b) = loc(su.provenance);
+            rows.insert((
+                written,
+                locus,
+                handler_short,
+                src,
+                a,
+                b,
+            ));
+        }
+        for (subj, locus, handler, src, a, b) in &rows {
+            out.push_str(&format!(
+                "      {{\"subject\": {}, \"locus\": {}, \"handler\": {}, \
+                 \"source\": {}, \"span\": [{}, {}]}},\n",
+                quote(subj),
+                quote(locus),
+                quote(handler),
+                src,
+                a,
+                b
+            ));
+        }
+    }
+    trim_trailing_comma(&mut out);
+    out.push_str("    ],\n    \"decls\": {\n");
+    {
+        let mut rows: BTreeMap<String, (i64, u32, u32)> =
+            BTreeMap::new();
+        // The decl universe is TOP declarations — free fns yes,
+        // methods/hooks no (they are members, not decls).
+        for f in &e.functions {
+            if !matches!(f.kind, hale_model::FunctionKind::Free) {
+                continue;
+            }
+            let (src, a, b) = loc(f.provenance);
+            rows.entry(f.display.clone())
+                .or_insert((src, a, b));
+        }
+        for g in &e.groups {
+            let (src, a, b) = loc(g.provenance);
+            rows.entry(g.display.clone())
+                .or_insert((src, a, b));
+        }
+        for l in &e.loci {
+            let (src, a, b) = loc(l.provenance);
+            rows.entry(l.display.clone())
+                .or_insert((src, a, b));
+        }
+        for t in &e.types {
+            let (src, a, b) = loc(t.provenance);
+            rows.entry(t.display.clone())
+                .or_insert((src, a, b));
+        }
+        for i in &e.interfaces {
+            let (src, a, b) = loc(i.provenance);
+            rows.entry(i.display.clone())
+                .or_insert((src, a, b));
+        }
+        for t in &e.topics {
+            let (src, a, b) = loc(t.provenance);
+            rows.entry(t.display.clone())
+                .or_insert((src, a, b));
+        }
+        for (decl, (src, a, b)) in &rows {
+            out.push_str(&format!(
+                "      {}: {{\"source\": {}, \"span\": [{}, {}]}},\n",
+                quote(decl),
+                src,
+                a,
+                b
+            ));
+        }
+    }
+    trim_trailing_comma(&mut out);
+    out.push_str("    },\n    \"supervision\": [\n");
+    {
+        struct Row {
+            locus: String,
+            child: String,
+            src: i64,
+            a: u32,
+            b: u32,
+            origin: u32,
+        }
+        let mut rows: Vec<Row> = r
+            .supervises
+            .iter()
+            .map(|s| {
+                let (src, a, b) = loc(s.provenance);
+                Row {
+                    locus: locus_display(s.parent),
+                    child: match &s.child {
+                        hale_model::SupervisedRef::Locus(l) => {
+                            locus_display(*l)
+                        }
+                        hale_model::SupervisedRef::External(
+                            n,
+                        ) => n.clone(),
+                    },
+                    src,
+                    a,
+                    b,
+                    origin: s.authored_ordinal,
+                }
+            })
+            .collect();
+        rows.sort_by(|x, y| {
+            (&x.locus, &x.child, x.origin)
+                .cmp(&(&y.locus, &y.child, y.origin))
+        });
+        for row in &rows {
+            out.push_str(&format!(
+                "      {{\"locus\": {}, \"child\": {}, \"source\": {}, \"span\": [{}, {}]}},\n",
+                quote(&row.locus),
+                quote(&row.child),
+                row.src,
+                row.a,
+                row.b
+            ));
+        }
+    }
+    trim_trailing_comma(&mut out);
+    out.push_str("    ]\n  }");
+
+    // ---- topics: the per-topic observation identity ----
+    out.push_str(",\n  \"topics\": [\n");
+    {
+        let mut rows: BTreeSet<(String, String, String, u64)> =
+            BTreeSet::new();
+        for t in &e.topics {
+            let subj =
+                e.subjects[t.subject.index()].pattern.clone();
+            let payload = &e.payloads[t.payload.index()];
+            // The OBSERVATION identity fuses subject and shape
+            // (`topic_shape_hash`) — the model's payload hash is
+            // shape-only, and the runtime manifest joins on the
+            // fused value. A payload the per-file gathering could
+            // not structurally resolve (the model's `opaque:`
+            // contracts — cross-seed types) renders as the empty
+            // shape, the spelling this section always carried.
+            let shape = if payload.shape.starts_with("opaque:") {
+                String::new()
+            } else {
+                payload.shape.clone()
+            };
+            let h = crate::topic_identity::topic_shape_hash(
+                &subj, &shape,
+            );
+            rows.insert((
+                t.display.clone(),
+                subj,
+                shape,
+                h,
+            ));
+        }
+        for (tname, subj, shape, h) in &rows {
+            out.push_str(&format!(
+                "    {{\"name\": {}, \"subject\": {}, \"shape\": {}, \
+                 \"payload_hash\": \"{:016x}\"}},\n",
+                quote(tname),
+                quote(subj),
+                quote(shape),
+                h
+            ));
+        }
+    }
+    trim_trailing_comma(&mut out);
+    out.push_str("  ]");
+    out
 }

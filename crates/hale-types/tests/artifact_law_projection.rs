@@ -590,3 +590,140 @@ fn main() { App { }; }
             .contains("effects(publish)")
     );
 }
+
+/// Review round 2: the legacy bridge never manufactures `holds` —
+/// a module-scoped `causes:` is lowered but the old engine's
+/// nonrecursive walk never evaluated it, so its row stays
+/// `uncertified` (and the document verdict follows); two asserts
+/// on one fn share one diagnostic anchor, so when a diagnostic
+/// exists neither row can claim it.
+#[test]
+fn unenumerated_and_ambiguous_rows_stay_uncertified() {
+    // Module-scoped: lowered, never evaluated.
+    let src = r#"
+effect money;
+module billing {
+    @effects(causes: { money })
+    fn poke(v: Int) -> Int { return v; }
+}
+main locus App {
+    params { n: Int = 0; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let art = hale_types::topology::dump_topology(&bundle);
+    let v: serde_json::Value =
+        serde_json::from_str(&art).expect("valid JSON");
+    let rows = v["law"]["rows"].as_array().expect("law.rows");
+    let causes = rows
+        .iter()
+        .find(|r| r["law"]["kind"] == "effect_causes")
+        .expect("the module-scoped row IS lowered");
+    assert_eq!(
+        causes["verdict"], "uncertified",
+        "no old-engine evidence exists for a module-scoped row — \
+         a missing diagnostic must not become holds: {}",
+        causes
+    );
+    assert_eq!(
+        v["verdict"], "law_failed",
+        "an unwitnessed law cannot leave the document clean"
+    );
+}
+
+/// Review round 2: adequacy answers per RELATION, not per coupled
+/// capability — a subscriber-only endpoint hole leaves the
+/// certificate family (CALLS | EFFECTS | PUBLISHES) `exact` while
+/// the bus-composing families degrade.
+#[test]
+fn subscriber_only_hole_keeps_certificate_exact() {
+    let src = r#"
+topic Sig { payload: Int; subject: "app.sig"; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) { Sig <- v; }
+}
+main locus App {
+    params { a: A = A { }; }
+    run() { self.a.go(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let sid = model
+        .entities
+        .subjects
+        .iter()
+        .position(|su| su.pattern == "app.sig")
+        .expect("subject");
+    model.capabilities.exact_bus_endpoints = false;
+    model.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(hale_model::SubjectId(
+            sid as u32,
+        )),
+        kind: hale_model::HoleKind::DynamicEndpoint,
+        hides: hale_model::RelationSet::SUBSCRIBES,
+        authored_site: None,
+        reason: "subscriber set incomplete".to_string(),
+        provenance: hale_model::ProvenanceId(0),
+    });
+    model.validate().expect("lawful");
+    let adequacy: std::collections::BTreeMap<_, _> =
+        hale_types::topology_projection::family_adequacy(&model)
+            .into_iter()
+            .collect();
+    assert!(
+        adequacy[&hale_model::JudgmentFamily::Certificate],
+        "SUBSCRIBES-only incompleteness does not touch the \
+         certificate family"
+    );
+    assert!(
+        !adequacy[&hale_model::JudgmentFamily::Reachability],
+        "the bus-composing families degrade"
+    );
+    assert!(!adequacy[&hale_model::JudgmentFamily::Endpoint]);
+}
+
+/// Review round 2: bus selectors serialize their CANDIDATE sets —
+/// the normalized topic identities the selector matched — plus
+/// the selector's own source location.
+#[test]
+fn publish_set_selector_carries_candidates() {
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic Allowed { payload: Cmd; subject: "app.allowed"; }
+@effects(publish: { Allowed })
+fn f(v: Int) { Allowed <- Cmd { }; }
+main locus App {
+    run() { f(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let art = hale_types::topology::dump_topology(&bundle);
+    let v: serde_json::Value =
+        serde_json::from_str(&art).expect("valid JSON");
+    let rows = v["law"]["rows"].as_array().expect("law.rows");
+    let ps = rows
+        .iter()
+        .find(|r| r["law"]["kind"] == "effect_publish_set")
+        .expect("publish-set row");
+    let entry = &ps["law"]["entries"][0];
+    assert_eq!(entry["name"], "Allowed");
+    assert_eq!(
+        entry["topics"][0]["name"], "Allowed",
+        "the candidate set is the selector's meaning: {}",
+        entry
+    );
+    assert!(
+        entry["span"].is_array(),
+        "the selector carries its own source location: {}",
+        entry
+    );
+}
