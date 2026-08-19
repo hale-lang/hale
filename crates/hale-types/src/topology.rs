@@ -1265,10 +1265,122 @@ pub fn dump_topology_parts(
     // checks before trusting external evidence against this
     // artifact. Unhashed by `shape_hash` (law rows are results,
     // not topology), covered by `artifact_digest`.
+    // Round 7: `law_digest` is a RECOMPUTABLE canonical fingerprint
+    // over the serialized law rows — the rows text parsed and
+    // re-serialized through serde_json (BTreeMap keys, compact
+    // separators), then fnv1a64 — so a consumer recomputes it from
+    // the parsed document, and editing a row while keeping the
+    // stale digest refuses. (The ClaimIrTable's internal semantic
+    // digest remains the derive-time evidence tie; this field is
+    // the EXTERNAL contract.)
+    let law_rows_text = {
+        let mut rows_out = String::from("[\n");
+        for r in &law_rows {
+        let prov = match &r.provenance {
+            Some((file, a, b)) => format!(
+                ", \"file\": {}, \"span\": [{}, {}]",
+                quote(file),
+                a,
+                b
+            ),
+            None => String::new(),
+        };
+        let diag_list = |ds: &[(
+            String,
+            Option<(String, u32, u32)>,
+        )]|
+         -> String {
+            let items: Vec<String> = ds
+                .iter()
+                .map(|(msg, at)| {
+                    let at = match at {
+                        Some((file, a, b)) => format!(
+                            ", \"file\": {}, \"span\": [{}, {}]",
+                            quote(file),
+                            a,
+                            b
+                        ),
+                        None => String::new(),
+                    };
+                    format!(
+                        "{{\"message\": {}{}}}",
+                        quote(&demangle_str(msg)),
+                        at
+                    )
+                })
+                .collect();
+            format!("[{}]", items.join(", "))
+        };
+        let certs = if r.certs.is_empty() {
+            String::new()
+        } else {
+            let cs: Vec<String> = r
+                .certs
+                .iter()
+                .map(|(i, form, res, diags)| {
+                    let ev = if diags.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            ", \"evidence\": {}",
+                            diag_list(diags)
+                        )
+                    };
+                    format!(
+                        "{{\"ordinal\": {}, \"form\": {}, \
+                         \"result\": {}{}}}",
+                        i,
+                        quote(&demangle_str(form)),
+                        quote(res.as_str()),
+                        ev
+                    )
+                })
+                .collect();
+            format!(", \"certs\": [{}]", cs.join(", "))
+        };
+        let evidence = if r.evidence.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ", \"evidence\": {}",
+                diag_list(&r.evidence)
+            )
+        };
+        rows_out.push_str(&format!(
+            "      {{\"ordinal\": {}, \"name\": {}, \"origin\": {}, \
+             \"family\": {}, \"verdict\": {}, \"law\": {}{}{}{}}},\n",
+            r.ordinal,
+            quote(&demangle_str(&r.name)),
+            quote(&r.origin),
+            quote(r.family.as_str()),
+            quote(r.verdict.as_str()),
+            // Verbatim: the payload carries RAW (canonical) and
+            // DISPLAY spellings side by side — demangling the
+            // whole object would collapse the raw identity.
+            r.law,
+            certs,
+            evidence,
+            prov
+        ));
+    }
+        trim_trailing_comma(&mut rows_out);
+        rows_out.push_str("    ]");
+        rows_out
+    };
+    let law_digest = {
+        let v: serde_json::Value =
+            serde_json::from_str(&law_rows_text)
+                .expect("the emitter's own law rows parse");
+        fnv1a64(
+            serde_json::to_string(&v)
+                .expect("canonical serialization")
+                .as_bytes(),
+        )
+    };
     out.push_str(",\n  \"law\": {\n");
     out.push_str(&format!(
         "    \"law_digest\": \"{:016x}\",\n",
-        law_table.semantic_digest()
+        law_digest
     ));
     out.push_str(&format!(
         "    \"inputs_digest\": \"{:016x}\",\n",
@@ -1431,97 +1543,9 @@ pub fn dump_topology_parts(
             entries.join(", ")
         ));
     }
-    out.push_str("    \"rows\": [\n");
-    for r in &law_rows {
-        let prov = match &r.provenance {
-            Some((file, a, b)) => format!(
-                ", \"file\": {}, \"span\": [{}, {}]",
-                quote(file),
-                a,
-                b
-            ),
-            None => String::new(),
-        };
-        let diag_list = |ds: &[(
-            String,
-            Option<(String, u32, u32)>,
-        )]|
-         -> String {
-            let items: Vec<String> = ds
-                .iter()
-                .map(|(msg, at)| {
-                    let at = match at {
-                        Some((file, a, b)) => format!(
-                            ", \"file\": {}, \"span\": [{}, {}]",
-                            quote(file),
-                            a,
-                            b
-                        ),
-                        None => String::new(),
-                    };
-                    format!(
-                        "{{\"message\": {}{}}}",
-                        quote(&demangle_str(msg)),
-                        at
-                    )
-                })
-                .collect();
-            format!("[{}]", items.join(", "))
-        };
-        let certs = if r.certs.is_empty() {
-            String::new()
-        } else {
-            let cs: Vec<String> = r
-                .certs
-                .iter()
-                .map(|(i, form, res, diags)| {
-                    let ev = if diags.is_empty() {
-                        String::new()
-                    } else {
-                        format!(
-                            ", \"evidence\": {}",
-                            diag_list(diags)
-                        )
-                    };
-                    format!(
-                        "{{\"ordinal\": {}, \"form\": {}, \
-                         \"result\": {}{}}}",
-                        i,
-                        quote(&demangle_str(form)),
-                        quote(res.as_str()),
-                        ev
-                    )
-                })
-                .collect();
-            format!(", \"certs\": [{}]", cs.join(", "))
-        };
-        let evidence = if r.evidence.is_empty() {
-            String::new()
-        } else {
-            format!(
-                ", \"evidence\": {}",
-                diag_list(&r.evidence)
-            )
-        };
-        out.push_str(&format!(
-            "      {{\"ordinal\": {}, \"name\": {}, \"origin\": {}, \
-             \"family\": {}, \"verdict\": {}, \"law\": {}{}{}{}}},\n",
-            r.ordinal,
-            quote(&demangle_str(&r.name)),
-            quote(&r.origin),
-            quote(r.family.as_str()),
-            quote(r.verdict.as_str()),
-            // Verbatim: the payload carries RAW (canonical) and
-            // DISPLAY spellings side by side — demangling the
-            // whole object would collapse the raw identity.
-            r.law,
-            certs,
-            evidence,
-            prov
-        ));
-    }
-    trim_trailing_comma(&mut out);
-    out.push_str("    ]\n  }");
+    out.push_str("    \"rows\": ");
+    out.push_str(&law_rows_text);
+    out.push_str("\n  }");
 
     // The model's positive completeness account, typed — what the
     // artifact can promise is exact, without reverse-engineering

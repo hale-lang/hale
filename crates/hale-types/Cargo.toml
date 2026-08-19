@@ -10,6 +10,11 @@ description = "Hale language: type checker (Phase 1 milestone 2)"
 hale-model = { path = "../hale-model" }
 hale-stdlib = { path = "../hale-stdlib" }
 hale-syntax = { path = "../hale-syntax" }
+# The artifact's `law_digest` is a canonical-JSON fingerprint over
+# the serialized law rows — canonicalized through serde_json's
+# BTreeMap Value (alphabetical keys, compact separators) so an
+# external consumer can recompute it from the parsed document.
+serde_json = "1"
 
 [dev-dependencies]
 hale-corpus = { path = "../hale-corpus" }

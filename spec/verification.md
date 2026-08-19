@@ -400,7 +400,32 @@ mutation orphans the entry, and a `causes:` row naming an
 undeclared or cyclic class cannot hold), refuses fleet-family
 rows outright (an application artifact does not own a fleet
 account — that is Change 7's), and recomputes `adequacy` from
-`capabilities`.
+`capabilities`. Static invalidity DOMINATES (round 7): an
+unresolved operand or an undeclared/cyclic effect class makes
+`invalid` the ONLY admissible verdict — a replayed engine result
+is never an alternative — and otherwise a certificate row's
+verdict is EXACTLY its recomputed evidence severity; a subject
+outside the legacy analyzable universe (`sorts.fns`) carries no
+certificates and only `invalid`. Machine-`invalid` rows may still
+PRESERVE the old engines' reports (`law.legacy`, keyed budget
+`lowered` rows) — bound by fingerprint as optional evidence,
+never demanded and never overriding the machine verdict, so the
+compiler's own cyclic-class artifacts admit. The catalogs are
+CLOSED: unique in both halves and in exact bijection with the
+`topics` / `groups` / `sorts.loci` sections (`fn_universe` covers
+`sorts.fns`; `law.subjects` is tied to the declared subjects and
+relation endpoints), so selector recomputation cannot be widened
+underneath a certificate. Both digests are RECOMPUTED at
+admission: `law_digest` is the canonical-JSON fingerprint over
+the law rows (serde-canonical rendering, fnv1a64 — a row edit
+under a stale digest refuses), and `inputs_digest` must equal the
+consuming binary's analysis-inputs digest (evidence produced
+under a different stdlib/analysis snapshot is refused — re-dump).
+Evidence is VALIDATED, not presence-checked: every diagnostic
+carries a non-empty message and paired provenance resolving to a
+known source, a migrated `violated` / `uncertified` row must
+retain its judgment's evidence (the countermodel / the residue),
+and a violated certificate must retain its diagnostics.
 Evidence locations are source-space-honest: a diagnostic whose
 span lives in a FOREIGN offset space (stdlib parse space, another
 seed) is never re-resolved against bundle sources — the

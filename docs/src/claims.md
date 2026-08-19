@@ -913,20 +913,23 @@ choose to accept it, but must never read "nothing to check" as
 
 The digest is only the integrity gate. Past it, every in-tree
 consumer — `hale topology graph` and `hale fleet check` alike —
-runs the same **law-account admission**: it decodes each law row's
-typed payload against a closed per-kind shape, resolves every
-reference against the artifact's canonical catalogs (exact
-`(name, display)` pairs — the raw machine join key is anchored,
-not merely consistent), recomputes bus-selector candidate sets
-from the catalogs with the compiler's own matching rule, requires
-the `lowered` evidence to project one-to-one from the typed
-account (each row keyed by law ordinal), requires the
-`law.legacy` report to re-render from the unmigrated rows' typed
-operands, joins `claims` rows to law rows one-to-one in both
-directions, refuses fleet-family rows outright, and recomputes
-the document verdict. A restamped artifact whose sections
-disagree with each other is refused even though its digest
-verifies.
+runs the same **law-account admission**: it recomputes both
+digests (`law_digest` from the canonical-JSON law rows;
+`inputs_digest` against the consuming binary's own
+analysis-inputs snapshot), decodes each law row's typed payload
+against a closed per-kind shape, resolves every reference against
+the artifact's canonical catalogs (exact `(name, display)` pairs,
+closed under exact bijection with the public sections), recomputes
+bus-selector candidate sets with the compiler's own matching
+rule, requires the `lowered` evidence and `law.legacy` report to
+project from the typed account, validates every diagnostic and
+requires non-holds verdicts to retain their judgment's evidence,
+lets static invalidity (unresolved operands, undeclared or cyclic
+classes) dominate every replayed engine result, joins `claims`
+rows to law rows one-to-one in both directions, refuses
+fleet-family rows outright, and recomputes the document verdict.
+A restamped artifact whose sections disagree with each other is
+refused even though its digest verifies.
 
 The artifact shape (schema `1.11`):
 

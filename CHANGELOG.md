@@ -81,6 +81,27 @@ never a fail-open `holds`), and the document `verdict` follows
 the machine. Artifact consumers reject unrecognized semantics by
 design; re-dump with the current compiler.
 
+Round 7: the admission is SELF-CONTAINED and invalidity-first.
+Static invalidity dominates: an unresolved operand or an
+undeclared/cyclic effect class admits only `invalid` - the old
+engine's replayed vacuous `holds` is never an alternative (the
+exact fail-open the semantics-2 bump exists to prevent); a
+certificate verdict is otherwise EXACTLY its recomputed evidence
+severity, and a subject outside the legacy analyzable universe
+carries no certificates. Machine-`invalid` rows still PRESERVE
+the old engines' reports (law.legacy, keyed budget lowered rows)
+as fingerprint-bound optional evidence - the compiler's own
+cyclic-class artifacts admit through their own admission. The
+catalogs are closed (unique, exact bijections with the public
+sections; law.subjects tied to the model) so selector
+recomputation cannot be widened underneath a certificate. Both
+digests recompute at admission: law_digest is a canonical-JSON
+fingerprint over the law rows (a row edit under a stale digest
+refuses) and inputs_digest must match the consuming binary's
+analysis snapshot. Evidence is validated, not presence-checked:
+migrated violated/uncertified rows must retain their countermodel
+/ residue, and violated certificates their diagnostics.
+
 Round 6: the law account is EVIDENCE-CLOSED on every edge. The
 `law` catalogs become canonical `(name, display)` pairs (loci,
 groups, topics + wire subject, the wire-subject universe, and

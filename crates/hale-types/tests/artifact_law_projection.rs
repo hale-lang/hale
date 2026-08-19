@@ -236,13 +236,33 @@ fn main() { App { }; }
         "law rows carry source provenance: {}",
         iso
     );
-    // the digests recompute against the canonical path.
-    let model = derive_application_model(&bundle);
-    let table = lower_claims(&bundle, &model);
+    // the digests recompute against the canonical path — round 7:
+    // `law_digest` is the EXTERNAL fingerprint, recomputable from
+    // the parsed document alone (canonical serde_json rendering of
+    // the rows, fnv1a64).
+    fn fnv1a64(bytes: &[u8]) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
     assert_eq!(
         v["law"]["law_digest"].as_str().unwrap(),
-        format!("{:016x}", table.semantic_digest())
+        format!(
+            "{:016x}",
+            fnv1a64(
+                serde_json::to_string(&v["law"]["rows"])
+                    .unwrap()
+                    .as_bytes()
+            )
+        ),
+        "law_digest recomputes from the parsed rows"
     );
+    let model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let _ = &table;
     assert_eq!(
         v["law"]["inputs_digest"].as_str().unwrap(),
         format!(

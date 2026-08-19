@@ -230,6 +230,11 @@ pub struct RefContext {
     /// The wire-subject pattern universe.
     pub subjects: Vec<String>,
     pub fn_universe: Vec<(String, String)>,
+    /// The legacy analyzable universe (`sorts.fns`) — the old
+    /// engines never saw subjects outside it, so a certificate row
+    /// on such a subject carries NO evidence and only `invalid` is
+    /// truthful.
+    pub sorts_fns: Vec<String>,
     pub loci: Vec<(String, String)>,
     pub phases: Vec<String>,
     pub seeds: Vec<String>,
@@ -365,6 +370,12 @@ impl RefContext {
                 &v["law"]["fn_universe"],
                 "law.fn_universe",
             )?,
+            sorts_fns: v["sorts"]["fns"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                .collect(),
             loci: pairs(&v["law"]["loci"], "law.loci")?,
             phases,
             seeds: v["seeds"]
@@ -379,41 +390,192 @@ impl RefContext {
                 std::collections::BTreeMap::new(),
             )),
         };
-        // Cross-ties: the canonical catalogs must AGREE with the
-        // sections other consumers join on — a catalog is not a
-        // side channel an attacker can extend independently.
-        for t in v["topics"].as_array().into_iter().flatten() {
-            let (name, subject) = (
-                t["name"].as_str().unwrap_or(""),
-                t["subject"].as_str().unwrap_or(""),
-            );
+        // Round 7: the catalogs are CLOSED, not extensible. Each
+        // must be unique in both halves and stand in exact
+        // bijection with the section other consumers join on —
+        // otherwise selector recomputation is circular (a ghost
+        // topic appended to the catalog widens the law universe
+        // underneath the certificate).
+        let unique_pairs = |pairs: &[(String, String)],
+                            what: &str|
+         -> Result<(), String> {
+            let mut raws = BTreeSet::new();
+            let mut disps = BTreeSet::new();
+            for (n, d) in pairs {
+                if !raws.insert(n) {
+                    return Err(format!(
+                        "{}: duplicate raw identity `{}`",
+                        what, n
+                    ));
+                }
+                if !disps.insert(d) {
+                    return Err(format!(
+                        "{}: duplicate display `{}`",
+                        what, d
+                    ));
+                }
+            }
+            Ok(())
+        };
+        unique_pairs(&cx.fn_universe, "law.fn_universe")?;
+        unique_pairs(&cx.loci, "law.loci")?;
+        unique_pairs(&cx.groups, "law.groups")?;
+        {
+            let mut raws = BTreeSet::new();
+            let mut disps = BTreeSet::new();
+            for (n, d, _) in &cx.topics {
+                if !raws.insert(n) || !disps.insert(d) {
+                    return Err(format!(
+                        "law.topics: duplicate identity `{}`",
+                        d
+                    ));
+                }
+            }
+            let mut names = BTreeSet::new();
+            for (n, _, _) in &cx.classes {
+                if !names.insert(n) {
+                    return Err(format!(
+                        "law.effect_classes: duplicate class `{}`",
+                        n
+                    ));
+                }
+            }
+            let mut pats = BTreeSet::new();
+            for p2 in &cx.subjects {
+                if !pats.insert(p2) {
+                    return Err(format!(
+                        "law.subjects: duplicate pattern `{}`",
+                        p2
+                    ));
+                }
+            }
+        }
+        // topics ↔ topics section: exact bijection on
+        // (display, subject).
+        let section_topics: Vec<(&str, &str)> = v["topics"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|t| {
+                (
+                    t["name"].as_str().unwrap_or(""),
+                    t["subject"].as_str().unwrap_or(""),
+                )
+            })
+            .collect();
+        if section_topics.len() != cx.topics.len() {
+            return Err(format!(
+                "law.topics carries {} rows, the topics section \
+                 {} — the catalogs are closed",
+                cx.topics.len(),
+                section_topics.len()
+            ));
+        }
+        for (name, subject) in &section_topics {
             if !cx
                 .topics
                 .iter()
                 .any(|(_, d, su)| d == name && su == subject)
             {
                 return Err(format!(
-                    "topics section row `{}` has no canonical                      law.topics pair",
+                    "topics section row `{}` has no canonical \
+                     law.topics pair",
                     name
                 ));
             }
         }
-        for (k, _) in v["groups"].as_object().into_iter().flatten()
-        {
-            if !cx.groups.iter().any(|(_, d)| d == k) {
+        // groups ↔ groups section: exact bijection on display.
+        let group_keys: Vec<&String> = v["groups"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(k, _)| k)
+            .collect();
+        if group_keys.len() != cx.groups.len() {
+            return Err(format!(
+                "law.groups carries {} rows, the groups section \
+                 {} — the catalogs are closed",
+                cx.groups.len(),
+                group_keys.len()
+            ));
+        }
+        for k in &group_keys {
+            if !cx.groups.iter().any(|(_, d)| &d == k) {
                 return Err(format!(
-                    "groups section row `{}` has no canonical                      law.groups pair",
+                    "groups section row `{}` has no canonical \
+                     law.groups pair",
                     k
                 ));
             }
         }
-        for l in v["sorts"]["loci"].as_array().into_iter().flatten()
-        {
-            let name = l.as_str().unwrap_or("");
+        // loci ↔ sorts.loci: exact bijection on display.
+        let loci_sort: Vec<&str> = v["sorts"]["loci"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|x| x.as_str())
+            .collect();
+        if loci_sort.len() != cx.loci.len() {
+            return Err(format!(
+                "law.loci carries {} rows, sorts.loci {} — the \
+                 catalogs are closed",
+                cx.loci.len(),
+                loci_sort.len()
+            ));
+        }
+        for name in &loci_sort {
             if !cx.loci.iter().any(|(_, d)| d == name) {
                 return Err(format!(
-                    "sorts.loci row `{}` has no canonical                      law.loci pair",
+                    "sorts.loci row `{}` has no canonical \
+                     law.loci pair",
                     name
+                ));
+            }
+        }
+        // fn_universe is deliberately WIDER than sorts.fns, but
+        // must still cover it.
+        for f in &cx.sorts_fns {
+            if !cx.fn_universe.iter().any(|(_, d)| d == f) {
+                return Err(format!(
+                    "sorts.fns row `{}` is missing from \
+                     law.fn_universe",
+                    f
+                ));
+            }
+        }
+        // The subject universe is tied to the model: every entry
+        // must be a declared topic's wire subject or an endpoint
+        // subject the relations carry, and every declared subject
+        // must be present.
+        let mut known_subjects: BTreeSet<&str> = cx
+            .topics
+            .iter()
+            .map(|(_, _, su)| su.as_str())
+            .collect();
+        for key in ["publishes", "subscribes"] {
+            for r in
+                v["relations"][key].as_array().into_iter().flatten()
+            {
+                if let Some(su) = r["subject"].as_str() {
+                    known_subjects.insert(su);
+                }
+            }
+        }
+        for p2 in &cx.subjects {
+            if !known_subjects.contains(p2.as_str()) {
+                return Err(format!(
+                    "law.subjects entry `{}` names no subject the \
+                     model carries",
+                    p2
+                ));
+            }
+        }
+        for (_, _, su) in &cx.topics {
+            if !cx.subjects.iter().any(|p2| p2 == su) {
+                return Err(format!(
+                    "declared subject `{}` is missing from \
+                     law.subjects",
+                    su
                 ));
             }
         }
@@ -796,6 +958,48 @@ pub fn has_unresolved(law: &Law) -> bool {
             r(at)
                 || matches!(dim, Dim::UserClass(u) if c(u))
         }
+    }
+}
+
+/// Does the decoded law name a statically INVALID effect class —
+/// an undeclared or cyclic user class, per the artifact's own
+/// class catalog? Round 7: static invalidity DOMINATES every
+/// replayed engine result; a law over an invalid class can only
+/// truthfully judge `invalid`.
+pub fn law_class_invalid(
+    law: &Law,
+    classes: &[(String, bool, bool)],
+) -> bool {
+    let bad = |c: &ClassRef| -> bool {
+        !c.builtin
+            && classes
+                .iter()
+                .find(|(n, _, _)| *n == c.class)
+                .map_or(true, |(_, d, cy)| !d || *cy)
+    };
+    let set_bad = |s: &SetRef| match s {
+        SetRef::Group(_) => false,
+        SetRef::Effects(c) => bad(c),
+    };
+    match law {
+        Law::ForbidReaches { src, dst, .. } => {
+            set_bad(src) || set_bad(dst)
+        }
+        Law::Bound { class, .. }
+        | Law::RequireAttributed { class } => bad(class),
+        Law::EffectForbid { classes: cs, .. }
+        | Law::EffectOnly { classes: cs, .. }
+        | Law::EffectCauses { classes: cs, .. } => {
+            cs.iter().any(&bad)
+        }
+        Law::PhaseEffects { phases, .. } => phases
+            .iter()
+            .flat_map(|(_, cs)| cs.iter())
+            .any(&bad),
+        Law::QuantBudget { dim, .. } => {
+            matches!(dim, Dim::UserClass(c) if bad(c))
+        }
+        _ => false,
     }
 }
 
@@ -1433,6 +1637,52 @@ pub fn validate_law_account(
             label
         ));
     }
+    // Round 7: the digests are RECOMPUTED, never shape-checked.
+    // `law_digest` is the canonical-JSON fingerprint over the law
+    // rows (serde_json's BTreeMap rendering, fnv1a64) — editing a
+    // row while keeping a stale digest refuses. `inputs_digest`
+    // must match THIS binary's analysis-inputs digest: evidence
+    // produced under a different stdlib/analysis snapshot is
+    // refused, not silently trusted (re-dump with the current
+    // compiler).
+    fn fnv1a64(bytes: &[u8]) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+    let canon = serde_json::to_string(&v["law"]["rows"])
+        .map_err(|e| format!("{}: {}", label, e))?;
+    let expect_law_digest =
+        format!("{:016x}", fnv1a64(canon.as_bytes()));
+    if v["law"]["law_digest"].as_str()
+        != Some(expect_law_digest.as_str())
+    {
+        return Err(format!(
+            "{}: malformed artifact — law_digest does not \
+             recompute from the law rows",
+            label
+        ));
+    }
+    let expect_inputs = format!(
+        "{:016x}",
+        hale_types::evidence::analysis_inputs_digest()
+    );
+    if v["law"]["inputs_digest"].as_str()
+        != Some(expect_inputs.as_str())
+    {
+        return Err(format!(
+            "{}: this artifact's evidence was produced under a \
+             different analysis-inputs snapshot \
+             (inputs_digest {} != current {}); re-dump with the \
+             current compiler",
+            label,
+            v["law"]["inputs_digest"].as_str().unwrap_or("?"),
+            expect_inputs
+        ));
+    }
     let cx = RefContext::from_artifact(v)
         .map_err(|e| format!("{}: {}", label, e))?;
     let origin_ok = |origin: &str, family: &str| -> bool {
@@ -1446,6 +1696,64 @@ pub fn validate_law_account(
             }
         }
     };
+    // Round 7: evidence objects are VALIDATED, not
+    // presence-checked — every diagnostic must carry a non-empty
+    // message, paired file/span provenance, and a file the
+    // artifact's sources section knows.
+    let source_paths: BTreeSet<String> = v["sources"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| {
+            s["path"].as_str().map(|x| x.to_string())
+        })
+        .collect();
+    let check_evidence = |ev: &Value,
+                          what: &str|
+     -> Result<usize, String> {
+        let Some(items) = ev.as_array() else {
+            return Err(format!("{}: must be an array", what));
+        };
+        for (k, d) in items.iter().enumerate() {
+            only_keys(
+                d,
+                what,
+                &["message"],
+                &["file", "span"],
+            )
+            .map_err(|e| format!("{}[{}]: {}", what, k, e))?;
+            if !d["message"]
+                .as_str()
+                .is_some_and(|m| !m.is_empty())
+            {
+                return Err(format!(
+                    "{}[{}]: message must be a non-empty string",
+                    what, k
+                ));
+            }
+            if d.get("file").is_some() != d.get("span").is_some()
+            {
+                return Err(format!(
+                    "{}[{}]: file and span come together",
+                    what, k
+                ));
+            }
+            if let Some(f) = d.get("file") {
+                if !f
+                    .as_str()
+                    .is_some_and(|p2| source_paths.contains(p2))
+                    || !span_ok(&d["span"])
+                {
+                    return Err(format!(
+                        "{}[{}]: location does not resolve to a \
+                         known source",
+                        what, k
+                    ));
+                }
+            }
+        }
+        Ok(items.len())
+    };
     let mut prev_ordinal: Option<u64> = None;
     let mut law_all_pass = true;
     let mut claims_tier_ordinals: Vec<u64> = Vec::new();
@@ -1453,16 +1761,22 @@ pub fn validate_law_account(
     // typed law account generates — keyed (law ordinal, cert
     // ordinal). The lowered section must project one-to-one from
     // it: an orphan on either side refuses.
+    // Values: (form, result, subject, required). Round 7: a row
+    // whose machine verdict is `invalid` may still carry the OLD
+    // engine's compatibility evidence (the cyclic-class artifacts
+    // preserve legacy holds under machine invalid) — such entries
+    // are OPTIONAL: bound by fingerprint if present, never
+    // demanded, and never allowed to override the machine verdict.
     let mut expected_lowered: std::collections::BTreeMap<
         (u64, Option<u64>),
-        (String, String, String),
+        (String, String, String, bool),
     > = std::collections::BTreeMap::new();
     // …and the exact set of `law.legacy` report entries the
     // unmigrated non-budget rows require: ordinal -> (fingerprint,
     // verdict).
     let mut expected_legacy: std::collections::BTreeMap<
         u64,
-        (String, String),
+        (String, String, bool),
     > = std::collections::BTreeMap::new();
     for (i, row) in v["law"]["rows"]
         .as_array()
@@ -1538,15 +1852,19 @@ pub fn validate_law_account(
             ));
         }
         let verdict = row["verdict"].as_str().unwrap_or("?");
-        // Resolution ↔ verdict binding: a passing row cannot
-        // carry an unresolved operand (the judgment refuses such
-        // laws), so flipping `resolved` to dodge existence checks
-        // flips this contract instead.
-        if has_unresolved(&decoded) && verdict == "holds" {
+        // Round 7: static invalidity DOMINATES. An unresolved
+        // operand or an undeclared/cyclic effect class makes
+        // `invalid` the ONLY truthful verdict — a replayed engine
+        // result is not an alternative, and `violated` /
+        // `uncertified` cannot dress up a malformed law either.
+        let static_invalid = has_unresolved(&decoded)
+            || law_class_invalid(&decoded, &cx.classes);
+        if static_invalid && verdict != "invalid" {
             return Err(format!(
-                "{}: malformed artifact — law.rows[{}] holds over \
-                 an unresolved operand",
-                label, i
+                "{}: malformed artifact — law.rows[{}] carries an \
+                 unresolved operand or an invalid effect class; \
+                 only `invalid` is truthful (got `{}`)",
+                label, i, verdict
             ));
         }
         // A row whose law generates no certificates must not
@@ -1562,12 +1880,46 @@ pub fn validate_law_account(
         }
         // Certificate rows: evidence binding + verdict recompute.
         if let Some(expected) = expected_cert_forms(&decoded) {
+            // A subject outside the legacy analyzable universe
+            // (`sorts.fns` — e.g. a module-scoped fn) has NO
+            // engine report: the row must carry no certificates
+            // and only `invalid` is truthful. Everything inside
+            // the universe binds its full evidence.
+            let analyzable = match &decoded {
+                Law::PhaseEffects { .. } => true,
+                Law::EffectForbid { at, .. }
+                | Law::EffectOnly { at, .. }
+                | Law::EffectPublishSet { at, .. }
+                | Law::NoPanic { at } => {
+                    cx.sorts_fns.iter().any(|f| *f == at.display)
+                }
+                _ => true,
+            };
             let certs: Vec<&Value> = row["certs"]
                 .as_array()
                 .into_iter()
                 .flatten()
                 .collect();
-            if verdict != "invalid" || !certs.is_empty() {
+            if !analyzable {
+                if !certs.is_empty() {
+                    return Err(format!(
+                        "{}: malformed artifact — law.rows[{}] \
+                         carries certificates no engine produced \
+                         (subject outside the analyzable \
+                         universe)",
+                        label, i
+                    ));
+                }
+                if verdict != "invalid" {
+                    return Err(format!(
+                        "{}: malformed artifact — law.rows[{}] \
+                         has no engine evidence (subject outside \
+                         the analyzable universe); only `invalid` \
+                         is truthful (got `{}`)",
+                        label, i, verdict
+                    ));
+                }
+            } else {
                 if certs.len() != expected.len() {
                     return Err(format!(
                         "{}: malformed artifact — law.rows[{}] \
@@ -1583,6 +1935,40 @@ pub fn validate_law_account(
                 for (k, (cert, form)) in
                     certs.iter().zip(expected.iter()).enumerate()
                 {
+                    only_keys(
+                        cert,
+                        "certificate",
+                        &["ordinal", "form", "result"],
+                        &["evidence"],
+                    )
+                    .map_err(|e| {
+                        format!(
+                            "{}: law.rows[{}] certs[{}]: {}",
+                            label, i, k, e
+                        )
+                    })?;
+                    let cert_ev = match cert.get("evidence") {
+                        Some(ev) => check_evidence(
+                            ev,
+                            "certificate evidence",
+                        )
+                        .map_err(|e| {
+                            format!(
+                                "{}: law.rows[{}] certs[{}]: {}",
+                                label, i, k, e
+                            )
+                        })?,
+                        None => 0,
+                    };
+                    if cert["result"] == "violated" && cert_ev == 0
+                    {
+                        return Err(format!(
+                            "{}: malformed artifact — \
+                             law.rows[{}] certs[{}] is violated \
+                             but retains no diagnostics",
+                            label, i, k
+                        ));
+                    }
                     if cert["ordinal"].as_u64()
                         != Some(k as u64)
                         || cert["form"].as_str() != Some(form)
@@ -1615,57 +2001,41 @@ pub fn validate_law_account(
                             r.to_string(),
                             expected_subject(&decoded)
                                 .unwrap_or_default(),
+                            true,
                         ),
                     );
                 }
-                // The aggregate verdict is the max certificate
-                // severity — or `invalid` when justified by the
-                // class catalog (undeclared / cyclic user class).
-                let class_invalid = match &decoded {
-                    Law::EffectForbid { classes, .. }
-                    | Law::EffectOnly { classes, .. }
-                    | Law::EffectCauses { classes, .. } => {
-                        classes.iter().any(|c| {
-                            !c.builtin
-                                && cx
-                                    .classes
-                                    .iter()
-                                    .find(|(n, _, _)| {
-                                        *n == c.class
-                                    })
-                                    .map_or(true, |(_, d, cy)| {
-                                        !d || *cy
-                                    })
-                        })
-                    }
-                    Law::PhaseEffects { phases, .. } => phases
-                        .iter()
-                        .flat_map(|(_, cs)| cs.iter())
-                        .any(|c| {
-                            !c.builtin
-                                && cx
-                                    .classes
-                                    .iter()
-                                    .find(|(n, _, _)| {
-                                        *n == c.class
-                                    })
-                                    .map_or(true, |(_, d, cy)| {
-                                        !d || *cy
-                                    })
-                        }),
-                    _ => false,
+                // Round 7: static invalidity DOMINATES the
+                // replayed engine result — when the class catalog
+                // says a named class is undeclared or cyclic, the
+                // old engine's vacuous `holds` is not an
+                // alternative; otherwise the verdict is EXACTLY
+                // the recomputed evidence result.
+                let expect = if static_invalid {
+                    "invalid"
+                } else {
+                    recomputed
                 };
-                let verdict_ok = verdict == recomputed
-                    || (verdict == "invalid" && class_invalid);
-                if !verdict_ok {
+                if verdict != expect {
                     return Err(format!(
                         "{}: malformed artifact — law.rows[{}] \
                          verdict `{}` disagrees with its bound \
-                         certificate evidence (recomputed: {})",
-                        label, i, verdict, recomputed
+                         certificate evidence (expected `{}`)",
+                        label, i, verdict, expect
                     ));
                 }
             }
+        } else if !matches!(fam, "certificate")
+            && verdict == "invalid"
+            && !static_invalid
+        {
+            // A non-certificate row may only judge `invalid` for
+            // a statically decodable reason.
+            return Err(format!(
+                "{}: malformed artifact — law.rows[{}] asserts \
+                 `invalid` with no decodable invalidity",
+                label, i
+            ));
         }
         // Budget rows: bound to their compatibility `lowered`
         // evidence — an operand mutation (per_call 4 → 0) cannot
@@ -1681,6 +2051,23 @@ pub fn validate_law_account(
                         verdict.to_string(),
                         expected_subject(&decoded)
                             .unwrap_or_default(),
+                        true,
+                    ),
+                );
+            } else if verdict == "invalid" {
+                // The old engine may still have produced a report
+                // (a cycle-resolved-empty class counts zero and
+                // holds) — preserved as OPTIONAL evidence, bound
+                // by fingerprint, never overriding the machine
+                // verdict.
+                expected_lowered.insert(
+                    (row["ordinal"].as_u64().unwrap_or(0), None),
+                    (
+                        form,
+                        String::new(),
+                        expected_subject(&decoded)
+                            .unwrap_or_default(),
+                        false,
                     ),
                 );
             }
@@ -1690,32 +2077,43 @@ pub fn validate_law_account(
         // exact law by a `law.legacy` report entry whose
         // fingerprint re-renders from the typed operands.
         if let Some(form) = expected_legacy_form(&decoded) {
-            // A causes row is held to the class-validity account:
-            // an undeclared or cyclic class cannot certify.
-            if let Law::EffectCauses { classes, .. } = &decoded {
-                let class_invalid = classes.iter().any(|c| {
-                    !c.builtin
-                        && cx
-                            .classes
-                            .iter()
-                            .find(|(n, _, _)| *n == c.class)
-                            .map_or(true, |(_, d, cy)| !d || *cy)
-                });
-                if class_invalid && verdict == "holds" {
-                    return Err(format!(
-                        "{}: malformed artifact — law.rows[{}] \
-                         holds over an undeclared or cyclic \
-                         effect class",
-                        label, i
-                    ));
-                }
-            }
+            // (Class validity is enforced above: static_invalid
+            // forces the verdict to exactly `invalid`.)
             if verdict == "holds" || verdict == "violated" {
                 expected_legacy.insert(
                     row["ordinal"].as_u64().unwrap_or(0),
-                    (form, verdict.to_string()),
+                    (form, verdict.to_string(), true),
+                );
+            } else if verdict == "invalid" {
+                expected_legacy.insert(
+                    row["ordinal"].as_u64().unwrap_or(0),
+                    (form, String::new(), false),
                 );
             }
+        }
+        // Row-level evidence: structurally valid always; and a
+        // migrated non-holds verdict must RETAIN the judgment's
+        // evidence — `violated` means "here is the countermodel",
+        // `uncertified` means "here is the residue", never bare
+        // labels.
+        let row_ev = match row.get("evidence") {
+            Some(ev) => check_evidence(ev, "row evidence")
+                .map_err(|e| {
+                    format!("{}: law.rows[{}]: {}", label, i, e)
+                })?,
+            None => 0,
+        };
+        if matches!(
+            fam,
+            "reachability" | "boundary" | "endpoint" | "bound"
+        ) && matches!(verdict, "violated" | "uncertified")
+            && row_ev == 0
+        {
+            return Err(format!(
+                "{}: malformed artifact — law.rows[{}] is `{}` \
+                 but retains none of its judgment's evidence",
+                label, i, verdict
+            ));
         }
         if matches!(
             fam,
@@ -1768,7 +2166,7 @@ pub fn validate_law_account(
                 ));
             };
             let cert = r["cert"].as_u64();
-            let Some((form, result, subject)) =
+            let Some((form, result, subject, required)) =
                 unmet.remove(&(ord, cert))
             else {
                 return Err(format!(
@@ -1779,20 +2177,34 @@ pub fn validate_law_account(
                     r["form"].as_str().unwrap_or("?")
                 ));
             };
+            // Required entries bind result exactly; OPTIONAL
+            // entries (machine-invalid rows preserving the old
+            // engine's report) bind the fingerprint and subject,
+            // with the old result constrained to the old engine's
+            // vocabulary.
+            let result_ok = if required {
+                r["result"].as_str() == Some(&result)
+            } else {
+                matches!(
+                    r["result"].as_str(),
+                    Some("holds") | Some("violated")
+                )
+            };
             if r["form"].as_str() != Some(&form)
-                || r["result"].as_str() != Some(&result)
+                || !result_ok
                 || r["subject"].as_str() != Some(&subject)
             {
                 return Err(format!(
                     "{}: malformed artifact — lowered[{}] does \
-                     not match its typed law (expected `{}` = \
-                     `{}` on `{}`)",
-                    label, i, form, result, subject
+                     not match its typed law (expected `{}` on \
+                     `{}`)",
+                    label, i, form, subject
                 ));
             }
         }
-        if let Some(((ord, cert), (form, _, _))) =
-            unmet.into_iter().next()
+        if let Some(((ord, cert), (form, _, _, _))) = unmet
+            .into_iter()
+            .find(|(_, (_, _, _, required))| *required)
         {
             return Err(format!(
                 "{}: malformed artifact — law ordinal {}{} has no \
@@ -1837,25 +2249,36 @@ pub fn validate_law_account(
                     label, i
                 ));
             };
-            let Some((form, result)) = unmet.remove(&ord) else {
+            let Some((form, result, required)) =
+                unmet.remove(&ord)
+            else {
                 return Err(format!(
                     "{}: malformed artifact — law.legacy[{}] is \
                      not claimed by any unmigrated law row",
                     label, i
                 ));
             };
-            if e["form"].as_str() != Some(&form)
-                || e["result"].as_str() != Some(&result)
-            {
+            let result_ok = if required {
+                e["result"].as_str() == Some(&result)
+            } else {
+                matches!(
+                    e["result"].as_str(),
+                    Some("holds") | Some("violated")
+                )
+            };
+            if e["form"].as_str() != Some(&form) || !result_ok {
                 return Err(format!(
                     "{}: malformed artifact — law.legacy[{}] does \
                      not re-render from the typed law at ordinal \
-                     {} (expected `{}` = `{}`)",
-                    label, i, ord, form, result
+                     {} (expected `{}`)",
+                    label, i, ord, form
                 ));
             }
         }
-        if let Some((ord, (form, _))) = unmet.into_iter().next() {
+        if let Some((ord, (form, _, _))) = unmet
+            .into_iter()
+            .find(|(_, (_, _, required))| *required)
+        {
             return Err(format!(
                 "{}: malformed artifact — law ordinal {} imports \
                  a legacy verdict with no report entry matching \

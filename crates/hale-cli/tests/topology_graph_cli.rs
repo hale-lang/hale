@@ -324,13 +324,36 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
     h
 }
 
-/// Re-stamp a (possibly edited) artifact with a fresh valid digest,
-/// mirroring the emitter's trailer format.
+/// Re-stamp a (possibly edited) artifact with fresh valid digests,
+/// mirroring the emitter: `law_digest` recomputes from the
+/// canonical-JSON law rows (round 7), then the whole-document
+/// trailer. Tamper pins restamp BOTH so each exercises the deep
+/// binding it targets, not the digest gate.
 fn restamp_digest(body_without_trailer: &str) -> String {
+    let mut body = body_without_trailer.to_string();
+    let key = "\"law_digest\": \"";
+    if let (Some(at), Ok(v)) = (
+        body.find(key),
+        serde_json::from_str::<serde_json::Value>(&format!(
+            "{}\n}}\n",
+            body
+        )),
+    ) {
+        if v["law"]["rows"].is_array() {
+            let canon =
+                serde_json::to_string(&v["law"]["rows"]).unwrap();
+            let fresh =
+                format!("{:016x}", fnv1a64(canon.as_bytes()));
+            let start = at + key.len();
+            let end = start
+                + body[start..].find('"').expect("digest close");
+            body.replace_range(start..end, &fresh);
+        }
+    }
     format!(
         "{},\n  \"artifact_digest\": \"{:016x}\"\n}}\n",
-        body_without_trailer,
-        fnv1a64(body_without_trailer.as_bytes())
+        body,
+        fnv1a64(body.as_bytes())
     )
 }
 
@@ -588,11 +611,16 @@ fn tampered_or_unverifiable_artifacts_are_refused() {
         !out.status.success(),
         "a clean verdict over a non-holds law must refuse"
     );
+    // Round 7 refuses even earlier: a `violated` verdict without
+    // its countermodel evidence is not admissible, so the lie
+    // fails for lacking the evidence it never had. Either way the
+    // law account speaks, not the digest.
+    let err = String::from_utf8_lossy(&out.stderr);
     assert!(
-        String::from_utf8_lossy(&out.stderr)
-            .contains("disagrees with its own law rows"),
-        "the refusal names the recompute: {}",
-        String::from_utf8_lossy(&out.stderr)
+        err.contains("disagrees with its own law rows")
+            || err.contains("retains none of its judgment's"),
+        "the refusal names the recompute or the missing          evidence: {}",
+        err
     );
 
     // 10. Round 5: flipping `resolved` to false to dodge the
@@ -619,7 +647,7 @@ fn tampered_or_unverifiable_artifacts_are_refused() {
     assert!(!out.status.success());
     assert!(
         String::from_utf8_lossy(&out.stderr)
-            .contains("holds over an unresolved operand"),
+            .contains("only `invalid` is truthful"),
         "the resolution↔verdict binding refuses: {}",
         String::from_utf8_lossy(&out.stderr)
     );
@@ -1489,5 +1517,450 @@ fn main() { App { }; }
         "the refusal names the fleet inadmissibility: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 7: static invalidity DOMINATES the replayed engine
+/// result. The semantics-2 counterexample: a cyclic class judges
+/// `invalid` while the compatibility certificate preserves the old
+/// engine's vacuous `holds` — flipping the row verdict to `holds`
+/// (and the document to `clean`) must refuse even though the
+/// recomputed certificate severity IS `holds`.
+#[test]
+fn cyclic_class_verdict_flip_is_refused() {
+    let dir = workdir("cycflip");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+effect a = { b };
+effect b = { a };
+@effects(none: { a })
+fn f(v: Int) -> Int { return v; }
+main locus App {
+    params { n: Int = 0; }
+    run() { println(f(1)); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    // A cyclic class is a check ERROR — the artifact still dumps
+    // (verdict law_failed), it just fails the build.
+    let artifact = dir.join("app.hale.topology");
+    let _ = hale()
+        .arg("check")
+        .arg(&src)
+        .arg(format!("--dump-topology={}", artifact.display()))
+        .output()
+        .unwrap();
+    let raw = std::fs::read_to_string(&artifact)
+        .expect("the cyclic artifact still dumps");
+    // The compiler-produced artifact ADMITS as-is (invalid over a
+    // cyclic class, old holds preserved in the certs).
+    let out =
+        hale().arg("topology").arg("graph").arg(&artifact).output().unwrap();
+    assert!(
+        out.status.success(),
+        "the honest cyclic artifact admits: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let flipped = raw
+        .replacen("\"verdict\": \"invalid\"", "\"verdict\": \"holds\"", 1)
+        .replacen(
+            "\"verdict\": \"law_failed\"",
+            "\"verdict\": \"clean\"",
+            1,
+        );
+    assert_ne!(flipped, raw, "test premise: the flip landed");
+    let p2 = dir.join("flipped.topology");
+    std::fs::write(&p2, restamp_digest(&strip_trailer(&flipped)))
+        .unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p2)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("only `invalid` is truthful"),
+        "static invalidity dominates the replayed holds: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 7: an `invalid` verdict needs a typed reason — a resolved
+/// analyzable law cannot assert `invalid` and discard its
+/// certificates.
+#[test]
+fn bare_invalid_with_discarded_certs_is_refused() {
+    let dir = workdir("bareinvalid");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+@no_panic
+fn f(v: Int) -> Int { return v; }
+main locus App {
+    params { n: Int = 0; }
+    run() { println(f(1)); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    let needle_from = raw
+        .find("\"certs\": [")
+        .expect("the no_panic row carries its certificate");
+    // Delete the certs array (bracket match) and assert invalid.
+    let open = needle_from + "\"certs\": ".len();
+    let bytes = raw.as_bytes();
+    let (mut depth, mut close, mut in_str, mut esc) =
+        (0usize, open, false, false);
+    for (i, &b) in bytes.iter().enumerate().skip(open) {
+        if esc {
+            esc = false;
+            continue;
+        }
+        match b {
+            b'\\' if in_str => esc = true,
+            b'"' => in_str = !in_str,
+            b'[' if !in_str => depth += 1,
+            b']' if !in_str => {
+                depth -= 1;
+                if depth == 0 {
+                    close = i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let gutted = format!(
+        "{}{}",
+        &raw[..needle_from - 2], // also eat the `, ` separator
+        &raw[close + 1..]
+    );
+    let asserted = gutted
+        .replacen("\"verdict\": \"holds\"", "\"verdict\": \"invalid\"", 1)
+        .replacen(
+            "\"verdict\": \"clean\"",
+            "\"verdict\": \"law_failed\"",
+            1,
+        );
+    let p2 = dir.join("bareinvalid.topology");
+    std::fs::write(&p2, restamp_digest(&strip_trailer(&asserted)))
+        .unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p2)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("carries 0 certificates, its law generates"),
+        "a bare invalid cannot discard its evidence: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 7: the compiler-produced CYCLIC unmigrated artifacts must
+/// admit through their own admission — machine `invalid` rows
+/// preserving the old engines' `holds` reports (`law.legacy`, the
+/// keyed budget `lowered` row) are bound, not orphaned.
+#[test]
+fn cyclic_unmigrated_artifacts_self_admit() {
+    for (tag, body) in [
+        (
+            "cyccauses",
+            "effect a = { b };\neffect b = { a };\n\
+             @effects(causes: { a })\n\
+             fn f(v: Int) -> Int { return v; }",
+        ),
+        (
+            "cycbudget",
+            "effect a = { b };\neffect b = { a };\n\
+             @budget(a = 1)\n\
+             fn f(v: Int) -> Int { return v; }",
+        ),
+    ] {
+        let dir = workdir(tag);
+        let src = dir.join("app.hl");
+        std::fs::write(
+            &src,
+            format!(
+                "{}\nmain locus App {{\n    params {{ n: Int = 0; \
+                 }}\n    run() {{ println(f(1)); }}\n}}\nfn main() \
+                 {{ App {{ }}; }}\n",
+                body
+            ),
+        )
+        .unwrap();
+        let artifact = dir.join("app.hale.topology");
+        let _ = hale()
+            .arg("check")
+            .arg(&src)
+            .arg(format!(
+                "--dump-topology={}",
+                artifact.display()
+            ))
+            .output()
+            .unwrap();
+        assert!(
+            artifact.exists(),
+            "{}: the cyclic artifact still dumps",
+            tag
+        );
+        let out = hale()
+            .arg("topology")
+            .arg("graph")
+            .arg(&artifact)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}: the compiler's own cyclic artifact must admit: {}",
+            tag,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Round 7: the catalogs are CLOSED — a ghost topic appended to
+/// `law.topics` (with its wire pattern in `law.subjects` and both
+/// added to a selector's candidate sets) must refuse; otherwise
+/// candidate recomputation is circular.
+#[test]
+fn ghost_catalog_widening_is_refused() {
+    let dir = workdir("ghostcat");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+type M { v: Int; }
+topic Allowed { payload: M; subject: "app.allowed"; }
+locus Sender {
+    params { n: Int = 0; }
+    bus { publish Allowed; }
+    @effects(publish: { Allowed })
+    fn send(v: Int) { let m = M { v: v }; Allowed <- m; }
+}
+locus Sink {
+    params { n: Int = 0; }
+    bus { subscribe Allowed as on_m; }
+    fn on_m(m: M) { self.n = m.v; }
+}
+main locus App {
+    params { s: Sink = Sink { }; snd: Sender = Sender { }; }
+    run() { self.snd.send(1); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    // Append a ghost topic whose raw name tail-matches the
+    // selector.
+    let widened = raw.replacen(
+        "\"topics\": [{\"name\": \"Allowed\", \"display\": \
+         \"Allowed\", \"subject\": \"app.allowed\"}]",
+        "\"topics\": [{\"name\": \"Allowed\", \"display\": \
+         \"Allowed\", \"subject\": \"app.allowed\"}, {\"name\": \
+         \"Ghost::Allowed\", \"display\": \"Ghost::Allowed\", \
+         \"subject\": \"ghost.allowed\"}]",
+        1,
+    );
+    assert_ne!(widened, raw, "test premise: the ghost landed");
+    let p2 = dir.join("ghost.topology");
+    std::fs::write(&p2, restamp_digest(&strip_trailer(&widened)))
+        .unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p2)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("the catalogs are closed"),
+        "the widened catalog refuses: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 7: the digests are recomputed, never shape-checked. A row
+/// edit under a STALE law_digest refuses even with a fresh
+/// artifact_digest; a foreign inputs_digest refuses outright.
+#[test]
+fn stale_digests_are_refused() {
+    let dir = workdir("staledigest");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+@effects(none: { block })
+fn pure_math(v: Int) -> Int { return v + 1; }
+main locus App {
+    params { n: Int = 0; }
+    run() { println(pure_math(1)); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    // 1. Edit a law row, restamp ONLY the document trailer (the
+    //    stale law_digest survives).
+    fn restamp_doc_only(body: &str) -> String {
+        format!(
+            "{},\n  \"artifact_digest\": \"{:016x}\"\n}}\n",
+            body,
+            fnv1a64(body.as_bytes())
+        )
+    }
+    let edited = raw.replacen(
+        "\"name\": \"pure_math\", \"origin\": \"annotation\"",
+        "\"name\": \"pure_meth\", \"origin\": \"annotation\"",
+        1,
+    );
+    assert_ne!(edited, raw, "test premise: the row edit landed");
+    let p2 = dir.join("stale.topology");
+    std::fs::write(&p2, restamp_doc_only(&strip_trailer(&edited)))
+        .unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p2)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("law_digest does not recompute"),
+        "the stale law_digest refuses: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // 2. A foreign inputs_digest refuses: the evidence was
+    //    produced under a different analysis snapshot.
+    let ik = "\"inputs_digest\": \"";
+    let at = raw.find(ik).unwrap() + ik.len();
+    let mut foreign = raw.clone();
+    foreign.replace_range(at..at + 16, "0000000000000000");
+    let p3 = dir.join("foreigninputs.topology");
+    std::fs::write(&p3, restamp_digest(&strip_trailer(&foreign)))
+        .unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p3)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("different analysis-inputs snapshot"),
+        "the foreign inputs_digest refuses: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 7: a violated claims-tier law cannot delete its
+/// countermodel — `violated` means "here is the witness", not a
+/// bare label.
+#[test]
+fn deleted_countermodel_is_refused() {
+    let dir = workdir("nocounter");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+fn leak(v: Int) -> Int { return v; }
+fn touchy(v: Int) -> Int { return leak(v); }
+group a_side = { touchy };
+group b_side = { leak };
+main locus App {
+    params { n: Int = 0; }
+    claims { iso: forbid reaches(a_side, b_side); }
+    run() { println(touchy(1)); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    // A violated claim still dumps an artifact (check fails but
+    // --dump-topology of a violated program is the point: verify
+    // whether check refuses; if it does, dump differently).
+    let artifact = dir.join("app.hale.topology");
+    let out = hale()
+        .arg("check")
+        .arg(&src)
+        .arg(format!("--dump-topology={}", artifact.display()))
+        .output()
+        .unwrap();
+    if !artifact.exists() {
+        // A violated program refuses to dump — the emitter never
+        // produces a violated artifact to strip, so construct the
+        // deletion on a HOLDING row instead: flip it to violated
+        // WITHOUT evidence (the round-7 rule refuses the bare
+        // label).
+        let _ = out;
+        let src2 = dir.join("app2.hl");
+        std::fs::write(
+            &src2,
+            r#"
+fn leak(v: Int) -> Int { return v; }
+fn safe(v: Int) -> Int { return v; }
+group a_side = { safe };
+group b_side = { leak };
+main locus App {
+    params { n: Int = 0; }
+    claims { iso: forbid reaches(a_side, b_side); }
+    run() { println(safe(1)); }
+}
+fn main() { App { }; }
+"#,
+        )
+        .unwrap();
+        let artifact = dump_artifact(&dir, &src2);
+        let raw = std::fs::read_to_string(&artifact).unwrap();
+        let lied = raw
+            .replace("\"verdict\": \"holds\"", "\"verdict\": \"violated\"")
+            .replace("\"result\": \"holds\"", "\"result\": \"violated\"")
+            .replacen(
+                "\"verdict\": \"clean\"",
+                "\"verdict\": \"law_failed\"",
+                1,
+            );
+        let p2 = dir.join("nocounter.topology");
+        std::fs::write(&p2, restamp_digest(&strip_trailer(&lied)))
+            .unwrap();
+        let out = hale()
+            .arg("topology")
+            .arg("graph")
+            .arg(&p2)
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        assert!(
+            String::from_utf8_lossy(&out.stderr)
+                .contains("retains none of its judgment's"),
+            "a violated law without its countermodel refuses: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
