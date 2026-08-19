@@ -59,6 +59,20 @@ their law `ordinal`, and Track A admission enforces the closed
 law vocabulary, per-kind payload shapes, reference existence,
 contiguous ordinals, and the one-to-one claims-to-law join.
 
+Round 4: the law payload is LOSSLESS (during/seed/user-class
+dims are typed references with resolution status; every operand
+carries its provenance; the four fleet variants have distinct
+tagged payloads); law rows carry EVIDENCE (the judgments' ordered
+diagnostics with source locations; certificate rows keep their
+per-cert diagnostics); Track A decodes the payload against a real
+closed vocabulary (exact enums for kinds/verbs/comparators/
+via-edges/dimensions, complete variant shapes, reference
+existence, builtin-class agreement), re-renders the claims-tier
+form and requires byte agreement, binds source<->origin and
+kind<->family, joins claims<->law in both directions, requires
+the exact capability flag set, recomputes adequacy from the
+positive account, and recomputes the document verdict.
+
 `semantics` bumps to 2: machine verdicts are stricter in two
 documented places (a certificate naming a cyclically-defined or
 undeclared effect class is `invalid`, never a vacuous `holds`;

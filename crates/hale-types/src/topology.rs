@@ -1234,27 +1234,70 @@ pub fn dump_topology_parts(
             ),
             None => String::new(),
         };
+        let diag_list = |ds: &[(
+            String,
+            Option<(String, u32, u32)>,
+        )]|
+         -> String {
+            let items: Vec<String> = ds
+                .iter()
+                .map(|(msg, at)| {
+                    let at = match at {
+                        Some((file, a, b)) => format!(
+                            ", \"file\": {}, \"span\": [{}, {}]",
+                            quote(file),
+                            a,
+                            b
+                        ),
+                        None => String::new(),
+                    };
+                    format!(
+                        "{{\"message\": {}{}}}",
+                        quote(&demangle_str(msg)),
+                        at
+                    )
+                })
+                .collect();
+            format!("[{}]", items.join(", "))
+        };
         let certs = if r.certs.is_empty() {
             String::new()
         } else {
             let cs: Vec<String> = r
                 .certs
                 .iter()
-                .map(|(i, form, res)| {
+                .map(|(i, form, res, diags)| {
+                    let ev = if diags.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            ", \"evidence\": {}",
+                            diag_list(diags)
+                        )
+                    };
                     format!(
                         "{{\"ordinal\": {}, \"form\": {}, \
-                         \"result\": {}}}",
+                         \"result\": {}{}}}",
                         i,
                         quote(&demangle_str(form)),
-                        quote(res.as_str())
+                        quote(res.as_str()),
+                        ev
                     )
                 })
                 .collect();
             format!(", \"certs\": [{}]", cs.join(", "))
         };
+        let evidence = if r.evidence.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ", \"evidence\": {}",
+                diag_list(&r.evidence)
+            )
+        };
         out.push_str(&format!(
             "      {{\"ordinal\": {}, \"name\": {}, \"origin\": {}, \
-             \"family\": {}, \"verdict\": {}, \"law\": {}{}{}}},\n",
+             \"family\": {}, \"verdict\": {}, \"law\": {}{}{}{}}},\n",
             r.ordinal,
             quote(&demangle_str(&r.name)),
             quote(&r.origin),
@@ -1265,6 +1308,7 @@ pub fn dump_topology_parts(
             // whole object would collapse the raw identity.
             r.law,
             certs,
+            evidence,
             prov
         ));
     }

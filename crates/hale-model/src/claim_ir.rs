@@ -523,26 +523,72 @@ impl ClaimRow {
         e: &crate::application::Entities,
         prov: &crate::provenance::ProvenanceTable,
     ) -> String {
-        let name_ref = |n: &NameRef, resolved: bool| -> String {
+        let loc0 = |pid: ProvenanceId| -> String {
+            match prov.records.get(pid.index()) {
+                Some(crate::provenance::Provenance::Source {
+                    source,
+                    span,
+                }) => match prov.sources.get(source.index()) {
+                    Some(su) => format!(
+                        ", \"file\": {}, \"span\": [{}, {}]",
+                        json_str(&su.path),
+                        span.0,
+                        span.1
+                    ),
+                    None => String::new(),
+                },
+                _ => String::new(),
+            }
+        };
+        // EVERY operand reference is lossless (round 4): canonical
+        // identity, author spelling, resolution status, AND its own
+        // provenance — a consumer can reconstruct the typed law the
+        // semantic digest hashed.
+        let name_ref = |n: &NameRef,
+                        resolved: bool,
+                        pid: ProvenanceId|
+         -> String {
             format!(
-                "{{\"name\": {}, \"display\": {}, \"resolved\": {}}}",
+                "{{\"name\": {}, \"display\": {}, \"resolved\": {}{}}}",
                 json_str(&n.raw),
                 json_str(&n.display),
-                resolved
+                resolved,
+                loc0(pid)
             )
         };
         let gref = |g: &GroupRef| -> String {
-            name_ref(&g.name, g.group.is_some())
+            name_ref(&g.name, g.group.is_some(), g.provenance)
         };
         let tref = |t: &TopicIrRef| -> String {
-            name_ref(&t.name, t.topic.is_some())
+            name_ref(&t.name, t.topic.is_some(), t.provenance)
+        };
+        let phref = |p2: &PhaseIrRef| -> String {
+            name_ref(
+                &NameRef {
+                    raw: p2.name.clone(),
+                    display: p2.name.clone(),
+                },
+                p2.phase.is_some(),
+                p2.provenance,
+            )
+        };
+        let sref = |sd: &SeedIrRef| -> String {
+            name_ref(
+                &NameRef {
+                    raw: sd.name.clone(),
+                    display: sd.name.clone(),
+                },
+                sd.seed.is_some(),
+                sd.provenance,
+            )
         };
         let cref = |c: &EffectClassRef| -> String {
             format!(
-                "{{\"class\": {}, \"builtin\": {}, \"resolved\": {}}}",
+                "{{\"class\": {}, \"builtin\": {}, \"resolved\": {}{}}}",
                 json_str(&c.name),
                 c.builtin,
-                c.builtin || c.class.is_some()
+                c.builtin || c.class.is_some(),
+                loc0(c.provenance)
             )
         };
         let crefs = |cs: &[EffectClassRef]| -> String {
@@ -550,11 +596,24 @@ impl ClaimRow {
             format!("[{}]", v.join(", "))
         };
         let fnref = |at: &(Option<FunctionId>, NameRef)| -> String {
-            name_ref(&at.1, at.0.is_some())
+            // Annotation subjects anchor at the row's own
+            // provenance (the lowering interns the decl name span
+            // on the row).
+            format!(
+                "{{\"name\": {}, \"display\": {}, \"resolved\": {}}}",
+                json_str(&at.1.raw),
+                json_str(&at.1.display),
+                at.0.is_some()
+            )
         };
         let locusref =
             |at: &(Option<LocusDeclId>, NameRef)| -> String {
-                name_ref(&at.1, at.0.is_some())
+                format!(
+                    "{{\"name\": {}, \"display\": {}, \"resolved\": {}}}",
+                    json_str(&at.1.raw),
+                    json_str(&at.1.display),
+                    at.0.is_some()
+                )
             };
         let set = |s: &SetIr| -> String {
             match s {
@@ -637,7 +696,7 @@ impl ClaimRow {
                 if let Some(p) = during {
                     out.push_str(&format!(
                         ", \"during\": {}",
-                        json_str(&p.name)
+                        phref(p)
                     ));
                 }
                 if let Some(a) = avoiding {
@@ -703,7 +762,7 @@ impl ClaimRow {
             ClaimIr::Cover { seed, group } => format!(
                 "{{\"kind\": \"cover\", \"seed\": {}, \
                  \"group\": {}}}",
-                json_str(&seed.name),
+                sref(seed),
                 gref(group)
             ),
             ClaimIr::Count {
@@ -789,24 +848,99 @@ impl ClaimRow {
                 fnref(at),
                 per_call
             ),
-            ClaimIr::QuantBudget { at, dim, limit } => format!(
-                "{{\"kind\": \"quant_budget\", \"at\": {}, \
-                 \"dim\": {}, \"limit\": {}}}",
-                fnref(at),
-                json_str(match dim {
-                    QuantDimIr::StackBytes => "stack_bytes",
-                    QuantDimIr::BlockPoints => "block_points",
-                    QuantDimIr::Publish => "publish",
-                    QuantDimIr::Fanout => "fanout",
-                    QuantDimIr::UserClass(c) => &c.name,
-                }),
-                limit
+            ClaimIr::QuantBudget { at, dim, limit } => {
+                // The dimension is TYPED (round 4): a builtin is a
+                // closed tag; a user class is a full class
+                // reference with its resolution state.
+                let dim_json = match dim {
+                    QuantDimIr::StackBytes => {
+                        "{\"builtin\": \"stack_bytes\"}".to_string()
+                    }
+                    QuantDimIr::BlockPoints => {
+                        "{\"builtin\": \"block_points\"}".to_string()
+                    }
+                    QuantDimIr::Publish => {
+                        "{\"builtin\": \"publish\"}".to_string()
+                    }
+                    QuantDimIr::Fanout => {
+                        "{\"builtin\": \"fanout\"}".to_string()
+                    }
+                    QuantDimIr::UserClass(c) => {
+                        format!("{{\"user_class\": {}}}", cref(c))
+                    }
+                };
+                format!(
+                    "{{\"kind\": \"quant_budget\", \"at\": {}, \
+                     \"dim\": {}, \"limit\": {}}}",
+                    fnref(at),
+                    dim_json,
+                    limit
+                )
+            }
+            ClaimIr::FleetForbidReaches { from, to, avoiding } => {
+                let av = match avoiding {
+                    Some(a) => format!(
+                        ", \"avoiding\": {}",
+                        json_str(a)
+                    ),
+                    None => String::new(),
+                };
+                format!(
+                    "{{\"kind\": \"fleet_forbid_reaches\", \
+                     \"from\": {}, \"to\": {}{}}}",
+                    json_str(from),
+                    json_str(to),
+                    av
+                )
+            }
+            ClaimIr::FleetOnlyEdges { src, dst, grants } => {
+                let gs: Vec<String> =
+                    grants.iter().map(|g| json_str(g)).collect();
+                format!(
+                    "{{\"kind\": \"fleet_only_edges\", \
+                     \"src\": {}, \"dst\": {}, \
+                     \"grants\": [{}]}}",
+                    json_str(src),
+                    json_str(dst),
+                    gs.join(", ")
+                )
+            }
+            ClaimIr::FleetRequireEndpoint {
+                publishers,
+                target,
+                topic,
+            } => format!(
+                "{{\"kind\": \"fleet_require_endpoint\", \
+                 \"publishers\": {}, \"target\": {}, \
+                 \"topic\": {}}}",
+                publishers,
+                json_str(target),
+                json_str(topic)
             ),
-            ClaimIr::FleetForbidReaches { .. }
-            | ClaimIr::FleetOnlyEdges { .. }
-            | ClaimIr::FleetRequireEndpoint { .. }
-            | ClaimIr::FleetCountInstances { .. } => {
-                "{\"kind\": \"fleet\"}".to_string()
+            ClaimIr::FleetCountInstances {
+                publishers,
+                topic,
+                eq,
+                max,
+                min,
+            } => {
+                let mut out = format!(
+                    "{{\"kind\": \"fleet_count_instances\", \
+                     \"publishers\": {}, \"topic\": {}",
+                    publishers,
+                    json_str(topic)
+                );
+                if let Some(n) = eq {
+                    out.push_str(&format!(", \"eq\": {}", n));
+                }
+                if let Some(n) = max {
+                    out.push_str(&format!(", \"max\": {}", n));
+                }
+                if let Some(n) = min {
+                    out.push_str(&format!(", \"min\": {}", n));
+                }
+                out.push('}');
+                out
             }
         }
     }

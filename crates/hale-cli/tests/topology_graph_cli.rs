@@ -520,6 +520,81 @@ fn tampered_or_unverifiable_artifacts_are_refused() {
         String::from_utf8_lossy(&out.stderr)
     );
 
+    // 8. Round 4: an OPERAND SWAP — the typed payload's groups are
+    //    replaced while the compatibility form string is kept.
+    //    Both referenced groups exist, name and verdict are
+    //    unchanged; the canonical re-render is what refuses.
+    let swapped = raw.replacen(
+        "\"src\": {\"group\": {\"name\": \"stores\", \"display\": \"stores\"",
+        "\"src\": {\"group\": {\"name\": \"workers\", \"display\": \"workers\"",
+        1,
+    );
+    assert_ne!(swapped, raw, "test premise: the swap landed");
+    {
+        let sw = dir.join("swapped.topology");
+        std::fs::write(
+            &sw,
+            restamp_digest(&strip_trailer(&swapped)),
+        )
+        .unwrap();
+        let out = hale()
+            .arg("topology")
+            .arg("graph")
+            .arg(&sw)
+            .output()
+            .unwrap();
+        assert!(
+            !out.status.success(),
+            "an operand swap under an unchanged form must refuse"
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr)
+                .contains("does not render from the typed law"),
+            "the refusal names the form binding: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    // 9. Round 4: a CLEAN document verdict over a non-holds law —
+    //    the verdict is recomputed during admission, never
+    //    trusted.
+    let lying = {
+        let s = raw.replacen(
+            "\"verdict\": \"holds\"",
+            "\"verdict\": \"violated\"",
+            1,
+        );
+        assert_ne!(s, raw, "test premise: a law verdict flipped");
+        s
+    };
+    // (the claims row's result must flip too, or the 1:1 check
+    // refuses before the verdict recompute — flip it as well so
+    // the recompute is what bites)
+    let lying = lying.replacen(
+        "\"result\": \"holds\", \"ordinal\"",
+        "\"result\": \"violated\", \"ordinal\"",
+        1,
+    );
+    let ly = dir.join("lying.topology");
+    std::fs::write(&ly, restamp_digest(&strip_trailer(&lying)))
+        .unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&ly)
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "a clean verdict over a non-holds law must refuse"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("disagrees with its own law rows"),
+        "the refusal names the recompute: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
     let _ = std::fs::remove_dir_all(&dir);
 }
 

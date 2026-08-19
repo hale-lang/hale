@@ -658,8 +658,20 @@ pub struct ProjectedLawRow {
     /// verbatim into the artifact.
     pub law: String,
     /// Per-certificate evidence for certificate-family rows:
-    /// (certificate ordinal within the row, form, engine result).
-    pub certs: Vec<(u32, String, crate::verdict::Verdict)>,
+    /// (certificate ordinal within the row, form, engine result,
+    /// the certificate's own ordered diagnostics).
+    pub certs: Vec<(
+        u32,
+        String,
+        crate::verdict::Verdict,
+        Vec<(String, Option<(String, u32, u32)>)>,
+    )>,
+    /// The judgment's ordered diagnostics for this row — the
+    /// EVIDENCE behind the verdict (round 4: a violated
+    /// reachability law carries its countermodel path, an
+    /// uncertified law its refusal reason), resolved to
+    /// (message, source location).
+    pub evidence: Vec<(String, Option<(String, u32, u32)>)>,
     /// (source path, start, end) when the row's provenance is a
     /// source record.
     pub provenance: Option<(String, u32, u32)>,
@@ -908,9 +920,9 @@ pub fn project_law_rows(
     use hale_model::{ClaimIr, ClaimOrigin};
     let _ = bundle;
     // Merge every judged family by ordinal.
-    let mut verdicts: std::collections::BTreeMap<
+    let mut judged: std::collections::BTreeMap<
         u32,
-        crate::verdict::Verdict,
+        crate::judgment::Judged,
     > = std::collections::BTreeMap::new();
     let (_pre, r5a) = crate::judgment::judge_forbid_reaches(
         table,
@@ -918,26 +930,26 @@ pub fn project_law_rows(
         source_bases,
     );
     for j in r5a {
-        verdicts.insert(j.ordinal, j.verdict);
+        judged.insert(j.ordinal, j);
     }
     for j in crate::judgment::judge_only_edges(
         table,
         model,
         source_bases,
     ) {
-        verdicts.insert(j.ordinal, j.verdict);
+        judged.insert(j.ordinal, j);
     }
     for j in crate::judgment::judge_endpoints(
         table,
         model,
         source_bases,
     ) {
-        verdicts.insert(j.ordinal, j.verdict);
+        judged.insert(j.ordinal, j);
     }
     for j in
         crate::judgment::judge_bound(table, model, source_bases)
     {
-        verdicts.insert(j.ordinal, j.verdict);
+        judged.insert(j.ordinal, j);
     }
     for j in crate::judgment::judge_certificates(
         table,
@@ -945,8 +957,37 @@ pub fn project_law_rows(
         evidence,
         source_bases,
     ) {
-        verdicts.insert(j.ordinal, j.verdict);
+        judged.insert(j.ordinal, j);
     }
+    // Bundle-global diag spans → (source path, local span), the
+    // same placement rule the artifact's provenance section uses.
+    let locate = |sp: hale_syntax::Span|
+     -> Option<(String, u32, u32)> {
+        let s0 = sp.start.as_usize() as u32;
+        let e0 = sp.end.as_usize() as u32;
+        bundle
+            .sources
+            .iter()
+            .filter(|f| {
+                s0 >= f.base
+                    && s0 < f.base.saturating_add(f.len + 1)
+            })
+            .max_by_key(|f| f.base)
+            .map(|f| {
+                (
+                    f.path.clone(),
+                    s0 - f.base,
+                    e0.saturating_sub(f.base),
+                )
+            })
+    };
+    let verdicts: std::collections::BTreeMap<
+        u32,
+        crate::verdict::Verdict,
+    > = judged
+        .iter()
+        .map(|(o, j)| (*o, j.verdict))
+        .collect();
 
     // ---- claims rows: claims-block origins, authored order ----
     let mut claims: Vec<ProjectedClaimRow> = Vec::new();
@@ -1079,38 +1120,76 @@ pub fn project_law_rows(
         } else {
             *v
         };
-        let certs: Vec<(u32, String, crate::verdict::Verdict)> =
-            evidence
-                .rows
-                .iter()
-                .find(|r| r.ordinal == row.ordinal)
-                .map(|r| {
-                    r.certs
-                        .iter()
-                        .enumerate()
-                        .map(|(i, c)| {
-                            (
-                                i as u32,
-                                c.form.clone(),
-                                match c.result {
-                                    hale_model::VerdictIr::Holds => {
-                                        crate::verdict::Verdict::Holds
-                                    }
-                                    hale_model::VerdictIr::Violated => {
-                                        crate::verdict::Verdict::Violated
-                                    }
-                                    hale_model::VerdictIr::Uncertified => {
-                                        crate::verdict::Verdict::Uncertified
-                                    }
-                                    hale_model::VerdictIr::Invalid => {
-                                        crate::verdict::Verdict::Invalid
-                                    }
-                                },
-                            )
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+        let ev_loc = |pid: hale_model::ProvenanceId|
+         -> Option<(String, u32, u32)> {
+            match evidence.provenance.records.get(pid.index()) {
+                Some(hale_model::Provenance::Source {
+                    source,
+                    span,
+                }) => evidence
+                    .provenance
+                    .sources
+                    .get(source.index())
+                    .map(|su| (su.path.clone(), span.0, span.1)),
+                _ => None,
+            }
+        };
+        let certs: Vec<(
+            u32,
+            String,
+            crate::verdict::Verdict,
+            Vec<(String, Option<(String, u32, u32)>)>,
+        )> = evidence
+            .rows
+            .iter()
+            .find(|r| r.ordinal == row.ordinal)
+            .map(|r| {
+                r.certs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| {
+                        (
+                            i as u32,
+                            c.form.clone(),
+                            match c.result {
+                                hale_model::VerdictIr::Holds => {
+                                    crate::verdict::Verdict::Holds
+                                }
+                                hale_model::VerdictIr::Violated => {
+                                    crate::verdict::Verdict::Violated
+                                }
+                                hale_model::VerdictIr::Uncertified => {
+                                    crate::verdict::Verdict::Uncertified
+                                }
+                                hale_model::VerdictIr::Invalid => {
+                                    crate::verdict::Verdict::Invalid
+                                }
+                            },
+                            c.diags
+                                .iter()
+                                .map(|(msg, pid)| {
+                                    (msg.clone(), ev_loc(*pid))
+                                })
+                                .collect(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let row_evidence: Vec<(
+            String,
+            Option<(String, u32, u32)>,
+        )> = judged
+            .get(&row.ordinal)
+            .map(|j| {
+                j.diags
+                    .iter()
+                    .map(|d| {
+                        (d.message.clone(), locate(d.span))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         law.push(ProjectedLawRow {
             ordinal: row.ordinal,
             name: row.name.clone(),
@@ -1122,6 +1201,7 @@ pub fn project_law_rows(
                 &table.provenance,
             ),
             certs,
+            evidence: row_evidence,
             provenance,
         });
     }

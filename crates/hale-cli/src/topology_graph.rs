@@ -375,136 +375,45 @@ impl Artifact {
         ];
         const VERDICTS: &[&str] =
             &["holds", "violated", "uncertified", "invalid"];
-        // The CLOSED external law vocabulary (round 3): every
-        // payload deserializes against its kind's complete shape,
-        // and resolved group/topic references must exist in the
-        // artifact's own sections — a bare {"kind": …} or an
-        // operand-free row is malformed, never rendered.
-        let groups_obj = art.v["groups"].clone();
+        // The CLOSED external law decoder (round 4): every payload
+        // deserializes into the typed vocabulary
+        // (`topology_law::decode_law` — exact enums for kinds,
+        // via-edges, verbs, comparators, dimensions; complete
+        // variant shapes; reference existence against this
+        // artifact's own sections), the claims-tier forms are
+        // canonically RE-RENDERED and required byte-equal to the
+        // compatibility rows, the join runs in BOTH directions,
+        // and the document verdict is RECOMPUTED — an operand
+        // swap, a family mismatch, or a clean verdict over a
+        // non-holds law all refuse.
         let topic_names: Vec<String> = art.v["topics"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(|t| t["name"].as_str().map(|s| s.to_string()))
             .collect();
-        let is_ref = |v: &Value| -> bool {
-            v["name"].is_string()
-                && v["display"].is_string()
-                && v["resolved"].is_boolean()
-        };
-        let group_ref_ok = |v: &Value| -> bool {
-            is_ref(v)
-                && (v["resolved"] != true
-                    || groups_obj
-                        [v["display"].as_str().unwrap_or_default()]
-                    .is_array())
-        };
-        let topic_ref_ok = |v: &Value| -> bool {
-            is_ref(v)
-                && (v["resolved"] != true
-                    || topic_names.iter().any(|n| {
-                        n == v["display"].as_str().unwrap_or("")
-                    }))
-        };
-        let class_ref_ok = |v: &Value| -> bool {
-            v["class"].is_string()
-                && v["builtin"].is_boolean()
-                && v["resolved"].is_boolean()
-        };
-        let class_list_ok = |v: &Value| -> bool {
-            v.as_array()
-                .is_some_and(|a| a.iter().all(|c| class_ref_ok(c)))
-        };
-        let set_ok = |v: &Value| -> bool {
-            group_ref_ok(&v["group"]) || class_ref_ok(&v["effects"])
-        };
-        let selector_list_ok = |v: &Value| -> bool {
-            v.as_array().is_some_and(|a| {
-                a.iter().all(|s| {
-                    s["name"].is_string()
-                        && s["topics"].is_array()
-                        && s["subjects"].is_array()
-                })
-            })
-        };
-        let law_ok = |law: &Value| -> bool {
-            match law["kind"].as_str() {
-                Some("forbid_reaches") => {
-                    set_ok(&law["src"])
-                        && set_ok(&law["dst"])
-                        && law["via"].is_array()
-                }
-                Some("only_edges") => {
-                    group_ref_ok(&law["src"])
-                        && group_ref_ok(&law["dst"])
-                        && law["grants"].as_array().is_some_and(|a| {
-                            a.iter().all(|g| {
-                                g["verb"].is_string()
-                                    && topic_ref_ok(&g["topic"])
-                            })
-                        })
-                }
-                Some("bound") => {
-                    class_ref_ok(&law["class"])
-                        && law["limit"].is_u64()
-                        && group_ref_ok(&law["from"])
-                }
-                Some("require_endpoint") => {
-                    law["publishers"].is_boolean()
-                        && group_ref_ok(&law["group"])
-                        && topic_ref_ok(&law["topic"])
-                }
-                Some("require_sealed") => group_ref_ok(&law["group"]),
-                Some("require_attributed") => {
-                    class_ref_ok(&law["class"])
-                }
-                Some("cover") => {
-                    law["seed"].is_string()
-                        && group_ref_ok(&law["group"])
-                }
-                Some("count") => {
-                    law["publishers"].is_boolean()
-                        && topic_ref_ok(&law["topic"])
-                        && law["cmp"].is_string()
-                        && law["n"].is_u64()
-                }
-                Some(
-                    "effect_forbid" | "effect_only" | "effect_causes",
-                ) => {
-                    is_ref(&law["at"])
-                        && class_list_ok(&law["classes"])
-                }
-                Some("effect_publish_set") => {
-                    is_ref(&law["at"])
-                        && selector_list_ok(&law["entries"])
-                }
-                Some("no_panic") => is_ref(&law["at"]),
-                Some("depends_set") => {
-                    is_ref(&law["locus"])
-                        && selector_list_ok(&law["entries"])
-                }
-                Some("phase_effects") => {
-                    is_ref(&law["locus"])
-                        && law["phases"].as_array().is_some_and(|a| {
-                            a.iter().all(|p| {
-                                p["phase"].is_string()
-                                    && class_list_ok(&p["allowed"])
-                            })
-                        })
-                }
-                Some("alloc_budget") => {
-                    is_ref(&law["at"]) && law["per_call"].is_u64()
-                }
-                Some("quant_budget") => {
-                    is_ref(&law["at"])
-                        && law["dim"].is_string()
-                        && law["limit"].is_u64()
-                }
-                Some("fleet") => true,
-                _ => false,
-            }
+        let fn_names: Vec<String> = art.v["sorts"]["fns"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|t| t.as_str().map(|s| s.to_string()))
+            .collect();
+        let locus_names: Vec<String> = art.v["sorts"]["loci"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|t| t.as_str().map(|s| s.to_string()))
+            .collect();
+        let groups_obj = art.v["groups"].clone();
+        let cx = crate::topology_law::RefContext {
+            groups: &groups_obj,
+            topic_names: &topic_names,
+            fn_names: &fn_names,
+            locus_names: &locus_names,
         };
         let mut prev_ordinal: Option<u64> = None;
+        let mut law_all_pass = true;
+        let mut claims_tier_ordinals: Vec<u64> = Vec::new();
         for (i, row) in art.v["law"]["rows"]
             .as_array()
             .into_iter()
@@ -528,20 +437,43 @@ impl Artifact {
                     i
                 ));
             }
-            if !law_ok(&row["law"]) {
-                return Err(format!(
+            let decoded = crate::topology_law::decode_law(
+                &row["law"], &cx,
+            )
+            .map_err(|e| {
+                format!(
                     "{}: malformed artifact — law.rows[{}] (`{}`) \
-                     has an unrecognized or incomplete law payload \
-                     of kind `{}`",
+                     has an unrecognized or incomplete law payload: \
+                     {}",
                     path.display(),
                     i,
                     row["name"].as_str().unwrap_or("?"),
-                    row["law"]["kind"].as_str().unwrap_or("?")
+                    e
+                )
+            })?;
+            // The declared family must agree with the kind.
+            let fam = crate::topology_law::family_of(&decoded);
+            if row["family"] != fam {
+                return Err(format!(
+                    "{}: malformed artifact — law.rows[{}] declares \
+                     family `{}` but its kind belongs to `{}`",
+                    path.display(),
+                    i,
+                    row["family"].as_str().unwrap_or("?"),
+                    fam
                 ));
             }
-            // Ordinals are unique and contiguous from zero —
-            // application-tier law tables are authored-dense, and a
-            // duplicated or inserted row breaks the sequence.
+            if matches!(
+                fam,
+                "reachability" | "boundary" | "endpoint" | "bound"
+            ) {
+                claims_tier_ordinals
+                    .push(row["ordinal"].as_u64().unwrap_or(0));
+            }
+            if fam != "fleet" && row["verdict"] != "holds" {
+                law_all_pass = false;
+            }
+            // Ordinals are unique and contiguous from zero.
             let ord = row["ordinal"].as_u64().unwrap_or(0);
             let expect = prev_ordinal.map_or(0, |o| o + 1);
             if ord != expect {
@@ -556,38 +488,95 @@ impl Artifact {
             }
             prev_ordinal = Some(ord);
         }
-        // Typed contents of capabilities and adequacy.
-        for (k, v) in
-            art.v["capabilities"].as_object().into_iter().flatten()
+        // Capabilities: the EXACT flag set, all booleans, and
+        // adequacy RECOMPUTED from the positive account — an
+        // artifact cannot carry an empty completeness section or
+        // claim `exact` over unvouched relations.
+        const CAP_FLAGS: &[(&str, u32)] = &[
+            ("exact_calls", 1 << 0),
+            ("exact_publishes", 1 << 1),
+            ("exact_subscribes", 1 << 2),
+            ("exact_key_filters", 1 << 9),
+            ("exact_ownership", 1 << 3),
+            ("exact_placement", 1 << 4),
+            ("exact_routes", 1 << 8),
+            ("exact_effects", 1 << 7),
+            ("exact_cardinality", 1 << 10),
+            ("exact_delivery_guarantees", 1 << 11),
+        ];
+        let caps = art.v["capabilities"]
+            .as_object()
+            .ok_or_else(|| {
+                format!(
+                    "{}: capabilities must be an object",
+                    path.display()
+                )
+            })?;
+        if caps.len() != CAP_FLAGS.len()
+            || CAP_FLAGS.iter().any(|(k, _)| {
+                !caps.get(*k).is_some_and(|v| v.is_boolean())
+            })
         {
-            if !v.is_boolean() {
+            return Err(format!(
+                "{}: malformed artifact — capabilities must carry \
+                 exactly the {} known boolean flags",
+                path.display(),
+                CAP_FLAGS.len()
+            ));
+        }
+        let mut vouched: u32 = 0;
+        for (k, bit) in CAP_FLAGS {
+            if caps[*k] == true {
+                vouched |= bit;
+            }
+        }
+        use hale_model::JudgmentFamily as JF;
+        const MIGRATED: &[(&str, JF)] = &[
+            ("reachability", JF::Reachability),
+            ("boundary", JF::Boundary),
+            ("endpoint", JF::Endpoint),
+            ("bound", JF::Bound),
+            ("certificate", JF::Certificate),
+        ];
+        let adequacy = art.v["adequacy"]
+            .as_object()
+            .ok_or_else(|| {
+                format!(
+                    "{}: adequacy must be an object",
+                    path.display()
+                )
+            })?;
+        if adequacy.len() != MIGRATED.len() {
+            return Err(format!(
+                "{}: malformed artifact — adequacy must carry \
+                 exactly the {} migrated families",
+                path.display(),
+                MIGRATED.len()
+            ));
+        }
+        for (name, fam) in MIGRATED {
+            let required = fam.required_relations().0;
+            let expect = if vouched & required == required {
+                "exact"
+            } else {
+                "degraded"
+            };
+            if adequacy.get(*name).and_then(|v| v.as_str())
+                != Some(expect)
+            {
                 return Err(format!(
-                    "{}: malformed artifact — capabilities.{} must \
-                     be a boolean",
+                    "{}: malformed artifact — adequacy.{} \
+                     disagrees with the positive capability \
+                     account (expected {})",
                     path.display(),
-                    k
+                    name,
+                    expect
                 ));
             }
         }
-        for (k, v) in
-            art.v["adequacy"].as_object().into_iter().flatten()
-        {
-            let ok = matches!(
-                v.as_str(),
-                Some("exact") | Some("degraded")
-            ) && FAMILIES.contains(&k.as_str());
-            if !ok {
-                return Err(format!(
-                    "{}: malformed artifact — adequacy.{} must name \
-                     a known family with exact|degraded",
-                    path.display(),
-                    k
-                ));
-            }
-        }
-        // Every legacy claim row projects from exactly ONE law row,
-        // joined BY ORDINAL (round 3: a same-name row cannot
-        // masquerade); name and verdict must agree.
+        // The claims-to-law join, BOTH directions, with form,
+        // source, and verdict binding.
+        let mut claimed_ordinals: Vec<u64> = Vec::new();
         for (i, c) in art.v["claims"]
             .as_array()
             .into_iter()
@@ -602,27 +591,110 @@ impl Artifact {
                     i
                 ));
             };
+            claimed_ordinals.push(ord);
             let matching: Vec<&Value> = art.v["law"]["rows"]
                 .as_array()
                 .into_iter()
                 .flatten()
                 .filter(|r| r["ordinal"] == ord)
                 .collect();
-            let ok = matching.len() == 1
-                && matching[0]["name"] == c["name"]
-                && matching[0]["verdict"] == c["result"]
-                && matching[0]["family"] != "certificate"
-                && matching[0]["family"] != "fleet";
-            if !ok {
+            if matching.len() != 1 {
                 return Err(format!(
-                    "{}: malformed artifact — claims[{}] (`{}`) does \
-                     not project one-to-one from law ordinal {}",
+                    "{}: malformed artifact — claims[{}] does not \
+                     project one-to-one from law ordinal {}",
+                    path.display(),
+                    i,
+                    ord
+                ));
+            }
+            let law_row = matching[0];
+            let decoded = crate::topology_law::decode_law(
+                &law_row["law"],
+                &cx,
+            )
+            .expect("validated above");
+            // Form binding: the compatibility string must be the
+            // canonical rendering of the typed payload — an
+            // operand swap under an unchanged form refuses.
+            let rendered =
+                crate::topology_law::render_claims_form(&decoded);
+            if rendered.as_deref() != c["form"].as_str() {
+                return Err(format!(
+                    "{}: malformed artifact — claims[{}] (`{}`) \
+                     form does not render from the typed law at \
+                     ordinal {}",
                     path.display(),
                     i,
                     c["name"].as_str().unwrap_or("?"),
                     ord
                 ));
             }
+            // Source ↔ origin binding.
+            let origin =
+                law_row["origin"].as_str().unwrap_or_default();
+            let source_ok = match c["source"].as_str() {
+                Some(src) => {
+                    origin == format!("constitution:{}", src)
+                }
+                None => !origin.starts_with("constitution:"),
+            };
+            let ok = source_ok
+                && law_row["name"] == c["name"]
+                && law_row["verdict"] == c["result"];
+            if !ok {
+                return Err(format!(
+                    "{}: malformed artifact — claims[{}] (`{}`) \
+                     disagrees with law ordinal {} on \
+                     name/verdict/source",
+                    path.display(),
+                    i,
+                    c["name"].as_str().unwrap_or("?"),
+                    ord
+                ));
+            }
+        }
+        // Reverse direction: every claims-tier law row has exactly
+        // one compatibility claim.
+        claimed_ordinals.sort_unstable();
+        let mut tier = claims_tier_ordinals.clone();
+        tier.sort_unstable();
+        if claimed_ordinals != tier {
+            return Err(format!(
+                "{}: malformed artifact — the claims rows and the \
+                 claims-tier law rows are not one-to-one \
+                 (claims: {:?}, law: {:?})",
+                path.display(),
+                claimed_ordinals,
+                tier
+            ));
+        }
+        // The document verdict is RECOMPUTED, never trusted: clean
+        // iff every claims/lowered result passes AND every
+        // non-fleet law row holds.
+        let claims_pass = art.v["claims"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .all(|c| c["result"] == "holds");
+        let lowered_pass = art.v["lowered"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .all(|r| r["result"] == "holds");
+        let expect_verdict =
+            if claims_pass && lowered_pass && law_all_pass {
+                "clean"
+            } else {
+                "law_failed"
+            };
+        if art.v["verdict"] != expect_verdict {
+            return Err(format!(
+                "{}: malformed artifact — document verdict `{}` \
+                 disagrees with its own law rows (recomputed: {})",
+                path.display(),
+                art.v["verdict"].as_str().unwrap_or("?"),
+                expect_verdict
+            ));
         }
 
         for (i, row) in art.v["unknowns"]
@@ -1526,25 +1598,6 @@ fn law_display_names(law: &Value, out: &mut Vec<String>) {
     }
 }
 
-fn form_mentions(form: &str, name: &str) -> bool {
-    let bytes = form.as_bytes();
-    let mut start = 0;
-    while let Some(pos) = form[start..].find(name) {
-        let a = start + pos;
-        let b = a + name.len();
-        let left_ok = a == 0 || !is_ident(bytes[a - 1]);
-        let right_ok = b >= bytes.len() || !is_ident(bytes[b]);
-        if left_ok && right_ok {
-            return true;
-        }
-        start = a + 1;
-    }
-    false
-}
-
-fn is_ident(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
-}
 
 /// `short` is the display name inside the owning box (the full name
 /// with the owner's longest-prefix stripped — computed by the

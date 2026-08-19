@@ -913,3 +913,125 @@ fn main() { App { }; }
     );
     assert!(!adequacy[&hale_model::JudgmentFamily::Reachability]);
 }
+
+/// Review round 4: the law rows carry EVIDENCE, not bare verdicts
+/// — a violated reachability law serializes its countermodel
+/// diagnostics with source locations, and a violated certificate
+/// keeps its root/leaf diagnostics.
+#[test]
+fn law_rows_carry_evidence() {
+    let src = r#"
+fn leak(v: Int) -> Int { return v; }
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) -> Int { return leak(v); }
+}
+group a_side = { A };
+group b_side = { leak };
+@effects(none: { publish })
+fn f(v: Int) { A { }.go(v); "x" <- v; }
+main locus App {
+    params { a: A = A { }; }
+    claims { iso: forbid reaches(a_side, b_side); }
+    run() { println(self.a.go(1)); f(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let art = hale_types::topology::dump_topology(&bundle);
+    let v: serde_json::Value =
+        serde_json::from_str(&art).expect("valid JSON");
+    let rows = v["law"]["rows"].as_array().expect("law.rows");
+    let iso = rows
+        .iter()
+        .find(|r| r["name"] == "iso")
+        .expect("claim row");
+    assert_eq!(iso["verdict"], "violated");
+    let ev = iso["evidence"].as_array().expect("evidence");
+    assert!(
+        ev.iter().any(|d| {
+            d["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("violated"))
+                && d["file"] == "app.hl"
+                && d["span"].is_array()
+        }),
+        "the countermodel diagnostics survive with locations: {}",
+        iso["evidence"]
+    );
+    let forbid = rows
+        .iter()
+        .find(|r| r["law"]["kind"] == "effect_forbid")
+        .expect("certificate row");
+    let certs = forbid["certs"].as_array().expect("certs");
+    let violated = certs
+        .iter()
+        .find(|c| c["result"] == "violated")
+        .expect("the publish certificate violates");
+    assert!(
+        violated["evidence"]
+            .as_array()
+            .is_some_and(|d| !d.is_empty()),
+        "the certificate keeps its diagnostics: {}",
+        violated
+    );
+}
+
+/// Review round 4: the payload is LOSSLESS — `during` and `seed`
+/// are typed references with resolution status, and a user-class
+/// budget dimension carries its full class reference.
+#[test]
+fn payload_refs_are_lossless() {
+    let src = r#"
+effect money;
+type Cmd { v: Int = 0; }
+topic T { payload: Cmd; subject: "app.t"; }
+locus A {
+    params { n: Int = 0; }
+    bus { subscribe T as on_t; }
+    fn on_t(c: Cmd) { self.n = c.v; }
+}
+@budget(money = 2)
+fn charge(v: Int) -> Int { return v; }
+group a_side = { A };
+group b_side = { charge };
+main locus App {
+    params { a: A = A { }; }
+    claims {
+        iso: forbid reaches(a_side, b_side) during boot;
+    }
+    run() { println(charge(1)); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let art = hale_types::topology::dump_topology(&bundle);
+    let v: serde_json::Value =
+        serde_json::from_str(&art).expect("valid JSON");
+    let rows = v["law"]["rows"].as_array().expect("law.rows");
+    let iso = rows
+        .iter()
+        .find(|r| r["name"] == "iso")
+        .expect("claim row");
+    // `boot` is an UNRESOLVED phase — the typed ref records that.
+    let during = &iso["law"]["during"];
+    assert_eq!(during["display"], "boot");
+    assert_eq!(
+        during["resolved"], false,
+        "an unresolved during keeps its status: {}",
+        during
+    );
+    let qb = rows
+        .iter()
+        .find(|r| r["law"]["kind"] == "quant_budget")
+        .expect("budget row");
+    let dim = &qb["law"]["dim"];
+    assert_eq!(
+        dim["user_class"]["class"], "money",
+        "a user-class dimension is a full class reference: {}",
+        dim
+    );
+    assert_eq!(dim["user_class"]["resolved"], true);
+}
