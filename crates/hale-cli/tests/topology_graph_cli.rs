@@ -1126,11 +1126,12 @@ fn main() { App { }; }
         .output()
         .unwrap();
     assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
     assert!(
-        String::from_utf8_lossy(&out.stderr)
-            .contains("has no lowered evidence row matching"),
+        err.contains("does not match its typed law")
+            || err.contains("has no lowered evidence row"),
         "the budget↔evidence binding refuses the mutation: {}",
-        String::from_utf8_lossy(&out.stderr)
+        err
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1188,10 +1189,304 @@ fn main() { App { }; }
         .output()
         .unwrap();
     assert!(!out.status.success());
+    // Round 6: the canonical-pair anchor refuses this even for a
+    // SINGLETON occurrence — the raw half must match one exact
+    // catalog pair, not merely stay self-consistent across rows.
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("does not match any canonical pair")
+            || err.contains("names two raw identities"),
+        "the raw<->display binding refuses the swap: {}",
+        err
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 6: an ANNOTATION-ONLY artifact cannot delete its typed
+/// law rows and keep the passing compatibility rows — every
+/// lowered row is keyed to (law ordinal, cert ordinal), so gutting
+/// `law.rows` orphans the evidence instead of passing vacuously.
+#[test]
+fn annotation_only_law_deletion_is_refused() {
+    let dir = workdir("lawgut");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+@effects(none: { block })
+fn pure_math(v: Int) -> Int { return v + 1; }
+main locus App {
+    params { n: Int = 0; }
+    run() { println(pure_math(1)); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    // Empty law.rows by bracket-matching from the `"rows": [`
+    // inside the law object; the lowered rows and the `clean`
+    // verdict survive untouched.
+    let law_at = raw.find("\"law\": {").expect("law section");
+    let rows_key = raw[law_at..]
+        .find("\"rows\": [")
+        .map(|i| law_at + i)
+        .expect("law.rows");
+    let open = rows_key + "\"rows\": ".len();
+    let bytes = raw.as_bytes();
+    let (mut depth, mut close, mut in_str, mut esc) =
+        (0usize, open, false, false);
+    for (i, &b) in bytes.iter().enumerate().skip(open) {
+        if esc {
+            esc = false;
+            continue;
+        }
+        match b {
+            b'\\' if in_str => esc = true,
+            b'"' => in_str = !in_str,
+            b'[' if !in_str => depth += 1,
+            b']' if !in_str => {
+                depth -= 1;
+                if depth == 0 {
+                    close = i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(close > open, "bracket match");
+    let gutted =
+        format!("{}[]{}", &raw[..open], &raw[close + 1..]);
+    assert!(
+        gutted.contains("\"lowered\""),
+        "test premise: the passing lowered rows survive"
+    );
+    let p2 = dir.join("gutted.topology");
+    std::fs::write(&p2, restamp_digest(&strip_trailer(&gutted)))
+        .unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p2)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
     assert!(
         String::from_utf8_lossy(&out.stderr)
-            .contains("names two raw identities"),
-        "the raw<->display binding refuses the swap: {}",
+            .contains("is not claimed by any typed law row"),
+        "the lowered↔law bijection refuses the orphaned \
+         evidence: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 6: a bus-selector CANDIDATE swap — the selector keeps its
+/// authored name while its machine candidate set names a different
+/// existing topic. Admission recomputes the candidates from the
+/// catalog with the compiler's own matching rule and refuses the
+/// disagreement.
+#[test]
+fn selector_candidate_swap_is_refused() {
+    let dir = workdir("selswap");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+type M { v: Int; }
+topic Allowed { payload: M; subject: "app.allowed"; }
+topic Denied  { payload: M; subject: "app.denied"; }
+locus Sender {
+    params { n: Int = 0; }
+    bus { publish Allowed; }
+    @effects(publish: { Allowed })
+    fn send(v: Int) { let m = M { v: v }; Allowed <- m; }
+}
+locus Sink {
+    params { n: Int = 0; }
+    bus { subscribe Allowed as on_m; subscribe Denied as on_d; }
+    fn on_m(m: M) { self.n = m.v; }
+    fn on_d(m: M) { self.n = m.v; }
+}
+main locus App {
+    params { s: Sink = Sink { }; snd: Sender = Sender { }; }
+    run() { self.snd.send(1); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    let needle =
+        "\"topics\": [{\"name\": \"Allowed\", \"display\": \
+         \"Allowed\"}]";
+    assert_eq!(
+        raw.matches(needle).count(),
+        1,
+        "test premise: the selector candidate list is unique \
+         (catalog rows carry a subject field)"
+    );
+    let swapped = raw.replacen(
+        needle,
+        "\"topics\": [{\"name\": \"Denied\", \"display\": \
+         \"Denied\"}]",
+        1,
+    );
+    assert_ne!(swapped, raw, "test premise: the swap landed");
+    let p2 = dir.join("selswap.topology");
+    std::fs::write(&p2, restamp_digest(&strip_trailer(&swapped)))
+        .unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p2)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains(
+            "candidate topics do not match the set recomputed"
+        ),
+        "the selector binding refuses the candidate swap: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 6: a `causes:` OPERAND swap under a retained legacy
+/// verdict — the `law.legacy` report entry is keyed by the
+/// fingerprint re-rendered from the typed operands, so changing
+/// the class to another declared one orphans the entry.
+#[test]
+fn causes_operand_swap_is_refused() {
+    let dir = workdir("causesswap");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+effect money;
+effect spare;
+topic Sig { payload: Int; subject: "app.sig"; }
+locus P {
+    params { n: Int = 0; }
+    bus { publish Sig; }
+    @effects(causes: { money })
+    fn poke(v: Int) { Sig <- v; }
+}
+locus H {
+    params { n: Int = 0; }
+    bus { subscribe Sig as on_s; }
+    fn on_s(v: Int) { self.n = charge(v); }
+}
+@effects(is: { money })
+fn charge(v: Int) -> Int { return v; }
+@effects(is: { spare })
+fn side(v: Int) -> Int { return v; }
+main locus App {
+    params { h: H = H { }; p: P = P { }; }
+    run() { self.p.poke(1); println(side(1)); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    let needle = "\"class\": \"money\"";
+    assert_eq!(
+        raw.matches(needle).count(),
+        1,
+        "test premise: the causes payload is the only class ref"
+    );
+    let swapped =
+        raw.replacen(needle, "\"class\": \"spare\"", 1);
+    assert_ne!(swapped, raw, "test premise: the swap landed");
+    let p2 = dir.join("causesswap.topology");
+    std::fs::write(&p2, restamp_digest(&strip_trailer(&swapped)))
+        .unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p2)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("does not re-render from the typed law"),
+        "the legacy-report fingerprint refuses the operand \
+         swap: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 6: an injected FLEET law row — a family the application
+/// artifact does not own (Change 7 owns the fleet account) — is
+/// refused outright, never excluded from the document verdict.
+#[test]
+fn fleet_row_injection_is_refused() {
+    let dir = workdir("fleetrow");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+@effects(none: { block })
+fn pure_math(v: Int) -> Int { return v + 1; }
+main locus App {
+    params { n: Int = 0; }
+    run() { println(pure_math(1)); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    // Prepend the reviewer's exact row shape as row 0, bumping
+    // the real row to keep ordinal continuity out of the refusal
+    // path.
+    let anchor = "\"verdict\": \"clean\"";
+    assert!(raw.contains(anchor), "clean fixture");
+    let injected = raw.replacen(
+        "\"rows\": [\n",
+        "\"rows\": [\n      {\"ordinal\": 0, \"name\": \"ghost\", \
+         \"origin\": \"fleet\", \"family\": \"fleet\", \
+         \"verdict\": \"violated\", \"law\": {\"kind\": \
+         \"fleet_forbid_reaches\"}},\n",
+        1,
+    );
+    assert_ne!(injected, raw, "test premise: the row landed");
+    // Renumber the original row 0 to keep ordinal continuity out
+    // of the refusal path: bump every later ordinal by one.
+    let injected = injected.replacen(
+        "\"fleet_forbid_reaches\"}},\n      {\"ordinal\": 0,",
+        "\"fleet_forbid_reaches\"}},\n      {\"ordinal\": 1,",
+        1,
+    );
+    let p2 = dir.join("fleetrow.topology");
+    std::fs::write(&p2, restamp_digest(&strip_trailer(&injected)))
+        .unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p2)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("malformed artifact"),
+        "the fleet row is refused, not excluded: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("fleet row, which an application artifact"),
+        "the refusal names the fleet inadmissibility: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     let _ = std::fs::remove_dir_all(&dir);

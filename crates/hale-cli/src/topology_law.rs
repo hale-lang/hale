@@ -128,6 +128,14 @@ pub enum Dim {
 
 pub struct Selector {
     pub name: String,
+    /// Candidate TOPICS the selector matched — canonical
+    /// (raw, display) pairs, validated against the topic catalog
+    /// and REQUIRED to equal the set recomputed from it with the
+    /// compiler's own matching rule (`hale_model::bus_ref_matches`).
+    pub topics: Vec<(String, String)>,
+    /// Candidate wire-subject patterns, same contract against the
+    /// subject catalog.
+    pub subjects: Vec<String>,
 }
 
 /// The closed law vocabulary — every variant retains its operands.
@@ -192,10 +200,6 @@ pub enum Law {
     },
     DependsSet {
         locus: Ref,
-        // Retained for the closed decode (an unknown or malformed
-        // entry refuses); the depends family is unmigrated, so no
-        // downstream binding consumes the selectors yet.
-        #[allow(dead_code)]
         entries: Vec<Selector>,
     },
     PhaseEffects {
@@ -211,16 +215,22 @@ pub enum Law {
         dim: Dim,
         limit: u64,
     },
-    Fleet,
 }
 
 /// The artifact's own catalogs, against which every resolved
-/// reference must exist.
+/// reference must exist. Round 6: entity catalogs carry CANONICAL
+/// (raw name, display) pairs — the raw half is the machine join
+/// key, and a resolved reference must match one exact pair
+/// (cross-row consistency alone cannot anchor a singleton
+/// reference).
 pub struct RefContext {
-    pub groups: Vec<String>,
-    pub topics: Vec<String>,
-    pub fn_universe: Vec<String>,
-    pub loci: Vec<String>,
+    pub groups: Vec<(String, String)>,
+    /// (raw, display, wire subject).
+    pub topics: Vec<(String, String, String)>,
+    /// The wire-subject pattern universe.
+    pub subjects: Vec<String>,
+    pub fn_universe: Vec<(String, String)>,
+    pub loci: Vec<(String, String)>,
     pub phases: Vec<String>,
     pub seeds: Vec<String>,
     /// (name, declared, cyclic) from `law.effect_classes`.
@@ -238,12 +248,33 @@ pub struct RefContext {
 
 impl RefContext {
     pub fn from_artifact(v: &Value) -> Result<Self, String> {
-        let strings = |x: &Value| -> Vec<String> {
-            x.as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|s| s.as_str().map(|s| s.to_string()))
-                .collect()
+        let pairs = |x: &Value,
+                     what: &str|
+         -> Result<Vec<(String, String)>, String> {
+            let mut out = Vec::new();
+            for e in x.as_array().ok_or_else(|| {
+                format!("{} must be an array", what)
+            })? {
+                only_keys(e, what, &["name", "display"], &[])?;
+                out.push((
+                    e["name"]
+                        .as_str()
+                        .ok_or_else(|| {
+                            format!("{}: name must be a string", what)
+                        })?
+                        .to_string(),
+                    e["display"]
+                        .as_str()
+                        .ok_or_else(|| {
+                            format!(
+                                "{}: display must be a string",
+                                what
+                            )
+                        })?
+                        .to_string(),
+                ));
+            }
+            Ok(out)
         };
         let mut classes = Vec::new();
         for c in v["law"]["effect_classes"]
@@ -283,23 +314,58 @@ impl RefContext {
                 .map(|s| s.to_string()),
             )
             .collect();
-        Ok(RefContext {
-            groups: v["groups"]
-                .as_object()
-                .into_iter()
-                .flatten()
-                .map(|(k, _)| k.clone())
-                .collect(),
-            topics: v["topics"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|t| {
-                    t["name"].as_str().map(|s| s.to_string())
-                })
-                .collect(),
-            fn_universe: strings(&v["law"]["fn_universe"]),
-            loci: strings(&v["sorts"]["loci"]),
+        // Topic catalog rows carry the wire subject too.
+        let mut topics: Vec<(String, String, String)> = Vec::new();
+        for t in v["law"]["topics"].as_array().ok_or(
+            "law.topics must be an array of canonical topic rows",
+        )? {
+            only_keys(
+                t,
+                "law.topics[*]",
+                &["name", "display", "subject"],
+                &[],
+            )?;
+            topics.push((
+                t["name"]
+                    .as_str()
+                    .ok_or("law.topics[*].name must be a string")?
+                    .to_string(),
+                t["display"]
+                    .as_str()
+                    .ok_or(
+                        "law.topics[*].display must be a string",
+                    )?
+                    .to_string(),
+                t["subject"]
+                    .as_str()
+                    .ok_or(
+                        "law.topics[*].subject must be a string",
+                    )?
+                    .to_string(),
+            ));
+        }
+        let subjects: Vec<String> = v["law"]["subjects"]
+            .as_array()
+            .ok_or("law.subjects must be an array")?
+            .iter()
+            .map(|x| {
+                x.as_str().map(|s| s.to_string()).ok_or_else(
+                    || {
+                        "law.subjects entries must be strings"
+                            .to_string()
+                    },
+                )
+            })
+            .collect::<Result<_, _>>()?;
+        let cx = RefContext {
+            groups: pairs(&v["law"]["groups"], "law.groups")?,
+            topics,
+            subjects,
+            fn_universe: pairs(
+                &v["law"]["fn_universe"],
+                "law.fn_universe",
+            )?,
+            loci: pairs(&v["law"]["loci"], "law.loci")?,
             phases,
             seeds: v["seeds"]
                 .as_object()
@@ -312,17 +378,78 @@ impl RefContext {
                 std::collections::BTreeMap::new(),
                 std::collections::BTreeMap::new(),
             )),
-        })
+        };
+        // Cross-ties: the canonical catalogs must AGREE with the
+        // sections other consumers join on — a catalog is not a
+        // side channel an attacker can extend independently.
+        for t in v["topics"].as_array().into_iter().flatten() {
+            let (name, subject) = (
+                t["name"].as_str().unwrap_or(""),
+                t["subject"].as_str().unwrap_or(""),
+            );
+            if !cx
+                .topics
+                .iter()
+                .any(|(_, d, su)| d == name && su == subject)
+            {
+                return Err(format!(
+                    "topics section row `{}` has no canonical                      law.topics pair",
+                    name
+                ));
+            }
+        }
+        for (k, _) in v["groups"].as_object().into_iter().flatten()
+        {
+            if !cx.groups.iter().any(|(_, d)| d == k) {
+                return Err(format!(
+                    "groups section row `{}` has no canonical                      law.groups pair",
+                    k
+                ));
+            }
+        }
+        for l in v["sorts"]["loci"].as_array().into_iter().flatten()
+        {
+            let name = l.as_str().unwrap_or("");
+            if !cx.loci.iter().any(|(_, d)| d == name) {
+                return Err(format!(
+                    "sorts.loci row `{}` has no canonical                      law.loci pair",
+                    name
+                ));
+            }
+        }
+        Ok(cx)
     }
 
-    fn exists(
+    fn exists_pair(
+        &self,
+        catalog: &[(String, String)],
+        r: &Ref,
+        what: &str,
+    ) -> Result<(), String> {
+        if r.resolved
+            && !catalog
+                .iter()
+                .any(|(n, d)| *n == r.name && *d == r.display)
+        {
+            return Err(format!(
+                "{}: resolved `{}` (raw `{}`) does not match any canonical pair in this artifact",
+                what, r.display, r.name
+            ));
+        }
+        self.bind(r, what)
+    }
+
+    /// Phases and seeds live in a raw==display domain — a resolved
+    /// reference must be self-consistent AND cataloged.
+    fn exists_flat(
         &self,
         catalog: &[String],
         r: &Ref,
         what: &str,
     ) -> Result<(), String> {
         if r.resolved
-            && !catalog.iter().any(|n| *n == r.display)
+            && (r.name != r.display
+                || !catalog.iter().any(|n| *n == r.display))
         {
             return Err(format!(
                 "{}: resolved `{}` is not in this artifact",
@@ -339,7 +466,7 @@ impl RefContext {
         match seen.0.get(&r.name) {
             Some(d) if d != &r.display => {
                 return Err(format!(
-                    "{}: raw identity `{}` appears under two                      spellings (`{}` and `{}`)",
+                    "{}: raw identity `{}` appears under two spellings (`{}` and `{}`)",
                     what, r.name, d, r.display
                 ));
             }
@@ -352,7 +479,7 @@ impl RefContext {
         match seen.1.get(&r.display) {
             Some(n) if n != &r.name => {
                 return Err(format!(
-                    "{}: spelling `{}` names two raw identities                      (`{}` and `{}`)",
+                    "{}: spelling `{}` names two raw identities (`{}` and `{}`)",
                     what, r.display, n, r.name
                 ));
             }
@@ -366,12 +493,23 @@ impl RefContext {
     }
     fn group(&self, v: &Value, what: &str) -> Result<Ref, String> {
         let r = decode_ref(v, what)?;
-        self.exists(&self.groups, &r, what)?;
+        self.exists_pair(&self.groups, &r, what)?;
         Ok(r)
     }
     fn topic(&self, v: &Value, what: &str) -> Result<Ref, String> {
         let r = decode_ref(v, what)?;
-        self.exists(&self.topics, &r, what)?;
+        if r.resolved
+            && !self
+                .topics
+                .iter()
+                .any(|(n, d, _)| *n == r.name && *d == r.display)
+        {
+            return Err(format!(
+                "{}: resolved `{}` (raw `{}`) does not match any canonical pair in this artifact",
+                what, r.display, r.name
+            ));
+        }
+        self.bind(&r, what)?;
         Ok(r)
     }
     fn function(
@@ -380,22 +518,22 @@ impl RefContext {
         what: &str,
     ) -> Result<Ref, String> {
         let r = decode_ref(v, what)?;
-        self.exists(&self.fn_universe, &r, what)?;
+        self.exists_pair(&self.fn_universe, &r, what)?;
         Ok(r)
     }
     fn locus(&self, v: &Value, what: &str) -> Result<Ref, String> {
         let r = decode_ref(v, what)?;
-        self.exists(&self.loci, &r, what)?;
+        self.exists_pair(&self.loci, &r, what)?;
         Ok(r)
     }
     fn phase(&self, v: &Value, what: &str) -> Result<Ref, String> {
         let r = decode_ref(v, what)?;
-        self.exists(&self.phases, &r, what)?;
+        self.exists_flat(&self.phases, &r, what)?;
         Ok(r)
     }
     fn seed(&self, v: &Value, what: &str) -> Result<Ref, String> {
         let r = decode_ref(v, what)?;
-        self.exists(&self.seeds, &r, what)?;
+        self.exists_flat(&self.seeds, &r, what)?;
         Ok(r)
     }
     fn class(
@@ -496,35 +634,105 @@ impl RefContext {
             let name = s["name"].as_str().ok_or_else(|| {
                 format!("{}: name must be a string", w)
             })?;
+            let mut cand_topics: Vec<(String, String)> = Vec::new();
             for t in s["topics"]
                 .as_array()
                 .ok_or_else(|| format!("{}: topics array", w))?
             {
                 only_keys(t, &w, &["name", "display"], &[])?;
+                let raw = t["name"].as_str().ok_or_else(|| {
+                    format!("{}: candidate name", w)
+                })?;
                 let disp =
                     t["display"].as_str().ok_or_else(|| {
                         format!("{}: candidate display", w)
                     })?;
-                // Candidate topics must exist in the artifact.
-                if !self.topics.iter().any(|n| n == disp) {
+                // Candidate topics must be canonical pairs.
+                if !self
+                    .topics
+                    .iter()
+                    .any(|(n, d, _)| n == raw && d == disp)
+                {
                     return Err(format!(
-                        "{}: candidate topic `{}` is not in this \
-                         artifact",
+                        "{}: candidate topic `{}` does not match \
+                         any canonical pair in this artifact",
                         w, disp
                     ));
                 }
+                cand_topics.push(
+                    (raw.to_string(), disp.to_string()),
+                );
             }
-            if !s["subjects"].as_array().is_some_and(|ss| {
-                ss.iter().all(|x| x.is_string())
-            }) {
+            let mut cand_subjects: Vec<String> = Vec::new();
+            for x in s["subjects"]
+                .as_array()
+                .ok_or_else(|| format!("{}: subjects array", w))?
+            {
+                let pat = x.as_str().ok_or_else(|| {
+                    format!("{}: subjects must be strings", w)
+                })?;
+                if !self.subjects.iter().any(|p| p == pat) {
+                    return Err(format!(
+                        "{}: candidate subject `{}` is not in \
+                         this artifact's subject universe",
+                        w, pat
+                    ));
+                }
+                cand_subjects.push(pat.to_string());
+            }
+            // The candidate sets ARE the selector's normalized
+            // meaning — and they are NOT free: recompute them from
+            // the catalogs with the compiler's own matching rule
+            // and require agreement. A candidate swap under an
+            // unchanged selector name cannot survive.
+            let sel = Selector {
+                name: name.to_string(),
+                topics: cand_topics,
+                subjects: cand_subjects,
+            };
+            let mut expect_topics: Vec<(String, String)> = self
+                .topics
+                .iter()
+                .filter(|(n, _, _)| {
+                    hale_model::bus_ref_matches(&sel.name, n)
+                })
+                .map(|(n, d, _)| (n.clone(), d.clone()))
+                .collect();
+            expect_topics.sort();
+            expect_topics.dedup();
+            let mut got_topics = sel.topics.clone();
+            got_topics.sort();
+            got_topics.dedup();
+            if got_topics != expect_topics {
                 return Err(format!(
-                    "{}: subjects must be strings",
-                    w
+                    "{}: candidate topics do not match the set \
+                     recomputed from the catalog for selector \
+                     `{}`",
+                    w, sel.name
                 ));
             }
-            out.push(Selector {
-                name: name.to_string(),
-            });
+            let mut expect_subjects: Vec<String> = self
+                .subjects
+                .iter()
+                .filter(|p| {
+                    hale_model::bus_ref_matches(&sel.name, p)
+                })
+                .cloned()
+                .collect();
+            expect_subjects.sort();
+            expect_subjects.dedup();
+            let mut got_subjects = sel.subjects.clone();
+            got_subjects.sort();
+            got_subjects.dedup();
+            if got_subjects != expect_subjects {
+                return Err(format!(
+                    "{}: candidate subjects do not match the set \
+                     recomputed from the catalog for selector \
+                     `{}`",
+                    w, sel.name
+                ));
+            }
+            out.push(sel);
         }
         Ok(out)
     }
@@ -588,7 +796,6 @@ pub fn has_unresolved(law: &Law) -> bool {
             r(at)
                 || matches!(dim, Dim::UserClass(u) if c(u))
         }
-        Law::Fleet => false,
     }
 }
 
@@ -927,7 +1134,11 @@ pub fn decode_law(
             | "fleet_only_edges"
             | "fleet_require_endpoint"
             | "fleet_count_instances",
-        ) => Ok(Law::Fleet),
+        ) => Err(
+            "fleet law rows are not admissible in an application \
+             artifact (the fleet account is Change 7's)"
+                .to_string(),
+        ),
         other => Err(format!(
             "law kind `{:?}` is not in the closed vocabulary",
             other
@@ -954,7 +1165,6 @@ pub fn family_of(law: &Law) -> &'static str {
         | Law::DependsSet { .. }
         | Law::AllocBudget { .. }
         | Law::QuantBudget { .. } => "unmigrated",
-        Law::Fleet => "fleet",
     }
 }
 
@@ -1141,6 +1351,53 @@ pub fn expected_budget_form(law: &Law) -> Option<String> {
     }
 }
 
+/// Round 6: the LEGACY-report fingerprint the unmigrated
+/// non-budget families generate — must byte-match
+/// `ClaimRow::legacy_form` (the emitter's spelling).
+pub fn expected_legacy_form(law: &Law) -> Option<String> {
+    match law {
+        Law::EffectCauses { at, classes } => {
+            let cs: Vec<&str> = classes
+                .iter()
+                .map(|c| c.class.as_str())
+                .collect();
+            Some(format!(
+                "causes {{{}}} from {{{}}}",
+                cs.join(", "),
+                at.display
+            ))
+        }
+        Law::DependsSet { locus, entries } => {
+            let es: Vec<&str> = entries
+                .iter()
+                .map(|e| e.name.as_str())
+                .collect();
+            Some(format!(
+                "depends {{{}}} on {{{}}}",
+                es.join(", "),
+                locus.display
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// The subject spelling a row's lowered evidence carries.
+fn expected_subject(law: &Law) -> Option<String> {
+    match law {
+        Law::EffectForbid { at, .. }
+        | Law::EffectOnly { at, .. }
+        | Law::EffectPublishSet { at, .. }
+        | Law::NoPanic { at }
+        | Law::AllocBudget { at, .. }
+        | Law::QuantBudget { at, .. } => Some(at.display.clone()),
+        Law::PhaseEffects { locus, .. } => {
+            Some(locus.display.clone())
+        }
+        _ => None,
+    }
+}
+
 fn sev(v: &str) -> u8 {
     match v {
         "holds" => 0,
@@ -1163,7 +1420,6 @@ pub fn validate_law_account(
         "bound",
         "certificate",
         "unmigrated",
-        "fleet",
     ];
     const VERDICTS: &[&str] =
         &["holds", "violated", "uncertified", "invalid"];
@@ -1182,7 +1438,6 @@ pub fn validate_law_account(
     let origin_ok = |origin: &str, family: &str| -> bool {
         match family {
             "certificate" | "unmigrated" => origin == "annotation",
-            "fleet" => origin == "fleet",
             _ => {
                 origin == "main"
                     || origin == "library"
@@ -1194,6 +1449,21 @@ pub fn validate_law_account(
     let mut prev_ordinal: Option<u64> = None;
     let mut law_all_pass = true;
     let mut claims_tier_ordinals: Vec<u64> = Vec::new();
+    // Round 6: the exact multiset of `lowered` evidence rows the
+    // typed law account generates — keyed (law ordinal, cert
+    // ordinal). The lowered section must project one-to-one from
+    // it: an orphan on either side refuses.
+    let mut expected_lowered: std::collections::BTreeMap<
+        (u64, Option<u64>),
+        (String, String, String),
+    > = std::collections::BTreeMap::new();
+    // …and the exact set of `law.legacy` report entries the
+    // unmigrated non-budget rows require: ordinal -> (fingerprint,
+    // verdict).
+    let mut expected_legacy: std::collections::BTreeMap<
+        u64,
+        (String, String),
+    > = std::collections::BTreeMap::new();
     for (i, row) in v["law"]["rows"]
         .as_array()
         .into_iter()
@@ -1208,6 +1478,20 @@ pub fn validate_law_account(
             &["certs", "evidence", "file", "span"],
         )
         .map_err(|e| format!("{}: law.rows[{}]: {}", label, i, e))?;
+        // Fleet rows are refused BY NAME: the application
+        // artifact does not own a fleet account (Change 7 does),
+        // so a fleet-family row can never be excluded from the
+        // document verdict — it is inadmissible outright.
+        if row["family"] == "fleet"
+            || row["origin"] == "fleet"
+        {
+            return Err(format!(
+                "{}: malformed artifact — law.rows[{}] carries a \
+                 fleet row, which an application artifact does \
+                 not own",
+                label, i
+            ));
+        }
         let ok = row["ordinal"].is_u64()
             && row["name"].as_str().is_some_and(|n| !n.is_empty())
             && row["origin"].is_string()
@@ -1265,6 +1549,17 @@ pub fn validate_law_account(
                 label, i
             ));
         }
+        // A row whose law generates no certificates must not
+        // carry any — unvalidated baggage is not admitted.
+        if expected_cert_forms(&decoded).is_none()
+            && row.get("certs").is_some()
+        {
+            return Err(format!(
+                "{}: malformed artifact — law.rows[{}] carries \
+                 certificates its law does not generate",
+                label, i
+            ));
+        }
         // Certificate rows: evidence binding + verdict recompute.
         if let Some(expected) = expected_cert_forms(&decoded) {
             let certs: Vec<&Value> = row["certs"]
@@ -1310,6 +1605,18 @@ pub fn validate_law_account(
                     if sev(r) > sev(recomputed) {
                         recomputed = r;
                     }
+                    expected_lowered.insert(
+                        (
+                            row["ordinal"].as_u64().unwrap_or(0),
+                            Some(k as u64),
+                        ),
+                        (
+                            form.clone(),
+                            r.to_string(),
+                            expected_subject(&decoded)
+                                .unwrap_or_default(),
+                        ),
+                    );
                 }
                 // The aggregate verdict is the max certificate
                 // severity — or `invalid` when justified by the
@@ -1362,29 +1669,52 @@ pub fn validate_law_account(
         }
         // Budget rows: bound to their compatibility `lowered`
         // evidence — an operand mutation (per_call 4 → 0) cannot
-        // keep the old passing row.
+        // keep the old passing row. The entry joins the exact
+        // bijection below, so it must exist with the re-rendered
+        // form AND nothing else may claim this ordinal.
         if let Some(form) = expected_budget_form(&decoded) {
             if verdict == "holds" || verdict == "violated" {
-                let hit = v["lowered"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .any(|r| {
-                        r["form"].as_str() == Some(&form)
-                            && r["result"] == verdict
-                    });
-                if !hit {
+                expected_lowered.insert(
+                    (row["ordinal"].as_u64().unwrap_or(0), None),
+                    (
+                        form,
+                        verdict.to_string(),
+                        expected_subject(&decoded)
+                            .unwrap_or_default(),
+                    ),
+                );
+            }
+        }
+        // Unmigrated non-budget rows (`causes:` / `depends:`):
+        // their imported old-engine verdict must be keyed to the
+        // exact law by a `law.legacy` report entry whose
+        // fingerprint re-renders from the typed operands.
+        if let Some(form) = expected_legacy_form(&decoded) {
+            // A causes row is held to the class-validity account:
+            // an undeclared or cyclic class cannot certify.
+            if let Law::EffectCauses { classes, .. } = &decoded {
+                let class_invalid = classes.iter().any(|c| {
+                    !c.builtin
+                        && cx
+                            .classes
+                            .iter()
+                            .find(|(n, _, _)| *n == c.class)
+                            .map_or(true, |(_, d, cy)| !d || *cy)
+                });
+                if class_invalid && verdict == "holds" {
                     return Err(format!(
                         "{}: malformed artifact — law.rows[{}] \
-                         (`{}`) has no lowered evidence row \
-                         matching `{}` with result `{}`",
-                        label,
-                        i,
-                        row["name"].as_str().unwrap_or("?"),
-                        form,
-                        verdict
+                         holds over an undeclared or cyclic \
+                         effect class",
+                        label, i
                     ));
                 }
+            }
+            if verdict == "holds" || verdict == "violated" {
+                expected_legacy.insert(
+                    row["ordinal"].as_u64().unwrap_or(0),
+                    (form, verdict.to_string()),
+                );
             }
         }
         if matches!(
@@ -1394,7 +1724,7 @@ pub fn validate_law_account(
             claims_tier_ordinals
                 .push(row["ordinal"].as_u64().unwrap_or(0));
         }
-        if fam != "fleet" && row["verdict"] != "holds" {
+        if row["verdict"] != "holds" {
             law_all_pass = false;
         }
         let ord = row["ordinal"].as_u64().unwrap_or(0);
@@ -1407,6 +1737,132 @@ pub fn validate_law_account(
             ));
         }
         prev_ordinal = Some(ord);
+    }
+    // Round 6: the lowered section projects ONE-TO-ONE from the
+    // typed law account. Every lowered row must be claimed by
+    // exactly one (law ordinal, cert ordinal) expectation, and
+    // every expectation must be met — deleting law rows orphans
+    // their evidence instead of passing vacuously.
+    {
+        let mut unmet = expected_lowered;
+        for (i, r) in v["lowered"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            only_keys(
+                r,
+                "lowered row",
+                &["subject", "form", "result", "ordinal"],
+                &["cert"],
+            )
+            .map_err(|e| {
+                format!("{}: lowered[{}]: {}", label, i, e)
+            })?;
+            let Some(ord) = r["ordinal"].as_u64() else {
+                return Err(format!(
+                    "{}: malformed artifact — lowered[{}] carries \
+                     no law ordinal",
+                    label, i
+                ));
+            };
+            let cert = r["cert"].as_u64();
+            let Some((form, result, subject)) =
+                unmet.remove(&(ord, cert))
+            else {
+                return Err(format!(
+                    "{}: malformed artifact — lowered[{}] (`{}`) \
+                     is not claimed by any typed law row",
+                    label,
+                    i,
+                    r["form"].as_str().unwrap_or("?")
+                ));
+            };
+            if r["form"].as_str() != Some(&form)
+                || r["result"].as_str() != Some(&result)
+                || r["subject"].as_str() != Some(&subject)
+            {
+                return Err(format!(
+                    "{}: malformed artifact — lowered[{}] does \
+                     not match its typed law (expected `{}` = \
+                     `{}` on `{}`)",
+                    label, i, form, result, subject
+                ));
+            }
+        }
+        if let Some(((ord, cert), (form, _, _))) =
+            unmet.into_iter().next()
+        {
+            return Err(format!(
+                "{}: malformed artifact — law ordinal {}{} has no \
+                 lowered evidence row matching `{}`",
+                label,
+                ord,
+                cert.map(|c| format!(" cert {}", c))
+                    .unwrap_or_default(),
+                form
+            ));
+        }
+    }
+    // Round 6: the `law.legacy` report projects one-to-one from
+    // the unmigrated non-budget rows with imported verdicts.
+    {
+        let mut unmet = expected_legacy;
+        for (i, e) in v["law"]["legacy"]
+            .as_array()
+            .ok_or_else(|| {
+                format!(
+                    "{}: malformed artifact — law.legacy must be \
+                     an array",
+                    label
+                )
+            })?
+            .iter()
+            .enumerate()
+        {
+            only_keys(
+                e,
+                "law.legacy entry",
+                &["ordinal", "form", "result"],
+                &[],
+            )
+            .map_err(|x| {
+                format!("{}: law.legacy[{}]: {}", label, i, x)
+            })?;
+            let Some(ord) = e["ordinal"].as_u64() else {
+                return Err(format!(
+                    "{}: malformed artifact — law.legacy[{}] \
+                     ordinal must be a number",
+                    label, i
+                ));
+            };
+            let Some((form, result)) = unmet.remove(&ord) else {
+                return Err(format!(
+                    "{}: malformed artifact — law.legacy[{}] is \
+                     not claimed by any unmigrated law row",
+                    label, i
+                ));
+            };
+            if e["form"].as_str() != Some(&form)
+                || e["result"].as_str() != Some(&result)
+            {
+                return Err(format!(
+                    "{}: malformed artifact — law.legacy[{}] does \
+                     not re-render from the typed law at ordinal \
+                     {} (expected `{}` = `{}`)",
+                    label, i, ord, form, result
+                ));
+            }
+        }
+        if let Some((ord, (form, _))) = unmet.into_iter().next() {
+            return Err(format!(
+                "{}: malformed artifact — law ordinal {} imports \
+                 a legacy verdict with no report entry matching \
+                 `{}`",
+                label, ord, form
+            ));
+        }
     }
     // Capabilities: the EXACT flag set; adequacy recomputed.
     const CAP_FLAGS: &[(&str, u32)] = &[

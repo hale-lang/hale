@@ -81,6 +81,27 @@ never a fail-open `holds`), and the document `verdict` follows
 the machine. Artifact consumers reject unrecognized semantics by
 design; re-dump with the current compiler.
 
+Round 6: the law account is EVIDENCE-CLOSED on every edge. The
+`law` catalogs become canonical `(name, display)` pairs (loci,
+groups, topics + wire subject, the wire-subject universe, and
+`fn_universe`), and every resolved reference must match one exact
+pair - the raw machine join key is anchored, so a singleton
+`name` swap refuses; the catalogs cross-tie to the sections other
+consumers join on. Bus selectors keep their candidate sets and
+admission recomputes them from the catalogs with the compiler's
+own matching rule (`bus_ref_matches`) - a candidate swap under an
+unchanged selector name refuses. Every compatibility `lowered`
+row is keyed to its law ordinal (and certificate ordinal), and
+the section must project one-to-one from the typed account -
+deleting law rows orphans their evidence even in an
+annotation-only artifact. A new `law.legacy` report keys the old
+engines' `causes:`/`depends:` verdicts by ordinal and by a form
+fingerprint re-rendered from the typed operands (operand
+mutations orphan the entry; a `causes:` row naming an undeclared
+or cyclic class cannot hold). Fleet-family rows are refused
+outright in application artifacts - the fleet account is Change
+7's.
+
 Round 5: the `law` section carries a `fn_universe` catalog (the
 FULL model function universe - module-scoped annotation subjects
 admit) and an `effect_classes` catalog (declared/cyclic status);

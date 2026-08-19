@@ -914,13 +914,19 @@ choose to accept it, but must never read "nothing to check" as
 The digest is only the integrity gate. Past it, every in-tree
 consumer — `hale topology graph` and `hale fleet check` alike —
 runs the same **law-account admission**: it decodes each law row's
-typed payload against a closed per-kind shape, resolves references
-against the artifact's own catalogs (including `law.fn_universe`
-and `law.effect_classes`), requires certificates and budget rows
-to match forms re-rendered from the typed operands, joins `claims`
-rows to law rows one-to-one in both directions, and recomputes the
-document verdict. A restamped artifact whose sections disagree
-with each other is refused even though its digest verifies.
+typed payload against a closed per-kind shape, resolves every
+reference against the artifact's canonical catalogs (exact
+`(name, display)` pairs — the raw machine join key is anchored,
+not merely consistent), recomputes bus-selector candidate sets
+from the catalogs with the compiler's own matching rule, requires
+the `lowered` evidence to project one-to-one from the typed
+account (each row keyed by law ordinal), requires the
+`law.legacy` report to re-render from the unmigrated rows' typed
+operands, joins `claims` rows to law rows one-to-one in both
+directions, refuses fleet-family rows outright, and recomputes
+the document verdict. A restamped artifact whose sections
+disagree with each other is refused even though its digest
+verifies.
 
 The artifact shape (schema `1.11`):
 
@@ -954,11 +960,17 @@ The artifact shape (schema `1.11`):
   "topics":    [ {"name", "subject", "shape", "payload_hash"} ],
   "claims":    [ {"name", "form", "result": <verdict>,
                   "ordinal", "source"?} ],
-  "lowered":   [ {"subject", "form", "result": <verdict>} ],
+  "lowered":   [ {"subject", "form", "result": <verdict>,
+                  "ordinal", "cert"?} ],
   "law":       { "law_digest", "inputs_digest",
-                 "fn_universe": [names],
+                 "fn_universe": [ {"name", "display"} ],
+                 "loci":     [ {"name", "display"} ],
+                 "groups":   [ {"name", "display"} ],
+                 "topics":   [ {"name", "display", "subject"} ],
+                 "subjects": [patterns],
                  "effect_classes": [ {"name", "declared",
                                       "cyclic"} ],
+                 "legacy": [ {"ordinal", "form", "result"} ],
                  "rows": [ {"ordinal", "name", "origin",
                             "family", "verdict",
                             "law": {"kind", …typed operand refs,

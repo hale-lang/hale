@@ -1114,6 +1114,68 @@ impl ClaimRow {
     /// it answers — review round 3: a table-wide digest cannot see
     /// two same-subject rows exchanging their certs), and a
     /// renderer may display them.
+    /// The compatibility `lowered` form a BUDGET row generates —
+    /// the SAME spelling the legacy producers emit, so the emitter
+    /// can key each legacy evidence row to its law ordinal
+    /// (round 6) and admission can re-render it from the typed
+    /// operands.
+    pub fn budget_lowered_form(&self) -> Option<String> {
+        match &self.law {
+            ClaimIr::AllocBudget { at, per_call } => Some(format!(
+                "bound alloc <= {} on paths from {{{}}}",
+                per_call, at.1.display
+            )),
+            ClaimIr::QuantBudget { at, dim, limit } => {
+                let d = match dim {
+                    QuantDimIr::StackBytes => "stack_bytes".to_string(),
+                    QuantDimIr::BlockPoints => "block_points".to_string(),
+                    QuantDimIr::Publish => "publish".to_string(),
+                    QuantDimIr::Fanout => "fanout".to_string(),
+                    QuantDimIr::UserClass(c) => c.name.clone(),
+                };
+                Some(format!(
+                    "bound {} <= {} on paths from {{{}}}",
+                    d, limit, at.1.display
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// Round 6: the typed LEGACY-report fingerprint for the
+    /// unmigrated non-budget families (`causes:` / `depends:`) —
+    /// rendered from the typed operands, so the `law.legacy` entry
+    /// binds the imported old-engine verdict to the EXACT law in
+    /// the row (an operand mutation changes the fingerprint and
+    /// orphans the report entry).
+    pub fn legacy_form(&self) -> Option<String> {
+        match &self.law {
+            ClaimIr::EffectCauses { at, classes } => {
+                let cs: Vec<&str> = classes
+                    .iter()
+                    .map(|c| c.name.as_str())
+                    .collect();
+                Some(format!(
+                    "causes {{{}}} from {{{}}}",
+                    cs.join(", "),
+                    at.1.display
+                ))
+            }
+            ClaimIr::DependsSet { locus, entries } => {
+                let es: Vec<&str> = entries
+                    .iter()
+                    .map(|b| b.name.as_str())
+                    .collect();
+                Some(format!(
+                    "depends {{{}}} on {{{}}}",
+                    es.join(", "),
+                    locus.1.display
+                ))
+            }
+            _ => None,
+        }
+    }
+
     pub fn certificate_forms(&self) -> Vec<(String, String)> {
         let subject_disp =
             |at: &(Option<FunctionId>, NameRef)| at.1.display.clone();

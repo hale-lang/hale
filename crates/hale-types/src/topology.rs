@@ -1176,10 +1176,51 @@ pub fn dump_topology_parts(
                 result: r.result,
             })
             .collect();
-    lowered.extend(crate::budget_check::certificate_rows(
-        &programs,
-        &bundle.import_renames,
-    ));
+    // Round 6: every lowered row is KEYED to the typed law it
+    // evidences — (law ordinal, certificate ordinal). Certificate
+    // rows carry theirs from the projection; the legacy budget /
+    // quantitative producers are keyed by their form re-rendered
+    // from the typed operands (`ClaimRow::budget_lowered_form`),
+    // consumed in table order.
+    let mut lowered_keys: Vec<Option<(u32, Option<u32>)>> =
+        projected_lowered
+            .iter()
+            .map(|r| Some((r.ordinal, r.cert)))
+            .collect();
+    let mut budget_ordinals: std::collections::BTreeMap<
+        String,
+        std::collections::VecDeque<u32>,
+    > = std::collections::BTreeMap::new();
+    for row in &law_table.rows {
+        if let Some(form) = row.budget_lowered_form() {
+            budget_ordinals
+                .entry(form)
+                .or_default()
+                .push_back(row.ordinal);
+        }
+    }
+    let mut push_budget_rows =
+        |rows: Vec<crate::effects::LoweredCertificate>,
+         lowered: &mut Vec<crate::effects::LoweredCertificate>,
+         keys: &mut Vec<Option<(u32, Option<u32>)>>| {
+            for r in rows {
+                let form = demangle_str(&r.form);
+                let key = budget_ordinals
+                    .get_mut(&form)
+                    .and_then(|q| q.pop_front())
+                    .map(|o| (o, None));
+                keys.push(key);
+                lowered.push(r);
+            }
+        };
+    push_budget_rows(
+        crate::budget_check::certificate_rows(
+            &programs,
+            &bundle.import_renames,
+        ),
+        &mut lowered,
+        &mut lowered_keys,
+    );
     let fanout = |subj: &str| -> u64 {
         graph
             .subjects
@@ -1187,9 +1228,11 @@ pub fn dump_topology_parts(
             .map(|si| si.subscribers.len().max(1) as u64)
             .unwrap_or(1)
     };
-    lowered.extend(crate::quantitative::certificate_rows(
-        &programs, &fanout,
-    ));
+    push_budget_rows(
+        crate::quantitative::certificate_rows(&programs, &fanout),
+        &mut lowered,
+        &mut lowered_keys,
+    );
     // Close the `claims` array before opening `lowered` — omitting
     // this emitted a document no standards-compliant JSON parser
     // accepts, for every shape (no claims, one, many, with or
@@ -1197,12 +1240,20 @@ pub fn dump_topology_parts(
     // asserted on substrings and never parsed the whole document;
     // `topology_artifact_is_valid_json` now does.
     out.push_str("  ],\n  \"lowered\": [\n");
-    for r in &lowered {
+    for (r, key) in lowered.iter().zip(lowered_keys.iter()) {
+        let keyed = match key {
+            Some((o, Some(c))) => {
+                format!(", \"ordinal\": {}, \"cert\": {}", o, c)
+            }
+            Some((o, None)) => format!(", \"ordinal\": {}", o),
+            None => String::new(),
+        };
         out.push_str(&format!(
-            "    {{\"subject\": {}, \"form\": {}, \"result\": {}}},\n",
+            "    {{\"subject\": {}, \"form\": {}, \"result\": {}{}}},\n",
             quote(&demangle_str(&r.subject)),
             quote(&demangle_str(&r.form)),
-            quote(r.result.as_str())
+            quote(r.result.as_str()),
+            keyed
         ));
     }
     trim_trailing_comma(&mut out);
@@ -1223,23 +1274,104 @@ pub fn dump_topology_parts(
         "    \"inputs_digest\": \"{:016x}\",\n",
         law_evidence.inputs_digest
     ));
-    // Round 5: the FULL law-subject catalog — annotation subjects
-    // resolve against the whole model function table (module fns
-    // included), which is wider than the legacy `sorts.fns`
-    // summary universe; a consumer validating resolved references
-    // needs the catalog the lowering actually resolved against.
+    // Round 5/6: the FULL law-subject catalogs — annotation
+    // subjects resolve against the whole model function table
+    // (module fns included), wider than the legacy `sorts.fns`
+    // summary universe. Round 6: every catalog entry is a
+    // CANONICAL PAIR `{name: raw, display}` — the raw half is the
+    // machine join key, and a resolved reference must match one
+    // exact pair (cross-row consistency alone cannot anchor a
+    // singleton reference).
     {
-        let mut subjects: Vec<&str> = vmodel
+        let pair_catalog = |label: &str,
+                            mut pairs: Vec<(String, String)>|
+         -> String {
+            pairs.sort();
+            pairs.dedup();
+            format!(
+                "    \"{}\": [{}],\n",
+                label,
+                pairs
+                    .iter()
+                    .map(|(n, d)| format!(
+                        "{{\"name\": {}, \"display\": {}}}",
+                        quote(n),
+                        quote(d)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        out.push_str(&pair_catalog(
+            "fn_universe",
+            vmodel
+                .entities
+                .functions
+                .iter()
+                .map(|f| (f.name.clone(), f.display.clone()))
+                .collect(),
+        ));
+        out.push_str(&pair_catalog(
+            "loci",
+            vmodel
+                .entities
+                .loci
+                .iter()
+                .map(|l| (l.name.clone(), l.display.clone()))
+                .collect(),
+        ));
+        out.push_str(&pair_catalog(
+            "groups",
+            vmodel
+                .entities
+                .groups
+                .iter()
+                .map(|g| (g.name.clone(), g.display.clone()))
+                .collect(),
+        ));
+        // Topics carry their wire subject too — the selector
+        // binding recomputes candidate sets from these rows with
+        // the SAME matching rule the lowering used
+        // (`hale_model::bus_ref_matches`).
+        let mut topic_rows: Vec<String> = vmodel
             .entities
-            .functions
+            .topics
             .iter()
-            .map(|f| f.display.as_str())
+            .map(|t| {
+                let subject = vmodel
+                    .entities
+                    .subjects
+                    .get(t.subject.index())
+                    .map(|su| su.pattern.as_str())
+                    .unwrap_or("");
+                format!(
+                    "{{\"name\": {}, \"display\": {}, \"subject\": {}}}",
+                    quote(&t.name),
+                    quote(&t.display),
+                    quote(subject)
+                )
+            })
             .collect();
-        subjects.sort_unstable();
-        subjects.dedup();
+        topic_rows.sort();
+        topic_rows.dedup();
         out.push_str(&format!(
-            "    \"fn_universe\": [{}],\n",
-            subjects
+            "    \"topics\": [{}],\n",
+            topic_rows.join(", ")
+        ));
+        // The wire-subject universe — selector SUBJECT candidates
+        // resolve against the model's subject table, which is
+        // wider than the declared topics (raw publish subjects).
+        let mut subject_rows: Vec<&str> = vmodel
+            .entities
+            .subjects
+            .iter()
+            .map(|su| su.pattern.as_str())
+            .collect();
+        subject_rows.sort_unstable();
+        subject_rows.dedup();
+        out.push_str(&format!(
+            "    \"subjects\": [{}],\n",
+            subject_rows
                 .iter()
                 .map(|s| quote(s))
                 .collect::<Vec<_>>()
@@ -1270,6 +1402,33 @@ pub fn dump_topology_parts(
         out.push_str(&format!(
             "    \"effect_classes\": [{}],\n",
             rows.join(", ")
+        ));
+    }
+    // Round 6: the typed LEGACY report — the old engines'
+    // verdicts for the unmigrated non-budget families (`causes:` /
+    // `depends:`), keyed by law ordinal and by the form
+    // FINGERPRINT re-rendered from the typed operands. Admission
+    // re-renders the fingerprint from the decoded payload: an
+    // operand mutation orphans the report entry, so a bare
+    // imported verdict cannot survive a payload edit.
+    {
+        let mut entries: Vec<String> = Vec::new();
+        for row in &law_table.rows {
+            let Some(form) = row.legacy_form() else { continue };
+            let Some(vd) = legacy_unmigrated.get(&row.ordinal)
+            else {
+                continue;
+            };
+            entries.push(format!(
+                "{{\"ordinal\": {}, \"form\": {}, \"result\": {}}}",
+                row.ordinal,
+                quote(&demangle_str(&form)),
+                quote(vd.as_str())
+            ));
+        }
+        out.push_str(&format!(
+            "    \"legacy\": [{}],\n",
+            entries.join(", ")
         ));
     }
     out.push_str("    \"rows\": [\n");

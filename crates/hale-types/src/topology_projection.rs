@@ -627,12 +627,19 @@ pub struct ProjectedClaimRow {
     pub ordinal: u32,
 }
 
-/// One projected `lowered` row.
+/// One projected `lowered` row. Round 6: each row is KEYED to the
+/// typed law it evidences — the law ordinal plus, for certificate
+/// rows, the certificate ordinal within that row — so admission can
+/// enforce an exact bidirectional lowered ↔ law/cert projection
+/// (deleting law rows orphans their evidence instead of passing
+/// vacuously).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectedLoweredRow {
     pub subject: String,
     pub form: String,
     pub result: crate::verdict::Verdict,
+    pub ordinal: u32,
+    pub cert: Option<u32>,
 }
 
 /// One TYPED law row (GH #476 Change 6) — the artifact's `law`
@@ -1036,8 +1043,8 @@ pub fn project_law_rows(
             continue;
         };
         let forms = row.certificate_forms();
-        for (cert, (subject, form)) in
-            r.certs.iter().zip(forms.into_iter())
+        for (k, (cert, (subject, form))) in
+            r.certs.iter().zip(forms.into_iter()).enumerate()
         {
             // The stored form is validated equal to the expected
             // one (EvidenceTable::validate); the subject spelling
@@ -1045,6 +1052,8 @@ pub fn project_law_rows(
             debug_assert_eq!(cert.form, form);
             lowered.push(ProjectedLoweredRow {
                 subject,
+                ordinal: r.ordinal,
+                cert: Some(k as u32),
                 form: cert.form.clone(),
                 result: match cert.result {
                     hale_model::VerdictIr::Holds => {

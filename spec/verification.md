@@ -359,11 +359,22 @@ consumes (holes are the validation cross-check, never a source of
 positive knowledge). A payload contract carries a structural
 `opaque` discriminant — `opaque` is not a reserved word, so a
 struct field literally named `opaque` keeps its structural shape.
-The `law` section also carries two catalogs: **`fn_universe`**
-(every function display the model knows, wider than the legacy
-`sorts.fns` — module-scoped annotation subjects resolve against
-it) and **`effect_classes`** (each class with its `declared` /
-`cyclic` status). Legacy `claims` rows carry the law `ordinal`
+The `law` section also carries the CANONICAL catalogs:
+**`fn_universe`**, **`loci`**, **`groups`**, and **`topics`** as
+`{name: <raw canonical identity>, display}` pairs (topics add
+their wire `subject`), **`subjects`** (the wire-subject pattern
+universe), and **`effect_classes`** (each class with its
+`declared` / `cyclic` status). `fn_universe` covers every
+function the model knows — wider than the legacy `sorts.fns`, so
+module-scoped annotation subjects resolve. A resolved reference
+must match one exact `(name, display)` pair — the raw half is
+the machine join key and is anchored, not merely
+cross-row-consistent — and the catalogs are cross-tied to the
+`topics`/`groups`/`sorts` sections other consumers join on. Bus
+selectors keep their candidate sets, and admission RECOMPUTES
+each set from the catalogs with the compiler's own matching rule
+(`bus_ref_matches`) — a candidate swap under an unchanged
+selector name is refused. Legacy `claims` rows carry the law `ordinal`
 they project from. **One shared admission**
 (`validate_law_account`) runs for Track A rendering AND fleet
 composition: it decodes every payload against the closed
@@ -373,13 +384,23 @@ per-kind shape (unknown fields refused), resolves every
 `fn_universe`), refuses a `holds` verdict over any unresolved
 operand, re-renders each certificate's expected form from the
 typed operands and requires the row's `certs` to match it (an
-operand swap cannot keep the old certificates), requires each
-budget row to cite a `lowered` evidence row matching the form
-re-rendered from the typed payload (a `per_call` mutation cannot
-keep the old passing row), recomputes per-row and document
-verdicts from the evidence, checks the one-to-one claims-to-law
-projection in both directions (deleting law rows is refused, not
-vacuous), and recomputes `adequacy` from `capabilities`.
+operand swap cannot keep the old certificates), requires the
+`lowered` section to project ONE-TO-ONE from the typed account —
+every lowered row carries its law `ordinal` (and certificate
+`cert` ordinal where applicable) and must match the form, result,
+and subject re-rendered from the typed operands, and every
+generated expectation must be met, so deleting law rows orphans
+their evidence even in an annotation-only artifact — recomputes
+per-row and document verdicts from the evidence, checks the
+one-to-one claims-to-law projection in both directions, requires
+the `law.legacy` report (the old engines' verdicts for the
+unmigrated `causes:` / `depends:` rows, keyed by ordinal and by a
+form FINGERPRINT re-rendered from the typed operands; an operand
+mutation orphans the entry, and a `causes:` row naming an
+undeclared or cyclic class cannot hold), refuses fleet-family
+rows outright (an application artifact does not own a fleet
+account — that is Change 7's), and recomputes `adequacy` from
+`capabilities`.
 Evidence locations are source-space-honest: a diagnostic whose
 span lives in a FOREIGN offset space (stdlib parse space, another
 seed) is never re-resolved against bundle sources — the
