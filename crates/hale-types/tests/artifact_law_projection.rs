@@ -46,7 +46,7 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
     let table = lower_claims(&bundle, &model);
     let evidence =
         derive_certificate_evidence(&bundle, &table, &model);
-    let (claims, lowered, _law) = project_law_rows(
+    let (claims, lowered, _law, _issues) = project_law_rows(
         &bundle,
         &model,
         &table,
@@ -271,12 +271,15 @@ fn main() { App { }; }
         format!(
             "{:016x}",
             fnv1a64(
-                serde_json::to_string(&v["law"]["rows"])
-                    .unwrap()
-                    .as_bytes()
+                serde_json::to_string(&serde_json::json!({
+                    "issues": v["law"]["issues"],
+                    "rows": v["law"]["rows"],
+                }))
+                .unwrap()
+                .as_bytes()
             )
         ),
-        "law_digest recomputes from the parsed rows"
+        "law_digest recomputes from the parsed rows + issues"
     );
     let model = derive_application_model(&bundle);
     let table = lower_claims(&bundle, &model);

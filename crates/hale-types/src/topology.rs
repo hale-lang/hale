@@ -706,7 +706,7 @@ pub fn dump_topology_parts(
         crate::topology_projection::legacy_unmigrated_verdicts(
             bundle, &graph, &law_table,
         );
-    let (outcomes, projected_lowered, law_rows) =
+    let (outcomes, projected_lowered, law_rows, law_issues) =
         crate::topology_projection::project_law_rows(
             bundle,
             &vmodel,
@@ -1178,6 +1178,34 @@ pub fn dump_topology_parts(
             ",\n  \"endpoints\": [{}]",
             rows.join(", ")
         ));
+        // Round 9: the DECLARED-publisher relation as its own
+        // typed projection (`declares_publish(locus, subject)`) —
+        // the anchor for `via: declaration` publish endpoints,
+        // which no site-grained relation shows.
+        let mut decl_rows: Vec<String> = vmodel
+            .relations
+            .declares_publish
+            .iter()
+            .map(|r| {
+                let locus = vmodel
+                    .entities
+                    .loci
+                    .get(r.locus.index())
+                    .map(|l| l.display.as_str())
+                    .unwrap_or("");
+                format!(
+                    "{{\"locus\": {}, \"subject\": {}}}",
+                    quote(locus),
+                    quote(subj_pat(r.subject))
+                )
+            })
+            .collect();
+        decl_rows.sort();
+        decl_rows.dedup();
+        out.push_str(&format!(
+            ",\n  \"declares_publish\": [{}]",
+            decl_rows.join(", ")
+        ));
     }
     out.push_str(",\n  \"claims\": [\n");
     for o in &outcomes {
@@ -1411,14 +1439,45 @@ pub fn dump_topology_parts(
         rows_out.push_str("    ]");
         rows_out
     };
+    // Round 9: the law-selection ISSUES participate in the digest
+    // and the document verdict — no claim error disappears between
+    // checking and projection.
+    let law_issues_text = {
+        let items: Vec<String> = law_issues
+            .iter()
+            .map(|(msg, at)| {
+                let loc = match at {
+                    Some((f, a, b)) => format!(
+                        ", \"file\": {}, \"span\": [{}, {}]",
+                        quote(f),
+                        a,
+                        b
+                    ),
+                    None => String::new(),
+                };
+                format!(
+                    "{{\"message\": {}{}}}",
+                    quote(&demangle_str(msg)),
+                    loc
+                )
+            })
+            .collect();
+        format!("[{}]", items.join(", "))
+    };
     let law_digest = {
-        let v: serde_json::Value =
+        let rows: serde_json::Value =
             serde_json::from_str(&law_rows_text)
                 .expect("the emitter's own law rows parse");
+        let issues: serde_json::Value =
+            serde_json::from_str(&law_issues_text)
+                .expect("the emitter's own issues parse");
         fnv1a64(
-            serde_json::to_string(&v)
-                .expect("canonical serialization")
-                .as_bytes(),
+            serde_json::to_string(&serde_json::json!({
+                "issues": issues,
+                "rows": rows,
+            }))
+            .expect("canonical serialization")
+            .as_bytes(),
         )
     };
     out.push_str(",\n  \"law\": {\n");
@@ -1471,29 +1530,21 @@ pub fn dump_topology_parts(
         // engines walk only top-level loci, so a module-scoped
         // locus's phase contracts have no engine report and judge
         // `uncertified` — a consumer needs the discriminator to
-        // hold the two shapes to their exact verdicts.
+        // hold the two shapes to their exact verdicts. Round 9:
+        // the fact is the MODEL's (`LocusDecl::analyzable`) — one
+        // authority shared with the evidence layer; this
+        // projection never re-walks source.
         {
-            let top_level: std::collections::BTreeSet<&str> =
-                programs
-                    .iter()
-                    .flat_map(|pr| pr.items.iter())
-                    .filter_map(|item| match item {
-                        hale_syntax::ast::TopDecl::Locus(l) => {
-                            Some(l.name.name.as_str())
-                        }
-                        _ => None,
-                    })
-                    .collect();
             let mut rows: Vec<String> = vmodel
                 .entities
                 .loci
                 .iter()
                 .map(|l| {
                     format!(
-                        "{{\"name\": {}, \"display\": {},                          \"analyzable\": {}}}",
+                        "{{\"name\": {}, \"display\": {}, \"analyzable\": {}}}",
                         quote(&l.name),
                         quote(&l.display),
-                        top_level.contains(l.name.as_str())
+                        l.analyzable
                     )
                 })
                 .collect();
@@ -1615,6 +1666,10 @@ pub fn dump_topology_parts(
             entries.join(", ")
         ));
     }
+    out.push_str(&format!(
+        "    \"issues\": {},\n",
+        law_issues_text
+    ));
     out.push_str("    \"rows\": ");
     out.push_str(&law_rows_text);
     out.push_str("\n  }");
@@ -1729,7 +1784,8 @@ pub fn dump_topology_parts(
     });
     let all_pass = outcomes.iter().all(|o| o.result.passed())
         && lowered.iter().all(|r| r.result.passed())
-        && law_pass;
+        && law_pass
+        && law_issues.is_empty();
     out.push_str(&format!(
         ",\n  \"verdict\": {}",
         quote(if all_pass { "clean" } else { "law_failed" })

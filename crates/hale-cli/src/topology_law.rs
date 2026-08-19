@@ -572,6 +572,36 @@ impl RefContext {
                 ));
             }
         }
+        // The `analyzable` flag is RECOMPUTED against the hashed
+        // function universe (round 9): a locus with members has
+        // them in `law.fn_universe`, and the legacy summary
+        // universe (`sorts.fns`) contains exactly the analyzed
+        // ones — so for any locus with members, the flag must
+        // agree with whether its members were analyzed. Flipping
+        // a module-scoped contract to `analyzable` (to dress
+        // `uncertified` up as `holds`) contradicts the member
+        // account.
+        for (_, disp, analyzable) in &cx.loci {
+            let prefix = format!("{}::", disp);
+            let has_members = cx
+                .fn_universe
+                .iter()
+                .any(|(_, d)| d.starts_with(&prefix));
+            if !has_members {
+                continue;
+            }
+            let analyzed = cx
+                .sorts_fns
+                .iter()
+                .any(|f| f.starts_with(&prefix));
+            if analyzed != *analyzable {
+                return Err(format!(
+                    "law.loci: `{}` marks analyzable={} but its \
+                     member account says {}",
+                    disp, analyzable, analyzed
+                ));
+            }
+        }
         // fn_universe is deliberately WIDER than sorts.fns, but
         // must still cover it.
         for f in &cx.sorts_fns {
@@ -597,6 +627,98 @@ impl RefContext {
             .iter()
             .map(|(_, _, su)| su.clone())
             .collect();
+        // Round 9: the endpoint section is NOT a second authority
+        // — it must project exactly from the artifact's own
+        // relations. Site endpoints recompute from
+        // `relations.publishes` / `relations.subscribes` (V1 rows
+        // name declared topics by display; the wire subject comes
+        // from the topics section), and declaration endpoints from
+        // the typed `declares_publish` relation.
+        let wire_of = |s: &str| -> String {
+            cx.topics
+                .iter()
+                .find(|(_, d, _)| d == s)
+                .map(|(_, _, su)| su.clone())
+                .unwrap_or_else(|| s.to_string())
+        };
+        let mut expected_endpoints: BTreeSet<(
+            String,
+            String,
+            String,
+        )> = BTreeSet::new();
+        for r in
+            v["relations"]["publishes"].as_array().into_iter().flatten()
+        {
+            if let Some(su) = r["subject"].as_str() {
+                expected_endpoints.insert((
+                    "publish".to_string(),
+                    wire_of(su),
+                    "site".to_string(),
+                ));
+            }
+        }
+        for r in v["relations"]["subscribes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            if let Some(su) = r["subject"].as_str() {
+                expected_endpoints.insert((
+                    "subscribe".to_string(),
+                    wire_of(su),
+                    "declaration".to_string(),
+                ));
+            }
+        }
+        for (i, d) in v["declares_publish"]
+            .as_array()
+            .ok_or(
+                "declares_publish must be an array of typed \
+                 relation rows",
+            )?
+            .iter()
+            .enumerate()
+        {
+            only_keys(
+                d,
+                "declares_publish[*]",
+                &["locus", "subject"],
+                &[],
+            )
+            .map_err(|x| {
+                format!("declares_publish[{}]: {}", i, x)
+            })?;
+            let locus = d["locus"].as_str().ok_or_else(|| {
+                format!(
+                    "declares_publish[{}]: locus must be a string",
+                    i
+                )
+            })?;
+            if !cx.loci.iter().any(|(_, disp, _)| disp == locus) {
+                return Err(format!(
+                    "declares_publish[{}]: locus `{}` is not in \
+                     this artifact",
+                    i, locus
+                ));
+            }
+            let su = d["subject"].as_str().ok_or_else(|| {
+                format!(
+                    "declares_publish[{}]: subject must be a \
+                     string",
+                    i
+                )
+            })?;
+            expected_endpoints.insert((
+                "publish".to_string(),
+                su.to_string(),
+                "declaration".to_string(),
+            ));
+        }
+        let mut got_endpoints: BTreeSet<(
+            String,
+            String,
+            String,
+        )> = BTreeSet::new();
         for (i, e) in v["endpoints"]
             .as_array()
             .ok_or(
@@ -632,7 +754,26 @@ impl RefContext {
                     i
                 )
             })?;
+            got_endpoints.insert((
+                e["verb"].as_str().unwrap_or("").to_string(),
+                su.to_string(),
+                e["via"].as_str().unwrap_or("").to_string(),
+            ));
             model_subjects.insert(su.to_string());
+        }
+        if got_endpoints != expected_endpoints {
+            let extra: Vec<_> = got_endpoints
+                .difference(&expected_endpoints)
+                .collect();
+            let missing: Vec<_> = expected_endpoints
+                .difference(&got_endpoints)
+                .collect();
+            return Err(format!(
+                "the endpoints section does not project from the \
+                 artifact's relations (extra: {:?}, missing: \
+                 {:?})",
+                extra, missing
+            ));
         }
         let law_subjects: BTreeSet<String> =
             cx.subjects.iter().cloned().collect();
@@ -1711,6 +1852,7 @@ pub fn validate_law_account(
         || !v["law"]["law_digest"].is_string()
         || !v["law"]["inputs_digest"].is_string()
         || !v["law"]["rows"].is_array()
+        || !v["law"]["issues"].is_array()
     {
         return Err(format!(
             "{}: malformed artifact — law section incomplete",
@@ -1733,8 +1875,11 @@ pub fn validate_law_account(
         }
         h
     }
-    let canon = serde_json::to_string(&v["law"]["rows"])
-        .map_err(|e| format!("{}: {}", label, e))?;
+    let canon = serde_json::to_string(&serde_json::json!({
+        "issues": v["law"]["issues"],
+        "rows": v["law"]["rows"],
+    }))
+    .map_err(|e| format!("{}: {}", label, e))?;
     let expect_law_digest =
         format!("{:016x}", fnv1a64(canon.as_bytes()));
     if v["law"]["law_digest"].as_str()
@@ -1834,6 +1979,13 @@ pub fn validate_law_account(
         }
         Ok(items.len())
     };
+    // Round 9: the LAW-SELECTION account. Issues are validated
+    // like every diagnostic, and a non-empty account fails the
+    // document — a duplicate-name or constitution failure cannot
+    // disappear between checking and projection.
+    let issue_count =
+        check_evidence(&v["law"]["issues"], "law issue")
+            .map_err(|e| format!("{}: {}", label, e))?;
     let mut prev_ordinal: Option<u64> = None;
     let mut law_all_pass = true;
     let mut claims_tier_ordinals: Vec<u64> = Vec::new();
@@ -2535,6 +2687,37 @@ pub fn validate_law_account(
             ));
         }
     }
+    // The judgment pre-pass is RECOMPUTABLE for duplicates: two
+    // claims-tier rows sharing a name is exactly the
+    // contract-of-record failure the evaluator refuses, so the
+    // account must say so.
+    {
+        let mut names = BTreeSet::new();
+        let mut dup = None;
+        for r in v["law"]["rows"].as_array().into_iter().flatten()
+        {
+            let fam = r["family"].as_str().unwrap_or("");
+            if matches!(
+                fam,
+                "reachability" | "boundary" | "endpoint" | "bound"
+            ) {
+                let name = r["name"].as_str().unwrap_or("");
+                if !names.insert(name.to_string()) {
+                    dup = Some(name.to_string());
+                }
+            }
+        }
+        if let Some(name) = dup {
+            if issue_count == 0 {
+                return Err(format!(
+                    "{}: malformed artifact — duplicate claim \
+                     name `{}` with an empty law-selection \
+                     account",
+                    label, name
+                ));
+            }
+        }
+    }
     claimed_ordinals.sort_unstable();
     let mut tier: Vec<u64> = claims_tier_ordinals;
     tier.sort_unstable();
@@ -2557,12 +2740,15 @@ pub fn validate_law_account(
         .into_iter()
         .flatten()
         .all(|r| r["result"] == "holds");
-    let expect_verdict =
-        if claims_pass && lowered_pass && law_all_pass {
-            "clean"
-        } else {
-            "law_failed"
-        };
+    let expect_verdict = if claims_pass
+        && lowered_pass
+        && law_all_pass
+        && issue_count == 0
+    {
+        "clean"
+    } else {
+        "law_failed"
+    };
     if v["verdict"] != expect_verdict {
         return Err(format!(
             "{}: malformed artifact — document verdict `{}` \

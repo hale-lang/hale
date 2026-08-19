@@ -1987,12 +1987,33 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         rows.sort_by(|a, b| a.name.cmp(&b.name));
         e.effect_classes = rows;
     }
+    let module_loci: BTreeSet<String> = {
+        fn walk(items: &[TopDecl], depth: u32, out: &mut BTreeSet<String>) {
+            for item in items {
+                match item {
+                    TopDecl::Locus(l) if depth > 0 => {
+                        out.insert(l.name.name.clone());
+                    }
+                    TopDecl::Module(m) => {
+                        walk(&m.items, depth + 1, out)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut out = BTreeSet::new();
+        for pr in &programs {
+            walk(&pr.items, 0, &mut out);
+        }
+        out
+    };
     for (n, (sealed, sp)) in &locus_rows {
         let pid = intern_span(&mut records, *sp);
         e.loci.push(LocusDecl {
             name: n.clone(),
             display: name(n),
             sealed: *sealed,
+            analyzable: !module_loci.contains(n),
             provenance: pid,
         });
     }

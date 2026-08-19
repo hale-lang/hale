@@ -340,8 +340,11 @@ fn restamp_digest(body_without_trailer: &str) -> String {
         )),
     ) {
         if v["law"]["rows"].is_array() {
-            let canon =
-                serde_json::to_string(&v["law"]["rows"]).unwrap();
+            let canon = serde_json::to_string(&serde_json::json!({
+                "issues": v["law"]["issues"],
+                "rows": v["law"]["rows"],
+            }))
+            .unwrap();
             let fresh =
                 format!("{:016x}", fnv1a64(canon.as_bytes()));
             let start = at + key.len();
@@ -2186,6 +2189,236 @@ fn main() { App { }; }
             "does not equal the model's typed endpoint universe"
         ),
         "the narrowed subject universe refuses: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 9: a table-level law-selection failure cannot produce a
+/// clean artifact. Two duplicate-name claims that individually
+/// hold fail `hale check`; the artifact carries the failure in
+/// `law.issues`, its document verdict is `law_failed`, it still
+/// ADMITS (the account is honest) — and deleting the issues to
+/// dress it up as clean refuses on the recomputable duplicate.
+#[test]
+fn duplicate_claim_names_cannot_be_clean() {
+    let dir = workdir("dupclaims");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+fn leak(v: Int) -> Int { return v; }
+fn safe(v: Int) -> Int { return v; }
+group a_side = { safe };
+group b_side = { leak };
+main locus App {
+    params { n: Int = 0; }
+    claims {
+        iso: forbid reaches(a_side, b_side);
+        iso: forbid reaches(b_side, a_side);
+    }
+    run() { println(safe(1)); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dir.join("app.hale.topology");
+    let out = hale()
+        .arg("check")
+        .arg(&src)
+        .arg(format!("--dump-topology={}", artifact.display()))
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "duplicate names fail the check"
+    );
+    let raw = std::fs::read_to_string(&artifact)
+        .expect("the artifact still dumps");
+    assert!(
+        raw.contains("\"verdict\": \"law_failed\""),
+        "no claim error disappears between checking and \
+         projection:\n{}",
+        raw
+    );
+    assert!(
+        !raw.contains("\"issues\": []"),
+        "the law-selection account records the duplicate:\n{}",
+        raw
+    );
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&artifact)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "the honest failing artifact admits: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Dress it up: empty the issues, flip the verdict, restamp
+    // both digests — the duplicate is recomputable from the rows.
+    let issues_at = raw.find("\"issues\": [").expect("issues");
+    let open = issues_at + "\"issues\": ".len();
+    let bytes = raw.as_bytes();
+    let (mut depth, mut close, mut in_str, mut esc) =
+        (0usize, open, false, false);
+    for (i, &b) in bytes.iter().enumerate().skip(open) {
+        if esc {
+            esc = false;
+            continue;
+        }
+        match b {
+            b'\\' if in_str => esc = true,
+            b'"' => in_str = !in_str,
+            b'[' if !in_str => depth += 1,
+            b']' if !in_str => {
+                depth -= 1;
+                if depth == 0 {
+                    close = i + 1;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let dressed = format!(
+        "{}[]{}",
+        &raw[..open],
+        &raw[close..]
+    )
+    .replacen("\"verdict\": \"law_failed\"", "\"verdict\": \"clean\"", 1);
+    let p2 = dir.join("dressed.topology");
+    std::fs::write(&p2, restamp_digest(&strip_trailer(&dressed)))
+        .unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p2)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains(
+            "duplicate claim name `iso` with an empty \
+             law-selection account"
+        ),
+        "the recomputable pre-pass refuses the dressed-up \
+         artifact: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 9: the endpoints section is not a second authority — a
+/// literal publish's endpoint row cannot be deleted (narrowing the
+/// selector universe) while the actual publish relation remains.
+#[test]
+fn endpoint_narrowing_against_relations_is_refused() {
+    let dir = workdir("epnarrow");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+type Msg { n: Int = 0; }
+locus Emitter {
+    params { n: Int = 0; }
+    bus { publish "audit.log" of type Msg; }
+    @effects(publish: { "audit.log" })
+    fn emit(v: Int) { let m = Msg { n: v }; "audit.log" <- m; }
+}
+locus Sink {
+    params { n: Int = 0; }
+    bus { subscribe "audit.log" as on_m of type Msg; }
+    fn on_m(m: Msg) { self.n = m.n; }
+}
+main locus App {
+    params { e: Emitter = Emitter { }; s: Sink = Sink { }; }
+    run() { self.e.emit(1); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    // Remove the SITE endpoint row while relations.publishes keeps
+    // the actual publish.
+    let needle = "{\"verb\": \"publish\", \"subject\": \
+                  \"audit.log\", \"via\": \"site\"}, ";
+    let narrowed = raw.replacen(needle, "", 1);
+    assert_ne!(narrowed, raw, "test premise: the row was deleted");
+    let p2 = dir.join("narrowed.topology");
+    std::fs::write(&p2, restamp_digest(&strip_trailer(&narrowed)))
+        .unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p2)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains(
+            "does not project from the artifact's relations"
+        ),
+        "the endpoint recompute refuses the narrowing: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 9: `analyzable` is recomputed from the member account —
+/// flipping a module-scoped locus's flag (to dress `uncertified`
+/// up as `holds`) contradicts the hashed function universe.
+#[test]
+fn analyzable_flip_is_refused() {
+    let dir = workdir("anaflip");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+module inner {
+    @phase_effects(birth: {})
+    locus Hidden {
+        params { n: Int = 0; }
+        fn poke(v: Int) -> Int { return v; }
+    }
+}
+main locus App {
+    params { n: Int = 0; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    let flipped = raw.replacen(
+        "\"name\": \"Hidden\", \"display\": \"Hidden\", \
+         \"analyzable\": false",
+        "\"name\": \"Hidden\", \"display\": \"Hidden\", \
+         \"analyzable\": true",
+        1,
+    );
+    assert_ne!(flipped, raw, "test premise: the flip landed");
+    let p2 = dir.join("flipped.topology");
+    std::fs::write(&p2, restamp_digest(&strip_trailer(&flipped)))
+        .unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p2)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("its member account says"),
+        "the member-universe recompute refuses the flip: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     let _ = std::fs::remove_dir_all(&dir);

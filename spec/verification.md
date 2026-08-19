@@ -433,8 +433,34 @@ wire-subject grain with its verb and `via: site | declaration`,
 including a DECLARED publisher with no send site, which the V1
 site-grained relations never show — and `law.subjects` must equal
 exactly the subjects the endpoint and topic sections carry, in
-both directions: an appended ghost pattern has no endpoint row,
-and a deleted pattern orphans one. Both digests are RECOMPUTED at
+both directions. The endpoint section is NOT a second authority
+(round 9): site rows must project exactly from the artifact's own
+`relations.publishes` / `relations.subscribes` (V1 rows name
+declared topics by display; the wire subject comes from the
+topics section), and declaration rows from the typed
+**`declares_publish`** relation section — deleting a literal
+publish's endpoint row while the site relation remains refuses.
+The `analyzable` flag on `law.loci` has ONE authority — the
+model builder sets `LocusDecl::analyzable` from its declaration
+walk; the evidence layer and the emitter read the model, never
+re-walking source — and admission RECOMPUTES it against the
+hashed function universe: a locus's members appear in
+`law.fn_universe`, the legacy summary universe (`sorts.fns`)
+contains exactly the analyzed ones, and the flag must agree.
+The **`law.issues`** account (round 9) serializes every
+table-level law-selection failure — lowering issues (unknown or
+cyclic constitutions, illegal adoption, collisions) and the
+judgment pre-pass (duplicate claim names) — with source
+locations; it participates in `law_digest` (the canonical
+fingerprint covers `{issues, rows}`) and in the document verdict
+(a non-empty account is `law_failed`), admission validates each
+entry like any diagnostic, and the duplicate-name case is
+recomputed from the rows themselves — no claim error disappears
+between checking and artifact projection. The evidence engine's
+`ANALYSIS_SEMANTICS_VERSION` is 3: round 8's producer/judgment
+changes (synthetic implicit-phase certificates, report-less
+subjects judging `uncertified`) are result-affecting, so pre- and
+post-round-8 evidence cannot share an `inputs_digest`. Both digests are RECOMPUTED at
 admission: `law_digest` is the canonical-JSON fingerprint over
 the law rows (serde-canonical rendering, fnv1a64 — a row edit
 under a stale digest refuses), and `inputs_digest` must equal the

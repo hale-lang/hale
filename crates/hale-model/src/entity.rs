@@ -71,6 +71,12 @@ pub struct LocusDecl {
     pub display: String,
     /// `@sealed` confinement (GH #436).
     pub sealed: bool,
+    /// The legacy certificate engines walk this locus (round 9:
+    /// top-level declaration — module-scoped bodies are outside
+    /// the analyzable universe). ONE authority: the model builder
+    /// sets it from its declaration walk; the evidence layer and
+    /// the artifact emitter read it here, never re-walking source.
+    pub analyzable: bool,
     pub provenance: ProvenanceId,
 }
 

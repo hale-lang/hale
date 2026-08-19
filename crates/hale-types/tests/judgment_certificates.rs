@@ -229,6 +229,13 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
     };
     let mut old_sorted = old.clone();
     let mut new_sorted = new.clone();
+    // Round 8/9 documented divergence: a report-less subject
+    // (module-scoped body) judges `uncertified` WITH its residue
+    // reason — a diagnostic the old engine (which skipped the
+    // subject entirely) never produced.
+    new_sorted.retain(|(m, _)| {
+        !m.contains("did not analyze this subject")
+    });
     old_sorted.sort_by_key(key);
     new_sorted.sort_by_key(key);
     if old_sorted != new_sorted {

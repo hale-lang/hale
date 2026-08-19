@@ -921,6 +921,12 @@ pub fn project_law_rows(
     Vec<ProjectedClaimRow>,
     Vec<ProjectedLoweredRow>,
     Vec<ProjectedLawRow>,
+    // Round 9: the table-level LAW-SELECTION account — lowering
+    // issues (unknown/cyclic constitutions, illegal adoption,
+    // collisions) plus the judgment pre-pass (duplicate claim
+    // names), each with its source location. No claim error may
+    // disappear between checking and artifact projection.
+    Vec<(String, Option<(String, u32, u32)>)>,
 ) {
     use hale_model::{ClaimIr, ClaimOrigin};
     let _ = bundle;
@@ -929,7 +935,7 @@ pub fn project_law_rows(
         u32,
         crate::judgment::Judged,
     > = std::collections::BTreeMap::new();
-    let (_pre, r5a) = crate::judgment::judge_forbid_reaches(
+    let (pre, r5a) = crate::judgment::judge_forbid_reaches(
         table,
         model,
         source_bases,
@@ -1230,7 +1236,32 @@ pub fn project_law_rows(
             provenance,
         });
     }
-    (claims, lowered, law)
+    let mut issues: Vec<(
+        String,
+        Option<(String, u32, u32)>,
+    )> = Vec::new();
+    for issue in &table.issues {
+        let at = match table
+            .provenance
+            .records
+            .get(issue.provenance.index())
+        {
+            Some(hale_model::Provenance::Source {
+                source,
+                span,
+            }) => table
+                .provenance
+                .sources
+                .get(source.index())
+                .map(|su| (su.path.clone(), span.0, span.1)),
+            _ => None,
+        };
+        issues.push((issue.message.clone(), at));
+    }
+    for d in &pre {
+        issues.push((d.message.clone(), locate(d.span)));
+    }
+    (claims, lowered, law, issues)
 }
 
 /// Per-family adequacy (GH #476 Change 6): can this model support

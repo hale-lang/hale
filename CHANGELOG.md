@@ -81,6 +81,26 @@ never a fail-open `holds`), and the document `verdict` follows
 the machine. Artifact consumers reject unrecognized semantics by
 design; re-dump with the current compiler.
 
+Round 9: no claim error disappears, and no section is a second
+authority. A typed `law.issues` account serializes every
+table-level law-selection failure (duplicate claim names,
+unknown/cyclic constitutions, illegal adoption, collisions) with
+locations; it participates in law_digest ({issues, rows} canon)
+and the document verdict, and the duplicate-name case is
+recomputed from the rows - two individually-holding duplicates
+can no longer produce a clean artifact. The endpoints section
+must project exactly from the artifact's own
+publishes/subscribes relations plus the new typed
+`declares_publish` relation section - deleting a literal
+publish's endpoint row while the site relation remains refuses.
+`LocusDecl::analyzable` is the model's fact (one walk, in the
+model builder; evidence and emitter read the model), and
+admission recomputes the flag against the hashed function
+universe - flipping a module-scoped contract to analyzable
+contradicts its member account. ANALYSIS_SEMANTICS_VERSION bumps
+to 3: round 8's synthetic certificates and report-less
+`uncertified` are result-affecting producer changes.
+
 Round 8: the admission accepts every artifact the compiler
 emits. Beyond references and classes, the claims evaluator's
 other legitimate Invalid outcomes (operand-domain errors like

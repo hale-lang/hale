@@ -156,8 +156,11 @@ fn restamp_both(artifact: &str) -> String {
         )),
     ) {
         if v["law"]["rows"].is_array() {
-            let canon =
-                serde_json::to_string(&v["law"]["rows"]).unwrap();
+            let canon = serde_json::to_string(&serde_json::json!({
+                "issues": v["law"]["issues"],
+                "rows": v["law"]["rows"],
+            }))
+            .unwrap();
             let fresh =
                 format!("{:016x}", fnv1a64(canon.as_bytes()));
             let start = at + lk.len();

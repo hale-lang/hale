@@ -129,7 +129,11 @@ fn the_topology_artifact_round_trips() {
                 // wire-subject grain — the same deliberate rawness
                 // as `topics` (a subject-less imported topic's
                 // default subject IS its mangled name).
-                if l.starts_with("  \"endpoints\": [") {
+                if l.starts_with("  \"endpoints\": [")
+                    || l.starts_with(
+                        "  \"declares_publish\": [",
+                    )
+                {
                     return false;
                 }
                 if l.starts_with("  \"topics\": [")
