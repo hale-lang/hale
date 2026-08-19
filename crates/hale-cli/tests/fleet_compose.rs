@@ -311,6 +311,60 @@ fn a_component_whose_own_claims_fail_is_refused() {
     );
 }
 
+/// GH #476 Change 6 (round 4): the composer RECOMPUTES the
+/// verdict from the component's own law rows — a restamped
+/// artifact whose top-level verdict lies `clean` over a violated
+/// law row is refused past the integrity gate.
+#[test]
+fn a_restamped_lying_verdict_is_refused() {
+    fn fnv1a64(bytes: &[u8]) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+    let r = fleet("lyingverdict");
+    let p = r.join("artifacts/prober.json");
+    let good = std::fs::read_to_string(&p).expect("read");
+    // Inject a VIOLATED law row (the prober's own table is empty)
+    // while keeping the top-level verdict `clean`; then RESTAMP
+    // the digest so integrity passes and the recompute is what
+    // bites.
+    let lied = good.replacen(
+        "\"rows\": [\n    ]",
+        "\"rows\": [\n      {\"ordinal\": 0, \"name\": \"ghost\", \
+         \"origin\": \"main\", \"family\": \"reachability\", \
+         \"verdict\": \"violated\", \"law\": {\"kind\": \
+         \"forbid_reaches\"}}\n    ]",
+        1,
+    );
+    assert_ne!(lied, good, "test premise: a law row was injected");
+    assert!(
+        lied.contains("\"verdict\": \"clean\""),
+        "test premise: the document still claims clean"
+    );
+    let key = ",\n  \"artifact_digest\": \"";
+    let cut = lied.rfind(key).expect("digest trailer");
+    let body = &lied[..cut];
+    let restamped = format!(
+        "{}{}{:016x}\"\n}}\n",
+        body,
+        key,
+        fnv1a64(body.as_bytes())
+    );
+    std::fs::write(&p, restamped).expect("write");
+    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(
+        out.contains("disagrees with its own law rows"),
+        "the refusal names the recompute, not the digest: {}",
+        out
+    );
+}
+
 #[test]
 fn a_route_naming_an_undeclared_instance_is_rejected() {
     let r = fleet("ghost");

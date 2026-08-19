@@ -1332,6 +1332,38 @@ fn load_artifact(
             ))
         }
     }
+    // GH #476 Change 6 (round 4): the verdict is RECOMPUTED from
+    // the artifact's own rows, never trusted — a restamped
+    // component with a lying `clean` under a violated law row must
+    // not enter composition. Same rule Track A admission applies.
+    let claims_pass = v["claims"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .all(|c| c["result"] == "holds");
+    let lowered_pass = v["lowered"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .all(|r| r["result"] == "holds");
+    let law_rows = v["law"]["rows"].as_array().ok_or_else(|| {
+        format!(
+            "{}: schema-1.11 artifact carries no law rows — an \
+             unverifiable law account is not admissible",
+            p.display()
+        )
+    })?;
+    let law_pass = law_rows.iter().all(|r| {
+        r["family"] == "fleet" || r["verdict"] == "holds"
+    });
+    if !(claims_pass && lowered_pass && law_pass) {
+        return Err(format!(
+            "{}: component verdict `clean` disagrees with its own \
+             law rows — a restamped or corrupted artifact is not \
+             admissible",
+            p.display()
+        ));
+    }
     Ok((v, sha256, signed_by))
 }
 
