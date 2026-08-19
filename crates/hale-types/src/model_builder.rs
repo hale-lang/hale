@@ -746,17 +746,17 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     // is path-derived and importer-independent, so `p::Status` and
     // `db::Status` share one contract (round 9; display spelling
     // never enters an identity).
-    let shape_of_type = |raw_ty: &str| -> (String, u64) {
+    let shape_of_type = |raw_ty: &str| -> (String, u64, bool) {
         let shape = crate::topic_identity::canonical_type_shape(
             &all_items, raw_ty,
         );
         if shape.is_empty() {
             let opaque = format!("opaque:{}", raw_ty);
             let h = fnv(&opaque);
-            (opaque, h)
+            (opaque, h, true)
         } else {
             let h = fnv(&shape);
-            (shape, h)
+            (shape, h, false)
         }
     };
     // The ONE payload-contract rule for a type EXPRESSION — used by
@@ -765,7 +765,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     // non-named form to `opaque:?` through a name-only path):
     //   bare named struct → canonical structural shape;
     //   every other form  → opaque over the structural descriptor.
-    let contract_of_te = |te: &TypeExpr| -> (String, u64) {
+    let contract_of_te = |te: &TypeExpr| -> (String, u64, bool) {
         match te {
             TypeExpr::Named { path, generic_args, .. }
                 if path.segments.len() == 1
@@ -776,15 +776,16 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             other => shape_of_type(&type_descriptor(other)),
         }
     };
-    let mut payload_rows: BTreeMap<(String, u64), ()> = BTreeMap::new();
-    let mut topic_payload: BTreeMap<String, (String, u64)> =
+    let mut payload_rows: BTreeMap<(String, u64, bool), ()> =
+        BTreeMap::new();
+    let mut topic_payload: BTreeMap<String, (String, u64, bool)> =
         BTreeMap::new();
     for (tname, info) in &topic_decl_by_name {
         let key = contract_of_te(&info.decl.payload);
         payload_rows.insert(key.clone(), ());
         topic_payload.insert(tname.clone(), key);
     }
-    let mut endpoint_payload: BTreeMap<String, (String, u64)> =
+    let mut endpoint_payload: BTreeMap<String, (String, u64, bool)> =
         BTreeMap::new();
     for (subject, info) in &graph.subjects {
         let display = subject.clone();
@@ -811,7 +812,9 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     // payload contract rather than a lookup panic. (An unresolvable
     // program fails typecheck; the model of a parseable bundle
     // still exists, holes and all.)
-    let unresolved_payload = ("?".to_string(), fnv("?"));
+    // The unresolved contract is OPAQUE by definition — nothing
+    // structural is known about it.
+    let unresolved_payload = ("?".to_string(), fnv("?"), true);
     {
         // `known` overrides the "?" fallback with the endpoint's
         // real structural contract (an explicit `of type T`) — one
@@ -823,7 +826,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         // return.
         let mut need = |display: String,
                         literal: bool,
-                        known: Option<(String, u64)>| {
+                        known: Option<(String, u64, bool)>| {
             if !literal && topic_decl_by_name.contains_key(&display) {
                 return;
             }
@@ -889,7 +892,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         .enumerate()
         .map(|(i, k)| (k, SubjectId(i as u32)))
         .collect();
-    let payload_id: BTreeMap<&(String, u64), PayloadContractId> =
+    let payload_id: BTreeMap<&(String, u64, bool), PayloadContractId> =
         payload_rows
             .keys()
             .enumerate()
@@ -2099,10 +2102,11 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             provenance: pid,
         });
     }
-    for ((shape, hash), ()) in &payload_rows {
+    for ((shape, hash, opaque), ()) in &payload_rows {
         let pid = intern_synth(&mut records, "payload contract");
         e.payloads.push(PayloadContract {
             shape: shape.clone(),
+            opaque: *opaque,
             hash: *hash,
             provenance: pid,
         });
@@ -2791,9 +2795,11 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     };
     let capabilities = Capabilities {
         exact_calls: !hides_any(hale_model::RelationSet::CALLS),
-        exact_bus_endpoints: !hides_any(
-            hale_model::RelationSet::PUBLISHES
-                .union(hale_model::RelationSet::SUBSCRIBES),
+        exact_publishes: !hides_any(
+            hale_model::RelationSet::PUBLISHES,
+        ),
+        exact_subscribes: !hides_any(
+            hale_model::RelationSet::SUBSCRIBES,
         ),
         exact_key_filters: !hides_any(
             hale_model::RelationSet::KEY_FILTERS,
@@ -3058,9 +3064,10 @@ pub fn render_internal(m: &ApplicationModel) -> String {
         ));
     }
     s.push_str(&format!(
-        "capabilities: calls={} bus={} keys={} effects={}\n",
+        "capabilities: calls={} pub={} sub={} keys={} effects={}\n",
         m.capabilities.exact_calls,
-        m.capabilities.exact_bus_endpoints,
+        m.capabilities.exact_publishes,
+        m.capabilities.exact_subscribes,
         m.capabilities.exact_key_filters,
         m.capabilities.exact_effects
     ));

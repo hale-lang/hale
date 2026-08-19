@@ -57,6 +57,77 @@ pub fn project_shape_hash(m: &ApplicationModel) -> u64 {
 /// Render the hashed model half of the topology artifact from the
 /// model alone. Byte-compatible with the string `dump_topology`
 /// builds internally (the substring `shape_hash` covers).
+/// The V1 display map: raw post-merge symbol → author spelling,
+/// over EVERY declaration table. The legacy encoder ran name()
+/// (full-string demangle) unconditionally over subjects,
+/// supervision child/error types, and more — including strings
+/// that merely COLLIDE with an imported declaration's raw symbol
+/// (a literal subject spelled like a mangled name demangles
+/// under V1). EVERY projected section that renders an endpoint
+/// subject applies this one map (rounds 11, 3 — the hashed half
+/// and the provenance tail must join on identical spellings).
+fn v1_display_map<'e>(
+    e: &'e hale_model::Entities,
+) -> BTreeMap<&'e str, &'e str> {
+    let mut v1_display: BTreeMap<&'e str, &'e str> = BTreeMap::new();
+    let mut add = |name: &'e str, display: &'e str| {
+        if name != display {
+            v1_display.insert(name, display);
+        }
+    };
+    for l in &e.loci {
+        add(&l.name, &l.display);
+    }
+    for t in &e.topics {
+        add(&t.name, &t.display);
+    }
+    for t in &e.types {
+        add(&t.name, &t.display);
+    }
+    for i in &e.interfaces {
+        add(&i.name, &i.display);
+    }
+    for g in &e.groups {
+        add(&g.name, &g.display);
+    }
+    for d in &e.declarations {
+        add(&d.name, &d.display);
+    }
+    // FREE functions only: the legacy name() is an EXACT lookup
+    // in import_renames, which holds renamed top-level
+    // declarations — a method identity is never a renames key
+    // (review round 12).
+    for f in &e.functions {
+        if f.kind == FunctionKind::Free {
+            add(&f.name, &f.display);
+        }
+    }
+    v1_display
+}
+
+/// The ONE V1 endpoint-subject renderer (round 3): a declared
+/// endpoint renders its topic's display name; an undeclared
+/// endpoint renders its authored pattern through the V1 display
+/// map — the relation and provenance sections must join on
+/// identical spellings.
+fn v1_endpoint_subject(
+    e: &hale_model::Entities,
+    v1_display: &BTreeMap<&str, &str>,
+    declared: Option<hale_model::TopicId>,
+    subject: hale_model::SubjectId,
+) -> String {
+    match declared {
+        Some(t) => e.topics[t.index()].display.clone(),
+        None => {
+            let raw = e.subjects[subject.index()].pattern.as_str();
+            v1_display
+                .get(raw)
+                .map(|d| d.to_string())
+                .unwrap_or_else(|| raw.to_string())
+        }
+    }
+}
+
 pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
     let e = &m.entities;
     let r = &m.relations;
@@ -74,52 +145,7 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
             .map(|i| i.display.clone())
             .unwrap_or_else(|| raw.to_string())
     };
-    // The V1 display map: raw post-merge symbol → author spelling,
-    // over EVERY declaration table. The legacy encoder ran name()
-    // (full-string demangle) unconditionally over subjects,
-    // supervision child/error types, and more — including strings
-    // that merely COLLIDE with an imported declaration's raw symbol
-    // (a literal subject spelled like a mangled name demangles
-    // under V1). The projection must apply the same rule everywhere
-    // name() ran (review round 11).
-    let mut v1_display: BTreeMap<&str, &str> = BTreeMap::new();
-    {
-        let mut add = |name: &'a str, display: &'a str| {
-            if name != display {
-                v1_display.insert(name, display);
-            }
-        };
-        for l in &e.loci {
-            add(&l.name, &l.display);
-        }
-        for t in &e.topics {
-            add(&t.name, &t.display);
-        }
-        for t in &e.types {
-            add(&t.name, &t.display);
-        }
-        for i in &e.interfaces {
-            add(&i.name, &i.display);
-        }
-        for g in &e.groups {
-            add(&g.name, &g.display);
-        }
-        for d in &e.declarations {
-            add(&d.name, &d.display);
-        }
-        // FREE functions only: the legacy name() is an EXACT lookup
-        // in import_renames, which holds renamed top-level
-        // declarations — a method identity (`__lib_x_Store::bump`)
-        // is never a renames key, so a literal subject spelled like
-        // one must NOT demangle (review round 12). Every other
-        // table above holds top-level declarations whose raw names
-        // are exactly the renames keys.
-        for f in &e.functions {
-            if f.kind == FunctionKind::Free {
-                add(&f.name, &f.display);
-            }
-        }
-    }
+    let v1_display = v1_display_map(e);
     let v1_name = |raw: &str| -> String {
         v1_display
             .get(raw)
@@ -210,10 +236,7 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
     let subject_of = |declared: Option<hale_model::TopicId>,
                       subject: hale_model::SubjectId|
      -> String {
-        match declared {
-            Some(t) => topic_display(t),
-            None => v1_name(&e.subjects[subject.index()].pattern),
-        }
+        v1_endpoint_subject(e, &v1_display, declared, subject)
     };
     let mut publishes: BTreeSet<(String, String)> = BTreeSet::new();
     for p in &r.publishes {
@@ -600,6 +623,10 @@ pub struct ProjectedClaimRow {
     pub form: String,
     pub result: crate::verdict::Verdict,
     pub source: Option<String>,
+    /// The law ordinal this row projects from (round 3): the
+    /// claims-to-law join is BY ORDINAL, never by name — a
+    /// duplicate-name row cannot masquerade.
+    pub ordinal: u32,
 }
 
 /// One projected `lowered` row.
@@ -940,6 +967,7 @@ pub fn project_law_rows(
             form,
             result: *v,
             source,
+            ordinal: row.ordinal,
         });
     }
 
@@ -1111,15 +1139,21 @@ pub fn family_adequacy(
     m: &ApplicationModel,
 ) -> Vec<(hale_model::JudgmentFamily, bool)> {
     use hale_model::JudgmentFamily as F;
-    // Relation-LEVEL exactness, derived from the validated holes
-    // directly (round 2): the coarse capability flags couple
-    // publish and subscribe completeness (`exact_bus_endpoints`),
-    // but the hole schema keeps them independent — a model with
-    // complete publishers and an incomplete subscriber set is
-    // still exact for every family that consumes PUBLISHES but
-    // not SUBSCRIBES. Absorption residue participates exactly as
-    // it does in the capability law.
-    let inexact = m.unresolved_relation_mask();
+    // The POSITIVE account decides (round 3): a family is `exact`
+    // only when the capabilities VOUCH for every relation family
+    // its projection consumes — `exact_publishes` and
+    // `exact_subscribes` are independent flags, so publish and
+    // subscribe completeness count separately. Holes are the
+    // validation cross-check (`CapabilityContradiction`), never a
+    // source of positive knowledge: an unvouched family with no
+    // hole reads `degraded`, because absence of recorded unknowns
+    // is not proof of completeness.
+    let mut vouched = hale_model::RelationSet(0);
+    for (_, claimed, fam) in m.capabilities.vouched_families() {
+        if claimed {
+            vouched = vouched.union(fam);
+        }
+    }
     [
         F::Reachability,
         F::Boundary,
@@ -1128,7 +1162,7 @@ pub fn family_adequacy(
         F::Certificate,
     ]
     .into_iter()
-    .map(|f| (f, !f.required_relations().intersects(inexact)))
+    .map(|f| (f, vouched.contains(f.required_relations())))
     .collect()
 }
 
@@ -1229,13 +1263,14 @@ pub fn project_unhashed_tail(m: &ApplicationModel) -> String {
     {
         let mut rows: BTreeSet<(String, String, i64, u32, u32)> =
             BTreeSet::new();
+        let v1_display = v1_display_map(e);
         for p in &r.publishes {
-            let written = match p.declared_topic {
-                Some(t) => e.topics[t.index()].display.clone(),
-                None => {
-                    e.subjects[p.subject.index()].pattern.clone()
-                }
-            };
+            let written = v1_endpoint_subject(
+                e,
+                &v1_display,
+                p.declared_topic,
+                p.subject,
+            );
             let (src, a, b) = loc(p.provenance);
             rows.insert((
                 fn_display(p.function),
@@ -1268,13 +1303,14 @@ pub fn project_unhashed_tail(m: &ApplicationModel) -> String {
         }
         let mut rows: BTreeSet<(String, String, String, i64, u32, u32)> =
             BTreeSet::new();
+        let v1_display = v1_display_map(e);
         for su in &r.subscribes {
-            let written = match su.declared_topic {
-                Some(t) => e.topics[t.index()].display.clone(),
-                None => {
-                    e.subjects[su.subject.index()].pattern.clone()
-                }
-            };
+            let written = v1_endpoint_subject(
+                e,
+                &v1_display,
+                su.declared_topic,
+                su.subject,
+            );
             let handler_full =
                 e.functions[su.handler.index()].display.clone();
             let handler_short = handler_full
@@ -1426,7 +1462,11 @@ pub fn project_unhashed_tail(m: &ApplicationModel) -> String {
             // not structurally resolve (the model's `opaque:`
             // contracts — cross-seed types) renders as the empty
             // shape, the spelling this section always carried.
-            let shape = if payload.shape.starts_with("opaque:") {
+            // Opaque by the STRUCTURAL flag (round 3): `opaque`
+            // is not a reserved word — a struct whose first field
+            // is literally named `opaque` has structural shape
+            // `opaque:i`, and string inspection would erase it.
+            let shape = if payload.opaque {
                 String::new()
             } else {
                 payload.shape.clone()

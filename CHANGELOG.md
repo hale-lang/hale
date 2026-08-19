@@ -48,6 +48,17 @@ location; adequacy derives from the relation-level hole mask
 rows the old engines never enumerated; Track A admission requires
 and validates the 1.11 sections and the claim-to-law join.
 
+Round 3: `PayloadContract` gains a structural `opaque`
+discriminant (a field literally named `opaque` keeps its shape);
+one shared V1 endpoint renderer joins the relation and provenance
+sections on identical spellings; `exact_bus_endpoints` splits
+into independent `exact_publishes` / `exact_subscribes`, and
+adequacy reads the positive capability account (unvouched =>
+degraded, holes are the cross-check); legacy `claims` rows carry
+their law `ordinal`, and Track A admission enforces the closed
+law vocabulary, per-kind payload shapes, reference existence,
+contiguous ordinals, and the one-to-one claims-to-law join.
+
 `semantics` bumps to 2: machine verdicts are stricter in two
 documented places (a certificate naming a cyclically-defined or
 undeclared effect class is `invalid`, never a vacuous `holds`;

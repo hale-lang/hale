@@ -103,9 +103,17 @@ pub struct Subject {
 /// A payload shape contract.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct PayloadContract {
-    /// The canonical shape string (field:kind;… — as the artifact
-    /// serializes today).
+    /// The canonical STRUCTURAL shape string (`field:kind;…`) when
+    /// `opaque` is false; the per-type opaque descriptor
+    /// (`opaque:<raw type>`) when true.
     pub shape: String,
+    /// STRUCTURAL discriminant (round 3): a payload the shape
+    /// renderer could not resolve is opaque BY THIS FLAG, never by
+    /// string inspection — `opaque` is not a reserved word, so a
+    /// struct whose first field is literally named `opaque` has a
+    /// structural shape `opaque:i` that must not be mistaken for
+    /// the sentinel.
+    pub opaque: bool,
     pub hash: u64,
     pub provenance: ProvenanceId,
 }

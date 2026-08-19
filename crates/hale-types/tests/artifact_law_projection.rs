@@ -285,7 +285,7 @@ fn main() { App { }; }
     let art = hale_types::topology::dump_topology(&bundle);
     let v: serde_json::Value =
         serde_json::from_str(&art).expect("valid JSON");
-    assert_eq!(v["capabilities"]["exact_bus_endpoints"], false);
+    assert_eq!(v["capabilities"]["exact_publishes"], false);
     for fam in [
         "reachability",
         "boundary",
@@ -661,7 +661,10 @@ fn main() { App { }; }
         .iter()
         .position(|su| su.pattern == "app.sig")
         .expect("subject");
-    model.capabilities.exact_bus_endpoints = false;
+    // Only SUBSCRIBES is incomplete — publishes stay vouched
+    // (round 3: the flags are independent, and adequacy reads the
+    // positive account).
+    model.capabilities.exact_subscribes = false;
     model.holes.push(hale_model::Hole {
         at: hale_model::EntityRef::Subject(hale_model::SubjectId(
             sid as u32,
@@ -726,4 +729,187 @@ fn main() { App { }; }
         "the selector carries its own source location: {}",
         entry
     );
+}
+
+/// Review round 3: `opaque` is not a reserved word — a struct
+/// whose field is literally named `opaque` has structural shape
+/// `opaque:i`, which must survive into the topics section with
+/// the shared observation-identity hash (never erased by sentinel
+/// string-matching).
+#[test]
+fn opaque_named_field_shape_is_not_erased() {
+    let src = r#"
+type Payload { opaque: Int = 0; }
+topic Events { payload: Payload; subject: "app.events"; }
+locus A {
+    params { n: Int = 0; }
+    bus { publish Events; }
+    fn act() { Events <- Payload { }; }
+}
+main locus App {
+    params { a: A = A { }; }
+    run() { self.a.act(); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let model = derive_application_model(&bundle);
+    let payload = model
+        .entities
+        .payloads
+        .iter()
+        .find(|p| p.shape == "opaque:i")
+        .expect("the structural shape is stored");
+    assert!(
+        !payload.opaque,
+        "a field literally named `opaque` is STRUCTURAL — the \
+         discriminant is the flag, never the string"
+    );
+    let art = hale_types::topology::dump_topology(&bundle);
+    let v: serde_json::Value =
+        serde_json::from_str(&art).expect("valid JSON");
+    let topics = v["topics"].as_array().expect("topics");
+    let row = topics
+        .iter()
+        .find(|t| t["name"] == "Events")
+        .expect("topic row");
+    assert_eq!(
+        row["shape"], "opaque:i",
+        "the structural shape survives: {}",
+        row
+    );
+    // …and the fused hash matches the shared observation-identity
+    // implementation the binary registers with.
+    let expected = hale_types::topic_identity::topic_shape_hash(
+        "app.events",
+        "opaque:i",
+    );
+    assert_eq!(
+        row["payload_hash"].as_str().unwrap(),
+        format!("{:016x}", expected),
+        "artifact and manifest identities join"
+    );
+}
+
+/// Review round 3: ONE V1 endpoint renderer — a literal subject
+/// whose text collides with a mangled imported symbol renders the
+/// SAME spelling in the relation and provenance sections, publish
+/// and subscribe forms both.
+#[test]
+fn literal_collision_renders_identically_in_both_halves() {
+    let lib = r#"
+type __lib_x_events_Item { n: Int = 0; }
+topic __lib_x_events_Changed { payload: __lib_x_events_Item; subject: "ev.changed"; }
+"#;
+    let main_src = r#"
+type Note { n: Int = 0; }
+locus Ops {
+    params { n: Int = 0; }
+    bus {
+        publish "__lib_x_events_Changed" of type Note;
+        subscribe "__lib_x_events_Changed" as on_ev;
+    }
+    fn act() { "__lib_x_events_Changed" <- Note { }; }
+    fn on_ev(v: Note) { self.n = v.n; }
+}
+main locus App {
+    params { o: Ops = Ops { }; }
+    run() { self.o.act(); }
+}
+fn main() { App { }; }
+"#;
+    let main_p =
+        hale_syntax::parse_source(main_src).expect("parse main");
+    let lib_p = hale_syntax::parse_source(lib).expect("parse lib");
+    let mut programs = BTreeMap::new();
+    programs.insert("app/main.hl".to_string(), &main_p);
+    programs.insert("lib/events.hl".to_string(), &lib_p);
+    let mut bundle = Bundle::new(programs);
+    bundle.import_renames = vec![
+        (
+            vec!["events".to_string(), "Item".to_string()],
+            "__lib_x_events_Item".to_string(),
+        ),
+        (
+            vec!["events".to_string(), "Changed".to_string()],
+            "__lib_x_events_Changed".to_string(),
+        ),
+    ];
+    let art = hale_types::topology::dump_topology(&bundle);
+    let v: serde_json::Value =
+        serde_json::from_str(&art).expect("valid JSON");
+    // The V1 rule demangles the colliding literal EVERYWHERE.
+    let rel_pub = v["relations"]["publishes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["fn"] == "Ops::act")
+        .expect("relation publish row")["subject"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let prov_pub = v["provenance"]["publishes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["fn"] == "Ops::act")
+        .expect("provenance publish row")["subject"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        rel_pub, prov_pub,
+        "the provenance row must join the relation row it locates"
+    );
+    assert_eq!(rel_pub, "events::Changed");
+    let rel_sub = v["relations"]["subscribes"]
+        .as_array()
+        .unwrap()
+        .first()
+        .expect("relation subscribe row")["subject"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let prov_sub = v["provenance"]["subscribes"]
+        .as_array()
+        .unwrap()
+        .first()
+        .expect("provenance subscribe row")["subject"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(rel_sub, prov_sub);
+    assert_eq!(rel_sub, "events::Changed");
+}
+
+/// Review round 3: adequacy reads the POSITIVE account — a false
+/// capability with no corresponding hole is a valid model state,
+/// and the family reads `degraded`, never `exact` inferred from
+/// the absence of recorded unknowns.
+#[test]
+fn unvouched_capability_degrades_adequacy() {
+    let src = r#"
+fn f(v: Int) -> Int { return v; }
+main locus App {
+    run() { println(f(1)); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    model.capabilities.exact_effects = false;
+    model.holes.clear();
+    model.validate().expect("a withdrawn claim is lawful");
+    let adequacy: std::collections::BTreeMap<_, _> =
+        hale_types::topology_projection::family_adequacy(&model)
+            .into_iter()
+            .collect();
+    assert!(
+        !adequacy[&hale_model::JudgmentFamily::Certificate],
+        "not vouched for is not exact — absence of holes is not \
+         proof"
+    );
+    assert!(!adequacy[&hale_model::JudgmentFamily::Reachability]);
 }

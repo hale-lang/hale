@@ -1147,10 +1147,12 @@ pub fn dump_topology_parts(
             None => String::new(),
         };
         out.push_str(&format!(
-            "    {{\"name\": {}, \"form\": {}, \"result\": {}{}}},\n",
+            "    {{\"name\": {}, \"form\": {}, \"result\": {}, \
+             \"ordinal\": {}{}}},\n",
             quote(&o.name),
             quote(&demangle_str(&o.form)),
             quote(o.result.as_str()),
+            o.ordinal,
             src
         ));
     }

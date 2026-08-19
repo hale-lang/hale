@@ -351,9 +351,19 @@ the legacy gathering survives only as the corpus differential's
 comparison arm until Change 9. Bus selectors in the `law` payload
 serialize their resolved CANDIDATE sets (the topic identities and
 wire patterns the selector matched) plus the selector's own
-source location; per-family `adequacy` derives from the
-relation-level hole mask, so publish and subscribe completeness
-count independently. Unmigrated rows bridge to the old engines
+source location; `capabilities` carries `exact_publishes` and
+`exact_subscribes` as INDEPENDENT flags, and per-family
+`adequacy` reads the positive account — a family is `exact` only
+when capabilities vouch every relation family its projection
+consumes (holes are the validation cross-check, never a source of
+positive knowledge). A payload contract carries a structural
+`opaque` discriminant — `opaque` is not a reserved word, so a
+struct field literally named `opaque` keeps its structural shape.
+Legacy `claims` rows carry the law `ordinal` they project from;
+Track A joins by ordinal and admission enforces the closed law
+vocabulary, per-kind payload shapes, resolved-reference
+existence, contiguous unique ordinals, and the one-to-one
+claims-to-law projection. Unmigrated rows bridge to the old engines
 only where the old walk demonstrably enumerated the row
 (module-scoped annotations and ambiguous multi-assert anchors
 stay `uncertified`). The legacy `claims` / `lowered` string rows

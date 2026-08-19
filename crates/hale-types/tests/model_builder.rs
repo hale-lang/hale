@@ -550,7 +550,7 @@ fn main() { App { }; }
     let m = derive(src);
     assert!(m.holes.is_empty());
     assert!(m.capabilities.exact_calls);
-    assert!(m.capabilities.exact_bus_endpoints);
+    assert!(m.capabilities.exact_publishes && m.capabilities.exact_subscribes);
     assert!(m.capabilities.exact_key_filters);
     // Never claimed at Change 2 (empty tables, deferred adapters):
     assert!(!m.capabilities.exact_ownership);
@@ -1204,7 +1204,7 @@ fn main() { App { }; }
     );
     // …so the capabilities cannot lie.
     assert!(!m.capabilities.exact_calls);
-    assert!(!m.capabilities.exact_bus_endpoints);
+    assert!(!(m.capabilities.exact_publishes && m.capabilities.exact_subscribes));
     assert!(!m.capabilities.exact_effects);
 }
 

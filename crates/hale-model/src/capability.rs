@@ -14,7 +14,11 @@ use crate::hole::RelationSet;
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Capabilities {
     pub exact_calls: bool,
-    pub exact_bus_endpoints: bool,
+    /// Publish and subscribe completeness are INDEPENDENT facts
+    /// (round 3): a set-level hole can hide one without the other,
+    /// and per-family adequacy must not couple them.
+    pub exact_publishes: bool,
+    pub exact_subscribes: bool,
     pub exact_key_filters: bool,
     pub exact_ownership: bool,
     pub exact_placement: bool,
@@ -34,9 +38,14 @@ impl Capabilities {
         vec![
             ("exact_calls", self.exact_calls, RelationSet::CALLS),
             (
-                "exact_bus_endpoints",
-                self.exact_bus_endpoints,
-                RelationSet::PUBLISHES.union(RelationSet::SUBSCRIBES),
+                "exact_publishes",
+                self.exact_publishes,
+                RelationSet::PUBLISHES,
+            ),
+            (
+                "exact_subscribes",
+                self.exact_subscribes,
+                RelationSet::SUBSCRIBES,
             ),
             (
                 "exact_key_filters",

@@ -653,7 +653,10 @@ impl ApplicationModel {
         check_sorted_keys("locus_instances", e.locus_instances.iter().map(|i| &i.path))?;
         check_sorted_keys("topics", e.topics.iter().map(|t| &t.name))?;
         check_sorted_keys("subjects", e.subjects.iter().map(|s| &s.pattern))?;
-        check_sorted_keys("payloads", e.payloads.iter().map(|p| (&p.shape, p.hash)))?;
+        check_sorted_keys(
+            "payloads",
+            e.payloads.iter().map(|p| (&p.shape, p.hash, p.opaque)),
+        )?;
         check_sorted_keys("phases", e.phases.iter().map(|p| &p.name))?;
         check_sorted_keys("seeds", e.seeds.iter().map(|s| &s.name))?;
         check_sorted_keys("thread_domains", e.thread_domains.iter().map(|d| &d.name))?;

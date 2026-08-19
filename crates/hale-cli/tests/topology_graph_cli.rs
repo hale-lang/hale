@@ -436,6 +436,90 @@ fn tampered_or_unverifiable_artifacts_are_refused() {
         String::from_utf8_lossy(&out.stderr)
     );
 
+    // 6. Round 3: a REAL law replaced by a bare tagged object —
+    //    the payload's kind is recognized but its operands are
+    //    missing; refused, never rendered without highlights.
+    let start =
+        raw.find("\"rows\": [\n").expect("law rows") + "\"rows\": [\n".len();
+    let row_end = raw[start..]
+        .find("\n")
+        .map(|i| start + i)
+        .expect("first law row line");
+    let first_row = &raw[start..row_end];
+    let gutted = first_row
+        .split("\"law\": {")
+        .next()
+        .unwrap()
+        .to_string()
+        + "\"law\": {\"kind\": \"forbid_reaches\"}},";
+    let mut bare = String::new();
+    bare.push_str(&raw[..start]);
+    bare.push_str(&gutted);
+    bare.push_str(&raw[row_end..]);
+    let bare_path = dir.join("barelaw.topology");
+    std::fs::write(
+        &bare_path,
+        restamp_digest(&strip_trailer(&bare)),
+    )
+    .unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&bare_path)
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "a bare tagged payload must refuse"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("incomplete law payload"),
+        "the refusal names the payload: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // 7. Round 3: a duplicate same-name law row inserted ahead of
+    //    the real one — the contiguous-ordinal law refuses it, so
+    //    a masquerading row can never win a name join (which the
+    //    renderer no longer performs anyway: it joins by ordinal).
+    let dup = {
+        let start = raw.find("\"rows\": [\n").expect("law rows")
+            + "\"rows\": [\n".len();
+        let row_end = raw[start..]
+            .find("\n")
+            .map(|i| start + i)
+            .expect("first row line");
+        let first_row = raw[start..row_end].trim_end_matches(',');
+        let mut d = String::new();
+        d.push_str(&raw[..start]);
+        d.push_str(&format!("{},\n", first_row));
+        d.push_str(&raw[start..]);
+        d
+    };
+    let dup_path = dir.join("duplaw.topology");
+    std::fs::write(
+        &dup_path,
+        restamp_digest(&strip_trailer(&dup)),
+    )
+    .unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&dup_path)
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "a duplicated law row must refuse"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("contiguous"),
+        "the refusal names the broken sequence: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
     let _ = std::fs::remove_dir_all(&dir);
 }
 

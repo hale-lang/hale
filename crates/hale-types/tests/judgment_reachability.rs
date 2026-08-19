@@ -1543,7 +1543,8 @@ fn main() { App { }; }
     // the honest model lowers the flag alongside — that law
     // already existed and stays).
     let mut m = base.clone();
-    m.capabilities.exact_bus_endpoints = false;
+    m.capabilities.exact_publishes = false;
+    m.capabilities.exact_subscribes = false;
     m.capabilities.exact_cardinality = false;
     m.holes.push(hale_model::Hole {
         at: subject,

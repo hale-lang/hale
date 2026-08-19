@@ -98,9 +98,10 @@ fn the_topology_artifact_round_trips() {
         dump.contains(
             "{\"name\": \"no_orphans\", \"form\": \"cover topic in \
              seed(t): subscribed_by(some staff)\", \"result\": \
-             \"violated\"}"
+             \"violated\", \"ordinal\":"
         ),
-        "the artifact must record the violated claim:\n{}",
+        "the artifact must record the violated claim (with its law \
+         ordinal, round 3):\n{}",
         dump
     );
     assert!(
