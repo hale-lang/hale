@@ -47,7 +47,12 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
     let evidence =
         derive_certificate_evidence(&bundle, &table, &model);
     let (claims, lowered, _law) = project_law_rows(
-        &bundle, &model, &table, &evidence, &[0],
+        &bundle,
+        &model,
+        &table,
+        &evidence,
+        &[0],
+        &std::collections::BTreeMap::new(),
     );
 
     // ---- old: the evaluator rows the artifact serialized ----
@@ -251,13 +256,20 @@ fn main() { App { }; }
     assert_eq!(v["adequacy"]["certificate"], "exact");
 }
 
-/// Adequacy degrades with the model's honesty, PER FAMILY: a
-/// computed publish subject hides PUBLISHES — every bus-composing
-/// family degrades while the certificate family (CALLS + EFFECTS
-/// only) stays exact.
+/// Adequacy, both directions (review round 1): a computed publish
+/// subject is unresolved knowledge for the CERTIFICATE family too
+/// (`@effects(publish: {…})` cannot prove the subject in-set), so
+/// every family degrades; and a fully known program — including a
+/// `count` claim, whose multiplicity needs CARDINALITY — is
+/// `exact` across the board, because the builder now derives
+/// `exact_cardinality` from the closed-world enumeration.
 #[test]
 fn adequacy_tracks_capabilities_per_family() {
+    // Negative control: a computed subject inside a fn carrying a
+    // publish-set certificate.
     let src = r#"
+type Cmd { v: Int = 0; }
+topic Allowed { payload: Cmd; subject: "app.allowed"; }
 locus A {
     params { n: Int = 0; }
     fn go(v: Int) { self.n <- v; }
@@ -274,14 +286,65 @@ fn main() { App { }; }
     let v: serde_json::Value =
         serde_json::from_str(&art).expect("valid JSON");
     assert_eq!(v["capabilities"]["exact_bus_endpoints"], false);
-    assert_eq!(v["adequacy"]["reachability"], "degraded");
-    assert_eq!(v["adequacy"]["boundary"], "degraded");
-    assert_eq!(v["adequacy"]["endpoint"], "degraded");
-    assert_eq!(v["adequacy"]["bound"], "degraded");
-    assert_eq!(
-        v["adequacy"]["certificate"], "exact",
-        "the certificate family consumes CALLS + EFFECTS only"
-    );
+    for fam in [
+        "reachability",
+        "boundary",
+        "endpoint",
+        "bound",
+        "certificate",
+    ] {
+        assert_eq!(
+            v["adequacy"][fam], "degraded",
+            "a computed publish degrades `{}` — the publish-set \
+             certificate cannot prove a computed subject in-set",
+            fam
+        );
+    }
+
+    // Closed world: endpoint counts are exact.
+    let src = r#"
+type Cmd { v: Int = 0; }
+topic T { payload: Cmd; subject: "app.t" ; }
+locus Pub {
+    params { n: Int = 0; }
+    bus { publish T; }
+    fn act() { T <- Cmd { }; }
+}
+main locus App {
+    params { p: Pub = Pub { }; }
+    claims { one: count publishers(topic T) == 1; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let art = hale_types::topology::dump_topology(&bundle);
+    let v: serde_json::Value =
+        serde_json::from_str(&art).expect("valid JSON");
+    assert_eq!(v["capabilities"]["exact_cardinality"], true);
+    for fam in [
+        "reachability",
+        "boundary",
+        "endpoint",
+        "bound",
+        "certificate",
+    ] {
+        assert_eq!(
+            v["adequacy"][fam], "exact",
+            "a fully known program is exact for `{}`",
+            fam
+        );
+    }
+    let law = v["law"]["rows"].as_array().expect("law.rows");
+    let one = law
+        .iter()
+        .find(|r| r["name"] == "one")
+        .expect("count row");
+    assert_eq!(one["verdict"], "holds");
+    assert_eq!(one["law"]["kind"], "count");
+    assert_eq!(one["law"]["n"], 1);
+    assert_eq!(one["law"]["topic"]["display"], "T");
 }
 
 /// The semantics bump, end to end (MODEL_SEMANTICS 2): a
@@ -324,4 +387,206 @@ fn main() { App { }; }
         v["law"]["rows"]
     );
     assert_eq!(v["verdict"], "law_failed");
+}
+
+/// Review round 1: NO non-passing law row can coexist with a
+/// `clean` document verdict — over every corpus artifact. The
+/// unmigrated families carry the old engines' authoritative
+/// results (`legacy_unmigrated_verdicts`), so the invariant is
+/// total: `clean` ⟺ every application-tier law row holds.
+#[test]
+fn clean_verdict_implies_every_law_row_holds() {
+    let mut bad: Vec<String> = Vec::new();
+    let mut law_rows_seen = 0usize;
+    for p in
+        hale_corpus::parseable(|s| hale_syntax::parse_source(s).is_ok())
+    {
+        let Ok(program) = hale_syntax::parse_source(&p.source)
+        else {
+            continue;
+        };
+        let caught = std::panic::catch_unwind(
+            std::panic::AssertUnwindSafe(|| {
+                let bundle = bundle_of(&p.source, &program);
+                hale_types::topology::dump_topology(&bundle)
+            }),
+        );
+        let Ok(art) = caught else {
+            bad.push(format!("{}: PANIC", p.origin));
+            continue;
+        };
+        let Ok(v) =
+            serde_json::from_str::<serde_json::Value>(&art)
+        else {
+            bad.push(format!("{}: invalid JSON", p.origin));
+            continue;
+        };
+        let clean = v["verdict"] == "clean";
+        for r in v["law"]["rows"].as_array().into_iter().flatten()
+        {
+            law_rows_seen += 1;
+            if r["family"] == "fleet" {
+                continue;
+            }
+            if clean && r["verdict"] != "holds" {
+                bad.push(format!(
+                    "{}: clean artifact carries a non-holds law \
+                     row: {}",
+                    p.origin, r
+                ));
+            }
+        }
+    }
+    assert!(
+        law_rows_seen > 60,
+        "the corpus must exercise law rows ({} seen)",
+        law_rows_seen
+    );
+    assert!(
+        bad.is_empty(),
+        "{} violations:\n{}",
+        bad.len(),
+        bad.join("\n")
+    );
+}
+
+/// Review round 1: unmigrated families carry the OLD engines'
+/// authoritative results in the law section — a passing `@budget`
+/// and a passing `causes:` both read `holds` (with the budget's
+/// legacy `lowered` row agreeing), and a violated budget reads
+/// `violated`; the `uncertified` no-engine placeholder never
+/// reaches the artifact where legacy truth exists.
+#[test]
+fn unmigrated_rows_carry_legacy_verdicts() {
+    let src = r#"
+effect money;
+topic Sig { payload: Int; subject: "app.sig"; }
+@effects(causes: { money })
+fn poke(v: Int) { Sig <- v; }
+@budget(alloc_per_call = 4)
+fn tight(v: Int) -> Int { return v + 1; }
+locus Handler {
+    params { n: Int = 0; }
+    bus { subscribe Sig as on_sig; }
+    fn on_sig(v: Int) { self.n = charge(v); }
+}
+@effects(is: { money })
+fn charge(v: Int) -> Int { return v; }
+main locus App {
+    params { h: Handler = Handler { }; }
+    run() { poke(1); println(tight(1)); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let art = hale_types::topology::dump_topology(&bundle);
+    let v: serde_json::Value =
+        serde_json::from_str(&art).expect("valid JSON");
+    let rows = v["law"]["rows"].as_array().expect("law.rows");
+    let by_kind = |kind: &str| -> &serde_json::Value {
+        rows.iter()
+            .find(|r| r["law"]["kind"] == kind)
+            .unwrap_or_else(|| panic!("row of kind {}", kind))
+    };
+    let causes = by_kind("effect_causes");
+    assert_eq!(causes["family"], "unmigrated");
+    assert_eq!(
+        causes["verdict"], "holds",
+        "the old causes engine certifies the publish->handler \
+         path: {}",
+        causes
+    );
+    let budget = by_kind("alloc_budget");
+    assert_eq!(
+        budget["verdict"], "holds",
+        "the old budget engine's result, not the no-engine \
+         placeholder: {}",
+        budget
+    );
+    assert_eq!(v["verdict"], "clean");
+
+    // A VIOLATED budget flows through and fails the document.
+    let src = r#"
+type P { a: Int = 0; }
+@budget(alloc_per_call = 0)
+fn hot(v: Int) -> P { return P { a: v }; }
+main locus App {
+    run() { println(hot(1).a); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let art = hale_types::topology::dump_topology(&bundle);
+    let v: serde_json::Value =
+        serde_json::from_str(&art).expect("valid JSON");
+    let rows = v["law"]["rows"].as_array().expect("law.rows");
+    let budget = rows
+        .iter()
+        .find(|r| r["law"]["kind"] == "alloc_budget")
+        .expect("budget row");
+    assert_eq!(
+        budget["verdict"], "violated",
+        "a violated budget carries the legacy verdict: {}",
+        budget
+    );
+    assert_eq!(v["verdict"], "law_failed");
+}
+
+/// The typed payload carries the law's OPERANDS (review round 1):
+/// a two-class forbid names both classes; per-certificate evidence
+/// is keyed by (law ordinal, certificate ordinal) and says WHICH
+/// certificate failed.
+#[test]
+fn typed_payload_carries_operands_and_certs()  {
+    let src = r#"
+locus A {
+    params { n: Int = 0; }
+    fn go(v: Int) { self.n <- v; }
+}
+@effects(none: { syscall, publish })
+fn f(v: Int) { A { }.go(v); }
+main locus App {
+    run() { f(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let art = hale_types::topology::dump_topology(&bundle);
+    let v: serde_json::Value =
+        serde_json::from_str(&art).expect("valid JSON");
+    let rows = v["law"]["rows"].as_array().expect("law.rows");
+    let forbid = rows
+        .iter()
+        .find(|r| r["law"]["kind"] == "effect_forbid")
+        .expect("forbid row");
+    let classes = forbid["law"]["classes"]
+        .as_array()
+        .expect("classes");
+    let names: Vec<&str> = classes
+        .iter()
+        .filter_map(|c| c["class"].as_str())
+        .collect();
+    assert_eq!(names, ["syscall", "publish"]);
+    assert_eq!(forbid["law"]["at"]["display"], "f");
+    // per-certificate evidence: publish violated, syscall holds.
+    let certs = forbid["certs"].as_array().expect("certs");
+    assert_eq!(certs.len(), 2);
+    assert_eq!(certs[0]["ordinal"], 0);
+    assert_eq!(certs[0]["result"], "holds");
+    assert!(
+        certs[0]["form"]
+            .as_str()
+            .unwrap()
+            .contains("effects(syscall)")
+    );
+    assert_eq!(certs[1]["result"], "violated");
+    assert!(
+        certs[1]["form"]
+            .as_str()
+            .unwrap()
+            .contains("effects(publish)")
+    );
 }

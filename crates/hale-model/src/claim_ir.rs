@@ -469,9 +469,13 @@ impl JudgmentFamily {
                 .union(R::SUBSCRIBES)
                 .union(R::CARDINALITY)
                 .union(R::EFFECTS),
-            JudgmentFamily::Certificate => {
-                R::CALLS.union(R::EFFECTS)
-            }
+            // PUBLISHES joins CALLS + EFFECTS (round 1): the
+            // `@effects(publish: {…})` certificate walks publish
+            // sites, and a computed subject is exactly the
+            // unresolved knowledge that makes the family inexact.
+            JudgmentFamily::Certificate => R::CALLS
+                .union(R::EFFECTS)
+                .union(R::PUBLISHES),
             JudgmentFamily::Unmigrated | JudgmentFamily::Fleet => {
                 crate::hole::RelationSet(0)
             }
@@ -479,7 +483,289 @@ impl JudgmentFamily {
     }
 }
 
+/// Minimal JSON string escaping for the dep-free payload renderer.
+fn json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", c as u32))
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 impl ClaimRow {
+    /// The TYPED law payload (GH #476 Change 6): one tagged JSON
+    /// object per `ClaimIr` variant carrying the law's operands —
+    /// what a consumer reads instead of parsing the rendered form
+    /// string. References render as `{"name": raw, "display",
+    /// "resolved": bool}`; class references as `{"class",
+    /// "builtin", "resolved"}`. One authority beside
+    /// [`ClaimRow::claims_form`] — the artifact serializes this
+    /// verbatim, and Track A's claim view consumes it.
+    pub fn law_payload_json(&self) -> String {
+        let name_ref = |n: &NameRef, resolved: bool| -> String {
+            format!(
+                "{{\"name\": {}, \"display\": {}, \"resolved\": {}}}",
+                json_str(&n.raw),
+                json_str(&n.display),
+                resolved
+            )
+        };
+        let gref = |g: &GroupRef| -> String {
+            name_ref(&g.name, g.group.is_some())
+        };
+        let tref = |t: &TopicIrRef| -> String {
+            name_ref(&t.name, t.topic.is_some())
+        };
+        let cref = |c: &EffectClassRef| -> String {
+            format!(
+                "{{\"class\": {}, \"builtin\": {}, \"resolved\": {}}}",
+                json_str(&c.name),
+                c.builtin,
+                c.builtin || c.class.is_some()
+            )
+        };
+        let crefs = |cs: &[EffectClassRef]| -> String {
+            let v: Vec<String> = cs.iter().map(&cref).collect();
+            format!("[{}]", v.join(", "))
+        };
+        let fnref = |at: &(Option<FunctionId>, NameRef)| -> String {
+            name_ref(&at.1, at.0.is_some())
+        };
+        let locusref =
+            |at: &(Option<LocusDeclId>, NameRef)| -> String {
+                name_ref(&at.1, at.0.is_some())
+            };
+        let set = |s: &SetIr| -> String {
+            match s {
+                SetIr::Group(g) => {
+                    format!("{{\"group\": {}}}", gref(g))
+                }
+                SetIr::EffectCarriers(c) => {
+                    format!("{{\"effects\": {}}}", cref(c))
+                }
+            }
+        };
+        let selector = |b: &BusSelector| -> String {
+            name_ref(
+                &NameRef {
+                    raw: b.name.clone(),
+                    display: b.name.clone(),
+                },
+                !b.topics.is_empty() || !b.subjects.is_empty(),
+            )
+        };
+        match &self.law {
+            ClaimIr::ForbidReaches {
+                src,
+                dst,
+                via_calls,
+                via_bus,
+                during,
+                avoiding,
+            } => {
+                let mut via: Vec<&str> = Vec::new();
+                if *via_calls {
+                    via.push("\"calls\"");
+                }
+                if *via_bus {
+                    via.push("\"bus\"");
+                }
+                let mut out = format!(
+                    "{{\"kind\": \"forbid_reaches\", \"src\": {}, \
+                     \"dst\": {}, \"via\": [{}]",
+                    set(src),
+                    set(dst),
+                    via.join(", ")
+                );
+                if let Some(p) = during {
+                    out.push_str(&format!(
+                        ", \"during\": {}",
+                        json_str(&p.name)
+                    ));
+                }
+                if let Some(a) = avoiding {
+                    out.push_str(&format!(
+                        ", \"avoiding\": {}",
+                        gref(a)
+                    ));
+                }
+                out.push('}');
+                out
+            }
+            ClaimIr::OnlyEdges { src, dst, grants } => {
+                let gs: Vec<String> = grants
+                    .iter()
+                    .map(|g| {
+                        format!(
+                            "{{\"verb\": {}, \"topic\": {}}}",
+                            json_str(if g.publish {
+                                "publish"
+                            } else {
+                                "subscribe"
+                            }),
+                            tref(&g.topic)
+                        )
+                    })
+                    .collect();
+                format!(
+                    "{{\"kind\": \"only_edges\", \"src\": {}, \
+                     \"dst\": {}, \"grants\": [{}]}}",
+                    gref(src),
+                    gref(dst),
+                    gs.join(", ")
+                )
+            }
+            ClaimIr::Bound { class, limit, from } => format!(
+                "{{\"kind\": \"bound\", \"class\": {}, \
+                 \"limit\": {}, \"from\": {}}}",
+                cref(class),
+                limit,
+                gref(from)
+            ),
+            ClaimIr::RequireEndpoint {
+                publishers,
+                group,
+                topic,
+            } => format!(
+                "{{\"kind\": \"require_endpoint\", \
+                 \"publishers\": {}, \"group\": {}, \
+                 \"topic\": {}}}",
+                publishers,
+                gref(group),
+                tref(topic)
+            ),
+            ClaimIr::RequireSealed { group } => format!(
+                "{{\"kind\": \"require_sealed\", \"group\": {}}}",
+                gref(group)
+            ),
+            ClaimIr::RequireAttributed { class } => format!(
+                "{{\"kind\": \"require_attributed\", \
+                 \"class\": {}}}",
+                cref(class)
+            ),
+            ClaimIr::Cover { seed, group } => format!(
+                "{{\"kind\": \"cover\", \"seed\": {}, \
+                 \"group\": {}}}",
+                json_str(&seed.name),
+                gref(group)
+            ),
+            ClaimIr::Count {
+                publishers,
+                topic,
+                cmp,
+                n,
+            } => format!(
+                "{{\"kind\": \"count\", \"publishers\": {}, \
+                 \"topic\": {}, \"cmp\": {}, \"n\": {}}}",
+                publishers,
+                tref(topic),
+                json_str(match cmp {
+                    CountCmpIr::Eq => "==",
+                    CountCmpIr::Le => "<=",
+                    CountCmpIr::Ge => ">=",
+                }),
+                n
+            ),
+            ClaimIr::EffectForbid { at, classes } => format!(
+                "{{\"kind\": \"effect_forbid\", \"at\": {}, \
+                 \"classes\": {}}}",
+                fnref(at),
+                crefs(classes)
+            ),
+            ClaimIr::EffectOnly { at, classes } => format!(
+                "{{\"kind\": \"effect_only\", \"at\": {}, \
+                 \"classes\": {}}}",
+                fnref(at),
+                crefs(classes)
+            ),
+            ClaimIr::EffectPublishSet { at, entries } => {
+                let es: Vec<String> =
+                    entries.iter().map(&selector).collect();
+                format!(
+                    "{{\"kind\": \"effect_publish_set\", \
+                     \"at\": {}, \"entries\": [{}]}}",
+                    fnref(at),
+                    es.join(", ")
+                )
+            }
+            ClaimIr::EffectCauses { at, classes } => format!(
+                "{{\"kind\": \"effect_causes\", \"at\": {}, \
+                 \"classes\": {}}}",
+                fnref(at),
+                crefs(classes)
+            ),
+            ClaimIr::NoPanic { at } => format!(
+                "{{\"kind\": \"no_panic\", \"at\": {}}}",
+                fnref(at)
+            ),
+            ClaimIr::DependsSet { locus, entries } => {
+                let es: Vec<String> =
+                    entries.iter().map(&selector).collect();
+                format!(
+                    "{{\"kind\": \"depends_set\", \
+                     \"locus\": {}, \"entries\": [{}]}}",
+                    locusref(locus),
+                    es.join(", ")
+                )
+            }
+            ClaimIr::PhaseEffects { locus, phases } => {
+                let ps: Vec<String> = phases
+                    .iter()
+                    .map(|(ph, allowed)| {
+                        format!(
+                            "{{\"phase\": {}, \"allowed\": {}}}",
+                            json_str(ph),
+                            crefs(allowed)
+                        )
+                    })
+                    .collect();
+                format!(
+                    "{{\"kind\": \"phase_effects\", \
+                     \"locus\": {}, \"phases\": [{}]}}",
+                    locusref(locus),
+                    ps.join(", ")
+                )
+            }
+            ClaimIr::AllocBudget { at, per_call } => format!(
+                "{{\"kind\": \"alloc_budget\", \"at\": {}, \
+                 \"per_call\": {}}}",
+                fnref(at),
+                per_call
+            ),
+            ClaimIr::QuantBudget { at, dim, limit } => format!(
+                "{{\"kind\": \"quant_budget\", \"at\": {}, \
+                 \"dim\": {}, \"limit\": {}}}",
+                fnref(at),
+                json_str(match dim {
+                    QuantDimIr::StackBytes => "stack_bytes",
+                    QuantDimIr::BlockPoints => "block_points",
+                    QuantDimIr::Publish => "publish",
+                    QuantDimIr::Fanout => "fanout",
+                    QuantDimIr::UserClass(c) => &c.name,
+                }),
+                limit
+            ),
+            ClaimIr::FleetForbidReaches { .. }
+            | ClaimIr::FleetOnlyEdges { .. }
+            | ClaimIr::FleetRequireEndpoint { .. }
+            | ClaimIr::FleetCountInstances { .. } => {
+                "{\"kind\": \"fleet\"}".to_string()
+            }
+        }
+    }
+
     /// Which judgment family owns this row.
     pub fn family(&self) -> JudgmentFamily {
         match &self.law {

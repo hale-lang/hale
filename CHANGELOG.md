@@ -26,6 +26,18 @@ and `adequacy` (per migrated family: `exact` | `degraded`).
 `shape_hash` is UNCHANGED - replay admission and recorded
 baselines survive.
 
+The emitted model half and `shape_hash` now come from the
+`ApplicationModel` projection (`project_model_half`) - one
+semantic authority; the legacy gathering survives only as the
+corpus differential's comparison arm. Law rows carry a typed
+tagged payload per `ClaimIr` variant (operands with raw/display
+reference duality) and per-certificate evidence; unmigrated
+families (`causes:`, `depends:`, `@budget`) carry the old
+engines' authoritative results, so `clean` implies every law row
+holds. Track A's claim view highlights from the typed payload
+instead of substring-matching form strings. `exact_cardinality`
+is now derived (closed-world endpoint counts).
+
 `semantics` bumps to 2: machine verdicts are stricter in two
 documented places (a certificate naming a cyclically-defined or
 undeclared effect class is `invalid`, never a vacuous `holds`;

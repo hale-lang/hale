@@ -2794,6 +2794,14 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             hale_model::RelationSet::KEY_FILTERS,
         ),
         exact_effects: !hides_any(hale_model::RelationSet::EFFECTS),
+        // Endpoint multiplicity comes from a complete closed-world
+        // AST enumeration — counts are exact unless a hole says the
+        // endpoint sets are incomplete (round 1: leaving this
+        // unclaimed made endpoint adequacy permanently `degraded`,
+        // including for fully known publisher/subscriber counts).
+        exact_cardinality: !hides_any(
+            hale_model::RelationSet::CARDINALITY,
+        ),
         ..Capabilities::default()
     };
 

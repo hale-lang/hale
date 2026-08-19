@@ -323,14 +323,30 @@ sections: **`law`** — every lowered `ClaimIr` row with its
 ordinal, origin (`main` / `constitution:<name>` / `library` /
 `annotation`), judgment **family** (`reachability` / `boundary` /
 `endpoint` / `bound` / `certificate` / `unmigrated` / `fleet`),
-machine **verdict**, and source provenance, plus `law_digest`
-(the law table's semantic digest) and `inputs_digest` (the
-analysis-inputs digest) — the ties a consumer checks before
-trusting external evidence against this artifact; **`capabilities`**
-— the model's positive completeness account, typed; and
-**`adequacy`** — per migrated judgment family, `exact` when
-capabilities vouch every relation family that judgment consumes,
-else `degraded`. The legacy `claims` / `lowered` string rows
+machine **verdict**, a TYPED **`law` payload** (one tagged object
+per `ClaimIr` variant carrying the law's operands — each reference
+as `{"name": <raw canonical identity>, "display": <author
+spelling>, "resolved": bool}`; the raw half is the machine join
+key, the same deliberate raw/display duality the `topics` section
+carries), per-certificate **`certs`** evidence keyed by
+certificate ordinal for the certificate family, and source
+provenance, plus `law_digest` (the law table's semantic digest)
+and `inputs_digest` (the analysis-inputs digest) — the ties a
+consumer checks before trusting external evidence against this
+artifact; **`capabilities`** — the model's positive completeness
+account, typed (`exact_cardinality` is derived: endpoint counts
+come from a closed-world enumeration and are exact unless a hole
+says otherwise); and **`adequacy`** — per migrated judgment
+family, `exact` when capabilities vouch every relation family that
+judgment consumes, else `degraded` (the certificate family
+consumes PUBLISHES — a publish-set contract cannot prove a
+computed subject in-set). The UNMIGRATED families (`causes:`,
+`depends:`, `@budget`) carry the old engines' authoritative
+results in their law rows, so no non-passing law row can coexist
+with a `clean` document verdict. The emitted model half — and
+`shape_hash` — come from the `ApplicationModel` projection
+(`project_model_half`); the legacy gathering survives only as the
+corpus differential's comparison arm until Change 9. The legacy `claims` / `lowered` string rows
 remain, now PROJECTED from the canonical model path; `semantics`
 bumps to 2 because the machine verdicts are stricter in two
 documented places (a certificate naming a cyclically-defined or

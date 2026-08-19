@@ -1112,18 +1112,31 @@ fn build_graph(
                 tone,
             });
             // Highlight every group member (loci AND free fns) and
-            // topic the claim's rendered form names. (The artifact
-            // carries the claim as normalized text; structured
-            // ClaimIr rows are the Track B upgrade — this stays
-            // presentation-side.)
+            // topic the claim REFERENCES — from the TYPED law
+            // payload (schema 1.11), never by substring-matching
+            // the rendered form. The payload's `display` fields
+            // are exactly the operand spellings.
+            let law_row = art.v["law"]["rows"]
+                .as_array()
+                .and_then(|rows| {
+                    rows.iter()
+                        .find(|r| r["name"] == cname.as_str())
+                })
+                .cloned()
+                .unwrap_or(Value::Null);
+            let mut named: Vec<String> = Vec::new();
+            law_display_names(&law_row["law"], &mut named);
+            let mentions = |name: &str| -> bool {
+                named.iter().any(|n| n == name)
+            };
             let mut hl: Vec<String> = Vec::new();
             for (gname, members) in art.groups() {
-                if form_mentions(&form, &gname) {
+                if mentions(&gname) {
                     hl.extend(members);
                 }
             }
             for l in &loci {
-                if form_mentions(&form, l) {
+                if mentions(l) {
                     hl.push(l.clone());
                 }
             }
@@ -1138,7 +1151,7 @@ fn build_graph(
                 }
             }
             for t in &mut topic_nodes {
-                if form_mentions(&form, &t.name) {
+                if mentions(&t.name) {
                     t.highlight = true;
                 }
             }
@@ -1192,6 +1205,29 @@ fn build_graph(
 
 /// Word-boundary mention check over the claim's normalized form, so
 /// group `stores` doesn't light up locus `Store` by prefix accident.
+/// Every DISPLAY spelling the typed law payload references —
+/// groups, topics, classes, subjects, phases (GH #476 Change 6:
+/// the claim view highlights from the typed operands instead of
+/// substring-matching the rendered form string).
+fn law_display_names(law: &Value, out: &mut Vec<String>) {
+    match law {
+        Value::Object(map) => {
+            if let Some(Value::String(d)) = map.get("display") {
+                out.push(d.clone());
+            }
+            for v in map.values() {
+                law_display_names(v, out);
+            }
+        }
+        Value::Array(items) => {
+            for v in items {
+                law_display_names(v, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn form_mentions(form: &str, name: &str) -> bool {
     let bytes = form.as_bytes();
     let mut start = 0;

@@ -625,9 +625,130 @@ pub struct ProjectedLawRow {
     pub origin: String,
     pub family: hale_model::JudgmentFamily,
     pub verdict: crate::verdict::Verdict,
+    /// The TYPED law payload — one tagged JSON object per ClaimIr
+    /// variant with the law's operands
+    /// ([`hale_model::ClaimRow::law_payload_json`]), serialized
+    /// verbatim into the artifact.
+    pub law: String,
+    /// Per-certificate evidence for certificate-family rows:
+    /// (certificate ordinal within the row, form, engine result).
+    pub certs: Vec<(u32, String, crate::verdict::Verdict)>,
     /// (source path, start, end) when the row's provenance is a
     /// source record.
     pub provenance: Option<(String, u32, u32)>,
+}
+
+/// The authoritative verdicts of the UNMIGRATED families (GH #476
+/// Change 6 round 1), from the old engines: `@budget` rows align
+/// by position within their variant (both sides walk declarations
+/// in source order — counts are asserted, and a mismatch fails
+/// closed to the judgment's `uncertified`); `causes:` and
+/// `depends:` attribute the old passes' diagnostics to rows by the
+/// exact span both anchor at (the fn name span / the depends
+/// declaration span). Without this, a law row for a surface with
+/// no other artifact evidence would say `uncertified` under a
+/// `clean` document verdict — an unwitnessed pass.
+pub fn legacy_unmigrated_verdicts(
+    bundle: &crate::symbol::Bundle<'_>,
+    graph: &crate::bus_graph::BusGraph,
+    table: &hale_model::ClaimIrTable,
+) -> std::collections::BTreeMap<u32, crate::verdict::Verdict> {
+    use hale_model::ClaimIr;
+    let programs: Vec<&hale_syntax::ast::Program> =
+        bundle.programs.values().copied().collect();
+    let mut out: std::collections::BTreeMap<
+        u32,
+        crate::verdict::Verdict,
+    > = std::collections::BTreeMap::new();
+
+    // ---- budgets: position-aligned within each variant ----
+    let alloc_rows: Vec<u32> = table
+        .rows
+        .iter()
+        .filter(|r| matches!(r.law, ClaimIr::AllocBudget { .. }))
+        .map(|r| r.ordinal)
+        .collect();
+    let old_alloc = crate::budget_check::certificate_rows(
+        &programs,
+        &bundle.import_renames,
+    );
+    if alloc_rows.len() == old_alloc.len() {
+        for (ord, r) in alloc_rows.iter().zip(old_alloc.iter()) {
+            out.insert(*ord, r.result);
+        }
+    }
+    let quant_rows: Vec<u32> = table
+        .rows
+        .iter()
+        .filter(|r| matches!(r.law, ClaimIr::QuantBudget { .. }))
+        .map(|r| r.ordinal)
+        .collect();
+    let fanout = |subj: &str| -> u64 {
+        graph
+            .subjects
+            .get(subj)
+            .map(|si| si.subscribers.len().max(1) as u64)
+            .unwrap_or(1)
+    };
+    let old_quant = crate::quantitative::certificate_rows(
+        &programs, &fanout,
+    );
+    if quant_rows.len() == old_quant.len() {
+        for (ord, r) in quant_rows.iter().zip(old_quant.iter()) {
+            out.insert(*ord, r.result);
+        }
+    }
+
+    // ---- causes / depends: span-attributed diagnostics ----
+    let span_of_row = |ordinal: u32| -> Option<(usize, usize)> {
+        let row = table.rows.iter().find(|r| r.ordinal == ordinal)?;
+        match table.provenance.records.get(row.provenance.index())
+        {
+            Some(hale_model::Provenance::Source {
+                source,
+                span,
+            }) => {
+                let base = bundle
+                    .sources
+                    .iter()
+                    .find(|f| f.id == source.0)
+                    .map(|f| f.base)
+                    .unwrap_or(0);
+                Some((
+                    (base + span.0) as usize,
+                    (base + span.1) as usize,
+                ))
+            }
+            _ => None,
+        }
+    };
+    let causes_diags =
+        crate::frontier::causes_diags(&programs, graph);
+    let depends_diags =
+        crate::frontier::depends_diags(&programs, graph);
+    for row in &table.rows {
+        let diags: &[hale_syntax::Diag] = match &row.law {
+            ClaimIr::EffectCauses { .. } => &causes_diags,
+            ClaimIr::DependsSet { .. } => &depends_diags,
+            _ => continue,
+        };
+        let Some((a, b)) = span_of_row(row.ordinal) else {
+            continue;
+        };
+        let hit = diags.iter().any(|d| {
+            d.span.start.as_usize() == a
+                && d.span.end.as_usize() == b
+        });
+        out.insert(
+            row.ordinal,
+            if hit {
+                crate::verdict::Verdict::Violated
+            } else {
+                crate::verdict::Verdict::Holds
+            },
+        );
+    }
+    out
 }
 
 /// Project the artifact's claim/evidence rows from the canonical
@@ -646,6 +767,10 @@ pub fn project_law_rows(
     table: &hale_model::ClaimIrTable,
     evidence: &hale_model::EvidenceTable,
     source_bases: &[u32],
+    legacy_unmigrated: &std::collections::BTreeMap<
+        u32,
+        crate::verdict::Verdict,
+    >,
 ) -> (
     Vec<ProjectedClaimRow>,
     Vec<ProjectedLoweredRow>,
@@ -805,12 +930,65 @@ pub fn project_law_rows(
         let Some(v) = verdicts.get(&row.ordinal) else {
             continue;
         };
+        // An UNMIGRATED family's judgment verdict is `uncertified`
+        // ("no migrated engine") — the artifact substitutes the
+        // OLD engine's authoritative result where one exists
+        // (round 1: an uncertified law row under a clean document
+        // verdict with no other evidence is an unwitnessed pass).
+        // A stricter judgment verdict (`invalid` for an undeclared
+        // budget class) is never weakened.
+        let family = row.family();
+        let verdict = if family
+            == hale_model::JudgmentFamily::Unmigrated
+            && *v == crate::verdict::Verdict::Uncertified
+        {
+            legacy_unmigrated
+                .get(&row.ordinal)
+                .copied()
+                .unwrap_or(*v)
+        } else {
+            *v
+        };
+        let certs: Vec<(u32, String, crate::verdict::Verdict)> =
+            evidence
+                .rows
+                .iter()
+                .find(|r| r.ordinal == row.ordinal)
+                .map(|r| {
+                    r.certs
+                        .iter()
+                        .enumerate()
+                        .map(|(i, c)| {
+                            (
+                                i as u32,
+                                c.form.clone(),
+                                match c.result {
+                                    hale_model::VerdictIr::Holds => {
+                                        crate::verdict::Verdict::Holds
+                                    }
+                                    hale_model::VerdictIr::Violated => {
+                                        crate::verdict::Verdict::Violated
+                                    }
+                                    hale_model::VerdictIr::Uncertified => {
+                                        crate::verdict::Verdict::Uncertified
+                                    }
+                                    hale_model::VerdictIr::Invalid => {
+                                        crate::verdict::Verdict::Invalid
+                                    }
+                                },
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
         law.push(ProjectedLawRow {
             ordinal: row.ordinal,
             name: row.name.clone(),
             origin,
-            family: row.family(),
-            verdict: *v,
+            family,
+            verdict,
+            law: row.law_payload_json(),
+            certs,
             provenance,
         });
     }

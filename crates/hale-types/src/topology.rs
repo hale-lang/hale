@@ -172,6 +172,19 @@ pub fn model_shape_hash(bundle: &Bundle<'_>) -> u64 {
 /// Serialize the bundle's model + claim results as the topology
 /// artifact (JSON).
 pub fn dump_topology(bundle: &Bundle<'_>) -> String {
+    dump_topology_parts(bundle).0
+}
+
+/// The artifact PLUS the legacy model-half string (GH #476
+/// Change 6, review round 1): production emits the PROJECTION of
+/// `ApplicationModel` (`project_model_half` — one semantic
+/// authority); the legacy gathering remains ONLY as the
+/// differential's comparison arm until Change 9 retires it. It
+/// never supplies emitted rows.
+#[doc(hidden)]
+pub fn dump_topology_parts(
+    bundle: &Bundle<'_>,
+) -> (String, String) {
     let programs: Vec<&Program> =
         bundle.programs.values().copied().collect();
     let (top, _resolve_diags) = crate::resolve::build_top_scope(bundle);
@@ -689,6 +702,10 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     );
     let source_bases: Vec<u32> =
         bundle.sources.iter().map(|f| f.base).collect();
+    let legacy_unmigrated =
+        crate::topology_projection::legacy_unmigrated_verdicts(
+            bundle, &graph, &law_table,
+        );
     let (outcomes, projected_lowered, law_rows) =
         crate::topology_projection::project_law_rows(
             bundle,
@@ -696,6 +713,7 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
             &law_table,
             &law_evidence,
             &source_bases,
+            &legacy_unmigrated,
         );
     // Rendered forms carry post-mangle topic refs; rewrite them to
     // author spelling (longest-mangled-first, the demangle_imports
@@ -907,7 +925,18 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     trim_trailing_comma(&mut model);
     model.push_str("  ]");
 
+    // GH #476 Change 6 (review round 1): the emitted model half is
+    // the PROJECTION — artifact generation projects the model
+    // (acceptance criterion 6). The legacy string just built above
+    // is returned for the corpus differential only.
+    let legacy_model = model;
+    let model =
+        crate::topology_projection::project_model_half(&vmodel);
     let shape_hash = fnv1a64(model.as_bytes());
+    debug_assert_eq!(
+        shape_hash,
+        crate::topology_projection::project_shape_hash(&vmodel)
+    );
 
     let mut out = String::new();
     out.push_str("{\n");
@@ -1196,14 +1225,37 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
             ),
             None => String::new(),
         };
+        let certs = if r.certs.is_empty() {
+            String::new()
+        } else {
+            let cs: Vec<String> = r
+                .certs
+                .iter()
+                .map(|(i, form, res)| {
+                    format!(
+                        "{{\"ordinal\": {}, \"form\": {}, \
+                         \"result\": {}}}",
+                        i,
+                        quote(&demangle_str(form)),
+                        quote(res.as_str())
+                    )
+                })
+                .collect();
+            format!(", \"certs\": [{}]", cs.join(", "))
+        };
         out.push_str(&format!(
             "      {{\"ordinal\": {}, \"name\": {}, \"origin\": {}, \
-             \"family\": {}, \"verdict\": {}{}}},\n",
+             \"family\": {}, \"verdict\": {}, \"law\": {}{}{}}},\n",
             r.ordinal,
             quote(&demangle_str(&r.name)),
             quote(&r.origin),
             quote(r.family.as_str()),
             quote(r.verdict.as_str()),
+            // Verbatim: the payload carries RAW (canonical) and
+            // DISPLAY spellings side by side — demangling the
+            // whole object would collapse the raw identity.
+            r.law,
+            certs,
             prov
         ));
     }
@@ -1310,15 +1362,13 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     // the migrated families the law rows are the judgment's word —
     // stricter than the engine replay in the two documented places
     // (cyclic/undeclared classes ⇒ invalid; attributed-over-hole ⇒
-    // uncertified). Unmigrated families (budget/quant/causes) and
-    // fleet rows are excluded: their truth still comes from the old
-    // engines in `lowered`.
+    // uncertified). Unmigrated rows carry the OLD engines'
+    // authoritative results (`legacy_unmigrated_verdicts`), so
+    // EVERY application-tier row participates: no non-passing law
+    // row can coexist with a `clean` document verdict (round 1).
     let law_pass = law_rows.iter().all(|r| {
-        matches!(
-            r.family,
-            hale_model::JudgmentFamily::Unmigrated
-                | hale_model::JudgmentFamily::Fleet
-        ) || r.verdict.passed()
+        matches!(r.family, hale_model::JudgmentFamily::Fleet)
+            || r.verdict.passed()
     });
     let all_pass = outcomes.iter().all(|o| o.result.passed())
         && lowered.iter().all(|r| r.result.passed())
@@ -1353,7 +1403,7 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
         "{}{:016x}\"\n}}\n",
         ARTIFACT_DIGEST_KEY, digest
     ));
-    out
+    (out, legacy_model)
 }
 
 /// The exact byte sequence introducing the integrity digest. It is
