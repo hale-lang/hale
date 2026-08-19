@@ -1135,6 +1135,50 @@ pub fn dump_topology_parts(
     out.push_str(
         &crate::topology_projection::project_unhashed_tail(&vmodel),
     );
+    // Round 8: the typed ENDPOINT section — every bus endpoint the
+    // model carries, at WIRE-SUBJECT grain, including a declared
+    // publisher with no send site (`bus {{ publish "addr" of type
+    // T; }}` is a real endpoint the V1 site-grained relations
+    // never show). `law.subjects` must equal exactly the subjects
+    // this section and the topics section carry — the full model
+    // subject universe is validated against its own typed
+    // projection, never reverse-engineered from the narrower V1
+    // view. Unhashed (endpoint rows are join surface, not shape).
+    {
+        let subj_pat = |sid: hale_model::SubjectId| -> &str {
+            vmodel
+                .entities
+                .subjects
+                .get(sid.index())
+                .map(|su| su.pattern.as_str())
+                .unwrap_or("")
+        };
+        let mut rows: Vec<String> = Vec::new();
+        for r in &vmodel.relations.publishes {
+            rows.push(format!(
+                "{{\"verb\": \"publish\", \"subject\": {}, \"via\": \"site\"}}",
+                quote(subj_pat(r.subject))
+            ));
+        }
+        for r in &vmodel.relations.declares_publish {
+            rows.push(format!(
+                "{{\"verb\": \"publish\", \"subject\": {}, \"via\": \"declaration\"}}",
+                quote(subj_pat(r.subject))
+            ));
+        }
+        for r in &vmodel.relations.subscribes {
+            rows.push(format!(
+                "{{\"verb\": \"subscribe\", \"subject\": {}, \"via\": \"declaration\"}}",
+                quote(subj_pat(r.subject))
+            ));
+        }
+        rows.sort();
+        rows.dedup();
+        out.push_str(&format!(
+            ",\n  \"endpoints\": [{}]",
+            rows.join(", ")
+        ));
+    }
     out.push_str(",\n  \"claims\": [\n");
     for o in &outcomes {
         // GH #409: `source` names the constitution an adopted clause
@@ -1423,15 +1467,43 @@ pub fn dump_topology_parts(
                 .map(|f| (f.name.clone(), f.display.clone()))
                 .collect(),
         ));
-        out.push_str(&pair_catalog(
-            "loci",
-            vmodel
+        // Loci carry an ANALYZABLE flag: the legacy certificate
+        // engines walk only top-level loci, so a module-scoped
+        // locus's phase contracts have no engine report and judge
+        // `uncertified` — a consumer needs the discriminator to
+        // hold the two shapes to their exact verdicts.
+        {
+            let top_level: std::collections::BTreeSet<&str> =
+                programs
+                    .iter()
+                    .flat_map(|pr| pr.items.iter())
+                    .filter_map(|item| match item {
+                        hale_syntax::ast::TopDecl::Locus(l) => {
+                            Some(l.name.name.as_str())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+            let mut rows: Vec<String> = vmodel
                 .entities
                 .loci
                 .iter()
-                .map(|l| (l.name.clone(), l.display.clone()))
-                .collect(),
-        ));
+                .map(|l| {
+                    format!(
+                        "{{\"name\": {}, \"display\": {},                          \"analyzable\": {}}}",
+                        quote(&l.name),
+                        quote(&l.display),
+                        top_level.contains(l.name.as_str())
+                    )
+                })
+                .collect();
+            rows.sort();
+            rows.dedup();
+            out.push_str(&format!(
+                "    \"loci\": [{}],\n",
+                rows.join(", ")
+            ));
+        }
         out.push_str(&pair_catalog(
             "groups",
             vmodel

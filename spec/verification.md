@@ -404,18 +404,37 @@ account — that is Change 7's), and recomputes `adequacy` from
 unresolved operand or an undeclared/cyclic effect class makes
 `invalid` the ONLY admissible verdict — a replayed engine result
 is never an alternative — and otherwise a certificate row's
-verdict is EXACTLY its recomputed evidence severity; a subject
-outside the legacy analyzable universe (`sorts.fns`) carries no
-certificates and only `invalid`. Machine-`invalid` rows may still
+verdict is EXACTLY its recomputed evidence severity. A subject
+outside the legacy analyzable universe carries no certificates
+and judges `uncertified` with its residue on the row (round 8):
+`sorts.fns` for fn subjects, the `analyzable` flag on `law.loci`
+rows for phase contracts — module-scoped bodies are residue, not
+invalidity. An implicit lifecycle phase with no hook body gets a
+SYNTHETIC `Holds` certificate from the evidence layer (no hook
+performs no effects), so `@phase_effects(birth: {})` on a
+hook-less locus is `holds`, not a missing report. Beyond the
+statically decodable invalidities, the claims evaluator's other
+legitimate `Invalid` outcomes (an operand outside a verb's
+domain, projection vacuity, an empty `during` slice, `avoiding`
+overlap, …) admit by RETAINING the judgment's explanation — an
+`invalid` row must carry either a decodable invalidity or its
+judgment's evidence, and an unanalyzed `uncertified` its
+residue. Machine-`invalid` rows may still
 PRESERVE the old engines' reports (`law.legacy`, keyed budget
 `lowered` rows) — bound by fingerprint as optional evidence,
 never demanded and never overriding the machine verdict, so the
 compiler's own cyclic-class artifacts admit. The catalogs are
 CLOSED: unique in both halves and in exact bijection with the
 `topics` / `groups` / `sorts.loci` sections (`fn_universe` covers
-`sorts.fns`; `law.subjects` is tied to the declared subjects and
-relation endpoints), so selector recomputation cannot be widened
-underneath a certificate. Both digests are RECOMPUTED at
+`sorts.fns`), so selector recomputation cannot be widened
+underneath a certificate. The artifact carries a typed
+**`endpoints`** section (round 8) — every bus endpoint at
+wire-subject grain with its verb and `via: site | declaration`,
+including a DECLARED publisher with no send site, which the V1
+site-grained relations never show — and `law.subjects` must equal
+exactly the subjects the endpoint and topic sections carry, in
+both directions: an appended ghost pattern has no endpoint row,
+and a deleted pattern orphans one. Both digests are RECOMPUTED at
 admission: `law_digest` is the canonical-JSON fingerprint over
 the law rows (serde-canonical rendering, fnv1a64 — a row edit
 under a stale digest refuses), and `inputs_digest` must equal the

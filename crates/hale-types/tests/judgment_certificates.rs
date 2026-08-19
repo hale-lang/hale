@@ -329,10 +329,25 @@ fn dropping_evidence_changes_the_verdict() {
     assert_eq!(judged[0].verdict, Verdict::Holds);
     evidence.rows.clear();
     let judged = judge_certificates(&table, &model, &evidence, &[0]);
+    // Round 8: an entirely REPORT-LESS row is a subject the
+    // engines never analyzed — residue (`uncertified`, carrying
+    // its reason), not invalidity. Partial disagreement is what
+    // stays Invalid.
     assert_eq!(
         judged[0].verdict,
-        Verdict::Invalid,
-        "a certificate row without an evidence row must be Invalid"
+        Verdict::Uncertified,
+        "a certificate row without any evidence row is uncertified"
+    );
+    assert!(
+        judged[0].diags.iter().any(|d| d
+            .message
+            .contains("did not analyze this subject")),
+        "the residue carries its reason: {:?}",
+        judged[0]
+            .diags
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 

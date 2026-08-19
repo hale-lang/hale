@@ -125,6 +125,13 @@ fn the_topology_artifact_round_trips() {
         let mut skip = false;
         dump.lines()
             .filter(|l| {
+                // Round 8: the one-line `endpoints` section is
+                // wire-subject grain — the same deliberate rawness
+                // as `topics` (a subject-less imported topic's
+                // default subject IS its mangled name).
+                if l.starts_with("  \"endpoints\": [") {
+                    return false;
+                }
                 if l.starts_with("  \"topics\": [")
                     || l.starts_with("  \"law\": {")
                 {

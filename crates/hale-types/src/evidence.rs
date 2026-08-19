@@ -147,6 +147,23 @@ pub fn derive_certificate_evidence(
     }
     let mut cursor: BTreeMap<(String, String), usize> =
         BTreeMap::new();
+    // Round 8: the certificate engines walk only TOP-LEVEL loci,
+    // and they emit no certificate for an implicit lifecycle phase
+    // with no hook body (`@phase_effects(birth: {})` on a locus
+    // that declares no `birth`). No hook body performs no effects,
+    // so the truthful certificate for such a phase is a synthetic
+    // `Holds` — module-scoped loci stay report-less and judge
+    // `uncertified`.
+    let top_level_loci: std::collections::BTreeSet<&str> = programs
+        .iter()
+        .flat_map(|pr| pr.items.iter())
+        .filter_map(|item| match item {
+            hale_syntax::ast::TopDecl::Locus(l) => {
+                Some(l.name.name.as_str())
+            }
+            _ => None,
+        })
+        .collect();
     for row in &table.rows {
         let forms = row.certificate_forms();
         if forms.is_empty() {
@@ -167,7 +184,22 @@ pub fn derive_certificate_evidence(
                 *c += 1;
                 i
             });
-            let Some(i) = idx else { continue };
+            let Some(i) = idx else {
+                if let ClaimIr::PhaseEffects { locus, .. } =
+                    &row.law
+                {
+                    if top_level_loci
+                        .contains(locus.1.raw.as_str())
+                    {
+                        certs.push(CertificateEvidence {
+                            form: key.1.clone(),
+                            result: VerdictIr::Holds,
+                            diags: Vec::new(),
+                        });
+                    }
+                }
+                continue;
+            };
             let (cert, ds) = &groups[i];
             let mut diags_out: Vec<(String, ProvenanceId)> =
                 Vec::new();

@@ -81,6 +81,25 @@ never a fail-open `holds`), and the document `verdict` follows
 the machine. Artifact consumers reject unrecognized semantics by
 design; re-dump with the current compiler.
 
+Round 8: the admission accepts every artifact the compiler
+emits. Beyond references and classes, the claims evaluator's
+other legitimate Invalid outcomes (operand-domain errors like
+`require attributed` over a user class, vacuity, empty `during`,
+`avoiding` overlap) admit by RETAINING the judgment's explanation
+- an invalid row carries either a decodable invalidity or its
+evidence. An implicit lifecycle phase with no hook body gets a
+synthetic Holds certificate (no hook performs no effects), and a
+report-less subject - a module-scoped body - judges `uncertified`
+with its residue, never Invalid; `law.loci` rows carry an
+`analyzable` flag so admission holds both shapes to their exact
+verdicts. A typed `endpoints` section projects every bus endpoint
+at wire-subject grain (including a declared publisher with no
+send site), and `law.subjects` must equal exactly the subjects
+the endpoint and topic sections carry, both directions - the
+subject universe is validated against the model's own typed
+projection, never reverse-engineered from the narrower V1
+relations.
+
 Round 7: the admission is SELF-CONTAINED and invalidity-first.
 Static invalidity dominates: an unresolved operand or an
 undeclared/cyclic effect class admits only `invalid` - the old

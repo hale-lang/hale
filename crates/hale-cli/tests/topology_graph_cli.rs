@@ -1964,3 +1964,229 @@ fn main() { App { }; }
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Round 8: every compiler-emitted Invalid admits. The claims
+/// evaluator has legitimate invalidity beyond references and
+/// classes — `require attributed(all <declared user class>)` is an
+/// operand-domain error the judgment explains in its evidence —
+/// and `--dump-topology` deliberately emits despite claim errors
+/// so such rows can be replayed externally.
+#[test]
+fn operand_domain_invalid_admits() {
+    let dir = workdir("attrinvalid");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+effect purpose;
+main locus App {
+    params { n: Int = 0; }
+    claims { bad: require attributed(all purpose); }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dir.join("app.hale.topology");
+    let _ = hale()
+        .arg("check")
+        .arg(&src)
+        .arg(format!("--dump-topology={}", artifact.display()))
+        .output()
+        .unwrap();
+    let raw = std::fs::read_to_string(&artifact)
+        .expect("the invalid-claim artifact still dumps");
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&artifact)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "a compiler-emitted operand-domain Invalid admits: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // …but STRIPPING the judgment's explanation refuses: invalid
+    // must retain its reason.
+    let stripped = raw.replacen(", \"evidence\": [", ", \"evidence_\": [", 1);
+    if stripped != raw {
+        // renaming the key would fail only_keys; instead remove
+        // the whole evidence field by bracket-matching
+        let at = raw.find(", \"evidence\": [").unwrap();
+        let open = at + ", \"evidence\": ".len();
+        let bytes = raw.as_bytes();
+        let (mut depth, mut close, mut in_str, mut esc) =
+            (0usize, open, false, false);
+        for (i, &b) in bytes.iter().enumerate().skip(open) {
+            if esc {
+                esc = false;
+                continue;
+            }
+            match b {
+                b'\\' if in_str => esc = true,
+                b'"' => in_str = !in_str,
+                b'[' if !in_str => depth += 1,
+                b']' if !in_str => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let gutted =
+            format!("{}{}", &raw[..at], &raw[close + 1..]);
+        let p2 = dir.join("noexplain.topology");
+        std::fs::write(
+            &p2,
+            restamp_digest(&strip_trailer(&gutted)),
+        )
+        .unwrap();
+        let out = hale()
+            .arg("topology")
+            .arg("graph")
+            .arg(&p2)
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains(
+                "neither a decodable invalidity nor its \
+                 judgment's explanation"
+            ),
+            "a bare invalid refuses: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 8: an implicit lifecycle phase (`@phase_effects(birth:
+/// {})` with no `birth` hook) gets a synthetic Holds certificate —
+/// the compiler's own check-clean artifact admits; a module-scoped
+/// locus's phase contract judges `uncertified` and admits too.
+#[test]
+fn implicit_phase_and_module_locus_admit() {
+    for (tag, src, expect_verdict) in [
+        (
+            "implicitphase",
+            "@phase_effects(birth: {})\nlocus Worker {\n    \
+             params { n: Int = 0; }\n}\nmain locus App {\n    \
+             params { w: Worker = Worker { }; }\n    run() { \
+             println(1); }\n}\nfn main() { App { }; }\n",
+            "holds",
+        ),
+        (
+            "modlocusphase",
+            "module inner {\n    @phase_effects(birth: {})\n    \
+             locus Hidden {\n        params { n: Int = 0; }\n    \
+             }\n}\nmain locus App {\n    params { n: Int = 0; }\n    \
+             run() { println(1); }\n}\nfn main() { App { }; }\n",
+            "uncertified",
+        ),
+    ] {
+        let dir = workdir(tag);
+        let src_p = dir.join("app.hl");
+        std::fs::write(&src_p, src).unwrap();
+        let artifact = dump_artifact(&dir, &src_p);
+        let raw = std::fs::read_to_string(&artifact).unwrap();
+        assert!(
+            raw.contains(&format!(
+                "\"verdict\": \"{}\"",
+                expect_verdict
+            )),
+            "{}: expected {}:\n{}",
+            tag,
+            expect_verdict,
+            raw
+        );
+        let out = hale()
+            .arg("topology")
+            .arg("graph")
+            .arg(&artifact)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}: the compiler's own artifact admits: {}",
+            tag,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Round 8: a declared publisher with NO send site is a real
+/// endpoint — the artifact carries it in the typed `endpoints`
+/// section and admits; deleting its subject from `law.subjects`
+/// (narrowing a selector's recomputed universe) refuses on the
+/// exact-equality closure.
+#[test]
+fn declared_endpoint_without_site_admits_and_closes() {
+    let dir = workdir("declendpoint");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+type Msg { n: Int = 0; }
+locus Producer {
+    params { n: Int = 0; }
+    bus { publish "unused.address" of type Msg; }
+}
+main locus App {
+    params { p: Producer = Producer { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    assert!(
+        raw.contains(
+            "{\"verb\": \"publish\", \"subject\": \
+             \"unused.address\", \"via\": \"declaration\"}"
+        ),
+        "the declared endpoint row exists:\n{}",
+        raw
+    );
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&artifact)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "the declared-endpoint artifact admits: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Narrowing: delete the subject from law.subjects while the
+    // endpoint row remains.
+    let narrowed =
+        raw.replacen("\"subjects\": [\"unused.address\"]", "\"subjects\": []", 1);
+    assert_ne!(narrowed, raw, "test premise: the deletion landed");
+    let p2 = dir.join("narrowed.topology");
+    std::fs::write(&p2, restamp_digest(&strip_trailer(&narrowed)))
+        .unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p2)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains(
+            "does not equal the model's typed endpoint universe"
+        ),
+        "the narrowed subject universe refuses: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

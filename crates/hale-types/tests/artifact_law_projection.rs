@@ -122,35 +122,43 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
     // ---- lowered parity (the effects family; budget/quant rows
     // keep their old producers and are compared in the artifact
     // itself) ----
-    if old_lowered.len() != lowered.len() {
-        return Err(format!(
-            "{}: lowered row count diverges: old {} / new {}\n  \
-             old: {:?}\n  new: {:?}",
-            origin,
-            old_lowered.len(),
-            lowered.len(),
-            old_lowered
-                .iter()
-                .map(|r| (&r.subject, &r.form))
-                .collect::<Vec<_>>(),
-            lowered
-                .iter()
-                .map(|r| (&r.subject, &r.form))
-                .collect::<Vec<_>>()
-        ));
-    }
-    for (o, c) in old_lowered.iter().zip(lowered.iter()) {
+    // Merge walk (round 8): the projection may carry EXTRA rows
+    // the old evaluator never emitted — the synthetic `Holds`
+    // certificate for an implicit lifecycle phase with no hook
+    // body (a documented divergence: no hook performs no effects,
+    // so the truthful certificate exists even though the legacy
+    // walk skipped the phase). Everything else must match in
+    // order.
+    let mut oi = 0usize;
+    for c in lowered.iter() {
+        let o = old_lowered.get(oi);
+        let matches_old = o.is_some_and(|o| {
+            o.subject == c.subject && o.form == c.form
+        });
+        if !matches_old {
+            let synthetic = c.form.contains(" during ")
+                && c.result == Verdict::Holds;
+            if synthetic {
+                continue;
+            }
+            return Err(format!(
+                "{}: lowered row diverges:\n  old: {:?}\n  \
+                 new: {:?} {:?} {:?}",
+                origin,
+                o.map(|o| (&o.subject, &o.form, o.result)),
+                c.subject,
+                c.form,
+                c.result
+            ));
+        }
+        let o = o.expect("matched");
         n += 1;
         // The 5e documented divergences: cyclic and undeclared
         // classes judge Invalid where the evaluator's certificate
         // held vacuously.
         let class_carveout = c.result == Verdict::Invalid
             && o.result == Verdict::Holds;
-        let verdict_ok = o.result == c.result || class_carveout;
-        if o.subject != c.subject
-            || o.form != c.form
-            || !verdict_ok
-        {
+        if o.result != c.result && !class_carveout {
             return Err(format!(
                 "{}: lowered row diverges:\n  old: {:?} {:?} {:?}\n  \
                  new: {:?} {:?} {:?}",
@@ -158,6 +166,16 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
                 c.form, c.result
             ));
         }
+        oi += 1;
+    }
+    if oi != old_lowered.len() {
+        return Err(format!(
+            "{}: the projection dropped legacy lowered rows \
+             (consumed {} of {})",
+            origin,
+            oi,
+            old_lowered.len()
+        ));
     }
     Ok(n)
 }

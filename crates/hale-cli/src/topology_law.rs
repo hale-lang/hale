@@ -232,10 +232,13 @@ pub struct RefContext {
     pub fn_universe: Vec<(String, String)>,
     /// The legacy analyzable universe (`sorts.fns`) — the old
     /// engines never saw subjects outside it, so a certificate row
-    /// on such a subject carries NO evidence and only `invalid` is
-    /// truthful.
+    /// on such a subject carries no report and judges
+    /// `uncertified` (or `invalid` when statically invalid).
     pub sorts_fns: Vec<String>,
-    pub loci: Vec<(String, String)>,
+    /// (raw, display, analyzable) — loci carry the engine-walk
+    /// discriminator: module-scoped loci are in every sort but
+    /// outside the legacy certificate walk.
+    pub loci: Vec<(String, String, bool)>,
     pub phases: Vec<String>,
     pub seeds: Vec<String>,
     /// (name, declared, cyclic) from `law.effect_classes`.
@@ -376,7 +379,33 @@ impl RefContext {
                 .flatten()
                 .filter_map(|x| x.as_str().map(|s| s.to_string()))
                 .collect(),
-            loci: pairs(&v["law"]["loci"], "law.loci")?,
+            loci: {
+                let mut out = Vec::new();
+                for e in v["law"]["loci"].as_array().ok_or(
+                    "law.loci must be an array of canonical rows",
+                )? {
+                    only_keys(
+                        e,
+                        "law.loci[*]",
+                        &["name", "display", "analyzable"],
+                        &[],
+                    )?;
+                    out.push((
+                        e["name"]
+                            .as_str()
+                            .ok_or("law.loci[*].name")?
+                            .to_string(),
+                        e["display"]
+                            .as_str()
+                            .ok_or("law.loci[*].display")?
+                            .to_string(),
+                        e["analyzable"]
+                            .as_bool()
+                            .ok_or("law.loci[*].analyzable")?,
+                    ));
+                }
+                out
+            },
             phases,
             seeds: v["seeds"]
                 .as_object()
@@ -418,7 +447,18 @@ impl RefContext {
             Ok(())
         };
         unique_pairs(&cx.fn_universe, "law.fn_universe")?;
-        unique_pairs(&cx.loci, "law.loci")?;
+        {
+            let mut raws = BTreeSet::new();
+            let mut disps = BTreeSet::new();
+            for (n, d, _) in &cx.loci {
+                if !raws.insert(n) || !disps.insert(d) {
+                    return Err(format!(
+                        "law.loci: duplicate identity `{}`",
+                        d
+                    ));
+                }
+            }
+        }
         unique_pairs(&cx.groups, "law.groups")?;
         {
             let mut raws = BTreeSet::new();
@@ -524,7 +564,7 @@ impl RefContext {
             ));
         }
         for name in &loci_sort {
-            if !cx.loci.iter().any(|(_, d)| d == name) {
+            if !cx.loci.iter().any(|(_, d, _)| d == name) {
                 return Err(format!(
                     "sorts.loci row `{}` has no canonical \
                      law.loci pair",
@@ -543,41 +583,69 @@ impl RefContext {
                 ));
             }
         }
-        // The subject universe is tied to the model: every entry
-        // must be a declared topic's wire subject or an endpoint
-        // subject the relations carry, and every declared subject
-        // must be present.
-        let mut known_subjects: BTreeSet<&str> = cx
+        // Round 8: the subject universe is validated against the
+        // model's OWN typed endpoint projection — the `endpoints`
+        // section carries every bus endpoint at wire-subject
+        // grain, including a declared publisher with no send site,
+        // which the narrower V1 site relations never show.
+        // `law.subjects` must equal exactly the subjects the
+        // endpoint and topic sections carry, in both directions —
+        // an appended ghost pattern has no endpoint row, and a
+        // deleted pattern orphans one.
+        let mut model_subjects: BTreeSet<String> = cx
             .topics
             .iter()
-            .map(|(_, _, su)| su.as_str())
+            .map(|(_, _, su)| su.clone())
             .collect();
-        for key in ["publishes", "subscribes"] {
-            for r in
-                v["relations"][key].as_array().into_iter().flatten()
-            {
-                if let Some(su) = r["subject"].as_str() {
-                    known_subjects.insert(su);
-                }
-            }
-        }
-        for p2 in &cx.subjects {
-            if !known_subjects.contains(p2.as_str()) {
+        for (i, e) in v["endpoints"]
+            .as_array()
+            .ok_or(
+                "endpoints must be an array of typed endpoint \
+                 rows",
+            )?
+            .iter()
+            .enumerate()
+        {
+            only_keys(
+                e,
+                "endpoints[*]",
+                &["verb", "subject", "via"],
+                &[],
+            )
+            .map_err(|x| format!("endpoints[{}]: {}", i, x))?;
+            if !matches!(
+                e["verb"].as_str(),
+                Some("publish") | Some("subscribe")
+            ) || !matches!(
+                e["via"].as_str(),
+                Some("site") | Some("declaration")
+            ) {
                 return Err(format!(
-                    "law.subjects entry `{}` names no subject the \
-                     model carries",
-                    p2
+                    "endpoints[{}]: verb/via outside the closed \
+                     vocabulary",
+                    i
                 ));
             }
+            let su = e["subject"].as_str().ok_or_else(|| {
+                format!(
+                    "endpoints[{}]: subject must be a string",
+                    i
+                )
+            })?;
+            model_subjects.insert(su.to_string());
         }
-        for (_, _, su) in &cx.topics {
-            if !cx.subjects.iter().any(|p2| p2 == su) {
-                return Err(format!(
-                    "declared subject `{}` is missing from \
-                     law.subjects",
-                    su
-                ));
-            }
+        let law_subjects: BTreeSet<String> =
+            cx.subjects.iter().cloned().collect();
+        if law_subjects != model_subjects {
+            let extra: Vec<&String> =
+                law_subjects.difference(&model_subjects).collect();
+            let missing: Vec<&String> =
+                model_subjects.difference(&law_subjects).collect();
+            return Err(format!(
+                "law.subjects does not equal the model's typed \
+                 endpoint universe (extra: {:?}, missing: {:?})",
+                extra, missing
+            ));
         }
         Ok(cx)
     }
@@ -685,7 +753,19 @@ impl RefContext {
     }
     fn locus(&self, v: &Value, what: &str) -> Result<Ref, String> {
         let r = decode_ref(v, what)?;
-        self.exists_pair(&self.loci, &r, what)?;
+        if r.resolved
+            && !self
+                .loci
+                .iter()
+                .any(|(n, d, _)| *n == r.name && *d == r.display)
+        {
+            return Err(format!(
+                "{}: resolved `{}` (raw `{}`) does not match any \
+                 canonical pair in this artifact",
+                what, r.display, r.name
+            ));
+        }
+        self.bind(&r, what)?;
         Ok(r)
     }
     fn phase(&self, v: &Value, what: &str) -> Result<Ref, String> {
@@ -1886,7 +1966,10 @@ pub fn validate_law_account(
             // and only `invalid` is truthful. Everything inside
             // the universe binds its full evidence.
             let analyzable = match &decoded {
-                Law::PhaseEffects { .. } => true,
+                Law::PhaseEffects { locus, .. } => cx
+                    .loci
+                    .iter()
+                    .any(|(_, d, a)| *d == locus.display && *a),
                 Law::EffectForbid { at, .. }
                 | Law::EffectOnly { at, .. }
                 | Law::EffectPublishSet { at, .. }
@@ -1910,13 +1993,22 @@ pub fn validate_law_account(
                         label, i
                     ));
                 }
-                if verdict != "invalid" {
+                // Round 8: an unanalyzed body is RESIDUE, not
+                // invalidity — `uncertified`, carrying its reason
+                // — unless the law is statically invalid, which
+                // dominates.
+                let expect = if static_invalid {
+                    "invalid"
+                } else {
+                    "uncertified"
+                };
+                if verdict != expect {
                     return Err(format!(
                         "{}: malformed artifact — law.rows[{}] \
                          has no engine evidence (subject outside \
-                         the analyzable universe); only `invalid` \
-                         is truthful (got `{}`)",
-                        label, i, verdict
+                         the analyzable universe); only `{}` is \
+                         truthful (got `{}`)",
+                        label, i, expect, verdict
                     ));
                 }
             } else {
@@ -2025,17 +2117,6 @@ pub fn validate_law_account(
                     ));
                 }
             }
-        } else if !matches!(fam, "certificate")
-            && verdict == "invalid"
-            && !static_invalid
-        {
-            // A non-certificate row may only judge `invalid` for
-            // a statically decodable reason.
-            return Err(format!(
-                "{}: malformed artifact — law.rows[{}] asserts \
-                 `invalid` with no decodable invalidity",
-                label, i
-            ));
         }
         // Budget rows: bound to their compatibility `lowered`
         // evidence — an operand mutation (per_call 4 → 0) cannot
@@ -2113,6 +2194,39 @@ pub fn validate_law_account(
                 "{}: malformed artifact — law.rows[{}] is `{}` \
                  but retains none of its judgment's evidence",
                 label, i, verdict
+            ));
+        }
+        // Round 8: `invalid` needs its reason. The claims
+        // evaluator has legitimate invalidity beyond references
+        // and classes (an operand outside a verb's domain,
+        // projection vacuity, an empty `during` slice, `avoiding`
+        // overlap, …) — each such judgment carries its
+        // explanation, and the row must RETAIN it. A statically
+        // decodable invalidity (unresolved operand, invalid
+        // class) needs no prose; a bare `invalid` with neither is
+        // refused.
+        if verdict == "invalid"
+            && !matches!(fam, "certificate")
+            && !static_invalid
+            && row_ev == 0
+        {
+            return Err(format!(
+                "{}: malformed artifact — law.rows[{}] asserts \
+                 `invalid` with neither a decodable invalidity \
+                 nor its judgment's explanation",
+                label, i
+            ));
+        }
+        // An unanalyzed certificate row's `uncertified` carries
+        // its residue too.
+        if matches!(fam, "certificate")
+            && verdict == "uncertified"
+            && row_ev == 0
+        {
+            return Err(format!(
+                "{}: malformed artifact — law.rows[{}] is \
+                 `uncertified` but carries no residue explanation",
+                label, i
             ));
         }
         if matches!(

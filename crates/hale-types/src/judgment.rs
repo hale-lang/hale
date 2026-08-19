@@ -4167,14 +4167,37 @@ pub fn judge_certificates(
             r.subject == subject && r.certs.len() == expected
         });
         let Some(ev) = usable else {
-            // No evidence row for this ordinal, a subject
-            // disagreement, or a certificate count that differs
-            // from the row's shape (fewer = an unresolved subject
-            // the engines never saw; more = evidence that answers
-            // some other law) — Invalid.
+            // Round 8: an entirely REPORT-LESS row (no evidence
+            // row, or one with zero certificates) is a subject the
+            // engines never analyzed — a module-scoped body. That
+            // is residue, not invalidity: `uncertified`, with the
+            // reason on the row. A PARTIAL disagreement (subject
+            // mismatch, or a count that differs with certificates
+            // present) is still Invalid — evidence answering some
+            // other law. A statically invalid class dominates
+            // both.
+            let report_missing =
+                ev.is_none_or(|r| r.certs.is_empty());
+            let verdict = if invalid_class {
+                Verdict::Invalid
+            } else if report_missing {
+                diags.push(Diag::ty(
+                    claim_span(row.provenance),
+                    format!(
+                        "claim `{}`: the certificate engines did not \
+                         analyze this subject (module-scoped bodies are \
+                         outside the legacy analyzable universe) — \
+                         uncertified",
+                        row.name
+                    ),
+                ));
+                Verdict::Uncertified
+            } else {
+                Verdict::Invalid
+            };
             out.push(Judged {
                 ordinal: row.ordinal,
-                verdict: Verdict::Invalid,
+                verdict,
                 diags,
                 foreign: Vec::new(),
             });
