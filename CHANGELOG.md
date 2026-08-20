@@ -81,6 +81,20 @@ never a fail-open `holds`), and the document `verdict` follows
 the machine. Artifact consumers reject unrecognized semantics by
 design; re-dump with the current compiler.
 
+Round 15: member_of is a closed ownership partition. Every
+function carries its canonical `owner` (typed; None for free
+fns), and member_of must be a total exclusive partition agreeing
+with it exactly - a membership row can be neither deleted nor
+moved to launder locus coverage or group projection. Ownership
+is coverage-bearing (folded into the coverage digest), and ALL
+ownership + coverage laws live in one shared validator
+(ApplicationModel::validate_coverage) called by both
+ApplicationModel::validate and EvidenceTable::validate - a model
+whose ownership account is corrupted cannot certify anything,
+digests notwithstanding. Negative controls delete AND move
+Hidden::poke's membership; both fail model validation and both
+fail to manufacture Holds through the sidecar.
+
 Round 14: the coverage laws close at the MODEL. Application-
 Model::validate now enforces analyzed => summarized (with the
 existing converse: analyzed <=> summarized, the hashed anchor)

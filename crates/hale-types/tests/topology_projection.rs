@@ -558,6 +558,7 @@ fn labels_and_effects_are_restricted_to_the_v1_universe() {
     let f = |name: &str, effects: Vec<&str>| Function {
         analyzed: true,
         summarized: true,
+        owner: None,
         name: name.to_string(),
         display: name.to_string(),
         kind: FunctionKind::Free,

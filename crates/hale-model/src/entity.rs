@@ -79,6 +79,13 @@ pub struct Function {
     /// (walked) and from "a certificate engine emitted a report":
     /// the three coverage states are typed, never conflated.
     pub summarized: bool,
+    /// The CANONICAL owning locus (round 15): `Some` for every
+    /// method / hook / mode / failure handler, `None` for free
+    /// functions. `member_of` must be a total, exclusive
+    /// partition agreeing with this field exactly (validated) —
+    /// coverage and group projection both hang off ownership, so
+    /// it is a closed account, never inferable-by-absence.
+    pub owner: Option<LocusDeclId>,
     pub provenance: ProvenanceId,
 }
 

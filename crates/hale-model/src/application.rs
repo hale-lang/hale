@@ -326,6 +326,184 @@ pub struct EvidenceTable {
 }
 
 impl ApplicationModel {
+    /// The relevant (non-failure) members a locus OWNS — from the
+    /// closed `owner` account, which `member_of` must mirror
+    /// exactly (validated). Shared by the model validator and the
+    /// sidecar API, so coverage is judged from one relation.
+    pub fn locus_members_analyzed(
+        &self,
+        lid: crate::ids::LocusDeclId,
+    ) -> bool {
+        self.entities
+            .functions
+            .iter()
+            .filter(|f| {
+                f.owner == Some(lid)
+                    && !matches!(
+                        f.kind,
+                        crate::entity::FunctionKind::FailureHandler
+                    )
+            })
+            .all(|f| f.analyzed)
+    }
+
+    /// The OWNERSHIP + COVERAGE laws (round 15) — one shared
+    /// validator: `member_of` is a total, exclusive partition
+    /// agreeing with `Function::owner` (a free fn owns nothing
+    /// and appears in no row; every other kind has exactly one
+    /// row, at its canonical owner), and every coverage law from
+    /// rounds 10–14. `ApplicationModel::validate` calls this, and
+    /// so does `EvidenceTable::validate` — a model whose
+    /// ownership account is corrupted cannot certify anything,
+    /// digests notwithstanding.
+    pub fn validate_coverage(&self) -> Result<(), ModelError> {
+        let e = &self.entities;
+        // Ownership partition: rows per function.
+        let mut rows_of: std::collections::BTreeMap<
+            u32,
+            Vec<crate::ids::LocusDeclId>,
+        > = std::collections::BTreeMap::new();
+        for m in &self.relations.member_of {
+            rows_of
+                .entry(m.function.0)
+                .or_default()
+                .push(m.locus);
+        }
+        for (i, f) in e.functions.iter().enumerate() {
+            let rows = rows_of
+                .get(&(i as u32))
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let free =
+                matches!(f.kind, crate::entity::FunctionKind::Free);
+            if free != f.owner.is_none() {
+                return Err(ModelError::CoverageLaw {
+                    index: i,
+                    law: "free functions own nothing; every \
+                          other kind has a canonical owner",
+                });
+            }
+            match f.owner {
+                None => {
+                    if !rows.is_empty() {
+                        return Err(ModelError::CoverageLaw {
+                            index: i,
+                            law: "a free function appears in no \
+                                  member_of row",
+                        });
+                    }
+                }
+                Some(owner) => {
+                    if rows.len() != 1 || rows[0] != owner {
+                        return Err(ModelError::CoverageLaw {
+                            index: i,
+                            law: "member_of is a total exclusive \
+                                  partition agreeing with the \
+                                  canonical owner",
+                        });
+                    }
+                }
+            }
+            if f.summarized && !f.analyzed {
+                return Err(ModelError::CoverageLaw {
+                    index: i,
+                    law: "summarized implies analyzed",
+                });
+            }
+            if f.analyzed && !f.summarized {
+                return Err(ModelError::CoverageLaw {
+                    index: i,
+                    law: "analyzed implies summarized — the \
+                          walked set is the summary set",
+                });
+            }
+            if matches!(
+                f.kind,
+                crate::entity::FunctionKind::FailureHandler
+            ) && f.analyzed
+            {
+                return Err(ModelError::CoverageLaw {
+                    index: i,
+                    law: "failure handlers are never analyzed",
+                });
+            }
+        }
+        // Unanalyzed-residue law.
+        {
+            let holed: std::collections::BTreeSet<u32> = self
+                .holes
+                .iter()
+                .filter(|h| {
+                    h.kind == crate::hole::HoleKind::UnanalyzedBody
+                })
+                .filter_map(|h| match h.at {
+                    crate::ids::EntityRef::Function(f) => {
+                        Some(f.0)
+                    }
+                    _ => None,
+                })
+                .collect();
+            for (i, f) in e.functions.iter().enumerate() {
+                let has_hole = holed.contains(&(i as u32));
+                if f.analyzed && has_hole {
+                    return Err(ModelError::CoverageLaw {
+                        index: i,
+                        law: "an analyzed body carries no \
+                              UnanalyzedBody residue",
+                    });
+                }
+                if !f.analyzed && !has_hole {
+                    return Err(ModelError::CoverageLaw {
+                        index: i,
+                        law: "an unanalyzed body retains its \
+                              UnanalyzedBody residue",
+                    });
+                }
+            }
+        }
+        // Locus-grain law, from the closed owner account.
+        for (i, l) in e.loci.iter().enumerate() {
+            let expect = self.locus_members_analyzed(
+                crate::ids::LocusDeclId(i as u32),
+            );
+            if l.analyzable != expect {
+                return Err(ModelError::CoverageLaw {
+                    index: i,
+                    law: "locus analyzability derives from its \
+                          member coverage",
+                });
+            }
+        }
+        // Summarized set == legacy fn sort (in-range rows only;
+        // out-of-range is the DanglingId defect).
+        {
+            let summarized: std::collections::BTreeSet<u32> = e
+                .functions
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| f.summarized)
+                .map(|(i, _)| i as u32)
+                .collect();
+            let legacy: std::collections::BTreeSet<u32> = self
+                .legacy
+                .topology_v1_fns
+                .iter()
+                .map(|f| f.0)
+                .collect();
+            let in_range = legacy
+                .iter()
+                .all(|i| (*i as usize) < e.functions.len());
+            if in_range && summarized != legacy {
+                return Err(ModelError::CoverageLaw {
+                    index: usize::MAX,
+                    law: "the legacy fn sort is the summarized \
+                          set",
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// The model's analysis-coverage identity (round 10): fnv1a64
     /// over every locus's `analyzable` bit and every function's
     /// `analyzed` bit, in canonical entity order. Evidence
@@ -354,6 +532,13 @@ impl ApplicationModel {
                     crate::entity::FunctionKind::FailureHandler
                 ) as u8,
             ]);
+            // Ownership is coverage-bearing (round 15): moving a
+            // member changes which locus's coverage it counts
+            // toward.
+            match f.owner {
+                Some(l) => eat(&l.0.to_le_bytes()),
+                None => eat(&[0xff; 4]),
+            }
         }
         h
     }
@@ -372,6 +557,15 @@ impl EvidenceTable {
         table: &ClaimIrTable,
         inputs_digest: u64,
     ) -> Result<(), ClaimIrError> {
+        // Round 15: the SAME ownership/coverage validator the
+        // model runs — a corrupted ownership account (a deleted or
+        // moved member_of row, an upgraded coverage bit) cannot
+        // certify anything, digests notwithstanding.
+        if model.validate_coverage().is_err() {
+            return Err(ClaimIrError::InvalidProvenanceRecord {
+                index: usize::MAX,
+            });
+        }
         if self.model_shape != model_shape
             || self.law_digest != table.semantic_digest()
             || self.inputs_digest != inputs_digest
@@ -467,24 +661,7 @@ impl EvidenceTable {
                         .loci
                         .get(lid.index())
                         .is_some_and(|l| l.analyzable);
-                    let members_ok = model
-                        .relations
-                        .member_of
-                        .iter()
-                        .filter(|m| m.locus == lid)
-                        .all(|m| {
-                            model
-                                .entities
-                                .functions
-                                .get(m.function.index())
-                                .is_none_or(|f| {
-                                    matches!(
-                                        f.kind,
-                                        crate::entity::FunctionKind::FailureHandler
-                                    ) || f.analyzed
-                                })
-                        });
-                    flag && members_ok
+                    flag && model.locus_members_analyzed(lid)
                 }),
                 _ => false,
             };
@@ -755,144 +932,6 @@ impl ApplicationModel {
     pub fn validate(&self) -> Result<(), ModelError> {
         let e = &self.entities;
         let prov_len = self.provenance.records.len();
-
-        // --- coverage laws (round 11): the three states are
-        // typed and ordered — a summarized body was walked, a
-        // failure handler never is, and the legacy fn sort IS the
-        // summarized set.
-        for (i, f) in e.functions.iter().enumerate() {
-            if f.summarized && !f.analyzed {
-                return Err(ModelError::CoverageLaw {
-                    index: i,
-                    law: "summarized implies analyzed",
-                });
-            }
-            if f.analyzed && !f.summarized {
-                return Err(ModelError::CoverageLaw {
-                    index: i,
-                    law: "analyzed implies summarized — the \
-                          walked set is the summary set",
-                });
-            }
-            if matches!(
-                f.kind,
-                crate::entity::FunctionKind::FailureHandler
-            ) && f.analyzed
-            {
-                return Err(ModelError::CoverageLaw {
-                    index: i,
-                    law: "failure handlers are never analyzed",
-                });
-            }
-        }
-        // The account is CLOSED (round 12): an unanalyzed body
-        // must retain its UnanalyzedBody residue, and an analyzed
-        // body must not carry one — `analyzed` derives from the
-        // hole account, never floats free of it.
-        {
-            let holed: std::collections::BTreeSet<u32> = self
-                .holes
-                .iter()
-                .filter(|h| {
-                    h.kind == crate::hole::HoleKind::UnanalyzedBody
-                })
-                .filter_map(|h| match h.at {
-                    crate::ids::EntityRef::Function(f) => {
-                        Some(f.0)
-                    }
-                    _ => None,
-                })
-                .collect();
-            for (i, f) in e.functions.iter().enumerate() {
-                let has_hole = holed.contains(&(i as u32));
-                if f.analyzed && has_hole {
-                    return Err(ModelError::CoverageLaw {
-                        index: i,
-                        law: "an analyzed body carries no \
-                              UnanalyzedBody residue",
-                    });
-                }
-                if !f.analyzed && !has_hole {
-                    return Err(ModelError::CoverageLaw {
-                        index: i,
-                        law: "an unanalyzed body retains its \
-                              UnanalyzedBody residue",
-                    });
-                }
-            }
-        }
-        // Locus-grain coverage law (round 14): `analyzable` is
-        // DERIVED from the typed member_of relation and
-        // FunctionKind — a locus is analyzable iff every relevant
-        // member (all kinds except FailureHandler; closures never
-        // produce function entities) is analyzed; an empty
-        // relevant set is vacuously analyzable. No display-prefix
-        // inference.
-        {
-            let mut relevant: std::collections::BTreeMap<
-                u32,
-                (bool, bool),
-            > = std::collections::BTreeMap::new();
-            for m in &self.relations.member_of {
-                let Some(f) =
-                    e.functions.get(m.function.index())
-                else {
-                    continue;
-                };
-                if matches!(
-                    f.kind,
-                    crate::entity::FunctionKind::FailureHandler
-                ) {
-                    continue;
-                }
-                let entry = relevant
-                    .entry(m.locus.0)
-                    .or_insert((true, true));
-                entry.0 = false;
-                entry.1 = entry.1 && f.analyzed;
-            }
-            for (i, l) in e.loci.iter().enumerate() {
-                let (empty, all_analyzed) = relevant
-                    .get(&(i as u32))
-                    .copied()
-                    .unwrap_or((true, true));
-                let expect = empty || all_analyzed;
-                if l.analyzable != expect {
-                    return Err(ModelError::CoverageLaw {
-                        index: i,
-                        law: "locus analyzability derives from \
-                              its member coverage",
-                    });
-                }
-            }
-        }
-        {
-            let summarized: std::collections::BTreeSet<u32> = e
-                .functions
-                .iter()
-                .enumerate()
-                .filter(|(_, f)| f.summarized)
-                .map(|(i, _)| i as u32)
-                .collect();
-            let legacy: std::collections::BTreeSet<u32> = self
-                .legacy
-                .topology_v1_fns
-                .iter()
-                .map(|f| f.0)
-                .collect();
-            // Out-of-range ids are the existing DanglingId
-            // defect, reported by the legacy-sort check below —
-            // the coverage law only speaks about resolvable rows.
-            let in_range = legacy
-                .iter()
-                .all(|i| (*i as usize) < e.functions.len());
-            if in_range && summarized != legacy {
-                return Err(ModelError::CoverageLaw {
-                    index: usize::MAX,
-                    law: "the legacy fn sort is the summarized set",
-                });
-            }
-        }
 
         // --- provenance record contents resolve (incl. inverted
         // ForeignSpan — an accepted-but-unrenderable record is the
@@ -2073,6 +2112,12 @@ impl ApplicationModel {
                 return Err(ModelError::CapabilityContradiction { capability: name });
             }
         }
+        // --- ownership + coverage laws (rounds 10–15): one
+        // shared validator, also called by the sidecar API. Runs
+        // LAST so purely structural defects (non-canonical
+        // ordering, dangling ids) report as themselves.
+        self.validate_coverage()?;
+
         Ok(())
     }
 }

@@ -481,15 +481,22 @@ directions: a summarized body was walked and a walked body is
 summarized, anchoring `analyzed` to the hashed `sorts.fns`);
 failure handlers never analyzed; the legacy fn sort equals the
 summarized set; an unanalyzed body RETAINS its `UnanalyzedBody`
-residue and an analyzed body carries none; and (round 14)
-`LocusDecl::analyzable` DERIVES from the typed `member_of`
-relation and `FunctionKind` — analyzable iff every relevant
-member (all kinds except failure handlers) is analyzed, an empty
-relevant set vacuously so — are ALL validated in
-`ApplicationModel::validate`, re-checked at admission, and folded
-into the evidence coverage digest: the same coverage state is
-lawful (or refused) at the model, the sidecar, and the artifact
-alike.
+residue and an analyzed body carries none; and (rounds 14–15)
+`LocusDecl::analyzable` DERIVES from the CLOSED ownership
+account: every function carries its canonical `owner`
+(`Some` for methods, hooks, modes, and failure handlers; `None`
+for free functions), `member_of` must be a total, exclusive
+partition agreeing with it exactly (a free fn appears in no row;
+every other kind in exactly one, at its owner), and a locus is
+analyzable iff every relevant owned member (all kinds except
+failure handlers) is analyzed, an empty set vacuously so — so a
+membership row can be neither deleted nor moved to launder
+coverage or group projection. Ownership is coverage-bearing and
+folded into the evidence coverage digest. All of these laws live
+in ONE shared validator (`ApplicationModel::validate_coverage`),
+called by `ApplicationModel::validate` and by
+`EvidenceTable::validate` alike: the same coverage state is
+lawful (or refused) at the model, the sidecar, and the artifact.
 Coverage is BINDING in the sidecar API too:
 `EvidenceTable::validate` categorically refuses a certificate
 payload for a subject or phase whose typed coverage says no

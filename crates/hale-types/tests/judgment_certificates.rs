@@ -1325,3 +1325,132 @@ fn locus_coverage_upgrade_cannot_manufacture_holds() {
          certify its phases"
     );
 }
+
+/// Round 15: `member_of` is a TOTAL EXCLUSIVE PARTITION agreeing
+/// with the canonical owner — deleting Hidden::poke's membership
+/// row (and flipping the locus to analyzable) fails model
+/// validation, and the sidecar refuses to certify through the
+/// same shared validator.
+#[test]
+fn deleted_membership_is_refused_everywhere() {
+    let program =
+        hale_syntax::parse_source(MODULE_LOCUS_METHOD_SRC)
+            .expect("parse");
+    let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let bundle2 = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let fid = model
+        .entities
+        .functions
+        .iter()
+        .position(|f| f.display == "Hidden::poke")
+        .expect("module method");
+    let lid = model
+        .entities
+        .loci
+        .iter()
+        .position(|l| l.display == "Hidden")
+        .expect("module locus");
+    model
+        .relations
+        .member_of
+        .retain(|m| m.function.index() != fid);
+    model.entities.loci[lid].analyzable = true;
+    // Model layer: the partition law refuses (poke's canonical
+    // owner has no matching row).
+    assert!(
+        matches!(
+            model.validate(),
+            Err(hale_model::ModelError::CoverageLaw { .. })
+        ),
+        "a deleted membership row must not validate"
+    );
+    // Sidecar layer: derivation against the mutated model still
+    // cannot certify — EvidenceTable::validate runs the SAME
+    // shared ownership/coverage validator.
+    let evidence =
+        derive_certificate_evidence(&bundle2, &table, &model);
+    let judged =
+        judge_certificates(&table, &model, &evidence, &[0]);
+    let row = judged
+        .iter()
+        .find(|j| {
+            table.rows.iter().any(|r| {
+                r.ordinal == j.ordinal && r.name == "Hidden"
+            })
+        })
+        .expect("the phase row");
+    assert_ne!(
+        row.verdict,
+        Verdict::Holds,
+        "a laundered membership cannot manufacture Holds"
+    );
+}
+
+/// …and MOVING the membership (row + owner repointed to another
+/// locus) is refused the same way: the destination locus's
+/// coverage law now contradicts its flag.
+#[test]
+fn moved_membership_is_refused_everywhere() {
+    let program =
+        hale_syntax::parse_source(MODULE_LOCUS_METHOD_SRC)
+            .expect("parse");
+    let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let bundle2 = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let fid = model
+        .entities
+        .functions
+        .iter()
+        .position(|f| f.display == "Hidden::poke")
+        .expect("module method");
+    let hidden = model
+        .entities
+        .loci
+        .iter()
+        .position(|l| l.display == "Hidden")
+        .expect("module locus");
+    let app = model
+        .entities
+        .loci
+        .iter()
+        .position(|l| l.display == "App")
+        .expect("main locus");
+    // Move BOTH the row and the canonical owner (a row-only move
+    // fails the agreement law immediately; the consistent move is
+    // the stronger attempt).
+    for m in model.relations.member_of.iter_mut() {
+        if m.function.index() == fid {
+            m.locus = hale_model::LocusDeclId(app as u32);
+        }
+    }
+    model.entities.functions[fid].owner =
+        Some(hale_model::LocusDeclId(app as u32));
+    model.entities.loci[hidden].analyzable = true;
+    assert!(
+        matches!(
+            model.validate(),
+            Err(hale_model::ModelError::CoverageLaw { .. })
+        ),
+        "the destination's coverage law contradicts the move"
+    );
+    let evidence =
+        derive_certificate_evidence(&bundle2, &table, &model);
+    let judged =
+        judge_certificates(&table, &model, &evidence, &[0]);
+    let row = judged
+        .iter()
+        .find(|j| {
+            table.rows.iter().any(|r| {
+                r.ordinal == j.ordinal && r.name == "Hidden"
+            })
+        })
+        .expect("the phase row");
+    assert_ne!(
+        row.verdict,
+        Verdict::Holds,
+        "a moved membership cannot manufacture Holds"
+    );
+}

@@ -67,6 +67,7 @@ fn tiny_model() -> ApplicationModel {
                 Function {
                     analyzed: true,
                     summarized: true,
+                    owner: Some(LocusDeclId(0)),
                     name: "App::run".to_string(),
                     display: "App::run".to_string(),
                     kind: FunctionKind::Hook,
@@ -80,6 +81,7 @@ fn tiny_model() -> ApplicationModel {
                 Function {
                     analyzed: true,
                     summarized: true,
+                    owner: Some(LocusDeclId(1)),
                     name: "Worker::on_r".to_string(),
                     display: "Worker::on_r".to_string(),
                     kind: FunctionKind::Method,

@@ -2152,6 +2152,10 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             carries_user_class: authored_user_class.contains(n),
             analyzed: !info.unanalyzed,
             summarized: summarized_names.contains(n),
+            owner: info
+                .locus
+                .as_ref()
+                .and_then(|ld| locus_id.get(ld).copied()),
             provenance: pid,
         });
     }
