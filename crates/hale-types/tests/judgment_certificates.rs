@@ -1102,3 +1102,43 @@ fn coverage_change_invalidates_evidence_identity() {
          as stale, never replayed"
     );
 }
+
+/// Round 12: coverage is BINDING inside the sidecar API — a
+/// certificate payload for a subject whose typed coverage says no
+/// report can exist is refused by `EvidenceTable::validate`, so
+/// `judge_certificates` can never consume it into Holds.
+#[test]
+fn certs_for_unanalyzed_subjects_are_refused() {
+    let src = HOLDS_SRC;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let evidence =
+        derive_certificate_evidence(&bundle, &table, &model);
+    assert!(evidence
+        .rows
+        .iter()
+        .any(|r| !r.certs.is_empty()));
+    // Mark the subject unanalyzed (keeping the digest consistent
+    // by recomputing it): the full certificate must now be
+    // refused, never replayed into Holds.
+    let f = model
+        .entities
+        .functions
+        .iter_mut()
+        .find(|f| f.display == "pure_math")
+        .expect("subject");
+    f.analyzed = false;
+    f.summarized = false;
+    let mut ev2 = evidence.clone();
+    ev2.coverage_digest = model.analysis_coverage_digest();
+    let judged = judge_certificates(&table, &model, &ev2, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        Verdict::Invalid,
+        "a matching digest proves the sidecar repeated the \
+         model's bits; a certificate for an unanalyzed subject \
+         still refuses"
+    );
+}

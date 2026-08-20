@@ -410,8 +410,21 @@ impl RefContext {
                             kind
                         ));
                     }
-                    // Coverage laws (round 11): a summarized body
-                    // was walked; a failure handler never is.
+                    // Coverage laws (rounds 11–12): a summarized
+                    // body was walked — and a WALKED body is
+                    // summarized (the summary enumerates exactly
+                    // the walked set), which anchors the analyzed
+                    // bit to the HASHED `sorts.fns`: upgrading an
+                    // unanalyzed body to certifiable would have to
+                    // change the hashed half.
+                    if analyzed && !summarized {
+                        return Err(format!(
+                            "law.fn_universe: `{}` is analyzed \
+                             but not summarized — the walked set \
+                             is the summary set",
+                            e["display"].as_str().unwrap_or("?")
+                        ));
+                    }
                     if summarized && !analyzed {
                         return Err(format!(
                             "law.fn_universe: `{}` is summarized \
@@ -789,9 +802,16 @@ impl RefContext {
             };
             Ok((su.to_string(), topic))
         };
-        // Typed declares rows: (subject, topic).
-        let mut declares: BTreeSet<(String, Option<String>)> =
-            BTreeSet::new();
+        // Typed declares rows: (locus, subject, topic) — the
+        // OWNER stays in the compared identity (round 12: a
+        // declaration cannot move between loci while a
+        // `require publishes(some G, topic T)` verdict rides on
+        // the original owner).
+        let mut declares: BTreeSet<(
+            String,
+            String,
+            Option<String>,
+        )> = BTreeSet::new();
         for (i, d) in v["declares_publish"]
             .as_array()
             .ok_or(
@@ -805,7 +825,7 @@ impl RefContext {
                 d,
                 "declares_publish[*]",
                 &["locus", "subject"],
-                &["topic"],
+                &["topic", "file", "span"],
             )
             .map_err(|x| {
                 format!("declares_publish[{}]: {}", i, x)
@@ -823,12 +843,35 @@ impl RefContext {
                     i, locus
                 ));
             }
-            declares.insert(decode_endpoint(
+            let (su, topic) = decode_endpoint(
                 d,
                 &format!("declares_publish[{}]", i),
-            )?);
+            )?;
+            declares.insert((locus.to_string(), su, topic));
         }
         // Endpoint rows, split by (verb, via).
+        let source_paths_cx: BTreeSet<String> = v["sources"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|s| {
+                s["path"].as_str().map(|x| x.to_string())
+            })
+            .collect();
+        let source_by_id: std::collections::BTreeMap<
+            i64,
+            String,
+        > = v["sources"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|s| {
+                Some((
+                    s["id"].as_i64()?,
+                    s["path"].as_str()?.to_string(),
+                ))
+            })
+            .collect();
         // Round 11: site rows are LOSSLESS — (owner fn, site
         // ordinal, subject, topic). No two typed rows collapse
         // under the legacy display projection, and each must be
@@ -839,14 +882,26 @@ impl RefContext {
             String,
             Option<String>,
         )> = BTreeSet::new();
-        let mut decl_pub: BTreeSet<(String, Option<String>)> =
-            BTreeSet::new();
+        let mut decl_pub: BTreeSet<(
+            String,
+            String,
+            Option<String>,
+        )> = BTreeSet::new();
         let mut subs: BTreeSet<(
             String,
             u64,
             String,
             Option<String>,
         )> = BTreeSet::new();
+        // (verb, owner, site) — exactly one occupant each; and
+        // every site row's authored span, tied below to the
+        // span-grained provenance account.
+        let mut occupancy: BTreeSet<(bool, String, u64)> =
+            BTreeSet::new();
+        let mut pub_spans: Vec<(String, String, u64, u64)> =
+            Vec::new();
+        let mut sub_spans: Vec<(String, String, u64, u64)> =
+            Vec::new();
         for (i, e) in v["endpoints"]
             .as_array()
             .ok_or(
@@ -867,17 +922,36 @@ impl RefContext {
                     e,
                     "endpoints[*]",
                     &["verb", "subject", "via", "fn", "site"],
-                    &["topic"],
+                    &["topic", "file", "span"],
                 )
                 .map_err(|x| format!("{}: {}", what, x))?;
             } else {
                 only_keys(
                     e,
                     "endpoints[*]",
-                    &["verb", "subject", "via"],
-                    &["topic"],
+                    &["verb", "subject", "via", "locus"],
+                    &["topic", "file", "span"],
                 )
                 .map_err(|x| format!("{}: {}", what, x))?;
+            }
+            if e.get("file").is_some() != e.get("span").is_some()
+            {
+                return Err(format!(
+                    "{}: file and span come together",
+                    what
+                ));
+            }
+            if let Some(f) = e.get("file") {
+                if !f.as_str().is_some_and(|p2| {
+                    source_paths_cx.contains(p2)
+                }) || !span_ok(&e["span"])
+                {
+                    return Err(format!(
+                        "{}: location does not resolve to a \
+                         known source",
+                        what
+                    ));
+                }
             }
             let row = decode_endpoint(e, &what)?;
             model_subjects.insert(row.0.clone());
@@ -910,9 +984,37 @@ impl RefContext {
                                 what
                             )
                         })?;
+                    let is_pub = e["verb"] == "publish";
+                    if !occupancy.insert((
+                        is_pub,
+                        owner.clone(),
+                        site,
+                    )) {
+                        return Err(format!(
+                            "{}: (verb, owner, site) already \
+                             occupied",
+                            what
+                        ));
+                    }
+                    if let (Some(f), Some(sp)) = (
+                        e["file"].as_str(),
+                        e["span"].as_array(),
+                    ) {
+                        let rec = (
+                            owner.clone(),
+                            f.to_string(),
+                            sp[0].as_u64().unwrap_or(0),
+                            sp[1].as_u64().unwrap_or(0),
+                        );
+                        if is_pub {
+                            pub_spans.push(rec);
+                        } else {
+                            sub_spans.push(rec);
+                        }
+                    }
                     let full =
                         (owner, site, row.0.clone(), row.1);
-                    let fresh = if e["verb"] == "publish" {
+                    let fresh = if is_pub {
                         site_pub.insert(full)
                     } else {
                         subs.insert(full)
@@ -925,7 +1027,27 @@ impl RefContext {
                     }
                 }
                 (Some("publish"), Some("declaration")) => {
-                    decl_pub.insert(row);
+                    let locus = e["locus"]
+                        .as_str()
+                        .ok_or_else(|| {
+                            format!(
+                                "{}: locus must be a string",
+                                what
+                            )
+                        })?
+                        .to_string();
+                    if !cx
+                        .loci
+                        .iter()
+                        .any(|(_, disp, _)| *disp == locus)
+                    {
+                        return Err(format!(
+                            "{}: locus `{}` is not in this \
+                             artifact",
+                            what, locus
+                        ));
+                    }
+                    decl_pub.insert((locus, row.0, row.1));
                 }
                 _ => {
                     return Err(format!(
@@ -1010,40 +1132,51 @@ impl RefContext {
                 derived_sub, rel_sub
             ));
         }
-        // Site-count tie against the span-grained provenance
-        // section (one row per authored site): deleting one of two
-        // colliding site endpoints leaves the count behind.
-        let count_by = |rows: &Value,
-                        key: &dyn Fn(&Value) -> Option<String>|
-         -> std::collections::BTreeMap<String, usize> {
-            let mut out = std::collections::BTreeMap::new();
-            for r in rows.as_array().into_iter().flatten() {
-                if let Some(k) = key(r) {
-                    *out.entry(k).or_insert(0) += 1;
-                }
-            }
+        // Round 12: SPAN-multiset tie against the span-grained
+        // provenance section — each typed site row is anchored to
+        // its authored span, one-to-one, not merely counted.
+        // Deleting or duplicating one of two colliding site rows
+        // leaves the provenance spans behind.
+        let prov_multiset = |rows: &Value,
+                             owner: &dyn Fn(
+            &Value,
+        )
+            -> Option<String>|
+         -> Vec<(String, String, u64, u64)> {
+            let mut out: Vec<(String, String, u64, u64)> = rows
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|r| {
+                    let sp = r["span"].as_array()?;
+                    Some((
+                        owner(r)?,
+                        source_by_id
+                            .get(&r["source"].as_i64()?)?
+                            .clone(),
+                        sp[0].as_u64()?,
+                        sp[1].as_u64()?,
+                    ))
+                })
+                .collect();
+            out.sort();
             out
         };
-        let prov_pub_counts = count_by(
+        let prov_pub = prov_multiset(
             &v["provenance"]["publishes"],
             &|r| r["fn"].as_str().map(|s| s.to_string()),
         );
-        let mut ep_pub_counts: std::collections::BTreeMap<
-            String,
-            usize,
-        > = std::collections::BTreeMap::new();
-        for (f, _, _, _) in &site_pub {
-            *ep_pub_counts.entry(f.clone()).or_insert(0) += 1;
-        }
-        if ep_pub_counts != prov_pub_counts {
+        let mut ep_pub = pub_spans.clone();
+        ep_pub.sort();
+        if ep_pub != prov_pub {
             return Err(format!(
                 "the site-publish endpoints do not match the \
-                 provenance site count (endpoints: {:?}, \
+                 provenance span account (endpoints: {:?}, \
                  provenance: {:?})",
-                ep_pub_counts, prov_pub_counts
+                ep_pub, prov_pub
             ));
         }
-        let prov_sub_counts = count_by(
+        let prov_sub = prov_multiset(
             &v["provenance"]["subscribes"],
             &|r| {
                 Some(format!(
@@ -1053,19 +1186,14 @@ impl RefContext {
                 ))
             },
         );
-        let mut ep_sub_counts: std::collections::BTreeMap<
-            String,
-            usize,
-        > = std::collections::BTreeMap::new();
-        for (f, _, _, _) in &subs {
-            *ep_sub_counts.entry(f.clone()).or_insert(0) += 1;
-        }
-        if ep_sub_counts != prov_sub_counts {
+        let mut ep_sub = sub_spans.clone();
+        ep_sub.sort();
+        if ep_sub != prov_sub {
             return Err(format!(
                 "the subscribe endpoints do not match the \
-                 provenance site count (endpoints: {:?}, \
+                 provenance span account (endpoints: {:?}, \
                  provenance: {:?})",
-                ep_sub_counts, prov_sub_counts
+                ep_sub, prov_sub
             ));
         }
         let law_subjects: BTreeSet<String> =

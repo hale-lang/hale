@@ -440,19 +440,25 @@ end, the topic identity (`declared_topic` is the model's
 syntactic fact — a literal address whose text collides with a
 topic display stays a literal, never inferred from strings; a
 topic-typed row's subject must equal the topic's wire subject).
-Site rows are LOSSLESS (round 11): each carries its owning
-fn/handler and authored site ordinal, so no two typed rows
-collapse under the legacy display projection (a topic-covered end
-and a colliding literal stay distinct facts). They project onto
+Site rows are LOSSLESS (rounds 11–12): each carries its
+owning fn/handler, authored site ordinal, and AUTHORED SPAN, with
+exactly one occupant per (verb, owner, site). They project onto
 the V1 relations at (owner, name) grain under their OWN declared
 identity — a topic-covered end by the topic display, a literal
-end by its text — and their per-owner COUNTS must match the
-span-grained provenance section (the V1 rows dedup; the
-provenance spans do not, so a typed site row cannot disappear
-behind a collision). Declaration rows come from the typed
-**`declares_publish`** relation section (which carries the topic
-identity too, so `require publishes(some G, topic Orders)` can
-distinguish `publish Orders` from `publish "wire.orders"`).
+end by its text — and their per-owner SPAN MULTISETS must equal
+the span-grained provenance section one-to-one (the V1 rows
+dedup; the provenance spans do not, so a typed site row cannot
+disappear behind a collision). Declaration rows come from the
+typed **`declares_publish`** relation section and keep the OWNING
+LOCUS in the compared identity — a declaration cannot move
+between loci while a `require publishes` verdict rides on the
+original owner. Known residual, by design: the CONTENT of a site
+row (its wire/topic identity) at an unchanged span is not
+independently verifiable without the source — the wire identity
+of a display-colliding literal lives only in unhashed sections,
+so substituting it at the same site is a self-consistent edit;
+closing it requires hashing endpoint wire identity (a shape-
+identity change).
 Analysis coverage is FUNCTION-grained with THREE typed
 states (rounds 10–11): `analyzed` (the body was walked),
 `summarized` (a behavior-summary row exists — this set IS the
@@ -460,10 +466,22 @@ legacy `sorts.fns`, the hashed anchor), and whether a certificate
 engine emitted a report (the evidence account). Failure handlers
 carry the typed `FunctionKind::FailureHandler` — no consumer
 infers handler-ness from a display prefix. The coverage laws
-(`summarized ⇒ analyzed`; failure handlers are never analyzed;
-the legacy fn sort equals the summarized set) are validated in
-`ApplicationModel::validate`, re-checked at admission, and folded
-into the evidence coverage digest. `law.fn_universe` rows carry
+(`summarized ⇔ analyzed`-adjacent: a summarized body was walked
+AND a walked body is summarized — anchoring `analyzed` to the
+hashed `sorts.fns`, so upgrading an unanalyzed body to
+certifiable must change the hashed half; failure handlers are
+never analyzed and never make a locus unanalyzable — one typed
+rule in the builder and admission, so a module-scoped
+failure-only locus is vacuously analyzable; the legacy fn sort
+equals the summarized set; an unanalyzed body RETAINS its
+`UnanalyzedBody` residue and an analyzed body carries none) are
+validated in `ApplicationModel::validate`, re-checked at
+admission, and folded into the evidence coverage digest.
+Coverage is BINDING in the sidecar API too:
+`EvidenceTable::validate` categorically refuses a certificate
+payload for a subject or phase whose typed coverage says no
+report exists — a matching digest proves the sidecar repeated the
+model's bits; this proves its evidence obeys them. `law.fn_universe` rows carry
 all three facts, and the SUMMARIZED subset must equal `sorts.fns`
 exactly. `law.loci`'s
 `analyzable` flag recomputes from the member coverage: a locus

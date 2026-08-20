@@ -1189,30 +1189,64 @@ pub fn dump_topology_parts(
                 .map(|f| f.display.as_str())
                 .unwrap_or("")
         };
+        // Round 12: every site row is ANCHORED to the typed
+        // provenance account — its authored span, which must
+        // correspond to the span-grained provenance section rows.
+        let ep_loc = |pid: hale_model::ProvenanceId| -> String {
+            match vmodel.provenance.records.get(pid.index()) {
+                Some(hale_model::Provenance::Source {
+                    source,
+                    span,
+                }) => vmodel
+                    .provenance
+                    .sources
+                    .get(source.index())
+                    .map(|su| {
+                        format!(
+                            ", \"file\": {}, \"span\": [{}, {}]",
+                            quote(&su.path),
+                            span.0,
+                            span.1
+                        )
+                    })
+                    .unwrap_or_default(),
+                _ => String::new(),
+            }
+        };
         let mut rows: Vec<String> = Vec::new();
         for r in &vmodel.relations.publishes {
             rows.push(format!(
-                "{{\"verb\": \"publish\", \"subject\": {}, \"via\": \"site\", \"fn\": {}, \"site\": {}{}}}",
+                "{{\"verb\": \"publish\", \"subject\": {}, \"via\": \"site\", \"fn\": {}, \"site\": {}{}{}}}",
                 quote(subj_pat(r.subject)),
                 quote(fn_disp(r.function)),
                 r.site,
-                topic_field(&r.declared_topic)
+                topic_field(&r.declared_topic),
+                ep_loc(r.provenance)
             ));
         }
         for r in &vmodel.relations.declares_publish {
+            let locus = vmodel
+                .entities
+                .loci
+                .get(r.locus.index())
+                .map(|l| l.display.as_str())
+                .unwrap_or("");
             rows.push(format!(
-                "{{\"verb\": \"publish\", \"subject\": {}, \"via\": \"declaration\"{}}}",
+                "{{\"verb\": \"publish\", \"subject\": {}, \"via\": \"declaration\", \"locus\": {}{}{}}}",
                 quote(subj_pat(r.subject)),
-                topic_field(&r.declared_topic)
+                quote(locus),
+                topic_field(&r.declared_topic),
+                ep_loc(r.provenance)
             ));
         }
         for r in &vmodel.relations.subscribes {
             rows.push(format!(
-                "{{\"verb\": \"subscribe\", \"subject\": {}, \"via\": \"declaration\", \"fn\": {}, \"site\": {}{}}}",
+                "{{\"verb\": \"subscribe\", \"subject\": {}, \"via\": \"declaration\", \"fn\": {}, \"site\": {}{}{}}}",
                 quote(subj_pat(r.subject)),
                 quote(fn_disp(r.handler)),
                 r.site,
-                topic_field(&r.declared_topic)
+                topic_field(&r.declared_topic),
+                ep_loc(r.provenance)
             ));
         }
         rows.sort();
@@ -1237,10 +1271,11 @@ pub fn dump_topology_parts(
                     .map(|l| l.display.as_str())
                     .unwrap_or("");
                 format!(
-                    "{{\"locus\": {}, \"subject\": {}{}}}",
+                    "{{\"locus\": {}, \"subject\": {}{}{}}}",
                     quote(locus),
                     quote(subj_pat(r.subject)),
-                    topic_field(&r.declared_topic)
+                    topic_field(&r.declared_topic),
+                    ep_loc(r.provenance)
                 )
             })
             .collect();

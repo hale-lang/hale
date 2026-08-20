@@ -81,6 +81,23 @@ never a fail-open `holds`), and the document `verdict` follows
 the machine. Artifact consumers reject unrecognized semantics by
 design; re-dump with the current compiler.
 
+Round 12: span-anchored endpoints + the closed coverage
+account. Site endpoint rows carry their authored span, exactly
+one occupant per (verb, owner, site), and their per-owner span
+multisets must equal the span-grained provenance section
+one-to-one; declaration rows keep the owning locus in the
+compared identity. Coverage closes: an unanalyzed body must
+retain its UnanalyzedBody residue and an analyzed body carries
+none (ApplicationModel::validate); a walked body is summarized,
+anchoring `analyzed` to the hashed sorts.fns - the
+coverage-upgrade flip (analyzed=true on a module body plus a
+manufactured Holds certificate) refuses on the hashed anchor;
+EvidenceTable::validate categorically refuses certificate
+payloads for unanalyzed subjects/phases, so judge_certificates
+can never replay them; and failure handlers share one typed rule
+on both sides, so a module-scoped failure-only locus is
+vacuously analyzable and its honest artifact admits.
+
 Round 11: lossless site endpoints + the three-state coverage
 account. Site endpoint rows carry their owning fn/handler and
 authored site ordinal, project onto the V1 relations at (owner,

@@ -406,6 +406,67 @@ impl EvidenceTable {
                 index: usize::MAX,
             });
         }
+        // Round 12: coverage is BINDING, not advisory — a
+        // certificate payload for a subject whose typed coverage
+        // says no report can exist (an unanalyzed fn, an
+        // unanalyzable locus) is refused here, so the judgment can
+        // never consume it. A matching digest proves the sidecar
+        // repeated the model's bits; this proves its evidence
+        // obeys them.
+        let claim_by_ordinal: std::collections::BTreeMap<
+            u32,
+            &ClaimRow,
+        > = table.rows.iter().map(|r| (r.ordinal, r)).collect();
+        for (i, row) in self.rows.iter().enumerate() {
+            if row.certs.is_empty() {
+                continue;
+            }
+            let eligible = match claim_by_ordinal
+                .get(&row.ordinal)
+                .map(|c| &c.law)
+            {
+                Some(
+                    crate::claim_ir::ClaimIr::EffectForbid {
+                        at, ..
+                    }
+                    | crate::claim_ir::ClaimIr::EffectOnly {
+                        at, ..
+                    }
+                    | crate::claim_ir::ClaimIr::EffectPublishSet {
+                        at, ..
+                    }
+                    | crate::claim_ir::ClaimIr::NoPanic { at },
+                ) => at.0.is_some_and(|f| {
+                    model
+                        .entities
+                        .functions
+                        .get(f.index())
+                        .is_some_and(|f| f.analyzed)
+                }),
+                Some(
+                    crate::claim_ir::ClaimIr::PhaseEffects {
+                        locus,
+                        ..
+                    },
+                ) => {
+                    locus.0.is_some_and(|l| {
+                        model
+                            .entities
+                            .loci
+                            .get(l.index())
+                            .is_some_and(|l| l.analyzable)
+                    })
+                }
+                _ => false,
+            };
+            if !eligible {
+                return Err(
+                    ClaimIrError::InvalidProvenanceRecord {
+                        index: i,
+                    },
+                );
+            }
+        }
         let law_rows = table.rows.len();
         let by_ordinal: std::collections::BTreeMap<u32, &ClaimRow> =
             table.rows.iter().map(|r| (r.ordinal, r)).collect();
@@ -686,6 +747,42 @@ impl ApplicationModel {
                     index: i,
                     law: "failure handlers are never analyzed",
                 });
+            }
+        }
+        // The account is CLOSED (round 12): an unanalyzed body
+        // must retain its UnanalyzedBody residue, and an analyzed
+        // body must not carry one — `analyzed` derives from the
+        // hole account, never floats free of it.
+        {
+            let holed: std::collections::BTreeSet<u32> = self
+                .holes
+                .iter()
+                .filter(|h| {
+                    h.kind == crate::hole::HoleKind::UnanalyzedBody
+                })
+                .filter_map(|h| match h.at {
+                    crate::ids::EntityRef::Function(f) => {
+                        Some(f.0)
+                    }
+                    _ => None,
+                })
+                .collect();
+            for (i, f) in e.functions.iter().enumerate() {
+                let has_hole = holed.contains(&(i as u32));
+                if f.analyzed && has_hole {
+                    return Err(ModelError::CoverageLaw {
+                        index: i,
+                        law: "an analyzed body carries no \
+                              UnanalyzedBody residue",
+                    });
+                }
+                if !f.analyzed && !has_hole {
+                    return Err(ModelError::CoverageLaw {
+                        index: i,
+                        law: "an unanalyzed body retains its \
+                              UnanalyzedBody residue",
+                    });
+                }
             }
         }
         {

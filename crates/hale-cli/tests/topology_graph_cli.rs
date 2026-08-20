@@ -360,6 +360,24 @@ fn restamp_digest(body_without_trailer: &str) -> String {
     )
 }
 
+/// Remove one JSON row that STARTS with `prefix` (through its
+/// closing `}, ` or `}`) — endpoint rows carry provenance tails,
+/// so pins match on the stable identity prefix.
+fn cut_row(raw: &str, prefix: &str) -> String {
+    let at = raw
+        .find(prefix)
+        .unwrap_or_else(|| panic!("row prefix present: {}", prefix));
+    let close = at
+        + raw[at..].find('}').expect("row closes")
+        + 1;
+    let close = if raw[close..].starts_with(", ") {
+        close + 2
+    } else {
+        close
+    };
+    format!("{}{}", &raw[..at], &raw[close..])
+}
+
 fn strip_trailer(artifact: &str) -> String {
     let key = ",\n  \"artifact_digest\": \"";
     let i = artifact.rfind(key).expect("artifact has a digest trailer");
@@ -2168,7 +2186,8 @@ fn main() { App { }; }
     assert!(
         raw.contains(
             "{\"verb\": \"publish\", \"subject\": \
-             \"unused.address\", \"via\": \"declaration\"}"
+             \"unused.address\", \"via\": \"declaration\", \
+             \"locus\": \"Producer\""
         ),
         "the declared endpoint row exists:\n{}",
         raw
@@ -2361,10 +2380,12 @@ fn main() { App { }; }
     let raw = std::fs::read_to_string(&artifact).unwrap();
     // Remove the SITE endpoint row while relations.publishes keeps
     // the actual publish.
-    let needle = "{\"verb\": \"publish\", \"subject\": \
-                  \"audit.log\", \"via\": \"site\", \"fn\": \
-                  \"Emitter::emit\", \"site\": 0}, ";
-    let narrowed = raw.replacen(needle, "", 1);
+    let narrowed = cut_row(
+        &raw,
+        "{\"verb\": \"publish\", \"subject\": \"audit.log\", \
+         \"via\": \"site\", \"fn\": \"Emitter::emit\", \
+         \"site\": 0",
+    );
     assert_ne!(narrowed, raw, "test premise: the row was deleted");
     let p2 = dir.join("narrowed.topology");
     std::fs::write(&p2, restamp_digest(&strip_trailer(&narrowed)))
@@ -2493,15 +2514,12 @@ fn main() { App { }; }
     );
     // Retag the literal site endpoint as topic-covered: its
     // subject `Orders` disagrees with the topic's wire subject.
-    let needle = "{\"verb\": \"publish\", \"subject\": \"Orders\", \
-                  \"via\": \"site\", \"fn\": \"Emitter::emit\", \
-                  \"site\": 1}";
+    let needle = "\"fn\": \"Emitter::emit\", \"site\": 1, \"file\"";
     assert!(raw.contains(needle), "literal site row exists");
     let retagged = raw.replacen(
         needle,
-        "{\"verb\": \"publish\", \"subject\": \"Orders\", \
-         \"via\": \"site\", \"fn\": \"Emitter::emit\", \
-         \"site\": 1, \"topic\": \"Orders\"}",
+        "\"fn\": \"Emitter::emit\", \"site\": 1, \"topic\": \
+         \"Orders\", \"file\"",
         1,
     );
     let p2 = dir.join("retagged.topology");
@@ -2665,32 +2683,28 @@ fn main() { App { }; }
     .unwrap();
     let artifact = dump_artifact(&dir, &src);
     let raw = std::fs::read_to_string(&artifact).unwrap();
-    let narrowed = raw
-        .replacen(
-            "{\"verb\": \"publish\", \"subject\": \"Orders\", \
-             \"via\": \"site\", \"fn\": \"Emitter::emit\", \
-             \"site\": 1}, ",
-            "",
-            1,
-        )
-        .replacen(
-            "{\"verb\": \"publish\", \"subject\": \"Orders\", \
-             \"via\": \"declaration\"}, ",
-            "",
-            1,
-        )
-        .replacen(
-            "{\"verb\": \"subscribe\", \"subject\": \"Orders\", \
-             \"via\": \"declaration\", \"fn\": \"Sink::on_l\", \
-             \"site\": 1}, ",
-            "",
-            1,
-        )
-        .replacen(
-            "{\"locus\": \"Emitter\", \"subject\": \"Orders\"}, ",
-            "",
-            1,
-        );
+    let narrowed = cut_row(
+        &raw,
+        "{\"verb\": \"publish\", \"subject\": \"Orders\", \
+         \"via\": \"site\", \"fn\": \"Emitter::emit\", \
+         \"site\": 1",
+    );
+    let narrowed = cut_row(
+        &narrowed,
+        "{\"verb\": \"publish\", \"subject\": \"Orders\", \
+         \"via\": \"declaration\", \"locus\": \"Emitter\"",
+    );
+    let narrowed = cut_row(
+        &narrowed,
+        "{\"verb\": \"subscribe\", \"subject\": \"Orders\", \
+         \"via\": \"declaration\", \"fn\": \"Sink::on_l\", \
+         \"site\": 1",
+    );
+    let narrowed = cut_row(
+        &narrowed,
+        "{\"locus\": \"Emitter\", \"subject\": \"Orders\", \
+         \"file\"",
+    );
     assert_ne!(narrowed, raw, "test premise: the removals landed");
     let p2 = dir.join("narrowed.topology");
     std::fs::write(&p2, restamp_digest(&strip_trailer(&narrowed)))
@@ -2762,6 +2776,116 @@ fn main() { App { }; }
     assert!(
         out.status.success(),
         "the helper-named module method admits: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 12: a module-scoped locus whose only executable member is
+/// an `on_failure` handler is vacuously analyzable — the handler
+/// is never analyzed anywhere, so it cannot make the locus
+/// unanalyzable. The builder and admission share ONE typed rule;
+/// the compiler's own artifact admits.
+#[test]
+fn module_failure_only_locus_admits() {
+    let dir = workdir("failonly");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+module inner {
+    @phase_effects(birth: {})
+    locus Guard {
+        params { n: Int = 0; }
+        on_failure(e: FailureInfo) {
+            self.n = 1;
+        }
+    }
+}
+main locus App {
+    params { n: Int = 0; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    assert!(
+        raw.contains(
+            "\"name\": \"Guard\", \"display\": \"Guard\", \
+             \"analyzable\": true"
+        ),
+        "one typed rule on both sides:\n{}",
+        raw
+    );
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&artifact)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "the failure-only module locus admits: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 12: the coverage bit cannot be upgraded — `analyzed` is
+/// anchored to the HASHED summary universe (a walked body is
+/// summarized), so flipping a module fn's bit to manufacture a
+/// Holds certificate contradicts `sorts.fns`.
+#[test]
+fn coverage_upgrade_is_refused() {
+    let dir = workdir("covupgrade");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+module inner {
+    @effects(none: { syscall })
+    fn f(v: Int) -> Int {
+        return v;
+    }
+}
+main locus App {
+    params { n: Int = 0; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    let needle = "\"display\": \"f\", \"analyzed\": false, \
+                  \"summarized\": false";
+    assert!(raw.contains(needle), "module fn coverage:\n{}", raw);
+    let upgraded = raw.replacen(
+        needle,
+        "\"display\": \"f\", \"analyzed\": true, \
+         \"summarized\": false",
+        1,
+    );
+    let p2 = dir.join("upgraded.topology");
+    std::fs::write(&p2, restamp_digest(&strip_trailer(&upgraded)))
+        .unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p2)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains(
+            "analyzed but not summarized — the walked set is \
+             the summary set"
+        ),
+        "the coverage upgrade refuses on the hashed anchor: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     let _ = std::fs::remove_dir_all(&dir);

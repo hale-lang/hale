@@ -2007,6 +2007,14 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             for item in items {
                 match item {
                     TopDecl::Locus(l) if depth > 0 => {
+                        // Failure handlers are NEVER analyzed
+                        // anywhere (typed FailureHandler kind), so
+                        // they cannot make a locus unanalyzable —
+                        // one rule, shared with admission's
+                        // member-coverage recompute (round 12: a
+                        // module-scoped failure-only locus is
+                        // vacuously analyzable, symmetric with its
+                        // top-level equivalent).
                         let executable =
                             l.members.iter().any(|m| {
                                 matches!(
@@ -2014,7 +2022,6 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                                     LocusMember::Fn(_)
                                         | LocusMember::Lifecycle(_)
                                         | LocusMember::Mode(_)
-                                        | LocusMember::Failure(_)
                                         | LocusMember::Closure(_)
                                 )
                             });
