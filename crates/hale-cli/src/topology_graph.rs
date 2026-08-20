@@ -338,6 +338,42 @@ impl Artifact {
             &["name", "subject", "shape", "payload_hash"],
         )?;
         str_fields("claims", &["name", "form", "result"])?;
+        // Schema 1.11 (GH #476 Change 6, round 2): the typed
+        // sections this renderer CONSUMES are required and
+        // structurally validated — a missing or malformed `law`
+        // section must refuse, never render a valid-looking claim
+        // view with silently absent highlights.
+        need(art.v["law"].is_object(), "law must be an object")?;
+        need(
+            art.v["law"]["law_digest"].is_string(),
+            "law.law_digest must be a string",
+        )?;
+        need(
+            art.v["law"]["inputs_digest"].is_string(),
+            "law.inputs_digest must be a string",
+        )?;
+        need(
+            art.v["law"]["rows"].is_array(),
+            "law.rows must be an array",
+        )?;
+        need(
+            art.v["capabilities"].is_object(),
+            "capabilities must be an object",
+        )?;
+        need(
+            art.v["adequacy"].is_object(),
+            "adequacy must be an object",
+        )?;
+        // The schema-1.11 law account — ONE shared admission
+        // routine (round 5), used identically by fleet
+        // composition: closed decode, evidence binding,
+        // both-direction claims↔law join, capability/adequacy
+        // recompute, document-verdict recompute.
+        crate::topology_law::validate_law_account(
+            &art.v,
+            &path.display().to_string(),
+        )?;
+
         for (i, row) in art.v["unknowns"]
             .as_array()
             .into_iter()
@@ -517,14 +553,27 @@ impl Artifact {
                 return Err(ghost("unknowns", i, "fn", who));
             }
         }
+        // Round 10: `phases` / `effects` may cover the FULL model
+        // function universe (module-scoped members carry phase
+        // assignments and derived effects even though the legacy
+        // summary sort excludes them) — resolve against
+        // `law.fn_universe` where present, `sorts.fns` otherwise.
+        let full_fn_set: std::collections::BTreeSet<&str> = art.v
+            ["law"]["fn_universe"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e["display"].as_str())
+            .chain(fn_set.iter().copied())
+            .collect();
         for key in ["phases", "effects"] {
             for (name, _) in
                 art.v[key].as_object().into_iter().flatten()
             {
-                if !fn_set.contains(name.as_str()) {
+                if !full_fn_set.contains(name.as_str()) {
                     return Err(format!(
                         "{}: referentially invalid artifact — {}.{} is \
-                         not in sorts.fns",
+                         not in the function universe",
                         path.display(),
                         key,
                         name
@@ -1112,18 +1161,42 @@ fn build_graph(
                 tone,
             });
             // Highlight every group member (loci AND free fns) and
-            // topic the claim's rendered form names. (The artifact
-            // carries the claim as normalized text; structured
-            // ClaimIr rows are the Track B upgrade — this stays
-            // presentation-side.)
+            // topic the claim REFERENCES — from the TYPED law
+            // payload (schema 1.11), never by substring-matching
+            // the rendered form. The payload's `display` fields
+            // are exactly the operand spellings.
+            // Join BY ORDINAL (round 3): admission guarantees the
+            // one-to-one projection, and a same-name row cannot
+            // masquerade.
+            let ordinal = art.v["claims"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|c| c["name"] == cname.as_str())
+                .and_then(|c| c["ordinal"].as_u64());
+            let law_row = art.v["law"]["rows"]
+                .as_array()
+                .and_then(|rows| {
+                    rows.iter().find(|r| {
+                        ordinal
+                            .is_some_and(|o| r["ordinal"] == o)
+                    })
+                })
+                .cloned()
+                .unwrap_or(Value::Null);
+            let mut named: Vec<String> = Vec::new();
+            law_display_names(&law_row["law"], &mut named);
+            let mentions = |name: &str| -> bool {
+                named.iter().any(|n| n == name)
+            };
             let mut hl: Vec<String> = Vec::new();
             for (gname, members) in art.groups() {
-                if form_mentions(&form, &gname) {
+                if mentions(&gname) {
                     hl.extend(members);
                 }
             }
             for l in &loci {
-                if form_mentions(&form, l) {
+                if mentions(l) {
                     hl.push(l.clone());
                 }
             }
@@ -1138,7 +1211,7 @@ fn build_graph(
                 }
             }
             for t in &mut topic_nodes {
-                if form_mentions(&form, &t.name) {
+                if mentions(&t.name) {
                     t.highlight = true;
                 }
             }
@@ -1192,25 +1265,29 @@ fn build_graph(
 
 /// Word-boundary mention check over the claim's normalized form, so
 /// group `stores` doesn't light up locus `Store` by prefix accident.
-fn form_mentions(form: &str, name: &str) -> bool {
-    let bytes = form.as_bytes();
-    let mut start = 0;
-    while let Some(pos) = form[start..].find(name) {
-        let a = start + pos;
-        let b = a + name.len();
-        let left_ok = a == 0 || !is_ident(bytes[a - 1]);
-        let right_ok = b >= bytes.len() || !is_ident(bytes[b]);
-        if left_ok && right_ok {
-            return true;
+/// Every DISPLAY spelling the typed law payload references —
+/// groups, topics, classes, subjects, phases (GH #476 Change 6:
+/// the claim view highlights from the typed operands instead of
+/// substring-matching the rendered form string).
+fn law_display_names(law: &Value, out: &mut Vec<String>) {
+    match law {
+        Value::Object(map) => {
+            if let Some(Value::String(d)) = map.get("display") {
+                out.push(d.clone());
+            }
+            for v in map.values() {
+                law_display_names(v, out);
+            }
         }
-        start = a + 1;
+        Value::Array(items) => {
+            for v in items {
+                law_display_names(v, out);
+            }
+        }
+        _ => {}
     }
-    false
 }
 
-fn is_ident(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
-}
 
 /// `short` is the display name inside the owning box (the full name
 /// with the owner's longest-prefix stripped — computed by the

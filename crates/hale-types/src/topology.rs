@@ -116,7 +116,18 @@ use crate::symbol::Bundle;
 /// (everything they reach), and gains the `environment` label —
 /// identities now come from the adoption traversal, so a constitution
 /// contributing no clause of its own is no longer invisible.
-pub const TOPOLOGY_SCHEMA: &str = "1.10";
+/// 1.11 (GH #476 Change 6): three unhashed, digest-covered typed
+/// sections — `law` (every lowered ClaimIr row: ordinal, name,
+/// origin, judgment family, machine verdict, provenance; plus
+/// `law_digest` and `inputs_digest`, the sidecar ties a consumer
+/// checks before trusting external evidence against this
+/// artifact), `capabilities` (the model's positive completeness
+/// account, typed), and `adequacy` (per migrated judgment family:
+/// `exact` when capabilities vouch every relation family that
+/// judgment consumes, else `degraded`). The legacy `claims` /
+/// `lowered` string rows remain, now PROJECTED from the same
+/// canonical path.
+pub const TOPOLOGY_SCHEMA: &str = "1.11";
 
 /// GH #408 Phase 0: what the rows MEAN, as distinct from their shape.
 ///
@@ -130,7 +141,14 @@ pub const TOPOLOGY_SCHEMA: &str = "1.10";
 /// Bump whenever the interpretation of any row changes, even when its
 /// shape does not. A consumer that does not recognise the value must
 /// refuse rather than assume equivalence.
-pub const MODEL_SEMANTICS: u32 = 1;
+/// 2 (GH #476 Change 6): law verdicts come from the canonical
+/// judgments, whose interpretation is stricter in two documented
+/// places — a certificate naming a cyclically-defined or
+/// undeclared effect class reports `invalid` (previously a vacuous
+/// `holds`), and `require attributed` over a body the analysis
+/// could not walk reports `uncertified` (previously a fail-open
+/// `holds`).
+pub const MODEL_SEMANTICS: u32 = 2;
 
 /// The model identity alone (downstream handoff P26, 2026-08-12):
 /// the same `shape_hash` `dump_topology` stamps, for embedding in
@@ -154,6 +172,19 @@ pub fn model_shape_hash(bundle: &Bundle<'_>) -> u64 {
 /// Serialize the bundle's model + claim results as the topology
 /// artifact (JSON).
 pub fn dump_topology(bundle: &Bundle<'_>) -> String {
+    dump_topology_parts(bundle).0
+}
+
+/// The artifact PLUS the legacy model-half string (GH #476
+/// Change 6, review round 1): production emits the PROJECTION of
+/// `ApplicationModel` (`project_model_half` — one semantic
+/// authority); the legacy gathering remains ONLY as the
+/// differential's comparison arm until Change 9 retires it. It
+/// never supplies emitted rows.
+#[doc(hidden)]
+pub fn dump_topology_parts(
+    bundle: &Bundle<'_>,
+) -> (String, String, String) {
     let programs: Vec<&Program> =
         bundle.programs.values().copied().collect();
     let (top, _resolve_diags) = crate::resolve::build_top_scope(bundle);
@@ -649,12 +680,41 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     }
 
     // ---- claims ----
-    let (_diags, outcomes, identities) =
+    // GH #476 Change 6: the artifact's law rows are PROJECTED from
+    // the canonical path (ClaimIr renders the forms, the Change-5
+    // judgments produce the verdicts, the evidence sidecar carries
+    // the certificate results). The evaluator report is still run
+    // for the constitution identities — and it remains the CHECK
+    // authority until Change 9; the artifact_law_projection corpus
+    // differential holds the two row sets equal (modulo the
+    // Change-5 documented divergences, which the SEMANTICS bump
+    // records).
+    let (_diags, _old_outcomes, identities) =
         crate::claims::claims_report_with_identities(
         &programs,
         &graph,
         &bundle.import_renames,
     );
+    let vmodel = crate::model_builder::derive_application_model(bundle);
+    let law_table = crate::claim_lowering::lower_claims(bundle, &vmodel);
+    let law_evidence = crate::evidence::derive_certificate_evidence(
+        bundle, &law_table, &vmodel,
+    );
+    let source_bases: Vec<u32> =
+        bundle.sources.iter().map(|f| f.base).collect();
+    let legacy_unmigrated =
+        crate::topology_projection::legacy_unmigrated_verdicts(
+            bundle, &graph, &law_table,
+        );
+    let (outcomes, projected_lowered, law_rows, law_issues) =
+        crate::topology_projection::project_law_rows(
+            bundle,
+            &vmodel,
+            &law_table,
+            &law_evidence,
+            &source_bases,
+            &legacy_unmigrated,
+        );
     // Rendered forms carry post-mangle topic refs; rewrite them to
     // author spelling (longest-mangled-first, the demangle_imports
     // rule, so a prefix symbol cannot partially rewrite another).
@@ -865,7 +925,18 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     trim_trailing_comma(&mut model);
     model.push_str("  ]");
 
+    // GH #476 Change 6 (review round 1): the emitted model half is
+    // the PROJECTION — artifact generation projects the model
+    // (acceptance criterion 6). The legacy string just built above
+    // is returned for the corpus differential only.
+    let legacy_model = model;
+    let model =
+        crate::topology_projection::project_model_half(&vmodel);
     let shape_hash = fnv1a64(model.as_bytes());
+    debug_assert_eq!(
+        shape_hash,
+        crate::topology_projection::project_shape_hash(&vmodel)
+    );
 
     let mut out = String::new();
     out.push_str("{\n");
@@ -890,9 +961,13 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     // carry a content digest, so an artifact stays comparable across
     // machines and a consumer can tell a stale pairing from a fresh
     // one.
-    out.push_str(",\n  \"sources\": [\n");
+    // GH #476 Change 6 (round 2): the UNHASHED tail — sources,
+    // provenance, topics — is PROJECTED from the model; the legacy
+    // gathering below feeds only the corpus differential.
+    let mut legacy_tail = String::new();
+    legacy_tail.push_str(",\n  \"sources\": [\n");
     for (i, sf) in bundle.sources.iter().enumerate() {
-        out.push_str(&format!(
+        legacy_tail.push_str(&format!(
             "    {{\"id\": {}, \"path\": {}, \"digest\": {}}}{}\n",
             sf.id,
             quote(&sf.path),
@@ -900,7 +975,7 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
             if i + 1 == bundle.sources.len() { "" } else { "," }
         ));
     }
-    out.push_str("  ]");
+    legacy_tail.push_str("  ]");
 
     // Provenance (#392): source spans, now resolved to
     // `(source, [local_start, local_end])`. UNHASHED by `shape_hash`
@@ -920,9 +995,9 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
             None => (-1, pos),
         }
     };
-    out.push_str(",\n  \"provenance\": {\n    \"calls\": [\n");
+    legacy_tail.push_str(",\n  \"provenance\": {\n    \"calls\": [\n");
     for (from, to, s, e) in &call_spans {
-        out.push_str(&format!(
+        legacy_tail.push_str(&format!(
             "      {{\"from\": {}, \"to\": {}, \"source\": {}, \"span\": [{}, {}]}},\n",
             quote(from),
             quote(to),
@@ -931,10 +1006,10 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
             loc(*e).1
         ));
     }
-    trim_trailing_comma(&mut out);
-    out.push_str("    ],\n    \"publishes\": [\n");
+    trim_trailing_comma(&mut legacy_tail);
+    legacy_tail.push_str("    ],\n    \"publishes\": [\n");
     for (f, subj, s, e) in &publish_spans {
-        out.push_str(&format!(
+        legacy_tail.push_str(&format!(
             "      {{\"fn\": {}, \"subject\": {}, \"source\": {}, \"span\": [{}, {}]}},\n",
             quote(f),
             quote(subj),
@@ -951,10 +1026,10 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
             loc(*e).1
         ));
     }
-    trim_trailing_comma(&mut out);
-    out.push_str("    ],\n    \"subscribes\": [\n");
+    trim_trailing_comma(&mut legacy_tail);
+    legacy_tail.push_str("    ],\n    \"subscribes\": [\n");
     for (subj, locus, handler, s, e) in &subscribe_spans {
-        out.push_str(&format!(
+        legacy_tail.push_str(&format!(
             "      {{\"subject\": {}, \"locus\": {}, \"handler\": {}, \
              \"source\": {}, \"span\": [{}, {}]}},\n",
             quote(subj),
@@ -965,10 +1040,10 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
             loc(*e).1
         ));
     }
-    trim_trailing_comma(&mut out);
-    out.push_str("    ],\n    \"decls\": {\n");
+    trim_trailing_comma(&mut legacy_tail);
+    legacy_tail.push_str("    ],\n    \"decls\": {\n");
     for (decl, (s, e)) in &decl_spans {
-        out.push_str(&format!(
+        legacy_tail.push_str(&format!(
             "      {}: {{\"source\": {}, \"span\": [{}, {}]}},\n",
             quote(decl),
             loc(*s).0,
@@ -976,10 +1051,10 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
             loc(*e).1
         ));
     }
-    trim_trailing_comma(&mut out);
-    out.push_str("    },\n    \"supervision\": [\n");
+    trim_trailing_comma(&mut legacy_tail);
+    legacy_tail.push_str("    },\n    \"supervision\": [\n");
     for r in &sup_rows {
-        out.push_str(&format!(
+        legacy_tail.push_str(&format!(
             "      {{\"locus\": {}, \"child\": {}, \"source\": {}, \"span\": [{}, {}]}},\n",
             quote(&r.locus),
             quote(&r.child),
@@ -988,8 +1063,8 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
             loc(r.span.1).1
         ));
     }
-    trim_trailing_comma(&mut out);
-    out.push_str("    ]\n  }");
+    trim_trailing_comma(&mut legacy_tail);
+    legacy_tail.push_str("    ]\n  }");
     // #399: the per-topic OBSERVATION identity — the join between
     // this artifact and a recording. The runtime manifest fuses
     // topics on (name, shape_hash) where shape_hash =
@@ -1001,7 +1076,7 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     // UNHASHED by ruling: payload field shape does not affect
     // claim evaluation, so it is not part of the model identity —
     // the artifact document is the reference, not the fusion.
-    out.push_str(",\n  \"topics\": [\n");
+    legacy_tail.push_str(",\n  \"topics\": [\n");
     {
         let mut rows: BTreeSet<(String, String, String, u64)> =
             BTreeSet::new();
@@ -1045,7 +1120,7 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
             }
         }
         for (tname, subj, shape, h) in &rows {
-            out.push_str(&format!(
+            legacy_tail.push_str(&format!(
                 "    {{\"name\": {}, \"subject\": {}, \"shape\": {}, \
                  \"payload_hash\": \"{:016x}\"}},\n",
                 quote(tname),
@@ -1055,8 +1130,162 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
             ));
         }
     }
-    trim_trailing_comma(&mut out);
-    out.push_str("  ]");
+    trim_trailing_comma(&mut legacy_tail);
+    legacy_tail.push_str("  ]");
+    out.push_str(
+        &crate::topology_projection::project_unhashed_tail(&vmodel),
+    );
+    // Round 8: the typed ENDPOINT section — every bus endpoint the
+    // model carries, at WIRE-SUBJECT grain, including a declared
+    // publisher with no send site (`bus {{ publish "addr" of type
+    // T; }}` is a real endpoint the V1 site-grained relations
+    // never show). `law.subjects` must equal exactly the subjects
+    // this section and the topics section carry — the full model
+    // subject universe is validated against its own typed
+    // projection, never reverse-engineered from the narrower V1
+    // view. Unhashed (endpoint rows are join surface, not shape).
+    {
+        let subj_pat = |sid: hale_model::SubjectId| -> &str {
+            vmodel
+                .entities
+                .subjects
+                .get(sid.index())
+                .map(|su| su.pattern.as_str())
+                .unwrap_or("")
+        };
+        // Round 10: every endpoint row carries its TYPED identity
+        // — the wire subject AND the declared topic when one
+        // covers the end. A literal address whose text collides
+        // with a topic display stays a literal (`declared_topic`
+        // is the model's syntactic fact, never inferred from
+        // strings).
+        let topic_field = |t: &Option<hale_model::TopicId>|
+         -> String {
+            match t {
+                Some(tid) => vmodel
+                    .entities
+                    .topics
+                    .get(tid.index())
+                    .map(|tp| {
+                        format!(
+                            ", \"topic\": {}",
+                            quote(&tp.display)
+                        )
+                    })
+                    .unwrap_or_default(),
+                None => String::new(),
+            }
+        };
+        // Round 11: site rows are LOSSLESS — each carries its
+        // owning fn/handler and authored site ordinal, so no two
+        // typed rows collapse under the legacy display projection
+        // (a topic-covered end and a colliding literal stay
+        // distinct facts).
+        let fn_disp = |fid: hale_model::FunctionId| -> &str {
+            vmodel
+                .entities
+                .functions
+                .get(fid.index())
+                .map(|f| f.display.as_str())
+                .unwrap_or("")
+        };
+        // Round 12: every site row is ANCHORED to the typed
+        // provenance account — its authored span, which must
+        // correspond to the span-grained provenance section rows.
+        let ep_loc = |pid: hale_model::ProvenanceId| -> String {
+            match vmodel.provenance.records.get(pid.index()) {
+                Some(hale_model::Provenance::Source {
+                    source,
+                    span,
+                }) => vmodel
+                    .provenance
+                    .sources
+                    .get(source.index())
+                    .map(|su| {
+                        format!(
+                            ", \"file\": {}, \"span\": [{}, {}]",
+                            quote(&su.path),
+                            span.0,
+                            span.1
+                        )
+                    })
+                    .unwrap_or_default(),
+                _ => String::new(),
+            }
+        };
+        let mut rows: Vec<String> = Vec::new();
+        for r in &vmodel.relations.publishes {
+            rows.push(format!(
+                "{{\"verb\": \"publish\", \"subject\": {}, \"via\": \"site\", \"fn\": {}, \"site\": {}{}{}}}",
+                quote(subj_pat(r.subject)),
+                quote(fn_disp(r.function)),
+                r.site,
+                topic_field(&r.declared_topic),
+                ep_loc(r.provenance)
+            ));
+        }
+        for r in &vmodel.relations.declares_publish {
+            let locus = vmodel
+                .entities
+                .loci
+                .get(r.locus.index())
+                .map(|l| l.display.as_str())
+                .unwrap_or("");
+            rows.push(format!(
+                "{{\"verb\": \"publish\", \"subject\": {}, \"via\": \"declaration\", \"locus\": {}{}{}}}",
+                quote(subj_pat(r.subject)),
+                quote(locus),
+                topic_field(&r.declared_topic),
+                ep_loc(r.provenance)
+            ));
+        }
+        for r in &vmodel.relations.subscribes {
+            rows.push(format!(
+                "{{\"verb\": \"subscribe\", \"subject\": {}, \"via\": \"declaration\", \"fn\": {}, \"site\": {}{}{}}}",
+                quote(subj_pat(r.subject)),
+                quote(fn_disp(r.handler)),
+                r.site,
+                topic_field(&r.declared_topic),
+                ep_loc(r.provenance)
+            ));
+        }
+        rows.sort();
+        rows.dedup();
+        out.push_str(&format!(
+            ",\n  \"endpoints\": [{}]",
+            rows.join(", ")
+        ));
+        // Round 9: the DECLARED-publisher relation as its own
+        // typed projection (`declares_publish(locus, subject)`) —
+        // the anchor for `via: declaration` publish endpoints,
+        // which no site-grained relation shows.
+        let mut decl_rows: Vec<String> = vmodel
+            .relations
+            .declares_publish
+            .iter()
+            .map(|r| {
+                let locus = vmodel
+                    .entities
+                    .loci
+                    .get(r.locus.index())
+                    .map(|l| l.display.as_str())
+                    .unwrap_or("");
+                format!(
+                    "{{\"locus\": {}, \"subject\": {}{}{}}}",
+                    quote(locus),
+                    quote(subj_pat(r.subject)),
+                    topic_field(&r.declared_topic),
+                    ep_loc(r.provenance)
+                )
+            })
+            .collect();
+        decl_rows.sort();
+        decl_rows.dedup();
+        out.push_str(&format!(
+            ",\n  \"declares_publish\": [{}]",
+            decl_rows.join(", ")
+        ));
+    }
     out.push_str(",\n  \"claims\": [\n");
     for o in &outcomes {
         // GH #409: `source` names the constitution an adopted clause
@@ -1069,10 +1298,12 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
             None => String::new(),
         };
         out.push_str(&format!(
-            "    {{\"name\": {}, \"form\": {}, \"result\": {}{}}},\n",
+            "    {{\"name\": {}, \"form\": {}, \"result\": {}, \
+             \"ordinal\": {}{}}},\n",
             quote(&o.name),
             quote(&demangle_str(&o.form)),
             quote(o.result.as_str()),
+            o.ordinal,
             src
         ));
     }
@@ -1084,14 +1315,63 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     // record: the artifact carries ALL law, bundle-quantified and
     // fn-grained, in one place. Unhashed like the claim results —
     // rows are law + verdicts, not topology.
-    let mut lowered = crate::effects::certificate_rows(
-        &programs,
-        &bundle.import_renames,
+    // Effects-family certificates come from the evidence sidecar
+    // (Change 6); `@budget` rows keep their old producers until the
+    // quantitative engines migrate (JudgmentFamily::Unmigrated).
+    let mut lowered: Vec<crate::effects::LoweredCertificate> =
+        projected_lowered
+            .iter()
+            .map(|r| crate::effects::LoweredCertificate {
+                subject: r.subject.clone(),
+                form: r.form.clone(),
+                result: r.result,
+            })
+            .collect();
+    // Round 6: every lowered row is KEYED to the typed law it
+    // evidences — (law ordinal, certificate ordinal). Certificate
+    // rows carry theirs from the projection; the legacy budget /
+    // quantitative producers are keyed by their form re-rendered
+    // from the typed operands (`ClaimRow::budget_lowered_form`),
+    // consumed in table order.
+    let mut lowered_keys: Vec<Option<(u32, Option<u32>)>> =
+        projected_lowered
+            .iter()
+            .map(|r| Some((r.ordinal, r.cert)))
+            .collect();
+    let mut budget_ordinals: std::collections::BTreeMap<
+        String,
+        std::collections::VecDeque<u32>,
+    > = std::collections::BTreeMap::new();
+    for row in &law_table.rows {
+        if let Some(form) = row.budget_lowered_form() {
+            budget_ordinals
+                .entry(form)
+                .or_default()
+                .push_back(row.ordinal);
+        }
+    }
+    let mut push_budget_rows =
+        |rows: Vec<crate::effects::LoweredCertificate>,
+         lowered: &mut Vec<crate::effects::LoweredCertificate>,
+         keys: &mut Vec<Option<(u32, Option<u32>)>>| {
+            for r in rows {
+                let form = demangle_str(&r.form);
+                let key = budget_ordinals
+                    .get_mut(&form)
+                    .and_then(|q| q.pop_front())
+                    .map(|o| (o, None));
+                keys.push(key);
+                lowered.push(r);
+            }
+        };
+    push_budget_rows(
+        crate::budget_check::certificate_rows(
+            &programs,
+            &bundle.import_renames,
+        ),
+        &mut lowered,
+        &mut lowered_keys,
     );
-    lowered.extend(crate::budget_check::certificate_rows(
-        &programs,
-        &bundle.import_renames,
-    ));
     let fanout = |subj: &str| -> u64 {
         graph
             .subjects
@@ -1099,9 +1379,11 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
             .map(|si| si.subscribers.len().max(1) as u64)
             .unwrap_or(1)
     };
-    lowered.extend(crate::quantitative::certificate_rows(
-        &programs, &fanout,
-    ));
+    push_budget_rows(
+        crate::quantitative::certificate_rows(&programs, &fanout),
+        &mut lowered,
+        &mut lowered_keys,
+    );
     // Close the `claims` array before opening `lowered` — omitting
     // this emitted a document no standards-compliant JSON parser
     // accepts, for every shape (no claims, one, many, with or
@@ -1109,16 +1391,448 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     // asserted on substrings and never parsed the whole document;
     // `topology_artifact_is_valid_json` now does.
     out.push_str("  ],\n  \"lowered\": [\n");
-    for r in &lowered {
+    for (r, key) in lowered.iter().zip(lowered_keys.iter()) {
+        let keyed = match key {
+            Some((o, Some(c))) => {
+                format!(", \"ordinal\": {}, \"cert\": {}", o, c)
+            }
+            Some((o, None)) => format!(", \"ordinal\": {}", o),
+            None => String::new(),
+        };
         out.push_str(&format!(
-            "    {{\"subject\": {}, \"form\": {}, \"result\": {}}},\n",
+            "    {{\"subject\": {}, \"form\": {}, \"result\": {}{}}},\n",
             quote(&demangle_str(&r.subject)),
             quote(&demangle_str(&r.form)),
-            quote(r.result.as_str())
+            quote(r.result.as_str()),
+            keyed
         ));
     }
     trim_trailing_comma(&mut out);
     out.push_str("  ]");
+
+    // GH #476 Change 6: the TYPED law section — every lowered
+    // ClaimIr row with its judgment family and machine verdict,
+    // addressable by ordinal, plus the two digests a consumer
+    // checks before trusting external evidence against this
+    // artifact. Unhashed by `shape_hash` (law rows are results,
+    // not topology), covered by `artifact_digest`.
+    // Round 7: `law_digest` is a RECOMPUTABLE canonical fingerprint
+    // over the serialized law rows — the rows text parsed and
+    // re-serialized through serde_json (BTreeMap keys, compact
+    // separators), then fnv1a64 — so a consumer recomputes it from
+    // the parsed document, and editing a row while keeping the
+    // stale digest refuses. (The ClaimIrTable's internal semantic
+    // digest remains the derive-time evidence tie; this field is
+    // the EXTERNAL contract.)
+    let law_rows_text = {
+        let mut rows_out = String::from("[\n");
+        for r in &law_rows {
+        let prov = match &r.provenance {
+            Some((file, a, b)) => format!(
+                ", \"file\": {}, \"span\": [{}, {}]",
+                quote(file),
+                a,
+                b
+            ),
+            None => String::new(),
+        };
+        let diag_list = |ds: &[(
+            String,
+            Option<(String, u32, u32)>,
+        )]|
+         -> String {
+            let items: Vec<String> = ds
+                .iter()
+                .map(|(msg, at)| {
+                    let at = match at {
+                        Some((file, a, b)) => format!(
+                            ", \"file\": {}, \"span\": [{}, {}]",
+                            quote(file),
+                            a,
+                            b
+                        ),
+                        None => String::new(),
+                    };
+                    format!(
+                        "{{\"message\": {}{}}}",
+                        quote(&demangle_str(msg)),
+                        at
+                    )
+                })
+                .collect();
+            format!("[{}]", items.join(", "))
+        };
+        let certs = if r.certs.is_empty() {
+            String::new()
+        } else {
+            let cs: Vec<String> = r
+                .certs
+                .iter()
+                .map(|(i, form, res, diags)| {
+                    let ev = if diags.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            ", \"evidence\": {}",
+                            diag_list(diags)
+                        )
+                    };
+                    format!(
+                        "{{\"ordinal\": {}, \"form\": {}, \
+                         \"result\": {}{}}}",
+                        i,
+                        quote(&demangle_str(form)),
+                        quote(res.as_str()),
+                        ev
+                    )
+                })
+                .collect();
+            format!(", \"certs\": [{}]", cs.join(", "))
+        };
+        let evidence = if r.evidence.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ", \"evidence\": {}",
+                diag_list(&r.evidence)
+            )
+        };
+        rows_out.push_str(&format!(
+            "      {{\"ordinal\": {}, \"name\": {}, \"origin\": {}, \
+             \"family\": {}, \"verdict\": {}, \"law\": {}{}{}{}}},\n",
+            r.ordinal,
+            quote(&demangle_str(&r.name)),
+            quote(&r.origin),
+            quote(r.family.as_str()),
+            quote(r.verdict.as_str()),
+            // Verbatim: the payload carries RAW (canonical) and
+            // DISPLAY spellings side by side — demangling the
+            // whole object would collapse the raw identity.
+            r.law,
+            certs,
+            evidence,
+            prov
+        ));
+    }
+        trim_trailing_comma(&mut rows_out);
+        rows_out.push_str("    ]");
+        rows_out
+    };
+    // Round 9: the law-selection ISSUES participate in the digest
+    // and the document verdict — no claim error disappears between
+    // checking and projection.
+    let law_issues_text = {
+        let items: Vec<String> = law_issues
+            .iter()
+            .map(|(msg, at)| {
+                let loc = match at {
+                    Some((f, a, b)) => format!(
+                        ", \"file\": {}, \"span\": [{}, {}]",
+                        quote(f),
+                        a,
+                        b
+                    ),
+                    None => String::new(),
+                };
+                format!(
+                    "{{\"message\": {}{}}}",
+                    quote(&demangle_str(msg)),
+                    loc
+                )
+            })
+            .collect();
+        format!("[{}]", items.join(", "))
+    };
+    let law_digest = {
+        let rows: serde_json::Value =
+            serde_json::from_str(&law_rows_text)
+                .expect("the emitter's own law rows parse");
+        let issues: serde_json::Value =
+            serde_json::from_str(&law_issues_text)
+                .expect("the emitter's own issues parse");
+        fnv1a64(
+            serde_json::to_string(&serde_json::json!({
+                "issues": issues,
+                "rows": rows,
+            }))
+            .expect("canonical serialization")
+            .as_bytes(),
+        )
+    };
+    out.push_str(",\n  \"law\": {\n");
+    out.push_str(&format!(
+        "    \"law_digest\": \"{:016x}\",\n",
+        law_digest
+    ));
+    out.push_str(&format!(
+        "    \"inputs_digest\": \"{:016x}\",\n",
+        law_evidence.inputs_digest
+    ));
+    // Round 5/6: the FULL law-subject catalogs — annotation
+    // subjects resolve against the whole model function table
+    // (module fns included), wider than the legacy `sorts.fns`
+    // summary universe. Round 6: every catalog entry is a
+    // CANONICAL PAIR `{name: raw, display}` — the raw half is the
+    // machine join key, and a resolved reference must match one
+    // exact pair (cross-row consistency alone cannot anchor a
+    // singleton reference).
+    {
+        let pair_catalog = |label: &str,
+                            mut pairs: Vec<(String, String)>|
+         -> String {
+            pairs.sort();
+            pairs.dedup();
+            format!(
+                "    \"{}\": [{}],\n",
+                label,
+                pairs
+                    .iter()
+                    .map(|(n, d)| format!(
+                        "{{\"name\": {}, \"display\": {}}}",
+                        quote(n),
+                        quote(d)
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        // Round 10: function-grain ANALYSIS COVERAGE — the model's
+        // `analyzed` bit per function (false for module-scoped
+        // bodies and `on_failure` handlers). The analyzed subset
+        // must equal `sorts.fns` exactly (the hashed summary
+        // universe), which is what anchors the coverage account.
+        {
+            let mut rows: Vec<String> = vmodel
+                .entities
+                .functions
+                .iter()
+                .map(|f| {
+                    let kind = match f.kind {
+                        hale_model::FunctionKind::Hook => "hook",
+                        hale_model::FunctionKind::Method => {
+                            "method"
+                        }
+                        hale_model::FunctionKind::Free => "free",
+                        hale_model::FunctionKind::Mode => "mode",
+                        hale_model::FunctionKind::FailureHandler => {
+                            "failure"
+                        }
+                    };
+                    let owner = match f.owner {
+                        Some(l) => vmodel
+                            .entities
+                            .loci
+                            .get(l.index())
+                            .map(|l| {
+                                format!(
+                                    ", \"owner\": {}",
+                                    quote(&l.display)
+                                )
+                            })
+                            .unwrap_or_default(),
+                        None => String::new(),
+                    };
+                    format!(
+                        "{{\"name\": {}, \"display\": {}, \"analyzed\": {}, \"summarized\": {}, \"kind\": {}{}}}",
+                        quote(&f.name),
+                        quote(&f.display),
+                        f.analyzed,
+                        f.summarized,
+                        quote(kind),
+                        owner
+                    )
+                })
+                .collect();
+            rows.sort();
+            rows.dedup();
+            out.push_str(&format!(
+                "    \"fn_universe\": [{}],\n",
+                rows.join(", ")
+            ));
+        }
+        // Loci carry an ANALYZABLE flag: the legacy certificate
+        // engines walk only top-level loci, so a module-scoped
+        // locus's phase contracts have no engine report and judge
+        // `uncertified` — a consumer needs the discriminator to
+        // hold the two shapes to their exact verdicts. Round 9:
+        // the fact is the MODEL's (`LocusDecl::analyzable`) — one
+        // authority shared with the evidence layer; this
+        // projection never re-walks source.
+        {
+            let mut rows: Vec<String> = vmodel
+                .entities
+                .loci
+                .iter()
+                .map(|l| {
+                    format!(
+                        "{{\"name\": {}, \"display\": {}, \"analyzable\": {}}}",
+                        quote(&l.name),
+                        quote(&l.display),
+                        l.analyzable
+                    )
+                })
+                .collect();
+            rows.sort();
+            rows.dedup();
+            out.push_str(&format!(
+                "    \"loci\": [{}],\n",
+                rows.join(", ")
+            ));
+        }
+        out.push_str(&pair_catalog(
+            "groups",
+            vmodel
+                .entities
+                .groups
+                .iter()
+                .map(|g| (g.name.clone(), g.display.clone()))
+                .collect(),
+        ));
+        // Topics carry their wire subject too — the selector
+        // binding recomputes candidate sets from these rows with
+        // the SAME matching rule the lowering used
+        // (`hale_model::bus_ref_matches`).
+        let mut topic_rows: Vec<String> = vmodel
+            .entities
+            .topics
+            .iter()
+            .map(|t| {
+                let subject = vmodel
+                    .entities
+                    .subjects
+                    .get(t.subject.index())
+                    .map(|su| su.pattern.as_str())
+                    .unwrap_or("");
+                format!(
+                    "{{\"name\": {}, \"display\": {}, \"subject\": {}}}",
+                    quote(&t.name),
+                    quote(&t.display),
+                    quote(subject)
+                )
+            })
+            .collect();
+        topic_rows.sort();
+        topic_rows.dedup();
+        out.push_str(&format!(
+            "    \"topics\": [{}],\n",
+            topic_rows.join(", ")
+        ));
+        // The wire-subject universe — selector SUBJECT candidates
+        // resolve against the model's subject table, which is
+        // wider than the declared topics (raw publish subjects).
+        let mut subject_rows: Vec<&str> = vmodel
+            .entities
+            .subjects
+            .iter()
+            .map(|su| su.pattern.as_str())
+            .collect();
+        subject_rows.sort_unstable();
+        subject_rows.dedup();
+        out.push_str(&format!(
+            "    \"subjects\": [{}],\n",
+            subject_rows
+                .iter()
+                .map(|s| quote(s))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    // …and the effect-class catalog: which user classes are
+    // DECLARED and which are cyclic — the facts a consumer needs
+    // to independently justify an `invalid` certificate verdict.
+    {
+        let mut rows: Vec<String> = vmodel
+            .entities
+            .effect_classes
+            .iter()
+            .map(|c| {
+                format!(
+                    "{{\"name\": {}, \"declared\": {}, \"cyclic\": {}}}",
+                    quote(&c.name),
+                    c.declared,
+                    matches!(
+                        c.definition,
+                        hale_model::EffectClassDefinition::InvalidCycle
+                    )
+                )
+            })
+            .collect();
+        rows.sort();
+        out.push_str(&format!(
+            "    \"effect_classes\": [{}],\n",
+            rows.join(", ")
+        ));
+    }
+    // Round 6: the typed LEGACY report — the old engines'
+    // verdicts for the unmigrated non-budget families (`causes:` /
+    // `depends:`), keyed by law ordinal and by the form
+    // FINGERPRINT re-rendered from the typed operands. Admission
+    // re-renders the fingerprint from the decoded payload: an
+    // operand mutation orphans the report entry, so a bare
+    // imported verdict cannot survive a payload edit.
+    {
+        let mut entries: Vec<String> = Vec::new();
+        for row in &law_table.rows {
+            let Some(form) = row.legacy_form() else { continue };
+            let Some(vd) = legacy_unmigrated.get(&row.ordinal)
+            else {
+                continue;
+            };
+            entries.push(format!(
+                "{{\"ordinal\": {}, \"form\": {}, \"result\": {}}}",
+                row.ordinal,
+                quote(&demangle_str(&form)),
+                quote(vd.as_str())
+            ));
+        }
+        out.push_str(&format!(
+            "    \"legacy\": [{}],\n",
+            entries.join(", ")
+        ));
+    }
+    out.push_str(&format!(
+        "    \"issues\": {},\n",
+        law_issues_text
+    ));
+    out.push_str("    \"rows\": ");
+    out.push_str(&law_rows_text);
+    out.push_str("\n  }");
+
+    // The model's positive completeness account, typed — what the
+    // artifact can promise is exact, without reverse-engineering
+    // the `unknowns` strings.
+    out.push_str(",\n  \"capabilities\": {\n");
+    {
+        let caps = vmodel.capabilities.vouched_families();
+        for (i, (cname, claimed, _)) in caps.iter().enumerate() {
+            out.push_str(&format!(
+                "    \"{}\": {}{}\n",
+                cname,
+                claimed,
+                if i + 1 == caps.len() { "" } else { "," }
+            ));
+        }
+    }
+    out.push_str("  }");
+
+    // Per migrated judgment family: can this model support the
+    // family's judgment EXACTLY (`exact`), or do holes degrade it
+    // (`degraded` — judgments still run; reachable holes force
+    // `uncertified`)?
+    out.push_str(",\n  \"adequacy\": {\n");
+    {
+        let adequacy =
+            crate::topology_projection::family_adequacy(&vmodel);
+        for (i, (fam, exact)) in adequacy.iter().enumerate() {
+            out.push_str(&format!(
+                "    \"{}\": {}{}\n",
+                fam.as_str(),
+                quote(if *exact { "exact" } else { "degraded" }),
+                if i + 1 == adequacy.len() { "" } else { "," }
+            ));
+        }
+    }
+    out.push_str("  }");
 
     // GH #409 (review finding 5): WHICH evaluation this artifact
     // certifies. Per-claim `source` answers "where did this clause
@@ -1180,8 +1894,22 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
     // Note this says nothing about whether the program TYPECHECKS.
     // It does not have to: an artifact is only emitted for a program
     // that does, so its existence already carries that.
+    // Change 6: the MACHINE verdicts join the pass condition. For
+    // the migrated families the law rows are the judgment's word —
+    // stricter than the engine replay in the two documented places
+    // (cyclic/undeclared classes ⇒ invalid; attributed-over-hole ⇒
+    // uncertified). Unmigrated rows carry the OLD engines'
+    // authoritative results (`legacy_unmigrated_verdicts`), so
+    // EVERY application-tier row participates: no non-passing law
+    // row can coexist with a `clean` document verdict (round 1).
+    let law_pass = law_rows.iter().all(|r| {
+        matches!(r.family, hale_model::JudgmentFamily::Fleet)
+            || r.verdict.passed()
+    });
     let all_pass = outcomes.iter().all(|o| o.result.passed())
-        && lowered.iter().all(|r| r.result.passed());
+        && lowered.iter().all(|r| r.result.passed())
+        && law_pass
+        && law_issues.is_empty();
     out.push_str(&format!(
         ",\n  \"verdict\": {}",
         quote(if all_pass { "clean" } else { "law_failed" })
@@ -1212,7 +1940,7 @@ pub fn dump_topology(bundle: &Bundle<'_>) -> String {
         "{}{:016x}\"\n}}\n",
         ARTIFACT_DIGEST_KEY, digest
     ));
-    out
+    (out, legacy_model, legacy_tail)
 }
 
 /// The exact byte sequence introducing the integrity digest. It is

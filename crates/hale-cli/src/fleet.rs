@@ -1332,6 +1332,15 @@ fn load_artifact(
             ))
         }
     }
+    // GH #476 Change 6 (rounds 4–5): the ONE shared law-account
+    // admission — the same routine Track A runs, so there is
+    // exactly one definition of "admitted schema-1.11 artifact".
+    // It decodes every payload, binds evidence, joins claims↔law
+    // in both directions, and RECOMPUTES the document verdict.
+    crate::topology_law::validate_law_account(
+        &v,
+        &p.display().to_string(),
+    )?;
     Ok((v, sha256, signed_by))
 }
 

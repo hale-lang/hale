@@ -1,7 +1,10 @@
 //! GH #476 Change 3 — the projection differential.
 //!
 //! `topology_projection::project_model_half(derive(bundle))` must be
-//! BYTE-IDENTICAL to the hashed model half `dump_topology` builds
+//! BYTE-IDENTICAL to the LEGACY model-half gathering (Change 6
+//! inverted the direction: production emits the projection, and
+//! the legacy arm — `dump_topology_parts(..).1` — exists only for
+//! this differential until Change 9 retires it); it must also be
 //! from its own derivation, for every program in the corpus — the
 //! epic's exit criterion ("reproduce the legacy `TopologyShapeV1`
 //! hash exactly over the corpus before any cutover"). Until the
@@ -20,7 +23,7 @@ use hale_types::Bundle;
 
 /// The hashed model half of a rendered artifact: everything from
 /// `"sorts"` up to (not including) the unhashed `"sources"` map.
-/// `dump_topology` hashes exactly this substring.
+/// The EMITTED model half (the projection, post-Change 6).
 fn model_half_of(artifact: &str) -> &str {
     let start = artifact
         .find("  \"sorts\": {")
@@ -29,6 +32,15 @@ fn model_half_of(artifact: &str) -> &str {
         .find(",\n  \"sources\": [")
         .expect("artifact has a sources section");
     &artifact[start..end]
+}
+
+/// The DIFFERENTIAL's comparison arm: the legacy gathering string
+/// `dump_topology_parts` returns beside the artifact. Kept as a
+/// named helper so the direction of the comparison is explicit —
+/// production emits the projection; the legacy arm exists only
+/// here.
+fn legacy_arm(legacy_half: &str) -> &str {
+    legacy_half
 }
 
 fn artifact_shape_hash(artifact: &str) -> u64 {
@@ -72,12 +84,13 @@ fn check_one(
             let mut programs = BTreeMap::new();
             programs.insert("app.hl".to_string(), program);
             let bundle = Bundle::new(programs);
-            let art = hale_types::topology::dump_topology(&bundle);
+            let (art, legacy_half, legacy_tail) =
+                hale_types::topology::dump_topology_parts(&bundle);
             let model = derive_application_model(&bundle);
-            (art, model)
+            (art, legacy_half, legacy_tail, model)
         },
     ));
-    let Ok((art, model)) = caught else {
+    let Ok((art, legacy_half, legacy_tail, model)) = caught else {
         bad.push(format!("{}: PANIC", origin));
         return;
     };
@@ -91,7 +104,8 @@ fn check_one(
     if !checks_clean {
         return;
     }
-    let legacy = model_half_of(&art);
+    let legacy = legacy_arm(&legacy_half);
+    let _ = model_half_of(&art);
     let projected = project_model_half(&model);
     if legacy != projected {
         bad.push(format!(
@@ -105,6 +119,20 @@ fn check_one(
         bad.push(format!(
             "{}: byte-equal halves but hash mismatch (?)",
             origin
+        ));
+        return;
+    }
+    // Round 2: the UNHASHED tail (sources/provenance/topics) is
+    // projected too — same differential, same direction.
+    let projected_tail =
+        hale_types::topology_projection::project_unhashed_tail(
+            &model,
+        );
+    if legacy_tail != projected_tail {
+        bad.push(format!(
+            "{}: unhashed tail diverges.\n{}",
+            origin,
+            first_diff(&legacy_tail, &projected_tail)
         ));
     }
 }
@@ -211,7 +239,8 @@ fn main() { App { }; }
     let mut programs = BTreeMap::new();
     programs.insert("app.hl".to_string(), &program);
     let bundle = Bundle::new(programs);
-    let art = hale_types::topology::dump_topology(&bundle);
+    let (art, legacy_half, _legacy_tail) =
+        hale_types::topology::dump_topology_parts(&bundle);
     for needle in [
         "\"sealed\": [\"Vault\"]",
         "\"supervision\": [\n    {\"locus\": \"Worker\"",
@@ -272,9 +301,11 @@ fn main() { App { }; }
             "__lib_x_kv_Store".to_string(),
         ),
     ];
-    let art = hale_types::topology::dump_topology(&bundle);
+    let (art, legacy_half, _legacy_tail) =
+        hale_types::topology::dump_topology_parts(&bundle);
     let model = derive_application_model(&bundle);
-    let legacy = model_half_of(&art);
+    let legacy = legacy_arm(&legacy_half);
+    let _ = model_half_of(&art);
     let projected = project_model_half(&model);
     assert!(
         legacy.contains("kv::Store"),
@@ -297,9 +328,11 @@ fn assert_projection_matches(src: &str, label: &str) -> String {
     let mut programs = BTreeMap::new();
     programs.insert("app.hl".to_string(), &program);
     let bundle = Bundle::new(programs);
-    let art = hale_types::topology::dump_topology(&bundle);
+    let (art, legacy_half, _legacy_tail) =
+        hale_types::topology::dump_topology_parts(&bundle);
     let model = derive_application_model(&bundle);
-    let legacy = model_half_of(&art).to_string();
+    let legacy = legacy_arm(&legacy_half).to_string();
+    let _ = model_half_of(&art);
     let projected = project_model_half(&model);
     assert_eq!(
         legacy,
@@ -437,9 +470,11 @@ fn main() { App { }; }
         vec!["kv".to_string(), "Item".to_string()],
         "__lib_x_kv_Item".to_string(),
     )];
-    let art = hale_types::topology::dump_topology(&bundle);
+    let (art, legacy_half, _legacy_tail) =
+        hale_types::topology::dump_topology_parts(&bundle);
     let model = derive_application_model(&bundle);
-    let legacy = model_half_of(&art);
+    let legacy = legacy_arm(&legacy_half);
+    let _ = model_half_of(&art);
     let projected = project_model_half(&model);
     assert!(
         legacy.contains("\"subject\": \"kv::Item\""),
@@ -491,9 +526,11 @@ fn main() { App { }; }
             "__lib_x_kv_Store".to_string(),
         ),
     ];
-    let art = hale_types::topology::dump_topology(&bundle);
+    let (art, legacy_half, _legacy_tail) =
+        hale_types::topology::dump_topology_parts(&bundle);
     let model = derive_application_model(&bundle);
-    let legacy = model_half_of(&art);
+    let legacy = legacy_arm(&legacy_half);
+    let _ = model_half_of(&art);
     let projected = project_model_half(&model);
     assert!(
         legacy.contains("\"subject\": \"__lib_x_kv_Store::bump\""),
@@ -519,6 +556,9 @@ fn labels_and_effects_are_restricted_to_the_v1_universe() {
     });
     let p = ProvenanceId(0);
     let f = |name: &str, effects: Vec<&str>| Function {
+        analyzed: true,
+        summarized: true,
+        owner: None,
         name: name.to_string(),
         display: name.to_string(),
         kind: FunctionKind::Free,
@@ -627,9 +667,11 @@ fn main() { App { }; }
             "__lib_b_pack_A".to_string(),
         ),
     ];
-    let art = hale_types::topology::dump_topology(&bundle);
+    let (art, legacy_half, _legacy_tail) =
+        hale_types::topology::dump_topology_parts(&bundle);
     let model = derive_application_model(&bundle);
-    let legacy = model_half_of(&art);
+    let legacy = legacy_arm(&legacy_half);
+    let _ = model_half_of(&art);
     let projected = project_model_half(&model);
     assert!(
         legacy.contains("\"sealed\": [\"z::Z\", \"a::A\"]"),

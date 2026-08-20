@@ -294,7 +294,7 @@ earlier in the same file as the family. Companion:
 class along any path, with the same loop/indirect unboundedness
 rules as every per-call dimension.
 
-**The topology artifact** (#382 phase 2; schema 1.10):
+**The topology artifact** (#382 phase 2; schema 1.11):
 `hale check <t> --dump-topology` emits the serialized model —
 sorts (loci, fns, topics), relations (calls with **weights**: loop
 nesting, unbounded-loop membership, interface-dispatch tags;
@@ -317,7 +317,257 @@ uninhabited-interface dispatch, or computed publish subjects), all
 in author spelling — plus every named claim's normalized form and
 result, under a schema version and a `shape_hash` (FNV-1a/64 over
 the canonical model half; claim RESULTS are excluded, so one
-topology under different law keeps one shape). A **provenance**
+topology under different law keeps one shape). Schema 1.11
+(GH #476 Change 6) adds three unhashed, digest-covered typed
+sections: **`law`** — every lowered `ClaimIr` row with its
+ordinal, origin (`main` / `constitution:<name>` / `library` /
+`annotation`), judgment **family** (`reachability` / `boundary` /
+`endpoint` / `bound` / `certificate` / `unmigrated` / `fleet`),
+machine **verdict**, a TYPED **`law` payload** (one tagged object
+per `ClaimIr` variant carrying the law's operands — each reference
+as `{"name": <raw canonical identity>, "display": <author
+spelling>, "resolved": bool}`; the raw half is the machine join
+key, the same deliberate raw/display duality the `topics` section
+carries), per-certificate **`certs`** evidence keyed by
+certificate ordinal for the certificate family, and source
+provenance, plus `law_digest` (the law table's semantic digest)
+and `inputs_digest` (the analysis-inputs digest) — the ties a
+consumer checks before trusting external evidence against this
+artifact; **`capabilities`** — the model's positive completeness
+account, typed (`exact_cardinality` is derived: endpoint counts
+come from a closed-world enumeration and are exact unless a hole
+says otherwise); and **`adequacy`** — per migrated judgment
+family, `exact` when capabilities vouch every relation family that
+judgment consumes, else `degraded` (the certificate family
+consumes PUBLISHES — a publish-set contract cannot prove a
+computed subject in-set). The UNMIGRATED families (`causes:`,
+`depends:`, `@budget`) carry the old engines' authoritative
+results in their law rows, so no non-passing law row can coexist
+with a `clean` document verdict. The emitted model half — and
+`shape_hash` — come from the `ApplicationModel` projection
+(`project_model_half`), and so do the unhashed `sources`,
+`provenance`, and `topics` sections (`project_unhashed_tail`);
+the legacy gathering survives only as the corpus differential's
+comparison arm until Change 9. Bus selectors in the `law` payload
+serialize their resolved CANDIDATE sets (the topic identities and
+wire patterns the selector matched) plus the selector's own
+source location; `capabilities` carries `exact_publishes` and
+`exact_subscribes` as INDEPENDENT flags, and per-family
+`adequacy` reads the positive account — a family is `exact` only
+when capabilities vouch every relation family its projection
+consumes (holes are the validation cross-check, never a source of
+positive knowledge). A payload contract carries a structural
+`opaque` discriminant — `opaque` is not a reserved word, so a
+struct field literally named `opaque` keeps its structural shape.
+The `law` section also carries the CANONICAL catalogs:
+**`fn_universe`**, **`loci`**, **`groups`**, and **`topics`** as
+`{name: <raw canonical identity>, display}` pairs (topics add
+their wire `subject`), **`subjects`** (the wire-subject pattern
+universe), and **`effect_classes`** (each class with its
+`declared` / `cyclic` status). `fn_universe` covers every
+function the model knows — wider than the legacy `sorts.fns`, so
+module-scoped annotation subjects resolve. A resolved reference
+must match one exact `(name, display)` pair — the raw half is
+the machine join key and is anchored, not merely
+cross-row-consistent — and the catalogs are cross-tied to the
+`topics`/`groups`/`sorts` sections other consumers join on. Bus
+selectors keep their candidate sets, and admission RECOMPUTES
+each set from the catalogs with the compiler's own matching rule
+(`bus_ref_matches`) — a candidate swap under an unchanged
+selector name is refused. Legacy `claims` rows carry the law `ordinal`
+they project from. **One shared admission**
+(`validate_law_account`) runs for Track A rendering AND fleet
+composition: it decodes every payload against the closed
+per-kind shape (unknown fields refused), resolves every
+`resolved: true` reference against the artifact's own catalogs
+(loci, groups, topics, phases, seeds, effect classes,
+`fn_universe`), refuses a `holds` verdict over any unresolved
+operand, re-renders each certificate's expected form from the
+typed operands and requires the row's `certs` to match it (an
+operand swap cannot keep the old certificates), requires the
+`lowered` section to project ONE-TO-ONE from the typed account —
+every lowered row carries its law `ordinal` (and certificate
+`cert` ordinal where applicable) and must match the form, result,
+and subject re-rendered from the typed operands, and every
+generated expectation must be met, so deleting law rows orphans
+their evidence even in an annotation-only artifact — recomputes
+per-row and document verdicts from the evidence, checks the
+one-to-one claims-to-law projection in both directions, requires
+the `law.legacy` report (the old engines' verdicts for the
+unmigrated `causes:` / `depends:` rows, keyed by ordinal and by a
+form FINGERPRINT re-rendered from the typed operands; an operand
+mutation orphans the entry, and a `causes:` row naming an
+undeclared or cyclic class cannot hold), refuses fleet-family
+rows outright (an application artifact does not own a fleet
+account — that is Change 7's), and recomputes `adequacy` from
+`capabilities`. Static invalidity DOMINATES (round 7): an
+unresolved operand or an undeclared/cyclic effect class makes
+`invalid` the ONLY admissible verdict — a replayed engine result
+is never an alternative — and otherwise a certificate row's
+verdict is EXACTLY its recomputed evidence severity. A subject
+outside the legacy analyzable universe carries no certificates
+and judges `uncertified` with its residue on the row (round 8):
+`sorts.fns` for fn subjects, the `analyzable` flag on `law.loci`
+rows for phase contracts — module-scoped bodies are residue, not
+invalidity. An implicit lifecycle phase with no hook body gets a
+SYNTHETIC `Holds` certificate from the evidence layer (no hook
+performs no effects), so `@phase_effects(birth: {})` on a
+hook-less locus is `holds`, not a missing report. Beyond the
+statically decodable invalidities, the claims evaluator's other
+legitimate `Invalid` outcomes (an operand outside a verb's
+domain, projection vacuity, an empty `during` slice, `avoiding`
+overlap, …) admit by RETAINING the judgment's explanation — an
+`invalid` row must carry either a decodable invalidity or its
+judgment's evidence, and an unanalyzed `uncertified` its
+residue. Machine-`invalid` rows may still
+PRESERVE the old engines' reports (`law.legacy`, keyed budget
+`lowered` rows) — bound by fingerprint as optional evidence,
+never demanded and never overriding the machine verdict, so the
+compiler's own cyclic-class artifacts admit. The catalogs are
+CLOSED: unique in both halves and in exact bijection with the
+`topics` / `groups` / `sorts.loci` sections (`fn_universe` covers
+`sorts.fns`), so selector recomputation cannot be widened
+underneath a certificate. The artifact carries a typed
+**`endpoints`** section (round 8) — every bus endpoint at
+wire-subject grain with its verb and `via: site | declaration`,
+including a DECLARED publisher with no send site, which the V1
+site-grained relations never show — and `law.subjects` must equal
+exactly the subjects the endpoint and topic sections carry, in
+both directions. The endpoint section is NOT a second authority
+(round 9), and endpoint identity is TYPED (round 10): every row
+carries its wire subject and, when a declared topic covers the
+end, the topic identity (`declared_topic` is the model's
+syntactic fact — a literal address whose text collides with a
+topic display stays a literal, never inferred from strings; a
+topic-typed row's subject must equal the topic's wire subject).
+Site rows are LOSSLESS (rounds 11–12): each carries its
+owning fn/handler, authored site ordinal, and AUTHORED SPAN, with
+exactly one occupant per (verb, owner, site). They project onto
+the V1 relations at (owner, name) grain under their OWN declared
+identity — a topic-covered end by the topic display, a literal
+end by its text — and their per-owner SPAN MULTISETS must equal
+the span-grained provenance section one-to-one (the V1 rows
+dedup; the provenance spans do not, so a typed site row cannot
+disappear behind a collision). Declaration rows come from the
+typed **`declares_publish`** relation section and keep the OWNING
+LOCUS in the compared identity — a declaration cannot move
+between loci while a `require publishes` verdict rides on the
+original owner. The relation's canonical identity is
+`(locus, subject, declared_topic)` (round 13): a literal
+declaration whose text equals a topic's wire subject and the
+typed topic declaration are distinct endpoint facts, and BOTH
+survive regardless of declaration order — the model schema
+represents them separately, exactly as `BusSubject::canonical`
+and the endpoint judgment distinguish them. Closures never
+participate in locus analyzability: they are invisible to the
+certificate machinery at every scope (a top-level closure-only
+locus already certifies synthetically), so the builder and
+admission share one membership rule — only members that produce
+function entities the engines could walk count. Known residual, by design: the CONTENT of a site
+row (its wire/topic identity) at an unchanged span is not
+independently verifiable without the source — the wire identity
+of a display-colliding literal lives only in unhashed sections,
+so substituting it at the same site is a self-consistent edit;
+closing it requires hashing endpoint wire identity (a shape-
+identity change).
+Analysis coverage is FUNCTION-grained with THREE typed
+states (rounds 10–11): `analyzed` (the body was walked),
+`summarized` (a behavior-summary row exists — this set IS the
+legacy `sorts.fns`, the hashed anchor), and whether a certificate
+engine emitted a report (the evidence account). Failure handlers
+carry the typed `FunctionKind::FailureHandler` — no consumer
+infers handler-ness from a display prefix. The coverage laws — `analyzed ⇔ summarized` (both
+directions: a summarized body was walked and a walked body is
+summarized, anchoring `analyzed` to the hashed `sorts.fns`);
+failure handlers never analyzed; the legacy fn sort equals the
+summarized set; an unanalyzed body RETAINS its `UnanalyzedBody`
+residue and an analyzed body carries none; and (rounds 14–15)
+`LocusDecl::analyzable` DERIVES from the CLOSED ownership
+account: every function carries its canonical `owner`
+(`Some` for methods, hooks, modes, and failure handlers; `None`
+for free functions), `member_of` must be a total, exclusive
+partition agreeing with it exactly (a free fn appears in no row;
+every other kind in exactly one, at its owner), and a locus is
+analyzable iff every relevant owned member (all kinds except
+failure handlers) is analyzed, an empty set vacuously so — so a
+membership row can be neither deleted nor moved to launder
+coverage or group projection — and ownership is anchored to the
+ENTITY IDENTITY itself (round 16): `owner = Some(l)` requires the
+function's raw name and display to encode `l` as their prefix
+(`Hidden::poke` cannot canonically be owned by `App`), with the
+owner id range-checked directly, so even a fully coordinated
+repoint (owner + row + both analyzability flags) is refused.
+Ownership is coverage-bearing and folded into the evidence
+coverage digest. The artifact's `law.fn_universe` rows carry the
+typed owner (present iff the kind is non-free, display-anchored,
+resolving to a cataloged locus), and admission's locus coverage
+recomputes from IT — never from display-prefix recovery. All of these laws live
+in ONE shared validator (`ApplicationModel::validate_coverage`),
+called by `ApplicationModel::validate` and by
+`EvidenceTable::validate` alike: the same coverage state is
+lawful (or refused) at the model, the sidecar, and the artifact.
+Coverage is BINDING in the sidecar API too:
+`EvidenceTable::validate` categorically refuses a certificate
+payload for a subject or phase whose typed coverage says no
+report exists — fn eligibility requires BOTH `analyzed` and the
+hashed `summarized` anchor, and locus eligibility recomputes the
+member coverage from the typed `member_of` relation rather than
+trusting the flag (round 14) — a matching digest proves the
+sidecar repeated the model's bits; this proves its evidence obeys
+them. `law.fn_universe` rows carry
+all three facts, and the SUMMARIZED subset must equal `sorts.fns`
+exactly. `law.loci`'s
+`analyzable` flag recomputes from the member coverage: a locus
+with executable members is analyzable iff all its non-`on_failure`
+members are analyzed, and a MEMBERLESS locus is vacuously
+analyzable (no body to walk — every phase contract holds by
+absence), so the flag is recomputable in both directions. An
+implicit lifecycle phase's certificate must be exactly the
+synthetic `holds` with no diagnostics. Coverage also participates
+in EVIDENCE IDENTITY: the sidecar carries a coverage digest
+(`TopologyShapeV1` deliberately excludes coverage for recording
+compatibility), and a judgment refuses a sidecar derived beside
+different coverage as stale.
+The **`law.issues`** account (round 9) serializes every
+table-level law-selection failure — lowering issues (unknown or
+cyclic constitutions, illegal adoption, collisions) and the
+judgment pre-pass (duplicate claim names) — with source
+locations; it participates in `law_digest` (the canonical
+fingerprint covers `{issues, rows}`) and in the document verdict
+(a non-empty account is `law_failed`), admission validates each
+entry like any diagnostic, and the duplicate-name case is
+recomputed from the rows themselves — no claim error disappears
+between checking and artifact projection. The evidence engine's
+`ANALYSIS_SEMANTICS_VERSION` is 3: round 8's producer/judgment
+changes (synthetic implicit-phase certificates, report-less
+subjects judging `uncertified`) are result-affecting, so pre- and
+post-round-8 evidence cannot share an `inputs_digest`. Both digests are RECOMPUTED at
+admission: `law_digest` is the canonical-JSON fingerprint over
+the law rows (serde-canonical rendering, fnv1a64 — a row edit
+under a stale digest refuses), and `inputs_digest` must equal the
+consuming binary's analysis-inputs digest (evidence produced
+under a different stdlib/analysis snapshot is refused — re-dump).
+Evidence is VALIDATED, not presence-checked: every diagnostic
+carries a non-empty message and paired provenance resolving to a
+known source, a migrated `violated` / `uncertified` row must
+retain its judgment's evidence (the countermodel / the residue),
+and a violated certificate must retain its diagnostics.
+Evidence locations are source-space-honest: a diagnostic whose
+span lives in a FOREIGN offset space (stdlib parse space, another
+seed) is never re-resolved against bundle sources — the
+projection carries a per-diagnostic discriminator, so numeric
+overlap with a bundle file cannot misfile stdlib evidence as
+application code. Unmigrated rows bridge to the old engines
+only where the old walk demonstrably enumerated the row
+(module-scoped annotations and ambiguous multi-assert anchors
+stay `uncertified`). The legacy `claims` / `lowered` string rows
+remain, now PROJECTED from the canonical model path; `semantics`
+bumps to 2 because the machine verdicts are stricter in two
+documented places (a certificate naming a cyclically-defined or
+undeclared effect class is `invalid`, never a vacuous `holds`;
+`require attributed` over an unanalyzable body is `uncertified`,
+never a fail-open `holds`), and the document `verdict` follows
+the machine. A **provenance**
 section carries per-edge and per-decl source spans as
 bundle-global byte offsets; it is excluded from the hash on
 purpose — moving code must not change the shape identity.

@@ -33,6 +33,7 @@ mod pkg;
 mod replay;
 mod sign;
 mod topology_graph;
+mod topology_law;
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();

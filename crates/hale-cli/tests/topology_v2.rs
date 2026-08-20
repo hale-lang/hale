@@ -194,28 +194,28 @@ fn main() { Engine { }; }
     let art = dump(src, "lowered");
     assert!(
         art.contains(
-            r#"{"subject": "clean", "form": "forbid reaches({clean}, effects(money))", "result": "holds"}"#
+            r#"{"subject": "clean", "form": "forbid reaches({clean}, effects(money))", "result": "holds""#
         ),
         "a holding certificate must appear as a lowered row:\n{}",
         art
     );
     assert!(
         art.contains(
-            r#"{"subject": "dirty", "form": "forbid reaches({dirty}, effects(money))", "result": "violated"}"#
+            r#"{"subject": "dirty", "form": "forbid reaches({dirty}, effects(money))", "result": "violated""#
         ),
         "a violated certificate must appear as a lowered row:\n{}",
         art
     );
     assert!(
         art.contains(
-            r#"{"subject": "boxed", "form": "bound alloc <= 2 on paths from {boxed}", "result": "holds"}"#
+            r#"{"subject": "boxed", "form": "bound alloc <= 2 on paths from {boxed}", "result": "holds""#
         ),
         "a budget contract must appear as a lowered bound row:\n{}",
         art
     );
     assert!(
         art.contains(
-            r#"{"subject": "Engine", "form": "only effects {} on {Engine} during run", "result": "violated"}"#
+            r#"{"subject": "Engine", "form": "only effects {} on {Engine} during run", "result": "violated""#
         ),
         "a phase contract must appear as a lowered row (violated by \
          the unlisted user class):\n{}",

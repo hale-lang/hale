@@ -38,7 +38,13 @@ use crate::symbol::Bundle;
 /// user-class `@budget` dimension judges Invalid instead of
 /// Uncertified — evidence produced under v1 semantics must not be
 /// replayed by a v2 judgment (or vice versa).
-pub const ANALYSIS_SEMANTICS_VERSION: u32 = 2;
+// 3 (GH #476 Change 6 round 8): the producer synthesizes `Holds`
+// certificates for implicit lifecycle phases, absent certificate
+// reports judge `uncertified` instead of `invalid`, and the
+// completeness rule for certificate streams changed — evidence
+// from the pre-round-8 engine must not share an inputs_digest
+// with this one.
+pub const ANALYSIS_SEMANTICS_VERSION: u32 = 3;
 
 /// Digest of the certificate engines' inputs OUTSIDE the model:
 /// the analysis-semantics version above, the Hale-source stdlib
@@ -102,14 +108,14 @@ pub fn derive_certificate_evidence(
         ),
         law_digest: table.semantic_digest(),
         inputs_digest: analysis_inputs_digest(),
+        coverage_digest: model.analysis_coverage_digest(),
         ..EvidenceTable::default()
     };
     for sf in &bundle.sources {
         out.provenance.sources.push(
             hale_model::provenance::SourceUnit {
                 path: sf.path.clone(),
-                digest: u64::from_str_radix(&sf.digest, 16)
-                    .unwrap_or(0),
+                digest: sf.digest.clone(),
             },
         );
     }
@@ -148,6 +154,23 @@ pub fn derive_certificate_evidence(
     }
     let mut cursor: BTreeMap<(String, String), usize> =
         BTreeMap::new();
+    // Round 8/9: the certificate engines walk only ANALYZABLE
+    // loci, and they emit no certificate for an implicit lifecycle
+    // phase with no hook body (`@phase_effects(birth: {})` on a
+    // locus that declares no `birth`). No hook body performs no
+    // effects, so the truthful certificate for such a phase is a
+    // synthetic `Holds` — unanalyzed loci stay report-less and
+    // judge `uncertified`. The analyzability fact is the MODEL's
+    // (`LocusDecl::analyzable`, set once by the model builder) —
+    // this layer never re-walks source.
+    let locus_analyzable = |raw: &str| -> bool {
+        model
+            .entities
+            .loci
+            .iter()
+            .find(|l| l.name == raw)
+            .is_some_and(|l| l.analyzable)
+    };
     for row in &table.rows {
         let forms = row.certificate_forms();
         if forms.is_empty() {
@@ -168,7 +191,20 @@ pub fn derive_certificate_evidence(
                 *c += 1;
                 i
             });
-            let Some(i) = idx else { continue };
+            let Some(i) = idx else {
+                if let ClaimIr::PhaseEffects { locus, .. } =
+                    &row.law
+                {
+                    if locus_analyzable(locus.1.raw.as_str()) {
+                        certs.push(CertificateEvidence {
+                            form: key.1.clone(),
+                            result: VerdictIr::Holds,
+                            diags: Vec::new(),
+                        });
+                    }
+                }
+                continue;
+            };
             let (cert, ds) = &groups[i];
             let mut diags_out: Vec<(String, ProvenanceId)> =
                 Vec::new();

@@ -19,7 +19,7 @@ use crate::keys::TopicKey;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FunctionKind {
-    /// A lifecycle hook (birth, run, dissolve, on_failure…).
+    /// A lifecycle hook (birth, run, dissolve…).
     Hook,
     /// A locus method (including bus handlers).
     Method,
@@ -27,6 +27,11 @@ pub enum FunctionKind {
     Free,
     /// A mode body.
     Mode,
+    /// An `on_failure` handler (round 11): executable, but the
+    /// behavior analysis never walks it — a TYPED identity, so
+    /// consumers never infer handler-ness from a display-name
+    /// prefix.
+    FailureHandler,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -62,6 +67,25 @@ pub struct Function {
     /// purpose the author supplied is the composed NAME; review:
     /// composed attribution classes).
     pub carries_user_class: bool,
+    /// The legacy behavior summary WALKED this body (round 10:
+    /// function-grain analysis coverage — false for module-scoped
+    /// bodies and `on_failure` handlers, which are executable but
+    /// never analyzed). ONE authority: set by the model builder;
+    /// the evidence layer, the artifact emitter, and the evidence
+    /// identity digest all read it here.
+    pub analyzed: bool,
+    /// A behavior-SUMMARY row exists for this fn (round 11) — the
+    /// legacy `sorts.fns` universe. Distinct from `analyzed`
+    /// (walked) and from "a certificate engine emitted a report":
+    /// the three coverage states are typed, never conflated.
+    pub summarized: bool,
+    /// The CANONICAL owning locus (round 15): `Some` for every
+    /// method / hook / mode / failure handler, `None` for free
+    /// functions. `member_of` must be a total, exclusive
+    /// partition agreeing with this field exactly (validated) —
+    /// coverage and group projection both hang off ownership, so
+    /// it is a closed account, never inferable-by-absence.
+    pub owner: Option<LocusDeclId>,
     pub provenance: ProvenanceId,
 }
 
@@ -71,6 +95,12 @@ pub struct LocusDecl {
     pub display: String,
     /// `@sealed` confinement (GH #436).
     pub sealed: bool,
+    /// The legacy certificate engines walk this locus (round 9:
+    /// top-level declaration — module-scoped bodies are outside
+    /// the analyzable universe). ONE authority: the model builder
+    /// sets it from its declaration walk; the evidence layer and
+    /// the artifact emitter read it here, never re-walking source.
+    pub analyzable: bool,
     pub provenance: ProvenanceId,
 }
 
@@ -103,9 +133,17 @@ pub struct Subject {
 /// A payload shape contract.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct PayloadContract {
-    /// The canonical shape string (field:kind;… — as the artifact
-    /// serializes today).
+    /// The canonical STRUCTURAL shape string (`field:kind;…`) when
+    /// `opaque` is false; the per-type opaque descriptor
+    /// (`opaque:<raw type>`) when true.
     pub shape: String,
+    /// STRUCTURAL discriminant (round 3): a payload the shape
+    /// renderer could not resolve is opaque BY THIS FLAG, never by
+    /// string inspection — `opaque` is not a reserved word, so a
+    /// struct whose first field is literally named `opaque` has a
+    /// structural shape `opaque:i` that must not be mistaken for
+    /// the sentinel.
+    pub opaque: bool,
     pub hash: u64,
     pub provenance: ProvenanceId,
 }

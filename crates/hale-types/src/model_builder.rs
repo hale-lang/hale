@@ -384,7 +384,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     for sf in &bundle.sources {
         prov.sources.push(hale_model::provenance::SourceUnit {
             path: sf.path.clone(),
-            digest: u64::from_str_radix(&sf.digest, 16).unwrap_or(0),
+            digest: sf.digest.clone(),
         });
     }
     let mut prov_map: BTreeMap<(i64, u32, u32), ProvenanceId> =
@@ -423,8 +423,13 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                 span: (ls, le.max(ls)),
             }
         } else {
-            Provenance::Synthetic {
-                origin: "unplaceable span".to_string(),
+            // Round 2: an unplaceable span keeps its OFFSETS —
+            // `ForeignSpan` is verbatim offset-space; collapsing
+            // to Synthetic dropped the one thing the provenance
+            // section preserves (legacy renders source -1 with the
+            // global span).
+            Provenance::ForeignSpan {
+                span: (s, e.max(s)),
             }
         });
         prov_map.insert(key, id);
@@ -587,7 +592,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                         fn_rows.insert(
                             format!("{}::on_failure({})", ld, sig),
                             FnInfo {
-                                kind: FunctionKind::Hook,
+                                kind: FunctionKind::FailureHandler,
                                 locus: Some(ld.clone()),
                                 display: format!(
                                     "{}::on_failure({})",
@@ -639,6 +644,14 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             });
         }
     }
+    // Round 11: the summarized set — behavior-summary keys, which
+    // IS the legacy fn sort's universe.
+    let summarized_names: BTreeSet<String> = summary
+        .fns
+        .keys()
+        .filter(|k| user_key(k))
+        .map(fn_name)
+        .collect();
     let fn_id: BTreeMap<&String, FunctionId> = fn_rows
         .keys()
         .enumerate()
@@ -670,7 +683,6 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     // byte-exact runtime/recording join key — deliberately RAW in
     // the artifact, never author-spelled).
     struct TInfo<'t> {
-        raw: String,
         decl: &'t TopicDecl,
         wire: String,
     }
@@ -705,7 +717,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             .cloned()
             .unwrap_or_else(|| raw.clone());
         topic_decl_by_name
-            .insert(raw.clone(), TInfo { raw, decl: t, wire });
+            .insert(raw, TInfo { decl: t, wire });
     }
 
     let mut subject_set: BTreeSet<String> = BTreeSet::new();
@@ -741,17 +753,17 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     // is path-derived and importer-independent, so `p::Status` and
     // `db::Status` share one contract (round 9; display spelling
     // never enters an identity).
-    let shape_of_type = |raw_ty: &str| -> (String, u64) {
+    let shape_of_type = |raw_ty: &str| -> (String, u64, bool) {
         let shape = crate::topic_identity::canonical_type_shape(
             &all_items, raw_ty,
         );
         if shape.is_empty() {
             let opaque = format!("opaque:{}", raw_ty);
             let h = fnv(&opaque);
-            (opaque, h)
+            (opaque, h, true)
         } else {
             let h = fnv(&shape);
-            (shape, h)
+            (shape, h, false)
         }
     };
     // The ONE payload-contract rule for a type EXPRESSION — used by
@@ -760,7 +772,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     // non-named form to `opaque:?` through a name-only path):
     //   bare named struct → canonical structural shape;
     //   every other form  → opaque over the structural descriptor.
-    let contract_of_te = |te: &TypeExpr| -> (String, u64) {
+    let contract_of_te = |te: &TypeExpr| -> (String, u64, bool) {
         match te {
             TypeExpr::Named { path, generic_args, .. }
                 if path.segments.len() == 1
@@ -771,15 +783,16 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             other => shape_of_type(&type_descriptor(other)),
         }
     };
-    let mut payload_rows: BTreeMap<(String, u64), ()> = BTreeMap::new();
-    let mut topic_payload: BTreeMap<String, (String, u64)> =
+    let mut payload_rows: BTreeMap<(String, u64, bool), ()> =
+        BTreeMap::new();
+    let mut topic_payload: BTreeMap<String, (String, u64, bool)> =
         BTreeMap::new();
     for (tname, info) in &topic_decl_by_name {
         let key = contract_of_te(&info.decl.payload);
         payload_rows.insert(key.clone(), ());
         topic_payload.insert(tname.clone(), key);
     }
-    let mut endpoint_payload: BTreeMap<String, (String, u64)> =
+    let mut endpoint_payload: BTreeMap<String, (String, u64, bool)> =
         BTreeMap::new();
     for (subject, info) in &graph.subjects {
         let display = subject.clone();
@@ -806,7 +819,9 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     // payload contract rather than a lookup panic. (An unresolvable
     // program fails typecheck; the model of a parseable bundle
     // still exists, holes and all.)
-    let unresolved_payload = ("?".to_string(), fnv("?"));
+    // The unresolved contract is OPAQUE by definition — nothing
+    // structural is known about it.
+    let unresolved_payload = ("?".to_string(), fnv("?"), true);
     {
         // `known` overrides the "?" fallback with the endpoint's
         // real structural contract (an explicit `of type T`) — one
@@ -818,7 +833,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         // return.
         let mut need = |display: String,
                         literal: bool,
-                        known: Option<(String, u64)>| {
+                        known: Option<(String, u64, bool)>| {
             if !literal && topic_decl_by_name.contains_key(&display) {
                 return;
             }
@@ -884,7 +899,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         .enumerate()
         .map(|(i, k)| (k, SubjectId(i as u32)))
         .collect();
-    let payload_id: BTreeMap<&(String, u64), PayloadContractId> =
+    let payload_id: BTreeMap<&(String, u64, bool), PayloadContractId> =
         payload_rows
             .keys()
             .enumerate()
@@ -1980,12 +1995,64 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         rows.sort_by(|a, b| a.name.cmp(&b.name));
         e.effect_classes = rows;
     }
+    // Round 10: a locus is UNANALYZABLE only when it is
+    // module-scoped AND carries executable members the engines
+    // never walked. A memberless locus is VACUOUSLY analyzable —
+    // there is no body to walk, so the walk completed trivially
+    // and every phase contract holds by absence — which also makes
+    // the flag recomputable at admission (memberless ⇒ true;
+    // membered ⇒ agrees with the member coverage).
+    let module_loci: BTreeSet<String> = {
+        fn walk(items: &[TopDecl], depth: u32, out: &mut BTreeSet<String>) {
+            for item in items {
+                match item {
+                    TopDecl::Locus(l) if depth > 0 => {
+                        // ONE membership rule, shared with
+                        // admission's member-coverage recompute:
+                        // only members that produce FUNCTION
+                        // entities the certificate engines could
+                        // walk count. Failure handlers are never
+                        // analyzed anywhere (typed FailureHandler
+                        // kind), and CLOSURES are invisible to the
+                        // certificate machinery at every scope
+                        // (round 13: a top-level closure-only
+                        // locus already certifies synthetically —
+                        // the engines never walk closure bodies —
+                        // so a module-scoped one is vacuously
+                        // analyzable, symmetric).
+                        let executable =
+                            l.members.iter().any(|m| {
+                                matches!(
+                                    m,
+                                    LocusMember::Fn(_)
+                                        | LocusMember::Lifecycle(_)
+                                        | LocusMember::Mode(_)
+                                )
+                            });
+                        if executable {
+                            out.insert(l.name.name.clone());
+                        }
+                    }
+                    TopDecl::Module(m) => {
+                        walk(&m.items, depth + 1, out)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut out = BTreeSet::new();
+        for pr in &programs {
+            walk(&pr.items, 0, &mut out);
+        }
+        out
+    };
     for (n, (sealed, sp)) in &locus_rows {
         let pid = intern_span(&mut records, *sp);
         e.loci.push(LocusDecl {
             name: n.clone(),
             display: name(n),
             sealed: *sealed,
+            analyzable: !module_loci.contains(n),
             provenance: pid,
         });
     }
@@ -2083,6 +2150,12 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                 .unwrap_or_default(),
             opaque_call: opaque_calls.contains(n),
             carries_user_class: authored_user_class.contains(n),
+            analyzed: !info.unanalyzed,
+            summarized: summarized_names.contains(n),
+            owner: info
+                .locus
+                .as_ref()
+                .and_then(|ld| locus_id.get(ld).copied()),
             provenance: pid,
         });
     }
@@ -2094,10 +2167,11 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             provenance: pid,
         });
     }
-    for ((shape, hash), ()) in &payload_rows {
+    for ((shape, hash, opaque), ()) in &payload_rows {
         let pid = intern_synth(&mut records, "payload contract");
         e.payloads.push(PayloadContract {
             shape: shape.clone(),
+            opaque: *opaque,
             hash: *hash,
             provenance: pid,
         });
@@ -2352,9 +2426,19 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     // Declared publisher ends: `bus { publish T; }` — the endpoint
     // grain, independent of whether any send exists.
     {
+        // Round 13: the canonical identity INCLUDES the typed
+        // declaredness — `publish "wire.orders" of type Msg;` and
+        // `publish Orders;` resolve to one SubjectId but are
+        // distinct semantic facts (BusSubject::canonical and the
+        // endpoint judgment both branch on declared_topic), so
+        // both survive regardless of declaration order.
         let mut ends: BTreeMap<
-            (hale_model::LocusDeclId, SubjectId),
-            (Option<TopicId>, PayloadContractId, ProvenanceId),
+            (
+                hale_model::LocusDeclId,
+                SubjectId,
+                Option<TopicId>,
+            ),
+            (PayloadContractId, ProvenanceId),
         > = BTreeMap::new();
         for l in &ast.loci {
             let Some(lid) = locus_id.get(&l.name.name) else {
@@ -2405,12 +2489,16 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                             }
                         };
                     let pid = intern_span(&mut records, *span);
-                    ends.entry((*lid, subject_id[&subj_str]))
-                        .or_insert((declared, payload, pid));
+                    ends.entry((
+                        *lid,
+                        subject_id[&subj_str],
+                        declared,
+                    ))
+                    .or_insert((payload, pid));
                 }
             }
         }
-        for ((lid, sid), (declared, payload, pid)) in ends {
+        for ((lid, sid, declared), (payload, pid)) in ends {
             r.declares_publish.push(
                 hale_model::DeclaresPublish {
                     locus: lid,
@@ -2786,14 +2874,24 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     };
     let capabilities = Capabilities {
         exact_calls: !hides_any(hale_model::RelationSet::CALLS),
-        exact_bus_endpoints: !hides_any(
-            hale_model::RelationSet::PUBLISHES
-                .union(hale_model::RelationSet::SUBSCRIBES),
+        exact_publishes: !hides_any(
+            hale_model::RelationSet::PUBLISHES,
+        ),
+        exact_subscribes: !hides_any(
+            hale_model::RelationSet::SUBSCRIBES,
         ),
         exact_key_filters: !hides_any(
             hale_model::RelationSet::KEY_FILTERS,
         ),
         exact_effects: !hides_any(hale_model::RelationSet::EFFECTS),
+        // Endpoint multiplicity comes from a complete closed-world
+        // AST enumeration — counts are exact unless a hole says the
+        // endpoint sets are incomplete (round 1: leaving this
+        // unclaimed made endpoint adequacy permanently `degraded`,
+        // including for fully known publisher/subscriber counts).
+        exact_cardinality: !hides_any(
+            hale_model::RelationSet::CARDINALITY,
+        ),
         ..Capabilities::default()
     };
 
@@ -2865,6 +2963,7 @@ pub fn render_internal(m: &ApplicationModel) -> String {
                 FunctionKind::Method => "method",
                 FunctionKind::Free => "free",
                 FunctionKind::Mode => "mode",
+                FunctionKind::FailureHandler => "failure",
             },
             if f.effects.is_empty() {
                 String::new()
@@ -3045,9 +3144,10 @@ pub fn render_internal(m: &ApplicationModel) -> String {
         ));
     }
     s.push_str(&format!(
-        "capabilities: calls={} bus={} keys={} effects={}\n",
+        "capabilities: calls={} pub={} sub={} keys={} effects={}\n",
         m.capabilities.exact_calls,
-        m.capabilities.exact_bus_endpoints,
+        m.capabilities.exact_publishes,
+        m.capabilities.exact_subscribes,
         m.capabilities.exact_key_filters,
         m.capabilities.exact_effects
     ));

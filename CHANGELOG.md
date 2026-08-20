@@ -8,6 +8,281 @@ behavior.
 
 ## Unreleased
 
+### Typed law artifact rows + adequacy (GH #476 Change 6)
+
+The topology artifact's law rows are now PROJECTED from the
+canonical model path: `claims` rows render from `ClaimIr`
+(`ClaimRow::claims_form`, one authority) with verdicts from the
+Change-5 judgments, and the effects-family `lowered` rows come
+from the evidence sidecar (`@budget` rows keep their old producers
+until the quantitative engines migrate). A corpus differential
+holds the projection equal to the evaluator rows.
+
+Schema 1.11 adds three unhashed, digest-covered typed sections -
+`law` (every lowered ClaimIr row: ordinal, name, origin, judgment
+family, machine verdict, provenance; plus `law_digest` and
+`inputs_digest`), `capabilities` (typed positive completeness),
+and `adequacy` (per migrated family: `exact` | `degraded`).
+`shape_hash` is UNCHANGED - replay admission and recorded
+baselines survive.
+
+The emitted model half and `shape_hash` now come from the
+`ApplicationModel` projection (`project_model_half`) - one
+semantic authority; the legacy gathering survives only as the
+corpus differential's comparison arm. Law rows carry a typed
+tagged payload per `ClaimIr` variant (operands with raw/display
+reference duality) and per-certificate evidence; unmigrated
+families (`causes:`, `depends:`, `@budget`) carry the old
+engines' authoritative results, so `clean` implies every law row
+holds. Track A's claim view highlights from the typed payload
+instead of substring-matching form strings. `exact_cardinality`
+is now derived (closed-world endpoint counts).
+
+Round 2: the unhashed `sources` / `provenance` / `topics`
+sections project from the model too (`project_unhashed_tail`,
+byte-green over the corpus); unplaceable spans intern as
+`ForeignSpan` (offsets preserved); `SourceUnit.digest` keeps the
+producer's exact string; bus selectors serialize candidate sets +
+location; adequacy derives from the relation-level hole mask
+(publish/subscribe independent); the unmigrated bridge refuses
+rows the old engines never enumerated; Track A admission requires
+and validates the 1.11 sections and the claim-to-law join.
+
+Round 3: `PayloadContract` gains a structural `opaque`
+discriminant (a field literally named `opaque` keeps its shape);
+one shared V1 endpoint renderer joins the relation and provenance
+sections on identical spellings; `exact_bus_endpoints` splits
+into independent `exact_publishes` / `exact_subscribes`, and
+adequacy reads the positive capability account (unvouched =>
+degraded, holes are the cross-check); legacy `claims` rows carry
+their law `ordinal`, and Track A admission enforces the closed
+law vocabulary, per-kind payload shapes, reference existence,
+contiguous ordinals, and the one-to-one claims-to-law join.
+
+Round 4: the law payload is LOSSLESS (during/seed/user-class
+dims are typed references with resolution status; every operand
+carries its provenance; the four fleet variants have distinct
+tagged payloads); law rows carry EVIDENCE (the judgments' ordered
+diagnostics with source locations; certificate rows keep their
+per-cert diagnostics); Track A decodes the payload against a real
+closed vocabulary (exact enums for kinds/verbs/comparators/
+via-edges/dimensions, complete variant shapes, reference
+existence, builtin-class agreement), re-renders the claims-tier
+form and requires byte agreement, binds source<->origin and
+kind<->family, joins claims<->law in both directions, requires
+the exact capability flag set, recomputes adequacy from the
+positive account, and recomputes the document verdict.
+
+`semantics` bumps to 2: machine verdicts are stricter in two
+documented places (a certificate naming a cyclically-defined or
+undeclared effect class is `invalid`, never a vacuous `holds`;
+`require attributed` over an unanalyzable body is `uncertified`,
+never a fail-open `holds`), and the document `verdict` follows
+the machine. Artifact consumers reject unrecognized semantics by
+design; re-dump with the current compiler.
+
+Round 16: ownership is anchored to the entity identity. `owner
+= Some(l)` requires the function's raw name and display to encode
+l as their prefix, with the id range-checked directly - a fully
+coordinated repoint (owner + member_of row + both analyzability
+flags updated consistently) satisfies every relational law and is
+refused precisely because Hidden::poke cannot canonically be
+owned by App (negative controls at the model, the sidecar, and
+the artifact). law.fn_universe rows carry the typed owner
+(present iff non-free, display-anchored, cataloged), and
+admission's locus coverage recomputes from it instead of
+recovering membership from display prefixes.
+
+Round 15: member_of is a closed ownership partition. Every
+function carries its canonical `owner` (typed; None for free
+fns), and member_of must be a total exclusive partition agreeing
+with it exactly - a membership row can be neither deleted nor
+moved to launder locus coverage or group projection. Ownership
+is coverage-bearing (folded into the coverage digest), and ALL
+ownership + coverage laws live in one shared validator
+(ApplicationModel::validate_coverage) called by both
+ApplicationModel::validate and EvidenceTable::validate - a model
+whose ownership account is corrupted cannot certify anything,
+digests notwithstanding. Negative controls delete AND move
+Hidden::poke's membership; both fail model validation and both
+fail to manufacture Holds through the sidecar.
+
+Round 14: the coverage laws close at the MODEL. Application-
+Model::validate now enforces analyzed => summarized (with the
+existing converse: analyzed <=> summarized, the hashed anchor)
+and derives LocusDecl::analyzable from the typed member_of
+relation and FunctionKind (analyzable iff every non-failure
+member is analyzed; empty set vacuously) - the same coverage
+state is lawful or refused identically at the model, the
+sidecar, and the artifact. Sidecar eligibility hardens to match:
+fn subjects need analyzed AND summarized, and locus subjects'
+member coverage is recomputed from member_of rather than
+trusting the flag - both false->true upgrade paths (fn bit with
+residue removed; locus flag over an unanalyzed member) fail
+model validation AND cannot manufacture Holds through the
+sidecar (four new negative tests).
+
+Round 13: declared-end identity includes the typed topic, and
+one closure rule. declares_publish's canonical key is (locus,
+subject, declared_topic) - a literal declaration colliding with a
+topic's wire subject and the typed topic declaration are distinct
+facts that BOTH survive in either declaration order (the
+first-writer collapse is gone; `require publishes(some G, topic
+Orders)` no longer depends on source order). Closures never
+count toward locus analyzability on either side: they are
+invisible to the certificate machinery at every scope, so a
+module-scoped closure-only locus is vacuously analyzable and its
+honest artifact admits.
+
+Round 12: span-anchored endpoints + the closed coverage
+account. Site endpoint rows carry their authored span, exactly
+one occupant per (verb, owner, site), and their per-owner span
+multisets must equal the span-grained provenance section
+one-to-one; declaration rows keep the owning locus in the
+compared identity. Coverage closes: an unanalyzed body must
+retain its UnanalyzedBody residue and an analyzed body carries
+none (ApplicationModel::validate); a walked body is summarized,
+anchoring `analyzed` to the hashed sorts.fns - the
+coverage-upgrade flip (analyzed=true on a module body plus a
+manufactured Holds certificate) refuses on the hashed anchor;
+EvidenceTable::validate categorically refuses certificate
+payloads for unanalyzed subjects/phases, so judge_certificates
+can never replay them; and failure handlers share one typed rule
+on both sides, so a module-scoped failure-only locus is
+vacuously analyzable and its honest artifact admits.
+
+Round 11: lossless site endpoints + the three-state coverage
+account. Site endpoint rows carry their owning fn/handler and
+authored site ordinal, project onto the V1 relations at (owner,
+name) grain, and their per-owner counts must match the
+span-grained provenance section - a literal end colliding with a
+topic display can no longer disappear behind the dedup'd legacy
+projection (the full narrowing attack refuses at every depth).
+Coverage distinguishes its three typed states: `analyzed` (body
+walked), `summarized` (summary row exists - this set IS
+sorts.fns, and that equality replaces the wrong-universe
+analyzed tie), and the engine-report account; failure handlers
+carry the typed FunctionKind::FailureHandler, so a module method
+named on_failure_helper is a real unanalyzed member and its
+honest artifact admits. The coverage laws are validated in
+ApplicationModel::validate, re-checked at admission, and folded
+into the evidence coverage digest.
+
+Round 10: typed endpoint identity + function-grain coverage.
+Endpoint rows (and declares_publish rows) carry `declared_topic`
+- the model's syntactic fact - so a literal wire address whose
+text collides with a topic display stays a literal; admission
+compares typed identities and projects site rows onto the V1
+relations under their own declaredness, never inferring
+topic-ness from strings (the colliding compiler artifact admits).
+`Function::analyzed` is the model's coverage fact (false for
+module bodies and on_failure handlers); fn_universe rows carry it
+and the analyzed subset must equal sorts.fns exactly - the
+on_failure-only locus admits, and locus `analyzable` recomputes
+from member coverage with memberless loci VACUOUSLY analyzable
+(no body = every phase contract holds by absence), closing the
+memberless flip in both directions. Implicit-phase certificates
+must be exactly the synthetic holds. Evidence identity gains a
+coverage digest: a sidecar derived beside different coverage is
+refused as stale (TopologyShapeV1 unchanged for recording
+compatibility).
+
+Round 9: no claim error disappears, and no section is a second
+authority. A typed `law.issues` account serializes every
+table-level law-selection failure (duplicate claim names,
+unknown/cyclic constitutions, illegal adoption, collisions) with
+locations; it participates in law_digest ({issues, rows} canon)
+and the document verdict, and the duplicate-name case is
+recomputed from the rows - two individually-holding duplicates
+can no longer produce a clean artifact. The endpoints section
+must project exactly from the artifact's own
+publishes/subscribes relations plus the new typed
+`declares_publish` relation section - deleting a literal
+publish's endpoint row while the site relation remains refuses.
+`LocusDecl::analyzable` is the model's fact (one walk, in the
+model builder; evidence and emitter read the model), and
+admission recomputes the flag against the hashed function
+universe - flipping a module-scoped contract to analyzable
+contradicts its member account. ANALYSIS_SEMANTICS_VERSION bumps
+to 3: round 8's synthetic certificates and report-less
+`uncertified` are result-affecting producer changes.
+
+Round 8: the admission accepts every artifact the compiler
+emits. Beyond references and classes, the claims evaluator's
+other legitimate Invalid outcomes (operand-domain errors like
+`require attributed` over a user class, vacuity, empty `during`,
+`avoiding` overlap) admit by RETAINING the judgment's explanation
+- an invalid row carries either a decodable invalidity or its
+evidence. An implicit lifecycle phase with no hook body gets a
+synthetic Holds certificate (no hook performs no effects), and a
+report-less subject - a module-scoped body - judges `uncertified`
+with its residue, never Invalid; `law.loci` rows carry an
+`analyzable` flag so admission holds both shapes to their exact
+verdicts. A typed `endpoints` section projects every bus endpoint
+at wire-subject grain (including a declared publisher with no
+send site), and `law.subjects` must equal exactly the subjects
+the endpoint and topic sections carry, both directions - the
+subject universe is validated against the model's own typed
+projection, never reverse-engineered from the narrower V1
+relations.
+
+Round 7: the admission is SELF-CONTAINED and invalidity-first.
+Static invalidity dominates: an unresolved operand or an
+undeclared/cyclic effect class admits only `invalid` - the old
+engine's replayed vacuous `holds` is never an alternative (the
+exact fail-open the semantics-2 bump exists to prevent); a
+certificate verdict is otherwise EXACTLY its recomputed evidence
+severity, and a subject outside the legacy analyzable universe
+carries no certificates. Machine-`invalid` rows still PRESERVE
+the old engines' reports (law.legacy, keyed budget lowered rows)
+as fingerprint-bound optional evidence - the compiler's own
+cyclic-class artifacts admit through their own admission. The
+catalogs are closed (unique, exact bijections with the public
+sections; law.subjects tied to the model) so selector
+recomputation cannot be widened underneath a certificate. Both
+digests recompute at admission: law_digest is a canonical-JSON
+fingerprint over the law rows (a row edit under a stale digest
+refuses) and inputs_digest must match the consuming binary's
+analysis snapshot. Evidence is validated, not presence-checked:
+migrated violated/uncertified rows must retain their countermodel
+/ residue, and violated certificates their diagnostics.
+
+Round 6: the law account is EVIDENCE-CLOSED on every edge. The
+`law` catalogs become canonical `(name, display)` pairs (loci,
+groups, topics + wire subject, the wire-subject universe, and
+`fn_universe`), and every resolved reference must match one exact
+pair - the raw machine join key is anchored, so a singleton
+`name` swap refuses; the catalogs cross-tie to the sections other
+consumers join on. Bus selectors keep their candidate sets and
+admission recomputes them from the catalogs with the compiler's
+own matching rule (`bus_ref_matches`) - a candidate swap under an
+unchanged selector name refuses. Every compatibility `lowered`
+row is keyed to its law ordinal (and certificate ordinal), and
+the section must project one-to-one from the typed account -
+deleting law rows orphans their evidence even in an
+annotation-only artifact. A new `law.legacy` report keys the old
+engines' `causes:`/`depends:` verdicts by ordinal and by a form
+fingerprint re-rendered from the typed operands (operand
+mutations orphan the entry; a `causes:` row naming an undeclared
+or cyclic class cannot hold). Fleet-family rows are refused
+outright in application artifacts - the fleet account is Change
+7's.
+
+Round 5: the `law` section carries a `fn_universe` catalog (the
+FULL model function universe - module-scoped annotation subjects
+admit) and an `effect_classes` catalog (declared/cyclic status);
+one shared admission (`validate_law_account`) runs for BOTH
+Track A and fleet composition - fleet no longer trusts a
+component's `verdict: clean` without decoding its law account,
+and deleting law rows is refused by the two-way claims join, not
+vacuously accepted; annotation laws bind to their evidence (a
+certificate-class swap fails the re-rendered expected form; a
+budget `per_call` mutation fails the lowered-row match; flipping
+`resolved` to false cannot rescue a `holds`); and evidence
+locations are source-space-honest - a foreign-space diagnostic
+(stdlib parse space) is never re-resolved against bundle sources,
+even when its offsets numerically fall inside a bundle file.
+
 ### The pointwise-certificate judgment - family 5e (GH #476 Change 5e)
 
 `judgment::judge_certificates` - `@effects(none/only/publish)`,

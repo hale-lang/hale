@@ -911,11 +911,31 @@ reports as *unverifiable* rather than as valid — a consumer may
 choose to accept it, but must never read "nothing to check" as
 "checked and intact".
 
-The artifact shape (schema `1.10`):
+The digest is only the integrity gate. Past it, every in-tree
+consumer — `hale topology graph` and `hale fleet check` alike —
+runs the same **law-account admission**: it recomputes both
+digests (`law_digest` from the canonical-JSON law rows;
+`inputs_digest` against the consuming binary's own
+analysis-inputs snapshot), decodes each law row's typed payload
+against a closed per-kind shape, resolves every reference against
+the artifact's canonical catalogs (exact `(name, display)` pairs,
+closed under exact bijection with the public sections), recomputes
+bus-selector candidate sets with the compiler's own matching
+rule, requires the `lowered` evidence and `law.legacy` report to
+project from the typed account, validates every diagnostic and
+requires non-holds verdicts to retain their judgment's evidence,
+lets static invalidity (unresolved operands, undeclared or cyclic
+classes) dominate every replayed engine result, joins `claims`
+rows to law rows one-to-one in both directions, refuses
+fleet-family rows outright, and recomputes the document verdict.
+A restamped artifact whose sections disagree with each other is
+refused even though its digest verifies.
+
+The artifact shape (schema `1.11`):
 
 ```text
 {
-  "schema": "1.10",
+  "schema": "1.11",
   "shape_hash": "<fnv1a-64 over the model half>",
   "sorts":     { "loci": […], "fns": […], "topics": […] },
   "relations": {
@@ -941,8 +961,42 @@ The artifact shape (schema `1.10`):
                   "decls": {name: span, topics included},
                   "supervision": [+span] },
   "topics":    [ {"name", "subject", "shape", "payload_hash"} ],
-  "claims":    [ {"name", "form", "result": <verdict>, "source"?} ],
-  "lowered":   [ {"subject", "form", "result": <verdict>} ],
+  "endpoints": [ {"verb": "publish" | "subscribe", "subject",
+                  "via": "site" | "declaration",
+                  "fn"?, "site"?, "locus"?, "topic"?,
+                  "file"?, "span"?} ],
+  "declares_publish": [ {"locus", "subject", "topic"?,
+                         "file"?, "span"?} ],
+  "claims":    [ {"name", "form", "result": <verdict>,
+                  "ordinal", "source"?} ],
+  "lowered":   [ {"subject", "form", "result": <verdict>,
+                  "ordinal", "cert"?} ],
+  "law":       { "law_digest", "inputs_digest",
+                 "fn_universe": [ {"name", "display",
+                                   "analyzed", "summarized",
+                                   "kind", "owner"?} ],
+                 "loci":     [ {"name", "display",
+                                "analyzable"} ],
+                 "groups":   [ {"name", "display"} ],
+                 "topics":   [ {"name", "display", "subject"} ],
+                 "subjects": [patterns],
+                 "effect_classes": [ {"name", "declared",
+                                      "cyclic"} ],
+                 "legacy": [ {"ordinal", "form", "result"} ],
+                 "issues": [ {"message", "file"?, "span"?} ],
+                 "rows": [ {"ordinal", "name", "origin",
+                            "family", "verdict",
+                            "law": {"kind", …typed operand refs,
+                                    each with name/display/
+                                    resolved and provenance…},
+                            "certs"?: [ {"ordinal", "form",
+                                         "result",
+                                         "evidence"?} ],
+                            "evidence"?: [ {"message",
+                                            "file"?, "span"?} ],
+                            "file"?, "span"?} ] },
+  "capabilities": { "exact_calls": bool, … },
+  "adequacy":  { "<family>": "exact" | "degraded" },
   "verdict":   "clean" | "law_failed"
 }
 ```

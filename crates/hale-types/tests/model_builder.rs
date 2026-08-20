@@ -550,7 +550,7 @@ fn main() { App { }; }
     let m = derive(src);
     assert!(m.holes.is_empty());
     assert!(m.capabilities.exact_calls);
-    assert!(m.capabilities.exact_bus_endpoints);
+    assert!(m.capabilities.exact_publishes && m.capabilities.exact_subscribes);
     assert!(m.capabilities.exact_key_filters);
     // Never claimed at Change 2 (empty tables, deferred adapters):
     assert!(!m.capabilities.exact_ownership);
@@ -1179,7 +1179,12 @@ fn main() { App { }; }
         .iter()
         .find(|f| f.name.contains("on_failure"))
         .expect("failure handler is an executable entity");
-    assert_eq!(handler.kind, hale_model::FunctionKind::Hook);
+    // Round 11: failure handlers carry their TYPED kind — no
+    // consumer infers handler-ness from a display prefix.
+    assert_eq!(
+        handler.kind,
+        hale_model::FunctionKind::FailureHandler
+    );
     // …and both hole out as UnanalyzedBody…
     let unanalyzed: Vec<String> = m
         .holes
@@ -1204,7 +1209,7 @@ fn main() { App { }; }
     );
     // …so the capabilities cannot lie.
     assert!(!m.capabilities.exact_calls);
-    assert!(!m.capabilities.exact_bus_endpoints);
+    assert!(!(m.capabilities.exact_publishes && m.capabilities.exact_subscribes));
     assert!(!m.capabilities.exact_effects);
 }
 

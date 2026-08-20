@@ -229,6 +229,13 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
     };
     let mut old_sorted = old.clone();
     let mut new_sorted = new.clone();
+    // Round 8/9 documented divergence: a report-less subject
+    // (module-scoped body) judges `uncertified` WITH its residue
+    // reason — a diagnostic the old engine (which skipped the
+    // subject entirely) never produced.
+    new_sorted.retain(|(m, _)| {
+        !m.contains("did not analyze this subject")
+    });
     old_sorted.sort_by_key(key);
     new_sorted.sort_by_key(key);
     if old_sorted != new_sorted {
@@ -329,10 +336,25 @@ fn dropping_evidence_changes_the_verdict() {
     assert_eq!(judged[0].verdict, Verdict::Holds);
     evidence.rows.clear();
     let judged = judge_certificates(&table, &model, &evidence, &[0]);
+    // Round 8: an entirely REPORT-LESS row is a subject the
+    // engines never analyzed — residue (`uncertified`, carrying
+    // its reason), not invalidity. Partial disagreement is what
+    // stays Invalid.
     assert_eq!(
         judged[0].verdict,
-        Verdict::Invalid,
-        "a certificate row without an evidence row must be Invalid"
+        Verdict::Uncertified,
+        "a certificate row without any evidence row is uncertified"
+    );
+    assert!(
+        judged[0].diags.iter().any(|d| d
+            .message
+            .contains("did not analyze this subject")),
+        "the residue carries its reason: {:?}",
+        judged[0]
+            .diags
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1039,5 +1061,472 @@ fn main() { App { }; }
             .iter()
             .any(|i| i.message.contains("Did you mean `money`?")),
         "the near-miss hint survives"
+    );
+}
+
+/// Round 10: evidence identity includes ANALYSIS COVERAGE. Two
+/// models differing only in a coverage bit share a
+/// `TopologyShapeV1` (recording compatibility), so the sidecar
+/// carries a coverage digest — a synthetic sidecar derived beside
+/// one coverage cannot validate against the other.
+#[test]
+fn coverage_change_invalidates_evidence_identity() {
+    let src = HOLDS_SRC;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let evidence =
+        derive_certificate_evidence(&bundle, &table, &model);
+    let judged = judge_certificates(&table, &model, &evidence, &[0]);
+    assert_eq!(judged[0].verdict, Verdict::Holds);
+    // Flip one coverage bit: same shape, different coverage.
+    let before = model.analysis_coverage_digest();
+    let f = model
+        .entities
+        .functions
+        .iter_mut()
+        .find(|f| f.display == "pure_math")
+        .expect("subject");
+    f.analyzed = !f.analyzed;
+    assert_ne!(
+        before,
+        model.analysis_coverage_digest(),
+        "the coverage digest tracks the bit"
+    );
+    let judged = judge_certificates(&table, &model, &evidence, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        Verdict::Invalid,
+        "a sidecar derived beside different coverage is refused \
+         as stale, never replayed"
+    );
+}
+
+/// Round 12: coverage is BINDING inside the sidecar API — a
+/// certificate payload for a subject whose typed coverage says no
+/// report can exist is refused by `EvidenceTable::validate`, so
+/// `judge_certificates` can never consume it into Holds.
+#[test]
+fn certs_for_unanalyzed_subjects_are_refused() {
+    let src = HOLDS_SRC;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let evidence =
+        derive_certificate_evidence(&bundle, &table, &model);
+    assert!(evidence
+        .rows
+        .iter()
+        .any(|r| !r.certs.is_empty()));
+    // Mark the subject unanalyzed (keeping the digest consistent
+    // by recomputing it): the full certificate must now be
+    // refused, never replayed into Holds.
+    let f = model
+        .entities
+        .functions
+        .iter_mut()
+        .find(|f| f.display == "pure_math")
+        .expect("subject");
+    f.analyzed = false;
+    f.summarized = false;
+    let mut ev2 = evidence.clone();
+    ev2.coverage_digest = model.analysis_coverage_digest();
+    let judged = judge_certificates(&table, &model, &ev2, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        Verdict::Invalid,
+        "a matching digest proves the sidecar repeated the \
+         model's bits; a certificate for an unanalyzed subject \
+         still refuses"
+    );
+}
+
+const MODULE_ANNOTATED_SRC: &str = r#"
+module inner {
+    @effects(none: { syscall })
+    fn f(v: Int) -> Int { return v; }
+}
+main locus App {
+    params { n: Int = 0; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+
+/// Round 14: the FUNCTION-grain coverage upgrade is a model-law
+/// violation — flipping a module fn to analyzed (with its
+/// UnanalyzedBody residue removed so the hole law is silent) still
+/// fails `ApplicationModel::validate` on `analyzed ⇒ summarized`.
+#[test]
+fn function_coverage_upgrade_fails_model_validation() {
+    let program = hale_syntax::parse_source(MODULE_ANNOTATED_SRC)
+        .expect("parse");
+    let bundle = bundle_of(MODULE_ANNOTATED_SRC, &program);
+    let mut model = derive_application_model(&bundle);
+    model.validate().expect("the honest model is lawful");
+    let idx = model
+        .entities
+        .functions
+        .iter()
+        .position(|f| f.display == "f")
+        .expect("module fn");
+    model.entities.functions[idx].analyzed = true;
+    model.holes.retain(|h| {
+        !(h.kind == hale_model::HoleKind::UnanalyzedBody
+            && h.at
+                == hale_model::EntityRef::Function(
+                    hale_model::FunctionId(idx as u32),
+                ))
+    });
+    assert!(
+        matches!(
+            model.validate(),
+            Err(hale_model::ModelError::CoverageLaw { .. })
+        ),
+        "analyzed=true, summarized=false must not validate"
+    );
+}
+
+/// …and the sidecar cannot manufacture Holds from it either: even
+/// with recomputed shape/coverage digests and a well-formed Holds
+/// certificate, eligibility requires the hashed anchor
+/// (analyzed AND summarized), so the judgment refuses.
+#[test]
+fn function_coverage_upgrade_cannot_manufacture_holds() {
+    let program = hale_syntax::parse_source(MODULE_ANNOTATED_SRC)
+        .expect("parse");
+    let bundle = bundle_of(MODULE_ANNOTATED_SRC, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let idx = model
+        .entities
+        .functions
+        .iter()
+        .position(|f| f.display == "f")
+        .expect("module fn");
+    model.entities.functions[idx].analyzed = true;
+    model.holes.retain(|h| {
+        !(h.kind == hale_model::HoleKind::UnanalyzedBody
+            && h.at
+                == hale_model::EntityRef::Function(
+                    hale_model::FunctionId(idx as u32),
+                ))
+    });
+    // Manufacture the sidecar AGAINST the upgraded model: derive
+    // fresh (subject now "eligible" by the analyzed bit alone),
+    // digests recomputed by construction.
+    let evidence =
+        derive_certificate_evidence(&bundle, &table, &model);
+    let judged =
+        judge_certificates(&table, &model, &evidence, &[0]);
+    let row = judged
+        .iter()
+        .find(|j| {
+            table
+                .rows
+                .iter()
+                .any(|r| r.ordinal == j.ordinal && r.name == "f")
+        })
+        .expect("the module annotation row");
+    assert_ne!(
+        row.verdict,
+        Verdict::Holds,
+        "an upgraded coverage bit without the hashed anchor \
+         cannot certify"
+    );
+}
+
+const MODULE_LOCUS_METHOD_SRC: &str = r#"
+module inner {
+    @phase_effects(birth: {})
+    locus Hidden {
+        params { n: Int = 0; }
+        fn poke(v: Int) -> Int { return v; }
+    }
+}
+main locus App {
+    params { n: Int = 0; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+
+/// Round 14: the LOCUS-grain upgrade is a model-law violation —
+/// flipping `analyzable` to true over an unanalyzed ordinary
+/// member fails validate (the flag DERIVES from the typed
+/// member_of relation and FunctionKind).
+#[test]
+fn locus_coverage_upgrade_fails_model_validation() {
+    let program =
+        hale_syntax::parse_source(MODULE_LOCUS_METHOD_SRC)
+            .expect("parse");
+    let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let mut model = derive_application_model(&bundle);
+    model.validate().expect("the honest model is lawful");
+    let idx = model
+        .entities
+        .loci
+        .iter()
+        .position(|l| l.display == "Hidden")
+        .expect("module locus");
+    model.entities.loci[idx].analyzable = true;
+    assert!(
+        matches!(
+            model.validate(),
+            Err(hale_model::ModelError::CoverageLaw { .. })
+        ),
+        "analyzable=true over an unanalyzed member must not \
+         validate"
+    );
+}
+
+/// …and the sidecar refuses the matching synthetic phase
+/// certificate: eligibility recomputes the member coverage from
+/// the typed member_of relation, so the unverified locus bit
+/// alone cannot make the phases reportable.
+#[test]
+fn locus_coverage_upgrade_cannot_manufacture_holds() {
+    let program =
+        hale_syntax::parse_source(MODULE_LOCUS_METHOD_SRC)
+            .expect("parse");
+    let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let bundle2 = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let idx = model
+        .entities
+        .loci
+        .iter()
+        .position(|l| l.display == "Hidden")
+        .expect("module locus");
+    model.entities.loci[idx].analyzable = true;
+    // Manufacture against the upgraded model: derivation now
+    // synthesizes the implicit-phase Holds certificate (the
+    // upgraded bit steers it), digests recomputed by
+    // construction.
+    let evidence =
+        derive_certificate_evidence(&bundle2, &table, &model);
+    let judged =
+        judge_certificates(&table, &model, &evidence, &[0]);
+    let row = judged
+        .iter()
+        .find(|j| {
+            table.rows.iter().any(|r| {
+                r.ordinal == j.ordinal && r.name == "Hidden"
+            })
+        })
+        .expect("the phase row");
+    assert_ne!(
+        row.verdict,
+        Verdict::Holds,
+        "an upgraded locus bit over an unanalyzed member cannot \
+         certify its phases"
+    );
+}
+
+/// Round 15: `member_of` is a TOTAL EXCLUSIVE PARTITION agreeing
+/// with the canonical owner — deleting Hidden::poke's membership
+/// row (and flipping the locus to analyzable) fails model
+/// validation, and the sidecar refuses to certify through the
+/// same shared validator.
+#[test]
+fn deleted_membership_is_refused_everywhere() {
+    let program =
+        hale_syntax::parse_source(MODULE_LOCUS_METHOD_SRC)
+            .expect("parse");
+    let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let bundle2 = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let fid = model
+        .entities
+        .functions
+        .iter()
+        .position(|f| f.display == "Hidden::poke")
+        .expect("module method");
+    let lid = model
+        .entities
+        .loci
+        .iter()
+        .position(|l| l.display == "Hidden")
+        .expect("module locus");
+    model
+        .relations
+        .member_of
+        .retain(|m| m.function.index() != fid);
+    model.entities.loci[lid].analyzable = true;
+    // Model layer: the partition law refuses (poke's canonical
+    // owner has no matching row).
+    assert!(
+        matches!(
+            model.validate(),
+            Err(hale_model::ModelError::CoverageLaw { .. })
+        ),
+        "a deleted membership row must not validate"
+    );
+    // Sidecar layer: derivation against the mutated model still
+    // cannot certify — EvidenceTable::validate runs the SAME
+    // shared ownership/coverage validator.
+    let evidence =
+        derive_certificate_evidence(&bundle2, &table, &model);
+    let judged =
+        judge_certificates(&table, &model, &evidence, &[0]);
+    let row = judged
+        .iter()
+        .find(|j| {
+            table.rows.iter().any(|r| {
+                r.ordinal == j.ordinal && r.name == "Hidden"
+            })
+        })
+        .expect("the phase row");
+    assert_ne!(
+        row.verdict,
+        Verdict::Holds,
+        "a laundered membership cannot manufacture Holds"
+    );
+}
+
+/// Round 16: the FULLY COORDINATED move — owner + row repointed
+/// AND both analyzability flags updated (`App.analyzable = false`
+/// agrees with its new unanalyzed member; `Hidden.analyzable =
+/// true` agrees with its emptied owner set) — satisfies every
+/// relational law, and is refused specifically because
+/// `Hidden::poke` cannot canonically be owned by `App`: ownership
+/// is anchored to the entity identity, not merely its relational
+/// mirror.
+#[test]
+fn coordinated_ownership_laundering_is_refused() {
+    let program =
+        hale_syntax::parse_source(MODULE_LOCUS_METHOD_SRC)
+            .expect("parse");
+    let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let bundle2 = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let fid = model
+        .entities
+        .functions
+        .iter()
+        .position(|f| f.display == "Hidden::poke")
+        .expect("module method");
+    let hidden = model
+        .entities
+        .loci
+        .iter()
+        .position(|l| l.display == "Hidden")
+        .expect("module locus");
+    let app = model
+        .entities
+        .loci
+        .iter()
+        .position(|l| l.display == "App")
+        .expect("main locus");
+    for m in model.relations.member_of.iter_mut() {
+        if m.function.index() == fid {
+            m.locus = hale_model::LocusDeclId(app as u32);
+        }
+    }
+    model.entities.functions[fid].owner =
+        Some(hale_model::LocusDeclId(app as u32));
+    model.entities.loci[hidden].analyzable = true;
+    model.entities.loci[app].analyzable = false;
+    match model.validate() {
+        Err(hale_model::ModelError::CoverageLaw {
+            law, ..
+        }) => assert!(
+            law.contains("locus encoded in the"),
+            "the refusal is the IDENTITY anchor, not a              relational law: {}",
+            law
+        ),
+        other => panic!(
+            "the coordinated move must fail on the identity              anchor: {:?}",
+            other
+        ),
+    }
+    let evidence =
+        derive_certificate_evidence(&bundle2, &table, &model);
+    let judged =
+        judge_certificates(&table, &model, &evidence, &[0]);
+    let row = judged
+        .iter()
+        .find(|j| {
+            table.rows.iter().any(|r| {
+                r.ordinal == j.ordinal && r.name == "Hidden"
+            })
+        })
+        .expect("the phase row");
+    assert_ne!(
+        row.verdict,
+        Verdict::Holds,
+        "the laundered ownership cannot manufacture Holds"
+    );
+}
+
+/// …and MOVING the membership (row + owner repointed to another
+/// locus) is refused the same way: the destination locus's
+/// coverage law now contradicts its flag.
+#[test]
+fn moved_membership_is_refused_everywhere() {
+    let program =
+        hale_syntax::parse_source(MODULE_LOCUS_METHOD_SRC)
+            .expect("parse");
+    let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let bundle2 = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let fid = model
+        .entities
+        .functions
+        .iter()
+        .position(|f| f.display == "Hidden::poke")
+        .expect("module method");
+    let hidden = model
+        .entities
+        .loci
+        .iter()
+        .position(|l| l.display == "Hidden")
+        .expect("module locus");
+    let app = model
+        .entities
+        .loci
+        .iter()
+        .position(|l| l.display == "App")
+        .expect("main locus");
+    // Move BOTH the row and the canonical owner (a row-only move
+    // fails the agreement law immediately; the consistent move is
+    // the stronger attempt).
+    for m in model.relations.member_of.iter_mut() {
+        if m.function.index() == fid {
+            m.locus = hale_model::LocusDeclId(app as u32);
+        }
+    }
+    model.entities.functions[fid].owner =
+        Some(hale_model::LocusDeclId(app as u32));
+    model.entities.loci[hidden].analyzable = true;
+    assert!(
+        matches!(
+            model.validate(),
+            Err(hale_model::ModelError::CoverageLaw { .. })
+        ),
+        "the destination's coverage law contradicts the move"
+    );
+    let evidence =
+        derive_certificate_evidence(&bundle2, &table, &model);
+    let judged =
+        judge_certificates(&table, &model, &evidence, &[0]);
+    let row = judged
+        .iter()
+        .find(|j| {
+            table.rows.iter().any(|r| {
+                r.ordinal == j.ordinal && r.name == "Hidden"
+            })
+        })
+        .expect("the phase row");
+    assert_ne!(
+        row.verdict,
+        Verdict::Holds,
+        "a moved membership cannot manufacture Holds"
     );
 }

@@ -80,7 +80,10 @@ fn cover_catches_an_uncovered_topic_across_seeds() {
 fn the_topology_artifact_round_trips() {
     let dump = dump_artifact();
     assert!(
-        dump.contains("\"schema\": \"1.10\"")
+        dump.contains(&format!(
+            "\"schema\": \"{}\"",
+            hale_types::topology::TOPOLOGY_SCHEMA
+        ))
             && dump.contains("\"shape_hash\": \""),
         "the artifact must carry schema + shape_hash:\n{}",
         dump
@@ -95,9 +98,10 @@ fn the_topology_artifact_round_trips() {
         dump.contains(
             "{\"name\": \"no_orphans\", \"form\": \"cover topic in \
              seed(t): subscribed_by(some staff)\", \"result\": \
-             \"violated\"}"
+             \"violated\", \"ordinal\":"
         ),
-        "the artifact must record the violated claim:\n{}",
+        "the artifact must record the violated claim (with its law \
+         ordinal, round 3):\n{}",
         dump
     );
     assert!(
@@ -111,16 +115,36 @@ fn the_topology_artifact_round_trips() {
     // imported topic really does register under its mangled local
     // name (the artifact exposing that non-portable identity is
     // the point; declare `subject:` to fuse across binaries).
-    // Everything OUTSIDE that section stays author-spelled.
-    let without_topics: String = {
+    // GH #476 Change 6: the `law` section's typed payload carries
+    // the same duality on purpose — each reference is
+    // `{"name": <raw canonical identity>, "display": <author
+    // spelling>}`, and the raw half is the machine join key fleet
+    // composition uses. Everything OUTSIDE those two sections
+    // stays author-spelled.
+    let without_raw_sections: String = {
         let mut skip = false;
         dump.lines()
             .filter(|l| {
-                if l.starts_with("  \"topics\": [") {
+                // Round 8: the one-line `endpoints` section is
+                // wire-subject grain — the same deliberate rawness
+                // as `topics` (a subject-less imported topic's
+                // default subject IS its mangled name).
+                if l.starts_with("  \"endpoints\": [")
+                    || l.starts_with(
+                        "  \"declares_publish\": [",
+                    )
+                {
+                    return false;
+                }
+                if l.starts_with("  \"topics\": [")
+                    || l.starts_with("  \"law\": {")
+                {
                     skip = true;
                 }
                 let keep = !skip;
-                if skip && l.starts_with("  ],") {
+                if skip
+                    && (l.starts_with("  ],") || l.starts_with("  },"))
+                {
                     skip = false;
                 }
                 keep
@@ -128,6 +152,7 @@ fn the_topology_artifact_round_trips() {
             .collect::<Vec<_>>()
             .join("\n")
     };
+    let without_topics = without_raw_sections;
     assert!(
         !without_topics.contains("__lib_"),
         "the artifact (outside the raw-subject topics section) must \

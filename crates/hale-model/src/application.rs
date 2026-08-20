@@ -312,8 +312,267 @@ pub struct EvidenceTable {
     /// `model_shape` (review round 3); the producer computes it,
     /// and validation requires the judging toolchain to agree.
     pub inputs_digest: u64,
+    /// Digest of the model's ANALYSIS COVERAGE (round 10) — the
+    /// function-grain `analyzed` bits and locus-grain `analyzable`
+    /// bits the producer's synthesis decisions depend on.
+    /// `TopologyShapeV1` deliberately excludes coverage (recording
+    /// compatibility), so two models differing only in coverage
+    /// share a `model_shape` — this digest is what stops a
+    /// synthetic `Holds` sidecar from validating against a model
+    /// for which derivation would have produced no report.
+    pub coverage_digest: u64,
     pub rows: Vec<EvidenceRow>,
     pub provenance: ProvenanceTable,
+}
+
+impl ApplicationModel {
+    /// The relevant (non-failure) members a locus OWNS — from the
+    /// closed `owner` account, which `member_of` must mirror
+    /// exactly (validated). Shared by the model validator and the
+    /// sidecar API, so coverage is judged from one relation.
+    pub fn locus_members_analyzed(
+        &self,
+        lid: crate::ids::LocusDeclId,
+    ) -> bool {
+        self.entities
+            .functions
+            .iter()
+            .filter(|f| {
+                f.owner == Some(lid)
+                    && !matches!(
+                        f.kind,
+                        crate::entity::FunctionKind::FailureHandler
+                    )
+            })
+            .all(|f| f.analyzed)
+    }
+
+    /// The OWNERSHIP + COVERAGE laws (round 15) — one shared
+    /// validator: `member_of` is a total, exclusive partition
+    /// agreeing with `Function::owner` (a free fn owns nothing
+    /// and appears in no row; every other kind has exactly one
+    /// row, at its canonical owner), and every coverage law from
+    /// rounds 10–14. `ApplicationModel::validate` calls this, and
+    /// so does `EvidenceTable::validate` — a model whose
+    /// ownership account is corrupted cannot certify anything,
+    /// digests notwithstanding.
+    pub fn validate_coverage(&self) -> Result<(), ModelError> {
+        let e = &self.entities;
+        // Ownership partition: rows per function.
+        let mut rows_of: std::collections::BTreeMap<
+            u32,
+            Vec<crate::ids::LocusDeclId>,
+        > = std::collections::BTreeMap::new();
+        for m in &self.relations.member_of {
+            rows_of
+                .entry(m.function.0)
+                .or_default()
+                .push(m.locus);
+        }
+        for (i, f) in e.functions.iter().enumerate() {
+            let rows = rows_of
+                .get(&(i as u32))
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let free =
+                matches!(f.kind, crate::entity::FunctionKind::Free);
+            if free != f.owner.is_none() {
+                return Err(ModelError::CoverageLaw {
+                    index: i,
+                    law: "free functions own nothing; every \
+                          other kind has a canonical owner",
+                });
+            }
+            match f.owner {
+                None => {
+                    if !rows.is_empty() {
+                        return Err(ModelError::CoverageLaw {
+                            index: i,
+                            law: "a free function appears in no \
+                                  member_of row",
+                        });
+                    }
+                }
+                Some(owner) => {
+                    if rows.len() != 1 || rows[0] != owner {
+                        return Err(ModelError::CoverageLaw {
+                            index: i,
+                            law: "member_of is a total exclusive \
+                                  partition agreeing with the \
+                                  canonical owner",
+                        });
+                    }
+                    // Round 16: ownership is anchored to the
+                    // ENTITY IDENTITY, not merely its relational
+                    // mirror — the owner named by the field must
+                    // be the locus encoded in the function's own
+                    // canonical name and display. A coordinated
+                    // repoint (owner + row + both analyzability
+                    // flags) is refused HERE: `Hidden::poke`
+                    // cannot canonically be owned by `App`.
+                    let Some(l) = e.loci.get(owner.index())
+                    else {
+                        return Err(ModelError::DanglingId {
+                            table: "functions.owner",
+                            index: i,
+                        });
+                    };
+                    let raw_ok = f
+                        .name
+                        .strip_prefix(&l.name)
+                        .is_some_and(|r| r.starts_with("::"));
+                    let disp_ok = f
+                        .display
+                        .strip_prefix(&l.display)
+                        .is_some_and(|r| r.starts_with("::"));
+                    if !raw_ok || !disp_ok {
+                        return Err(ModelError::CoverageLaw {
+                            index: i,
+                            law: "the canonical owner is the \
+                                  locus encoded in the \
+                                  function's own identity",
+                        });
+                    }
+                }
+            }
+            if f.summarized && !f.analyzed {
+                return Err(ModelError::CoverageLaw {
+                    index: i,
+                    law: "summarized implies analyzed",
+                });
+            }
+            if f.analyzed && !f.summarized {
+                return Err(ModelError::CoverageLaw {
+                    index: i,
+                    law: "analyzed implies summarized — the \
+                          walked set is the summary set",
+                });
+            }
+            if matches!(
+                f.kind,
+                crate::entity::FunctionKind::FailureHandler
+            ) && f.analyzed
+            {
+                return Err(ModelError::CoverageLaw {
+                    index: i,
+                    law: "failure handlers are never analyzed",
+                });
+            }
+        }
+        // Unanalyzed-residue law.
+        {
+            let holed: std::collections::BTreeSet<u32> = self
+                .holes
+                .iter()
+                .filter(|h| {
+                    h.kind == crate::hole::HoleKind::UnanalyzedBody
+                })
+                .filter_map(|h| match h.at {
+                    crate::ids::EntityRef::Function(f) => {
+                        Some(f.0)
+                    }
+                    _ => None,
+                })
+                .collect();
+            for (i, f) in e.functions.iter().enumerate() {
+                let has_hole = holed.contains(&(i as u32));
+                if f.analyzed && has_hole {
+                    return Err(ModelError::CoverageLaw {
+                        index: i,
+                        law: "an analyzed body carries no \
+                              UnanalyzedBody residue",
+                    });
+                }
+                if !f.analyzed && !has_hole {
+                    return Err(ModelError::CoverageLaw {
+                        index: i,
+                        law: "an unanalyzed body retains its \
+                              UnanalyzedBody residue",
+                    });
+                }
+            }
+        }
+        // Locus-grain law, from the closed owner account.
+        for (i, l) in e.loci.iter().enumerate() {
+            let expect = self.locus_members_analyzed(
+                crate::ids::LocusDeclId(i as u32),
+            );
+            if l.analyzable != expect {
+                return Err(ModelError::CoverageLaw {
+                    index: i,
+                    law: "locus analyzability derives from its \
+                          member coverage",
+                });
+            }
+        }
+        // Summarized set == legacy fn sort (in-range rows only;
+        // out-of-range is the DanglingId defect).
+        {
+            let summarized: std::collections::BTreeSet<u32> = e
+                .functions
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| f.summarized)
+                .map(|(i, _)| i as u32)
+                .collect();
+            let legacy: std::collections::BTreeSet<u32> = self
+                .legacy
+                .topology_v1_fns
+                .iter()
+                .map(|f| f.0)
+                .collect();
+            let in_range = legacy
+                .iter()
+                .all(|i| (*i as usize) < e.functions.len());
+            if in_range && summarized != legacy {
+                return Err(ModelError::CoverageLaw {
+                    index: usize::MAX,
+                    law: "the legacy fn sort is the summarized \
+                          set",
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// The model's analysis-coverage identity (round 10): fnv1a64
+    /// over every locus's `analyzable` bit and every function's
+    /// `analyzed` bit, in canonical entity order. Evidence
+    /// derivation stamps it; the judgment refuses a sidecar whose
+    /// coverage disagrees with the judged model.
+    pub fn analysis_coverage_digest(&self) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        let mut eat = |bytes: &[u8]| {
+            for b in bytes {
+                h ^= u64::from(*b);
+                h = h.wrapping_mul(0x100000001b3);
+            }
+        };
+        for l in &self.entities.loci {
+            eat(l.name.as_bytes());
+            eat(&[0, u8::from(l.analyzable)]);
+        }
+        for f in &self.entities.functions {
+            eat(f.name.as_bytes());
+            eat(&[
+                1,
+                u8::from(f.analyzed),
+                u8::from(f.summarized),
+                matches!(
+                    f.kind,
+                    crate::entity::FunctionKind::FailureHandler
+                ) as u8,
+            ]);
+            // Ownership is coverage-bearing (round 15): moving a
+            // member changes which locus's coverage it counts
+            // toward.
+            match f.owner {
+                Some(l) => eat(&l.0.to_le_bytes()),
+                None => eat(&[0xff; 4]),
+            }
+        }
+        h
+    }
 }
 
 impl EvidenceTable {
@@ -329,9 +588,20 @@ impl EvidenceTable {
         table: &ClaimIrTable,
         inputs_digest: u64,
     ) -> Result<(), ClaimIrError> {
+        // Round 15: the SAME ownership/coverage validator the
+        // model runs — a corrupted ownership account (a deleted or
+        // moved member_of row, an upgraded coverage bit) cannot
+        // certify anything, digests notwithstanding.
+        if model.validate_coverage().is_err() {
+            return Err(ClaimIrError::InvalidProvenanceRecord {
+                index: usize::MAX,
+            });
+        }
         if self.model_shape != model_shape
             || self.law_digest != table.semantic_digest()
             || self.inputs_digest != inputs_digest
+            || self.coverage_digest
+                != model.analysis_coverage_digest()
         {
             return Err(ClaimIrError::InvalidProvenanceRecord {
                 index: usize::MAX,
@@ -360,6 +630,79 @@ impl EvidenceTable {
             return Err(ClaimIrError::InvalidProvenanceRecord {
                 index: usize::MAX,
             });
+        }
+        // Round 12: coverage is BINDING, not advisory — a
+        // certificate payload for a subject whose typed coverage
+        // says no report can exist (an unanalyzed fn, an
+        // unanalyzable locus) is refused here, so the judgment can
+        // never consume it. A matching digest proves the sidecar
+        // repeated the model's bits; this proves its evidence
+        // obeys them.
+        let claim_by_ordinal: std::collections::BTreeMap<
+            u32,
+            &ClaimRow,
+        > = table.rows.iter().map(|r| (r.ordinal, r)).collect();
+        for (i, row) in self.rows.iter().enumerate() {
+            if row.certs.is_empty() {
+                continue;
+            }
+            let eligible = match claim_by_ordinal
+                .get(&row.ordinal)
+                .map(|c| &c.law)
+            {
+                Some(
+                    crate::claim_ir::ClaimIr::EffectForbid {
+                        at, ..
+                    }
+                    | crate::claim_ir::ClaimIr::EffectOnly {
+                        at, ..
+                    }
+                    | crate::claim_ir::ClaimIr::EffectPublishSet {
+                        at, ..
+                    }
+                    | crate::claim_ir::ClaimIr::NoPanic { at },
+                ) => at.0.is_some_and(|f| {
+                    // Round 14: eligibility requires the HASHED
+                    // anchor too — a coverage bit upgraded on an
+                    // otherwise-unvalidated model still fails
+                    // here (analyzed without summarized is not a
+                    // reportable subject).
+                    model
+                        .entities
+                        .functions
+                        .get(f.index())
+                        .is_some_and(|f| {
+                            f.analyzed && f.summarized
+                        })
+                }),
+                Some(
+                    crate::claim_ir::ClaimIr::PhaseEffects {
+                        locus,
+                        ..
+                    },
+                ) => locus.0.is_some_and(|lid| {
+                    // Round 14: the locus bit alone is not
+                    // trusted — the member coverage must agree
+                    // (recomputed from the typed member_of
+                    // relation), so flipping `analyzable` over an
+                    // unanalyzed member cannot make its phases
+                    // reportable.
+                    let flag = model
+                        .entities
+                        .loci
+                        .get(lid.index())
+                        .is_some_and(|l| l.analyzable);
+                    flag && model.locus_members_analyzed(lid)
+                }),
+                _ => false,
+            };
+            if !eligible {
+                return Err(
+                    ClaimIrError::InvalidProvenanceRecord {
+                        index: i,
+                    },
+                );
+            }
         }
         let law_rows = table.rows.len();
         let by_ordinal: std::collections::BTreeMap<u32, &ClaimRow> =
@@ -514,6 +857,10 @@ pub enum ModelError {
     /// is legal only on fallback topics (resolve-time law,
     /// mirrored in the schema).
     IllegalFallback { index: usize },
+    /// A coverage law is violated (round 11): `summarized ⇒
+    /// analyzed`, `FailureHandler ⇒ ¬analyzed`, or the legacy fn
+    /// sort disagrees with the summarized set.
+    CoverageLaw { index: usize, law: &'static str },
     /// A topic declares `on_unmatched: fallback` but has no
     /// Fallback subscription — the policy's required catch is
     /// missing.
@@ -552,7 +899,7 @@ impl ApplicationModel {
     /// | `owns`           | (parent, child)                  |
     /// | `calls`          | (from, to, dispatch, site)       |
     /// | `publishes`      | (function, subject, site)        |
-    /// | `declares_publish` | (locus, subject)               |
+    /// | `declares_publish` | (locus, subject, declared_topic) |
     /// | `subscribes`     | (subject, handler, site)         |
     /// | `dead_interface_calls` | (from, site)               |
     /// | `placed_in`      | (instance)                       |
@@ -565,6 +912,54 @@ impl ApplicationModel {
     /// | `weights`        | (at, metric)                     |
     /// | `holes`          | (at, kind, reason)               |
     /// | nested key sets  | `KeyDomain::Exact`, `CoreSet`    |
+    /// EVERY relation family some unresolved residue hides —
+    /// typed hole rows AND stdlib-absorption residue (a CallHole
+    /// is an unfollowable call, a PublishHole an unprovable
+    /// publish, a Truncated frontier hides everything beyond it).
+    /// Exactness and holes are dual accounts that may not
+    /// disagree, wherever the hole lives; the capability law and
+    /// per-family adequacy both read this one mask (rounds 8, 2).
+    pub fn unresolved_relation_mask(
+        &self,
+    ) -> crate::hole::RelationSet {
+        let mut m = crate::hole::RelationSet(0);
+        for h in &self.holes {
+            m = m.union(h.hides);
+        }
+        for a in &self.legacy.stdlib_absorption {
+            for n in &a.nodes {
+                for ev in &n.events {
+                    match ev {
+                        crate::AbsorbedEvent::CallHole(_) => {
+                            m = m
+                                .union(crate::hole::RelationSet::CALLS)
+                                .union(
+                                    crate::hole::RelationSet::EFFECTS,
+                                );
+                        }
+                        crate::AbsorbedEvent::PublishHole => {
+                            m = m.union(
+                                crate::hole::RelationSet::PUBLISHES,
+                            );
+                        }
+                        crate::AbsorbedEvent::Truncated => {
+                            m = m
+                                .union(crate::hole::RelationSet::CALLS)
+                                .union(
+                                    crate::hole::RelationSet::PUBLISHES,
+                                )
+                                .union(
+                                    crate::hole::RelationSet::EFFECTS,
+                                );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        m
+    }
+
     pub fn validate(&self) -> Result<(), ModelError> {
         let e = &self.entities;
         let prov_len = self.provenance.records.len();
@@ -605,7 +1000,10 @@ impl ApplicationModel {
         check_sorted_keys("locus_instances", e.locus_instances.iter().map(|i| &i.path))?;
         check_sorted_keys("topics", e.topics.iter().map(|t| &t.name))?;
         check_sorted_keys("subjects", e.subjects.iter().map(|s| &s.pattern))?;
-        check_sorted_keys("payloads", e.payloads.iter().map(|p| (&p.shape, p.hash)))?;
+        check_sorted_keys(
+            "payloads",
+            e.payloads.iter().map(|p| (&p.shape, p.hash, p.opaque)),
+        )?;
         check_sorted_keys("phases", e.phases.iter().map(|p| &p.name))?;
         check_sorted_keys("seeds", e.seeds.iter().map(|s| &s.name))?;
         check_sorted_keys("thread_domains", e.thread_domains.iter().map(|d| &d.name))?;
@@ -934,7 +1332,9 @@ impl ApplicationModel {
         }
         check_sorted_keys(
             "declares_publish",
-            r.declares_publish.iter().map(|x| (x.locus, x.subject)),
+            r.declares_publish
+                .iter()
+                .map(|x| (x.locus, x.subject, x.declared_topic)),
         )?;
         for (i, x) in r.declares_publish.iter().enumerate() {
             if x.locus.index() >= loci
@@ -1735,59 +2135,20 @@ impl ApplicationModel {
                 });
             }
         }
-        // Unresolved residue INSIDE stdlib absorption participates
-        // in the exactness account (round 8): a CallHole is an
-        // unfollowable call, a PublishHole an unprovable publish,
-        // and a Truncated frontier hides everything beyond it —
-        // exactness and holes are dual accounts that may not
-        // disagree, wherever the hole lives.
-        let mut absorption_hides = crate::hole::RelationSet(0);
-        for a in &self.legacy.stdlib_absorption {
-            for n in &a.nodes {
-                for ev in &n.events {
-                    match ev {
-                        crate::AbsorbedEvent::CallHole(_) => {
-                            absorption_hides = absorption_hides
-                                .union(
-                                    crate::hole::RelationSet::CALLS,
-                                )
-                                .union(
-                                    crate::hole::RelationSet::EFFECTS,
-                                );
-                        }
-                        crate::AbsorbedEvent::PublishHole => {
-                            absorption_hides = absorption_hides
-                                .union(
-                                    crate::hole::RelationSet::PUBLISHES,
-                                );
-                        }
-                        crate::AbsorbedEvent::Truncated => {
-                            absorption_hides = absorption_hides
-                                .union(
-                                    crate::hole::RelationSet::CALLS,
-                                )
-                                .union(
-                                    crate::hole::RelationSet::PUBLISHES,
-                                )
-                                .union(
-                                    crate::hole::RelationSet::EFFECTS,
-                                );
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
         for (name, claimed, family) in self.capabilities.vouched_families() {
             if !claimed {
                 continue;
             }
-            if self.holes.iter().any(|h| h.hides.intersects(family))
-                || absorption_hides.intersects(family)
-            {
+            if self.unresolved_relation_mask().intersects(family) {
                 return Err(ModelError::CapabilityContradiction { capability: name });
             }
         }
+        // --- ownership + coverage laws (rounds 10–15): one
+        // shared validator, also called by the sidecar API. Runs
+        // LAST so purely structural defects (non-canonical
+        // ordering, dangling ids) report as themselves.
+        self.validate_coverage()?;
+
         Ok(())
     }
 }

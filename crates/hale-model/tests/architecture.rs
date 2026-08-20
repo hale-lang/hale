@@ -65,6 +65,9 @@ fn tiny_model() -> ApplicationModel {
             effect_classes: Vec::new(),
             functions: vec![
                 Function {
+                    analyzed: true,
+                    summarized: true,
+                    owner: Some(LocusDeclId(0)),
                     name: "App::run".to_string(),
                     display: "App::run".to_string(),
                     kind: FunctionKind::Hook,
@@ -76,6 +79,9 @@ fn tiny_model() -> ApplicationModel {
                     provenance: p,
                 },
                 Function {
+                    analyzed: true,
+                    summarized: true,
+                    owner: Some(LocusDeclId(1)),
                     name: "Worker::on_r".to_string(),
                     display: "Worker::on_r".to_string(),
                     kind: FunctionKind::Method,
@@ -92,12 +98,14 @@ fn tiny_model() -> ApplicationModel {
                     name: "App".to_string(),
                     display: "App".to_string(),
                     sealed: false,
+                    analyzable: true,
                     provenance: p,
                 },
                 LocusDecl {
                     name: "Worker".to_string(),
                     display: "Worker".to_string(),
                     sealed: false,
+                    analyzable: true,
                     provenance: p,
                 },
             ],
@@ -129,6 +137,7 @@ fn tiny_model() -> ApplicationModel {
             }],
             payloads: vec![PayloadContract {
                 shape: "sensor:i;v:i".to_string(),
+                opaque: false,
                 hash: 0xfb9f,
                 provenance: p,
             }],
@@ -197,18 +206,27 @@ fn tiny_model() -> ApplicationModel {
         holes: vec![],
         capabilities: Capabilities {
             exact_calls: true,
-            exact_bus_endpoints: true,
+            exact_publishes: true,
+            exact_subscribes: true,
             ..Capabilities::default()
         },
         provenance: prov,
-        legacy: LegacyProjection::default(),
+        legacy: LegacyProjection {
+            // Round 11 coverage law: the legacy fn sort IS the
+            // summarized set.
+            topology_v1_fns: vec![
+                FunctionId(0),
+                FunctionId(1),
+            ],
+            ..LegacyProjection::default()
+        },
     }
 }
 
 fn provenance_source() -> hale_model::provenance::SourceUnit {
     hale_model::provenance::SourceUnit {
         path: "app.hl".to_string(),
-        digest: 0xec85,
+        digest: "ec85".to_string(),
     }
 }
 
@@ -555,7 +573,8 @@ fn provenance_record_contents_must_resolve() {
 fn every_capability_flag_is_mapped_to_a_family() {
     let all = Capabilities {
         exact_calls: true,
-        exact_bus_endpoints: true,
+        exact_publishes: true,
+        exact_subscribes: true,
         exact_key_filters: true,
         exact_ownership: true,
         exact_placement: true,
@@ -565,7 +584,7 @@ fn every_capability_flag_is_mapped_to_a_family() {
         exact_delivery_guarantees: true,
     };
     let vouched = all.vouched_families();
-    assert_eq!(vouched.len(), 9, "every flag appears exactly once");
+    assert_eq!(vouched.len(), 10, "every flag appears exactly once");
     for (name, claimed, family) in vouched {
         assert!(claimed, "{} must carry its flag", name);
         assert!(!family.is_empty(), "{} must vouch a real family", name);
@@ -1150,6 +1169,7 @@ fn endpoint_payloads_are_kept_and_must_agree() {
     });
     m.entities.payloads.push(PayloadContract {
         shape: "z_op:i".to_string(),
+        opaque: false,
         hash: 0x828a,
         provenance: p,
     });
@@ -1316,6 +1336,7 @@ fn declared_publisher_ends_are_typed_rows() {
     // Payload disagreement with the declared topic refuses.
     m.entities.payloads.push(PayloadContract {
         shape: "z:i".to_string(),
+        opaque: false,
         hash: 0x2222,
         provenance: p,
     });

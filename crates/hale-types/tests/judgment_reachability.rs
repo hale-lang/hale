@@ -634,6 +634,9 @@ fn looped_stdlib_entry_with_carrier_is_unbounded() {
     });
     let p = ProvenanceId(0);
     let f = |name: &str| Function {
+        analyzed: true,
+        summarized: true,
+        owner: None,
         name: name.to_string(),
         display: name.to_string(),
         kind: FunctionKind::Free,
@@ -1543,7 +1546,9 @@ fn main() { App { }; }
     // the honest model lowers the flag alongside — that law
     // already existed and stays).
     let mut m = base.clone();
-    m.capabilities.exact_bus_endpoints = false;
+    m.capabilities.exact_publishes = false;
+    m.capabilities.exact_subscribes = false;
+    m.capabilities.exact_cardinality = false;
     m.holes.push(hale_model::Hole {
         at: subject,
         kind: hale_model::HoleKind::DynamicEndpoint,
@@ -2839,6 +2844,9 @@ fn mixed_dispatch_alternatives_share_one_group() {
     });
     let p = ProvenanceId(0);
     let f = |name: &str| Function {
+        analyzed: true,
+        summarized: true,
+        owner: None,
         name: name.to_string(),
         display: name.to_string(),
         kind: FunctionKind::Free,
