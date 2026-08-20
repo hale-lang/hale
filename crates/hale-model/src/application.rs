@@ -402,6 +402,37 @@ impl ApplicationModel {
                                   canonical owner",
                         });
                     }
+                    // Round 16: ownership is anchored to the
+                    // ENTITY IDENTITY, not merely its relational
+                    // mirror — the owner named by the field must
+                    // be the locus encoded in the function's own
+                    // canonical name and display. A coordinated
+                    // repoint (owner + row + both analyzability
+                    // flags) is refused HERE: `Hidden::poke`
+                    // cannot canonically be owned by `App`.
+                    let Some(l) = e.loci.get(owner.index())
+                    else {
+                        return Err(ModelError::DanglingId {
+                            table: "functions.owner",
+                            index: i,
+                        });
+                    };
+                    let raw_ok = f
+                        .name
+                        .strip_prefix(&l.name)
+                        .is_some_and(|r| r.starts_with("::"));
+                    let disp_ok = f
+                        .display
+                        .strip_prefix(&l.display)
+                        .is_some_and(|r| r.starts_with("::"));
+                    if !raw_ok || !disp_ok {
+                        return Err(ModelError::CoverageLaw {
+                            index: i,
+                            law: "the canonical owner is the \
+                                  locus encoded in the \
+                                  function's own identity",
+                        });
+                    }
                 }
             }
             if f.summarized && !f.analyzed {

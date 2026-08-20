@@ -491,8 +491,17 @@ every other kind in exactly one, at its owner), and a locus is
 analyzable iff every relevant owned member (all kinds except
 failure handlers) is analyzed, an empty set vacuously so — so a
 membership row can be neither deleted nor moved to launder
-coverage or group projection. Ownership is coverage-bearing and
-folded into the evidence coverage digest. All of these laws live
+coverage or group projection — and ownership is anchored to the
+ENTITY IDENTITY itself (round 16): `owner = Some(l)` requires the
+function's raw name and display to encode `l` as their prefix
+(`Hidden::poke` cannot canonically be owned by `App`), with the
+owner id range-checked directly, so even a fully coordinated
+repoint (owner + row + both analyzability flags) is refused.
+Ownership is coverage-bearing and folded into the evidence
+coverage digest. The artifact's `law.fn_universe` rows carry the
+typed owner (present iff the kind is non-free, display-anchored,
+resolving to a cataloged locus), and admission's locus coverage
+recomputes from IT — never from display-prefix recovery. All of these laws live
 in ONE shared validator (`ApplicationModel::validate_coverage`),
 called by `ApplicationModel::validate` and by
 `EvidenceTable::validate` alike: the same coverage state is

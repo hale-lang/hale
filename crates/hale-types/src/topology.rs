@@ -1618,13 +1618,28 @@ pub fn dump_topology_parts(
                             "failure"
                         }
                     };
+                    let owner = match f.owner {
+                        Some(l) => vmodel
+                            .entities
+                            .loci
+                            .get(l.index())
+                            .map(|l| {
+                                format!(
+                                    ", \"owner\": {}",
+                                    quote(&l.display)
+                                )
+                            })
+                            .unwrap_or_default(),
+                        None => String::new(),
+                    };
                     format!(
-                        "{{\"name\": {}, \"display\": {}, \"analyzed\": {}, \"summarized\": {}, \"kind\": {}}}",
+                        "{{\"name\": {}, \"display\": {}, \"analyzed\": {}, \"summarized\": {}, \"kind\": {}{}}}",
                         quote(&f.name),
                         quote(&f.display),
                         f.analyzed,
                         f.summarized,
-                        quote(kind)
+                        quote(kind),
+                        owner
                     )
                 })
                 .collect();

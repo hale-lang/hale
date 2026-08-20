@@ -1388,6 +1388,82 @@ fn deleted_membership_is_refused_everywhere() {
     );
 }
 
+/// Round 16: the FULLY COORDINATED move — owner + row repointed
+/// AND both analyzability flags updated (`App.analyzable = false`
+/// agrees with its new unanalyzed member; `Hidden.analyzable =
+/// true` agrees with its emptied owner set) — satisfies every
+/// relational law, and is refused specifically because
+/// `Hidden::poke` cannot canonically be owned by `App`: ownership
+/// is anchored to the entity identity, not merely its relational
+/// mirror.
+#[test]
+fn coordinated_ownership_laundering_is_refused() {
+    let program =
+        hale_syntax::parse_source(MODULE_LOCUS_METHOD_SRC)
+            .expect("parse");
+    let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let bundle2 = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let fid = model
+        .entities
+        .functions
+        .iter()
+        .position(|f| f.display == "Hidden::poke")
+        .expect("module method");
+    let hidden = model
+        .entities
+        .loci
+        .iter()
+        .position(|l| l.display == "Hidden")
+        .expect("module locus");
+    let app = model
+        .entities
+        .loci
+        .iter()
+        .position(|l| l.display == "App")
+        .expect("main locus");
+    for m in model.relations.member_of.iter_mut() {
+        if m.function.index() == fid {
+            m.locus = hale_model::LocusDeclId(app as u32);
+        }
+    }
+    model.entities.functions[fid].owner =
+        Some(hale_model::LocusDeclId(app as u32));
+    model.entities.loci[hidden].analyzable = true;
+    model.entities.loci[app].analyzable = false;
+    match model.validate() {
+        Err(hale_model::ModelError::CoverageLaw {
+            law, ..
+        }) => assert!(
+            law.contains("locus encoded in the"),
+            "the refusal is the IDENTITY anchor, not a              relational law: {}",
+            law
+        ),
+        other => panic!(
+            "the coordinated move must fail on the identity              anchor: {:?}",
+            other
+        ),
+    }
+    let evidence =
+        derive_certificate_evidence(&bundle2, &table, &model);
+    let judged =
+        judge_certificates(&table, &model, &evidence, &[0]);
+    let row = judged
+        .iter()
+        .find(|j| {
+            table.rows.iter().any(|r| {
+                r.ordinal == j.ordinal && r.name == "Hidden"
+            })
+        })
+        .expect("the phase row");
+    assert_ne!(
+        row.verdict,
+        Verdict::Holds,
+        "the laundered ownership cannot manufacture Holds"
+    );
+}
+
 /// …and MOVING the membership (row + owner repointed to another
 /// locus) is refused the same way: the destination locus's
 /// coverage law now contradicts its flag.

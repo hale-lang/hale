@@ -3013,3 +3013,77 @@ fn main() { App { }; }
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Round 16: the artifact's typed owner is anchored to the entity
+/// identity too — retagging `Hidden::poke`'s owner to `App` (with
+/// both analyzability flags updated consistently) refuses because
+/// the display cannot canonically encode that owner.
+#[test]
+fn artifact_owner_swap_is_refused() {
+    let dir = workdir("ownerswap");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+module inner {
+    @phase_effects(birth: {})
+    locus Hidden {
+        params { n: Int = 0; }
+        fn poke(v: Int) -> Int { return v; }
+    }
+}
+main locus App {
+    params { n: Int = 0; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    let needle = "\"display\": \"Hidden::poke\", \"analyzed\": \
+                  false, \"summarized\": false, \"kind\": \
+                  \"method\", \"owner\": \"Hidden\"";
+    assert!(raw.contains(needle), "typed owner present:\n{}", raw);
+    let swapped = raw
+        .replacen(
+            needle,
+            "\"display\": \"Hidden::poke\", \"analyzed\": false, \
+             \"summarized\": false, \"kind\": \"method\", \
+             \"owner\": \"App\"",
+            1,
+        )
+        .replacen(
+            "\"name\": \"Hidden\", \"display\": \"Hidden\", \
+             \"analyzable\": false",
+            "\"name\": \"Hidden\", \"display\": \"Hidden\", \
+             \"analyzable\": true",
+            1,
+        )
+        .replacen(
+            "\"name\": \"App\", \"display\": \"App\", \
+             \"analyzable\": true",
+            "\"name\": \"App\", \"display\": \"App\", \
+             \"analyzable\": false",
+            1,
+        );
+    assert_ne!(swapped, raw, "test premise: the swap landed");
+    let p2 = dir.join("ownerswap.topology");
+    std::fs::write(&p2, restamp_digest(&strip_trailer(&swapped)))
+        .unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p2)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("cannot canonically be owned by"),
+        "the identity anchor refuses the owner swap: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

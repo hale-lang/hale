@@ -238,6 +238,10 @@ pub struct RefContext {
     pub fn_analyzed: BTreeSet<String>,
     pub fn_summarized: BTreeSet<String>,
     pub fn_failure: BTreeSet<String>,
+    /// display -> typed owner display (round 16) — locus member
+    /// coverage recomputes from THIS, never from display-prefix
+    /// recovery.
+    pub fn_owner: std::collections::BTreeMap<String, String>,
     /// The legacy analyzable universe (`sorts.fns`) — the old
     /// engines never saw subjects outside it, so a certificate row
     /// on such a subject carries no report and judges
@@ -388,7 +392,7 @@ impl RefContext {
                         "law.fn_universe[*]",
                         &["name", "display", "analyzed",
                           "summarized", "kind"],
-                        &[],
+                        &["owner"],
                     )?;
                     let analyzed = e["analyzed"]
                         .as_bool()
@@ -439,6 +443,54 @@ impl RefContext {
                             e["display"].as_str().unwrap_or("?")
                         ));
                     }
+                    // Round 16: the typed OWNER is anchored to
+                    // the entity identity — present iff the kind
+                    // is non-free, and the display must encode
+                    // it (`Hidden::poke` cannot be owned by
+                    // `App`).
+                    let display =
+                        e["display"].as_str().unwrap_or("");
+                    match e.get("owner") {
+                        None => {
+                            if kind != "free" {
+                                return Err(format!(
+                                    "law.fn_universe: `{}` \
+                                     ({}) carries no owner",
+                                    display, kind
+                                ));
+                            }
+                        }
+                        Some(o) => {
+                            if kind == "free" {
+                                return Err(format!(
+                                    "law.fn_universe: free fn \
+                                     `{}` carries an owner",
+                                    display
+                                ));
+                            }
+                            let od =
+                                o.as_str().ok_or_else(|| {
+                                    format!(
+                                        "law.fn_universe: `{}` \
+                                         owner must be a string",
+                                        display
+                                    )
+                                })?;
+                            let ok = display
+                                .strip_prefix(od)
+                                .is_some_and(|r| {
+                                    r.starts_with("::")
+                                });
+                            if !ok {
+                                return Err(format!(
+                                    "law.fn_universe: `{}` \
+                                     cannot canonically be \
+                                     owned by `{}`",
+                                    display, od
+                                ));
+                            }
+                        }
+                    }
                     out.push((
                         e["name"]
                             .as_str()
@@ -477,6 +529,17 @@ impl RefContext {
                 .filter(|e| e["kind"] == "failure")
                 .filter_map(|e| {
                     e["display"].as_str().map(|s| s.to_string())
+                })
+                .collect(),
+            fn_owner: v["law"]["fn_universe"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|e| {
+                    Some((
+                        e["display"].as_str()?.to_string(),
+                        e["owner"].as_str()?.to_string(),
+                    ))
                 })
                 .collect(),
             sorts_fns: v["sorts"]["fns"]
@@ -700,20 +763,28 @@ impl RefContext {
                 extra, missing
             ));
         }
+        // Every typed owner must name a cataloged locus
+        // (round 16).
+        for (d, o) in &cx.fn_owner {
+            if !cx.loci.iter().any(|(_, disp, _)| disp == o) {
+                return Err(format!(
+                    "law.fn_universe: `{}` names owner `{}`, \
+                     which is not in this artifact",
+                    d, o
+                ));
+            }
+        }
         // Locus-grain: `analyzable` must agree with the member
-        // coverage. `on_failure` handlers are executable but never
-        // analyzed even on analyzable loci, so they are exempt; a
-        // memberless locus has no member evidence (and no code, so
-        // both phase shapes are vacuously truthful).
+        // coverage — membership from the TYPED owner account
+        // (round 16), never recovered from display prefixes.
         for (_, disp, analyzable) in &cx.loci {
-            let prefix = format!("{}::", disp);
-            let members: Vec<&(String, String)> = cx
-                .fn_universe
+            let members: Vec<&String> = cx
+                .fn_owner
                 .iter()
-                .filter(|(_, d)| {
-                    d.starts_with(&prefix)
-                        && !cx.fn_failure.contains(d)
+                .filter(|(d, o)| {
+                    *o == disp && !cx.fn_failure.contains(*d)
                 })
+                .map(|(d, _)| d)
                 .collect();
             if members.is_empty() {
                 // Memberless ⇒ VACUOUSLY analyzable (no body to
@@ -732,7 +803,7 @@ impl RefContext {
             }
             let all_analyzed = members
                 .iter()
-                .all(|(_, d)| cx.fn_analyzed.contains(d));
+                .all(|d| cx.fn_analyzed.contains(*d));
             if all_analyzed != *analyzable {
                 return Err(format!(
                     "law.loci: `{}` marks analyzable={} but its \

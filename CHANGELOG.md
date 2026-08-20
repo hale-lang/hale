@@ -81,6 +81,18 @@ never a fail-open `holds`), and the document `verdict` follows
 the machine. Artifact consumers reject unrecognized semantics by
 design; re-dump with the current compiler.
 
+Round 16: ownership is anchored to the entity identity. `owner
+= Some(l)` requires the function's raw name and display to encode
+l as their prefix, with the id range-checked directly - a fully
+coordinated repoint (owner + member_of row + both analyzability
+flags updated consistently) satisfies every relational law and is
+refused precisely because Hidden::poke cannot canonically be
+owned by App (negative controls at the model, the sidecar, and
+the artifact). law.fn_universe rows carry the typed owner
+(present iff non-free, display-anchored, cataloged), and
+admission's locus coverage recomputes from it instead of
+recovering membership from display prefixes.
+
 Round 15: member_of is a closed ownership partition. Every
 function carries its canonical `owner` (typed; None for free
 fns), and member_of must be a total exclusive partition agreeing

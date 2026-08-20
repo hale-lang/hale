@@ -974,7 +974,7 @@ The artifact shape (schema `1.11`):
   "law":       { "law_digest", "inputs_digest",
                  "fn_universe": [ {"name", "display",
                                    "analyzed", "summarized",
-                                   "kind"} ],
+                                   "kind", "owner"?} ],
                  "loci":     [ {"name", "display",
                                 "analyzable"} ],
                  "groups":   [ {"name", "display"} ],
