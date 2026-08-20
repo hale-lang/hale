@@ -345,7 +345,15 @@ impl ApplicationModel {
         }
         for f in &self.entities.functions {
             eat(f.name.as_bytes());
-            eat(&[1, u8::from(f.analyzed)]);
+            eat(&[
+                1,
+                u8::from(f.analyzed),
+                u8::from(f.summarized),
+                matches!(
+                    f.kind,
+                    crate::entity::FunctionKind::FailureHandler
+                ) as u8,
+            ]);
         }
         h
     }
@@ -551,6 +559,10 @@ pub enum ModelError {
     /// is legal only on fallback topics (resolve-time law,
     /// mirrored in the schema).
     IllegalFallback { index: usize },
+    /// A coverage law is violated (round 11): `summarized ⇒
+    /// analyzed`, `FailureHandler ⇒ ¬analyzed`, or the legacy fn
+    /// sort disagrees with the summarized set.
+    CoverageLaw { index: usize, law: &'static str },
     /// A topic declares `on_unmatched: fallback` but has no
     /// Fallback subscription — the policy's required catch is
     /// missing.
@@ -653,6 +665,56 @@ impl ApplicationModel {
     pub fn validate(&self) -> Result<(), ModelError> {
         let e = &self.entities;
         let prov_len = self.provenance.records.len();
+
+        // --- coverage laws (round 11): the three states are
+        // typed and ordered — a summarized body was walked, a
+        // failure handler never is, and the legacy fn sort IS the
+        // summarized set.
+        for (i, f) in e.functions.iter().enumerate() {
+            if f.summarized && !f.analyzed {
+                return Err(ModelError::CoverageLaw {
+                    index: i,
+                    law: "summarized implies analyzed",
+                });
+            }
+            if matches!(
+                f.kind,
+                crate::entity::FunctionKind::FailureHandler
+            ) && f.analyzed
+            {
+                return Err(ModelError::CoverageLaw {
+                    index: i,
+                    law: "failure handlers are never analyzed",
+                });
+            }
+        }
+        {
+            let summarized: std::collections::BTreeSet<u32> = e
+                .functions
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| f.summarized)
+                .map(|(i, _)| i as u32)
+                .collect();
+            let legacy: std::collections::BTreeSet<u32> = self
+                .legacy
+                .topology_v1_fns
+                .iter()
+                .map(|f| f.0)
+                .collect();
+            // Out-of-range ids are the existing DanglingId
+            // defect, reported by the legacy-sort check below —
+            // the coverage law only speaks about resolvable rows.
+            let in_range = legacy
+                .iter()
+                .all(|i| (*i as usize) < e.functions.len());
+            if in_range && summarized != legacy {
+                return Err(ModelError::CoverageLaw {
+                    index: usize::MAX,
+                    law: "the legacy fn sort is the summarized set",
+                });
+            }
+        }
 
         // --- provenance record contents resolve (incl. inverted
         // ForeignSpan — an accepted-but-unrenderable record is the

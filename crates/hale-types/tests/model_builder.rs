@@ -1179,7 +1179,12 @@ fn main() { App { }; }
         .iter()
         .find(|f| f.name.contains("on_failure"))
         .expect("failure handler is an executable entity");
-    assert_eq!(handler.kind, hale_model::FunctionKind::Hook);
+    // Round 11: failure handlers carry their TYPED kind — no
+    // consumer infers handler-ness from a display prefix.
+    assert_eq!(
+        handler.kind,
+        hale_model::FunctionKind::FailureHandler
+    );
     // …and both hole out as UnanalyzedBody…
     let unanalyzed: Vec<String> = m
         .holes

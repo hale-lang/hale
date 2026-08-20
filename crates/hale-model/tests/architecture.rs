@@ -66,6 +66,7 @@ fn tiny_model() -> ApplicationModel {
             functions: vec![
                 Function {
                     analyzed: true,
+                    summarized: true,
                     name: "App::run".to_string(),
                     display: "App::run".to_string(),
                     kind: FunctionKind::Hook,
@@ -78,6 +79,7 @@ fn tiny_model() -> ApplicationModel {
                 },
                 Function {
                     analyzed: true,
+                    summarized: true,
                     name: "Worker::on_r".to_string(),
                     display: "Worker::on_r".to_string(),
                     kind: FunctionKind::Method,
@@ -207,7 +209,15 @@ fn tiny_model() -> ApplicationModel {
             ..Capabilities::default()
         },
         provenance: prov,
-        legacy: LegacyProjection::default(),
+        legacy: LegacyProjection {
+            // Round 11 coverage law: the legacy fn sort IS the
+            // summarized set.
+            topology_v1_fns: vec![
+                FunctionId(0),
+                FunctionId(1),
+            ],
+            ..LegacyProjection::default()
+        },
     }
 }
 

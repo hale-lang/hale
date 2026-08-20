@@ -19,7 +19,7 @@ use crate::keys::TopicKey;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FunctionKind {
-    /// A lifecycle hook (birth, run, dissolve, on_failure…).
+    /// A lifecycle hook (birth, run, dissolve…).
     Hook,
     /// A locus method (including bus handlers).
     Method,
@@ -27,6 +27,11 @@ pub enum FunctionKind {
     Free,
     /// A mode body.
     Mode,
+    /// An `on_failure` handler (round 11): executable, but the
+    /// behavior analysis never walks it — a TYPED identity, so
+    /// consumers never infer handler-ness from a display-name
+    /// prefix.
+    FailureHandler,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -69,6 +74,11 @@ pub struct Function {
     /// the evidence layer, the artifact emitter, and the evidence
     /// identity digest all read it here.
     pub analyzed: bool,
+    /// A behavior-SUMMARY row exists for this fn (round 11) — the
+    /// legacy `sorts.fns` universe. Distinct from `analyzed`
+    /// (walked) and from "a certificate engine emitted a report":
+    /// the three coverage states are typed, never conflated.
+    pub summarized: bool,
     pub provenance: ProvenanceId,
 }
 

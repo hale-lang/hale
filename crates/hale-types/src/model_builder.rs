@@ -592,7 +592,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                         fn_rows.insert(
                             format!("{}::on_failure({})", ld, sig),
                             FnInfo {
-                                kind: FunctionKind::Hook,
+                                kind: FunctionKind::FailureHandler,
                                 locus: Some(ld.clone()),
                                 display: format!(
                                     "{}::on_failure({})",
@@ -644,6 +644,14 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             });
         }
     }
+    // Round 11: the summarized set — behavior-summary keys, which
+    // IS the legacy fn sort's universe.
+    let summarized_names: BTreeSet<String> = summary
+        .fns
+        .keys()
+        .filter(|k| user_key(k))
+        .map(fn_name)
+        .collect();
     let fn_id: BTreeMap<&String, FunctionId> = fn_rows
         .keys()
         .enumerate()
@@ -2132,6 +2140,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             opaque_call: opaque_calls.contains(n),
             carries_user_class: authored_user_class.contains(n),
             analyzed: !info.unanalyzed,
+            summarized: summarized_names.contains(n),
             provenance: pid,
         });
     }
@@ -2925,6 +2934,7 @@ pub fn render_internal(m: &ApplicationModel) -> String {
                 FunctionKind::Method => "method",
                 FunctionKind::Free => "free",
                 FunctionKind::Mode => "mode",
+                FunctionKind::FailureHandler => "failure",
             },
             if f.effects.is_empty() {
                 String::new()

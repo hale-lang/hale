@@ -81,6 +81,23 @@ never a fail-open `holds`), and the document `verdict` follows
 the machine. Artifact consumers reject unrecognized semantics by
 design; re-dump with the current compiler.
 
+Round 11: lossless site endpoints + the three-state coverage
+account. Site endpoint rows carry their owning fn/handler and
+authored site ordinal, project onto the V1 relations at (owner,
+name) grain, and their per-owner counts must match the
+span-grained provenance section - a literal end colliding with a
+topic display can no longer disappear behind the dedup'd legacy
+projection (the full narrowing attack refuses at every depth).
+Coverage distinguishes its three typed states: `analyzed` (body
+walked), `summarized` (summary row exists - this set IS
+sorts.fns, and that equality replaces the wrong-universe
+analyzed tie), and the engine-report account; failure handlers
+carry the typed FunctionKind::FailureHandler, so a module method
+named on_failure_helper is a real unanalyzed member and its
+honest artifact admits. The coverage laws are validated in
+ApplicationModel::validate, re-checked at admission, and folded
+into the evidence coverage digest.
+
 Round 10: typed endpoint identity + function-grain coverage.
 Endpoint rows (and declares_publish rows) carry `declared_topic`
 - the model's syntactic fact - so a literal wire address whose

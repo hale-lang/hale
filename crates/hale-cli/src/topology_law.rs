@@ -230,11 +230,14 @@ pub struct RefContext {
     /// The wire-subject pattern universe.
     pub subjects: Vec<String>,
     pub fn_universe: Vec<(String, String)>,
-    /// Function-grain analysis coverage: the displays whose bodies
-    /// the legacy summary walked (round 10). Must equal
-    /// `sorts.fns` exactly — the hashed anchor for the coverage
-    /// account.
+    /// Function-grain analysis coverage (rounds 10–11): the three
+    /// states are TYPED — `analyzed` (body walked), `summarized`
+    /// (a behavior-summary row exists; this set IS `sorts.fns`,
+    /// the hashed anchor), and the failure-handler kind
+    /// (executable, never walked).
     pub fn_analyzed: BTreeSet<String>,
+    pub fn_summarized: BTreeSet<String>,
+    pub fn_failure: BTreeSet<String>,
     /// The legacy analyzable universe (`sorts.fns`) — the old
     /// engines never saw subjects outside it, so a certificate row
     /// on such a subject carries no report and judges
@@ -383,15 +386,45 @@ impl RefContext {
                     only_keys(
                         e,
                         "law.fn_universe[*]",
-                        &["name", "display", "analyzed"],
+                        &["name", "display", "analyzed",
+                          "summarized", "kind"],
                         &[],
                     )?;
-                    if !e["analyzed"].is_boolean() {
-                        return Err(
-                            "law.fn_universe[*].analyzed must be \
-                             a bool"
-                                .to_string(),
-                        );
+                    let analyzed = e["analyzed"]
+                        .as_bool()
+                        .ok_or("law.fn_universe[*].analyzed")?;
+                    let summarized = e["summarized"]
+                        .as_bool()
+                        .ok_or("law.fn_universe[*].summarized")?;
+                    let kind = e["kind"]
+                        .as_str()
+                        .ok_or("law.fn_universe[*].kind")?;
+                    if !matches!(
+                        kind,
+                        "hook" | "method" | "free" | "mode"
+                            | "failure"
+                    ) {
+                        return Err(format!(
+                            "law.fn_universe[*].kind `{}` is \
+                             outside the closed vocabulary",
+                            kind
+                        ));
+                    }
+                    // Coverage laws (round 11): a summarized body
+                    // was walked; a failure handler never is.
+                    if summarized && !analyzed {
+                        return Err(format!(
+                            "law.fn_universe: `{}` is summarized \
+                             but not analyzed",
+                            e["display"].as_str().unwrap_or("?")
+                        ));
+                    }
+                    if kind == "failure" && analyzed {
+                        return Err(format!(
+                            "law.fn_universe: failure handler \
+                             `{}` marked analyzed",
+                            e["display"].as_str().unwrap_or("?")
+                        ));
                     }
                     out.push((
                         e["name"]
@@ -411,6 +444,24 @@ impl RefContext {
                 .into_iter()
                 .flatten()
                 .filter(|e| e["analyzed"] == true)
+                .filter_map(|e| {
+                    e["display"].as_str().map(|s| s.to_string())
+                })
+                .collect(),
+            fn_summarized: v["law"]["fn_universe"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|e| e["summarized"] == true)
+                .filter_map(|e| {
+                    e["display"].as_str().map(|s| s.to_string())
+                })
+                .collect(),
+            fn_failure: v["law"]["fn_universe"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|e| e["kind"] == "failure")
                 .filter_map(|e| {
                     e["display"].as_str().map(|s| s.to_string())
                 })
@@ -614,22 +665,23 @@ impl RefContext {
                 ));
             }
         }
-        // Round 10: the coverage account is validated at FUNCTION
-        // grain against the hashed summary universe — the analyzed
-        // subset of `law.fn_universe` must equal `sorts.fns`
-        // exactly (the legacy summary enumerated precisely the
-        // bodies it walked). No name-prefix inference.
+        // Rounds 10–11: the coverage account is validated at
+        // FUNCTION grain against the hashed summary universe — the
+        // SUMMARIZED subset of `law.fn_universe` must equal
+        // `sorts.fns` exactly (the legacy fn sort IS the
+        // behavior-summary key set; "walked" and "summarized" are
+        // distinct typed states). No name-prefix inference.
         let sorts_set: BTreeSet<&String> =
             cx.sorts_fns.iter().collect();
-        let analyzed_set: BTreeSet<&String> =
-            cx.fn_analyzed.iter().collect();
-        if sorts_set != analyzed_set {
+        let summarized_set: BTreeSet<&String> =
+            cx.fn_summarized.iter().collect();
+        if sorts_set != summarized_set {
             let extra: Vec<_> =
-                analyzed_set.difference(&sorts_set).collect();
+                summarized_set.difference(&sorts_set).collect();
             let missing: Vec<_> =
-                sorts_set.difference(&analyzed_set).collect();
+                sorts_set.difference(&summarized_set).collect();
             return Err(format!(
-                "the analyzed function coverage does not equal \
+                "the summarized function coverage does not equal \
                  the hashed summary universe (extra: {:?}, \
                  missing: {:?})",
                 extra, missing
@@ -647,8 +699,7 @@ impl RefContext {
                 .iter()
                 .filter(|(_, d)| {
                     d.starts_with(&prefix)
-                        && !d[prefix.len()..]
-                            .starts_with("on_failure")
+                        && !cx.fn_failure.contains(d)
                 })
                 .collect();
             if members.is_empty() {
@@ -778,12 +829,24 @@ impl RefContext {
             )?);
         }
         // Endpoint rows, split by (verb, via).
-        let mut site_pub: BTreeSet<(String, Option<String>)> =
-            BTreeSet::new();
+        // Round 11: site rows are LOSSLESS — (owner fn, site
+        // ordinal, subject, topic). No two typed rows collapse
+        // under the legacy display projection, and each must be
+        // unique.
+        let mut site_pub: BTreeSet<(
+            String,
+            u64,
+            String,
+            Option<String>,
+        )> = BTreeSet::new();
         let mut decl_pub: BTreeSet<(String, Option<String>)> =
             BTreeSet::new();
-        let mut subs: BTreeSet<(String, Option<String>)> =
-            BTreeSet::new();
+        let mut subs: BTreeSet<(
+            String,
+            u64,
+            String,
+            Option<String>,
+        )> = BTreeSet::new();
         for (i, e) in v["endpoints"]
             .as_array()
             .ok_or(
@@ -793,33 +856,82 @@ impl RefContext {
             .iter()
             .enumerate()
         {
-            only_keys(
-                e,
-                "endpoints[*]",
-                &["verb", "subject", "via"],
-                &["topic"],
-            )
-            .map_err(|x| format!("endpoints[{}]: {}", i, x))?;
-            let row = decode_endpoint(
-                e,
-                &format!("endpoints[{}]", i),
-            )?;
+            let what = format!("endpoints[{}]", i);
+            let is_site_grain = matches!(
+                (e["verb"].as_str(), e["via"].as_str()),
+                (Some("publish"), Some("site"))
+                    | (Some("subscribe"), Some("declaration"))
+            );
+            if is_site_grain {
+                only_keys(
+                    e,
+                    "endpoints[*]",
+                    &["verb", "subject", "via", "fn", "site"],
+                    &["topic"],
+                )
+                .map_err(|x| format!("{}: {}", what, x))?;
+            } else {
+                only_keys(
+                    e,
+                    "endpoints[*]",
+                    &["verb", "subject", "via"],
+                    &["topic"],
+                )
+                .map_err(|x| format!("{}: {}", what, x))?;
+            }
+            let row = decode_endpoint(e, &what)?;
             model_subjects.insert(row.0.clone());
             match (e["verb"].as_str(), e["via"].as_str()) {
-                (Some("publish"), Some("site")) => {
-                    site_pub.insert(row);
+                (Some("publish"), Some("site"))
+                | (Some("subscribe"), Some("declaration")) => {
+                    let owner = e["fn"]
+                        .as_str()
+                        .ok_or_else(|| {
+                            format!(
+                                "{}: fn must be a string",
+                                what
+                            )
+                        })?
+                        .to_string();
+                    if !cx
+                        .fn_universe
+                        .iter()
+                        .any(|(_, d)| *d == owner)
+                    {
+                        return Err(format!(
+                            "{}: fn `{}` is not in this artifact",
+                            what, owner
+                        ));
+                    }
+                    let site =
+                        e["site"].as_u64().ok_or_else(|| {
+                            format!(
+                                "{}: site must be a number",
+                                what
+                            )
+                        })?;
+                    let full =
+                        (owner, site, row.0.clone(), row.1);
+                    let fresh = if e["verb"] == "publish" {
+                        site_pub.insert(full)
+                    } else {
+                        subs.insert(full)
+                    };
+                    if !fresh {
+                        return Err(format!(
+                            "{}: duplicate typed endpoint row",
+                            what
+                        ));
+                    }
                 }
                 (Some("publish"), Some("declaration")) => {
                     decl_pub.insert(row);
                 }
-                (Some("subscribe"), Some("declaration")) => {
-                    subs.insert(row);
-                }
                 _ => {
                     return Err(format!(
-                        "endpoints[{}]: verb/via outside the \
-                         closed vocabulary",
-                        i
+                        "{}: verb/via outside the closed \
+                         vocabulary",
+                        what
                     ));
                 }
             }
@@ -836,19 +948,30 @@ impl RefContext {
         // Site endpoints project onto the V1 relations under
         // their OWN declared identity: topic-covered ends by the
         // topic display, literal ends by their text.
-        let v1_name = |(su, topic): &(String, Option<String>)|
+        // The image under the legacy projection must match the V1
+        // relations at (owner, name) grain — AND the row COUNTS
+        // must match the site-grained provenance section, which is
+        // what makes the projection lossless: a typed site row
+        // cannot disappear behind a colliding display (the V1
+        // rows dedup; the provenance spans do not).
+        let v1_name = |su: &str, topic: &Option<String>|
          -> String {
-            topic.clone().unwrap_or_else(|| su.clone())
+            topic.clone().unwrap_or_else(|| su.to_string())
         };
-        let derived_pub: BTreeSet<String> =
-            site_pub.iter().map(&v1_name).collect();
-        let rel_pub: BTreeSet<String> = v["relations"]
+        let derived_pub: BTreeSet<(String, String)> = site_pub
+            .iter()
+            .map(|(f, _, su, t)| (f.clone(), v1_name(su, t)))
+            .collect();
+        let rel_pub: BTreeSet<(String, String)> = v["relations"]
             ["publishes"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(|r| {
-                r["subject"].as_str().map(|s| s.to_string())
+                Some((
+                    r["fn"].as_str()?.to_string(),
+                    r["subject"].as_str()?.to_string(),
+                ))
             })
             .collect();
         if derived_pub != rel_pub {
@@ -859,15 +982,24 @@ impl RefContext {
                 derived_pub, rel_pub
             ));
         }
-        let derived_sub: BTreeSet<String> =
-            subs.iter().map(&v1_name).collect();
-        let rel_sub: BTreeSet<String> = v["relations"]
+        let derived_sub: BTreeSet<(String, String)> = subs
+            .iter()
+            .map(|(f, _, su, t)| (f.clone(), v1_name(su, t)))
+            .collect();
+        let rel_sub: BTreeSet<(String, String)> = v["relations"]
             ["subscribes"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(|r| {
-                r["subject"].as_str().map(|s| s.to_string())
+                Some((
+                    format!(
+                        "{}::{}",
+                        r["locus"].as_str()?,
+                        r["handler"].as_str()?
+                    ),
+                    r["subject"].as_str()?.to_string(),
+                ))
             })
             .collect();
         if derived_sub != rel_sub {
@@ -876,6 +1008,64 @@ impl RefContext {
                  artifact's relations (subscribe endpoints: {:?}, \
                  relations: {:?})",
                 derived_sub, rel_sub
+            ));
+        }
+        // Site-count tie against the span-grained provenance
+        // section (one row per authored site): deleting one of two
+        // colliding site endpoints leaves the count behind.
+        let count_by = |rows: &Value,
+                        key: &dyn Fn(&Value) -> Option<String>|
+         -> std::collections::BTreeMap<String, usize> {
+            let mut out = std::collections::BTreeMap::new();
+            for r in rows.as_array().into_iter().flatten() {
+                if let Some(k) = key(r) {
+                    *out.entry(k).or_insert(0) += 1;
+                }
+            }
+            out
+        };
+        let prov_pub_counts = count_by(
+            &v["provenance"]["publishes"],
+            &|r| r["fn"].as_str().map(|s| s.to_string()),
+        );
+        let mut ep_pub_counts: std::collections::BTreeMap<
+            String,
+            usize,
+        > = std::collections::BTreeMap::new();
+        for (f, _, _, _) in &site_pub {
+            *ep_pub_counts.entry(f.clone()).or_insert(0) += 1;
+        }
+        if ep_pub_counts != prov_pub_counts {
+            return Err(format!(
+                "the site-publish endpoints do not match the \
+                 provenance site count (endpoints: {:?}, \
+                 provenance: {:?})",
+                ep_pub_counts, prov_pub_counts
+            ));
+        }
+        let prov_sub_counts = count_by(
+            &v["provenance"]["subscribes"],
+            &|r| {
+                Some(format!(
+                    "{}::{}",
+                    r["locus"].as_str()?,
+                    r["handler"].as_str()?
+                ))
+            },
+        );
+        let mut ep_sub_counts: std::collections::BTreeMap<
+            String,
+            usize,
+        > = std::collections::BTreeMap::new();
+        for (f, _, _, _) in &subs {
+            *ep_sub_counts.entry(f.clone()).or_insert(0) += 1;
+        }
+        if ep_sub_counts != prov_sub_counts {
+            return Err(format!(
+                "the subscribe endpoints do not match the \
+                 provenance site count (endpoints: {:?}, \
+                 provenance: {:?})",
+                ep_sub_counts, prov_sub_counts
             ));
         }
         let law_subjects: BTreeSet<String> =
@@ -2229,7 +2419,11 @@ pub fn validate_law_account(
                 | Law::EffectOnly { at, .. }
                 | Law::EffectPublishSet { at, .. }
                 | Law::NoPanic { at } => {
-                    cx.sorts_fns.iter().any(|f| *f == at.display)
+                    // Round 11: "the engines can report on this
+                    // subject" is the WALKED state, not summary
+                    // membership — the three coverage states are
+                    // typed and distinct.
+                    cx.fn_analyzed.contains(&at.display)
                 }
                 _ => true,
             };

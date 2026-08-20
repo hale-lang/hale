@@ -1176,11 +1176,26 @@ pub fn dump_topology_parts(
                 None => String::new(),
             }
         };
+        // Round 11: site rows are LOSSLESS — each carries its
+        // owning fn/handler and authored site ordinal, so no two
+        // typed rows collapse under the legacy display projection
+        // (a topic-covered end and a colliding literal stay
+        // distinct facts).
+        let fn_disp = |fid: hale_model::FunctionId| -> &str {
+            vmodel
+                .entities
+                .functions
+                .get(fid.index())
+                .map(|f| f.display.as_str())
+                .unwrap_or("")
+        };
         let mut rows: Vec<String> = Vec::new();
         for r in &vmodel.relations.publishes {
             rows.push(format!(
-                "{{\"verb\": \"publish\", \"subject\": {}, \"via\": \"site\"{}}}",
+                "{{\"verb\": \"publish\", \"subject\": {}, \"via\": \"site\", \"fn\": {}, \"site\": {}{}}}",
                 quote(subj_pat(r.subject)),
+                quote(fn_disp(r.function)),
+                r.site,
                 topic_field(&r.declared_topic)
             ));
         }
@@ -1193,8 +1208,10 @@ pub fn dump_topology_parts(
         }
         for r in &vmodel.relations.subscribes {
             rows.push(format!(
-                "{{\"verb\": \"subscribe\", \"subject\": {}, \"via\": \"declaration\"{}}}",
+                "{{\"verb\": \"subscribe\", \"subject\": {}, \"via\": \"declaration\", \"fn\": {}, \"site\": {}{}}}",
                 quote(subj_pat(r.subject)),
+                quote(fn_disp(r.handler)),
+                r.site,
                 topic_field(&r.declared_topic)
             ));
         }
@@ -1555,11 +1572,24 @@ pub fn dump_topology_parts(
                 .functions
                 .iter()
                 .map(|f| {
+                    let kind = match f.kind {
+                        hale_model::FunctionKind::Hook => "hook",
+                        hale_model::FunctionKind::Method => {
+                            "method"
+                        }
+                        hale_model::FunctionKind::Free => "free",
+                        hale_model::FunctionKind::Mode => "mode",
+                        hale_model::FunctionKind::FailureHandler => {
+                            "failure"
+                        }
+                    };
                     format!(
-                        "{{\"name\": {}, \"display\": {}, \"analyzed\": {}}}",
+                        "{{\"name\": {}, \"display\": {}, \"analyzed\": {}, \"summarized\": {}, \"kind\": {}}}",
                         quote(&f.name),
                         quote(&f.display),
-                        f.analyzed
+                        f.analyzed,
+                        f.summarized,
+                        quote(kind)
                     )
                 })
                 .collect();

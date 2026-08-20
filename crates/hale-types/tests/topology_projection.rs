@@ -557,6 +557,7 @@ fn labels_and_effects_are_restricted_to_the_v1_universe() {
     let p = ProvenanceId(0);
     let f = |name: &str, effects: Vec<&str>| Function {
         analyzed: true,
+        summarized: true,
         name: name.to_string(),
         display: name.to_string(),
         kind: FunctionKind::Free,

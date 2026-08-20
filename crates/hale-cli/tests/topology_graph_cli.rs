@@ -2362,7 +2362,8 @@ fn main() { App { }; }
     // Remove the SITE endpoint row while relations.publishes keeps
     // the actual publish.
     let needle = "{\"verb\": \"publish\", \"subject\": \
-                  \"audit.log\", \"via\": \"site\"}, ";
+                  \"audit.log\", \"via\": \"site\", \"fn\": \
+                  \"Emitter::emit\", \"site\": 0}, ";
     let narrowed = raw.replacen(needle, "", 1);
     assert_ne!(narrowed, raw, "test premise: the row was deleted");
     let p2 = dir.join("narrowed.topology");
@@ -2493,12 +2494,14 @@ fn main() { App { }; }
     // Retag the literal site endpoint as topic-covered: its
     // subject `Orders` disagrees with the topic's wire subject.
     let needle = "{\"verb\": \"publish\", \"subject\": \"Orders\", \
-                  \"via\": \"site\"}";
+                  \"via\": \"site\", \"fn\": \"Emitter::emit\", \
+                  \"site\": 1}";
     assert!(raw.contains(needle), "literal site row exists");
     let retagged = raw.replacen(
         needle,
         "{\"verb\": \"publish\", \"subject\": \"Orders\", \
-         \"via\": \"site\", \"topic\": \"Orders\"}",
+         \"via\": \"site\", \"fn\": \"Emitter::emit\", \
+         \"site\": 1, \"topic\": \"Orders\"}",
         1,
     );
     let p2 = dir.join("retagged.topology");
@@ -2618,6 +2621,147 @@ fn main() { App { }; }
         String::from_utf8_lossy(&out.stderr)
             .contains("vacuously analyzable"),
         "the memberless flip refuses on the recompute: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 11: the typed site projection is LOSSLESS — removing the
+/// literal `"Orders"` endpoint (plus its declaration row, subject,
+/// and candidates) while keeping the topic-covered end cannot hide
+/// behind the colliding legacy display: the owner-grain relation
+/// tie and the span-grained provenance count both contradict it.
+#[test]
+fn colliding_literal_narrowing_is_refused() {
+    let dir = workdir("losslessnarrow");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+type Msg { n: Int = 0; }
+topic Orders { payload: Msg; subject: "wire.orders"; }
+locus Emitter {
+    params { n: Int = 0; }
+    bus { publish Orders; publish "Orders" of type Msg; }
+    fn emit(v: Int) {
+        let m = Msg { n: v };
+        Orders <- m;
+        "Orders" <- m;
+    }
+}
+locus Sink {
+    params { n: Int = 0; }
+    bus { subscribe Orders as on_t; subscribe "Orders" as on_l of type Msg; }
+    fn on_t(m: Msg) { self.n = m.n; }
+    fn on_l(m: Msg) { self.n = m.n; }
+}
+main locus App {
+    params { e: Emitter = Emitter { }; s: Sink = Sink { }; }
+    run() { self.e.emit(1); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    let narrowed = raw
+        .replacen(
+            "{\"verb\": \"publish\", \"subject\": \"Orders\", \
+             \"via\": \"site\", \"fn\": \"Emitter::emit\", \
+             \"site\": 1}, ",
+            "",
+            1,
+        )
+        .replacen(
+            "{\"verb\": \"publish\", \"subject\": \"Orders\", \
+             \"via\": \"declaration\"}, ",
+            "",
+            1,
+        )
+        .replacen(
+            "{\"verb\": \"subscribe\", \"subject\": \"Orders\", \
+             \"via\": \"declaration\", \"fn\": \"Sink::on_l\", \
+             \"site\": 1}, ",
+            "",
+            1,
+        )
+        .replacen(
+            "{\"locus\": \"Emitter\", \"subject\": \"Orders\"}, ",
+            "",
+            1,
+        );
+    assert_ne!(narrowed, raw, "test premise: the removals landed");
+    let p2 = dir.join("narrowed.topology");
+    std::fs::write(&p2, restamp_digest(&strip_trailer(&narrowed)))
+        .unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p2)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("does not project from the artifact's")
+            || err.contains("provenance site count")
+            || err.contains("declares_publish relation"),
+        "the lossless projection refuses the narrowing: {}",
+        err
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 11: the coverage account is typed, not prefix-inferred —
+/// a module-scoped ordinary method named `on_failure_helper` is a
+/// real (unanalyzed) member, so the module locus is honestly
+/// analyzable=false and its artifact admits.
+#[test]
+fn on_failure_helper_module_method_admits() {
+    let dir = workdir("onfhelper");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+module inner {
+    @phase_effects(birth: {})
+    locus Hidden {
+        params { n: Int = 0; }
+        fn on_failure_helper(v: Int) -> Int {
+            return v;
+        }
+    }
+}
+main locus App {
+    params { n: Int = 0; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    assert!(
+        raw.contains("\"kind\": \"method\"")
+            && raw.contains(
+                "\"name\": \"Hidden\", \"display\": \"Hidden\", \
+                 \"analyzable\": false"
+            ),
+        "the helper is a typed METHOD and the locus honestly \
+         unanalyzable:\n{}",
+        raw
+    );
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&artifact)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "the helper-named module method admits: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     let _ = std::fs::remove_dir_all(&dir);
