@@ -2007,14 +2007,19 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             for item in items {
                 match item {
                     TopDecl::Locus(l) if depth > 0 => {
-                        // Failure handlers are NEVER analyzed
-                        // anywhere (typed FailureHandler kind), so
-                        // they cannot make a locus unanalyzable —
-                        // one rule, shared with admission's
-                        // member-coverage recompute (round 12: a
-                        // module-scoped failure-only locus is
-                        // vacuously analyzable, symmetric with its
-                        // top-level equivalent).
+                        // ONE membership rule, shared with
+                        // admission's member-coverage recompute:
+                        // only members that produce FUNCTION
+                        // entities the certificate engines could
+                        // walk count. Failure handlers are never
+                        // analyzed anywhere (typed FailureHandler
+                        // kind), and CLOSURES are invisible to the
+                        // certificate machinery at every scope
+                        // (round 13: a top-level closure-only
+                        // locus already certifies synthetically —
+                        // the engines never walk closure bodies —
+                        // so a module-scoped one is vacuously
+                        // analyzable, symmetric).
                         let executable =
                             l.members.iter().any(|m| {
                                 matches!(
@@ -2022,7 +2027,6 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                                     LocusMember::Fn(_)
                                         | LocusMember::Lifecycle(_)
                                         | LocusMember::Mode(_)
-                                        | LocusMember::Closure(_)
                                 )
                             });
                         if executable {
@@ -2418,9 +2422,19 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     // Declared publisher ends: `bus { publish T; }` — the endpoint
     // grain, independent of whether any send exists.
     {
+        // Round 13: the canonical identity INCLUDES the typed
+        // declaredness — `publish "wire.orders" of type Msg;` and
+        // `publish Orders;` resolve to one SubjectId but are
+        // distinct semantic facts (BusSubject::canonical and the
+        // endpoint judgment both branch on declared_topic), so
+        // both survive regardless of declaration order.
         let mut ends: BTreeMap<
-            (hale_model::LocusDeclId, SubjectId),
-            (Option<TopicId>, PayloadContractId, ProvenanceId),
+            (
+                hale_model::LocusDeclId,
+                SubjectId,
+                Option<TopicId>,
+            ),
+            (PayloadContractId, ProvenanceId),
         > = BTreeMap::new();
         for l in &ast.loci {
             let Some(lid) = locus_id.get(&l.name.name) else {
@@ -2471,12 +2485,16 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                             }
                         };
                     let pid = intern_span(&mut records, *span);
-                    ends.entry((*lid, subject_id[&subj_str]))
-                        .or_insert((declared, payload, pid));
+                    ends.entry((
+                        *lid,
+                        subject_id[&subj_str],
+                        declared,
+                    ))
+                    .or_insert((payload, pid));
                 }
             }
         }
-        for ((lid, sid), (declared, payload, pid)) in ends {
+        for ((lid, sid, declared), (payload, pid)) in ends {
             r.declares_publish.push(
                 hale_model::DeclaresPublish {
                     locus: lid,

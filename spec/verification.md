@@ -452,7 +452,18 @@ disappear behind a collision). Declaration rows come from the
 typed **`declares_publish`** relation section and keep the OWNING
 LOCUS in the compared identity — a declaration cannot move
 between loci while a `require publishes` verdict rides on the
-original owner. Known residual, by design: the CONTENT of a site
+original owner. The relation's canonical identity is
+`(locus, subject, declared_topic)` (round 13): a literal
+declaration whose text equals a topic's wire subject and the
+typed topic declaration are distinct endpoint facts, and BOTH
+survive regardless of declaration order — the model schema
+represents them separately, exactly as `BusSubject::canonical`
+and the endpoint judgment distinguish them. Closures never
+participate in locus analyzability: they are invisible to the
+certificate machinery at every scope (a top-level closure-only
+locus already certifies synthetically), so the builder and
+admission share one membership rule — only members that produce
+function entities the engines could walk count. Known residual, by design: the CONTENT of a site
 row (its wire/topic identity) at an unchanged span is not
 independently verifiable without the source — the wire identity
 of a display-colliding literal lives only in unhashed sections,

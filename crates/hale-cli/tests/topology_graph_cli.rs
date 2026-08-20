@@ -2890,3 +2890,126 @@ fn main() { App { }; }
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Round 13: a literal declaration whose text equals a topic's
+/// wire subject and the typed topic declaration are DISTINCT
+/// endpoint facts — the canonical identity includes declared_topic,
+/// so both survive in EITHER declaration order (no first-writer
+/// collapse), and the artifact admits.
+#[test]
+fn colliding_declarations_both_survive() {
+    for (tag, bus) in [
+        (
+            "declorder1",
+            "publish \"wire.orders\" of type Msg;\n        \
+             publish Orders;",
+        ),
+        (
+            "declorder2",
+            "publish Orders;\n        \
+             publish \"wire.orders\" of type Msg;",
+        ),
+    ] {
+        let dir = workdir(tag);
+        let src = dir.join("app.hl");
+        std::fs::write(
+            &src,
+            format!(
+                "type Msg {{ n: Int = 0; }}\n\
+                 topic Orders {{ payload: Msg; subject: \
+                 \"wire.orders\"; }}\n\
+                 locus Producer {{\n    params {{ n: Int = 0; \
+                 }}\n    bus {{\n        {}\n    }}\n}}\n\
+                 main locus App {{\n    params {{ p: Producer = \
+                 Producer {{ }}; }}\n    run() {{ println(1); \
+                 }}\n}}\nfn main() {{ App {{ }}; }}\n",
+                bus
+            ),
+        )
+        .unwrap();
+        let artifact = dump_artifact(&dir, &src);
+        let raw = std::fs::read_to_string(&artifact).unwrap();
+        // Both typed facts present: the literal (no topic) and
+        // the typed topic end.
+        assert!(
+            raw.contains(
+                "{\"locus\": \"Producer\", \"subject\": \
+                 \"wire.orders\", \"file\""
+            ) && raw.contains(
+                "{\"locus\": \"Producer\", \"subject\": \
+                 \"wire.orders\", \"topic\": \"Orders\", \
+                 \"file\""
+            ),
+            "{}: both declarations survive:\n{}",
+            tag,
+            raw
+        );
+        let out = hale()
+            .arg("topology")
+            .arg("graph")
+            .arg(&artifact)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}: the colliding declarations admit: {}",
+            tag,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Round 13: closures are invisible to the certificate machinery
+/// at EVERY scope (a top-level closure-only locus already
+/// certifies synthetically), so one membership rule applies on
+/// both sides and a module-scoped closure-only locus is vacuously
+/// analyzable — the compiler's own artifact admits.
+#[test]
+fn module_closure_only_locus_admits() {
+    let dir = workdir("closuremod");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+module inner {
+    @phase_effects(birth: {})
+    locus Hidden {
+        params { n: Int = 0; }
+        closure heartbeat {
+            self.n ~~ 0 within 0;
+            epoch duration(5ms);
+        }
+    }
+}
+main locus App {
+    params { n: Int = 0; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    assert!(
+        raw.contains(
+            "\"name\": \"Hidden\", \"display\": \"Hidden\", \
+             \"analyzable\": true"
+        ),
+        "one membership rule on both sides:\n{}",
+        raw
+    );
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&artifact)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "the closure-only module locus admits: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

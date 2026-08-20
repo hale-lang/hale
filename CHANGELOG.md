@@ -81,6 +81,18 @@ never a fail-open `holds`), and the document `verdict` follows
 the machine. Artifact consumers reject unrecognized semantics by
 design; re-dump with the current compiler.
 
+Round 13: declared-end identity includes the typed topic, and
+one closure rule. declares_publish's canonical key is (locus,
+subject, declared_topic) - a literal declaration colliding with a
+topic's wire subject and the typed topic declaration are distinct
+facts that BOTH survive in either declaration order (the
+first-writer collapse is gone; `require publishes(some G, topic
+Orders)` no longer depends on source order). Closures never
+count toward locus analyzability on either side: they are
+invisible to the certificate machinery at every scope, so a
+module-scoped closure-only locus is vacuously analyzable and its
+honest artifact admits.
+
 Round 12: span-anchored endpoints + the closed coverage
 account. Site endpoint rows carry their authored span, exactly
 one occupant per (verb, owner, site), and their per-owner span

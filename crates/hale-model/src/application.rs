@@ -662,7 +662,7 @@ impl ApplicationModel {
     /// | `owns`           | (parent, child)                  |
     /// | `calls`          | (from, to, dispatch, site)       |
     /// | `publishes`      | (function, subject, site)        |
-    /// | `declares_publish` | (locus, subject)               |
+    /// | `declares_publish` | (locus, subject, declared_topic) |
     /// | `subscribes`     | (subject, handler, site)         |
     /// | `dead_interface_calls` | (from, site)               |
     /// | `placed_in`      | (instance)                       |
@@ -1181,7 +1181,9 @@ impl ApplicationModel {
         }
         check_sorted_keys(
             "declares_publish",
-            r.declares_publish.iter().map(|x| (x.locus, x.subject)),
+            r.declares_publish
+                .iter()
+                .map(|x| (x.locus, x.subject, x.declared_topic)),
         )?;
         for (i, x) in r.declares_publish.iter().enumerate() {
             if x.locus.index() >= loci
