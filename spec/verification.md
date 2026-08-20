@@ -977,6 +977,15 @@ would be judged one at a time and recorded under that name as though
 the whole sentence held, so the shape is refused: split it, and each
 half gets its own name and verdict.
 
+Fleet composition decodes each admitted component ONCE into a
+typed interior (GH #476 Change 7) — the vertex universe, both
+call relations unioned, the publish/subscribe rows, the topics
+join surface, the component's own unknowns, decl provenance, and
+the hashed endpoint identity — and composes from those typed rows
+exclusively; no modeled fact is recovered from generic JSON after
+admission. Endpoint-use checks ("declaring a topic is not using
+it") read the hashed wire identity at site grain.
+
 Route admission validates **roles**, not just topic identity. A
 publisher endpoint must publish the subject and a subscriber endpoint
 must subscribe it, as its own artifact records — declaring a topic is

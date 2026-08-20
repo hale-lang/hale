@@ -33,6 +33,7 @@ mod pkg;
 mod replay;
 mod sign;
 mod topology_graph;
+mod fleet_model;
 mod topology_law;
 
 fn main() -> ExitCode {

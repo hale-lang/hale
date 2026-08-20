@@ -10,6 +10,16 @@ behavior.
 
 ### Typed FleetModel + the versioned shape transition (GH #476 Change 7)
 
+Fleet composition is TYPED end to end: component artifacts are
+decoded ONCE into a typed ComponentModel (fns, unioned call
+relations, V1 publish/subscribe rows, the topics join surface,
+unknowns, decl provenance, and the hashed endpoint identity)
+immediately after the shared admission - the rest of composition
+never walks generic JSON for a modeled fact (the #476
+architecture canary). Route endpoint checks now read the
+byte-exact hashed wire identity: "declares but never sends" is
+judged from typed site rows, collision-proof.
+
 Schema 1.12: canonical ENDPOINT IDENTITY joins the hashed model
 half (`endpoint_identity`: verb, owner, source-order site
 ordinal, byte-exact wire subject, declared topic). The V1

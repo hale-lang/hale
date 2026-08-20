@@ -187,7 +187,9 @@ pub struct Endpoint {
 struct Component {
     id: String,
     labels: Vec<String>,
-    artifact: serde_json::Value,
+    /// The typed interior (GH #476 Change 7) — decoded once after
+    /// admission; composition never crawls generic JSON again.
+    model: crate::fleet_model::ComponentModel,
     path: PathBuf,
     /// SHA-256 of the artifact bytes that were ADMITTED — recorded
     /// in the fleet artifact so an auditor can re-check exactly what
@@ -233,10 +235,10 @@ pub fn compose(
             continue;
         }
         match load_artifact(&base.join(&inst.artifact), trust) {
-            Ok((v, sha256, signed_by)) => comps.push(Component {
+            Ok((model, sha256, signed_by)) => comps.push(Component {
                 id: inst.id.clone(),
                 labels: inst.labels.clone(),
-                artifact: v,
+                model,
                 path: base.join(&inst.artifact),
                 sha256,
                 signed_by,
@@ -259,10 +261,8 @@ pub fn compose(
     let mut call_edges: Vec<(String, String)> = Vec::new();
     let mut local_bus: Vec<(String, String)> = Vec::new();
     for c in &comps {
-        for f in arr(&c.artifact["sorts"]["fns"]) {
-            if let Some(n) = f.as_str() {
-                vertices.push(format!("{}::{}", c.id, n));
-            }
+        for n in &c.model.fns {
+            vertices.push(format!("{}::{}", c.id, n));
         }
         // BOTH call relations. `calls_via_stdlib` holds user→user
         // paths whose interior is stdlib code, contracted to their
@@ -272,36 +272,22 @@ pub fn compose(
         // whose routed handler reaches its routed publisher through
         // `std::http::Router` is invisible in `calls` alone, and a
         // prohibition spanning it would report a false absence.
-        for rel in ["calls", "calls_via_stdlib"] {
-            for e in arr(&c.artifact["relations"][rel]) {
-                if let (Some(f), Some(t)) =
-                    (e["from"].as_str(), e["to"].as_str())
-                {
-                    call_edges.push((
-                        format!("{}::{}", c.id, f),
-                        format!("{}::{}", c.id, t),
-                    ));
-                }
-            }
+        // (The typed decode already unions them.)
+        for (f, t) in &c.model.calls {
+            call_edges.push((
+                format!("{}::{}", c.id, f),
+                format!("{}::{}", c.id, t),
+            ));
         }
         // A local publish→subscribe pair inside one instance is a
         // real in-process edge and stays one.
-        for p in arr(&c.artifact["relations"]["publishes"]) {
-            let (Some(pf), Some(subj)) =
-                (p["fn"].as_str(), p["subject"].as_str())
-            else {
-                continue;
-            };
-            for s in arr(&c.artifact["relations"]["subscribes"]) {
-                if s["subject"].as_str() == Some(subj) {
-                    if let (Some(l), Some(h)) =
-                        (s["locus"].as_str(), s["handler"].as_str())
-                    {
-                        local_bus.push((
-                            format!("{}::{}", c.id, pf),
-                            format!("{}::{}::{}", c.id, l, h),
-                        ));
-                    }
+        for (pf, subj) in &c.model.publishes {
+            for (ssubj, l, h) in &c.model.subscribes {
+                if ssubj == subj {
+                    local_bus.push((
+                        format!("{}::{}", c.id, pf),
+                        format!("{}::{}::{}", c.id, l, h),
+                    ));
                 }
             }
         }
@@ -355,7 +341,12 @@ pub fn compose(
                 bad = true;
                 continue;
             };
-            match wire_id(&c.artifact, &ep.topic) {
+            match c.model.wire_of(&ep.topic).map(|(s, h)| {
+                WireId {
+                    subject: s.to_string(),
+                    payload_hash: h.to_string(),
+                }
+            }) {
                 None => {
                     errs.push(format!(
                         "route `{}`: instance `{}` declares no topic \
@@ -364,11 +355,9 @@ pub fn compose(
                     ));
                     bad = true;
                 }
-                Some(w) if !has_endpoint(
-                    &c.artifact,
-                    &w.subject,
-                    publishing,
-                ) =>
+                Some(w) if !c
+                    .model
+                    .has_endpoint(&w.subject, publishing) =>
                 {
                     errs.push(format!(
                         "route `{}`: instance `{}` is named as a {} of \
@@ -427,12 +416,14 @@ pub fn compose(
             let Some(pc) = by_id.get(p.instance.as_str()) else {
                 continue;
             };
-            for pf in publishers_of(&pc.artifact, &p.topic) {
+            for pf in pc.model.publishers_of(&p.topic) {
                 for s in &r.subscribers {
                     let Some(sc) = by_id.get(s.instance.as_str()) else {
                         continue;
                     };
-                    for (l, h) in subscribers_of(&sc.artifact, &s.topic) {
+                    for (l, h) in
+                        sc.model.subscribers_of(&s.topic)
+                    {
                         route_edges.push((
                             format!("{}::{}", p.instance, pf),
                             format!("{}::{}::{}", s.instance, l, h),
@@ -475,15 +466,18 @@ pub fn compose(
     // and leave `forbid_reaches` reporting `holds`.
     let mut holes: Vec<(String, String)> = Vec::new();
     for c in &comps {
-        for u in arr(&c.artifact["unknowns"]) {
+        for (f, reasons) in &c.model.unknowns {
             unknowns.push(format!(
-                "    {{\"instance\": {}, \"unknown\": {}}}",
+                "    {{\"instance\": {}, \"unknown\": {{\"fn\": {}, \"reasons\": [{}]}}}}",
                 q(&c.id),
-                serde_json::to_string(&u).unwrap_or_else(|_| "null".into())
+                q(f),
+                reasons
+                    .iter()
+                    .map(|r| q(r))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
-            let Some(f) = u["fn"].as_str() else { continue };
-            for r in arr(&u["reasons"]) {
-                let Some(kind) = r.as_str() else { continue };
+            for kind in reasons {
                 if hale_types::model_graph::kind_hides_edges(kind) {
                     holes.push((
                         format!("{}::{}", c.id, f),
@@ -613,9 +607,9 @@ fn evaluate_claims(
     let all_vertices: Vec<String> = comps
         .iter()
         .flat_map(|c| {
-            arr(&c.artifact["sorts"]["fns"])
+            c.model
+                .fns
                 .iter()
-                .filter_map(|f| f.as_str())
                 .map(|n| format!("{}::{}", c.id, n))
                 .collect::<Vec<_>>()
         })
@@ -802,11 +796,11 @@ fn evaluate_claims(
                         .and_then(|r| {
                             r.publishers.first().and_then(|ep| {
                                 by_id.get(ep.instance.as_str()).and_then(
-                                    |c| wire_id(&c.artifact, &ep.topic),
+                                    |c| c.model.wire_of(&ep.topic),
                                 )
                             })
                         })
-                        .map(|w| w.subject)
+                        .map(|(subject, _)| subject.to_string())
                         .unwrap_or_default();
                     if !granted.contains(subj.as_str()) {
                         bad.push(format!(
@@ -879,7 +873,7 @@ fn render_witness(
         let inst = v.split("::").next().unwrap_or("");
         let local = v.strip_prefix(&format!("{}::", inst)).unwrap_or(v);
         if let Some(c) = by_id.get(inst) {
-            if let Some(loc) = decl_location(&c.artifact, local) {
+            if let Some(loc) = c.model.decl_location(local) {
                 out.push_str(&format!("  [{}]", loc));
             }
         }
@@ -887,19 +881,6 @@ fn render_witness(
     out
 }
 
-/// `path/to/file.hl` for a vertex, via the artifact's source map.
-fn decl_location(a: &serde_json::Value, local: &str) -> Option<String> {
-    let decl = local.split("::").next().unwrap_or(local);
-    let row = a["provenance"]["decls"].get(decl)?;
-    let sid = row["source"].as_i64()?;
-    if sid < 0 {
-        return None;
-    }
-    arr(&a["sources"])
-        .iter()
-        .find(|s| s["id"].as_i64() == Some(sid))
-        .and_then(|s| s["path"].as_str().map(str::to_string))
-}
 
 /// `require subscribes/publishes` is a STRUCTURAL DEPLOYMENT
 /// statement: some instance in the group exposes the endpoint **and
@@ -933,7 +914,7 @@ fn endpoint_claim(
         .iter()
         .filter(|c| {
             g.contains(&c.id)
-                && has_endpoint(&c.artifact, &r.subject, publishing)
+                && c.model.has_endpoint(&r.subject, publishing)
         })
         .map(|c| c.id.as_str())
         .collect();
@@ -999,7 +980,7 @@ fn count_claim(
 ) -> (&'static str, String) {
     let hits: Vec<&str> = comps
         .iter()
-        .filter(|c| has_endpoint(&c.artifact, &k.subject, publishing))
+        .filter(|c| c.model.has_endpoint(&k.subject, publishing))
         .map(|c| c.id.as_str())
         .collect();
     let n = hits.len();
@@ -1022,24 +1003,6 @@ fn count_claim(
     }
 }
 
-/// Does this component publish / subscribe the given WIRE subject?
-/// Resolved through its `topics` table, never by local name.
-fn has_endpoint(
-    a: &serde_json::Value,
-    subject: &str,
-    publishing: bool,
-) -> bool {
-    let locals: BTreeSet<String> = arr(&a["topics"])
-        .iter()
-        .filter(|t| t["subject"].as_str() == Some(subject))
-        .filter_map(|t| t["name"].as_str().map(str::to_string))
-        .collect();
-    let rel =
-        if publishing { "publishes" } else { "subscribes" };
-    arr(&a["relations"][rel]).iter().any(|r| {
-        r["subject"].as_str().is_some_and(|s| locals.contains(s))
-    })
-}
 
 #[allow(clippy::too_many_arguments)]
 fn render(
@@ -1063,7 +1026,7 @@ fn render(
         model.push_str(&format!(
             "    {{\"id\": {}, \"app_shape_hash\": {}, \"labels\": [{}]}}{}\n",
             q(&c.id),
-            q(c.artifact["shape_hash"].as_str().unwrap_or("")),
+            q(&c.model.shape_hash),
             c.labels
                 .iter()
                 .map(|l| q(l))
@@ -1253,7 +1216,10 @@ fn read_plan(p: &Path) -> Result<FleetPlan, Vec<String>> {
 fn load_artifact(
     p: &Path,
     trust: &crate::sign::Trust,
-) -> Result<(serde_json::Value, String, Option<String>), String> {
+) -> Result<
+    (crate::fleet_model::ComponentModel, String, Option<String>),
+    String,
+> {
     let src = std::fs::read_to_string(p)
         .map_err(|e| format!("read {}: {}", p.display(), e))?;
     // Provenance BEFORE integrity BEFORE meaning. The signature is
@@ -1341,52 +1307,17 @@ fn load_artifact(
         &v,
         &p.display().to_string(),
     )?;
-    Ok((v, sha256, signed_by))
+    // GH #476 Change 7: decode the typed interior ONCE — the last
+    // time this artifact's JSON is touched.
+    let model = crate::fleet_model::ComponentModel::decode(
+        &v,
+        &p.display().to_string(),
+    )?;
+    Ok((model, sha256, signed_by))
 }
 
-fn wire_id(a: &serde_json::Value, local: &str) -> Option<WireId> {
-    arr(&a["topics"]).iter().find_map(|t| {
-        if t["name"].as_str() == Some(local) {
-            Some(WireId {
-                subject: t["subject"].as_str().unwrap_or("").to_string(),
-                payload_hash: t["payload_hash"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string(),
-            })
-        } else {
-            None
-        }
-    })
-}
 
-fn publishers_of(a: &serde_json::Value, local: &str) -> Vec<String> {
-    arr(&a["relations"]["publishes"])
-        .iter()
-        .filter(|p| p["subject"].as_str() == Some(local))
-        .filter_map(|p| p["fn"].as_str().map(str::to_string))
-        .collect()
-}
 
-fn subscribers_of(
-    a: &serde_json::Value,
-    local: &str,
-) -> Vec<(String, String)> {
-    arr(&a["relations"]["subscribes"])
-        .iter()
-        .filter(|s| s["subject"].as_str() == Some(local))
-        .filter_map(|s| {
-            Some((
-                s["locus"].as_str()?.to_string(),
-                s["handler"].as_str()?.to_string(),
-            ))
-        })
-        .collect()
-}
-
-fn arr(v: &serde_json::Value) -> Vec<serde_json::Value> {
-    v.as_array().cloned().unwrap_or_default()
-}
 
 fn q(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
