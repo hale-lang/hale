@@ -2083,10 +2083,25 @@ fn implicit_phase_and_module_locus_admit() {
              println(1); }\n}\nfn main() { App { }; }\n",
             "holds",
         ),
+        // Round 10: a MEMBERLESS module locus is vacuously
+        // analyzable — no body to walk means every phase contract
+        // holds by absence (and the flag is recomputable, closing
+        // the memberless flip in both directions).
         (
             "modlocusphase",
             "module inner {\n    @phase_effects(birth: {})\n    \
              locus Hidden {\n        params { n: Int = 0; }\n    \
+             }\n}\nmain locus App {\n    params { n: Int = 0; }\n    \
+             run() { println(1); }\n}\nfn main() { App { }; }\n",
+            "holds",
+        ),
+        // A module locus WITH executable members is genuinely
+        // unanalyzed: residue, `uncertified`.
+        (
+            "modlocusmember",
+            "module inner {\n    @phase_effects(birth: {})\n    \
+             locus Hidden {\n        params { n: Int = 0; }\n        \
+             fn poke(v: Int) -> Int { return v; }\n    \
              }\n}\nmain locus App {\n    params { n: Int = 0; }\n    \
              run() { println(1); }\n}\nfn main() { App { }; }\n",
             "uncertified",
@@ -2417,8 +2432,192 @@ fn main() { App { }; }
     assert!(!out.status.success());
     assert!(
         String::from_utf8_lossy(&out.stderr)
-            .contains("its member account says"),
-        "the member-universe recompute refuses the flip: {}",
+            .contains("its member coverage says"),
+        "the member-coverage recompute refuses the flip: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 10: a literal wire address whose text collides with a
+/// topic display stays a LITERAL — endpoint identity is typed
+/// (`declared_topic` from the model's syntactic fact), never
+/// inferred from strings. The compiler's own colliding artifact
+/// admits; retagging the literal as topic-covered refuses on the
+/// wire-subject disagreement.
+#[test]
+fn literal_topic_collision_admits_and_binds() {
+    let dir = workdir("collide");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+type Msg { n: Int = 0; }
+topic Orders { payload: Msg; subject: "wire.orders"; }
+locus Emitter {
+    params { n: Int = 0; }
+    bus { publish Orders; publish "Orders" of type Msg; }
+    fn emit(v: Int) {
+        let m = Msg { n: v };
+        Orders <- m;
+        "Orders" <- m;
+    }
+}
+locus Sink {
+    params { n: Int = 0; }
+    bus { subscribe Orders as on_t; subscribe "Orders" as on_l of type Msg; }
+    fn on_t(m: Msg) { self.n = m.n; }
+    fn on_l(m: Msg) { self.n = m.n; }
+}
+main locus App {
+    params { e: Emitter = Emitter { }; s: Sink = Sink { }; }
+    run() { self.e.emit(1); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&artifact)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "the colliding-literal artifact admits: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Retag the literal site endpoint as topic-covered: its
+    // subject `Orders` disagrees with the topic's wire subject.
+    let needle = "{\"verb\": \"publish\", \"subject\": \"Orders\", \
+                  \"via\": \"site\"}";
+    assert!(raw.contains(needle), "literal site row exists");
+    let retagged = raw.replacen(
+        needle,
+        "{\"verb\": \"publish\", \"subject\": \"Orders\", \
+         \"via\": \"site\", \"topic\": \"Orders\"}",
+        1,
+    );
+    let p2 = dir.join("retagged.topology");
+    std::fs::write(&p2, restamp_digest(&strip_trailer(&retagged)))
+        .unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p2)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("disagrees with topic"),
+        "the typed identity refuses the retag: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 10: a top-level locus whose only executable row is an
+/// `on_failure` handler is analyzable (the handler is executable
+/// but never analyzed — an exempt row in the member coverage);
+/// the compiler's own artifact admits.
+#[test]
+fn on_failure_only_locus_admits() {
+    let dir = workdir("onfail");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+@phase_effects(birth: {})
+locus Guard {
+    params { n: Int = 0; }
+    on_failure(e: FailureInfo) { self.n = 1; }
+}
+main locus App {
+    params { g: Guard = Guard { }; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&artifact)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "the on_failure-only locus admits: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Round 10: the MEMBERLESS module-locus flip is closed in both
+/// directions — a memberless locus is vacuously analyzable, so the
+/// honest artifact says analyzable=true/holds, and marking it
+/// analyzable=false (to manufacture `uncertified`) refuses on the
+/// recompute.
+#[test]
+fn memberless_locus_flag_is_recomputable() {
+    let dir = workdir("memberless");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+module inner {
+    @phase_effects(birth: {})
+    locus Hidden {
+        params { n: Int = 0; }
+    }
+}
+main locus App {
+    params { n: Int = 0; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    assert!(
+        raw.contains(
+            "\"name\": \"Hidden\", \"display\": \"Hidden\", \
+             \"analyzable\": true"
+        ) && raw.contains("\"verdict\": \"clean\""),
+        "a memberless module locus is vacuously analyzable and \
+         holds:\n{}",
+        raw
+    );
+    let flipped = raw
+        .replacen(
+            "\"name\": \"Hidden\", \"display\": \"Hidden\", \
+             \"analyzable\": true",
+            "\"name\": \"Hidden\", \"display\": \"Hidden\", \
+             \"analyzable\": false",
+            1,
+        );
+    let p2 = dir.join("flipped.topology");
+    std::fs::write(&p2, restamp_digest(&strip_trailer(&flipped)))
+        .unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p2)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr)
+            .contains("vacuously analyzable"),
+        "the memberless flip refuses on the recompute: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     let _ = std::fs::remove_dir_all(&dir);

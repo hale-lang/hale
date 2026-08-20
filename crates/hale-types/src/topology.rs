@@ -1153,23 +1153,49 @@ pub fn dump_topology_parts(
                 .map(|su| su.pattern.as_str())
                 .unwrap_or("")
         };
+        // Round 10: every endpoint row carries its TYPED identity
+        // — the wire subject AND the declared topic when one
+        // covers the end. A literal address whose text collides
+        // with a topic display stays a literal (`declared_topic`
+        // is the model's syntactic fact, never inferred from
+        // strings).
+        let topic_field = |t: &Option<hale_model::TopicId>|
+         -> String {
+            match t {
+                Some(tid) => vmodel
+                    .entities
+                    .topics
+                    .get(tid.index())
+                    .map(|tp| {
+                        format!(
+                            ", \"topic\": {}",
+                            quote(&tp.display)
+                        )
+                    })
+                    .unwrap_or_default(),
+                None => String::new(),
+            }
+        };
         let mut rows: Vec<String> = Vec::new();
         for r in &vmodel.relations.publishes {
             rows.push(format!(
-                "{{\"verb\": \"publish\", \"subject\": {}, \"via\": \"site\"}}",
-                quote(subj_pat(r.subject))
+                "{{\"verb\": \"publish\", \"subject\": {}, \"via\": \"site\"{}}}",
+                quote(subj_pat(r.subject)),
+                topic_field(&r.declared_topic)
             ));
         }
         for r in &vmodel.relations.declares_publish {
             rows.push(format!(
-                "{{\"verb\": \"publish\", \"subject\": {}, \"via\": \"declaration\"}}",
-                quote(subj_pat(r.subject))
+                "{{\"verb\": \"publish\", \"subject\": {}, \"via\": \"declaration\"{}}}",
+                quote(subj_pat(r.subject)),
+                topic_field(&r.declared_topic)
             ));
         }
         for r in &vmodel.relations.subscribes {
             rows.push(format!(
-                "{{\"verb\": \"subscribe\", \"subject\": {}, \"via\": \"declaration\"}}",
-                quote(subj_pat(r.subject))
+                "{{\"verb\": \"subscribe\", \"subject\": {}, \"via\": \"declaration\"{}}}",
+                quote(subj_pat(r.subject)),
+                topic_field(&r.declared_topic)
             ));
         }
         rows.sort();
@@ -1194,9 +1220,10 @@ pub fn dump_topology_parts(
                     .map(|l| l.display.as_str())
                     .unwrap_or("");
                 format!(
-                    "{{\"locus\": {}, \"subject\": {}}}",
+                    "{{\"locus\": {}, \"subject\": {}{}}}",
                     quote(locus),
-                    quote(subj_pat(r.subject))
+                    quote(subj_pat(r.subject)),
+                    topic_field(&r.declared_topic)
                 )
             })
             .collect();
@@ -1517,15 +1544,32 @@ pub fn dump_topology_parts(
                     .join(", ")
             )
         };
-        out.push_str(&pair_catalog(
-            "fn_universe",
-            vmodel
+        // Round 10: function-grain ANALYSIS COVERAGE — the model's
+        // `analyzed` bit per function (false for module-scoped
+        // bodies and `on_failure` handlers). The analyzed subset
+        // must equal `sorts.fns` exactly (the hashed summary
+        // universe), which is what anchors the coverage account.
+        {
+            let mut rows: Vec<String> = vmodel
                 .entities
                 .functions
                 .iter()
-                .map(|f| (f.name.clone(), f.display.clone()))
-                .collect(),
-        ));
+                .map(|f| {
+                    format!(
+                        "{{\"name\": {}, \"display\": {}, \"analyzed\": {}}}",
+                        quote(&f.name),
+                        quote(&f.display),
+                        f.analyzed
+                    )
+                })
+                .collect();
+            rows.sort();
+            rows.dedup();
+            out.push_str(&format!(
+                "    \"fn_universe\": [{}],\n",
+                rows.join(", ")
+            ));
+        }
         // Loci carry an ANALYZABLE flag: the legacy certificate
         // engines walk only top-level loci, so a module-scoped
         // locus's phase contracts have no engine report and judge

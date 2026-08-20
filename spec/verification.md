@@ -434,19 +434,36 @@ including a DECLARED publisher with no send site, which the V1
 site-grained relations never show — and `law.subjects` must equal
 exactly the subjects the endpoint and topic sections carry, in
 both directions. The endpoint section is NOT a second authority
-(round 9): site rows must project exactly from the artifact's own
-`relations.publishes` / `relations.subscribes` (V1 rows name
-declared topics by display; the wire subject comes from the
-topics section), and declaration rows from the typed
-**`declares_publish`** relation section — deleting a literal
-publish's endpoint row while the site relation remains refuses.
-The `analyzable` flag on `law.loci` has ONE authority — the
-model builder sets `LocusDecl::analyzable` from its declaration
-walk; the evidence layer and the emitter read the model, never
-re-walking source — and admission RECOMPUTES it against the
-hashed function universe: a locus's members appear in
-`law.fn_universe`, the legacy summary universe (`sorts.fns`)
-contains exactly the analyzed ones, and the flag must agree.
+(round 9), and endpoint identity is TYPED (round 10): every row
+carries its wire subject and, when a declared topic covers the
+end, the topic identity (`declared_topic` is the model's
+syntactic fact — a literal address whose text collides with a
+topic display stays a literal, never inferred from strings; a
+topic-typed row's subject must equal the topic's wire subject).
+Site rows project onto the V1 relations under their OWN declared
+identity — a topic-covered end by the topic display, a literal
+end by its text — and declaration rows come from the typed
+**`declares_publish`** relation section (which carries the topic
+identity too, so `require publishes(some G, topic Orders)` can
+distinguish `publish Orders` from `publish "wire.orders"`).
+Deleting a literal publish's endpoint row while the site relation
+remains refuses.
+Analysis coverage is FUNCTION-grained (round 10):
+`Function::analyzed` is the model's fact (false for module-scoped
+bodies and `on_failure` handlers — executable but never walked),
+`law.fn_universe` rows carry it, and the analyzed subset must
+equal `sorts.fns` exactly — the hashed anchor. `law.loci`'s
+`analyzable` flag recomputes from the member coverage: a locus
+with executable members is analyzable iff all its non-`on_failure`
+members are analyzed, and a MEMBERLESS locus is vacuously
+analyzable (no body to walk — every phase contract holds by
+absence), so the flag is recomputable in both directions. An
+implicit lifecycle phase's certificate must be exactly the
+synthetic `holds` with no diagnostics. Coverage also participates
+in EVIDENCE IDENTITY: the sidecar carries a coverage digest
+(`TopologyShapeV1` deliberately excludes coverage for recording
+compatibility), and a judgment refuses a sidecar derived beside
+different coverage as stale.
 The **`law.issues`** account (round 9) serializes every
 table-level law-selection failure — lowering issues (unknown or
 cyclic constitutions, illegal adoption, collisions) and the

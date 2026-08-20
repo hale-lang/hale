@@ -634,6 +634,7 @@ fn looped_stdlib_entry_with_carrier_is_unbounded() {
     });
     let p = ProvenanceId(0);
     let f = |name: &str| Function {
+        analyzed: true,
         name: name.to_string(),
         display: name.to_string(),
         kind: FunctionKind::Free,
@@ -2841,6 +2842,7 @@ fn mixed_dispatch_alternatives_share_one_group() {
     });
     let p = ProvenanceId(0);
     let f = |name: &str| Function {
+        analyzed: true,
         name: name.to_string(),
         display: name.to_string(),
         kind: FunctionKind::Free,

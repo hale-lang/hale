@@ -312,8 +312,43 @@ pub struct EvidenceTable {
     /// `model_shape` (review round 3); the producer computes it,
     /// and validation requires the judging toolchain to agree.
     pub inputs_digest: u64,
+    /// Digest of the model's ANALYSIS COVERAGE (round 10) — the
+    /// function-grain `analyzed` bits and locus-grain `analyzable`
+    /// bits the producer's synthesis decisions depend on.
+    /// `TopologyShapeV1` deliberately excludes coverage (recording
+    /// compatibility), so two models differing only in coverage
+    /// share a `model_shape` — this digest is what stops a
+    /// synthetic `Holds` sidecar from validating against a model
+    /// for which derivation would have produced no report.
+    pub coverage_digest: u64,
     pub rows: Vec<EvidenceRow>,
     pub provenance: ProvenanceTable,
+}
+
+impl ApplicationModel {
+    /// The model's analysis-coverage identity (round 10): fnv1a64
+    /// over every locus's `analyzable` bit and every function's
+    /// `analyzed` bit, in canonical entity order. Evidence
+    /// derivation stamps it; the judgment refuses a sidecar whose
+    /// coverage disagrees with the judged model.
+    pub fn analysis_coverage_digest(&self) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        let mut eat = |bytes: &[u8]| {
+            for b in bytes {
+                h ^= u64::from(*b);
+                h = h.wrapping_mul(0x100000001b3);
+            }
+        };
+        for l in &self.entities.loci {
+            eat(l.name.as_bytes());
+            eat(&[0, u8::from(l.analyzable)]);
+        }
+        for f in &self.entities.functions {
+            eat(f.name.as_bytes());
+            eat(&[1, u8::from(f.analyzed)]);
+        }
+        h
+    }
 }
 
 impl EvidenceTable {
@@ -332,6 +367,8 @@ impl EvidenceTable {
         if self.model_shape != model_shape
             || self.law_digest != table.semantic_digest()
             || self.inputs_digest != inputs_digest
+            || self.coverage_digest
+                != model.analysis_coverage_digest()
         {
             return Err(ClaimIrError::InvalidProvenanceRecord {
                 index: usize::MAX,

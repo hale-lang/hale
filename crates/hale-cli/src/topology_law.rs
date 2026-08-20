@@ -230,6 +230,11 @@ pub struct RefContext {
     /// The wire-subject pattern universe.
     pub subjects: Vec<String>,
     pub fn_universe: Vec<(String, String)>,
+    /// Function-grain analysis coverage: the displays whose bodies
+    /// the legacy summary walked (round 10). Must equal
+    /// `sorts.fns` exactly — the hashed anchor for the coverage
+    /// account.
+    pub fn_analyzed: BTreeSet<String>,
     /// The legacy analyzable universe (`sorts.fns`) — the old
     /// engines never saw subjects outside it, so a certificate row
     /// on such a subject carries no report and judges
@@ -369,10 +374,47 @@ impl RefContext {
             groups: pairs(&v["law"]["groups"], "law.groups")?,
             topics,
             subjects,
-            fn_universe: pairs(
-                &v["law"]["fn_universe"],
-                "law.fn_universe",
-            )?,
+            fn_universe: {
+                let mut out = Vec::new();
+                for e in v["law"]["fn_universe"].as_array().ok_or(
+                    "law.fn_universe must be an array of \
+                     canonical rows",
+                )? {
+                    only_keys(
+                        e,
+                        "law.fn_universe[*]",
+                        &["name", "display", "analyzed"],
+                        &[],
+                    )?;
+                    if !e["analyzed"].is_boolean() {
+                        return Err(
+                            "law.fn_universe[*].analyzed must be \
+                             a bool"
+                                .to_string(),
+                        );
+                    }
+                    out.push((
+                        e["name"]
+                            .as_str()
+                            .ok_or("law.fn_universe[*].name")?
+                            .to_string(),
+                        e["display"]
+                            .as_str()
+                            .ok_or("law.fn_universe[*].display")?
+                            .to_string(),
+                    ));
+                }
+                out
+            },
+            fn_analyzed: v["law"]["fn_universe"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|e| e["analyzed"] == true)
+                .filter_map(|e| {
+                    e["display"].as_str().map(|s| s.to_string())
+                })
+                .collect(),
             sorts_fns: v["sorts"]["fns"]
                 .as_array()
                 .into_iter()
@@ -572,44 +614,66 @@ impl RefContext {
                 ));
             }
         }
-        // The `analyzable` flag is RECOMPUTED against the hashed
-        // function universe (round 9): a locus with members has
-        // them in `law.fn_universe`, and the legacy summary
-        // universe (`sorts.fns`) contains exactly the analyzed
-        // ones — so for any locus with members, the flag must
-        // agree with whether its members were analyzed. Flipping
-        // a module-scoped contract to `analyzable` (to dress
-        // `uncertified` up as `holds`) contradicts the member
-        // account.
+        // Round 10: the coverage account is validated at FUNCTION
+        // grain against the hashed summary universe — the analyzed
+        // subset of `law.fn_universe` must equal `sorts.fns`
+        // exactly (the legacy summary enumerated precisely the
+        // bodies it walked). No name-prefix inference.
+        let sorts_set: BTreeSet<&String> =
+            cx.sorts_fns.iter().collect();
+        let analyzed_set: BTreeSet<&String> =
+            cx.fn_analyzed.iter().collect();
+        if sorts_set != analyzed_set {
+            let extra: Vec<_> =
+                analyzed_set.difference(&sorts_set).collect();
+            let missing: Vec<_> =
+                sorts_set.difference(&analyzed_set).collect();
+            return Err(format!(
+                "the analyzed function coverage does not equal \
+                 the hashed summary universe (extra: {:?}, \
+                 missing: {:?})",
+                extra, missing
+            ));
+        }
+        // Locus-grain: `analyzable` must agree with the member
+        // coverage. `on_failure` handlers are executable but never
+        // analyzed even on analyzable loci, so they are exempt; a
+        // memberless locus has no member evidence (and no code, so
+        // both phase shapes are vacuously truthful).
         for (_, disp, analyzable) in &cx.loci {
             let prefix = format!("{}::", disp);
-            let has_members = cx
+            let members: Vec<&(String, String)> = cx
                 .fn_universe
                 .iter()
-                .any(|(_, d)| d.starts_with(&prefix));
-            if !has_members {
+                .filter(|(_, d)| {
+                    d.starts_with(&prefix)
+                        && !d[prefix.len()..]
+                            .starts_with("on_failure")
+                })
+                .collect();
+            if members.is_empty() {
+                // Memberless ⇒ VACUOUSLY analyzable (no body to
+                // walk): the flag is fully recomputable, so a
+                // module-scoped memberless contract cannot be
+                // flipped in either direction.
+                if !analyzable {
+                    return Err(format!(
+                        "law.loci: `{}` marks analyzable=false \
+                         but it has no executable members — a \
+                         memberless locus is vacuously analyzable",
+                        disp
+                    ));
+                }
                 continue;
             }
-            let analyzed = cx
-                .sorts_fns
+            let all_analyzed = members
                 .iter()
-                .any(|f| f.starts_with(&prefix));
-            if analyzed != *analyzable {
+                .all(|(_, d)| cx.fn_analyzed.contains(d));
+            if all_analyzed != *analyzable {
                 return Err(format!(
                     "law.loci: `{}` marks analyzable={} but its \
-                     member account says {}",
-                    disp, analyzable, analyzed
-                ));
-            }
-        }
-        // fn_universe is deliberately WIDER than sorts.fns, but
-        // must still cover it.
-        for f in &cx.sorts_fns {
-            if !cx.fn_universe.iter().any(|(_, d)| d == f) {
-                return Err(format!(
-                    "sorts.fns row `{}` is missing from \
-                     law.fn_universe",
-                    f
+                     member coverage says {}",
+                    disp, analyzable, all_analyzed
                 ));
             }
         }
@@ -627,49 +691,56 @@ impl RefContext {
             .iter()
             .map(|(_, _, su)| su.clone())
             .collect();
-        // Round 9: the endpoint section is NOT a second authority
-        // — it must project exactly from the artifact's own
-        // relations. Site endpoints recompute from
-        // `relations.publishes` / `relations.subscribes` (V1 rows
-        // name declared topics by display; the wire subject comes
-        // from the topics section), and declaration endpoints from
-        // the typed `declares_publish` relation.
-        let wire_of = |s: &str| -> String {
-            cx.topics
-                .iter()
-                .find(|(_, d, _)| d == s)
-                .map(|(_, _, su)| su.clone())
-                .unwrap_or_else(|| s.to_string())
+        // Round 9/10: the endpoint section is NOT a second
+        // authority, and endpoint identity is TYPED — each row
+        // carries its wire subject AND (when a declared topic
+        // covers the end) the topic identity. A literal address
+        // whose text collides with a topic display stays a
+        // literal; declaredness is never inferred from strings.
+        // Site rows must project exactly onto the V1 relations:
+        // a topic-covered end appears there under the topic
+        // display, a literal end under its own text.
+        let decode_endpoint = |e: &Value,
+                               what: &str|
+         -> Result<(String, Option<String>), String> {
+            let su = e["subject"].as_str().ok_or_else(|| {
+                format!("{}: subject must be a string", what)
+            })?;
+            let topic = match e.get("topic") {
+                None => None,
+                Some(t) => {
+                    let td = t.as_str().ok_or_else(|| {
+                        format!(
+                            "{}: topic must be a string",
+                            what
+                        )
+                    })?;
+                    let hit = cx
+                        .topics
+                        .iter()
+                        .find(|(_, d, _)| d == td);
+                    let Some((_, _, wire)) = hit else {
+                        return Err(format!(
+                            "{}: topic `{}` is not in this \
+                             artifact",
+                            what, td
+                        ));
+                    };
+                    if wire != su {
+                        return Err(format!(
+                            "{}: subject `{}` disagrees with \
+                             topic `{}`'s wire subject `{}`",
+                            what, su, td, wire
+                        ));
+                    }
+                    Some(td.to_string())
+                }
+            };
+            Ok((su.to_string(), topic))
         };
-        let mut expected_endpoints: BTreeSet<(
-            String,
-            String,
-            String,
-        )> = BTreeSet::new();
-        for r in
-            v["relations"]["publishes"].as_array().into_iter().flatten()
-        {
-            if let Some(su) = r["subject"].as_str() {
-                expected_endpoints.insert((
-                    "publish".to_string(),
-                    wire_of(su),
-                    "site".to_string(),
-                ));
-            }
-        }
-        for r in v["relations"]["subscribes"]
-            .as_array()
-            .into_iter()
-            .flatten()
-        {
-            if let Some(su) = r["subject"].as_str() {
-                expected_endpoints.insert((
-                    "subscribe".to_string(),
-                    wire_of(su),
-                    "declaration".to_string(),
-                ));
-            }
-        }
+        // Typed declares rows: (subject, topic).
+        let mut declares: BTreeSet<(String, Option<String>)> =
+            BTreeSet::new();
         for (i, d) in v["declares_publish"]
             .as_array()
             .ok_or(
@@ -683,7 +754,7 @@ impl RefContext {
                 d,
                 "declares_publish[*]",
                 &["locus", "subject"],
-                &[],
+                &["topic"],
             )
             .map_err(|x| {
                 format!("declares_publish[{}]: {}", i, x)
@@ -701,24 +772,18 @@ impl RefContext {
                     i, locus
                 ));
             }
-            let su = d["subject"].as_str().ok_or_else(|| {
-                format!(
-                    "declares_publish[{}]: subject must be a \
-                     string",
-                    i
-                )
-            })?;
-            expected_endpoints.insert((
-                "publish".to_string(),
-                su.to_string(),
-                "declaration".to_string(),
-            ));
+            declares.insert(decode_endpoint(
+                d,
+                &format!("declares_publish[{}]", i),
+            )?);
         }
-        let mut got_endpoints: BTreeSet<(
-            String,
-            String,
-            String,
-        )> = BTreeSet::new();
+        // Endpoint rows, split by (verb, via).
+        let mut site_pub: BTreeSet<(String, Option<String>)> =
+            BTreeSet::new();
+        let mut decl_pub: BTreeSet<(String, Option<String>)> =
+            BTreeSet::new();
+        let mut subs: BTreeSet<(String, Option<String>)> =
+            BTreeSet::new();
         for (i, e) in v["endpoints"]
             .as_array()
             .ok_or(
@@ -732,47 +797,85 @@ impl RefContext {
                 e,
                 "endpoints[*]",
                 &["verb", "subject", "via"],
-                &[],
+                &["topic"],
             )
             .map_err(|x| format!("endpoints[{}]: {}", i, x))?;
-            if !matches!(
-                e["verb"].as_str(),
-                Some("publish") | Some("subscribe")
-            ) || !matches!(
-                e["via"].as_str(),
-                Some("site") | Some("declaration")
-            ) {
-                return Err(format!(
-                    "endpoints[{}]: verb/via outside the closed \
-                     vocabulary",
-                    i
-                ));
+            let row = decode_endpoint(
+                e,
+                &format!("endpoints[{}]", i),
+            )?;
+            model_subjects.insert(row.0.clone());
+            match (e["verb"].as_str(), e["via"].as_str()) {
+                (Some("publish"), Some("site")) => {
+                    site_pub.insert(row);
+                }
+                (Some("publish"), Some("declaration")) => {
+                    decl_pub.insert(row);
+                }
+                (Some("subscribe"), Some("declaration")) => {
+                    subs.insert(row);
+                }
+                _ => {
+                    return Err(format!(
+                        "endpoints[{}]: verb/via outside the \
+                         closed vocabulary",
+                        i
+                    ));
+                }
             }
-            let su = e["subject"].as_str().ok_or_else(|| {
-                format!(
-                    "endpoints[{}]: subject must be a string",
-                    i
-                )
-            })?;
-            got_endpoints.insert((
-                e["verb"].as_str().unwrap_or("").to_string(),
-                su.to_string(),
-                e["via"].as_str().unwrap_or("").to_string(),
-            ));
-            model_subjects.insert(su.to_string());
         }
-        if got_endpoints != expected_endpoints {
-            let extra: Vec<_> = got_endpoints
-                .difference(&expected_endpoints)
-                .collect();
-            let missing: Vec<_> = expected_endpoints
-                .difference(&got_endpoints)
-                .collect();
+        // Declaration-publish endpoints ≡ the typed relation.
+        if decl_pub != declares {
+            return Err(format!(
+                "the declaration-publish endpoints do not equal \
+                 the declares_publish relation (endpoints: {:?}, \
+                 relation: {:?})",
+                decl_pub, declares
+            ));
+        }
+        // Site endpoints project onto the V1 relations under
+        // their OWN declared identity: topic-covered ends by the
+        // topic display, literal ends by their text.
+        let v1_name = |(su, topic): &(String, Option<String>)|
+         -> String {
+            topic.clone().unwrap_or_else(|| su.clone())
+        };
+        let derived_pub: BTreeSet<String> =
+            site_pub.iter().map(&v1_name).collect();
+        let rel_pub: BTreeSet<String> = v["relations"]
+            ["publishes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| {
+                r["subject"].as_str().map(|s| s.to_string())
+            })
+            .collect();
+        if derived_pub != rel_pub {
             return Err(format!(
                 "the endpoints section does not project from the \
-                 artifact's relations (extra: {:?}, missing: \
-                 {:?})",
-                extra, missing
+                 artifact's relations (publish endpoints: {:?}, \
+                 relations: {:?})",
+                derived_pub, rel_pub
+            ));
+        }
+        let derived_sub: BTreeSet<String> =
+            subs.iter().map(&v1_name).collect();
+        let rel_sub: BTreeSet<String> = v["relations"]
+            ["subscribes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| {
+                r["subject"].as_str().map(|s| s.to_string())
+            })
+            .collect();
+        if derived_sub != rel_sub {
+            return Err(format!(
+                "the endpoints section does not project from the \
+                 artifact's relations (subscribe endpoints: {:?}, \
+                 relations: {:?})",
+                derived_sub, rel_sub
             ));
         }
         let law_subjects: BTreeSet<String> =
@@ -2232,6 +2335,38 @@ pub fn validate_law_account(
                     }
                     let r =
                         cert["result"].as_str().unwrap_or("?");
+                    // Round 10: an IMPLICIT lifecycle phase (no
+                    // hook fn in the function universe) has a
+                    // SYNTHETIC certificate — no hook body
+                    // performs no effects, so the only truthful
+                    // result is `holds`, with no diagnostics.
+                    if let Law::PhaseEffects { locus, phases } =
+                        &decoded
+                    {
+                        if let Some((ph, _)) = phases.get(k) {
+                            let hook = format!(
+                                "{}::{}",
+                                locus.display, ph
+                            );
+                            let explicit = cx
+                                .fn_universe
+                                .iter()
+                                .any(|(_, d)| *d == hook);
+                            if !explicit
+                                && (r != "holds" || cert_ev != 0)
+                            {
+                                return Err(format!(
+                                    "{}: malformed artifact — \
+                                     law.rows[{}] certs[{}] \
+                                     covers the implicit phase \
+                                     `{}`, whose only truthful \
+                                     certificate is a synthetic \
+                                     holds",
+                                    label, i, k, ph
+                                ));
+                            }
+                        }
+                    }
                     if sev(r) > sev(recomputed) {
                         recomputed = r;
                     }

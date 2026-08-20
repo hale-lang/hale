@@ -1987,12 +1987,32 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         rows.sort_by(|a, b| a.name.cmp(&b.name));
         e.effect_classes = rows;
     }
+    // Round 10: a locus is UNANALYZABLE only when it is
+    // module-scoped AND carries executable members the engines
+    // never walked. A memberless locus is VACUOUSLY analyzable —
+    // there is no body to walk, so the walk completed trivially
+    // and every phase contract holds by absence — which also makes
+    // the flag recomputable at admission (memberless ⇒ true;
+    // membered ⇒ agrees with the member coverage).
     let module_loci: BTreeSet<String> = {
         fn walk(items: &[TopDecl], depth: u32, out: &mut BTreeSet<String>) {
             for item in items {
                 match item {
                     TopDecl::Locus(l) if depth > 0 => {
-                        out.insert(l.name.name.clone());
+                        let executable =
+                            l.members.iter().any(|m| {
+                                matches!(
+                                    m,
+                                    LocusMember::Fn(_)
+                                        | LocusMember::Lifecycle(_)
+                                        | LocusMember::Mode(_)
+                                        | LocusMember::Failure(_)
+                                        | LocusMember::Closure(_)
+                                )
+                            });
+                        if executable {
+                            out.insert(l.name.name.clone());
+                        }
                     }
                     TopDecl::Module(m) => {
                         walk(&m.items, depth + 1, out)
@@ -2111,6 +2131,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                 .unwrap_or_default(),
             opaque_call: opaque_calls.contains(n),
             carries_user_class: authored_user_class.contains(n),
+            analyzed: !info.unanalyzed,
             provenance: pid,
         });
     }

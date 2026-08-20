@@ -1063,3 +1063,42 @@ fn main() { App { }; }
         "the near-miss hint survives"
     );
 }
+
+/// Round 10: evidence identity includes ANALYSIS COVERAGE. Two
+/// models differing only in a coverage bit share a
+/// `TopologyShapeV1` (recording compatibility), so the sidecar
+/// carries a coverage digest — a synthetic sidecar derived beside
+/// one coverage cannot validate against the other.
+#[test]
+fn coverage_change_invalidates_evidence_identity() {
+    let src = HOLDS_SRC;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let evidence =
+        derive_certificate_evidence(&bundle, &table, &model);
+    let judged = judge_certificates(&table, &model, &evidence, &[0]);
+    assert_eq!(judged[0].verdict, Verdict::Holds);
+    // Flip one coverage bit: same shape, different coverage.
+    let before = model.analysis_coverage_digest();
+    let f = model
+        .entities
+        .functions
+        .iter_mut()
+        .find(|f| f.display == "pure_math")
+        .expect("subject");
+    f.analyzed = !f.analyzed;
+    assert_ne!(
+        before,
+        model.analysis_coverage_digest(),
+        "the coverage digest tracks the bit"
+    );
+    let judged = judge_certificates(&table, &model, &evidence, &[0]);
+    assert_eq!(
+        judged[0].verdict,
+        Verdict::Invalid,
+        "a sidecar derived beside different coverage is refused \
+         as stale, never replayed"
+    );
+}

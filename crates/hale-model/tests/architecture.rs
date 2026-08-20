@@ -65,6 +65,7 @@ fn tiny_model() -> ApplicationModel {
             effect_classes: Vec::new(),
             functions: vec![
                 Function {
+                    analyzed: true,
                     name: "App::run".to_string(),
                     display: "App::run".to_string(),
                     kind: FunctionKind::Hook,
@@ -76,6 +77,7 @@ fn tiny_model() -> ApplicationModel {
                     provenance: p,
                 },
                 Function {
+                    analyzed: true,
                     name: "Worker::on_r".to_string(),
                     display: "Worker::on_r".to_string(),
                     kind: FunctionKind::Method,

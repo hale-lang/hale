@@ -553,14 +553,27 @@ impl Artifact {
                 return Err(ghost("unknowns", i, "fn", who));
             }
         }
+        // Round 10: `phases` / `effects` may cover the FULL model
+        // function universe (module-scoped members carry phase
+        // assignments and derived effects even though the legacy
+        // summary sort excludes them) — resolve against
+        // `law.fn_universe` where present, `sorts.fns` otherwise.
+        let full_fn_set: std::collections::BTreeSet<&str> = art.v
+            ["law"]["fn_universe"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e["display"].as_str())
+            .chain(fn_set.iter().copied())
+            .collect();
         for key in ["phases", "effects"] {
             for (name, _) in
                 art.v[key].as_object().into_iter().flatten()
             {
-                if !fn_set.contains(name.as_str()) {
+                if !full_fn_set.contains(name.as_str()) {
                     return Err(format!(
                         "{}: referentially invalid artifact — {}.{} is \
-                         not in sorts.fns",
+                         not in the function universe",
                         path.display(),
                         key,
                         name

@@ -62,6 +62,13 @@ pub struct Function {
     /// purpose the author supplied is the composed NAME; review:
     /// composed attribution classes).
     pub carries_user_class: bool,
+    /// The legacy behavior summary WALKED this body (round 10:
+    /// function-grain analysis coverage — false for module-scoped
+    /// bodies and `on_failure` handlers, which are executable but
+    /// never analyzed). ONE authority: set by the model builder;
+    /// the evidence layer, the artifact emitter, and the evidence
+    /// identity digest all read it here.
+    pub analyzed: bool,
     pub provenance: ProvenanceId,
 }
 

@@ -108,6 +108,7 @@ pub fn derive_certificate_evidence(
         ),
         law_digest: table.semantic_digest(),
         inputs_digest: analysis_inputs_digest(),
+        coverage_digest: model.analysis_coverage_digest(),
         ..EvidenceTable::default()
     };
     for sf in &bundle.sources {

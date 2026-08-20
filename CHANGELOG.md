@@ -81,6 +81,25 @@ never a fail-open `holds`), and the document `verdict` follows
 the machine. Artifact consumers reject unrecognized semantics by
 design; re-dump with the current compiler.
 
+Round 10: typed endpoint identity + function-grain coverage.
+Endpoint rows (and declares_publish rows) carry `declared_topic`
+- the model's syntactic fact - so a literal wire address whose
+text collides with a topic display stays a literal; admission
+compares typed identities and projects site rows onto the V1
+relations under their own declaredness, never inferring
+topic-ness from strings (the colliding compiler artifact admits).
+`Function::analyzed` is the model's coverage fact (false for
+module bodies and on_failure handlers); fn_universe rows carry it
+and the analyzed subset must equal sorts.fns exactly - the
+on_failure-only locus admits, and locus `analyzable` recomputes
+from member coverage with memberless loci VACUOUSLY analyzable
+(no body = every phase contract holds by absence), closing the
+memberless flip in both directions. Implicit-phase certificates
+must be exactly the synthetic holds. Evidence identity gains a
+coverage digest: a sidecar derived beside different coverage is
+refused as stale (TopologyShapeV1 unchanged for recording
+compatibility).
+
 Round 9: no claim error disappears, and no section is a second
 authority. A typed `law.issues` account serializes every
 table-level law-selection failure (duplicate claim names,
