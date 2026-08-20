@@ -8,6 +8,21 @@ behavior.
 
 ## Unreleased
 
+### Typed FleetModel + the versioned shape transition (GH #476 Change 7)
+
+Schema 1.12: canonical ENDPOINT IDENTITY joins the hashed model
+half (`endpoint_identity`: verb, owner, source-order site
+ordinal, byte-exact wire subject, declared topic). The V1
+relations render a topic-covered end and a display-colliding
+literal as one spelling, so the shape could not distinguish two
+systems that talk to different wire addresses - which is exactly
+what the shape exists to distinguish, and what replay admission
+relies on. The unhashed endpoint sections must agree with the
+hashed identity exactly, closing the round-12 substitution
+residual. SHAPE HASHES CHANGE for every bus-carrying program:
+re-record shape baselines and `.halerec` recordings once.
+
+
 ### Typed law artifact rows + adequacy (GH #476 Change 6)
 
 The topology artifact's law rows are now PROJECTED from the

@@ -1643,7 +1643,7 @@ fn main() { App { }; }
         .find(|c| c.from.0 == go)
         .expect("call row")
         .site;
-    let mut with_hole = |kind: hale_model::HoleKind,
+    let with_hole = |kind: hale_model::HoleKind,
                          hides: hale_model::RelationSet,
                          site: Option<u32>|
      -> hale_model::ApplicationModel {

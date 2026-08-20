@@ -363,14 +363,6 @@ fn a_component_whose_own_claims_fail_is_refused() {
 /// law row is refused past the integrity gate.
 #[test]
 fn a_restamped_lying_verdict_is_refused() {
-    fn fnv1a64(bytes: &[u8]) -> u64 {
-        let mut h: u64 = 0xcbf29ce484222325;
-        for b in bytes {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x100000001b3);
-        }
-        h
-    }
     let r = fleet("lyingverdict");
     let p = r.join("artifacts/prober.json");
     let good = std::fs::read_to_string(&p).expect("read");
@@ -954,14 +946,6 @@ fn fleets_and_environments_are_independent_axes() {
 /// admission's claims↔law join refuses it.
 #[test]
 fn deleted_law_rows_are_refused() {
-    fn fnv1a64(bytes: &[u8]) -> u64 {
-        let mut h: u64 = 0xcbf29ce484222325;
-        for b in bytes {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x100000001b3);
-        }
-        h
-    }
     let r = fleet("deletedlaw");
     // Rebuild the prober WITH a claim so its law table is
     // non-empty (the base prober's is empty — deleting nothing

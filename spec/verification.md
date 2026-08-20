@@ -294,7 +294,7 @@ earlier in the same file as the family. Companion:
 class along any path, with the same loop/indirect unboundedness
 rules as every per-call dimension.
 
-**The topology artifact** (#382 phase 2; schema 1.11):
+**The topology artifact** (#382 phase 2; schema 1.12):
 `hale check <t> --dump-topology` emits the serialized model —
 sorts (loci, fns, topics), relations (calls with **weights**: loop
 nesting, unbounded-loop membership, interface-dispatch tags;
@@ -317,7 +317,7 @@ uninhabited-interface dispatch, or computed publish subjects), all
 in author spelling — plus every named claim's normalized form and
 result, under a schema version and a `shape_hash` (FNV-1a/64 over
 the canonical model half; claim RESULTS are excluded, so one
-topology under different law keeps one shape). Schema 1.11
+topology under different law keeps one shape). Schema 1.11+
 (GH #476 Change 6) adds three unhashed, digest-covered typed
 sections: **`law`** — every lowered `ClaimIr` row with its
 ordinal, origin (`main` / `constitution:<name>` / `library` /
@@ -463,13 +463,17 @@ participate in locus analyzability: they are invisible to the
 certificate machinery at every scope (a top-level closure-only
 locus already certifies synthetically), so the builder and
 admission share one membership rule — only members that produce
-function entities the engines could walk count. Known residual, by design: the CONTENT of a site
-row (its wire/topic identity) at an unchanged span is not
-independently verifiable without the source — the wire identity
-of a display-colliding literal lives only in unhashed sections,
-so substituting it at the same site is a self-consistent edit;
-closing it requires hashing endpoint wire identity (a shape-
-identity change).
+function entities the engines could walk count. The residual is CLOSED as of schema 1.12 (Change 7's
+versioned shape transition): the canonical endpoint identity —
+verb, owner, source-order site ordinal, byte-exact wire subject,
+and declared topic — is part of the HASHED model half
+(`endpoint_identity`), and the unhashed endpoint sections must
+agree with it exactly. Substituting a colliding literal's content
+now contradicts the hashed half; rewriting the hashed half
+changes the program's shape identity, which is what replay
+admission and recorded baselines compare. Shape hashes changed
+for every bus-carrying program at this transition — re-record
+baselines and `.halerec` recordings once.
 Analysis coverage is FUNCTION-grained with THREE typed
 states (rounds 10–11): `analyzed` (the body was walked),
 `summarized` (a behavior-summary row exists — this set IS the

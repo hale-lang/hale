@@ -1203,6 +1203,142 @@ impl RefContext {
                 derived_sub, rel_sub
             ));
         }
+        // Change 7 (schema 1.12): the UNHASHED endpoint rows must
+        // equal the HASHED `endpoint_identity` section exactly —
+        // the wire identity now lives inside the shape, so
+        // substituting a colliding literal's content is no longer
+        // a self-consistent unhashed edit: it contradicts the
+        // hashed half, and editing the hashed half changes the
+        // program's identity.
+        {
+            let mut h_site_pub: BTreeSet<(
+                String,
+                u64,
+                String,
+                Option<String>,
+            )> = BTreeSet::new();
+            let mut h_decl_pub: BTreeSet<(
+                String,
+                String,
+                Option<String>,
+            )> = BTreeSet::new();
+            let mut h_subs: BTreeSet<(
+                String,
+                u64,
+                String,
+                Option<String>,
+            )> = BTreeSet::new();
+            for (i, e) in v["endpoint_identity"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                let what =
+                    format!("endpoint_identity[{}]", i);
+                let wire = e["wire"]
+                    .as_str()
+                    .ok_or_else(|| {
+                        format!(
+                            "{}: wire must be a string",
+                            what
+                        )
+                    })?
+                    .to_string();
+                let topic = e["topic"]
+                    .as_str()
+                    .map(|t| t.to_string());
+                match (
+                    e["verb"].as_str(),
+                    e["fn"].as_str(),
+                    e["locus"].as_str(),
+                ) {
+                    (Some("publish"), Some(f), None) => {
+                        only_keys(
+                            e,
+                            "endpoint_identity[*]",
+                            &["verb", "fn", "site", "wire"],
+                            &["topic"],
+                        )
+                        .map_err(|x| {
+                            format!("{}: {}", what, x)
+                        })?;
+                        h_site_pub.insert((
+                            f.to_string(),
+                            e["site"].as_u64().ok_or_else(
+                                || {
+                                    format!(
+                                        "{}: site must be a \
+                                         number",
+                                        what
+                                    )
+                                },
+                            )?,
+                            wire,
+                            topic,
+                        ));
+                    }
+                    (Some("publish"), None, Some(l)) => {
+                        only_keys(
+                            e,
+                            "endpoint_identity[*]",
+                            &["verb", "locus", "wire"],
+                            &["topic"],
+                        )
+                        .map_err(|x| {
+                            format!("{}: {}", what, x)
+                        })?;
+                        h_decl_pub.insert((
+                            l.to_string(),
+                            wire,
+                            topic,
+                        ));
+                    }
+                    (Some("subscribe"), Some(f), None) => {
+                        only_keys(
+                            e,
+                            "endpoint_identity[*]",
+                            &["verb", "fn", "site", "wire"],
+                            &["topic"],
+                        )
+                        .map_err(|x| {
+                            format!("{}: {}", what, x)
+                        })?;
+                        h_subs.insert((
+                            f.to_string(),
+                            e["site"].as_u64().ok_or_else(
+                                || {
+                                    format!(
+                                        "{}: site must be a \
+                                         number",
+                                        what
+                                    )
+                                },
+                            )?,
+                            wire,
+                            topic,
+                        ));
+                    }
+                    _ => {
+                        return Err(format!(
+                            "{}: outside the closed shape",
+                            what
+                        ));
+                    }
+                }
+            }
+            if h_site_pub != site_pub
+                || h_decl_pub != decl_pub
+                || h_subs != subs
+            {
+                return Err(
+                    "the endpoint sections do not agree with \
+                     the HASHED endpoint identity — the wire \
+                     identity is part of the shape"
+                        .to_string(),
+                );
+            }
+        }
         // Round 12: SPAN-multiset tie against the span-grained
         // provenance section — each typed site row is anchored to
         // its authored span, one-to-one, not merely counted.

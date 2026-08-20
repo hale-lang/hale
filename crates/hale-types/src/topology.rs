@@ -127,7 +127,11 @@ use crate::symbol::Bundle;
 /// judgment consumes, else `degraded`). The legacy `claims` /
 /// `lowered` string rows remain, now PROJECTED from the same
 /// canonical path.
-pub const TOPOLOGY_SCHEMA: &str = "1.11";
+// 1.12 (GH #476 Change 7): canonical endpoint identity joins the
+// HASHED model half — an explicitly versioned shape transition.
+// Shape hashes change for every bus-carrying program; recorded
+// baselines and `.halerec` admissions must be re-recorded once.
+pub const TOPOLOGY_SCHEMA: &str = "1.12";
 
 /// GH #408 Phase 0: what the rows MEAN, as distinct from their shape.
 ///

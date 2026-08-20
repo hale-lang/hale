@@ -605,6 +605,75 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
     }
     trim_trailing_comma(&mut model);
     model.push_str("  ]");
+    // GH #476 Change 7 (schema 1.12 — the explicitly versioned
+    // shape transition): canonical ENDPOINT IDENTITY joins the
+    // hashed half. The V1 relations render both a topic-covered
+    // end and a display-colliding literal as one spelling, so the
+    // shape could not distinguish two systems that talk to
+    // different wire addresses — which is exactly what the shape
+    // exists to distinguish (and what replay admission relies
+    // on). Rows carry the owner, source-order site ordinal
+    // (motion-stable), the byte-exact wire subject, and the
+    // declared topic when one covers the end. Emitted only when
+    // endpoints exist, so bus-free programs keep their identity.
+    {
+        let subj_pat = |sid: hale_model::SubjectId| -> &str {
+            e.subjects
+                .get(sid.index())
+                .map(|su| su.pattern.as_str())
+                .unwrap_or("")
+        };
+        let topic_disp = |t: &Option<hale_model::TopicId>|
+         -> String {
+            match t {
+                Some(tid) => e
+                    .topics
+                    .get(tid.index())
+                    .map(|tp| {
+                        format!(
+                            ", \"topic\": {}",
+                            quote(&tp.display)
+                        )
+                    })
+                    .unwrap_or_default(),
+                None => String::new(),
+            }
+        };
+        let mut rows: Vec<String> = Vec::new();
+        for p in &r.publishes {
+            rows.push(format!(
+                "    {{\"verb\": \"publish\", \"fn\": {}, \"site\": {}, \"wire\": {}{}}}",
+                quote(&fn_display(p.function)),
+                p.site,
+                quote(subj_pat(p.subject)),
+                topic_disp(&p.declared_topic)
+            ));
+        }
+        for d in &r.declares_publish {
+            rows.push(format!(
+                "    {{\"verb\": \"publish\", \"locus\": {}, \"wire\": {}{}}}",
+                quote(&locus_display(d.locus)),
+                quote(subj_pat(d.subject)),
+                topic_disp(&d.declared_topic)
+            ));
+        }
+        for su in &r.subscribes {
+            rows.push(format!(
+                "    {{\"verb\": \"subscribe\", \"fn\": {}, \"site\": {}, \"wire\": {}{}}}",
+                quote(&fn_display(su.handler)),
+                su.site,
+                quote(subj_pat(su.subject)),
+                topic_disp(&su.declared_topic)
+            ));
+        }
+        rows.sort();
+        rows.dedup();
+        if !rows.is_empty() {
+            model.push_str(",\n  \"endpoint_identity\": [\n");
+            model.push_str(&rows.join(",\n"));
+            model.push_str("\n  ]");
+        }
+    }
     model
 }
 

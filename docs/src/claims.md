@@ -931,11 +931,11 @@ fleet-family rows outright, and recomputes the document verdict.
 A restamped artifact whose sections disagree with each other is
 refused even though its digest verifies.
 
-The artifact shape (schema `1.11`):
+The artifact shape (schema `1.12`):
 
 ```text
 {
-  "schema": "1.11",
+  "schema": "1.12",
   "shape_hash": "<fnv1a-64 over the model half>",
   "sorts":     { "loci": […], "fns": […], "topics": […] },
   "relations": {
@@ -961,6 +961,8 @@ The artifact shape (schema `1.11`):
                   "decls": {name: span, topics included},
                   "supervision": [+span] },
   "topics":    [ {"name", "subject", "shape", "payload_hash"} ],
+  "endpoint_identity": [ {"verb", "fn" | "locus", "site"?,
+                          "wire", "topic"?} ],   // HASHED
   "endpoints": [ {"verb": "publish" | "subscribe", "subject",
                   "via": "site" | "declaration",
                   "fn"?, "site"?, "locus"?, "topic"?,
