@@ -81,6 +81,21 @@ never a fail-open `holds`), and the document `verdict` follows
 the machine. Artifact consumers reject unrecognized semantics by
 design; re-dump with the current compiler.
 
+Round 14: the coverage laws close at the MODEL. Application-
+Model::validate now enforces analyzed => summarized (with the
+existing converse: analyzed <=> summarized, the hashed anchor)
+and derives LocusDecl::analyzable from the typed member_of
+relation and FunctionKind (analyzable iff every non-failure
+member is analyzed; empty set vacuously) - the same coverage
+state is lawful or refused identically at the model, the
+sidecar, and the artifact. Sidecar eligibility hardens to match:
+fn subjects need analyzed AND summarized, and locus subjects'
+member coverage is recomputed from member_of rather than
+trusting the flag - both false->true upgrade paths (fn bit with
+residue removed; locus flag over an unanalyzed member) fail
+model validation AND cannot manufacture Holds through the
+sidecar (four new negative tests).
+
 Round 13: declared-end identity includes the typed topic, and
 one closure rule. declares_publish's canonical key is (locus,
 subject, declared_topic) - a literal declaration colliding with a

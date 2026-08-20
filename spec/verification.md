@@ -476,23 +476,29 @@ states (rounds 10–11): `analyzed` (the body was walked),
 legacy `sorts.fns`, the hashed anchor), and whether a certificate
 engine emitted a report (the evidence account). Failure handlers
 carry the typed `FunctionKind::FailureHandler` — no consumer
-infers handler-ness from a display prefix. The coverage laws
-(`summarized ⇔ analyzed`-adjacent: a summarized body was walked
-AND a walked body is summarized — anchoring `analyzed` to the
-hashed `sorts.fns`, so upgrading an unanalyzed body to
-certifiable must change the hashed half; failure handlers are
-never analyzed and never make a locus unanalyzable — one typed
-rule in the builder and admission, so a module-scoped
-failure-only locus is vacuously analyzable; the legacy fn sort
-equals the summarized set; an unanalyzed body RETAINS its
-`UnanalyzedBody` residue and an analyzed body carries none) are
-validated in `ApplicationModel::validate`, re-checked at
-admission, and folded into the evidence coverage digest.
+infers handler-ness from a display prefix. The coverage laws — `analyzed ⇔ summarized` (both
+directions: a summarized body was walked and a walked body is
+summarized, anchoring `analyzed` to the hashed `sorts.fns`);
+failure handlers never analyzed; the legacy fn sort equals the
+summarized set; an unanalyzed body RETAINS its `UnanalyzedBody`
+residue and an analyzed body carries none; and (round 14)
+`LocusDecl::analyzable` DERIVES from the typed `member_of`
+relation and `FunctionKind` — analyzable iff every relevant
+member (all kinds except failure handlers) is analyzed, an empty
+relevant set vacuously so — are ALL validated in
+`ApplicationModel::validate`, re-checked at admission, and folded
+into the evidence coverage digest: the same coverage state is
+lawful (or refused) at the model, the sidecar, and the artifact
+alike.
 Coverage is BINDING in the sidecar API too:
 `EvidenceTable::validate` categorically refuses a certificate
 payload for a subject or phase whose typed coverage says no
-report exists — a matching digest proves the sidecar repeated the
-model's bits; this proves its evidence obeys them. `law.fn_universe` rows carry
+report exists — fn eligibility requires BOTH `analyzed` and the
+hashed `summarized` anchor, and locus eligibility recomputes the
+member coverage from the typed `member_of` relation rather than
+trusting the flag (round 14) — a matching digest proves the
+sidecar repeated the model's bits; this proves its evidence obeys
+them. `law.fn_universe` rows carry
 all three facts, and the SUMMARIZED subset must equal `sorts.fns`
 exactly. `law.loci`'s
 `analyzable` flag recomputes from the member coverage: a locus

@@ -1142,3 +1142,186 @@ fn certs_for_unanalyzed_subjects_are_refused() {
          still refuses"
     );
 }
+
+const MODULE_ANNOTATED_SRC: &str = r#"
+module inner {
+    @effects(none: { syscall })
+    fn f(v: Int) -> Int { return v; }
+}
+main locus App {
+    params { n: Int = 0; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+
+/// Round 14: the FUNCTION-grain coverage upgrade is a model-law
+/// violation — flipping a module fn to analyzed (with its
+/// UnanalyzedBody residue removed so the hole law is silent) still
+/// fails `ApplicationModel::validate` on `analyzed ⇒ summarized`.
+#[test]
+fn function_coverage_upgrade_fails_model_validation() {
+    let program = hale_syntax::parse_source(MODULE_ANNOTATED_SRC)
+        .expect("parse");
+    let bundle = bundle_of(MODULE_ANNOTATED_SRC, &program);
+    let mut model = derive_application_model(&bundle);
+    model.validate().expect("the honest model is lawful");
+    let idx = model
+        .entities
+        .functions
+        .iter()
+        .position(|f| f.display == "f")
+        .expect("module fn");
+    model.entities.functions[idx].analyzed = true;
+    model.holes.retain(|h| {
+        !(h.kind == hale_model::HoleKind::UnanalyzedBody
+            && h.at
+                == hale_model::EntityRef::Function(
+                    hale_model::FunctionId(idx as u32),
+                ))
+    });
+    assert!(
+        matches!(
+            model.validate(),
+            Err(hale_model::ModelError::CoverageLaw { .. })
+        ),
+        "analyzed=true, summarized=false must not validate"
+    );
+}
+
+/// …and the sidecar cannot manufacture Holds from it either: even
+/// with recomputed shape/coverage digests and a well-formed Holds
+/// certificate, eligibility requires the hashed anchor
+/// (analyzed AND summarized), so the judgment refuses.
+#[test]
+fn function_coverage_upgrade_cannot_manufacture_holds() {
+    let program = hale_syntax::parse_source(MODULE_ANNOTATED_SRC)
+        .expect("parse");
+    let bundle = bundle_of(MODULE_ANNOTATED_SRC, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let idx = model
+        .entities
+        .functions
+        .iter()
+        .position(|f| f.display == "f")
+        .expect("module fn");
+    model.entities.functions[idx].analyzed = true;
+    model.holes.retain(|h| {
+        !(h.kind == hale_model::HoleKind::UnanalyzedBody
+            && h.at
+                == hale_model::EntityRef::Function(
+                    hale_model::FunctionId(idx as u32),
+                ))
+    });
+    // Manufacture the sidecar AGAINST the upgraded model: derive
+    // fresh (subject now "eligible" by the analyzed bit alone),
+    // digests recomputed by construction.
+    let evidence =
+        derive_certificate_evidence(&bundle, &table, &model);
+    let judged =
+        judge_certificates(&table, &model, &evidence, &[0]);
+    let row = judged
+        .iter()
+        .find(|j| {
+            table
+                .rows
+                .iter()
+                .any(|r| r.ordinal == j.ordinal && r.name == "f")
+        })
+        .expect("the module annotation row");
+    assert_ne!(
+        row.verdict,
+        Verdict::Holds,
+        "an upgraded coverage bit without the hashed anchor \
+         cannot certify"
+    );
+}
+
+const MODULE_LOCUS_METHOD_SRC: &str = r#"
+module inner {
+    @phase_effects(birth: {})
+    locus Hidden {
+        params { n: Int = 0; }
+        fn poke(v: Int) -> Int { return v; }
+    }
+}
+main locus App {
+    params { n: Int = 0; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+
+/// Round 14: the LOCUS-grain upgrade is a model-law violation —
+/// flipping `analyzable` to true over an unanalyzed ordinary
+/// member fails validate (the flag DERIVES from the typed
+/// member_of relation and FunctionKind).
+#[test]
+fn locus_coverage_upgrade_fails_model_validation() {
+    let program =
+        hale_syntax::parse_source(MODULE_LOCUS_METHOD_SRC)
+            .expect("parse");
+    let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let mut model = derive_application_model(&bundle);
+    model.validate().expect("the honest model is lawful");
+    let idx = model
+        .entities
+        .loci
+        .iter()
+        .position(|l| l.display == "Hidden")
+        .expect("module locus");
+    model.entities.loci[idx].analyzable = true;
+    assert!(
+        matches!(
+            model.validate(),
+            Err(hale_model::ModelError::CoverageLaw { .. })
+        ),
+        "analyzable=true over an unanalyzed member must not \
+         validate"
+    );
+}
+
+/// …and the sidecar refuses the matching synthetic phase
+/// certificate: eligibility recomputes the member coverage from
+/// the typed member_of relation, so the unverified locus bit
+/// alone cannot make the phases reportable.
+#[test]
+fn locus_coverage_upgrade_cannot_manufacture_holds() {
+    let program =
+        hale_syntax::parse_source(MODULE_LOCUS_METHOD_SRC)
+            .expect("parse");
+    let bundle = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let bundle2 = bundle_of(MODULE_LOCUS_METHOD_SRC, &program);
+    let mut model = derive_application_model(&bundle);
+    let table = lower_claims(&bundle, &model);
+    let idx = model
+        .entities
+        .loci
+        .iter()
+        .position(|l| l.display == "Hidden")
+        .expect("module locus");
+    model.entities.loci[idx].analyzable = true;
+    // Manufacture against the upgraded model: derivation now
+    // synthesizes the implicit-phase Holds certificate (the
+    // upgraded bit steers it), digests recomputed by
+    // construction.
+    let evidence =
+        derive_certificate_evidence(&bundle2, &table, &model);
+    let judged =
+        judge_certificates(&table, &model, &evidence, &[0]);
+    let row = judged
+        .iter()
+        .find(|j| {
+            table.rows.iter().any(|r| {
+                r.ordinal == j.ordinal && r.name == "Hidden"
+            })
+        })
+        .expect("the phase row");
+    assert_ne!(
+        row.verdict,
+        Verdict::Holds,
+        "an upgraded locus bit over an unanalyzed member cannot \
+         certify its phases"
+    );
+}

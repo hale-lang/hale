@@ -437,26 +437,55 @@ impl EvidenceTable {
                     }
                     | crate::claim_ir::ClaimIr::NoPanic { at },
                 ) => at.0.is_some_and(|f| {
+                    // Round 14: eligibility requires the HASHED
+                    // anchor too — a coverage bit upgraded on an
+                    // otherwise-unvalidated model still fails
+                    // here (analyzed without summarized is not a
+                    // reportable subject).
                     model
                         .entities
                         .functions
                         .get(f.index())
-                        .is_some_and(|f| f.analyzed)
+                        .is_some_and(|f| {
+                            f.analyzed && f.summarized
+                        })
                 }),
                 Some(
                     crate::claim_ir::ClaimIr::PhaseEffects {
                         locus,
                         ..
                     },
-                ) => {
-                    locus.0.is_some_and(|l| {
-                        model
-                            .entities
-                            .loci
-                            .get(l.index())
-                            .is_some_and(|l| l.analyzable)
-                    })
-                }
+                ) => locus.0.is_some_and(|lid| {
+                    // Round 14: the locus bit alone is not
+                    // trusted — the member coverage must agree
+                    // (recomputed from the typed member_of
+                    // relation), so flipping `analyzable` over an
+                    // unanalyzed member cannot make its phases
+                    // reportable.
+                    let flag = model
+                        .entities
+                        .loci
+                        .get(lid.index())
+                        .is_some_and(|l| l.analyzable);
+                    let members_ok = model
+                        .relations
+                        .member_of
+                        .iter()
+                        .filter(|m| m.locus == lid)
+                        .all(|m| {
+                            model
+                                .entities
+                                .functions
+                                .get(m.function.index())
+                                .is_none_or(|f| {
+                                    matches!(
+                                        f.kind,
+                                        crate::entity::FunctionKind::FailureHandler
+                                    ) || f.analyzed
+                                })
+                        });
+                    flag && members_ok
+                }),
                 _ => false,
             };
             if !eligible {
@@ -738,6 +767,13 @@ impl ApplicationModel {
                     law: "summarized implies analyzed",
                 });
             }
+            if f.analyzed && !f.summarized {
+                return Err(ModelError::CoverageLaw {
+                    index: i,
+                    law: "analyzed implies summarized — the \
+                          walked set is the summary set",
+                });
+            }
             if matches!(
                 f.kind,
                 crate::entity::FunctionKind::FailureHandler
@@ -781,6 +817,51 @@ impl ApplicationModel {
                         index: i,
                         law: "an unanalyzed body retains its \
                               UnanalyzedBody residue",
+                    });
+                }
+            }
+        }
+        // Locus-grain coverage law (round 14): `analyzable` is
+        // DERIVED from the typed member_of relation and
+        // FunctionKind — a locus is analyzable iff every relevant
+        // member (all kinds except FailureHandler; closures never
+        // produce function entities) is analyzed; an empty
+        // relevant set is vacuously analyzable. No display-prefix
+        // inference.
+        {
+            let mut relevant: std::collections::BTreeMap<
+                u32,
+                (bool, bool),
+            > = std::collections::BTreeMap::new();
+            for m in &self.relations.member_of {
+                let Some(f) =
+                    e.functions.get(m.function.index())
+                else {
+                    continue;
+                };
+                if matches!(
+                    f.kind,
+                    crate::entity::FunctionKind::FailureHandler
+                ) {
+                    continue;
+                }
+                let entry = relevant
+                    .entry(m.locus.0)
+                    .or_insert((true, true));
+                entry.0 = false;
+                entry.1 = entry.1 && f.analyzed;
+            }
+            for (i, l) in e.loci.iter().enumerate() {
+                let (empty, all_analyzed) = relevant
+                    .get(&(i as u32))
+                    .copied()
+                    .unwrap_or((true, true));
+                let expect = empty || all_analyzed;
+                if l.analyzable != expect {
+                    return Err(ModelError::CoverageLaw {
+                        index: i,
+                        law: "locus analyzability derives from \
+                              its member coverage",
                     });
                 }
             }
