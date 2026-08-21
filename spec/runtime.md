@@ -440,7 +440,11 @@ re-arms on peer EOF and a link it cannot serve is structural.
 A `pinned(..., replicas = K)` field contributes K instances whose
 model rows carry their own 0-based INDEX — the same `i` codegen
 bakes and a keyed subscriber registers under — and the model
-refuses a replica set that is not contiguous from 0.
+refuses a replica set that is not contiguous from 0. Replica-ness
+belongs to the LAST path component: the arrangement walks into each
+replica, so what a replica owns (`App.workers[0].leaf`) is an
+ordinary child that inherits its owner's domain and carries no
+index of its own.
 
 A subject named by a `bindings { }` entry is never devirtualized:
 an external peer is (or may be) the real counterparty, so the

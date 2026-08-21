@@ -335,6 +335,26 @@ fn main() { App { }; }
         ),
         "validate accepted a replica set that is not 0..K"
     );
+
+    // …and a genuine GAP, with path and field agreeing, so the
+    // contiguity clause is exercised and not just the
+    // path-vs-field agreement clause above.
+    let mut m2 = derive_application_model(&bundle);
+    for inst in m2.entities.locus_instances.iter_mut() {
+        if inst.replica == Some(2) {
+            inst.path = inst.path.replace("[2]", "[7]");
+            inst.replica = Some(7);
+        }
+    }
+    assert!(
+        matches!(
+            m2.validate(),
+            Err(hale_model::ModelError::ReplicaIndicesNotContiguous {
+                ref base
+            }) if base == "App.workers"
+        ),
+        "validate accepted replicas [0, 1, 7]"
+    );
 }
 
 /// Review round 1, blocker 3: a locus can be BOTH arranged and
@@ -519,4 +539,68 @@ fn main() { App { }; }
         );
     }
     assert_eq!(m.relations.binds.len(), 2);
+}
+
+/// Review round 2, blocker 1: a replica's own children are ordinary
+/// children. The arrangement walks into each replica, so a
+/// non-replicated field beneath one is `App.workers[0].leaf` with
+/// no index of its own — correct, and refused by a validator that
+/// decided replica-ness with `path.rfind('[')`, since an ancestor's
+/// bracket is not this row's. Replica-ness is a property of the
+/// LAST path component only.
+#[test]
+fn children_of_replicas_are_not_replicas() {
+    let m = model_of(
+        r#"
+locus Leaf {
+    params { n: Int = 0; }
+}
+locus Worker {
+    params { leaf: Leaf = Leaf { }; }
+}
+main locus App {
+    params { workers: Worker = Worker { }; }
+    placement { workers: pinned(replicas = 2); }
+}
+fn main() { App { }; }
+"#,
+    );
+    let rows: Vec<(&str, Option<u32>)> = m
+        .entities
+        .locus_instances
+        .iter()
+        .map(|i| (i.path.as_str(), i.replica))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            ("App", None),
+            ("App.workers[0]", Some(0)),
+            ("App.workers[0].leaf", None),
+            ("App.workers[1]", Some(1)),
+            ("App.workers[1].leaf", None),
+        ],
+        "each replica is walked into, and what it owns is not \
+         itself a replica"
+    );
+    // The nested leaves are real instances with real placement:
+    // they inherit their replica parent's pinned domain, one
+    // domain per replica.
+    let domains: Vec<&str> = m
+        .relations
+        .placed_in
+        .iter()
+        .map(|p| m.entities.thread_domains[p.domain.index()].name.as_str())
+        .collect();
+    assert_eq!(
+        domains,
+        vec![
+            "main",
+            "pinned:App.workers[0]",
+            "pinned:App.workers[0]",
+            "pinned:App.workers[1]",
+            "pinned:App.workers[1]",
+        ],
+        "a leaf runs on its owner's thread"
+    );
 }

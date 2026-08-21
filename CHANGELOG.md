@@ -56,6 +56,12 @@ identity setters now run before anything that can register. Eager
 recording/replay init deliberately stays after binding realization,
 so a backend with no replay class still refuses at its own seam.
 
+Review round 2: the replica-index law read `path.rfind('[')`, so any
+descendant of a replica (`App.workers[0].leaf` — the arrangement
+walks into each replica, and a leaf beneath one is an ordinary
+child) was treated as a malformed replica row and refused the whole
+model. Replica-ness is a property of the last path component only.
+
 **Fix (binding role inference).** The documented inference
 (publish-only → `connect`, subscribe-only → `listen`) was dead code:
 the desugar ran it after rewriting topic references to literal

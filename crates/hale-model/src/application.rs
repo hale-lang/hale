@@ -1265,7 +1265,18 @@ impl ApplicationModel {
                 Vec<u32>,
             > = std::collections::BTreeMap::new();
             for inst in &e.locus_instances {
-                let Some(open) = inst.path.rfind('[') else {
+                // Replica-ness is a property of the LAST path
+                // component only. A replica's own children keep
+                // being ordinary children — `App.workers[0].leaf`
+                // is a `leaf`, not replica 0 of anything — so an
+                // ancestor's bracket must not make a descendant
+                // answer for it.
+                let last = inst.path.rfind('.').map_or(0, |d| d + 1);
+                let open = inst.path[last..]
+                    .strip_suffix(']')
+                    .and_then(|c| c.rfind('['))
+                    .map(|i| last + i);
+                let Some(open) = open else {
                     // Not a replica path: it must not claim an index.
                     if inst.replica.is_some() {
                         return Err(
