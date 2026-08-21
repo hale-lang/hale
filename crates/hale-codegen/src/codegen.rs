@@ -1059,9 +1059,60 @@ pub fn build_executable_with_options(
     } else {
         let (top, _diags) = hale_types::resolve::build_top_scope(&bundle);
         let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top);
-        // Deterministic ids: eligible subjects sorted by wire string
-        // (BTreeMap iteration order is sorted), 0..N. The direct-call
-        // subset reuses those very ids (its bucket is the same one
+        // GH #476 Change 8: the flavor decision is NOT made here. The
+        // gate facts are bridged into the canonical shape and
+        // `DispatchPlan` — the same procedure the model-side
+        // `DispatchPlan::derive` runs, and whose digest the execution
+        // identity folds in — decides. Codegen's gates come from the
+        // MERGED (user + stdlib, desugared) graph its own lowering
+        // must agree with, so the source of facts is local; only the
+        // ladder is shared. `dispatch_plan_agrees_with_the_model` in
+        // hale-cli pins the two fact sources against each other over
+        // the corpus.
+        let gates: Vec<hale_model::DispatchGate> = graph
+            .subjects
+            .iter()
+            .map(|(subject, info)| hale_model::DispatchGate {
+                subject: subject.clone(),
+                static_eligible: info.eligible,
+                direct_eligible: info.direct_call_eligible,
+                ineligible_reason: info
+                    .ineligible_reason
+                    .as_ref()
+                    .map(|r| r.tag().to_string()),
+                publisher_loci: {
+                    let mut p: Vec<String> = info
+                        .publishers
+                        .iter()
+                        .map(|s| s.locus.clone())
+                        .collect();
+                    p.sort();
+                    p.dedup();
+                    p
+                },
+                subscribers: info
+                    .subscribers
+                    .iter()
+                    .map(|s| (s.locus.clone(), s.handler.clone()))
+                    .collect(),
+            })
+            .collect();
+        let plan = hale_model::dispatch_plan::DispatchPlan::from_gates(
+            &gates,
+            &std::collections::BTreeMap::new(),
+        );
+        if env_flag("HALE_DISPATCH_TRACE") {
+            for s in &plan.subjects {
+                eprintln!(
+                    "[hale-dispatch] {} {}",
+                    s.subject,
+                    s.flavor.as_str()
+                );
+            }
+        }
+        // Deterministic ids: static subjects in wire-string order
+        // (the plan sorts by subject), 0..N. The direct-call subset
+        // reuses those very ids (its bucket is the same one
         // lotus_bus_register_static populates), so we collect both in
         // one pass.
         let mut ids: std::collections::BTreeMap<String, u32> =
@@ -1075,21 +1126,14 @@ pub fn build_executable_with_options(
             String,
             Vec<(String, String)>,
         > = std::collections::BTreeMap::new();
-        let mut next: u32 = 0;
-        for (subject, info) in &graph.subjects {
-            if info.eligible {
-                ids.insert(subject.clone(), next);
-                next += 1;
-                if info.direct_call_eligible {
-                    direct.insert(subject.clone());
-                    direct_subs.insert(
-                        subject.clone(),
-                        info.subscribers
-                            .iter()
-                            .map(|s| (s.locus.clone(), s.handler.clone()))
-                            .collect(),
-                    );
-                }
+        for (next, s) in plan.static_subjects().iter().enumerate() {
+            ids.insert(s.subject.clone(), next as u32);
+            if s.flavor
+                == hale_model::dispatch_plan::DispatchFlavor::StaticDirect
+            {
+                direct.insert(s.subject.clone());
+                direct_subs
+                    .insert(s.subject.clone(), s.subscribers.clone());
             }
         }
         (ids, direct, direct_subs)

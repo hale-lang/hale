@@ -2511,6 +2511,80 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         }
     }
 
+    // GH #476 Change 8: the BusGraph's per-subject dispatch gates,
+    // bridged verbatim — DispatchPlan::derive combines them with
+    // the arrangement into the typed lowering plan.
+    //
+    // Keyed at WIRE grain, not at `BusSubject::canonical()` grain.
+    // The graph this builder runs over sees the AUTHORED program, so
+    // a topic-addressed site keys by the topic's declaration name
+    // (`Evt`); codegen desugars topics to their wire subject before
+    // building its graph, so the very same dispatch keys by `evt`
+    // there — and the wire string is the identity the runtime, the
+    // artifact (Change 7's route grain), and the static bucket all
+    // use. Mapping here is what makes the two plans comparable at
+    // all.
+    //
+    // A program that addresses one topic BOTH ways (`Evt <- x` in
+    // one locus, `"evt" <- x` in another) has two authored subjects
+    // collapsing onto one wire subject — codegen computes ONE
+    // eligibility over the union of those sites, so the merge is
+    // conjunctive (a subject is static/direct here only if every
+    // authored view of it was) with the site sets unioned. That is
+    // the conservative side: the plan can under-promote relative to
+    // codegen, never over-promote.
+    let mut gate_by_wire: BTreeMap<String, hale_model::DispatchGate> =
+        BTreeMap::new();
+    for (subject, info) in &graph.subjects {
+        let wire = topic_decl_by_name
+            .get(subject.as_str())
+            .map(|t| t.wire.clone())
+            .unwrap_or_else(|| subject.clone());
+        let publisher_loci: Vec<String> =
+            info.publishers.iter().map(|p| p.locus.clone()).collect();
+        let subscribers: Vec<(String, String)> = info
+            .subscribers
+            .iter()
+            .map(|s2| (s2.locus.clone(), s2.handler.clone()))
+            .collect();
+        let reason =
+            info.ineligible_reason.as_ref().map(|r| r.tag().to_string());
+        match gate_by_wire.get_mut(&wire) {
+            Some(g) => {
+                g.static_eligible &= info.eligible;
+                g.direct_eligible &= info.direct_call_eligible;
+                if g.ineligible_reason.is_none() {
+                    g.ineligible_reason = reason;
+                }
+                g.publisher_loci.extend(publisher_loci);
+                g.subscribers.extend(subscribers);
+            }
+            None => {
+                gate_by_wire.insert(
+                    wire.clone(),
+                    hale_model::DispatchGate {
+                        subject: wire,
+                        static_eligible: info.eligible,
+                        direct_eligible: info.direct_call_eligible,
+                        ineligible_reason: reason,
+                        publisher_loci,
+                        subscribers,
+                    },
+                );
+            }
+        }
+    }
+    let dispatch_gates: Vec<hale_model::DispatchGate> = gate_by_wire
+        .into_values()
+        .map(|mut g| {
+            g.publisher_loci.sort();
+            g.publisher_loci.dedup();
+            g.subscribers.sort();
+            g.subscribers.dedup();
+            g
+        })
+        .collect();
+
     // The Change-3 bridge: the legacy artifact's fn sort, recorded
     // so TopologyShapeV1 projects from the model alone.
     let mut legacy_fns: Vec<hale_model::FunctionId> = summary
@@ -3188,6 +3262,8 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         let og = crate::ownership_graph::build_ownership_graph(
             bundle, &top,
         );
+        let free_fn_births =
+            crate::ownership_graph::free_fn_birth_sites(bundle);
         // Params-default births ARE the arrangement — only sites
         // outside every params block of their enclosing locus are
         // dynamic.
@@ -3211,22 +3287,51 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                 )
             })
             .collect();
-        for site in &og.sites {
+        // Method-body births (the ownership graph's sites) PLUS
+        // free-function births — `fn main() { EchoL { }; }` is the
+        // most common arrangement-free program shape in the corpus,
+        // and it must not read as "no instances, exact placement".
+        let dyn_sites: Vec<(&str, &str, hale_syntax::Span)> = og
+            .sites
+            .iter()
+            .map(|s| {
+                (
+                    s.child_ty.as_str(),
+                    s.enclosing_locus.as_str(),
+                    s.span,
+                )
+            })
+            .chain(
+                free_fn_births
+                    .iter()
+                    .map(|(ty, sp)| (ty.as_str(), "", *sp)),
+            )
+            .collect();
+        for (child_ty, enclosing, span) in dyn_sites {
+            // `fn main() { App { }; }` — the birth of the
+            // arrangement ROOT — is not a dynamic birth: it is how
+            // the arrangement is entered, and the root instance is
+            // already modeled (path `App`, domain `main`). Every
+            // OTHER free-standing birth is outside the arrangement.
+            if main_decl.as_ref().is_some_and(|(n, _)| n == child_ty) {
+                continue;
+            }
             let in_arrangement = params_spans
-                .get(site.enclosing_locus.as_str())
+                .get(enclosing)
                 .is_some_and(|spans| {
                     spans.iter().any(|ps| {
-                        site.span.start >= ps.start
-                            && site.span.end <= ps.end
+                        span.start >= ps.start && span.end <= ps.end
                     })
                 });
             if in_arrangement {
                 continue;
             }
-            let pid = intern_span(&mut records, site.span);
-            let Some(lid) =
-                locus_id.get(&site.enclosing_locus)
-            else {
+            let pid = intern_span(&mut records, span);
+            // Anchored at the BORN locus, not the birthplace: the
+            // fact hidden is "instances of this locus exist that
+            // the arrangement does not name", which is true of the
+            // child whether it was born in a method or a free fn.
+            let Some(lid) = locus_id.get(&child_ty.to_string()) else {
                 continue;
             };
             let at = EntityRef::LocusDecl(*lid);
@@ -3353,6 +3458,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     let model = ApplicationModel {
         legacy: hale_model::LegacyProjection {
             topology_v1_fns: legacy_fns,
+            dispatch_gates,
             topology_v1_calls_via_stdlib: legacy_via,
             stdlib_absorption,
         },
@@ -3597,5 +3703,35 @@ pub fn render_internal(m: &ApplicationModel) -> String {
         m.capabilities.exact_key_filters,
         m.capabilities.exact_effects
     ));
+    s.push_str(&format!(
+        " ownership={} placement={} routes={}\n",
+        m.capabilities.exact_ownership,
+        m.capabilities.exact_placement,
+        m.capabilities.exact_routes
+    ));
+    // GH #476 Change 8: the derived lowering plan. Not model rows —
+    // a CONCLUSION, printed here because this dump is the survey
+    // surface #464's stage 0 asks its question of ("how much queued
+    // bus traffic is same-thread-domain?").
+    let plan = hale_model::dispatch_plan::DispatchPlan::derive(m);
+    let (same, total) = plan.same_domain_queued();
+    s.push_str(&format!(
+        "dispatch_plan ({} subjects, {} same-domain queued):\n",
+        total, same
+    ));
+    for sp in &plan.subjects {
+        s.push_str(&format!(
+            "  {} {}{} pub[{}] sub[{}]{}\n",
+            sp.subject,
+            sp.flavor.as_str(),
+            sp.ineligible_reason
+                .as_deref()
+                .map(|r| format!(" ({})", r))
+                .unwrap_or_default(),
+            sp.publisher_domains.join(","),
+            sp.subscriber_domains.join(","),
+            if sp.same_domain { " same-domain" } else { "" }
+        ));
+    }
     s
 }

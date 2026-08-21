@@ -764,6 +764,59 @@ fn named_type(ty: &TypeExpr) -> Option<String> {
     }
 }
 
+/// GH #476 Change 8: locus births in FREE functions — `fn main() {
+/// EchoL { }; }` and friends.
+///
+/// The ownership graph deliberately walks locus MEMBER bodies only:
+/// its question is "which owning locus does this child bubble to",
+/// and a free function has no owner to bubble toward. The model's
+/// arrangement asks a different question — "is this instance in the
+/// static arrangement, or does it appear at runtime?" — and a
+/// free-function birth is emphatically the latter. Without this
+/// walk, a whole program whose loci are all born in `fn main` would
+/// model zero instances while claiming exact placement.
+///
+/// Returns `(locus type, literal span)` per site, in source order.
+pub fn free_fn_birth_sites(
+    bundle: &Bundle<'_>,
+) -> Vec<(String, Span)> {
+    let mut locus_types: BTreeSet<String> = BTreeSet::new();
+    fn names(items: &[TopDecl], out: &mut BTreeSet<String>) {
+        for item in items {
+            match item {
+                TopDecl::Locus(l) => {
+                    out.insert(l.name.name.clone());
+                }
+                TopDecl::Module(m) => names(&m.items, out),
+                _ => {}
+            }
+        }
+    }
+    for program in bundle.programs.values() {
+        names(&program.items, &mut locus_types);
+    }
+    let mut out: Vec<RawSite> = Vec::new();
+    fn walk(
+        items: &[TopDecl],
+        locus_types: &BTreeSet<String>,
+        out: &mut Vec<RawSite>,
+    ) {
+        for item in items {
+            match item {
+                TopDecl::Fn(f) => {
+                    collect_sites_block(&f.body, locus_types, out)
+                }
+                TopDecl::Module(m) => walk(&m.items, locus_types, out),
+                _ => {}
+            }
+        }
+    }
+    for program in bundle.programs.values() {
+        walk(&program.items, &locus_types, &mut out);
+    }
+    out.into_iter().map(|s| (s.child_ty, s.span)).collect()
+}
+
 /// Collect every locus-instantiation literal (`I { ... }` where `I` is
 /// a known locus type) reachable from a block, walking every
 /// sub-statement and sub-expression.

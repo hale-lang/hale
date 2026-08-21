@@ -121,6 +121,24 @@ pub struct Relations {
 /// EXACT membership of legacy serialized sorts that are narrower
 /// than the model's universe, so `TopologyShapeV1` can be projected
 /// from the model alone (no summary/AST side channel). Deleted when
+/// One subject's dispatch-gate facts (GH #476 Change 8) — copied
+/// verbatim from the BusGraph's soundness gates.
+#[derive(Clone, Debug, Default)]
+pub struct DispatchGate {
+    /// The BusGraph's subject key (site spelling).
+    pub subject: String,
+    /// Static-bucket eligible (closed world).
+    pub static_eligible: bool,
+    /// Direct-call eligible (same-thread + quiet + closed world).
+    pub direct_eligible: bool,
+    /// The gate's reason when not static-eligible.
+    pub ineligible_reason: Option<String>,
+    /// Publisher locus displays (site grain, deduped).
+    pub publisher_loci: Vec<String>,
+    /// Subscriber (locus display, handler) pairs.
+    pub subscribers: Vec<(String, String)>,
+}
+
 /// the legacy artifact schema is versioned past.
 #[derive(Clone, Debug, Default)]
 pub struct LegacyProjection {
@@ -139,6 +157,11 @@ pub struct LegacyProjection {
     /// unchanged source. Both endpoints are legacy fns
     /// (∈ `topology_v1_fns`).
     pub topology_v1_calls_via_stdlib: Vec<(FunctionId, FunctionId, bool)>,
+    /// GH #476 Change 8: the BusGraph's per-subject dispatch gates
+    /// — the trusted devirtualization analysis, bridged like every
+    /// other legacy engine. `DispatchPlan::derive` combines these
+    /// facts with the arrangement into the typed lowering plan.
+    pub dispatch_gates: Vec<DispatchGate>,
     /// GH #476 Change 5a: what the evaluator's merged-summary walk
     /// sees INSIDE stdlib bodies reachable from a user fn — interior
     /// fail-closed holes (with the stdlib fn's display for the

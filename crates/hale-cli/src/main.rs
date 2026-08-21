@@ -4641,10 +4641,33 @@ fn compile_and_exec(
 /// inputs". Residue it cannot see: the LLVM/libc toolchain outside
 /// this binary and the linker environment — a post-link binary
 /// digest is the staged stronger form.
+/// GH #476 Change 8: the dispatch plan's identity for the bundle
+/// about to be built — `DispatchPlan::derive(&ApplicationModel)`,
+/// digested.
+///
+/// `LOTUS_NO_BUS_DEVIRT=1` (the differential harness's control arm)
+/// makes codegen emit the empty plan — every subject dynamic — so
+/// the identity folded into the exec digest must be the EMPTY
+/// plan's, not the model's. Otherwise the control arm and the live
+/// arm would share a build identity while running different
+/// lowerings, and a recording taken under one would be admitted
+/// against the other.
+fn dispatch_plan_digest(bundle: &hale_types::Bundle<'_>) -> u64 {
+    if std::env::var("LOTUS_NO_BUS_DEVIRT")
+        .map(|v| v == "1" || v == "true" || v == "TRUE")
+        .unwrap_or(false)
+    {
+        return hale_model::dispatch_plan::DispatchPlan::default().digest();
+    }
+    let model = hale_types::model_builder::derive_application_model(bundle);
+    hale_model::dispatch_plan::DispatchPlan::derive(&model).digest()
+}
+
 fn exec_digest(
     sources: &BTreeMap<PathBuf, String>,
     entry: &Path,
     options_fp: &str,
+    plan_digest: u64,
 ) -> [u64; 4] {
     let mut buf: Vec<u8> = Vec::new();
     let frame = |b: &[u8], buf: &mut Vec<u8>| {
@@ -4660,6 +4683,14 @@ fn exec_digest(
     frame(env!("HALE_TOOLCHAIN_SHA256").as_bytes(), &mut buf);
     frame(env!("CARGO_PKG_VERSION").as_bytes(), &mut buf);
     frame(options_fp.as_bytes(), &mut buf);
+    // GH #476 Change 8: the DISPATCH PLAN is part of what a build
+    // is. Two builds of byte-identical sources by one toolchain
+    // still run different code if the bus lowering differs (an
+    // env-forced all-dynamic plan, a future placement-driven
+    // flavor), and a recording admitted across that boundary would
+    // replay against a program whose bus behaves differently. The
+    // plan's digest is framed here so the boundary is a refusal.
+    frame(&plan_digest.to_le_bytes(), &mut buf);
     buf.extend_from_slice(&(sources.len() as u64).to_le_bytes());
     // Logical (entry-relative) source ids: identical trees checked
     // out under different roots are the same build inputs.
@@ -5176,7 +5207,8 @@ fn run_replay(args: &[String]) -> ExitCode {
         base_options.dev_profile,
         base_options.debug.is_some()
     );
-    let digest = exec_digest(&sources, &prog, &options_fp);
+    let digest =
+        exec_digest(&sources, &prog, &options_fp, dispatch_plan_digest(&bundle));
 
     // GH #296 phase 5b (review round): a binding backend with no
     // replay class cannot be suppressed OR injected — replaying or
@@ -5637,7 +5669,12 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
             base_options.dev_profile,
             base_options.debug.is_some()
         );
-        let digest = exec_digest(&sources, target, &options_fp);
+        let digest = exec_digest(
+            &sources,
+            target,
+            &options_fp,
+            dispatch_plan_digest(&bundle),
+        );
         return compile_and_exec(
             &program, &renames, user_args, model_hash, digest,
         );
@@ -5769,7 +5806,12 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
         base_options.dev_profile,
         base_options.debug.is_some()
     );
-    let digest = exec_digest(&path_sources, target, &options_fp);
+    let digest = exec_digest(
+        &path_sources,
+        target,
+        &options_fp,
+        dispatch_plan_digest(&bundle),
+    );
     compile_and_exec(&program, &renames, user_args, model_hash, digest)
 }
 
