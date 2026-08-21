@@ -993,7 +993,17 @@ VERIFIED: both Track A and fleet recompute `shape_hash` from the
 raw model half before any decoding (`verify_shape_hash`) — a
 consistent hashed+unhashed endpoint edit under a stale shape_hash
 refuses, so the identity that replay and composition compare is
-always the identity of the bytes present.
+always the identity of the bytes present. The typed decode is
+STRICT and fallible (round 3): a malformed semantic row — a call
+endpoint that is not a string, a non-string unknown reason — is
+REFUSED, never filtered, because a silently dropped edge or hole
+reason is precisely the omission the shared traversal must never
+see; only genuinely optional facts (provenance, unplaceable decl
+sources, a bus-free program's absent endpoint section) may be
+absent. And every consumed document must carry ONE unambiguous
+value per key: duplicate object keys are rejected before parsing
+(`find_duplicate_key`), because serde's last-wins map would let a
+duplicated `shape_hash` shadow the raw-verified one.
 
 Route admission validates **roles**, not just topic identity. A
 publisher endpoint must publish the subject and a subscriber endpoint

@@ -1154,3 +1154,119 @@ fn stale_shape_hash_is_refused() {
         out
     );
 }
+
+/// Round 3 (#490): the typed decoder is STRICT — a malformed
+/// semantic row is refused, never silently filtered. A call edge
+/// whose endpoint is a number would otherwise vanish before the
+/// shared traversal, flipping a violated fleet prohibition to
+/// holds; a non-string unknown reason would erase residue the
+/// graph must certify over. The oms component is rebuilt to carry
+/// BOTH shapes, and each premise is asserted — no silent skip.
+#[test]
+fn malformed_semantic_rows_are_refused_not_dropped() {
+    const OMS_WITH_SHAPES: &str = r#"
+import "../lib" as t;
+fn helper(v: Int) -> Int { return v + 1; }
+fn call_it(f: fn(Int) -> Int, v: Int) -> Int { return f(v); }
+locus Oms {
+    params { n: Int = 0; }
+    bus { subscribe t::OrderIntent as on_intent; publish t::OrderRequest; }
+    fn on_intent(i: t::Intent) {
+        self.n = call_it(helper, i.id);
+        let o = t::Order { id: i.id };
+        t::OrderRequest <- o;
+    }
+}
+main locus OmsApp { params { o: Oms = Oms { }; } }
+fn main() { OmsApp { }; }
+"#;
+    for (tag, needle, patched, expect) in [
+        (
+            "badcall",
+            "{\"from\": \"Oms::on_intent\", \"to\": \"call_it\"}",
+            "{\"from\": \"Oms::on_intent\", \"to\": 7}",
+            "relations.calls[0].to must be a string",
+        ),
+        (
+            "badreason",
+            "\"reasons\": [\"indirect_call\"]",
+            "\"reasons\": [7]",
+            "unknowns[0].reasons[0] must be a string",
+        ),
+    ] {
+        let r = fleet(tag);
+        write(&r, "oms/main.hl", OMS_WITH_SHAPES);
+        let p = r.join("artifacts/oms.json");
+        let (out, code) = hale(&[
+            "check",
+            r.join("oms").to_str().expect("utf8"),
+            &format!("--dump-topology={}", p.display()),
+        ]);
+        assert_eq!(code, 0, "{}: oms rebuilds clean: {}", tag, out);
+        let good = std::fs::read_to_string(&p).expect("read");
+        assert!(
+            good.contains(needle),
+            "{}: test premise — the shape is present:\n{}",
+            tag,
+            good
+        );
+        let bad = good.replacen(needle, patched, 1);
+        std::fs::write(&p, restamp_both(&bad)).expect("write");
+        let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+        let _ = std::fs::remove_dir_all(&r);
+        assert_ne!(code, 0, "{}: {}", tag, out);
+        assert!(
+            out.contains(expect),
+            "{}: the strict decoder refuses (wanted `{}`): {}",
+            tag,
+            expect,
+            out
+        );
+    }
+}
+
+/// Round 3 (#490): duplicate object keys are refused before/// Round 3 (#490): duplicate object keys are refused before
+/// parsing — serde's last-wins map would otherwise let a stale
+/// `shape_hash` shadow the raw-verified one.
+#[test]
+fn duplicate_shape_hash_is_refused() {
+    fn fnv1a64(bytes: &[u8]) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+    let r = fleet("dupkey");
+    let p = r.join("artifacts/prober.json");
+    let good = std::fs::read_to_string(&p).expect("read");
+    // Append a SECOND shape_hash after the sources section — the
+    // raw verifier reads the first; serde would keep this one.
+    let marker = ",\n  \"claims\": [";
+    let poisoned = good.replacen(
+        marker,
+        ",\n  \"shape_hash\": \"deadbeefdeadbeef\",\n  \
+         \"claims\": [",
+        1,
+    );
+    assert_ne!(poisoned, good, "test premise: the key landed");
+    let key = ",\n  \"artifact_digest\": \"";
+    let cut = poisoned.rfind(key).expect("digest trailer");
+    let body = &poisoned[..cut];
+    let restamped = format!(
+        "{}{}{:016x}\"\n}}\n",
+        body,
+        key,
+        fnv1a64(body.as_bytes())
+    );
+    std::fs::write(&p, restamped).expect("write");
+    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(
+        out.contains("duplicate object key `shape_hash`"),
+        "the duplicate key refuses before parsing: {}",
+        out
+    );
+}

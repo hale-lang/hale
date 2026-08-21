@@ -1996,6 +1996,81 @@ pub fn verify_shape_hash(artifact: &str) -> Option<bool> {
     Some(claimed == format!("{:016x}", fnv1a64(model.as_bytes())))
 }
 
+/// Scan a JSON document for DUPLICATE OBJECT KEYS (GH #476
+/// Change 7, round 3). serde's map parse is last-wins, while the
+/// raw digest/identity verifiers read first occurrences — a
+/// duplicated key would let the verified value and the consumed
+/// value disagree (a stale `shape_hash` shadowing the verified
+/// one is the concrete attack). One unambiguous value per key,
+/// enforced BEFORE parsing, for every object at every depth.
+/// Returns the first duplicated key, or `None` when clean.
+pub fn find_duplicate_key(doc: &str) -> Option<String> {
+    enum Scope {
+        Object {
+            keys: std::collections::BTreeSet<String>,
+            expect_key: bool,
+        },
+        Array,
+    }
+    let mut stack: Vec<Scope> = Vec::new();
+    let mut chars = doc.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '{' => stack.push(Scope::Object {
+                keys: std::collections::BTreeSet::new(),
+                expect_key: true,
+            }),
+            '[' => stack.push(Scope::Array),
+            '}' | ']' => {
+                stack.pop();
+            }
+            ',' => {
+                if let Some(Scope::Object {
+                    expect_key, ..
+                }) = stack.last_mut()
+                {
+                    *expect_key = true;
+                }
+            }
+            '"' => {
+                // Consume the string, tracking escapes.
+                let start = i + 1;
+                let mut end = start;
+                let mut esc = false;
+                for (j, sc) in chars.by_ref() {
+                    if esc {
+                        esc = false;
+                        continue;
+                    }
+                    match sc {
+                        '\\' => esc = true,
+                        '"' => {
+                            end = j;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(Scope::Object {
+                    keys,
+                    expect_key,
+                }) = stack.last_mut()
+                {
+                    if *expect_key {
+                        *expect_key = false;
+                        let key = &doc[start..end];
+                        if !keys.insert(key.to_string()) {
+                            return Some(key.to_string());
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 pub(crate) fn join_str<'a>(items: impl Iterator<Item = &'a String>) -> String {
     items
         .map(|s| quote(s))

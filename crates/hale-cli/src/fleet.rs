@@ -1269,6 +1269,19 @@ fn load_artifact(
             ))
         }
     }
+    // One unambiguous value per key (round 3, #490): serde's
+    // last-wins map parse must not be able to shadow what the raw
+    // verifiers below check.
+    if let Some(key) =
+        hale_types::topology::find_duplicate_key(&src)
+    {
+        return Err(format!(
+            "{}: duplicate object key `{}` — the verified and \
+             consumed values could disagree",
+            p.display(),
+            key
+        ));
+    }
     // Identity BEFORE meaning too (round 2, #490): the declared
     // shape_hash must recompute from the hashed model half, or the
     // wire identity could drift under a stale identity — the exact

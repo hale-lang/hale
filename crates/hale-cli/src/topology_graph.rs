@@ -239,6 +239,19 @@ impl Artifact {
                 hale_types::topology::MODEL_SEMANTICS
             ));
         }
+        // Round 3 (#490): one unambiguous value per key — a
+        // duplicated key would let the raw-verified value and the
+        // parsed (last-wins) value disagree.
+        if let Some(key) =
+            hale_types::topology::find_duplicate_key(&raw)
+        {
+            return Err(format!(
+                "{}: duplicate object key `{}` — the verified \
+                 and consumed values could disagree",
+                path.display(),
+                key
+            ));
+        }
         // Round 2 (#490): the declared IDENTITY must recompute
         // from the hashed model half — artifact_digest proves the
         // bytes were not edited; this proves the shape_hash names

@@ -72,119 +72,224 @@ impl ComponentModel {
     /// law-account admission — this is a projection, not a
     /// validation pass).
     pub fn decode(v: &Value, label: &str) -> Result<Self, String> {
-        let arr = |x: &Value| -> Vec<Value> {
-            x.as_array().cloned().unwrap_or_default()
+        // STRICT and FALLIBLE (round 3, #490): a malformed
+        // semantic row is REFUSED, never filtered — a dropped
+        // call edge or hole reason is exactly the silent-omission
+        // failure #476 exists to eliminate. Only genuinely
+        // optional facts (provenance, unplaceable decl sources)
+        // may be absent.
+        let req_str = |x: &Value,
+                       what: &str|
+         -> Result<String, String> {
+            x.as_str().map(str::to_string).ok_or_else(|| {
+                format!("{}: {} must be a string", label, what)
+            })
         };
-        let shape_hash = v["shape_hash"]
-            .as_str()
-            .ok_or_else(|| {
-                format!("{}: shape_hash must be a string", label)
-            })?
-            .to_string();
-        let fns: Vec<String> = arr(&v["sorts"]["fns"])
-            .iter()
-            .filter_map(|f| f.as_str().map(str::to_string))
-            .collect();
+        let req_arr = |x: &Value,
+                       what: &str|
+         -> Result<Vec<Value>, String> {
+            x.as_array().cloned().ok_or_else(|| {
+                format!("{}: {} must be an array", label, what)
+            })
+        };
+        let shape_hash =
+            req_str(&v["shape_hash"], "shape_hash")?;
+        let mut fns: Vec<String> = Vec::new();
+        for (i, f) in
+            req_arr(&v["sorts"]["fns"], "sorts.fns")?
+                .iter()
+                .enumerate()
+        {
+            fns.push(req_str(
+                f,
+                &format!("sorts.fns[{}]", i),
+            )?);
+        }
         let mut calls: Vec<(String, String)> = Vec::new();
         for rel in ["calls", "calls_via_stdlib"] {
-            for e in arr(&v["relations"][rel]) {
-                if let (Some(f), Some(t)) =
-                    (e["from"].as_str(), e["to"].as_str())
-                {
-                    calls.push((f.to_string(), t.to_string()));
-                }
+            for (i, e) in req_arr(
+                &v["relations"][rel],
+                &format!("relations.{}", rel),
+            )?
+            .iter()
+            .enumerate()
+            {
+                calls.push((
+                    req_str(
+                        &e["from"],
+                        &format!(
+                            "relations.{}[{}].from",
+                            rel, i
+                        ),
+                    )?,
+                    req_str(
+                        &e["to"],
+                        &format!(
+                            "relations.{}[{}].to",
+                            rel, i
+                        ),
+                    )?,
+                ));
             }
         }
-        let publishes: Vec<(String, String)> = arr(
+        let mut publishes: Vec<(String, String)> = Vec::new();
+        for (i, p) in req_arr(
             &v["relations"]["publishes"],
-        )
+            "relations.publishes",
+        )?
         .iter()
-        .filter_map(|p| {
-            Some((
-                p["fn"].as_str()?.to_string(),
-                p["subject"].as_str()?.to_string(),
-            ))
-        })
-        .collect();
-        let subscribes: Vec<(String, String, String)> = arr(
+        .enumerate()
+        {
+            publishes.push((
+                req_str(
+                    &p["fn"],
+                    &format!("relations.publishes[{}].fn", i),
+                )?,
+                req_str(
+                    &p["subject"],
+                    &format!(
+                        "relations.publishes[{}].subject",
+                        i
+                    ),
+                )?,
+            ));
+        }
+        let mut subscribes: Vec<(String, String, String)> =
+            Vec::new();
+        for (i, r) in req_arr(
             &v["relations"]["subscribes"],
-        )
+            "relations.subscribes",
+        )?
         .iter()
-        .filter_map(|s| {
-            Some((
-                s["subject"].as_str()?.to_string(),
-                s["locus"].as_str()?.to_string(),
-                s["handler"].as_str()?.to_string(),
-            ))
-        })
-        .collect();
-        let topics: Vec<TopicRow> = arr(&v["topics"])
+        .enumerate()
+        {
+            let at = format!("relations.subscribes[{}]", i);
+            subscribes.push((
+                req_str(
+                    &r["subject"],
+                    &format!("{}.subject", at),
+                )?,
+                req_str(&r["locus"], &format!("{}.locus", at))?,
+                req_str(
+                    &r["handler"],
+                    &format!("{}.handler", at),
+                )?,
+            ));
+        }
+        let mut topics: Vec<TopicRow> = Vec::new();
+        for (i, t) in
+            req_arr(&v["topics"], "topics")?.iter().enumerate()
+        {
+            let at = format!("topics[{}]", i);
+            topics.push(TopicRow {
+                name: req_str(
+                    &t["name"],
+                    &format!("{}.name", at),
+                )?,
+                subject: req_str(
+                    &t["subject"],
+                    &format!("{}.subject", at),
+                )?,
+                payload_hash: req_str(
+                    &t["payload_hash"],
+                    &format!("{}.payload_hash", at),
+                )?,
+            });
+        }
+        let mut unknowns: Vec<(String, Vec<String>)> =
+            Vec::new();
+        for (i, u) in req_arr(&v["unknowns"], "unknowns")?
             .iter()
-            .filter_map(|t| {
-                Some(TopicRow {
-                    name: t["name"].as_str()?.to_string(),
-                    subject: t["subject"].as_str()?.to_string(),
-                    payload_hash: t["payload_hash"]
-                        .as_str()?
-                        .to_string(),
-                })
-            })
-            .collect();
-        let unknowns: Vec<(String, Vec<String>)> =
-            arr(&v["unknowns"])
-                .iter()
-                .filter_map(|u| {
-                    Some((
-                        u["fn"].as_str()?.to_string(),
-                        arr(&u["reasons"])
-                            .iter()
-                            .filter_map(|r| {
-                                r.as_str().map(str::to_string)
-                            })
-                            .collect(),
-                    ))
-                })
-                .collect();
+            .enumerate()
+        {
+            let at = format!("unknowns[{}]", i);
+            let mut reasons: Vec<String> = Vec::new();
+            for (k, r) in req_arr(
+                &u["reasons"],
+                &format!("{}.reasons", at),
+            )?
+            .iter()
+            .enumerate()
+            {
+                reasons.push(req_str(
+                    r,
+                    &format!("{}.reasons[{}]", at, k),
+                )?);
+            }
+            unknowns.push((
+                req_str(&u["fn"], &format!("{}.fn", at))?,
+                reasons,
+            ));
+        }
         // decl → source path, resolved through the sources table.
-        let source_path: BTreeMap<i64, String> = arr(&v["sources"])
-            .iter()
-            .filter_map(|s| {
-                Some((
-                    s["id"].as_i64()?,
-                    s["path"].as_str()?.to_string(),
-                ))
-            })
-            .collect();
+        let mut source_path: BTreeMap<i64, String> =
+            BTreeMap::new();
+        for (i, srow) in
+            req_arr(&v["sources"], "sources")?.iter().enumerate()
+        {
+            let at = format!("sources[{}]", i);
+            let id =
+                srow["id"].as_i64().ok_or_else(|| {
+                    format!(
+                        "{}: {}.id must be a number",
+                        label, at
+                    )
+                })?;
+            source_path.insert(
+                id,
+                req_str(&srow["path"], &format!("{}.path", at))?,
+            );
+        }
         let mut decl_sources: BTreeMap<String, String> =
             BTreeMap::new();
         if let Some(decls) =
             v["provenance"]["decls"].as_object()
         {
             for (decl, row) in decls {
-                let Some(sid) = row["source"].as_i64() else {
-                    continue;
-                };
+                let sid =
+                    row["source"].as_i64().ok_or_else(|| {
+                        format!(
+                            "{}: provenance.decls.{}.source                              must be a number",
+                            label, decl
+                        )
+                    })?;
                 if sid < 0 {
+                    // Unplaceable (foreign/synthetic) — a
+                    // legitimate absence, not a defect.
                     continue;
                 }
-                if let Some(p) = source_path.get(&sid) {
-                    decl_sources
-                        .insert(decl.clone(), p.clone());
-                }
+                let p2 =
+                    source_path.get(&sid).ok_or_else(|| {
+                        format!(
+                            "{}: provenance.decls.{} names                              source {}, which is not in the                              sources table",
+                            label, decl, sid
+                        )
+                    })?;
+                decl_sources.insert(decl.clone(), p2.clone());
             }
         }
         // The hashed endpoint identity (schema 1.12) — admission
         // has already proven the unhashed sections agree with it.
         let mut endpoints: Vec<EndpointIdentity> = Vec::new();
-        for e in arr(&v["endpoint_identity"]) {
+        // Absent = a bus-free program (the section is emitted
+        // only when endpoints exist); present-but-not-an-array =
+        // malformed, refused.
+        let ep_rows: Vec<Value> =
+            match v.get("endpoint_identity") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(x) => {
+                    req_arr(x, "endpoint_identity")?
+                }
+            };
+        for (i, e) in ep_rows.iter().enumerate() {
+            let at = format!("endpoint_identity[{}]", i);
             let publish = match e["verb"].as_str() {
                 Some("publish") => true,
                 Some("subscribe") => false,
                 _ => {
                     return Err(format!(
-                        "{}: endpoint_identity verb outside the \
-                         closed vocabulary",
-                        label
+                        "{}: {}.verb outside the closed                          vocabulary",
+                        label, at
                     ))
                 }
             };
@@ -193,9 +298,8 @@ impl ComponentModel {
                 .or_else(|| e["locus"].as_str())
                 .ok_or_else(|| {
                     format!(
-                        "{}: endpoint_identity row without an \
-                         owner",
-                        label
+                        "{}: {} carries no owner",
+                        label, at
                     )
                 })?
                 .to_string();
@@ -203,19 +307,17 @@ impl ComponentModel {
                 publish,
                 owner,
                 site: e["site"].as_u64(),
-                wire: e["wire"]
-                    .as_str()
-                    .ok_or_else(|| {
-                        format!(
-                            "{}: endpoint_identity row without a \
-                             wire subject",
-                            label
-                        )
-                    })?
-                    .to_string(),
-                topic: e["topic"]
-                    .as_str()
-                    .map(str::to_string),
+                wire: req_str(
+                    &e["wire"],
+                    &format!("{}.wire", at),
+                )?,
+                topic: match e.get("topic") {
+                    None => None,
+                    Some(t) => Some(req_str(
+                        t,
+                        &format!("{}.topic", at),
+                    )?),
+                },
             });
         }
         endpoints.sort();

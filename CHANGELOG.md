@@ -10,6 +10,16 @@ behavior.
 
 ### Typed FleetModel + the versioned shape transition (GH #476 Change 7)
 
+Round 3: the typed decode is strict, and keys are unambiguous.
+ComponentModel::decode refuses malformed semantic rows instead of
+filtering them - a number-typed call endpoint or unknown reason
+is an error, never a silently dropped edge or erased residue
+(both pinned against components that genuinely carry the shapes,
+with asserted premises). Duplicate object keys are rejected
+before parsing at both consumption boundaries: serde's last-wins
+map parse would otherwise let a second shape_hash shadow the
+raw-verified one (pinned).
+
 Round 2: route identity is one grain, and the declared identity
 is verified. Route role checks and edge construction both read
 the typed topic-identity endpoint rows (a literal end on the same
