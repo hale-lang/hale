@@ -147,6 +147,33 @@ fn restamp_both(artifact: &str) -> String {
     let key = ",\n  \"artifact_digest\": \"";
     let cut = artifact.rfind(key).expect("digest trailer");
     let mut body = artifact[..cut].to_string();
+    // Round 2 (#490): the shape_hash is recomputed at admission,
+    // so hashed-half tampers must restamp it too — each pin then
+    // exercises the deep binding it targets, not the identity
+    // gate. (The stale-identity control below does NOT use this
+    // helper.)
+    let sk = "\"shape_hash\": \"";
+    if let Some(at) = body.find(sk) {
+        let start = at + sk.len();
+        if let Some(rel) = body[start..].find('"') {
+            let claimed_end = start + rel;
+            let model_start =
+                claimed_end + "\",\n".len();
+            if let Some(end_rel) =
+                body[model_start..].find(",\n  \"sources\": [")
+            {
+                let fresh = format!(
+                    "{:016x}",
+                    fnv1a64(
+                        body[model_start
+                            ..model_start + end_rel]
+                            .as_bytes()
+                    )
+                );
+                body.replace_range(start..claimed_end, &fresh);
+            }
+        }
+    }
     let lk = "\"law_digest\": \"";
     if let (Some(at), Ok(v)) = (
         body.find(lk),
@@ -1032,6 +1059,98 @@ fn main() { Prober { }; }
     assert!(
         !out.contains("artifact_digest"),
         "integrity passed; the law account is what refused: {}",
+        out
+    );
+}
+
+/// Round 2 (#490): route identity is ONE grain. A component with
+/// only a LITERAL end on the topic's wire (a raw send to
+/// "svc.order.intent", never `publish t::OrderIntent`) cannot
+/// satisfy a route naming the topic — the role check and the edge
+/// builder both read the typed topic-identity rows.
+#[test]
+fn literal_only_publisher_cannot_satisfy_a_topic_route() {
+    let r = fleet("literalroute");
+    // Rebuild the prober to publish the WIRE literally, never the
+    // topic identity.
+    write(
+        &r,
+        "prober/main.hl",
+        r#"
+import "../lib" as t;
+locus Probe {
+    params { n: Int = 0; }
+    bus { publish "svc.order.intent" of type t::Intent; }
+    fn submit() {
+        let i = t::Intent { id: 1 };
+        "svc.order.intent" <- i;
+    }
+}
+main locus Prober { params { p: Probe = Probe { }; } }
+fn main() { Prober { }; }
+"#,
+    );
+    let dst = r.join("artifacts/prober.json");
+    let (out, code) = hale(&[
+        "check",
+        r.join("prober").to_str().expect("utf8"),
+        &format!("--dump-topology={}", dst.display()),
+    ]);
+    assert_eq!(code, 0, "literal prober checks clean: {}", out);
+    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(
+        out.contains("declares no topic")
+            || out.contains("nothing in that component"),
+        "the topic-grain role check refuses the literal-only \
+         publisher: {}",
+        out
+    );
+}
+
+/// Round 2 (#490): the declared IDENTITY must recompute. A
+/// coordinated edit of the hashed endpoint_identity AND its
+/// unhashed mirrors under a STALE shape_hash — with only
+/// artifact_digest restamped — refuses before any decoding.
+#[test]
+fn stale_shape_hash_is_refused() {
+    fn fnv1a64(bytes: &[u8]) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+    let r = fleet("staleshape");
+    let p = r.join("artifacts/prober.json");
+    let good = std::fs::read_to_string(&p).expect("read");
+    // Rewrite the literal wire in BOTH the hashed identity and the
+    // unhashed mirrors, consistently.
+    let drifted = good.replace(
+        "svc.order.intent",
+        "svc.order.hijack",
+    );
+    assert_ne!(drifted, good, "test premise: the wire drifted");
+    // Restamp ONLY the document digest — the shape_hash stays
+    // stale.
+    let key = ",\n  \"artifact_digest\": \"";
+    let cut = drifted.rfind(key).expect("digest trailer");
+    let body = &drifted[..cut];
+    let restamped = format!(
+        "{}{}{:016x}\"\n}}\n",
+        body,
+        key,
+        fnv1a64(body.as_bytes())
+    );
+    std::fs::write(&p, restamped).expect("write");
+    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(
+        out.contains("shape_hash does not recompute"),
+        "the stale identity refuses: {}",
         out
     );
 }

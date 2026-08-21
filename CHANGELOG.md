@@ -10,6 +10,15 @@ behavior.
 
 ### Typed FleetModel + the versioned shape transition (GH #476 Change 7)
 
+Round 2: route identity is one grain, and the declared identity
+is verified. Route role checks and edge construction both read
+the typed topic-identity endpoint rows (a literal end on the same
+wire satisfies neither; wire-grain accessors remain for the fleet
+claims that quantify over wire subjects). verify_shape_hash
+recomputes the model-half hash from the raw artifact at both
+consumption boundaries before any decoding - a coordinated
+hashed+unhashed endpoint edit under a stale shape_hash refuses.
+
 Fleet composition is TYPED end to end: component artifacts are
 decoded ONCE into a typed ComponentModel (fns, unioned call
 relations, V1 publish/subscribe rows, the topics join surface,

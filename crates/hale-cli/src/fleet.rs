@@ -357,7 +357,7 @@ pub fn compose(
                 }
                 Some(w) if !c
                     .model
-                    .has_endpoint(&w.subject, publishing) =>
+                    .has_topic_endpoint(&ep.topic, publishing) =>
                 {
                     errs.push(format!(
                         "route `{}`: instance `{}` is named as a {} of \
@@ -416,17 +416,20 @@ pub fn compose(
             let Some(pc) = by_id.get(p.instance.as_str()) else {
                 continue;
             };
-            for pf in pc.model.publishers_of(&p.topic) {
+            for pf in pc.model.topic_publishers(&p.topic) {
                 for s in &r.subscribers {
                     let Some(sc) = by_id.get(s.instance.as_str()) else {
                         continue;
                     };
-                    for (l, h) in
-                        sc.model.subscribers_of(&s.topic)
+                    for handler in
+                        sc.model.topic_subscribers(&s.topic)
                     {
                         route_edges.push((
                             format!("{}::{}", p.instance, pf),
-                            format!("{}::{}::{}", s.instance, l, h),
+                            format!(
+                                "{}::{}",
+                                s.instance, handler
+                            ),
                             r.id.clone(),
                         ));
                     }
@@ -1262,6 +1265,26 @@ fn load_artifact(
                 "{}: no artifact_digest — this predates schema 1.3 and \
                  cannot be verified, and an unverifiable component is \
                  not a foundation for a certificate",
+                p.display()
+            ))
+        }
+    }
+    // Identity BEFORE meaning too (round 2, #490): the declared
+    // shape_hash must recompute from the hashed model half, or the
+    // wire identity could drift under a stale identity — the exact
+    // residual schema 1.12 closes.
+    match hale_types::topology::verify_shape_hash(&src) {
+        Some(true) => {}
+        Some(false) => {
+            return Err(format!(
+                "{}: shape_hash does not recompute from the \
+                 model half — the declared identity is stale",
+                p.display()
+            ))
+        }
+        None => {
+            return Err(format!(
+                "{}: no recomputable shape_hash",
                 p.display()
             ))
         }

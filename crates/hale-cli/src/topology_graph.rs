@@ -239,6 +239,26 @@ impl Artifact {
                 hale_types::topology::MODEL_SEMANTICS
             ));
         }
+        // Round 2 (#490): the declared IDENTITY must recompute
+        // from the hashed model half — artifact_digest proves the
+        // bytes were not edited; this proves the shape_hash names
+        // those bytes.
+        match hale_types::topology::verify_shape_hash(&raw) {
+            Some(true) => {}
+            Some(false) => {
+                return Err(format!(
+                    "{}: shape_hash does not recompute from the \
+                     model half — the declared identity is stale",
+                    path.display()
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "{}: no recomputable shape_hash",
+                    path.display()
+                ));
+            }
+        }
         let art = Artifact { v };
         let schema = art.schema();
         let minor: Option<u32> = schema

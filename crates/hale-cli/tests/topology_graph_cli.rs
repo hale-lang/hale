@@ -331,6 +331,33 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 /// binding it targets, not the digest gate.
 fn restamp_digest(body_without_trailer: &str) -> String {
     let mut body = body_without_trailer.to_string();
+    // Round 2 (#490): the shape_hash is recomputed at admission,
+    // so hashed-half tampers must restamp it too — each pin then
+    // exercises the deep binding it targets, not the identity
+    // gate. (The stale-identity control below does NOT use this
+    // helper.)
+    let sk = "\"shape_hash\": \"";
+    if let Some(at) = body.find(sk) {
+        let start = at + sk.len();
+        if let Some(rel) = body[start..].find('"') {
+            let claimed_end = start + rel;
+            let model_start =
+                claimed_end + "\",\n".len();
+            if let Some(end_rel) =
+                body[model_start..].find(",\n  \"sources\": [")
+            {
+                let fresh = format!(
+                    "{:016x}",
+                    fnv1a64(
+                        body[model_start
+                            ..model_start + end_rel]
+                            .as_bytes()
+                    )
+                );
+                body.replace_range(start..claimed_end, &fresh);
+            }
+        }
+    }
     let key = "\"law_digest\": \"";
     if let (Some(at), Ok(v)) = (
         body.find(key),

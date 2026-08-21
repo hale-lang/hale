@@ -983,8 +983,17 @@ call relations unioned, the publish/subscribe rows, the topics
 join surface, the component's own unknowns, decl provenance, and
 the hashed endpoint identity — and composes from those typed rows
 exclusively; no modeled fact is recovered from generic JSON after
-admission. Endpoint-use checks ("declaring a topic is not using
-it") read the hashed wire identity at site grain.
+admission. Route identity is ONE grain (round 2): a plan endpoint
+names a local topic, so the role check AND the edge builder both
+read the typed rows carrying that topic identity — a literal end
+on the same wire is a different endpoint and satisfies neither —
+while fleet claims that deliberately quantify over wire subjects
+keep the wire-grain accessor. And the declared identity is
+VERIFIED: both Track A and fleet recompute `shape_hash` from the
+raw model half before any decoding (`verify_shape_hash`) — a
+consistent hashed+unhashed endpoint edit under a stale shape_hash
+refuses, so the identity that replay and composition compare is
+always the identity of the bytes present.
 
 Route admission validates **roles**, not just topic identity. A
 publisher endpoint must publish the subject and a subscriber endpoint

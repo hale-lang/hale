@@ -1971,6 +1971,31 @@ pub fn verify_artifact_digest(artifact: &str) -> Option<bool> {
     Some(claimed == format!("{:016x}", fnv1a64(body.as_bytes())))
 }
 
+/// Recompute the MODEL-HALF hash from the raw artifact text and
+/// compare it with the declared `shape_hash` (GH #476 Change 7,
+/// round 2). `artifact_digest` proves the document was not edited;
+/// this proves the declared IDENTITY matches the hashed content —
+/// without it, a consistent edit of the hashed `endpoint_identity`
+/// (plus its unhashed mirrors) under a STALE shape_hash would keep
+/// the old identity while changing the wire facts, which is the
+/// exact drift schema 1.12 exists to prevent. `None` = the
+/// document has no shape_hash / model half to check.
+pub fn verify_shape_hash(artifact: &str) -> Option<bool> {
+    const KEY: &str = "\"shape_hash\": \"";
+    let at = artifact.find(KEY)?;
+    let rest = &artifact[at + KEY.len()..];
+    let claimed = rest.split('"').next()?;
+    // The model half starts on the next line and runs to the
+    // unhashed tail, which always begins with the sources section.
+    // JSON strings cannot contain raw newlines, so the line-anchored
+    // marker is unambiguous.
+    let start = at + KEY.len() + claimed.len() + "\",\n".len();
+    let body = &artifact[start..];
+    let end = body.find(",\n  \"sources\": [")?;
+    let model = &body[..end];
+    Some(claimed == format!("{:016x}", fnv1a64(model.as_bytes())))
+}
+
 pub(crate) fn join_str<'a>(items: impl Iterator<Item = &'a String>) -> String {
     items
         .map(|s| quote(s))

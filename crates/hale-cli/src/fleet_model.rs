@@ -250,24 +250,49 @@ impl ComponentModel {
         })
     }
 
-    /// Fns publishing a local subject name (V1 grain).
-    pub fn publishers_of(&self, local: &str) -> Vec<&str> {
-        self.publishes
+    /// Route-role check at TOPIC grain (round 2, #490): the plan
+    /// endpoint names a local topic, so the role must be judged
+    /// against endpoint rows carrying THAT topic identity — a
+    /// literal end on the same wire is a different endpoint and
+    /// must not satisfy it. A publisher role needs a send site;
+    /// a subscriber role is a declaration by nature.
+    pub fn has_topic_endpoint(
+        &self,
+        topic: &str,
+        publishing: bool,
+    ) -> bool {
+        self.endpoints.iter().any(|e| {
+            e.publish == publishing
+                && e.topic.as_deref() == Some(topic)
+                && (!publishing || e.site.is_some())
+        })
+    }
+
+    /// Route-edge owners at the SAME topic grain the role check
+    /// used: publishing fns whose site rows carry this topic
+    /// identity.
+    pub fn topic_publishers(&self, topic: &str) -> Vec<&str> {
+        self.endpoints
             .iter()
-            .filter(|(_, s)| s == local)
-            .map(|(f, _)| f.as_str())
+            .filter(|e| {
+                e.publish
+                    && e.site.is_some()
+                    && e.topic.as_deref() == Some(topic)
+            })
+            .map(|e| e.owner.as_str())
             .collect()
     }
 
-    /// (locus, handler) pairs subscribing a local subject name.
-    pub fn subscribers_of(
-        &self,
-        local: &str,
-    ) -> Vec<(&str, &str)> {
-        self.subscribes
+    /// Subscribing handlers (full `Locus::handler` displays) whose
+    /// rows carry this topic identity.
+    pub fn topic_subscribers(&self, topic: &str) -> Vec<&str> {
+        self.endpoints
             .iter()
-            .filter(|(s, _, _)| s == local)
-            .map(|(_, l, h)| (l.as_str(), h.as_str()))
+            .filter(|e| {
+                !e.publish
+                    && e.topic.as_deref() == Some(topic)
+            })
+            .map(|e| e.owner.as_str())
             .collect()
     }
 
