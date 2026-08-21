@@ -416,9 +416,31 @@ re-deciding), and the Change-8 arrangement supplies each row's
 publisher/subscriber **thread domains** and `same_domain` — "every
 publish site and every subscriber of this subject sit in one
 domain", the precondition the future placement-driven flavors
-(GH #464) need, withheld rather than guessed whenever a locus has
-no arranged instance. Plan subjects are WIRE subjects; `hale
+(GH #464) need, withheld rather than guessed whenever the model
+cannot place a locus's WHOLE population — a locus with both an
+arranged instance and a dynamic birth is incomplete, and its
+arranged instance does not answer for the instances the model
+admits it cannot see. Plan subjects are WIRE subjects; `hale
 model dump` prints the plan and the same-domain count.
+
+**Binding roles and replica indices in the model.** A binding's
+role is the authored `role:` kwarg when present and otherwise the
+inferred one — publish-only is `connect`, subscribe-only is
+`listen`, and an ambiguous or unused binding is a typecheck
+diagnostic, never a default. One rule serves both the desugar and
+the canonical model (`hale_syntax::desugar::binding_role_for`);
+before GH #476 Change 8 the desugar ran its half AFTER topic
+references were rewritten to literal subjects, so the publish and
+subscribe ends were always empty and no role was ever inferred —
+every binding had to spell `role:` or codegen refused it. Loss
+behavior follows the role, because the runtime does: the connect
+side is the publish side, where a send failure marks the entry lost
+and `or wait` parks through the reconnect window; the listen side
+re-arms on peer EOF and a link it cannot serve is structural.
+A `pinned(..., replicas = K)` field contributes K instances whose
+model rows carry their own 0-based INDEX — the same `i` codegen
+bakes and a keyed subscriber registers under — and the model
+refuses a replica set that is not contiguous from 0.
 
 A subject named by a `bindings { }` entry is never devirtualized:
 an external peer is (or may be) the real counterparty, so the
@@ -1414,21 +1436,45 @@ gauge of the kernel send-queue occupancy sampled at send time),
 `retries` (cell 5, reconnects) — counters-tier, so a consumer
 falling behind shows as depth climbing and block time accruing
 BEFORE anything drops) and the
-**Canonical model entity ids (GH #476 Change 8).** Manifest rows
-name entities and number them in registration order, which is a
-fact about the run, not about the program. Each row's `aux_b` —
-in the entry layout since v0, written as 0 by every path until now
-— carries the canonical `ApplicationModel` entity id for that row,
-stamped by the CLI at build time: `MK_TOPIC` rows carry the
-`SubjectId` (the manifest fuses publishers by wire subject, so the
-address, not the topic decl, is the identity), `MK_LOCUS_TYPE`
+**Canonical model entity ids (GH #476 Change 8, proto 0.3).**
+Manifest rows name entities and number them in registration order,
+which is a fact about the run, not about the program. Each row's
+`aux_b` — in the entry layout since v0, written as 0 by every path
+until now — carries the canonical `ApplicationModel` entity id for
+that row, stamped by the CLI at build time: `MK_TOPIC` rows carry
+the `SubjectId` (the manifest fuses publishers by wire subject, so
+the address, not the topic decl, is the identity), `MK_LOCUS_TYPE`
 rows the `LocusDeclId`, `MK_BINDING` rows the `BindingId`. Values
 are `index + 1`; **0 keeps meaning "unstamped"** (a harness build,
 or an entity the model does not name — a stdlib subject, say).
-The ids are indices into the tables of the model whose
-`shape_hash` sits in the header at `0x80`, so they are meaningful
-only together with it: same `model_hash`, joinable ids. A
-consumer that joined by name still can.
+
+Those ids index tables that `model_hash` does NOT fully cover:
+`shape_hash` is structural model identity, and the arrangement's
+binding rows are not in the topology artifact at all, so two builds
+can share a `model_hash` while numbering entities differently. The
+header therefore publishes the id table's own identity at `0x88`:
+`entity_id_digest`, a digest over the exact `(kind, name, id)` rows
+the build stamped. **A consumer recomputes it from the model it
+holds and uses the ids only on a match** — a detectable refusal
+instead of a silent misattribution. 0 = unstamped. A consumer that
+joined by name still can.
+
+The stamp is all-or-nothing: the mapping table grows with the
+program (no cap), and if it cannot, the process says so on stderr
+and publishes NO ids and NO digest rather than a partial table —
+partial canonicalization is indistinguishable from "unstamped" and
+would put a consumer back on name matching without telling it.
+
+**Identity is stamped before anything can register.** The prelude
+publishes `model_hash`, `exec_digest`, and the entity ids ahead of
+the bindings prelude and the config loader, because registering a
+binding creates the observation segment and segment creation
+snapshots the identity fields — a program with a `bindings { }`
+block used to publish `model_hash 0` for its whole life. Eager
+recording/replay init still runs after binding realization, so a
+backend with no replay class refuses at its own seam, naming
+itself, instead of being pre-empted by a generic identity
+refusal.
 
 The
 runtime's own choke points emit records: `BUS_PUBLISH` /

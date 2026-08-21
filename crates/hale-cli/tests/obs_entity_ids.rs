@@ -53,6 +53,34 @@ struct Row {
     aux_b: u64,
 }
 
+/// The segment header's two identity fields: `model_hash` (0x80)
+/// and, new at proto 0.3, `entity_id_digest` (0x88).
+fn header_identity(bin: &Path) -> (u64, u64) {
+    let mut child = Command::new(bin)
+        .env("LOTUS_OBS", "1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn");
+    let shm = format!("/dev/shm/hale-obs-{}", child.id());
+    let mut out = (0, 0);
+    for _ in 0..80 {
+        std::thread::sleep(Duration::from_millis(25));
+        let Ok(b) = std::fs::read(&shm) else { continue };
+        if b.len() < 0x90 {
+            continue;
+        }
+        let u64at = |o: usize| {
+            u64::from_le_bytes(b[o..o + 8].try_into().unwrap())
+        };
+        out = (u64at(0x80), u64at(0x88));
+        break;
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    out
+}
+
 /// Run the binary under LOTUS_OBS=1 and read its manifest rows out
 /// of the live segment.
 fn manifest_rows(bin: &Path) -> Vec<Row> {
@@ -243,6 +271,136 @@ fn manifest_rows_carry_canonical_model_entity_ids() {
         "canonical ids are indistinguishable from registration \
          order in this program — the test proves nothing: {:?}",
         rows
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Review round 1, blocker 5a: the ids need an identity that
+/// actually covers the tables they index.
+///
+/// `model_hash` is STRUCTURAL model identity and the arrangement's
+/// binding rows are not part of it — so adding a binding leaves
+/// `model_hash` untouched while renumbering the canonical binding
+/// table. Under the old contract ("meaningful alongside
+/// model_hash") the same `aux_b` would then designate different
+/// entities under one advertised identity, with nothing for a
+/// consumer to check. The header now publishes the id table's own
+/// digest, and it moves when the table moves.
+#[test]
+fn the_entity_id_table_publishes_its_own_identity() {
+    let dir = workdir("identity");
+    const BOUND: &str = r#"
+type Beat { n: Int = 0; }
+topic Heartbeat { payload: Beat; subject: "obs.beat"; }
+main locus App {
+    params { seen: Int = 0; }
+    bus { subscribe Heartbeat as on_beat; }
+    fn on_beat(b: Beat) { self.seen = self.seen + 1; }
+    run() { std::time::sleep(600ms); }
+}
+fn main() { App { }; }
+"#;
+    let with_binding = BOUND.replace(
+        "    run() {",
+        "    bindings { Heartbeat: unix(\"/tmp/hale-c8-ident.sock\"); }\n    run() {",
+    );
+    let plain = build(&dir, BOUND, "plain");
+    let bound = build(&dir, &with_binding, "bound");
+
+    let (m_plain, d_plain) = header_identity(&plain);
+    let (m_bound, d_bound) = header_identity(&bound);
+    assert_ne!(d_plain, 0, "no entity-id identity published");
+    assert_ne!(d_bound, 0);
+    // The premise that makes this a real hazard: structural model
+    // identity does NOT separate these two builds.
+    assert_eq!(
+        m_plain, m_bound,
+        "fixture premise: adding a binding leaves shape_hash alone"
+    );
+    assert_ne!(
+        d_plain, d_bound,
+        "the id table changed (a binding row appeared) but the \
+         published identity did not — a consumer cannot tell which \
+         table its ids index"
+    );
+
+    // And the published value is the one a CONSUMER computes from
+    // the model it holds — that recomputation is the whole join
+    // protocol, so pin it rather than just pinning "it changed".
+    let recompute = |src: &str| -> u64 {
+        let program = hale_syntax::parse_source(src).expect("parse");
+        let mut programs = std::collections::BTreeMap::new();
+        programs.insert("main.hl".to_string(), &program);
+        let bundle = hale_types::Bundle::new(programs);
+        let m = hale_types::model_builder::derive_application_model(
+            &bundle,
+        );
+        hale_model::obs_ids::digest(&hale_model::obs_ids::obs_entity_ids(
+            &m,
+        ))
+    };
+    assert_eq!(
+        d_plain,
+        recompute(BOUND),
+        "the header digest is not the one the model produces"
+    );
+    assert_eq!(d_bound, recompute(&with_binding));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Review round 1, blocker 5b: canonical ids are all-or-nothing.
+/// The mapping table used to be a fixed 512 slots that silently
+/// dropped later entities back to `aux_b == 0` — documented as
+/// "unstamped", so partial canonicalization was indistinguishable
+/// from "this build stamped nothing". A program with more
+/// declarations than any fixed cap must still stamp every one.
+#[test]
+fn a_large_declaration_universe_is_stamped_completely() {
+    let dir = workdir("many");
+    // 300 topics + 300 loci + the root: past 600 canonical
+    // entities, so the old fixed 512-slot table dropped the tail.
+    // Births go in `fn main` — a main locus caps out at 64
+    // locus-typed param fields, and this fixture is about the ID
+    // table's capacity, not that limit.
+    let mut src = String::from("type Tick { n: Int = 0; }\n");
+    for i in 0..300 {
+        src.push_str(&format!(
+            "topic T{i} {{ payload: Tick; subject: \"many.t{i}\"; }}\n\
+             locus L{i} {{\n\
+             \x20   params {{ seen: Int = 0; }}\n\
+             \x20   bus {{ subscribe T{i} as on_t; publish T{i}; }}\n\
+             \x20   fn on_t(t: Tick) {{ self.seen = self.seen + 1; }}\n\
+             }}\n"
+        ));
+    }
+    src.push_str("fn main() {\n");
+    for i in 0..300 {
+        src.push_str(&format!("    L{i} {{ }};\n"));
+    }
+    src.push_str("    std::time::sleep(600ms);\n}\n");
+    let bin = build(&dir, &src, "many");
+    let (_, digest) = header_identity(&bin);
+    assert_ne!(digest, 0, "a complete table publishes an identity");
+
+    // Every entity that actually registered carries a canonical
+    // id. With a capacity cliff, the later-sorted ones came back 0
+    // — indistinguishable from "this build stamped nothing".
+    let rows = manifest_rows(&bin);
+    assert!(
+        rows.len() > 100,
+        "fixture premise: many entities register ({} did)",
+        rows.len()
+    );
+    let unstamped: Vec<&str> = rows
+        .iter()
+        .filter(|r| r.aux_b == 0)
+        .map(|r| r.name.as_str())
+        .collect();
+    assert!(
+        unstamped.is_empty(),
+        "{} registered entities came back unstamped: {:?}",
+        unstamped.len(),
+        unstamped
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

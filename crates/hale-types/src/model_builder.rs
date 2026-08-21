@@ -3053,11 +3053,11 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                     arranged.push(Arranged {
                         path: child_path.clone(),
                         decl: (*ty).to_string(),
-                        replica: if fanout > 1 {
-                            Some(fanout)
-                        } else {
-                            None
-                        },
+                        // The instance's OWN replica index — what
+                        // codegen bakes into replica `i` and what a
+                        // keyed subscriber on this field registers
+                        // under. (`validate` enforces contiguity.)
+                        replica: if fanout > 1 { Some(i) } else { None },
                         domain: child_domain.clone(),
                         parent: Some(path.to_string()),
                         span: *span,
@@ -3108,11 +3108,15 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             .map(|a| a.domain.clone())
             .collect();
         // Bindings (main's `bindings { }` block).
-        let mut binding_entries: Vec<(
-            String,
-            hale_syntax::Span,
-            bool,
-        )> = Vec::new();
+        struct BindingEntry {
+            topic: String,
+            span: hale_syntax::Span,
+            /// `None` for adapter/shm transports — a declared
+            /// external boundary, holed out rather than guessed.
+            unix_role: Option<hale_syntax::ast::TransportRole>,
+            adapter: bool,
+        }
+        let mut binding_entries: Vec<BindingEntry> = Vec::new();
         if let Some((main_name, _)) = &main_decl {
             if let Some(decl) = decls_by_name.get(main_name.as_str())
             {
@@ -3123,11 +3127,29 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                                 e2.transport,
                                 TransportSpec::Unix { .. }
                             );
-                            binding_entries.push((
-                                e2.topic.name.clone(),
-                                e2.span,
+                            // The AUTHORED role, resolved through
+                            // the ONE rule the desugar uses (this
+                            // bundle is not desugared, so the field
+                            // is still `None` on every inferred
+                            // binding — reading it raw would model
+                            // a publish-only `connect` binding as
+                            // whatever the builder defaulted to).
+                            let unix_role = match &e2.transport {
+                                TransportSpec::Unix {
+                                    role, ..
+                                } => hale_syntax::desugar::binding_role_for(
+                                    &all_items,
+                                    &e2.topic.name,
+                                    *role,
+                                ),
+                                _ => None,
+                            };
+                            binding_entries.push(BindingEntry {
+                                topic: e2.topic.name.clone(),
+                                span: e2.span,
+                                unix_role,
                                 adapter,
-                            ));
+                            });
                             domain_names.insert(format!(
                                 "binding:{}",
                                 e2.topic.name
@@ -3208,23 +3230,54 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         // Binding entities + binds rows. Adapter transports are
         // declared external boundaries with opaque internals —
         // they hole out instead of guessing loss semantics.
-        let mut bind_rows: Vec<(
-            hale_model::TopicId,
-            BindingId,
-        )> = Vec::new();
-        for (topic_name, span, adapter) in &binding_entries {
-            let Some(tid) = topic_id.get(topic_name) else {
+        //
+        // Decoded FIRST, sorted canonically SECOND, ids assigned
+        // THIRD. `validate` requires the entity table sorted by
+        // (subject, transport, role); assigning ids in source order
+        // would hand back an invalid model for a perfectly valid
+        // main locus whose two binding entries are authored in
+        // reverse subject order.
+        struct DecodedBinding {
+            topic: hale_model::TopicId,
+            subject: hale_model::SubjectId,
+            transport: TransportKind,
+            role: BindingRole,
+            loss: hale_model::keys::BindingLossBehavior,
+            span: hale_syntax::Span,
+        }
+        let mut decoded: Vec<DecodedBinding> = Vec::new();
+        for entry in &binding_entries {
+            let Some(tid) = topic_id.get(&entry.topic) else {
                 continue;
             };
-            let pid = intern_span(&mut records, *span);
-            if *adapter {
+            let pid = intern_span(&mut records, entry.span);
+            // An adapter transport, or a unix binding whose role
+            // is not inferable (typecheck has diagnosed it; codegen
+            // refuses to lower it), is a boundary the model does
+            // not describe — a hole, never a guessed row.
+            let role = match (entry.adapter, entry.unix_role) {
+                (false, Some(hale_syntax::ast::TransportRole::Listen)) => {
+                    Some(BindingRole::Listen)
+                }
+                (false, Some(hale_syntax::ast::TransportRole::Connect)) => {
+                    Some(BindingRole::Connect)
+                }
+                _ => None,
+            };
+            let Some(role) = role else {
                 holes
                     .entry((
                         EntityRef::Topic(*tid),
                         HoleKind::ExternalOpaque,
-                        "adapter transport: external boundary \
-                         with opaque internals"
-                            .to_string(),
+                        if entry.adapter {
+                            "adapter transport: external boundary \
+                             with opaque internals"
+                                .to_string()
+                        } else {
+                            "binding role is not inferable: the \
+                             route this topic takes is undetermined"
+                                .to_string()
+                        },
                     ))
                     .or_insert((
                         hale_model::RelationSet::BINDS.union(
@@ -3234,16 +3287,52 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                         pid,
                     ));
                 continue;
-            }
-            let bid = BindingId(e.bindings.len() as u32);
-            e.bindings.push(Binding {
+            };
+            // Loss behavior follows the ROLE, because that is what
+            // the runtime does: the connect side is the publish
+            // side, where a send failure marks the entry lost and
+            // `or wait` can park through the reconnect window
+            // (WaitCapable); the listen side re-arms on peer EOF
+            // (peer EOF is not connection loss) and a link it
+            // cannot serve is structural (Fail).
+            let loss = match role {
+                BindingRole::Connect => {
+                    hale_model::keys::BindingLossBehavior::WaitCapable
+                }
+                BindingRole::Listen => {
+                    hale_model::keys::BindingLossBehavior::Fail
+                }
+            };
+            decoded.push(DecodedBinding {
+                topic: *tid,
                 subject: e.topics[tid.index()].subject,
                 transport: TransportKind::Unix,
-                role: BindingRole::Listen,
-                loss: hale_model::keys::BindingLossBehavior::WaitCapable,
+                role,
+                loss,
+                span: entry.span,
+            });
+        }
+        decoded.sort_by_key(|d| {
+            (d.subject, d.transport.clone(), d.role, d.topic)
+        });
+        decoded.dedup_by_key(|d| {
+            (d.subject, d.transport.clone(), d.role)
+        });
+        let mut bind_rows: Vec<(
+            hale_model::TopicId,
+            BindingId,
+        )> = Vec::new();
+        for (i, d) in decoded.iter().enumerate() {
+            let pid = intern_span(&mut records, d.span);
+            let bid = BindingId(i as u32);
+            e.bindings.push(Binding {
+                subject: d.subject,
+                transport: d.transport.clone(),
+                role: d.role,
+                loss: d.loss,
                 provenance: pid,
             });
-            bind_rows.push((*tid, bid));
+            bind_rows.push((d.topic, bid));
         }
         bind_rows.sort();
         for (t, b) in bind_rows {

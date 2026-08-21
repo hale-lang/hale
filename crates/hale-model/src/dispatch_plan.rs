@@ -133,6 +133,28 @@ impl DispatchPlan {
                     .push(d);
             }
         }
+        // …minus every locus the model admits it does not fully
+        // place. A locus can have an arranged instance AND a
+        // placement hole at the same time: one `Sub` under `App` on
+        // main, another born dynamically inside a pinned locus. The
+        // arranged instance would answer "main" for the whole
+        // population and manufacture a same-domain claim about a
+        // process that has a `Sub` on another thread. A hole hiding
+        // OWNS or PLACED at a locus decl therefore DELETES that
+        // locus's domain answer — incomplete, not partially known.
+        for h in &m.holes {
+            if !h.hides.intersects(
+                crate::hole::RelationSet::OWNS
+                    .union(crate::hole::RelationSet::PLACED),
+            ) {
+                continue;
+            }
+            if let crate::ids::EntityRef::LocusDecl(id) = h.at {
+                if let Some(decl) = m.entities.loci.get(id.index()) {
+                    domains_of.remove(decl.display.as_str());
+                }
+            }
+        }
         DispatchPlan::from_gates(&m.legacy.dispatch_gates, &domains_of)
     }
 
@@ -143,6 +165,11 @@ impl DispatchPlan {
     /// supplies its gates and an empty map — flavors depend only on
     /// the gates, so an absent arrangement costs the `same_domain`
     /// survey field and nothing else.
+    /// `domains_of` is a COMPLETE account per key: a locus present
+    /// in the map has every one of its instances represented, and a
+    /// locus the model cannot fully place must be ABSENT (that is
+    /// what `derive` does with placement holes). A partial entry
+    /// would silently become a same-domain claim.
     pub fn from_gates(
         gates: &[crate::application::DispatchGate],
         domains_of: &std::collections::BTreeMap<&str, Vec<String>>,

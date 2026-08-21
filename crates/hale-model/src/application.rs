@@ -871,6 +871,13 @@ pub enum ModelError {
     /// A locus instance has no (or more than one) `realizes` row:
     /// the relational projection is not total.
     RealizesIncomplete { instance: usize },
+    /// The replicas of one `replicas = K` field are not a
+    /// contiguous, unique, 0-based index set. Replica indices are
+    /// what codegen bakes and what a keyed subscriber registers
+    /// under, so `[3, 3, 3]` (the count repeated) or a gap is a
+    /// model that names instances the runtime does not have.
+    /// Carries the field's instance-path base.
+    ReplicaIndicesNotContiguous { base: String },
     /// A `binds` row joins a topic and a binding whose subjects
     /// disagree — the entity attribute and the relation repeat one
     /// fact and drifted.
@@ -1242,6 +1249,60 @@ impl ApplicationModel {
                     }
                 }
                 _ => return Err(ModelError::RealizesIncomplete { instance: i }),
+            }
+        }
+        // Replica index law (Change 8): the instances of one
+        // `replicas = K` field are `base[0] … base[K-1]`, each
+        // carrying its OWN index. The runtime pins replica `i` to
+        // one core and a keyed subscriber on that field registers
+        // under `key == i`, so a model that stored the COUNT in
+        // every row (or skipped an index) would name a population
+        // the process does not have. Grouped by the path base, so
+        // two replicated fields cannot patch each other's gaps.
+        {
+            let mut by_base: std::collections::BTreeMap<
+                &str,
+                Vec<u32>,
+            > = std::collections::BTreeMap::new();
+            for inst in &e.locus_instances {
+                let Some(open) = inst.path.rfind('[') else {
+                    // Not a replica path: it must not claim an index.
+                    if inst.replica.is_some() {
+                        return Err(
+                            ModelError::ReplicaIndicesNotContiguous {
+                                base: inst.path.clone(),
+                            },
+                        );
+                    }
+                    continue;
+                };
+                let Some(k) = inst.replica else {
+                    return Err(ModelError::ReplicaIndicesNotContiguous {
+                        base: inst.path[..open].to_string(),
+                    });
+                };
+                // The path and the field are two spellings of ONE
+                // fact; a row whose `base[2]` claims replica 0 is
+                // two answers to "which replica is this".
+                let in_path = inst.path[open + 1..]
+                    .strip_suffix(']')
+                    .and_then(|d| d.parse::<u32>().ok());
+                if in_path != Some(k) {
+                    return Err(ModelError::ReplicaIndicesNotContiguous {
+                        base: inst.path[..open].to_string(),
+                    });
+                }
+                by_base.entry(&inst.path[..open]).or_default().push(k);
+            }
+            for (base, mut ks) in by_base {
+                ks.sort_unstable();
+                let contiguous =
+                    ks.iter().enumerate().all(|(i, k)| *k == i as u32);
+                if !contiguous {
+                    return Err(ModelError::ReplicaIndicesNotContiguous {
+                        base: base.to_string(),
+                    });
+                }
             }
         }
         check_sorted_keys("owns", r.owns.iter().map(|x| (x.parent, x.child)))?;

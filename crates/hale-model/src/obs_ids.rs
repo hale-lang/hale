@@ -48,6 +48,43 @@ pub struct ObsEntityId {
     pub id: u64,
 }
 
+/// The identity of a stamped id table — what the observation
+/// header publishes at `entity_id_digest` (proto 0.3).
+///
+/// The header's `model_hash` is STRUCTURAL model identity, and it
+/// does not cover every table these ids index: the arrangement's
+/// binding rows are not in the topology artifact at all, and an
+/// unused topic's wire subject rides an unhashed section. Two
+/// builds could therefore share a `model_hash` while numbering
+/// entities differently, and `aux_b = 1` would designate different
+/// canonical entities under one advertised identity.
+///
+/// So the ids carry their OWN identity: this digest over the exact
+/// `(kind, name, id)` rows that were stamped. A consumer recomputes
+/// it from the model it holds — `digest(&obs_entity_ids(&model))` —
+/// and uses the ids only on a match. No match, no join; that is a
+/// detectable refusal instead of a silent misattribution.
+pub fn digest(rows: &[ObsEntityId]) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    let mut eat = |bytes: &[u8]| {
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x100000001b3);
+        }
+    };
+    for r in rows {
+        eat(&[r.kind as u8]);
+        eat(r.name.as_bytes());
+        eat(&r.id.to_le_bytes());
+    }
+    // Never 0: that value means "unstamped" in the header.
+    if h == 0 {
+        1
+    } else {
+        h
+    }
+}
+
 /// Project the model's entity tables into manifest stamps, in a
 /// deterministic order (kind, then name).
 pub fn obs_entity_ids(m: &ApplicationModel) -> Vec<ObsEntityId> {

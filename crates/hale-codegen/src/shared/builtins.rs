@@ -1212,6 +1212,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ),
             None,
         );
+        // GH #476 Change 8: the identity of the entity-id table
+        // above, published in the segment header so a consumer can
+        // verify the ids index the tables it holds.
+        // declare void @lotus_obs_entity_id_digest_set(i64 d)
+        self.module.add_function(
+            "lotus_obs_entity_id_digest_set",
+            self.context
+                .void_type()
+                .fn_type(&[i64_t2.into()], false),
+            None,
+        );
         // GH #296: build-manifest identity for recording headers,
         // stamped as four u64 parts of a framed SHA-256.
         // declare void @lotus_obs_exec_digest_set(i64 part, i64 v)

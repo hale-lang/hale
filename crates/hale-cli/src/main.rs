@@ -4655,6 +4655,20 @@ fn compile_and_exec(
 /// arm would share a build identity while running different
 /// lowerings, and a recording taken under one would be admitted
 /// against the other.
+/// The build-options half of the execution identity. One spelling,
+/// so `hale build` and `hale run` fingerprint the same options the
+/// same way (they did not: the build path never computed a digest
+/// at all — GH #476 Change 8 review).
+fn options_fingerprint(o: &hale_codegen::BuildOptions) -> String {
+    format!(
+        "target={:?};cpu={:?};dev={};debug={}",
+        o.target,
+        o.target_cpu,
+        o.dev_profile,
+        o.debug.is_some()
+    )
+}
+
 fn model_identity(
     bundle: &hale_types::Bundle<'_>,
 ) -> (u64, Vec<hale_model::obs_ids::ObsEntityId>) {
@@ -5206,14 +5220,8 @@ fn run_replay(args: &[String]) -> ExitCode {
         }
     }
     let model_hash = hale_types::topology::model_shape_hash(&bundle);
-    let base_options = hale_codegen::BuildOptions::default();
-    let options_fp = format!(
-        "target={:?};cpu={:?};dev={};debug={}",
-        base_options.target,
-        base_options.target_cpu,
-        base_options.dev_profile,
-        base_options.debug.is_some()
-    );
+    let options_fp =
+        options_fingerprint(&hale_codegen::BuildOptions::default());
     let (plan_digest, obs_ids) = model_identity(&bundle);
     let digest = exec_digest(&sources, &prog, &options_fp, plan_digest);
 
@@ -5669,14 +5677,8 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
         // P26: stamp the model identity of the bundle just checked.
         let model_hash =
             hale_types::topology::model_shape_hash(&bundle);
-        let base_options = hale_codegen::BuildOptions::default();
-        let options_fp = format!(
-            "target={:?};cpu={:?};dev={};debug={}",
-            base_options.target,
-            base_options.target_cpu,
-            base_options.dev_profile,
-            base_options.debug.is_some()
-        );
+        let options_fp =
+            options_fingerprint(&hale_codegen::BuildOptions::default());
         let (plan_digest, obs_ids) = model_identity(&bundle);
         let digest =
             exec_digest(&sources, target, &options_fp, plan_digest);
@@ -5803,14 +5805,8 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
     }
     // P26: stamp the model identity of the bundle just checked.
     let model_hash = hale_types::topology::model_shape_hash(&bundle);
-    let base_options = hale_codegen::BuildOptions::default();
-    let options_fp = format!(
-        "target={:?};cpu={:?};dev={};debug={}",
-        base_options.target,
-        base_options.target_cpu,
-        base_options.dev_profile,
-        base_options.debug.is_some()
-    );
+    let options_fp =
+        options_fingerprint(&hale_codegen::BuildOptions::default());
     let (plan_digest, obs_ids) = model_identity(&bundle);
     let digest =
         exec_digest(&path_sources, target, &options_fp, plan_digest);
@@ -6046,9 +6042,13 @@ fn run_build(target: &Path) -> ExitCode {
     // the binary, for the observation segment header.
     options.model_hash =
         Some(hale_types::topology::model_shape_hash(&bundle));
-    // GH #476 Change 8: and the canonical entity ids a consumer
-    // joins the live manifest to that model with.
-    options.obs_entity_ids = model_identity(&bundle).1;
+    // GH #476 Change 8: the canonical entity ids a consumer joins
+    // the live manifest to that model with, and the dispatch
+    // plan's digest — held here and folded into the execution
+    // identity once the options are FINAL (below), since the
+    // fingerprint covers options that are still being set.
+    let (plan_digest, obs_ids) = model_identity(&bundle);
+    options.obs_entity_ids = obs_ids;
     // WASM plan: a wasm build emits `<stem>.wasm` (a relocatable wasm
     // object at this stage) rather than the extension-less native binary.
     // Output naming is a property of the target, not a special case
@@ -6203,6 +6203,19 @@ fn run_build(target: &Path) -> ExitCode {
                 .collect(),
         });
     }
+    // The execution identity, stamped LAST: every option that
+    // alters emitted code is set by now, and the digest frames the
+    // finalized fingerprint together with the dispatch plan. Before
+    // this, `hale build` artifacts carried a model hash and no
+    // execution identity at all — so a recording from one could not
+    // be refused against a differently-lowered sibling, which is
+    // exactly what the identity is for.
+    options.exec_digest = Some(exec_digest(
+        &sources,
+        target,
+        &options_fingerprint(&options),
+        plan_digest,
+    ));
     match hale_codegen::build_executable_with_options(
         &program,
         &output,

@@ -10,6 +10,58 @@ behavior.
 
 ### Deployment consumers: the arrangement + the dispatch plan (GH #476 Change 8)
 
+Review round 1 (PR #491), five blockers plus two identity bugs they
+uncovered:
+
+- **Replica rows carry their index, not the count.** `replicas = 3`
+  produced `[3, 3, 3]` where the runtime has replicas 0, 1, 2 — the
+  keyed-delivery model the arrangement exists to feed would have
+  named a population no process has. `validate` now enforces that a
+  replicated field's instances form a contiguous 0-based set and
+  that the index in the path and the index in the row agree.
+- **Binding rows are decoded, not defaulted.** Every unix binding
+  was modeled `role: Listen, loss: WaitCapable` regardless of what
+  was authored, so an explicit (or inferred) `connect` binding was
+  its own opposite in the model. Roles now come from ONE rule shared
+  with the desugar, loss follows the role, and rows are canonically
+  sorted BEFORE ids are assigned — two bindings authored in reverse
+  subject order used to produce a model that failed its own
+  canonical-order law.
+- **A partly dynamic population is not same-domain.** The plan built
+  its domain map from arranged instances only, so a locus with one
+  arranged instance and one dynamic birth answered "main" for the
+  whole population — a false stage-0 optimization opportunity, and
+  an unsafe precondition for the placement-driven lowering it is
+  meant to inform. A placement hole now deletes the locus's answer.
+- **`hale build` artifacts carry an execution identity.** The
+  identity plumbing reached `hale run` and `hale replay` but not the
+  path that produces the binaries users ship, which set a model hash
+  and no digest at all. It now stamps the digest from the FINAL
+  build options plus the plan.
+- **Canonical ids are identity-bound and total.** `model_hash` does
+  not cover every table these ids index (binding rows are not in the
+  artifact), so the header publishes `entity_id_digest` at `0x88`
+  (proto 0.3) over the exact stamped rows: a consumer recomputes it
+  from its own model and joins only on a match. The mapping table
+  grows with the program instead of silently dropping entities past
+  a fixed 512 — a dropped row read back as "unstamped", which is
+  what a build with no ids at all looks like. Out of memory now
+  withholds the whole channel, loudly, rather than half of it.
+
+**Fix (observation identity).** A program with a `bindings { }`
+block published `model_hash 0` for its whole life: registering a
+binding creates the observation segment, segment creation snapshots
+the identity fields, and the prelude stamped them afterwards. The
+identity setters now run before anything that can register. Eager
+recording/replay init deliberately stays after binding realization,
+so a backend with no replay class still refuses at its own seam.
+
+**Fix (binding role inference).** The documented inference
+(publish-only → `connect`, subscribe-only → `listen`) was dead code:
+the desugar ran it after rewriting topic references to literal
+subjects, so it saw no topic ends and filled in nothing, and codegen
+refused every binding that did not spell `role:` explicitly.
+
 The model's arrangement tables are populated and their consumers
 land on them. `locus_instances` / `realizes` / `owns` /
 `placed_in` / `thread_domains` / `bindings` / `binds` now carry

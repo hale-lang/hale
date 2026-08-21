@@ -8914,23 +8914,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // lotus_bus_register_remote(subject, url, role) per entry
         // in the main locus's bindings { } block. These run BEFORE
         // load_config so an env-var override can layer on top.
-        self.emit_bindings_prelude()?;
-
-        // m58: load the deployment-config map (subject -> transport
-        // URL + role) from the path in $LOTUS_BUS_CONFIG. Emitted
-        // unconditionally — programs without the env var set hit
-        // the C-runtime's `if (!path) return` early-out and pay one
-        // syscall + one branch at startup. Programs with it set
-        // get their cross-process bus routes opened before any
-        // user code runs (so `<- "subj" | ...` calls reach remote
-        // subscribers from the very first publish).
-        // WASM plan (entry inversion): skip the cross-process transport
-        // loader on wasm. `lotus_bus_load_config` opens unix/udp sockets
-        // and spawns reader threads for `listen` routes — its body
-        // references socket/bind/connect/pthread_create, which (being
-        // reachable from `main`) would otherwise survive gc-sections and
-        // become host imports. The browser bus is in-memory / WebSocket-
-        // adapter-driven (a later slice), never cross-process sockets.
+        // GH #476 Change 8 review: the observation IDENTITY is
+        // stamped FIRST — before bindings register, before the
+        // config loader opens routes, before anything else that
+        // can touch a probe. A `bindings { }` entry registers a
+        // manifest row at startup, which CREATES the observation
+        // segment, and segment creation snapshots the identity
+        // fields; stamping afterwards left every bound program
+        // publishing model_hash 0 (and, once they existed,
+        // entity ids with no published identity) for its whole
+        // life. Same failure the GH #296 round-5 eager-init fix
+        // closed for recording processes, on a different path.
         // iris handoff-2 P6: register every declared topic's
         // canonical shape (subject + field structure, never the
         // declaring type's name) before any traffic — two
@@ -9064,24 +9058,63 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             CodegenError::LlvmEmit(e2.to_string())
                         })?;
                 }
-            }
-            // GH #296 round 5: eager recording/replay init, AFTER
-            // the identity setters — segment creation snapshots
-            // them into the shared header, and a constructor-driven
-            // init published a live segment with model_hash 0 for
-            // its whole life. Still before any user code or probe,
-            // so probe-free programs record. No-op when neither
-            // LOTUS_OBS_RECORD nor LOTUS_REPLAY is set.
-            {
-                let eager_fn = self
+                // …and the table's own identity, since `model_hash`
+                // does not cover every table these ids index. A
+                // consumer recomputes this from its model and joins
+                // only on a match.
+                let d = hale_model::obs_ids::digest(&self.obs_entity_ids);
+                let dig_fn = self
                     .module
-                    .get_function("lotus_obs_eager_init")
-                    .expect("lotus_obs_eager_init declared");
+                    .get_function("lotus_obs_entity_id_digest_set")
+                    .expect("lotus_obs_entity_id_digest_set declared");
                 self.builder
-                    .build_call(eager_fn, &[], "obs.eager_init")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    .build_call(
+                        dig_fn,
+                        &[i64_t.const_int(d, false).into()],
+                        "obs.entity_id_digest",
+                    )
+                    .map_err(|e2| {
+                        CodegenError::LlvmEmit(e2.to_string())
+                    })?;
             }
         }
+
+        self.emit_bindings_prelude()?;
+
+        // GH #296 round 5: eager recording/replay init, AFTER the
+        // identity setters (above) and after the bindings prelude —
+        // its position relative to binding REALIZATION is load
+        // bearing: a backend with no replay class must refuse at its
+        // own seam, naming itself, rather than be pre-empted by a
+        // generic identity refusal. Segment creation snapshots the
+        // identity fields, which the setters have already published.
+        // Still before any user code. No-op when neither
+        // LOTUS_OBS_RECORD nor LOTUS_REPLAY is set.
+        if !self.is_wasm {
+            let eager_fn = self
+                .module
+                .get_function("lotus_obs_eager_init")
+                .expect("lotus_obs_eager_init declared");
+            self.builder
+                .build_call(eager_fn, &[], "obs.eager_init")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+
+        // m58: load the deployment-config map (subject -> transport
+        // URL + role) from the path in $LOTUS_BUS_CONFIG. Emitted
+        // unconditionally — programs without the env var set hit
+        // the C-runtime's `if (!path) return` early-out and pay one
+        // syscall + one branch at startup. Programs with it set
+        // get their cross-process bus routes opened before any
+        // user code runs (so `<- "subj" | ...` calls reach remote
+        // subscribers from the very first publish).
+        // WASM plan (entry inversion): skip the cross-process transport
+        // loader on wasm. `lotus_bus_load_config` opens unix/udp sockets
+        // and spawns reader threads for `listen` routes — its body
+        // references socket/bind/connect/pthread_create, which (being
+        // reachable from `main`) would otherwise survive gc-sections and
+        // become host imports. The browser bus is in-memory / WebSocket-
+        // adapter-driven (a later slice), never cross-process sockets.
         if !self.is_wasm {
             let load_cfg_fn = self
                 .module
