@@ -1252,6 +1252,19 @@ fn load_artifact(
     // Integrity BEFORE meaning. `shape_hash` is an identity covering
     // the model half only, so it cannot vouch for the `topics` rows a
     // composition joins on; the whole-body digest can.
+    // One unambiguous value per key (round 3, #490): serde's
+    // last-wins map parse must not be able to shadow what the raw
+    // verifiers below check.
+    if let Err(e) =
+        hale_types::topology::scan_top_level(&src)
+    {
+        return Err(format!(
+            "{}: {} — the verified and consumed values could \
+             disagree",
+            p.display(),
+            e
+        ));
+    }
     match hale_types::topology::verify_artifact_digest(&src) {
         Some(true) => {}
         Some(false) => {
@@ -1268,19 +1281,6 @@ fn load_artifact(
                 p.display()
             ))
         }
-    }
-    // One unambiguous value per key (round 3, #490): serde's
-    // last-wins map parse must not be able to shadow what the raw
-    // verifiers below check.
-    if let Some(key) =
-        hale_types::topology::find_duplicate_key(&src)
-    {
-        return Err(format!(
-            "{}: duplicate object key `{}` — the verified and \
-             consumed values could disagree",
-            p.display(),
-            key
-        ));
     }
     // Identity BEFORE meaning too (round 2, #490): the declared
     // shape_hash must recompute from the hashed model half, or the

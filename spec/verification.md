@@ -1001,9 +1001,14 @@ reason is precisely the omission the shared traversal must never
 see; only genuinely optional facts (provenance, unplaceable decl
 sources, a bus-free program's absent endpoint section) may be
 absent. And every consumed document must carry ONE unambiguous
-value per key: duplicate object keys are rejected before parsing
-(`find_duplicate_key`), because serde's last-wins map would let a
-duplicated `shape_hash` shadow the raw-verified one.
+value per key, judged the way a parser judges it (round 4):
+duplicate object keys are rejected before parsing on their
+DECODED names (`"shape\u005fhash"` and `"shape_hash"` are one
+key), and the identity fields are located STRUCTURALLY — one raw
+walk (`scan_top_level`) yields the top-level entries, and both
+`verify_shape_hash` and `verify_artifact_digest` read exactly the
+top-level field the parsed document consumes, so a nested decoy
+in some other section is data, never the verified value.
 
 Route admission validates **roles**, not just topic identity. A
 publisher endpoint must publish the subject and a subscriber endpoint

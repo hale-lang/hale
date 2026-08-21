@@ -10,6 +10,16 @@ behavior.
 
 ### Typed FleetModel + the versioned shape transition (GH #476 Change 7)
 
+Round 4: the raw admission pass is JSON-semantic and
+path-aware. One structural walk (scan_top_level) drives
+everything: duplicate keys compare DECODED names (an escaped
+spelling cannot smuggle a second shape_hash past the scanner into
+serde's last-wins map), and verify_shape_hash /
+verify_artifact_digest locate their fields at the TOP LEVEL - a
+nested decoy is data, never the verified value (pinned both ways:
+the decoy neither confuses the verifier on an honest artifact nor
+rescues a drifted one).
+
 Round 3: the typed decode is strict, and keys are unambiguous.
 ComponentModel::decode refuses malformed semantic rows instead of
 filtering them - a number-typed call endpoint or unknown reason

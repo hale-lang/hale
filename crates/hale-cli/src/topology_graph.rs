@@ -209,6 +209,19 @@ impl Artifact {
         path: &std::path::Path,
         raw: &str,
     ) -> Result<Artifact, String> {
+        // Round 3 (#490): one unambiguous value per key — a
+        // duplicated key would let the raw-verified value and the
+        // parsed (last-wins) value disagree.
+        if let Err(e) =
+            hale_types::topology::scan_top_level(raw)
+        {
+            return Err(format!(
+                "{}: {} — the verified and consumed values \
+                 could disagree",
+                path.display(),
+                e
+            ));
+        }
         match hale_types::topology::verify_artifact_digest(raw) {
             Some(true) => {}
             Some(false) => {
@@ -237,19 +250,6 @@ impl Artifact {
                 path.display(),
                 sem.map(|s| s.to_string()).unwrap_or_else(|| "absent".into()),
                 hale_types::topology::MODEL_SEMANTICS
-            ));
-        }
-        // Round 3 (#490): one unambiguous value per key — a
-        // duplicated key would let the raw-verified value and the
-        // parsed (last-wins) value disagree.
-        if let Some(key) =
-            hale_types::topology::find_duplicate_key(&raw)
-        {
-            return Err(format!(
-                "{}: duplicate object key `{}` — the verified \
-                 and consumed values could disagree",
-                path.display(),
-                key
             ));
         }
         // Round 2 (#490): the declared IDENTITY must recompute

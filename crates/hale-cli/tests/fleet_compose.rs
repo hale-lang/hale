@@ -1270,3 +1270,111 @@ fn duplicate_shape_hash_is_refused() {
         out
     );
 }
+
+/// Round 4 (#490): duplicate detection compares DECODED key names
+/// — `"shape_hash"` and `"shape_hash"` are one parsed key,
+/// so the escaped spelling cannot smuggle a second value past the
+/// scanner into serde's last-wins map.
+#[test]
+fn escaped_duplicate_key_is_refused() {
+    fn fnv1a64(bytes: &[u8]) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+    let r = fleet("escdup");
+    let p = r.join("artifacts/prober.json");
+    let good = std::fs::read_to_string(&p).expect("read");
+    let marker = ",\n  \"claims\": [";
+    let poisoned = good.replacen(
+        marker,
+        ",\n  \"shape\\u005fhash\": \"deadbeefdeadbeef\",\n  \
+         \"claims\": [",
+        1,
+    );
+    assert_ne!(poisoned, good, "test premise: the key landed");
+    let key = ",\n  \"artifact_digest\": \"";
+    let cut = poisoned.rfind(key).expect("digest trailer");
+    let body = &poisoned[..cut];
+    let restamped = format!(
+        "{}{}{:016x}\"\n}}\n",
+        body,
+        key,
+        fnv1a64(body.as_bytes())
+    );
+    std::fs::write(&p, restamped).expect("write");
+    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(
+        out.contains("duplicate object key `shape_hash`"),
+        "the DECODED key comparison refuses the escaped \
+         duplicate: {}",
+        out
+    );
+}
+
+/// Round 4 (#490): the identity fields are located STRUCTURALLY —
+/// a nested `shape_hash` decoy placed before the real top-level
+/// field is data, not the value the verifier checks. The honest
+/// component with the decoy still admits (the verifier reads the
+/// top level), while the same decoy under a DRIFTED model still
+/// refuses on the top-level staleness.
+#[test]
+fn nested_shape_hash_decoy_does_not_confuse_the_verifier() {
+    fn fnv1a64(bytes: &[u8]) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+    let restamp_doc = |body: &str| -> String {
+        format!(
+            "{},\n  \"artifact_digest\": \"{:016x}\"\n}}\n",
+            body,
+            fnv1a64(body.as_bytes())
+        )
+    };
+    let r = fleet("decoy");
+    let p = r.join("artifacts/prober.json");
+    let good = std::fs::read_to_string(&p).expect("read");
+    // Insert a decoy object BEFORE the real top-level shape_hash.
+    let decoyed = good.replacen(
+        "\n  \"shape_hash\": \"",
+        "\n  \"aa_decoy\": {\"shape_hash\": \
+         \"deadbeefdeadbeef\"},\n  \"shape_hash\": \"",
+        1,
+    );
+    assert_ne!(decoyed, good, "test premise: the decoy landed");
+    let key = ",\n  \"artifact_digest\": \"";
+    let cut = decoyed.rfind(key).expect("digest trailer");
+    std::fs::write(&p, restamp_doc(&decoyed[..cut]))
+        .expect("write");
+    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    assert_eq!(
+        code, 0,
+        "the honest artifact with a decoy admits (the verifier \
+         reads the top level): {}",
+        out
+    );
+    // Now DRIFT the wire consistently while keeping the stale
+    // top-level shape_hash — the decoy must not rescue it.
+    let drifted = decoyed
+        .replace("svc.order.intent", "svc.order.hijack");
+    let cut = drifted.rfind(key).expect("digest trailer");
+    std::fs::write(&p, restamp_doc(&drifted[..cut]))
+        .expect("write");
+    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(
+        out.contains("shape_hash does not recompute"),
+        "the top-level staleness refuses despite the decoy: {}",
+        out
+    );
+}
