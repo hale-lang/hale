@@ -8,6 +8,89 @@ behavior.
 
 ## Unreleased
 
+### Typed FleetModel + the versioned shape transition (GH #476 Change 7)
+
+Round 6: completeness with the polarity of the law. The blanket
+holds->uncertified rule now applies only to the absence-certifying
+families (forbid_reaches/only_edges); require_* witnesses are
+positive facts no incomplete endpoint set can erase, and their
+route-backed failures are definite (the plan's route table is
+complete). Counts evaluate over a [known, known+hidden] interval
+with per-verb relevant flags (publish+cardinality /
+subscribe+cardinality): min met by known rows holds, max/eq
+exceeded by known rows violates, the undecided interval is
+uncertified - including the conjunctive eq/min/max form. The
+claim row is serialized after the final verdict (it previously
+recorded the pre-rewrite result). Track A is capped at exactly
+the current schema; the canonical layout table is versioned by
+it.
+
+Round 5: layout is law, and the completeness account is
+honored. The top-level key sequence is canonical and closed -
+order defines the verified hash ranges, so moving a model-half
+section outside the shape_hash interval, introducing an unknown
+top-level key, or demoting artifact_digest from final position
+all refuse (pinned). The typed component decode carries
+capabilities + adequacy, and fleet claims fail closed over
+admitted degradation: a family a component admits as `degraded`
+cannot certify holds through it - `uncertified`, naming the
+instances and withdrawn flags - scoped like the
+unreachable-unknown rule so unrelated degradation does not
+poison unrelated claims (pinned: exact_calls withdrawn, no
+legacy unknowns, reachability prohibition does not hold).
+
+Round 4: the raw admission pass is JSON-semantic and
+path-aware. One structural walk (scan_top_level) drives
+everything: duplicate keys compare DECODED names (an escaped
+spelling cannot smuggle a second shape_hash past the scanner into
+serde's last-wins map), and verify_shape_hash /
+verify_artifact_digest locate their fields at the TOP LEVEL - a
+nested decoy is data, never the verified value (pinned both ways:
+the decoy neither confuses the verifier on an honest artifact nor
+rescues a drifted one).
+
+Round 3: the typed decode is strict, and keys are unambiguous.
+ComponentModel::decode refuses malformed semantic rows instead of
+filtering them - a number-typed call endpoint or unknown reason
+is an error, never a silently dropped edge or erased residue
+(both pinned against components that genuinely carry the shapes,
+with asserted premises). Duplicate object keys are rejected
+before parsing at both consumption boundaries: serde's last-wins
+map parse would otherwise let a second shape_hash shadow the
+raw-verified one (pinned).
+
+Round 2: route identity is one grain, and the declared identity
+is verified. Route role checks and edge construction both read
+the typed topic-identity endpoint rows (a literal end on the same
+wire satisfies neither; wire-grain accessors remain for the fleet
+claims that quantify over wire subjects). verify_shape_hash
+recomputes the model-half hash from the raw artifact at both
+consumption boundaries before any decoding - a coordinated
+hashed+unhashed endpoint edit under a stale shape_hash refuses.
+
+Fleet composition is TYPED end to end: component artifacts are
+decoded ONCE into a typed ComponentModel (fns, unioned call
+relations, V1 publish/subscribe rows, the topics join surface,
+unknowns, decl provenance, and the hashed endpoint identity)
+immediately after the shared admission - the rest of composition
+never walks generic JSON for a modeled fact (the #476
+architecture canary). Route endpoint checks now read the
+byte-exact hashed wire identity: "declares but never sends" is
+judged from typed site rows, collision-proof.
+
+Schema 1.12: canonical ENDPOINT IDENTITY joins the hashed model
+half (`endpoint_identity`: verb, owner, source-order site
+ordinal, byte-exact wire subject, declared topic). The V1
+relations render a topic-covered end and a display-colliding
+literal as one spelling, so the shape could not distinguish two
+systems that talk to different wire addresses - which is exactly
+what the shape exists to distinguish, and what replay admission
+relies on. The unhashed endpoint sections must agree with the
+hashed identity exactly, closing the round-12 substitution
+residual. SHAPE HASHES CHANGE for every bus-carrying program:
+re-record shape baselines and `.halerec` recordings once.
+
+
 ### Typed law artifact rows + adequacy (GH #476 Change 6)
 
 The topology artifact's law rows are now PROJECTED from the

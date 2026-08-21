@@ -43,6 +43,16 @@ fn legacy_arm(legacy_half: &str) -> &str {
     legacy_half
 }
 
+/// Change 7 (schema 1.12): `endpoint_identity` is new hashed
+/// content the legacy gathering never produced — strip it before a
+/// V1 byte comparison.
+fn strip_endpoint_identity(projected: &str) -> &str {
+    projected
+        .split(",\n  \"endpoint_identity\": [")
+        .next()
+        .unwrap_or(projected)
+}
+
 fn artifact_shape_hash(artifact: &str) -> u64 {
     artifact
         .lines()
@@ -106,7 +116,12 @@ fn check_one(
     }
     let legacy = legacy_arm(&legacy_half);
     let _ = model_half_of(&art);
-    let projected = project_model_half(&model);
+    let projected_full = project_model_half(&model);
+    // Change 7 (schema 1.12): `endpoint_identity` is NEW hashed
+    // content the legacy gathering never produced — the versioned
+    // shape transition. The differential's charter is the V1
+    // subset: strip the new section, compare the rest byte-exact.
+    let projected = strip_endpoint_identity(&projected_full);
     if legacy != projected {
         bad.push(format!(
             "{}: model half diverges.\n{}",
@@ -306,7 +321,8 @@ fn main() { App { }; }
     let model = derive_application_model(&bundle);
     let legacy = legacy_arm(&legacy_half);
     let _ = model_half_of(&art);
-    let projected = project_model_half(&model);
+    let projected_full = project_model_half(&model);
+    let projected = strip_endpoint_identity(&projected_full);
     assert!(
         legacy.contains("kv::Store"),
         "artifact spells the import author-side:\n{}",
@@ -333,7 +349,8 @@ fn assert_projection_matches(src: &str, label: &str) -> String {
     let model = derive_application_model(&bundle);
     let legacy = legacy_arm(&legacy_half).to_string();
     let _ = model_half_of(&art);
-    let projected = project_model_half(&model);
+    let projected_full = project_model_half(&model);
+    let projected = strip_endpoint_identity(&projected_full);
     assert_eq!(
         legacy,
         projected,
@@ -475,13 +492,14 @@ fn main() { App { }; }
     let model = derive_application_model(&bundle);
     let legacy = legacy_arm(&legacy_half);
     let _ = model_half_of(&art);
-    let projected = project_model_half(&model);
+    let projected_full = project_model_half(&model);
+    let projected = strip_endpoint_identity(&projected_full);
     assert!(
         legacy.contains("\"subject\": \"kv::Item\""),
         "V1 demangles the colliding literal:\n{}",
         legacy
     );
-    assert_eq!(legacy, projected, "{}", first_diff(legacy, &projected));
+    assert_eq!(legacy, projected, "{}", first_diff(legacy, projected));
 }
 
 /// P1 (round 12): the V1 display map is EXACT-renames scope. A
@@ -531,13 +549,14 @@ fn main() { App { }; }
     let model = derive_application_model(&bundle);
     let legacy = legacy_arm(&legacy_half);
     let _ = model_half_of(&art);
-    let projected = project_model_half(&model);
+    let projected_full = project_model_half(&model);
+    let projected = strip_endpoint_identity(&projected_full);
     assert!(
         legacy.contains("\"subject\": \"__lib_x_kv_Store::bump\""),
         "V1 keeps the method-shaped literal verbatim:\n{}",
         legacy
     );
-    assert_eq!(legacy, projected, "{}", first_diff(legacy, &projected));
+    assert_eq!(legacy, projected, "{}", first_diff(legacy, projected));
 }
 
 /// P1 (round 12): labels and effects are V1-universe sections. The
@@ -672,13 +691,14 @@ fn main() { App { }; }
     let model = derive_application_model(&bundle);
     let legacy = legacy_arm(&legacy_half);
     let _ = model_half_of(&art);
-    let projected = project_model_half(&model);
+    let projected_full = project_model_half(&model);
+    let projected = strip_endpoint_identity(&projected_full);
     assert!(
         legacy.contains("\"sealed\": [\"z::Z\", \"a::A\"]"),
         "raw order, display values:\n{}",
         legacy
     );
-    assert_eq!(legacy, projected, "{}", first_diff(legacy, &projected));
+    assert_eq!(legacy, projected, "{}", first_diff(legacy, projected));
 }
 
 /// P1 (round 13): a retry bound is the literal AS WRITTEN — i64.

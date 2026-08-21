@@ -294,7 +294,7 @@ earlier in the same file as the family. Companion:
 class along any path, with the same loop/indirect unboundedness
 rules as every per-call dimension.
 
-**The topology artifact** (#382 phase 2; schema 1.11):
+**The topology artifact** (#382 phase 2; schema 1.12):
 `hale check <t> --dump-topology` emits the serialized model —
 sorts (loci, fns, topics), relations (calls with **weights**: loop
 nesting, unbounded-loop membership, interface-dispatch tags;
@@ -317,7 +317,7 @@ uninhabited-interface dispatch, or computed publish subjects), all
 in author spelling — plus every named claim's normalized form and
 result, under a schema version and a `shape_hash` (FNV-1a/64 over
 the canonical model half; claim RESULTS are excluded, so one
-topology under different law keeps one shape). Schema 1.11
+topology under different law keeps one shape). Schema 1.11+
 (GH #476 Change 6) adds three unhashed, digest-covered typed
 sections: **`law`** — every lowered `ClaimIr` row with its
 ordinal, origin (`main` / `constitution:<name>` / `library` /
@@ -463,13 +463,17 @@ participate in locus analyzability: they are invisible to the
 certificate machinery at every scope (a top-level closure-only
 locus already certifies synthetically), so the builder and
 admission share one membership rule — only members that produce
-function entities the engines could walk count. Known residual, by design: the CONTENT of a site
-row (its wire/topic identity) at an unchanged span is not
-independently verifiable without the source — the wire identity
-of a display-colliding literal lives only in unhashed sections,
-so substituting it at the same site is a self-consistent edit;
-closing it requires hashing endpoint wire identity (a shape-
-identity change).
+function entities the engines could walk count. The residual is CLOSED as of schema 1.12 (Change 7's
+versioned shape transition): the canonical endpoint identity —
+verb, owner, source-order site ordinal, byte-exact wire subject,
+and declared topic — is part of the HASHED model half
+(`endpoint_identity`), and the unhashed endpoint sections must
+agree with it exactly. Substituting a colliding literal's content
+now contradicts the hashed half; rewriting the hashed half
+changes the program's shape identity, which is what replay
+admission and recorded baselines compare. Shape hashes changed
+for every bus-carrying program at this transition — re-record
+baselines and `.halerec` recordings once.
 Analysis coverage is FUNCTION-grained with THREE typed
 states (rounds 10–11): `analyzed` (the body was walked),
 `summarized` (a behavior-summary row exists — this set IS the
@@ -972,6 +976,69 @@ A claim names **exactly one** verb. Several verbs under one name
 would be judged one at a time and recorded under that name as though
 the whole sentence held, so the shape is refused: split it, and each
 half gets its own name and verdict.
+
+Fleet composition decodes each admitted component ONCE into a
+typed interior (GH #476 Change 7) — the vertex universe, both
+call relations unioned, the publish/subscribe rows, the topics
+join surface, the component's own unknowns, decl provenance, and
+the hashed endpoint identity — and composes from those typed rows
+exclusively; no modeled fact is recovered from generic JSON after
+admission. Route identity is ONE grain (round 2): a plan endpoint
+names a local topic, so the role check AND the edge builder both
+read the typed rows carrying that topic identity — a literal end
+on the same wire is a different endpoint and satisfies neither —
+while fleet claims that deliberately quantify over wire subjects
+keep the wire-grain accessor. The component's POSITIVE
+completeness account is honored WITH THE POLARITY OF THE LAW
+(rounds 5–6). `forbid_reaches` / `only_edges` certify an absence,
+so incomplete knowledge in an involved component prevents the
+proof: `holds` becomes `uncertified`, naming the instances and
+their withdrawn capability flags, scoped by the
+unreachable-unknown rule. The endpoint and count forms handle
+completeness INSIDE their evaluators: a known, routed `require_*`
+witness is a positive fact no incomplete set can erase, and a
+route-backed structural failure is definite (the plan's route
+table is complete). Counts follow the canonical monotone rule
+over a [known, known+hidden] interval — known endpoint rows are
+the lower bound; an uncounted component that withdraws the
+RELEVANT completeness (publisher counts consult publish +
+cardinality, subscriber counts subscribe + cardinality) raises
+only the upper bound; `min` holds once the lower bound reaches
+it, `max`/`eq` definitely violate once the lower bound exceeds
+them, and the undecided interval is `uncertified` — with the
+eq/min/max conjunction judged over that interval. The claim row
+is serialized AFTER this final verdict. Track A is capped at the
+current schema exactly: the canonical layout table is versioned
+by it. And the declared identity is
+VERIFIED: both Track A and fleet recompute `shape_hash` from the
+raw model half before any decoding (`verify_shape_hash`) — a
+consistent hashed+unhashed endpoint edit under a stale shape_hash
+refuses, so the identity that replay and composition compare is
+always the identity of the bytes present. The typed decode is
+STRICT and fallible (round 3): a malformed semantic row — a call
+endpoint that is not a string, a non-string unknown reason — is
+REFUSED, never filtered, because a silently dropped edge or hole
+reason is precisely the omission the shared traversal must never
+see; only genuinely optional facts (provenance, unplaceable decl
+sources, a bus-free program's absent endpoint section) may be
+absent. The top-level LAYOUT is canonical and closed (round 5):
+order is not JSON pedantry here — it DEFINES the verified hash
+ranges (`shape_hash` covers the bytes between its entry and
+`sources`; `artifact_digest` covers everything before itself), so
+known keys must appear in the emitter's canonical sequence,
+unknown top-level keys are refused, and `artifact_digest` must be
+the FINAL entry — a model-half section cannot be moved outside
+the identity's coverage, and no tail entry can escape the
+document digest. And every consumed document must carry ONE
+unambiguous value per key, judged the way a parser judges it
+(round 4):
+duplicate object keys are rejected before parsing on their
+DECODED names (`"shape\u005fhash"` and `"shape_hash"` are one
+key), and the identity fields are located STRUCTURALLY — one raw
+walk (`scan_top_level`) yields the top-level entries, and both
+`verify_shape_hash` and `verify_artifact_digest` read exactly the
+top-level field the parsed document consumes, so a nested decoy
+in some other section is data, never the verified value.
 
 Route admission validates **roles**, not just topic identity. A
 publisher endpoint must publish the subject and a subscriber endpoint

@@ -209,6 +209,32 @@ impl Artifact {
         path: &std::path::Path,
         raw: &str,
     ) -> Result<Artifact, String> {
+        // Round 3 (#490): one unambiguous value per key — a
+        // duplicated key would let the raw-verified value and the
+        // parsed (last-wins) value disagree.
+        match hale_types::topology::scan_top_level(raw) {
+            Err(e) => {
+                return Err(format!(
+                    "{}: {} — the verified and consumed values \
+                     could disagree",
+                    path.display(),
+                    e
+                ));
+            }
+            Ok(top) => {
+                if let Err(e) =
+                    hale_types::topology::verify_top_level_order(
+                        &top,
+                    )
+                {
+                    return Err(format!(
+                        "{}: {}",
+                        path.display(),
+                        e
+                    ));
+                }
+            }
+        }
         match hale_types::topology::verify_artifact_digest(raw) {
             Some(true) => {}
             Some(false) => {
@@ -239,23 +265,43 @@ impl Artifact {
                 hale_types::topology::MODEL_SEMANTICS
             ));
         }
+        // Round 2 (#490): the declared IDENTITY must recompute
+        // from the hashed model half — artifact_digest proves the
+        // bytes were not edited; this proves the shape_hash names
+        // those bytes.
+        match hale_types::topology::verify_shape_hash(&raw) {
+            Some(true) => {}
+            Some(false) => {
+                return Err(format!(
+                    "{}: shape_hash does not recompute from the \
+                     model half — the declared identity is stale",
+                    path.display()
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "{}: no recomputable shape_hash",
+                    path.display()
+                ));
+            }
+        }
         let art = Artifact { v };
         let schema = art.schema();
-        let minor: Option<u32> = schema
-            .strip_prefix("1.")
-            .and_then(|m| m.parse().ok());
-        match minor {
-            Some(m) if m >= 4 => {}
-            _ => {
-                return Err(format!(
-                    "{}: unsupported topology artifact schema `{}` — this \
-                     renderer's adapter covers 1.4+ (topics landed in \
-                     1.2, verdict in 1.4; an older artifact would render \
-                     misleadingly incomplete)",
-                    path.display(),
-                    schema
-                ))
-            }
+        // Round 6 (#490): the adapter is CAPPED at the current
+        // schema — the closed canonical layout table is versioned
+        // by it, so an artifact from any other schema (older or
+        // newer) is refused rather than consumed against the
+        // wrong layout contract. Pre-release: no additive-minor
+        // promise exists.
+        if schema != hale_types::topology::TOPOLOGY_SCHEMA {
+            return Err(format!(
+                "{}: unsupported topology artifact schema `{}` — \
+                 this build consumes exactly schema {}; re-dump \
+                 with the current compiler",
+                path.display(),
+                schema,
+                hale_types::topology::TOPOLOGY_SCHEMA
+            ));
         }
         // Structural presence: every section this adapter reads.
         let need = |ok: bool, what: &str| -> Result<(), String> {

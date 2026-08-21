@@ -147,6 +147,33 @@ fn restamp_both(artifact: &str) -> String {
     let key = ",\n  \"artifact_digest\": \"";
     let cut = artifact.rfind(key).expect("digest trailer");
     let mut body = artifact[..cut].to_string();
+    // Round 2 (#490): the shape_hash is recomputed at admission,
+    // so hashed-half tampers must restamp it too — each pin then
+    // exercises the deep binding it targets, not the identity
+    // gate. (The stale-identity control below does NOT use this
+    // helper.)
+    let sk = "\"shape_hash\": \"";
+    if let Some(at) = body.find(sk) {
+        let start = at + sk.len();
+        if let Some(rel) = body[start..].find('"') {
+            let claimed_end = start + rel;
+            let model_start =
+                claimed_end + "\",\n".len();
+            if let Some(end_rel) =
+                body[model_start..].find(",\n  \"sources\": [")
+            {
+                let fresh = format!(
+                    "{:016x}",
+                    fnv1a64(
+                        body[model_start
+                            ..model_start + end_rel]
+                            .as_bytes()
+                    )
+                );
+                body.replace_range(start..claimed_end, &fresh);
+            }
+        }
+    }
     let lk = "\"law_digest\": \"";
     if let (Some(at), Ok(v)) = (
         body.find(lk),
@@ -363,14 +390,6 @@ fn a_component_whose_own_claims_fail_is_refused() {
 /// law row is refused past the integrity gate.
 #[test]
 fn a_restamped_lying_verdict_is_refused() {
-    fn fnv1a64(bytes: &[u8]) -> u64 {
-        let mut h: u64 = 0xcbf29ce484222325;
-        for b in bytes {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x100000001b3);
-        }
-        h
-    }
     let r = fleet("lyingverdict");
     let p = r.join("artifacts/prober.json");
     let good = std::fs::read_to_string(&p).expect("read");
@@ -954,14 +973,6 @@ fn fleets_and_environments_are_independent_axes() {
 /// admission's claims↔law join refuses it.
 #[test]
 fn deleted_law_rows_are_refused() {
-    fn fnv1a64(bytes: &[u8]) -> u64 {
-        let mut h: u64 = 0xcbf29ce484222325;
-        for b in bytes {
-            h ^= u64::from(*b);
-            h = h.wrapping_mul(0x100000001b3);
-        }
-        h
-    }
     let r = fleet("deletedlaw");
     // Rebuild the prober WITH a claim so its law table is
     // non-empty (the base prober's is empty — deleting nothing
@@ -1048,6 +1059,636 @@ fn main() { Prober { }; }
     assert!(
         !out.contains("artifact_digest"),
         "integrity passed; the law account is what refused: {}",
+        out
+    );
+}
+
+/// Round 2 (#490): route identity is ONE grain. A component with
+/// only a LITERAL end on the topic's wire (a raw send to
+/// "svc.order.intent", never `publish t::OrderIntent`) cannot
+/// satisfy a route naming the topic — the role check and the edge
+/// builder both read the typed topic-identity rows.
+#[test]
+fn literal_only_publisher_cannot_satisfy_a_topic_route() {
+    let r = fleet("literalroute");
+    // Rebuild the prober to publish the WIRE literally, never the
+    // topic identity.
+    write(
+        &r,
+        "prober/main.hl",
+        r#"
+import "../lib" as t;
+locus Probe {
+    params { n: Int = 0; }
+    bus { publish "svc.order.intent" of type t::Intent; }
+    fn submit() {
+        let i = t::Intent { id: 1 };
+        "svc.order.intent" <- i;
+    }
+}
+main locus Prober { params { p: Probe = Probe { }; } }
+fn main() { Prober { }; }
+"#,
+    );
+    let dst = r.join("artifacts/prober.json");
+    let (out, code) = hale(&[
+        "check",
+        r.join("prober").to_str().expect("utf8"),
+        &format!("--dump-topology={}", dst.display()),
+    ]);
+    assert_eq!(code, 0, "literal prober checks clean: {}", out);
+    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(
+        out.contains("declares no topic")
+            || out.contains("nothing in that component"),
+        "the topic-grain role check refuses the literal-only \
+         publisher: {}",
+        out
+    );
+}
+
+/// Round 2 (#490): the declared IDENTITY must recompute. A
+/// coordinated edit of the hashed endpoint_identity AND its
+/// unhashed mirrors under a STALE shape_hash — with only
+/// artifact_digest restamped — refuses before any decoding.
+#[test]
+fn stale_shape_hash_is_refused() {
+    fn fnv1a64(bytes: &[u8]) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+    let r = fleet("staleshape");
+    let p = r.join("artifacts/prober.json");
+    let good = std::fs::read_to_string(&p).expect("read");
+    // Rewrite the literal wire in BOTH the hashed identity and the
+    // unhashed mirrors, consistently.
+    let drifted = good.replace(
+        "svc.order.intent",
+        "svc.order.hijack",
+    );
+    assert_ne!(drifted, good, "test premise: the wire drifted");
+    // Restamp ONLY the document digest — the shape_hash stays
+    // stale.
+    let key = ",\n  \"artifact_digest\": \"";
+    let cut = drifted.rfind(key).expect("digest trailer");
+    let body = &drifted[..cut];
+    let restamped = format!(
+        "{}{}{:016x}\"\n}}\n",
+        body,
+        key,
+        fnv1a64(body.as_bytes())
+    );
+    std::fs::write(&p, restamped).expect("write");
+    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(
+        out.contains("shape_hash does not recompute"),
+        "the stale identity refuses: {}",
+        out
+    );
+}
+
+/// Round 3 (#490): the typed decoder is STRICT — a malformed
+/// semantic row is refused, never silently filtered. A call edge
+/// whose endpoint is a number would otherwise vanish before the
+/// shared traversal, flipping a violated fleet prohibition to
+/// holds; a non-string unknown reason would erase residue the
+/// graph must certify over. The oms component is rebuilt to carry
+/// BOTH shapes, and each premise is asserted — no silent skip.
+#[test]
+fn malformed_semantic_rows_are_refused_not_dropped() {
+    const OMS_WITH_SHAPES: &str = r#"
+import "../lib" as t;
+fn helper(v: Int) -> Int { return v + 1; }
+fn call_it(f: fn(Int) -> Int, v: Int) -> Int { return f(v); }
+locus Oms {
+    params { n: Int = 0; }
+    bus { subscribe t::OrderIntent as on_intent; publish t::OrderRequest; }
+    fn on_intent(i: t::Intent) {
+        self.n = call_it(helper, i.id);
+        let o = t::Order { id: i.id };
+        t::OrderRequest <- o;
+    }
+}
+main locus OmsApp { params { o: Oms = Oms { }; } }
+fn main() { OmsApp { }; }
+"#;
+    for (tag, needle, patched, expect) in [
+        (
+            "badcall",
+            "{\"from\": \"Oms::on_intent\", \"to\": \"call_it\"}",
+            "{\"from\": \"Oms::on_intent\", \"to\": 7}",
+            "relations.calls[0].to must be a string",
+        ),
+        (
+            "badreason",
+            "\"reasons\": [\"indirect_call\"]",
+            "\"reasons\": [7]",
+            "unknowns[0].reasons[0] must be a string",
+        ),
+    ] {
+        let r = fleet(tag);
+        write(&r, "oms/main.hl", OMS_WITH_SHAPES);
+        let p = r.join("artifacts/oms.json");
+        let (out, code) = hale(&[
+            "check",
+            r.join("oms").to_str().expect("utf8"),
+            &format!("--dump-topology={}", p.display()),
+        ]);
+        assert_eq!(code, 0, "{}: oms rebuilds clean: {}", tag, out);
+        let good = std::fs::read_to_string(&p).expect("read");
+        assert!(
+            good.contains(needle),
+            "{}: test premise — the shape is present:\n{}",
+            tag,
+            good
+        );
+        let bad = good.replacen(needle, patched, 1);
+        std::fs::write(&p, restamp_both(&bad)).expect("write");
+        let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+        let _ = std::fs::remove_dir_all(&r);
+        assert_ne!(code, 0, "{}: {}", tag, out);
+        assert!(
+            out.contains(expect),
+            "{}: the strict decoder refuses (wanted `{}`): {}",
+            tag,
+            expect,
+            out
+        );
+    }
+}
+
+/// Round 3 (#490): duplicate object keys are refused before/// Round 3 (#490): duplicate object keys are refused before
+/// parsing — serde's last-wins map would otherwise let a stale
+/// `shape_hash` shadow the raw-verified one.
+#[test]
+fn duplicate_shape_hash_is_refused() {
+    fn fnv1a64(bytes: &[u8]) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+    let r = fleet("dupkey");
+    let p = r.join("artifacts/prober.json");
+    let good = std::fs::read_to_string(&p).expect("read");
+    // Append a SECOND shape_hash after the sources section — the
+    // raw verifier reads the first; serde would keep this one.
+    let marker = ",\n  \"claims\": [";
+    let poisoned = good.replacen(
+        marker,
+        ",\n  \"shape_hash\": \"deadbeefdeadbeef\",\n  \
+         \"claims\": [",
+        1,
+    );
+    assert_ne!(poisoned, good, "test premise: the key landed");
+    let key = ",\n  \"artifact_digest\": \"";
+    let cut = poisoned.rfind(key).expect("digest trailer");
+    let body = &poisoned[..cut];
+    let restamped = format!(
+        "{}{}{:016x}\"\n}}\n",
+        body,
+        key,
+        fnv1a64(body.as_bytes())
+    );
+    std::fs::write(&p, restamped).expect("write");
+    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(
+        out.contains("duplicate object key `shape_hash`"),
+        "the duplicate key refuses before parsing: {}",
+        out
+    );
+}
+
+/// Round 4 (#490): duplicate detection compares DECODED key names
+/// — `"shape_hash"` and `"shape_hash"` are one parsed key,
+/// so the escaped spelling cannot smuggle a second value past the
+/// scanner into serde's last-wins map.
+#[test]
+fn escaped_duplicate_key_is_refused() {
+    fn fnv1a64(bytes: &[u8]) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+    let r = fleet("escdup");
+    let p = r.join("artifacts/prober.json");
+    let good = std::fs::read_to_string(&p).expect("read");
+    let marker = ",\n  \"claims\": [";
+    let poisoned = good.replacen(
+        marker,
+        ",\n  \"shape\\u005fhash\": \"deadbeefdeadbeef\",\n  \
+         \"claims\": [",
+        1,
+    );
+    assert_ne!(poisoned, good, "test premise: the key landed");
+    let key = ",\n  \"artifact_digest\": \"";
+    let cut = poisoned.rfind(key).expect("digest trailer");
+    let body = &poisoned[..cut];
+    let restamped = format!(
+        "{}{}{:016x}\"\n}}\n",
+        body,
+        key,
+        fnv1a64(body.as_bytes())
+    );
+    std::fs::write(&p, restamped).expect("write");
+    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(
+        out.contains("duplicate object key `shape_hash`"),
+        "the DECODED key comparison refuses the escaped \
+         duplicate: {}",
+        out
+    );
+}
+
+/// Round 5 (#490): the top-level layout is CLOSED and canonical —
+/// an unknown top-level key (the round-4 decoy vehicle) refuses by
+/// name before any verifier runs, and order defines the verified
+/// hash ranges, so a nested decoy has no host to hide in.
+#[test]
+fn unknown_top_level_key_is_refused() {
+    fn fnv1a64(bytes: &[u8]) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+    let r = fleet("decoy");
+    let p = r.join("artifacts/prober.json");
+    let good = std::fs::read_to_string(&p).expect("read");
+    let decoyed = good.replacen(
+        "\n  \"shape_hash\": \"",
+        "\n  \"aa_decoy\": {\"shape_hash\": \
+         \"deadbeefdeadbeef\"},\n  \"shape_hash\": \"",
+        1,
+    );
+    assert_ne!(decoyed, good, "test premise: the decoy landed");
+    let key = ",\n  \"artifact_digest\": \"";
+    let cut = decoyed.rfind(key).expect("digest trailer");
+    let body = &decoyed[..cut];
+    let restamped = format!(
+        "{}{}{:016x}\"\n}}\n",
+        body,
+        key,
+        fnv1a64(body.as_bytes())
+    );
+    std::fs::write(&p, restamped).expect("write");
+    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(
+        out.contains("unknown top-level key `aa_decoy`"),
+        "the closed layout refuses the decoy by name: {}",
+        out
+    );
+}
+
+/// Round 5 (#490): ORDER defines the verified hash ranges. Moving
+/// `relations` before `shape_hash` (out of the model-half
+/// interval) refuses; a non-final `artifact_digest` refuses.
+#[test]
+fn top_level_reordering_is_refused() {
+    fn fnv1a64(bytes: &[u8]) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+    let restamp_doc = |body: &str| -> String {
+        format!(
+            "{},\n  \"artifact_digest\": \"{:016x}\"\n}}\n",
+            body,
+            fnv1a64(body.as_bytes())
+        )
+    };
+    // 1. Move the relations section BEFORE shape_hash: its edits
+    //    would then leave shape_hash unchanged.
+    let r = fleet("reorder");
+    let p = r.join("artifacts/prober.json");
+    let good = std::fs::read_to_string(&p).expect("read");
+    let rel_at = good.find("  \"relations\": {").expect("relations");
+    let rel_end = good[rel_at..]
+        .find("\n  \"groups\"")
+        .map(|i| rel_at + i)
+        .expect("groups follows relations");
+    let rel_text = &good[rel_at..rel_end];
+    let moved = format!(
+        "{}{}\n{}{}",
+        &good[..good.find("  \"shape_hash\"").expect("sh")],
+        rel_text.trim_end_matches('\n'),
+        &good[good.find("  \"shape_hash\"").expect("sh")..rel_at],
+        &good[rel_end + 1..]
+    );
+    let key = ",\n  \"artifact_digest\": \"";
+    let cut = moved.rfind(key).expect("digest trailer");
+    std::fs::write(&p, restamp_doc(&moved[..cut]))
+        .expect("write");
+    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    assert_ne!(code, 0, "{}", out);
+    assert!(
+        out.contains("out of canonical order"),
+        "the moved model-half section refuses: {}",
+        out
+    );
+    // 2. artifact_digest not final: move it before `verdict`.
+    let good2 = {
+        // regenerate a clean artifact
+        let dst = r.join("artifacts/prober.json");
+        let (o, c) = hale(&[
+            "check",
+            r.join("prober").to_str().expect("utf8"),
+            &format!("--dump-topology={}", dst.display()),
+        ]);
+        assert_eq!(c, 0, "{}", o);
+        std::fs::read_to_string(&dst).expect("read")
+    };
+    let cut = good2.rfind(key).expect("digest trailer");
+    let digest_entry = &good2[cut + 2..]; // skip ",\n"
+    let digest_entry =
+        digest_entry.trim_end_matches("\n}\n").to_string();
+    let body = &good2[..cut];
+    let verdict_at =
+        body.rfind(",\n  \"verdict\"").expect("verdict");
+    let nonfinal = format!(
+        "{},\n  {}{}\n}}\n",
+        &body[..verdict_at],
+        digest_entry,
+        &body[verdict_at..]
+    );
+    std::fs::write(&p, nonfinal).expect("write");
+    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(
+        out.contains("out of canonical order")
+            || out.contains("must be the final top-level entry"),
+        "the non-final digest refuses: {}",
+        out
+    );
+}
+
+/// Round 5 (#490): an admitted component whose own account says
+/// `exact_calls: false` / `adequacy.reachability: "degraded"` —
+/// with NO legacy unknowns — must not let a fleet reachability
+/// prohibition certify `holds` over it. The account is honored,
+/// scoped like the unreachable-unknown rule.
+#[test]
+fn degraded_component_blocks_absence_certification() {
+    fn fnv1a64(bytes: &[u8]) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+    let r = fleet("degraded");
+    // The oms component (routed FROM the strategy source) declares
+    // the degraded account, self-consistently: exact_calls off,
+    // reachability degraded — an HONEST direction (claiming less).
+    let p = r.join("artifacts/oms.json");
+    let good = std::fs::read_to_string(&p).expect("read");
+    // Withdrawing exact_calls degrades every CALLS-consuming
+    // family — the account must stay self-consistent (admission
+    // recomputes adequacy from the capability flags).
+    let humble = good
+        .replacen(
+            "\"exact_calls\": true",
+            "\"exact_calls\": false",
+            1,
+        )
+        .replacen(
+            "\"reachability\": \"exact\"",
+            "\"reachability\": \"degraded\"",
+            1,
+        )
+        .replacen(
+            "\"boundary\": \"exact\"",
+            "\"boundary\": \"degraded\"",
+            1,
+        )
+        .replacen(
+            "\"bound\": \"exact\"",
+            "\"bound\": \"degraded\"",
+            1,
+        )
+        .replacen(
+            "\"certificate\": \"exact\"",
+            "\"certificate\": \"degraded\"",
+            1,
+        );
+    assert_ne!(humble, good, "test premise: the account changed");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&good).expect("parses");
+    assert!(
+        parsed["unknowns"]
+            .as_array()
+            .is_some_and(Vec::is_empty),
+        "test premise: no legacy unknowns:\n{}",
+        parsed["unknowns"]
+    );
+    let key = ",\n  \"artifact_digest\": \"";
+    let cut = humble.rfind(key).expect("digest trailer");
+    let body = &humble[..cut];
+    let restamped = format!(
+        "{}{}{:016x}\"\n}}\n",
+        body,
+        key,
+        fnv1a64(body.as_bytes())
+    );
+    std::fs::write(&p, restamped).expect("write");
+    // A reachability prohibition from the strategy label to the
+    // gateway label spans oms (the routed middle hop). With the
+    // routes in place there is no MODELED path only because oms's
+    // interior carries the edge — whose completeness oms itself
+    // has withdrawn.
+    write(
+        &r,
+        "prod.plan.json",
+        r#"{
+  "schema": "1.0",
+  "name": "prod",
+  "instances": [
+    {"id": "prober-0", "artifact": "artifacts/prober.json", "labels": ["strategy"]},
+    {"id": "oms-0",    "artifact": "artifacts/oms.json",    "labels": ["oms"]},
+    {"id": "gw-0",     "artifact": "artifacts/gw.json",     "labels": ["gateway"]}
+  ],
+  "groups": {
+    "strategies": {"labels": ["strategy"]},
+    "gateways":   {"labels": ["gateway"]}
+  },
+  "claims": [
+    {"name": "no_reach",
+     "forbid_reaches": {"from": "strategies", "to": "gateways"}}
+  ],
+  "routes": [
+    {"id": "intent", "transport": "unix",
+     "publishers":  [{"instance": "prober-0", "topic": "t::OrderIntent"}],
+     "subscribers": [{"instance": "oms-0",    "topic": "t::OrderIntent"}]}
+  ]
+}"#,
+    );
+    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(
+        out.contains("uncertified")
+            && out.contains("degraded `reachability` adequacy")
+            && out.contains("exact_calls"),
+        "the degraded account blocks holds and names the \
+         withdrawn capability: {}",
+        out
+    );
+}
+
+/// Round 6 (#490): completeness is applied with the POLARITY of
+/// the law. Positive witnesses survive degradation; counts
+/// evaluate over a [known, known+hidden] interval; definite
+/// violations from known rows stand.
+#[test]
+fn completeness_polarity_is_respected() {
+    fn fnv1a64(bytes: &[u8]) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+    // Withdraw one capability flag coherently (every family
+    // consumes EFFECTS and PUBLISHES, so all five degrade).
+    let withdraw = |src: &str, flag: &str| -> String {
+        let mut out = src.replacen(
+            &format!("\"{}\": true", flag),
+            &format!("\"{}\": false", flag),
+            1,
+        );
+        for fam in [
+            "reachability",
+            "boundary",
+            "endpoint",
+            "bound",
+            "certificate",
+        ] {
+            out = out.replacen(
+                &format!("\"{}\": \"exact\"", fam),
+                &format!("\"{}\": \"degraded\"", fam),
+                1,
+            );
+        }
+        let key = ",\n  \"artifact_digest\": \"";
+        let cut = out.rfind(key).expect("digest trailer");
+        let body = out[..cut].to_string();
+        format!(
+            "{}{}{:016x}\"\n}}\n",
+            body,
+            key,
+            fnv1a64(body.as_bytes())
+        )
+    };
+    let r = fleet("polarity");
+    // gw-0 withdraws exact_publishes: an UNCOUNTED component that
+    // could hide a publisher — and whose endpoint adequacy is
+    // degraded by flags unrelated to any subscribe witness.
+    let p = r.join("artifacts/gw.json");
+    let good = std::fs::read_to_string(&p).expect("read");
+    std::fs::write(&p, withdraw(&good, "exact_publishes"))
+        .expect("write");
+    write(
+        &r,
+        "prod.plan.json",
+        r#"{
+  "schema": "1.0",
+  "name": "prod",
+  "instances": [
+    {"id": "prober-0", "artifact": "artifacts/prober.json", "labels": ["strategy"]},
+    {"id": "oms-0",    "artifact": "artifacts/oms.json",    "labels": ["oms"]},
+    {"id": "gw-0",     "artifact": "artifacts/gw.json",     "labels": ["gateway"]}
+  ],
+  "groups": {
+    "gateways": {"labels": ["gateway"]}
+  },
+  "claims": [
+    {"name": "gw_gets_orders",
+     "require_subscribes": {"group": "gateways", "subject": "svc.order.request"}},
+    {"name": "at_least_one",
+     "count_publisher_instances": {"subject": "svc.order.intent", "min": 1}},
+    {"name": "at_least_two",
+     "count_publisher_instances": {"subject": "svc.order.intent", "min": 2}},
+    {"name": "at_most_zero",
+     "count_publisher_instances": {"subject": "svc.order.intent", "max": 0}},
+    {"name": "exactly_zero",
+     "count_publisher_instances": {"subject": "svc.order.intent", "eq": 0}},
+    {"name": "exactly_two",
+     "count_publisher_instances": {"subject": "svc.order.intent", "eq": 2}}
+  ],
+  "routes": [
+    {"id": "intent", "transport": "unix",
+     "publishers":  [{"instance": "prober-0", "topic": "t::OrderIntent"}],
+     "subscribers": [{"instance": "oms-0",    "topic": "t::OrderIntent"}]},
+    {"id": "request", "transport": "unix",
+     "publishers":  [{"instance": "oms-0", "topic": "t::OrderRequest"}],
+     "subscribers": [{"instance": "gw-0",  "topic": "t::OrderRequest"}]}
+  ]
+}"#,
+    );
+    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    // A known routed subscriber is a POSITIVE witness — unrelated
+    // endpoint-family degradation cannot erase it; likewise a
+    // `min` already met by the known row. Neither may appear as a
+    // failing claim.
+    assert!(
+        !out.contains("`gw_gets_orders`"),
+        "the routed witness stays holds: {}",
+        out
+    );
+    assert!(
+        !out.contains("`at_least_one`"),
+        "min met by the known lower bound stays holds: {}",
+        out
+    );
+    // Interval [1, 2]: one known publisher (prober-0), one hidden
+    // candidate (gw-0 withdraws publisher completeness).
+    assert!(
+        out.contains("`at_least_two` uncertified"),
+        "min above the lower bound but inside the interval is          uncertified, not violated: {}",
+        out
+    );
+    assert!(
+        out.contains("`at_most_zero` violated"),
+        "a known count already exceeding max stays violated: {}",
+        out
+    );
+    assert!(
+        out.contains("`exactly_zero` violated"),
+        "eq below the known lower bound is a definite violation:          {}",
+        out
+    );
+    assert!(
+        out.contains("`exactly_two` uncertified"),
+        "eq inside the undecided interval is uncertified: {}",
         out
     );
 }

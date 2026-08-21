@@ -284,9 +284,15 @@ fn bad_inputs_fail_closed() {
         .output()
         .unwrap();
     assert!(!out.status.success());
+    // Round 5 (#490): the canonical-layout gate runs first, so
+    // the minimal crafted document refuses on its layout (no
+    // final artifact_digest) — either refusal is fail-closed.
+    let err = String::from_utf8_lossy(&out.stderr);
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains("schema"),
-        "refusal names the schema"
+        err.contains("schema")
+            || err.contains("artifact_digest must be the final"),
+        "refusal names the schema or the layout: {}",
+        err
     );
 
     // Unknown view / format / missing --claim.
@@ -331,6 +337,33 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 /// binding it targets, not the digest gate.
 fn restamp_digest(body_without_trailer: &str) -> String {
     let mut body = body_without_trailer.to_string();
+    // Round 2 (#490): the shape_hash is recomputed at admission,
+    // so hashed-half tampers must restamp it too — each pin then
+    // exercises the deep binding it targets, not the identity
+    // gate. (The stale-identity control below does NOT use this
+    // helper.)
+    let sk = "\"shape_hash\": \"";
+    if let Some(at) = body.find(sk) {
+        let start = at + sk.len();
+        if let Some(rel) = body[start..].find('"') {
+            let claimed_end = start + rel;
+            let model_start =
+                claimed_end + "\",\n".len();
+            if let Some(end_rel) =
+                body[model_start..].find(",\n  \"sources\": [")
+            {
+                let fresh = format!(
+                    "{:016x}",
+                    fnv1a64(
+                        body[model_start
+                            ..model_start + end_rel]
+                            .as_bytes()
+                    )
+                );
+                body.replace_range(start..claimed_end, &fresh);
+            }
+        }
+    }
     let key = "\"law_digest\": \"";
     if let (Some(at), Ok(v)) = (
         body.find(key),
@@ -3083,6 +3116,79 @@ fn main() { App { }; }
         String::from_utf8_lossy(&out.stderr)
             .contains("cannot canonically be owned by"),
         "the identity anchor refuses the owner swap: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Change 7 (schema 1.12): wire identity is part of the SHAPE.
+/// The round-12 residual — substituting a colliding literal's
+/// content at an unchanged site, with every unhashed section
+/// edited consistently — now contradicts the hashed
+/// `endpoint_identity` section and refuses. Rewriting the hashed
+/// half instead changes the program's identity.
+#[test]
+fn colliding_content_substitution_is_refused() {
+    let dir = workdir("subst");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+type Msg { n: Int = 0; }
+topic Orders { payload: Msg; subject: "wire.orders"; }
+locus Emitter {
+    params { n: Int = 0; }
+    bus { publish Orders; publish "Orders" of type Msg; }
+    fn emit(v: Int) {
+        let m = Msg { n: v };
+        Orders <- m;
+        "Orders" <- m;
+    }
+}
+locus Sink {
+    params { n: Int = 0; }
+    bus { subscribe Orders as on_t; subscribe "Orders" as on_l of type Msg; }
+    fn on_t(m: Msg) { self.n = m.n; }
+    fn on_l(m: Msg) { self.n = m.n; }
+}
+main locus App {
+    params { e: Emitter = Emitter { }; s: Sink = Sink { }; }
+    run() { self.e.emit(1); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    // Retag the literal site-1 end as another copy of the
+    // topic-covered end — the exact round-12 substitution — in
+    // the UNHASHED endpoints section.
+    let needle = "\"subject\": \"Orders\", \"via\": \"site\", \
+                  \"fn\": \"Emitter::emit\", \"site\": 1";
+    assert!(raw.contains(needle), "literal site row:\n{}", raw);
+    let swapped = raw.replacen(
+        needle,
+        "\"subject\": \"wire.orders\", \"via\": \"site\", \
+         \"fn\": \"Emitter::emit\", \"site\": 1, \"topic\": \
+         \"Orders\"",
+        1,
+    );
+    let p2 = dir.join("subst.topology");
+    std::fs::write(&p2, restamp_digest(&strip_trailer(&swapped)))
+        .unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p2)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains(
+            "do not agree with the HASHED endpoint identity"
+        ),
+        "the hashed identity refuses the substitution: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     let _ = std::fs::remove_dir_all(&dir);

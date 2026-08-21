@@ -138,6 +138,9 @@ fn the_topology_artifact_round_trips() {
                 }
                 if l.starts_with("  \"topics\": [")
                     || l.starts_with("  \"law\": {")
+                    || l.starts_with(
+                        "  \"endpoint_identity\": [",
+                    )
                 {
                     skip = true;
                 }

@@ -127,7 +127,11 @@ use crate::symbol::Bundle;
 /// judgment consumes, else `degraded`). The legacy `claims` /
 /// `lowered` string rows remain, now PROJECTED from the same
 /// canonical path.
-pub const TOPOLOGY_SCHEMA: &str = "1.11";
+// 1.12 (GH #476 Change 7): canonical endpoint identity joins the
+// HASHED model half — an explicitly versioned shape transition.
+// Shape hashes change for every bus-carrying program; recorded
+// baselines and `.halerec` admissions must be re-recorded once.
+pub const TOPOLOGY_SCHEMA: &str = "1.12";
 
 /// GH #408 Phase 0: what the rows MEAN, as distinct from their shape.
 ///
@@ -1957,16 +1961,287 @@ pub const ARTIFACT_DIGEST_KEY: &str = ",\n  \"artifact_digest\": \"";
 /// older artifact, but it must never mistake "nothing to check"
 /// for "checked and intact".
 pub fn verify_artifact_digest(artifact: &str) -> Option<bool> {
-    // rfind: the digest is the final key, and searching from the end
-    // means a user-authored string that happens to contain the
-    // marker cannot shadow the real one.
-    let at = artifact.rfind(ARTIFACT_DIGEST_KEY)?;
-    let body = &artifact[..at];
-    let rest = &artifact[at + ARTIFACT_DIGEST_KEY.len()..];
-    let claimed = rest.split('"').next()?;
+    // Round 4 (#490): located STRUCTURALLY — the digest is the
+    // TOP-LEVEL entry, and the covered body is everything before
+    // the comma that terminates the preceding top-level entry
+    // (byte-identical to what the emitter hashed). A nested
+    // `artifact_digest` inside some section is data, never the
+    // verified value.
+    let top = scan_top_level(artifact).ok()?;
+    let at = top
+        .iter()
+        .position(|(k, _, _)| k == "artifact_digest")?;
+    let body_end = top.get(at.checked_sub(1)?)?.2;
+    let body = &artifact[..body_end];
+    let entry = &artifact[top[at].1..top[at].2];
+    let claimed = entry.split('"').nth(3)?;
     Some(claimed == format!("{:016x}", fnv1a64(body.as_bytes())))
 }
 
+/// One RAW STRUCTURAL scan of an artifact document (GH #476
+/// Change 7, rounds 3–4). The raw admission pass and the parsed
+/// consumption must never disagree, which forces two properties
+/// the earlier textual helpers lacked:
+///
+///  * duplicate object keys are detected on their DECODED names —
+///    `"shape\u005fhash"` and `"shape_hash"` are one parsed key,
+///    so they are one scanner key (serde's last-wins map would
+///    otherwise consume a value the raw pass never verified);
+///  * the identity fields are located STRUCTURALLY at the top
+///    level — a nested `shape_hash` (or `artifact_digest`) inside
+///    some other section is data, never the value the verifiers
+///    check.
+///
+/// Returns the top-level entries in document order:
+/// (decoded key, key position, terminator position — the byte
+/// index of the `,` or `}` that ends the entry). `Err` names the
+/// first duplicated key (any depth) or the malformation.
+pub fn scan_top_level(
+    doc: &str,
+) -> Result<Vec<(String, usize, usize)>, String> {
+    fn unescape(raw: &str) -> Option<String> {
+        let mut out = String::with_capacity(raw.len());
+        let mut it = raw.chars();
+        while let Some(c) = it.next() {
+            if c != '\\' {
+                out.push(c);
+                continue;
+            }
+            match it.next()? {
+                '"' => out.push('"'),
+                '\\' => out.push('\\'),
+                '/' => out.push('/'),
+                'b' => out.push('\u{8}'),
+                'f' => out.push('\u{c}'),
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                'u' => {
+                    let mut cp = 0u32;
+                    for _ in 0..4 {
+                        cp = cp * 16
+                            + it.next()?.to_digit(16)?;
+                    }
+                    if (0xD800..0xDC00).contains(&cp) {
+                        // Surrogate pair.
+                        if it.next()? != '\\'
+                            || it.next()? != 'u'
+                        {
+                            return None;
+                        }
+                        let mut lo = 0u32;
+                        for _ in 0..4 {
+                            lo = lo * 16
+                                + it.next()?.to_digit(16)?;
+                        }
+                        if !(0xDC00..0xE000).contains(&lo) {
+                            return None;
+                        }
+                        cp = 0x10000
+                            + ((cp - 0xD800) << 10)
+                            + (lo - 0xDC00);
+                    }
+                    out.push(char::from_u32(cp)?);
+                }
+                _ => return None,
+            }
+        }
+        Some(out)
+    }
+    enum Scope {
+        Object {
+            keys: std::collections::BTreeSet<String>,
+            expect_key: bool,
+        },
+        Array,
+    }
+    let mut stack: Vec<Scope> = Vec::new();
+    let mut top: Vec<(String, usize, usize)> = Vec::new();
+    let mut open_entry: Option<(String, usize)> = None;
+    let mut chars = doc.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '{' => stack.push(Scope::Object {
+                keys: std::collections::BTreeSet::new(),
+                expect_key: true,
+            }),
+            '[' => stack.push(Scope::Array),
+            '}' | ']' => {
+                if stack.len() == 1 {
+                    if let Some((k, pos)) = open_entry.take() {
+                        top.push((k, pos, i));
+                    }
+                }
+                stack.pop();
+            }
+            ',' => {
+                if stack.len() == 1 {
+                    if let Some((k, pos)) = open_entry.take() {
+                        top.push((k, pos, i));
+                    }
+                }
+                if let Some(Scope::Object {
+                    expect_key, ..
+                }) = stack.last_mut()
+                {
+                    *expect_key = true;
+                }
+            }
+            '"' => {
+                let start = i + 1;
+                let mut end = start;
+                let mut esc = false;
+                for (j, sc) in chars.by_ref() {
+                    if esc {
+                        esc = false;
+                        continue;
+                    }
+                    match sc {
+                        '\\' => esc = true,
+                        '"' => {
+                            end = j;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                let at_top = stack.len() == 1;
+                if let Some(Scope::Object {
+                    keys,
+                    expect_key,
+                }) = stack.last_mut()
+                {
+                    if *expect_key {
+                        *expect_key = false;
+                        let key = unescape(&doc[start..end])
+                            .ok_or_else(|| {
+                                format!(
+                                    "malformed string escape in \
+                                     key at byte {}",
+                                    start
+                                )
+                            })?;
+                        if !keys.insert(key.clone()) {
+                            return Err(format!(
+                                "duplicate object key `{}`",
+                                key
+                            ));
+                        }
+                        if at_top {
+                            open_entry = Some((key, i));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(top)
+}
+
+/// The canonical TOP-LEVEL key sequence the emitter writes
+/// (GH #476 Change 7, round 5). Order is not JSON pedantry here:
+/// it DEFINES the verified hash ranges — `shape_hash` covers the
+/// bytes between its entry and `sources`, and `artifact_digest`
+/// covers everything before itself — so a document that reorders
+/// known keys (or introduces unknown ones) moves modeled facts in
+/// or out of the verified ranges and is refused.
+const CANONICAL_TOP_LEVEL: &[&str] = &[
+    "schema",
+    "semantics",
+    "shape_hash",
+    "sorts",
+    "sealed",
+    "relations",
+    "groups",
+    "labels",
+    "phases",
+    "seeds",
+    "effects",
+    "supervision",
+    "unknowns",
+    "endpoint_identity",
+    "sources",
+    "provenance",
+    "topics",
+    "endpoints",
+    "declares_publish",
+    "claims",
+    "lowered",
+    "law",
+    "capabilities",
+    "adequacy",
+    "evaluation",
+    "verdict",
+    "artifact_digest",
+];
+
+/// Enforce the canonical top-level layout on a scanned document:
+/// every key known, keys in canonical relative order (absences
+/// allowed — a bus-free program has no `endpoint_identity`), and
+/// `artifact_digest` the FINAL entry. Run at every consumption
+/// boundary right after [`scan_top_level`].
+pub fn verify_top_level_order(
+    top: &[(String, usize, usize)],
+) -> Result<(), String> {
+    let mut cursor = 0usize;
+    for (k, _, _) in top {
+        let Some(pos) =
+            CANONICAL_TOP_LEVEL.iter().position(|c| c == k)
+        else {
+            return Err(format!(
+                "unknown top-level key `{}`",
+                k
+            ));
+        };
+        if pos < cursor {
+            return Err(format!(
+                "top-level key `{}` out of canonical order — \
+                 order defines the verified hash ranges",
+                k
+            ));
+        }
+        cursor = pos + 1;
+    }
+    match top.last() {
+        Some((k, _, _)) if k == "artifact_digest" => Ok(()),
+        _ => Err(
+            "artifact_digest must be the final top-level entry"
+                .to_string(),
+        ),
+    }
+}
+
+/// Recompute the MODEL-HALF hash from the raw artifact text and
+/// compare it with the declared `shape_hash` (GH #476 Change 7).
+/// Rounds 2 + 4: the field is located STRUCTURALLY at the top
+/// level (a nested `shape_hash` is never the checked value), and
+/// the model half is exactly the bytes between the top-level
+/// `shape_hash` entry and the top-level `sources` entry — the
+/// substring the emitter hashed. `None` = the document has no
+/// top-level shape_hash / sources to check.
+pub fn verify_shape_hash(artifact: &str) -> Option<bool> {
+    let top = scan_top_level(artifact).ok()?;
+    let sh = top.iter().find(|(k, _, _)| k == "shape_hash")?;
+    let sources_at = top
+        .iter()
+        .position(|(k, _, _)| k == "sources")?;
+    // The model half runs from just after the shape_hash entry's
+    // terminator (`,` + newline) to the terminator of the entry
+    // preceding `sources` — the comma the tail's `,\n  "sources"`
+    // begins with.
+    let model_start = sh.2 + ",\n".len();
+    let model_end = top.get(sources_at.checked_sub(1)?)?.2;
+    if model_end <= model_start {
+        return None;
+    }
+    let model = &artifact[model_start..model_end];
+    // The declared value: the quoted string after the key.
+    let val = artifact[sh.1..sh.2]
+        .split('"')
+        .nth(3)?;
+    Some(val == format!("{:016x}", fnv1a64(model.as_bytes())))
+}
 pub(crate) fn join_str<'a>(items: impl Iterator<Item = &'a String>) -> String {
     items
         .map(|s| quote(s))
