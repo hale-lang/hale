@@ -131,6 +131,7 @@ pub mod entity;
 pub mod hole;
 pub mod ids;
 pub mod keys;
+pub mod obs_ids;
 pub mod provenance;
 pub mod relation;
 

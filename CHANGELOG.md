@@ -8,6 +8,64 @@ behavior.
 
 ## Unreleased
 
+### Deployment consumers: the arrangement + the dispatch plan (GH #476 Change 8)
+
+The model's arrangement tables are populated and their consumers
+land on them. `locus_instances` / `realizes` / `owns` /
+`placed_in` / `thread_domains` / `bindings` / `binds` now carry
+the static deployment: the params-default tree rooted at the main
+locus, `pinned(replicas = K)` fanned to K instances, thread domains
+by the runtime's own rule (pinned owns a domain, `cooperative(pool
+= X)` runs on X's worker, everything else inherits its owner, the
+root is `main`, a binding reader is its own domain). What the
+arrangement cannot see is a typed hole, not silence: instances born
+outside it (method bodies AND free functions - `fn main() { W { };
+}` is the corpus's most common shape) hide OWNS|PLACED at the born
+locus, adapter transports hide BINDS|DELIVERY at the topic, and the
+capability account gains `exact_ownership` / `exact_placement` /
+`exact_routes` accordingly. This closed a fail-open: a program whose
+loci are all born in `fn main` used to claim exact placement over
+zero modeled instances.
+
+`DispatchPlan::derive(&ApplicationModel)` owns the lowering
+decision: one row per subject with the flavor (dynamic /
+static_bucket / static_direct), the gate's reason, the subscriber
+list, publisher and subscriber THREAD DOMAINS, and `same_domain` -
+GH #464's stage-0 survey question as a model query rather than a
+bespoke topology walk. `hale model dump` prints the plan and the
+same-domain count. Codegen no longer decides: it still computes its
+own gate facts over the merged, desugared program it emits from,
+but the ladder is `DispatchFlavor::of` in hale-model and its ids /
+direct set / direct-subscriber lists come from the plan. A corpus
+differential runs both fact sources through the real binaries and
+requires agreement on every subject the model names.
+
+The plan is part of build identity: `exec_digest` frames
+`DispatchPlan::digest()`, so two builds of identical sources that
+lower dispatch differently - notably the `LOTUS_NO_BUS_DEVIRT=1`
+control arm - no longer share a recording identity, and replay
+across that boundary is refused by name.
+
+Iris joins by ID instead of by name: manifest rows carry the
+canonical model entity id in `aux_b` (a field in the entry layout
+since v0, written as 0 by every path until now). MK_TOPIC rows
+carry the `SubjectId` (the manifest fuses publishers by wire
+subject), MK_LOCUS_TYPE the `LocusDeclId`, MK_BINDING the
+`BindingId`, all as `index + 1` so **0 still means unstamped** -
+harness builds, and entities the model does not name, read exactly
+as before. The ids are indices into the model whose `shape_hash`
+the header already carries, so the two travel together.
+
+**Fix (bus dispatch, transport-bound subjects).** A subject named
+by a `bindings { }` entry is exempt from devirtualization - the
+adapter's peer is the real counterparty - but the exemption was
+keyed only by the topic DECL name, while codegen builds its graph
+after topic desugaring, where subjects are wire strings. A bound
+topic could therefore be lowered into a static bucket its own
+adapter is not part of. The gate now records both grains. Found by
+the Change-8 plan differential: 1 of 21 bus programs in the corpus
+disagreed.
+
 ### Typed FleetModel + the versioned shape transition (GH #476 Change 7)
 
 Round 6: completeness with the polarity of the law. The blanket

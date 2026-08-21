@@ -403,6 +403,41 @@ dissolve frame. The replicas are non-addressable — there is no
 `field[i]` surface; they are workers that pull from the bus or run
 their own loop.
 
+**The dispatch plan (GH #476 Change 8).** Which lowering a
+subject's dispatch receives — `dynamic` (runtime hash lookup),
+`static_bucket` (compile-time subject id, dispatch still queued),
+`static_direct` (synchronous direct calls to every subscriber) —
+is a CONCLUSION derived from the canonical model, not a fact
+declared anywhere in the program. `DispatchPlan::derive(
+&ApplicationModel)` owns that derivation: the bus graph's
+per-subject eligibility gates decide the flavor (a single ladder,
+`DispatchFlavor::of`, which the backend calls rather than
+re-deciding), and the Change-8 arrangement supplies each row's
+publisher/subscriber **thread domains** and `same_domain` — "every
+publish site and every subscriber of this subject sit in one
+domain", the precondition the future placement-driven flavors
+(GH #464) need, withheld rather than guessed whenever a locus has
+no arranged instance. Plan subjects are WIRE subjects; `hale
+model dump` prints the plan and the same-domain count.
+
+A subject named by a `bindings { }` entry is never devirtualized:
+an external peer is (or may be) the real counterparty, so the
+dispatch has to go through the transport the binding realizes.
+That exemption is keyed at BOTH grains — the topic decl name a
+binding entry writes and the wire subject a desugared program
+dispatches on — because the backend builds its graph after topic
+desugaring, and a decl-name-only gate silently let a bound subject
+be bucketed past its own adapter.
+
+The plan is part of what a build **is**: its digest is framed into
+the executable identity (`exec_digest`) alongside the toolchain
+hash, the compiler version, the build options, and every source
+byte. Two builds of identical sources that lower dispatch
+differently — notably the all-dynamic `LOTUS_NO_BUS_DEVIRT=1`
+control arm — therefore have different identities, and a recording
+made under one is refused against the other rather than replayed
+against a bus that behaves differently.
+
 **Thread + memory co-location.** A `pinned(node = N)` /
 `pinned(l3 = name)` locus binds not just its thread but its
 *memory*: its arena is created via
@@ -1379,6 +1414,23 @@ gauge of the kernel send-queue occupancy sampled at send time),
 `retries` (cell 5, reconnects) — counters-tier, so a consumer
 falling behind shows as depth climbing and block time accruing
 BEFORE anything drops) and the
+**Canonical model entity ids (GH #476 Change 8).** Manifest rows
+name entities and number them in registration order, which is a
+fact about the run, not about the program. Each row's `aux_b` —
+in the entry layout since v0, written as 0 by every path until now
+— carries the canonical `ApplicationModel` entity id for that row,
+stamped by the CLI at build time: `MK_TOPIC` rows carry the
+`SubjectId` (the manifest fuses publishers by wire subject, so the
+address, not the topic decl, is the identity), `MK_LOCUS_TYPE`
+rows the `LocusDeclId`, `MK_BINDING` rows the `BindingId`. Values
+are `index + 1`; **0 keeps meaning "unstamped"** (a harness build,
+or an entity the model does not name — a stdlib subject, say).
+The ids are indices into the tables of the model whose
+`shape_hash` sits in the header at `0x80`, so they are meaningful
+only together with it: same `model_hash`, joinable ids. A
+consumer that joined by name still can.
+
+The
 runtime's own choke points emit records: `BUS_PUBLISH` /
 `BUS_DELIVER` at every dispatch flavor (dynamic, static-devirt,
 cross-thread wire; deliver is enqueue-time at v0),

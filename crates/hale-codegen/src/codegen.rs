@@ -594,6 +594,14 @@ pub struct BuildOptions {
     /// builds on this; shape_hash is the structural compatibility
     /// check only.
     pub exec_digest: Option<[u64; 4]>,
+    /// GH #476 Change 8: canonical model entity ids for the
+    /// observation manifest (`hale_model::obs_ids`). Stamped in the
+    /// prelude so a manifest row created later carries the
+    /// compiler's id for the entity — a consumer joining a live
+    /// process to the source-derived model stops matching on
+    /// strings. Meaningful only together with `model_hash`; harness
+    /// callers leave it empty and every row reads 0 as before.
+    pub obs_entity_ids: Vec<hale_model::obs_ids::ObsEntityId>,
 }
 
 /// The per-build source table for DWARF emission: each entry is one
@@ -1450,7 +1458,8 @@ pub fn build_executable_with_options(
         returned_bindings: compute_returned_bindings(&merged),
         assign_moved_bindings: compute_assign_moved_bindings(&merged),
         model_hash: options.model_hash,
-            exec_digest: options.exec_digest,
+        exec_digest: options.exec_digest,
+        obs_entity_ids: options.obs_entity_ids.clone(),
         replica_index_for_next_locus_instantiation: None,
         current_instantiation_replica_index: 0,
         suppress_fresh_temp: false,
@@ -4074,6 +4083,9 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// segment header (None = harness build, header reads 0).
     pub(crate) model_hash: Option<u64>,
     pub(crate) exec_digest: Option<[u64; 4]>,
+    /// GH #476 Change 8: canonical model entity ids, stamped into
+    /// the observation manifest by the prelude.
+    pub(crate) obs_entity_ids: Vec<hale_model::obs_ids::ObsEntityId>,
     /// Replica keys (2026-08-12): the replica index the NEXT locus
     /// instantiation carries — set by the Phase-1c fan-out loop for
     /// replicas 1..K, absent (= replica 0) everywhere else. Consumed
@@ -9018,6 +9030,40 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         "obs.model_hash",
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            // GH #476 Change 8: canonical model entity ids. Stamped
+            // here, with the other identity setters, because the
+            // manifest rows they annotate are created LAZILY — the
+            // first publish on a subject, the first birth of a locus
+            // type — and the runtime needs the mapping in hand
+            // before any of that can happen. Only meaningful next to
+            // `model_hash` above: these are indices into that
+            // model's tables.
+            if !self.obs_entity_ids.is_empty() {
+                let id_fn = self
+                    .module
+                    .get_function("lotus_obs_model_id")
+                    .expect("lotus_obs_model_id declared");
+                let i32_t = self.context.i32_type();
+                let i64_t = self.context.i64_type();
+                for e in self.obs_entity_ids.clone() {
+                    let ng = self.global_string(&e.name);
+                    self.builder
+                        .build_call(
+                            id_fn,
+                            &[
+                                i32_t
+                                    .const_int(e.kind as u64, false)
+                                    .into(),
+                                ng.into(),
+                                i64_t.const_int(e.id, false).into(),
+                            ],
+                            "obs.model_id",
+                        )
+                        .map_err(|e2| {
+                            CodegenError::LlvmEmit(e2.to_string())
+                        })?;
+                }
             }
             // GH #296 round 5: eager recording/replay init, AFTER
             // the identity setters — segment creation snapshots

@@ -169,6 +169,49 @@ static _Atomic int g_obs_state = 0;
  * any probe can lazily create the segment. */
 static uint64_t g_obs_model_hash = 0;
 void lotus_obs_model_hash_set(uint64_t h) { g_obs_model_hash = h; }
+/* GH #476 Change 8: canonical model entity ids, stamped by the
+ * codegen prelude before any probe can add a manifest entry.
+ *
+ * The manifest identifies entities by NAME and by a
+ * registration-order id, so a consumer joining a live process
+ * against the source-derived model had to match on strings and hope
+ * the two spellings agreed. These rows give the compiler's answer
+ * instead: for each (kind, name) the canonical `ApplicationModel`
+ * entity id, published in the manifest entry's `aux_b` — a field
+ * that has been in the ABI since v0 and written as 0 by every path,
+ * so no consumer's layout moves. `aux_b == 0` still means "no
+ * canonical id" (harness builds, or an entity the model doesn't
+ * name, e.g. a stdlib subject).
+ *
+ * Entity ids are only meaningful WITH the header's `model_hash`:
+ * they are indices into that model's tables, not stable names. */
+#define OBS_MODEL_ID_CAP 512
+static struct {
+  uint8_t kind;
+  char *name;
+  uint64_t model_id;
+} g_model_ids[OBS_MODEL_ID_CAP];
+static int g_model_id_count = 0;
+
+static uint64_t obs_model_id_for(uint8_t kind, const char *name) {
+  for (int i = 0; i < g_model_id_count; i++)
+    if (g_model_ids[i].kind == kind &&
+        strcmp(g_model_ids[i].name, name) == 0)
+      return g_model_ids[i].model_id;
+  return 0;
+}
+
+void lotus_obs_model_id(uint32_t kind, const char *name,
+                        uint64_t model_id) {
+  if (!name || g_model_id_count >= OBS_MODEL_ID_CAP) return;
+  char *copy = strdup(name);
+  if (!copy) return;
+  g_model_ids[g_model_id_count].kind = (uint8_t)kind;
+  g_model_ids[g_model_id_count].name = copy;
+  g_model_ids[g_model_id_count].model_id = model_id;
+  g_model_id_count++;
+}
+
 /* GH #296 review finding 2: shape_hash is structural compatibility,
  * not executable identity. The CLI stamps a digest of the compiler
  * version + every source byte; exact replay admits on THIS. */
@@ -2130,6 +2173,10 @@ static int64_t obs_manifest_add(uint8_t kind, uint8_t flg,
   uint32_t len = (uint32_t)strlen(name);
   uint32_t noff = atomic_fetch_add(&MH->pool_used, len);
   memcpy(POOL + noff, name, len);
+  /* GH #476 Change 8: fill in the canonical model entity id for
+   * this (kind, name), when the build stamped one. Every existing
+   * caller passes aux_b = 0; an explicit value still wins. */
+  if (aux_b == 0) aux_b = obs_model_id_for(kind, name);
   ME[i] = (obs_me_t){ .shape_hash = shape, .aux_b = aux_b,
                       .id = (uint32_t)id, .name_off = noff,
                       .name_len = (uint16_t)len, .aux_a = aux_a,
