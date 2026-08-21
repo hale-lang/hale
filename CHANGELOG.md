@@ -10,6 +10,20 @@ behavior.
 
 ### Typed FleetModel + the versioned shape transition (GH #476 Change 7)
 
+Round 5: layout is law, and the completeness account is
+honored. The top-level key sequence is canonical and closed -
+order defines the verified hash ranges, so moving a model-half
+section outside the shape_hash interval, introducing an unknown
+top-level key, or demoting artifact_digest from final position
+all refuse (pinned). The typed component decode carries
+capabilities + adequacy, and fleet claims fail closed over
+admitted degradation: a family a component admits as `degraded`
+cannot certify holds through it - `uncertified`, naming the
+instances and withdrawn flags - scoped like the
+unreachable-unknown rule so unrelated degradation does not
+poison unrelated claims (pinned: exact_calls withdrawn, no
+legacy unknowns, reachability prohibition does not hold).
+
 Round 4: the raw admission pass is JSON-semantic and
 path-aware. One structural walk (scan_top_level) drives
 everything: duplicate keys compare DECODED names (an escaped

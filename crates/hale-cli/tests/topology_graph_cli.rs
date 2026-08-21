@@ -284,9 +284,15 @@ fn bad_inputs_fail_closed() {
         .output()
         .unwrap();
     assert!(!out.status.success());
+    // Round 5 (#490): the canonical-layout gate runs first, so
+    // the minimal crafted document refuses on its layout (no
+    // final artifact_digest) — either refusal is fail-closed.
+    let err = String::from_utf8_lossy(&out.stderr);
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains("schema"),
-        "refusal names the schema"
+        err.contains("schema")
+            || err.contains("artifact_digest must be the final"),
+        "refusal names the schema or the layout: {}",
+        err
     );
 
     // Unknown view / format / missing --claim.

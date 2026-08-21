@@ -2139,6 +2139,79 @@ pub fn scan_top_level(
     Ok(top)
 }
 
+/// The canonical TOP-LEVEL key sequence the emitter writes
+/// (GH #476 Change 7, round 5). Order is not JSON pedantry here:
+/// it DEFINES the verified hash ranges — `shape_hash` covers the
+/// bytes between its entry and `sources`, and `artifact_digest`
+/// covers everything before itself — so a document that reorders
+/// known keys (or introduces unknown ones) moves modeled facts in
+/// or out of the verified ranges and is refused.
+const CANONICAL_TOP_LEVEL: &[&str] = &[
+    "schema",
+    "semantics",
+    "shape_hash",
+    "sorts",
+    "sealed",
+    "relations",
+    "groups",
+    "labels",
+    "phases",
+    "seeds",
+    "effects",
+    "supervision",
+    "unknowns",
+    "endpoint_identity",
+    "sources",
+    "provenance",
+    "topics",
+    "endpoints",
+    "declares_publish",
+    "claims",
+    "lowered",
+    "law",
+    "capabilities",
+    "adequacy",
+    "evaluation",
+    "verdict",
+    "artifact_digest",
+];
+
+/// Enforce the canonical top-level layout on a scanned document:
+/// every key known, keys in canonical relative order (absences
+/// allowed — a bus-free program has no `endpoint_identity`), and
+/// `artifact_digest` the FINAL entry. Run at every consumption
+/// boundary right after [`scan_top_level`].
+pub fn verify_top_level_order(
+    top: &[(String, usize, usize)],
+) -> Result<(), String> {
+    let mut cursor = 0usize;
+    for (k, _, _) in top {
+        let Some(pos) =
+            CANONICAL_TOP_LEVEL.iter().position(|c| c == k)
+        else {
+            return Err(format!(
+                "unknown top-level key `{}`",
+                k
+            ));
+        };
+        if pos < cursor {
+            return Err(format!(
+                "top-level key `{}` out of canonical order — \
+                 order defines the verified hash ranges",
+                k
+            ));
+        }
+        cursor = pos + 1;
+    }
+    match top.last() {
+        Some((k, _, _)) if k == "artifact_digest" => Ok(()),
+        _ => Err(
+            "artifact_digest must be the final top-level entry"
+                .to_string(),
+        ),
+    }
+}
+
 /// Recompute the MODEL-HALF hash from the raw artifact text and
 /// compare it with the declared `shape_hash` (GH #476 Change 7).
 /// Rounds 2 + 4: the field is located STRUCTURALLY at the top

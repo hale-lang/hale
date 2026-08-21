@@ -1317,14 +1317,55 @@ fn escaped_duplicate_key_is_refused() {
     );
 }
 
-/// Round 4 (#490): the identity fields are located STRUCTURALLY —
-/// a nested `shape_hash` decoy placed before the real top-level
-/// field is data, not the value the verifier checks. The honest
-/// component with the decoy still admits (the verifier reads the
-/// top level), while the same decoy under a DRIFTED model still
-/// refuses on the top-level staleness.
+/// Round 5 (#490): the top-level layout is CLOSED and canonical —
+/// an unknown top-level key (the round-4 decoy vehicle) refuses by
+/// name before any verifier runs, and order defines the verified
+/// hash ranges, so a nested decoy has no host to hide in.
 #[test]
-fn nested_shape_hash_decoy_does_not_confuse_the_verifier() {
+fn unknown_top_level_key_is_refused() {
+    fn fnv1a64(bytes: &[u8]) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+    let r = fleet("decoy");
+    let p = r.join("artifacts/prober.json");
+    let good = std::fs::read_to_string(&p).expect("read");
+    let decoyed = good.replacen(
+        "\n  \"shape_hash\": \"",
+        "\n  \"aa_decoy\": {\"shape_hash\": \
+         \"deadbeefdeadbeef\"},\n  \"shape_hash\": \"",
+        1,
+    );
+    assert_ne!(decoyed, good, "test premise: the decoy landed");
+    let key = ",\n  \"artifact_digest\": \"";
+    let cut = decoyed.rfind(key).expect("digest trailer");
+    let body = &decoyed[..cut];
+    let restamped = format!(
+        "{}{}{:016x}\"\n}}\n",
+        body,
+        key,
+        fnv1a64(body.as_bytes())
+    );
+    std::fs::write(&p, restamped).expect("write");
+    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(
+        out.contains("unknown top-level key `aa_decoy`"),
+        "the closed layout refuses the decoy by name: {}",
+        out
+    );
+}
+
+/// Round 5 (#490): ORDER defines the verified hash ranges. Moving
+/// `relations` before `shape_hash` (out of the model-half
+/// interval) refuses; a non-final `artifact_digest` refuses.
+#[test]
+fn top_level_reordering_is_refused() {
     fn fnv1a64(bytes: &[u8]) -> u64 {
         let mut h: u64 = 0xcbf29ce484222325;
         for b in bytes {
@@ -1340,41 +1381,182 @@ fn nested_shape_hash_decoy_does_not_confuse_the_verifier() {
             fnv1a64(body.as_bytes())
         )
     };
-    let r = fleet("decoy");
+    // 1. Move the relations section BEFORE shape_hash: its edits
+    //    would then leave shape_hash unchanged.
+    let r = fleet("reorder");
     let p = r.join("artifacts/prober.json");
     let good = std::fs::read_to_string(&p).expect("read");
-    // Insert a decoy object BEFORE the real top-level shape_hash.
-    let decoyed = good.replacen(
-        "\n  \"shape_hash\": \"",
-        "\n  \"aa_decoy\": {\"shape_hash\": \
-         \"deadbeefdeadbeef\"},\n  \"shape_hash\": \"",
-        1,
+    let rel_at = good.find("  \"relations\": {").expect("relations");
+    let rel_end = good[rel_at..]
+        .find("\n  \"groups\"")
+        .map(|i| rel_at + i)
+        .expect("groups follows relations");
+    let rel_text = &good[rel_at..rel_end];
+    let moved = format!(
+        "{}{}\n{}{}",
+        &good[..good.find("  \"shape_hash\"").expect("sh")],
+        rel_text.trim_end_matches('\n'),
+        &good[good.find("  \"shape_hash\"").expect("sh")..rel_at],
+        &good[rel_end + 1..]
     );
-    assert_ne!(decoyed, good, "test premise: the decoy landed");
     let key = ",\n  \"artifact_digest\": \"";
-    let cut = decoyed.rfind(key).expect("digest trailer");
-    std::fs::write(&p, restamp_doc(&decoyed[..cut]))
+    let cut = moved.rfind(key).expect("digest trailer");
+    std::fs::write(&p, restamp_doc(&moved[..cut]))
         .expect("write");
     let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
-    assert_eq!(
-        code, 0,
-        "the honest artifact with a decoy admits (the verifier \
-         reads the top level): {}",
+    assert_ne!(code, 0, "{}", out);
+    assert!(
+        out.contains("out of canonical order"),
+        "the moved model-half section refuses: {}",
         out
     );
-    // Now DRIFT the wire consistently while keeping the stale
-    // top-level shape_hash — the decoy must not rescue it.
-    let drifted = decoyed
-        .replace("svc.order.intent", "svc.order.hijack");
-    let cut = drifted.rfind(key).expect("digest trailer");
-    std::fs::write(&p, restamp_doc(&drifted[..cut]))
-        .expect("write");
+    // 2. artifact_digest not final: move it before `verdict`.
+    let good2 = {
+        // regenerate a clean artifact
+        let dst = r.join("artifacts/prober.json");
+        let (o, c) = hale(&[
+            "check",
+            r.join("prober").to_str().expect("utf8"),
+            &format!("--dump-topology={}", dst.display()),
+        ]);
+        assert_eq!(c, 0, "{}", o);
+        std::fs::read_to_string(&dst).expect("read")
+    };
+    let cut = good2.rfind(key).expect("digest trailer");
+    let digest_entry = &good2[cut + 2..]; // skip ",\n"
+    let digest_entry =
+        digest_entry.trim_end_matches("\n}\n").to_string();
+    let body = &good2[..cut];
+    let verdict_at =
+        body.rfind(",\n  \"verdict\"").expect("verdict");
+    let nonfinal = format!(
+        "{},\n  {}{}\n}}\n",
+        &body[..verdict_at],
+        digest_entry,
+        &body[verdict_at..]
+    );
+    std::fs::write(&p, nonfinal).expect("write");
     let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
     let _ = std::fs::remove_dir_all(&r);
     assert_ne!(code, 0, "{}", out);
     assert!(
-        out.contains("shape_hash does not recompute"),
-        "the top-level staleness refuses despite the decoy: {}",
+        out.contains("out of canonical order")
+            || out.contains("must be the final top-level entry"),
+        "the non-final digest refuses: {}",
+        out
+    );
+}
+
+/// Round 5 (#490): an admitted component whose own account says
+/// `exact_calls: false` / `adequacy.reachability: "degraded"` —
+/// with NO legacy unknowns — must not let a fleet reachability
+/// prohibition certify `holds` over it. The account is honored,
+/// scoped like the unreachable-unknown rule.
+#[test]
+fn degraded_component_blocks_absence_certification() {
+    fn fnv1a64(bytes: &[u8]) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+    let r = fleet("degraded");
+    // The oms component (routed FROM the strategy source) declares
+    // the degraded account, self-consistently: exact_calls off,
+    // reachability degraded — an HONEST direction (claiming less).
+    let p = r.join("artifacts/oms.json");
+    let good = std::fs::read_to_string(&p).expect("read");
+    // Withdrawing exact_calls degrades every CALLS-consuming
+    // family — the account must stay self-consistent (admission
+    // recomputes adequacy from the capability flags).
+    let humble = good
+        .replacen(
+            "\"exact_calls\": true",
+            "\"exact_calls\": false",
+            1,
+        )
+        .replacen(
+            "\"reachability\": \"exact\"",
+            "\"reachability\": \"degraded\"",
+            1,
+        )
+        .replacen(
+            "\"boundary\": \"exact\"",
+            "\"boundary\": \"degraded\"",
+            1,
+        )
+        .replacen(
+            "\"bound\": \"exact\"",
+            "\"bound\": \"degraded\"",
+            1,
+        )
+        .replacen(
+            "\"certificate\": \"exact\"",
+            "\"certificate\": \"degraded\"",
+            1,
+        );
+    assert_ne!(humble, good, "test premise: the account changed");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&good).expect("parses");
+    assert!(
+        parsed["unknowns"]
+            .as_array()
+            .is_some_and(Vec::is_empty),
+        "test premise: no legacy unknowns:\n{}",
+        parsed["unknowns"]
+    );
+    let key = ",\n  \"artifact_digest\": \"";
+    let cut = humble.rfind(key).expect("digest trailer");
+    let body = &humble[..cut];
+    let restamped = format!(
+        "{}{}{:016x}\"\n}}\n",
+        body,
+        key,
+        fnv1a64(body.as_bytes())
+    );
+    std::fs::write(&p, restamped).expect("write");
+    // A reachability prohibition from the strategy label to the
+    // gateway label spans oms (the routed middle hop). With the
+    // routes in place there is no MODELED path only because oms's
+    // interior carries the edge — whose completeness oms itself
+    // has withdrawn.
+    write(
+        &r,
+        "prod.plan.json",
+        r#"{
+  "schema": "1.0",
+  "name": "prod",
+  "instances": [
+    {"id": "prober-0", "artifact": "artifacts/prober.json", "labels": ["strategy"]},
+    {"id": "oms-0",    "artifact": "artifacts/oms.json",    "labels": ["oms"]},
+    {"id": "gw-0",     "artifact": "artifacts/gw.json",     "labels": ["gateway"]}
+  ],
+  "groups": {
+    "strategies": {"labels": ["strategy"]},
+    "gateways":   {"labels": ["gateway"]}
+  },
+  "claims": [
+    {"name": "no_reach",
+     "forbid_reaches": {"from": "strategies", "to": "gateways"}}
+  ],
+  "routes": [
+    {"id": "intent", "transport": "unix",
+     "publishers":  [{"instance": "prober-0", "topic": "t::OrderIntent"}],
+     "subscribers": [{"instance": "oms-0",    "topic": "t::OrderIntent"}]}
+  ]
+}"#,
+    );
+    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(
+        out.contains("uncertified")
+            && out.contains("degraded `reachability` adequacy")
+            && out.contains("exact_calls"),
+        "the degraded account blocks holds and names the \
+         withdrawn capability: {}",
         out
     );
 }

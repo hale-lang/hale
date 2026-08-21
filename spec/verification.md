@@ -988,7 +988,16 @@ names a local topic, so the role check AND the edge builder both
 read the typed rows carrying that topic identity — a literal end
 on the same wire is a different endpoint and satisfies neither —
 while fleet claims that deliberately quantify over wire subjects
-keep the wire-grain accessor. And the declared identity is
+keep the wire-grain accessor. The component's POSITIVE
+completeness account is honored (round 5): the typed decode
+carries `capabilities` and `adequacy`, and a fleet claim of a
+family some involved component admits as `degraded` cannot
+certify `holds` — it reports `uncertified`, naming the instances
+and their withdrawn capability flags. Violations stand (a witness
+is a witness), and the scoping mirrors the unreachable-unknown
+rule: a degraded instance the claim's sources cannot reach, and
+which hosts no quantified endpoint, is not evidence about that
+claim. And the declared identity is
 VERIFIED: both Track A and fleet recompute `shape_hash` from the
 raw model half before any decoding (`verify_shape_hash`) — a
 consistent hashed+unhashed endpoint edit under a stale shape_hash
@@ -1000,8 +1009,17 @@ REFUSED, never filtered, because a silently dropped edge or hole
 reason is precisely the omission the shared traversal must never
 see; only genuinely optional facts (provenance, unplaceable decl
 sources, a bus-free program's absent endpoint section) may be
-absent. And every consumed document must carry ONE unambiguous
-value per key, judged the way a parser judges it (round 4):
+absent. The top-level LAYOUT is canonical and closed (round 5):
+order is not JSON pedantry here — it DEFINES the verified hash
+ranges (`shape_hash` covers the bytes between its entry and
+`sources`; `artifact_digest` covers everything before itself), so
+known keys must appear in the emitter's canonical sequence,
+unknown top-level keys are refused, and `artifact_digest` must be
+the FINAL entry — a model-half section cannot be moved outside
+the identity's coverage, and no tail entry can escape the
+document digest. And every consumed document must carry ONE
+unambiguous value per key, judged the way a parser judges it
+(round 4):
 duplicate object keys are rejected before parsing on their
 DECODED names (`"shape\u005fhash"` and `"shape_hash"` are one
 key), and the identity fields are located STRUCTURALLY — one raw

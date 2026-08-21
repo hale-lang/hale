@@ -64,6 +64,14 @@ pub struct ComponentModel {
     pub decl_sources: BTreeMap<String, String>,
     /// The hashed endpoint identity rows (schema 1.12).
     pub endpoints: Vec<EndpointIdentity>,
+    /// The component's POSITIVE completeness account (round 5,
+    /// #490): capability flags and per-family adequacy. An
+    /// admitted `degraded` family is an honest statement that the
+    /// component cannot support a proof of absence for that
+    /// family — fleet judgments must fail closed over it, not
+    /// discard it.
+    pub capabilities: BTreeMap<String, bool>,
+    pub adequacy: BTreeMap<String, String>,
 }
 
 impl ComponentModel {
@@ -321,6 +329,39 @@ impl ComponentModel {
             });
         }
         endpoints.sort();
+        let mut capabilities: BTreeMap<String, bool> =
+            BTreeMap::new();
+        for (k, x) in v["capabilities"]
+            .as_object()
+            .ok_or_else(|| {
+                format!(
+                    "{}: capabilities must be an object",
+                    label
+                )
+            })?
+        {
+            capabilities.insert(
+                k.clone(),
+                x.as_bool().ok_or_else(|| {
+                    format!(
+                        "{}: capabilities.{} must be a bool",
+                        label, k
+                    )
+                })?,
+            );
+        }
+        let mut adequacy: BTreeMap<String, String> =
+            BTreeMap::new();
+        for (k, x) in
+            v["adequacy"].as_object().ok_or_else(|| {
+                format!("{}: adequacy must be an object", label)
+            })?
+        {
+            adequacy.insert(
+                k.clone(),
+                req_str(x, &format!("adequacy.{}", k))?,
+            );
+        }
         Ok(ComponentModel {
             shape_hash,
             fns,
@@ -331,6 +372,8 @@ impl ComponentModel {
             unknowns,
             decl_sources,
             endpoints,
+            capabilities,
+            adequacy,
         })
     }
 

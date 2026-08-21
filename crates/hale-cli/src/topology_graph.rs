@@ -212,15 +212,28 @@ impl Artifact {
         // Round 3 (#490): one unambiguous value per key — a
         // duplicated key would let the raw-verified value and the
         // parsed (last-wins) value disagree.
-        if let Err(e) =
-            hale_types::topology::scan_top_level(raw)
-        {
-            return Err(format!(
-                "{}: {} — the verified and consumed values \
-                 could disagree",
-                path.display(),
-                e
-            ));
+        match hale_types::topology::scan_top_level(raw) {
+            Err(e) => {
+                return Err(format!(
+                    "{}: {} — the verified and consumed values \
+                     could disagree",
+                    path.display(),
+                    e
+                ));
+            }
+            Ok(top) => {
+                if let Err(e) =
+                    hale_types::topology::verify_top_level_order(
+                        &top,
+                    )
+                {
+                    return Err(format!(
+                        "{}: {}",
+                        path.display(),
+                        e
+                    ));
+                }
+            }
         }
         match hale_types::topology::verify_artifact_digest(raw) {
             Some(true) => {}

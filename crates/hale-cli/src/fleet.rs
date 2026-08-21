@@ -839,6 +839,115 @@ fn evaluate_claims(
         // is recorded because the REPAIR differs (resolve the
         // unknown edge vs. fix the program), not because one of them
         // passes.
+        // Round 5 (#490): the component's positive completeness
+        // account is HONORED. An admitted `degraded` family is
+        // the component saying "I cannot support a proof of
+        // absence here" — a fleet claim of that family must not
+        // certify `holds` over it. Violations stand (a witness is
+        // a witness), and the SCOPING mirrors the unreachable-
+        // unknown rule: a degraded instance the claim's sources
+        // cannot reach — and which hosts no quantified endpoint —
+        // is not evidence about that claim.
+        let family = if c.forbid_reaches.is_some() {
+            "reachability"
+        } else if c.only_edges.is_some() {
+            "boundary"
+        } else {
+            "endpoint"
+        };
+        let involved = |k: &Component| -> bool {
+            if let Some(fr) = &c.forbid_reaches {
+                let (Some(src), Some(dst)) = (
+                    groups.get(&fr.from),
+                    groups.get(&fr.to),
+                ) else {
+                    return true;
+                };
+                if src.contains(&k.id) || dst.contains(&k.id) {
+                    return true;
+                }
+                let masked = fr
+                    .avoiding
+                    .as_ref()
+                    .and_then(|m| groups.get(m))
+                    .cloned()
+                    .unwrap_or_default();
+                let mine: BTreeSet<String> = k
+                    .model
+                    .fns
+                    .iter()
+                    .map(|n| format!("{}::{}", k.id, n))
+                    .collect();
+                !matches!(
+                    graph.reaches(
+                        &expand(src),
+                        &mine,
+                        &expand(&masked),
+                    ),
+                    hale_types::model_graph::Reach::None
+                )
+            } else if let Some(oe) = &c.only_edges {
+                [&oe.from, &oe.to].iter().any(|g| {
+                    groups
+                        .get(*g)
+                        .is_some_and(|g| g.contains(&k.id))
+                })
+            } else if let Some(r) = c
+                .require_subscribes
+                .as_ref()
+                .or(c.require_publishes.as_ref())
+            {
+                groups
+                    .get(&r.group)
+                    .is_some_and(|g| g.contains(&k.id))
+            } else {
+                // Count claims quantify over fleet-wide endpoint
+                // exposure: any degraded-endpoint component could
+                // change the count.
+                true
+            }
+        };
+        let degraded: Vec<String> = comps
+            .iter()
+            .filter(|k| {
+                k.model.adequacy.get(family).map(String::as_str)
+                    == Some("degraded")
+                    && involved(k)
+            })
+            .map(|k| {
+                // Name the withdrawn capability flags — the
+                // actionable half of the account.
+                let withdrawn: Vec<&str> = k
+                    .model
+                    .capabilities
+                    .iter()
+                    .filter(|(_, on)| !**on)
+                    .map(|(f, _)| f.as_str())
+                    .collect();
+                format!(
+                    "`{}` (withdraws {})",
+                    k.id,
+                    withdrawn.join(", ")
+                )
+            })
+            .collect();
+        let (result, witness) = if result == "holds"
+            && !degraded.is_empty()
+        {
+            (
+                "uncertified",
+                format!(
+                    "cannot certify this absence: instance(s) \
+                     {} carry a degraded `{}` adequacy — the \
+                     required relations are not vouched by their \
+                     own artifacts",
+                    degraded.join(", "),
+                    family
+                ),
+            )
+        } else {
+            (result, witness)
+        };
         if result == "violated" || result == "uncertified" {
             errs.push(format!(
                 "fleet claim `{}` {}{}{}",
@@ -1255,15 +1364,24 @@ fn load_artifact(
     // One unambiguous value per key (round 3, #490): serde's
     // last-wins map parse must not be able to shadow what the raw
     // verifiers below check.
-    if let Err(e) =
-        hale_types::topology::scan_top_level(&src)
-    {
-        return Err(format!(
-            "{}: {} — the verified and consumed values could \
-             disagree",
-            p.display(),
-            e
-        ));
+    match hale_types::topology::scan_top_level(&src) {
+        Err(e) => {
+            return Err(format!(
+                "{}: {} — the verified and consumed values \
+                 could disagree",
+                p.display(),
+                e
+            ));
+        }
+        Ok(top) => {
+            if let Err(e) =
+                hale_types::topology::verify_top_level_order(
+                    &top,
+                )
+            {
+                return Err(format!("{}: {}", p.display(), e));
+            }
+        }
     }
     match hale_types::topology::verify_artifact_digest(&src) {
         Some(true) => {}
