@@ -989,15 +989,27 @@ read the typed rows carrying that topic identity — a literal end
 on the same wire is a different endpoint and satisfies neither —
 while fleet claims that deliberately quantify over wire subjects
 keep the wire-grain accessor. The component's POSITIVE
-completeness account is honored (round 5): the typed decode
-carries `capabilities` and `adequacy`, and a fleet claim of a
-family some involved component admits as `degraded` cannot
-certify `holds` — it reports `uncertified`, naming the instances
-and their withdrawn capability flags. Violations stand (a witness
-is a witness), and the scoping mirrors the unreachable-unknown
-rule: a degraded instance the claim's sources cannot reach, and
-which hosts no quantified endpoint, is not evidence about that
-claim. And the declared identity is
+completeness account is honored WITH THE POLARITY OF THE LAW
+(rounds 5–6). `forbid_reaches` / `only_edges` certify an absence,
+so incomplete knowledge in an involved component prevents the
+proof: `holds` becomes `uncertified`, naming the instances and
+their withdrawn capability flags, scoped by the
+unreachable-unknown rule. The endpoint and count forms handle
+completeness INSIDE their evaluators: a known, routed `require_*`
+witness is a positive fact no incomplete set can erase, and a
+route-backed structural failure is definite (the plan's route
+table is complete). Counts follow the canonical monotone rule
+over a [known, known+hidden] interval — known endpoint rows are
+the lower bound; an uncounted component that withdraws the
+RELEVANT completeness (publisher counts consult publish +
+cardinality, subscriber counts subscribe + cardinality) raises
+only the upper bound; `min` holds once the lower bound reaches
+it, `max`/`eq` definitely violate once the lower bound exceeds
+them, and the undecided interval is `uncertified` — with the
+eq/min/max conjunction judged over that interval. The claim row
+is serialized AFTER this final verdict. Track A is capped at the
+current schema exactly: the canonical layout table is versioned
+by it. And the declared identity is
 VERIFIED: both Track A and fleet recompute `shape_hash` from the
 raw model half before any decoding (`verify_shape_hash`) — a
 consistent hashed+unhashed endpoint edit under a stale shape_hash

@@ -287,21 +287,21 @@ impl Artifact {
         }
         let art = Artifact { v };
         let schema = art.schema();
-        let minor: Option<u32> = schema
-            .strip_prefix("1.")
-            .and_then(|m| m.parse().ok());
-        match minor {
-            Some(m) if m >= 4 => {}
-            _ => {
-                return Err(format!(
-                    "{}: unsupported topology artifact schema `{}` — this \
-                     renderer's adapter covers 1.4+ (topics landed in \
-                     1.2, verdict in 1.4; an older artifact would render \
-                     misleadingly incomplete)",
-                    path.display(),
-                    schema
-                ))
-            }
+        // Round 6 (#490): the adapter is CAPPED at the current
+        // schema — the closed canonical layout table is versioned
+        // by it, so an artifact from any other schema (older or
+        // newer) is refused rather than consumed against the
+        // wrong layout contract. Pre-release: no additive-minor
+        // promise exists.
+        if schema != hale_types::topology::TOPOLOGY_SCHEMA {
+            return Err(format!(
+                "{}: unsupported topology artifact schema `{}` — \
+                 this build consumes exactly schema {}; re-dump \
+                 with the current compiler",
+                path.display(),
+                schema,
+                hale_types::topology::TOPOLOGY_SCHEMA
+            ));
         }
         // Structural presence: every section this adapter reads.
         let need = |ok: bool, what: &str| -> Result<(), String> {

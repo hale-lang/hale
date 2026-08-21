@@ -1560,3 +1560,135 @@ fn degraded_component_blocks_absence_certification() {
         out
     );
 }
+
+/// Round 6 (#490): completeness is applied with the POLARITY of
+/// the law. Positive witnesses survive degradation; counts
+/// evaluate over a [known, known+hidden] interval; definite
+/// violations from known rows stand.
+#[test]
+fn completeness_polarity_is_respected() {
+    fn fnv1a64(bytes: &[u8]) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+    // Withdraw one capability flag coherently (every family
+    // consumes EFFECTS and PUBLISHES, so all five degrade).
+    let withdraw = |src: &str, flag: &str| -> String {
+        let mut out = src.replacen(
+            &format!("\"{}\": true", flag),
+            &format!("\"{}\": false", flag),
+            1,
+        );
+        for fam in [
+            "reachability",
+            "boundary",
+            "endpoint",
+            "bound",
+            "certificate",
+        ] {
+            out = out.replacen(
+                &format!("\"{}\": \"exact\"", fam),
+                &format!("\"{}\": \"degraded\"", fam),
+                1,
+            );
+        }
+        let key = ",\n  \"artifact_digest\": \"";
+        let cut = out.rfind(key).expect("digest trailer");
+        let body = out[..cut].to_string();
+        format!(
+            "{}{}{:016x}\"\n}}\n",
+            body,
+            key,
+            fnv1a64(body.as_bytes())
+        )
+    };
+    let r = fleet("polarity");
+    // gw-0 withdraws exact_publishes: an UNCOUNTED component that
+    // could hide a publisher — and whose endpoint adequacy is
+    // degraded by flags unrelated to any subscribe witness.
+    let p = r.join("artifacts/gw.json");
+    let good = std::fs::read_to_string(&p).expect("read");
+    std::fs::write(&p, withdraw(&good, "exact_publishes"))
+        .expect("write");
+    write(
+        &r,
+        "prod.plan.json",
+        r#"{
+  "schema": "1.0",
+  "name": "prod",
+  "instances": [
+    {"id": "prober-0", "artifact": "artifacts/prober.json", "labels": ["strategy"]},
+    {"id": "oms-0",    "artifact": "artifacts/oms.json",    "labels": ["oms"]},
+    {"id": "gw-0",     "artifact": "artifacts/gw.json",     "labels": ["gateway"]}
+  ],
+  "groups": {
+    "gateways": {"labels": ["gateway"]}
+  },
+  "claims": [
+    {"name": "gw_gets_orders",
+     "require_subscribes": {"group": "gateways", "subject": "svc.order.request"}},
+    {"name": "at_least_one",
+     "count_publisher_instances": {"subject": "svc.order.intent", "min": 1}},
+    {"name": "at_least_two",
+     "count_publisher_instances": {"subject": "svc.order.intent", "min": 2}},
+    {"name": "at_most_zero",
+     "count_publisher_instances": {"subject": "svc.order.intent", "max": 0}},
+    {"name": "exactly_zero",
+     "count_publisher_instances": {"subject": "svc.order.intent", "eq": 0}},
+    {"name": "exactly_two",
+     "count_publisher_instances": {"subject": "svc.order.intent", "eq": 2}}
+  ],
+  "routes": [
+    {"id": "intent", "transport": "unix",
+     "publishers":  [{"instance": "prober-0", "topic": "t::OrderIntent"}],
+     "subscribers": [{"instance": "oms-0",    "topic": "t::OrderIntent"}]},
+    {"id": "request", "transport": "unix",
+     "publishers":  [{"instance": "oms-0", "topic": "t::OrderRequest"}],
+     "subscribers": [{"instance": "gw-0",  "topic": "t::OrderRequest"}]}
+  ]
+}"#,
+    );
+    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    // A known routed subscriber is a POSITIVE witness — unrelated
+    // endpoint-family degradation cannot erase it; likewise a
+    // `min` already met by the known row. Neither may appear as a
+    // failing claim.
+    assert!(
+        !out.contains("`gw_gets_orders`"),
+        "the routed witness stays holds: {}",
+        out
+    );
+    assert!(
+        !out.contains("`at_least_one`"),
+        "min met by the known lower bound stays holds: {}",
+        out
+    );
+    // Interval [1, 2]: one known publisher (prober-0), one hidden
+    // candidate (gw-0 withdraws publisher completeness).
+    assert!(
+        out.contains("`at_least_two` uncertified"),
+        "min above the lower bound but inside the interval is          uncertified, not violated: {}",
+        out
+    );
+    assert!(
+        out.contains("`at_most_zero` violated"),
+        "a known count already exceeding max stays violated: {}",
+        out
+    );
+    assert!(
+        out.contains("`exactly_zero` violated"),
+        "eq below the known lower bound is a definite violation:          {}",
+        out
+    );
+    assert!(
+        out.contains("`exactly_two` uncertified"),
+        "eq inside the undecided interval is uncertified: {}",
+        out
+    );
+}

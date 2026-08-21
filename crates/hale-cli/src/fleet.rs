@@ -828,6 +828,114 @@ fn evaluate_claims(
             ));
             continue;
         };
+        // Round 5–6 (#490): the component's positive completeness
+        // account is HONORED — with the POLARITY of the law.
+        // `forbid_reaches` / `only_edges` certify an ABSENCE, so
+        // incomplete knowledge in an involved component prevents
+        // the proof (holds → uncertified). The endpoint and count
+        // forms handle completeness INSIDE their evaluators: a
+        // known routed witness is a positive fact no incomplete
+        // set can erase, and counts evaluate over a
+        // [known, known+hidden] interval. The scoping mirrors the
+        // unreachable-unknown rule. Serialized AFTER this final
+        // verdict (round 6: the row previously recorded the
+        // pre-rewrite result).
+        let negative_family = if c.forbid_reaches.is_some() {
+            Some("reachability")
+        } else if c.only_edges.is_some() {
+            Some("boundary")
+        } else {
+            None
+        };
+        let (result, witness) = if let (Some(family), "holds") =
+            (negative_family, result)
+        {
+            let involved = |k: &Component| -> bool {
+                if let Some(fr) = &c.forbid_reaches {
+                    let (Some(src), Some(dst)) = (
+                        groups.get(&fr.from),
+                        groups.get(&fr.to),
+                    ) else {
+                        return true;
+                    };
+                    if src.contains(&k.id)
+                        || dst.contains(&k.id)
+                    {
+                        return true;
+                    }
+                    let masked = fr
+                        .avoiding
+                        .as_ref()
+                        .and_then(|m| groups.get(m))
+                        .cloned()
+                        .unwrap_or_default();
+                    let mine: BTreeSet<String> = k
+                        .model
+                        .fns
+                        .iter()
+                        .map(|n| format!("{}::{}", k.id, n))
+                        .collect();
+                    !matches!(
+                        graph.reaches(
+                            &expand(src),
+                            &mine,
+                            &expand(&masked),
+                        ),
+                        hale_types::model_graph::Reach::None
+                    )
+                } else if let Some(oe) = &c.only_edges {
+                    [&oe.from, &oe.to].iter().any(|g| {
+                        groups
+                            .get(*g)
+                            .is_some_and(|g| g.contains(&k.id))
+                    })
+                } else {
+                    true
+                }
+            };
+            let degraded: Vec<String> = comps
+                .iter()
+                .filter(|k| {
+                    k.model
+                        .adequacy
+                        .get(family)
+                        .map(String::as_str)
+                        == Some("degraded")
+                        && involved(k)
+                })
+                .map(|k| {
+                    let withdrawn: Vec<&str> = k
+                        .model
+                        .capabilities
+                        .iter()
+                        .filter(|(_, on)| !**on)
+                        .map(|(f, _)| f.as_str())
+                        .collect();
+                    format!(
+                        "`{}` (withdraws {})",
+                        k.id,
+                        withdrawn.join(", ")
+                    )
+                })
+                .collect();
+            if degraded.is_empty() {
+                (result, witness)
+            } else {
+                (
+                    "uncertified",
+                    format!(
+                        "cannot certify this absence: \
+                         instance(s) {} carry a degraded `{}` \
+                         adequacy — the required relations are \
+                         not vouched by their own artifacts",
+                        degraded.join(", "),
+                        family
+                    ),
+                )
+            }
+        } else {
+            (result, witness)
+        };
         rows.push(format!(
             "    {{\"name\": {}, \"result\": {}, \"witness\": {}}}",
             q(&c.name),
@@ -839,115 +947,6 @@ fn evaluate_claims(
         // is recorded because the REPAIR differs (resolve the
         // unknown edge vs. fix the program), not because one of them
         // passes.
-        // Round 5 (#490): the component's positive completeness
-        // account is HONORED. An admitted `degraded` family is
-        // the component saying "I cannot support a proof of
-        // absence here" — a fleet claim of that family must not
-        // certify `holds` over it. Violations stand (a witness is
-        // a witness), and the SCOPING mirrors the unreachable-
-        // unknown rule: a degraded instance the claim's sources
-        // cannot reach — and which hosts no quantified endpoint —
-        // is not evidence about that claim.
-        let family = if c.forbid_reaches.is_some() {
-            "reachability"
-        } else if c.only_edges.is_some() {
-            "boundary"
-        } else {
-            "endpoint"
-        };
-        let involved = |k: &Component| -> bool {
-            if let Some(fr) = &c.forbid_reaches {
-                let (Some(src), Some(dst)) = (
-                    groups.get(&fr.from),
-                    groups.get(&fr.to),
-                ) else {
-                    return true;
-                };
-                if src.contains(&k.id) || dst.contains(&k.id) {
-                    return true;
-                }
-                let masked = fr
-                    .avoiding
-                    .as_ref()
-                    .and_then(|m| groups.get(m))
-                    .cloned()
-                    .unwrap_or_default();
-                let mine: BTreeSet<String> = k
-                    .model
-                    .fns
-                    .iter()
-                    .map(|n| format!("{}::{}", k.id, n))
-                    .collect();
-                !matches!(
-                    graph.reaches(
-                        &expand(src),
-                        &mine,
-                        &expand(&masked),
-                    ),
-                    hale_types::model_graph::Reach::None
-                )
-            } else if let Some(oe) = &c.only_edges {
-                [&oe.from, &oe.to].iter().any(|g| {
-                    groups
-                        .get(*g)
-                        .is_some_and(|g| g.contains(&k.id))
-                })
-            } else if let Some(r) = c
-                .require_subscribes
-                .as_ref()
-                .or(c.require_publishes.as_ref())
-            {
-                groups
-                    .get(&r.group)
-                    .is_some_and(|g| g.contains(&k.id))
-            } else {
-                // Count claims quantify over fleet-wide endpoint
-                // exposure: any degraded-endpoint component could
-                // change the count.
-                true
-            }
-        };
-        let degraded: Vec<String> = comps
-            .iter()
-            .filter(|k| {
-                k.model.adequacy.get(family).map(String::as_str)
-                    == Some("degraded")
-                    && involved(k)
-            })
-            .map(|k| {
-                // Name the withdrawn capability flags — the
-                // actionable half of the account.
-                let withdrawn: Vec<&str> = k
-                    .model
-                    .capabilities
-                    .iter()
-                    .filter(|(_, on)| !**on)
-                    .map(|(f, _)| f.as_str())
-                    .collect();
-                format!(
-                    "`{}` (withdraws {})",
-                    k.id,
-                    withdrawn.join(", ")
-                )
-            })
-            .collect();
-        let (result, witness) = if result == "holds"
-            && !degraded.is_empty()
-        {
-            (
-                "uncertified",
-                format!(
-                    "cannot certify this absence: instance(s) \
-                     {} carry a degraded `{}` adequacy — the \
-                     required relations are not vouched by their \
-                     own artifacts",
-                    degraded.join(", "),
-                    family
-                ),
-            )
-        } else {
-            (result, witness)
-        };
         if result == "violated" || result == "uncertified" {
             errs.push(format!(
                 "fleet claim `{}` {}{}{}",
@@ -1090,31 +1089,112 @@ fn count_claim(
     comps: &[Component],
     publishing: bool,
 ) -> (&'static str, String) {
+    // Round 6 (#490): counts are evaluated over an INTERVAL, with
+    // the canonical monotone rule. Known endpoint rows are a lower
+    // bound; an uncounted component that withdraws the RELEVANT
+    // completeness (publisher counts consult publish +
+    // cardinality; subscriber counts subscribe + cardinality)
+    // could hide another endpoint, so it raises only the upper
+    // bound. A `min` already met by known rows holds regardless
+    // of hidden candidates; a `max` already exceeded by known
+    // rows violates regardless; everything the interval cannot
+    // decide is uncertified.
     let hits: Vec<&str> = comps
         .iter()
         .filter(|c| c.model.has_endpoint(&k.subject, publishing))
         .map(|c| c.id.as_str())
         .collect();
-    let n = hits.len();
-    let ok = k.eq.map(|e| n == e).unwrap_or(true)
-        && k.max.map(|m| n <= m).unwrap_or(true)
-        && k.min.map(|m| n >= m).unwrap_or(true);
-    if ok {
+    let relevant = if publishing {
+        "exact_publishes"
+    } else {
+        "exact_subscribes"
+    };
+    let hidden: Vec<&str> = comps
+        .iter()
+        .filter(|c| {
+            !hits.contains(&c.id.as_str())
+                && (!c
+                    .model
+                    .capabilities
+                    .get(relevant)
+                    .copied()
+                    .unwrap_or(true)
+                    || !c
+                        .model
+                        .capabilities
+                        .get("exact_cardinality")
+                        .copied()
+                        .unwrap_or(true))
+        })
+        .map(|c| c.id.as_str())
+        .collect();
+    let lo = hits.len();
+    let hi = lo + hidden.len();
+    // Per bound: Ok(true) definite pass, Ok(false) definite
+    // violation, Err(()) undecidable on this interval.
+    let bounds: Vec<(&str, Result<bool, ()>)> = [
+        ("eq", k.eq.map(|e| {
+            if lo > e || hi < e {
+                Ok(false)
+            } else if lo == e && hi == e {
+                Ok(true)
+            } else {
+                Err(())
+            }
+        })),
+        ("max", k.max.map(|m| {
+            if lo > m {
+                Ok(false)
+            } else if hi <= m {
+                Ok(true)
+            } else {
+                Err(())
+            }
+        })),
+        ("min", k.min.map(|m| {
+            if lo >= m {
+                Ok(true)
+            } else if hi < m {
+                Ok(false)
+            } else {
+                Err(())
+            }
+        })),
+    ]
+    .into_iter()
+    .filter_map(|(n, v)| v.map(|v| (n, v)))
+    .collect();
+    let counted = format!(
+        "counted {} deployed {} endpoint(s) of `{}`{}{}",
+        lo,
+        if publishing { "publisher" } else { "subscriber" },
+        k.subject,
+        if hits.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", hits.join(", "))
+        },
+        if hidden.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " (up to {} more possible — {} withdraw(s) the \
+                 relevant completeness)",
+                hidden.len(),
+                hidden.join(", ")
+            )
+        }
+    );
+    // Conjunctive fleet form: any definite violation violates;
+    // all definite passes hold; otherwise uncertified.
+    if bounds.iter().any(|(_, v)| *v == Ok(false)) {
+        ("violated", counted)
+    } else if bounds.iter().all(|(_, v)| *v == Ok(true)) {
         ("holds", String::new())
     } else {
-        (
-            "violated",
-            format!(
-                "counted {} deployed {} endpoint(s) of `{}`: {}",
-                n,
-                if publishing { "publisher" } else { "subscriber" },
-                k.subject,
-                hits.join(", ")
-            ),
-        )
+        ("uncertified", counted)
     }
 }
-
 
 #[allow(clippy::too_many_arguments)]
 fn render(

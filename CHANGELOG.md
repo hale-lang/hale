@@ -10,6 +10,21 @@ behavior.
 
 ### Typed FleetModel + the versioned shape transition (GH #476 Change 7)
 
+Round 6: completeness with the polarity of the law. The blanket
+holds->uncertified rule now applies only to the absence-certifying
+families (forbid_reaches/only_edges); require_* witnesses are
+positive facts no incomplete endpoint set can erase, and their
+route-backed failures are definite (the plan's route table is
+complete). Counts evaluate over a [known, known+hidden] interval
+with per-verb relevant flags (publish+cardinality /
+subscribe+cardinality): min met by known rows holds, max/eq
+exceeded by known rows violates, the undecided interval is
+uncertified - including the conjunctive eq/min/max form. The
+claim row is serialized after the final verdict (it previously
+recorded the pre-rewrite result). Track A is capped at exactly
+the current schema; the canonical layout table is versioned by
+it.
+
 Round 5: layout is law, and the completeness account is
 honored. The top-level key sequence is canonical and closed -
 order defines the verified hash ranges, so moving a model-half
