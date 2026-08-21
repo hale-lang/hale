@@ -552,10 +552,25 @@ fn main() { App { }; }
     assert!(m.capabilities.exact_calls);
     assert!(m.capabilities.exact_publishes && m.capabilities.exact_subscribes);
     assert!(m.capabilities.exact_key_filters);
-    // Never claimed at Change 2 (empty tables, deferred adapters):
-    assert!(!m.capabilities.exact_ownership);
-    assert!(!m.capabilities.exact_placement);
-    assert!(!m.capabilities.exact_routes);
+    // Change 8: the arrangement tables are populated, so a fully
+    // static program claims the ownership/placement/binding
+    // accounts too.
+    assert!(m.capabilities.exact_ownership);
+    assert!(m.capabilities.exact_placement);
+    assert!(m.capabilities.exact_routes);
+    // …and the arrangement itself is modeled: App realizes its
+    // decl on main; App.s is owned by App and co-domained.
+    assert_eq!(m.entities.locus_instances.len(), 2);
+    assert_eq!(m.entities.locus_instances[0].path, "App");
+    assert_eq!(m.entities.locus_instances[1].path, "App.s");
+    assert_eq!(m.relations.owns.len(), 1);
+    assert_eq!(m.relations.placed_in.len(), 2);
+    assert_eq!(
+        m.entities.thread_domains.len(),
+        1,
+        "one domain: main"
+    );
+    assert_eq!(m.entities.thread_domains[0].name, "main");
 }
 
 #[test]

@@ -629,7 +629,7 @@ pub fn has_offthread_placement(bundle: &Bundle<'_>) -> bool {
 /// path), else `None`. Non-locus field types never appear in a
 /// `placement { }` block (typecheck enforces), so we don't confirm
 /// locus-ness here.
-fn single_named_type(ty: &TypeExpr) -> Option<String> {
+pub(crate) fn single_named_type(ty: &TypeExpr) -> Option<String> {
     match ty {
         TypeExpr::Named { path, .. } => path.segments.last().map(|s| s.name.clone()),
         _ => None,
