@@ -1,0 +1,424 @@
+//! GH #476 Change 9 (review round 1) — the checker and the document
+//! must not disagree about a program.
+//!
+//! Law SELECTION decides which laws exist: it resolves group
+//! members and refuses an unknown name or an unannounced empty
+//! group. `hale check` reported those refusals; the artifact
+//! lowering did not, because it ran only the clause enumeration and
+//! never the group resolution. The model builder drops a selector
+//! it cannot resolve and leaves the group entity memberless, and the
+//! judgment declined to diagnose a memberless group precisely
+//! because selection was supposed to have refused it — so the law
+//! evaluated over an empty root set and could serialize as `holds`.
+//!
+//! Two machine-readable answers, opposite, about one program. These
+//! tests run the real binary and require the artifact to carry the
+//! selection issue and to refuse the dependent row.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+fn hale() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_hale"))
+}
+
+fn workdir(tag: &str) -> PathBuf {
+    let d = std::env::temp_dir()
+        .join(format!("hale_law_sel_{}_{}", std::process::id(), tag));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+/// (check stderr, parsed artifact)
+fn check_and_dump(dir: &Path, src: &str) -> (String, serde_json::Value) {
+    let file = dir.join("main.hl");
+    std::fs::write(&file, src).unwrap();
+    let checked = hale().arg("check").arg(&file).output().expect("check");
+    let dumped = hale()
+        .arg("check")
+        .arg(&file)
+        .arg("--dump-topology")
+        .output()
+        .expect("dump");
+    let artifact: serde_json::Value = serde_json::from_slice(
+        &dumped.stdout,
+    )
+    .unwrap_or_else(|e| {
+        panic!(
+            "artifact is not JSON ({}):\n{}",
+            e,
+            String::from_utf8_lossy(&dumped.stdout)
+        )
+    });
+    (String::from_utf8_lossy(&checked.stderr).into_owned(), artifact)
+}
+
+fn law_row<'a>(
+    artifact: &'a serde_json::Value,
+    name: &str,
+) -> &'a serde_json::Value {
+    artifact["law"]["rows"]
+        .as_array()
+        .expect("law rows")
+        .iter()
+        .find(|r| r["name"] == name)
+        .unwrap_or_else(|| panic!("no law row named `{}`", name))
+}
+
+fn issues(artifact: &serde_json::Value) -> Vec<String> {
+    artifact["law"]["issues"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|i| i["message"].as_str().unwrap_or("").to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// An unknown group member: the reviewer's reproducer.
+#[test]
+fn an_unknown_group_member_reaches_the_artifact() {
+    let dir = workdir("unknown");
+    let (stderr, artifact) = check_and_dump(
+        &dir,
+        r#"
+locus Worker {
+    params { n: Int = 0; }
+    fn run_job() { self.n = self.n + 1; }
+}
+group probes = { MissingWorker };
+group workers = { Worker };
+main locus App {
+    params { w: Worker = Worker { }; }
+    claims {
+        isolation: forbid reaches(probes, workers);
+    }
+    run() { self.w.run_job(); }
+}
+fn main() { App { }; }
+"#,
+    );
+    // Premise: the checker refuses the program by name.
+    assert!(
+        stderr.contains("MissingWorker"),
+        "fixture premise: check must reject the unknown member:\n{}",
+        stderr
+    );
+    // The document says the same thing.
+    let issues = issues(&artifact);
+    assert!(
+        issues.iter().any(|m| m.contains("MissingWorker")),
+        "the artifact carries no selection issue for the unknown \
+         member — the document and the checker disagree: {:?}",
+        issues
+    );
+    assert_eq!(
+        artifact["verdict"], "law_failed",
+        "a document with an unsatisfied law account is not clean"
+    );
+    // …and the dependent law is not recorded as holding over a
+    // domain the compiler just refused.
+    assert_ne!(
+        law_row(&artifact, "isolation")["verdict"], "holds",
+        "the law reads as holding over an empty, refused domain"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An empty group that never said it could be empty. Same rule from
+/// the other side: nothing is unknown here, the group is simply
+/// vacuous, and vacuous truth is the fail-open `may_be_empty` exists
+/// to make explicit.
+#[test]
+fn an_unannounced_empty_group_reaches_the_artifact() {
+    let dir = workdir("empty");
+    let (stderr, artifact) = check_and_dump(
+        &dir,
+        r#"
+locus Worker {
+    params { n: Int = 0; }
+    fn run_job() { self.n = self.n + 1; }
+}
+group probes = { };
+group workers = { Worker };
+main locus App {
+    params { w: Worker = Worker { }; }
+    claims {
+        isolation: forbid reaches(probes, workers);
+    }
+    run() { self.w.run_job(); }
+}
+fn main() { App { }; }
+"#,
+    );
+    assert!(
+        stderr.contains("resolves to no declarations"),
+        "fixture premise: check must reject the vacuous group:\n{}",
+        stderr
+    );
+    let issues = issues(&artifact);
+    assert!(
+        issues.iter().any(|m| m.contains("resolves to no declarations")),
+        "the artifact carries no selection issue for the empty \
+         group: {:?}",
+        issues
+    );
+    assert_ne!(
+        law_row(&artifact, "isolation")["verdict"], "holds",
+        "vacuous truth over an unannounced empty group is exactly \
+         the fail-open this refuses"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The control that keeps the two above honest: `may_be_empty` is a
+/// declared intent, so an empty group carrying it is NOT a selection
+/// failure, and its law still holds vacuously — as it always has.
+#[test]
+fn a_declared_may_be_empty_group_still_holds_vacuously() {
+    let dir = workdir("declared");
+    let (stderr, artifact) = check_and_dump(
+        &dir,
+        r#"
+locus Worker {
+    params { n: Int = 0; }
+    fn run_job() { self.n = self.n + 1; }
+}
+group probes = { } may_be_empty;
+group workers = { Worker };
+main locus App {
+    params { w: Worker = Worker { }; }
+    claims {
+        isolation: forbid reaches(probes, workers);
+    }
+    run() { self.w.run_job(); }
+}
+fn main() { App { }; }
+"#,
+    );
+    assert!(
+        !stderr.contains("resolves to no declarations"),
+        "an author who declared the group may be empty was refused \
+         anyway:\n{}",
+        stderr
+    );
+    assert!(
+        issues(&artifact).is_empty(),
+        "a declared-empty group is not a selection issue: {:?}",
+        issues(&artifact)
+    );
+    assert_eq!(
+        law_row(&artifact, "isolation")["verdict"], "holds",
+        "the declared vacuous case must keep holding"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Review round 2: `may_be_empty` authorizes an intentionally empty
+/// group. It does not turn a MISSPELLED member into intent.
+///
+/// The model builder emits no member for a selector it cannot
+/// resolve, so this group is empty in the model — and a guard that
+/// asked "empty, and did it declare may_be_empty?" exempted it and
+/// let the law hold over no roots at all.
+#[test]
+fn may_be_empty_does_not_rescue_an_unknown_member() {
+    let dir = workdir("mbe_unknown");
+    let (stderr, artifact) = check_and_dump(
+        &dir,
+        r#"
+locus Worker {
+    params { n: Int = 0; }
+    fn run_job() { self.n = self.n + 1; }
+}
+group probes = { MissingWorker } may_be_empty;
+group workers = { Worker };
+main locus App {
+    params { w: Worker = Worker { }; }
+    claims {
+        isolation: forbid reaches(probes, workers);
+    }
+    run() { self.w.run_job(); }
+}
+fn main() { App { }; }
+"#,
+    );
+    assert!(
+        stderr.contains("MissingWorker"),
+        "fixture premise: the unknown member is still an error:\n{}",
+        stderr
+    );
+    assert!(
+        issues(&artifact).iter().any(|m| m.contains("MissingWorker")),
+        "the artifact must carry the selection issue: {:?}",
+        issues(&artifact)
+    );
+    assert_ne!(
+        law_row(&artifact, "isolation")["verdict"], "holds",
+        "`may_be_empty` turned a misspelled member into vacuous truth"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Review round 2: a PARTIALLY resolved group is not a valid
+/// domain. One member survives, so the group is non-empty in the
+/// model — but the law was authored over both, and judging it over
+/// the surviving subset answers a question nobody asked.
+#[test]
+fn a_partly_resolved_group_is_not_judged_over_the_subset() {
+    let dir = workdir("partial");
+    let (stderr, artifact) = check_and_dump(
+        &dir,
+        r#"
+locus Worker {
+    params { n: Int = 0; }
+    fn run_job() { self.n = self.n + 1; }
+}
+locus Sink {
+    params { n: Int = 0; }
+    fn take() { self.n = self.n + 1; }
+}
+group probes = { Worker, MissingWorker };
+group sinks = { Sink };
+main locus App {
+    params { w: Worker = Worker { }; s: Sink = Sink { }; }
+    claims {
+        isolation: forbid reaches(probes, sinks);
+    }
+    run() { self.w.run_job(); self.s.take(); }
+}
+fn main() { App { }; }
+"#,
+    );
+    assert!(
+        stderr.contains("MissingWorker"),
+        "fixture premise: the unknown member is reported:\n{}",
+        stderr
+    );
+    // Premise: the surviving member makes the group NON-empty in
+    // the model, which is exactly why a member-count guard passed
+    // it through.
+    assert!(
+        issues(&artifact).iter().any(|m| m.contains("MissingWorker")),
+        "the artifact must carry the selection issue: {:?}",
+        issues(&artifact)
+    );
+    assert_eq!(
+        law_row(&artifact, "isolation")["verdict"], "invalid",
+        "the law was judged over the resolved subset instead of \
+         being refused with its domain"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Review round 2: a name declared twice is judged against neither
+/// definition.
+///
+/// Selection keeps the FIRST declaration and reports the duplicate;
+/// the model builder inserts declarations into a map, so the LAST
+/// one wins. A law referencing that name was therefore selected in
+/// one context and judged in another — two answers to one question,
+/// one layer below the one this change closes.
+#[test]
+fn a_duplicated_group_is_judged_against_neither_definition() {
+    let dir = workdir("dup");
+    let (stderr, artifact) = check_and_dump(
+        &dir,
+        r#"
+locus Worker {
+    params { n: Int = 0; }
+    fn run_job() { self.n = self.n + 1; }
+}
+locus Sink {
+    params { n: Int = 0; }
+    fn take() { self.n = self.n + 1; }
+}
+group probes = { Worker };
+group probes = { Sink };
+group sinks = { Sink };
+main locus App {
+    params { w: Worker = Worker { }; s: Sink = Sink { }; }
+    claims {
+        isolation: forbid reaches(probes, sinks);
+    }
+    run() { self.w.run_job(); self.s.take(); }
+}
+fn main() { App { }; }
+"#,
+    );
+    assert!(
+        stderr.contains("declared more than once"),
+        "fixture premise: the duplicate is reported:\n{}",
+        stderr
+    );
+    assert!(
+        issues(&artifact).iter().any(|m| m.contains("declared more than once")),
+        "the artifact must carry the duplicate-declaration issue: {:?}",
+        issues(&artifact)
+    );
+    assert_eq!(
+        law_row(&artifact, "isolation")["verdict"], "invalid",
+        "the law was judged against one of two definitions the \
+         compiler refused to choose between"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Review round 3: `avoiding` is a domain too.
+///
+/// The gate's members become the MASK that removes paths from the
+/// walk, so a partially-resolved gate masks with whatever members
+/// survived — and the claim gets proved by a subset of the gate the
+/// author wrote. Here `Gate` masks the only path from `sources` to
+/// `targets`; with `MissingGate` unresolved and the status ignored,
+/// the walk finds nothing and the law reads as holding.
+#[test]
+fn a_refused_avoiding_gate_refuses_the_law() {
+    let dir = workdir("avoiding");
+    let (stderr, artifact) = check_and_dump(
+        &dir,
+        r#"
+locus Target {
+    params { n: Int = 0; }
+    fn stop() { self.n = self.n + 1; }
+}
+locus Gate {
+    params { target: Target = Target { }; }
+    fn hop() { self.target.stop(); }
+}
+locus Source {
+    params { gate: Gate = Gate { }; }
+    fn go() { self.gate.hop(); }
+}
+group sources = { Source };
+group targets = { Target };
+group mask = { Gate, MissingGate };
+main locus App {
+    params { source: Source = Source { }; }
+    claims {
+        isolation: forbid reaches(sources, targets) avoiding mask;
+    }
+    run() { self.source.go(); }
+}
+fn main() { App { }; }
+"#,
+    );
+    assert!(
+        stderr.contains("MissingGate"),
+        "fixture premise: the unresolved gate member is reported:\n{}",
+        stderr
+    );
+    assert!(
+        issues(&artifact).iter().any(|m| m.contains("MissingGate")),
+        "the artifact must carry the selection issue: {:?}",
+        issues(&artifact)
+    );
+    assert_eq!(
+        law_row(&artifact, "isolation")["verdict"], "invalid",
+        "the law was proved against a mask built from the members \
+         that happened to resolve"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

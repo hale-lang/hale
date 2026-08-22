@@ -96,8 +96,22 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
                     hale_model::RelationSet::EFFECTS,
                 )
             });
-        let verdict_ok =
-            o.result == c.result || attributed_carveout;
+        // Change-9 review divergence: a law quantifying over a
+        // group that law SELECTION refused — an unknown member, or
+        // an empty group that never declared `may_be_empty` — is
+        // Invalid, where the evaluator held vacuously over the
+        // empty set. The refusal is the program's; a verdict of
+        // `holds` over a domain the compiler rejected has no
+        // witness and describes no program.
+        let refused_domain_carveout = c.result == Verdict::Invalid
+            && o.result != Verdict::Invalid
+            && table
+                .group_selection
+                .values()
+                .any(|st| !st.is_judgable());
+        let verdict_ok = o.result == c.result
+            || attributed_carveout
+            || refused_domain_carveout;
         if o.name != c.name
             || o.form != c.form
             || !verdict_ok

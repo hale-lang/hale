@@ -399,6 +399,70 @@ pub struct ClaimRow {
 pub struct LoweringIssue {
     pub message: String,
     pub provenance: ProvenanceId,
+    /// Which family's row this issue prevented, when one owns it —
+    /// `None` for table-level LAW SELECTION (an unknown or cyclic
+    /// constitution, a name declared twice, a group that resolves
+    /// to nothing), which belongs to no single family.
+    ///
+    /// GH #476 Change 9: the two consumers of this table report
+    /// different subsets, and they must not guess. The artifact
+    /// carries every issue; the CHECK path reports only the ones no
+    /// other engine already owns — law selection is its own
+    /// authority, while an annotation-surface issue (an undeclared
+    /// effect class, say) is reported by the effects engine, and
+    /// emitting it here too would put the same message on screen
+    /// twice.
+    pub family: Option<JudgmentFamily>,
+}
+
+/// What LAW SELECTION concluded about one group declaration.
+///
+/// GH #476 Change 9, review round 2: this is carried, not inferred.
+/// The judgment previously reconstructed "did selection accept this
+/// group?" from the model's member count, and that predicate is not
+/// the same question. A group whose member is misspelled resolves to
+/// nothing, so `{ MissingWorker } may_be_empty` looked
+/// intentionally empty; `{ Worker, MissingWorker }` looked resolved
+/// because one member survived; and a name declared twice looked
+/// fine because the model keeps the LAST declaration while selection
+/// keeps the first. Each of those judges a law against a domain
+/// selection refused — the same two-answers defect the change set
+/// out to close, one layer down.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum GroupSelection {
+    /// Every selector resolved and the group has members.
+    Resolved,
+    /// Every selector resolved, the group is empty, and it declared
+    /// `may_be_empty` — the author's stated intent, and the ONLY
+    /// case where a law over an empty domain may hold vacuously.
+    IntentionallyEmpty,
+    /// At least one selector named something that does not exist.
+    /// `may_be_empty` does not rescue this: it authorizes an
+    /// intentionally empty group, not a misspelled member.
+    SelectorFailed,
+    /// The declaration itself was refused — declared more than once,
+    /// or empty without declaring it may be.
+    Refused,
+}
+
+impl GroupSelection {
+    /// May a law quantifying over this group be judged at all?
+    pub fn is_judgable(self) -> bool {
+        matches!(
+            self,
+            GroupSelection::Resolved
+                | GroupSelection::IntentionallyEmpty
+        )
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GroupSelection::Resolved => "resolved",
+            GroupSelection::IntentionallyEmpty => "intentionally_empty",
+            GroupSelection::SelectorFailed => "selector_failed",
+            GroupSelection::Refused => "refused",
+        }
+    }
 }
 
 /// The lowered law table for one application (or one plan).
@@ -407,6 +471,12 @@ pub struct ClaimIrTable {
     pub rows: Vec<ClaimRow>,
     /// Law-selection invalidity (see [`LoweringIssue`]).
     pub issues: Vec<LoweringIssue>,
+    /// What selection concluded about each declared group, by RAW
+    /// group name — the identity selection itself keys on. A law
+    /// referencing a group that is not judgable is `Invalid`; see
+    /// [`GroupSelection`].
+    pub group_selection:
+        std::collections::BTreeMap<String, GroupSelection>,
     /// Row provenance — its OWN table (the laws are judged WITH the
     /// model, not stored in it; sharing the model's interner would
     /// force the lowering to mutate a finished model).
@@ -416,7 +486,7 @@ pub struct ClaimIrTable {
 /// The judgment family that owns a lowered row — the unit at which
 /// Change-5 migration, artifact adequacy, and the corpus
 /// differentials are organized (GH #476 Change 6).
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum JudgmentFamily {
     /// `forbid reaches` (Change 5a).
     Reachability,

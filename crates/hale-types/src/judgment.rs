@@ -2,14 +2,19 @@
 //! `ClaimIr` × `ApplicationModel`.
 //!
 //! Family-by-family migration of the claim evaluators onto the
-//! canonical model. Each family lands with DIAGNOSTICS PARITY —
-//! the same public spelling, spans, and related notes the
-//! authoritative evaluator emits, held byte-equal by a permanent
-//! corpus differential — plus negative controls proving the engine
-//! reads the model relations it claims to (dropping a family's
-//! rows must change its verdicts). The old evaluators in
-//! `claims.rs` stay live and authoritative until Change 9 removes
-//! the duplicate authorities.
+//! canonical model. Each family landed with DIAGNOSTICS PARITY —
+//! the same public spelling, spans, and related notes the old
+//! evaluator emitted, held byte-equal by a permanent corpus
+//! differential — plus negative controls proving the engine reads
+//! the model relations it claims to (dropping a family's rows must
+//! change its verdicts).
+//!
+//! Change 9 finished it: these engines ARE the authority now, for
+//! `hale check` (via [`claim_law_diags`]) as well as for the
+//! artifact. The evaluator in `claims.rs` keeps law SELECTION —
+//! which laws exist at all — and is otherwise a test oracle with no
+//! production callers, enforced by
+//! `tests/legacy_oracle_is_test_only.rs`.
 //!
 //! 5a: reachability (`forbid reaches`) + holes. The walk reuses
 //! `model_graph::search` with a two-kind vertex: user functions
@@ -200,6 +205,38 @@ fn span_of(
 /// pre-pass diagnostics (duplicate claim names — the evaluator
 /// emits them before any validation or evaluation) and the judged
 /// rows.
+/// May a law quantifying over this group be judged at all?
+///
+/// The answer is CARRIED from law selection
+/// ([`hale_model::GroupSelection`]), never re-derived here. The
+/// first version of this guard asked the model "does the group have
+/// members, and did it declare `may_be_empty`?", and that is a
+/// different question with three wrong answers: a group whose only
+/// member is misspelled resolves to nothing, so `{ Missing }
+/// may_be_empty` read as intentionally empty; `{ Worker, Missing }`
+/// read as resolved because one member survived, and the law was
+/// judged over a subset of the domain the author wrote; and a name
+/// declared twice read as fine, while the model keeps the LAST
+/// declaration and selection keeps the first — so the law was
+/// judged against a definition selection had discarded.
+///
+/// No diagnostic is emitted at the refusal: selection owns the
+/// message. What this decides is only whether a VERDICT may be
+/// recorded, and over a refused domain the honest answer is
+/// `Invalid` — there is no witness and no program it describes.
+fn domain_is_judgable(
+    table: &ClaimIrTable,
+    gref: &hale_model::GroupRef,
+) -> bool {
+    match table.group_selection.get(&gref.name.raw) {
+        Some(status) => status.is_judgable(),
+        // A group selection never saw at all: the reference is
+        // unresolved, which the per-family validation already
+        // reports and refuses.
+        None => true,
+    }
+}
+
 pub fn judge_forbid_reaches(
     table: &ClaimIrTable,
     model: &ApplicationModel,
@@ -708,6 +745,29 @@ pub fn judge_forbid_reaches(
             ));
             true
         };
+        // EVERY group operand, not just the endpoints. `avoiding`
+        // is a domain too: its members become the mask that removes
+        // paths from the walk, so a partially-resolved gate masks
+        // with the members that happened to survive and the claim
+        // can be proved by a subset of the gate the author wrote.
+        // Checked here — after validation, so the shape diagnostics
+        // still fire — and before roots, mask, or any verdict is
+        // derived from a refused group (review round 3).
+        if !domain_is_judgable(table, src_ref)
+            || matches!(dst, SetIr::Group(g)
+                if !domain_is_judgable(table, g))
+            || avoiding
+                .as_ref()
+                .is_some_and(|a| !domain_is_judgable(table, a))
+        {
+            out.push(Judged {
+                ordinal: row.ordinal,
+                verdict: Verdict::Invalid,
+                diags,
+                foreign: Vec::new(),
+            });
+            continue;
+        }
         if vacuous(src_gid, src_ref, "source", &mut diags) {
             out.push(Judged {
                 ordinal: row.ordinal,
@@ -1766,6 +1826,43 @@ pub fn judge_only_edges(
                 ok = false;
             }
         }
+        // …and unknown GRANT topics. A grant names the reviewable
+        // declaration that admits an edge, so a grant naming
+        // nothing is an invalid law, not a law with one fewer
+        // grant — silently dropping it would evaluate a WEAKER
+        // claim than the one written and report its violations as
+        // if the author had chosen them. (GH #476 Change 9: the
+        // evaluator validated this and the engine did not; the
+        // corpus differential could not see it, because the
+        // fixture that covers it is a `format!` template the
+        // corpus provider skips.)
+        let topic_names: Vec<&str> =
+            e.topics.iter().map(|t| t.display.as_str()).collect();
+        for g in grants {
+            if g.topic.topic.is_some() {
+                continue;
+            }
+            let mut near: Vec<&&str> = topic_names
+                .iter()
+                .filter(|n| {
+                    crate::effects::close(n, &g.topic.name.raw)
+                })
+                .collect();
+            near.sort();
+            let hint = match near.first() {
+                Some(n) => format!(" Did you mean `{}`?", n),
+                None => String::new(),
+            };
+            diags.push(Diag::ty(
+                claim_span(g.topic.provenance),
+                format!(
+                    "claim `{}` names topic `{}`, which is never \
+                     declared.{}",
+                    row.name, g.topic.name.raw, hint
+                ),
+            ));
+            ok = false;
+        }
         if !ok {
             out.push(Judged {
                 ordinal: row.ordinal,
@@ -1777,6 +1874,17 @@ pub fn judge_only_edges(
         }
         let (src_gid, dst_gid) =
             (src.group.unwrap(), dst.group.unwrap());
+        if !domain_is_judgable(table, src)
+            || !domain_is_judgable(table, dst)
+        {
+            out.push(Judged {
+                ordinal: row.ordinal,
+                verdict: Verdict::Invalid,
+                diags,
+                foreign: Vec::new(),
+            });
+            continue;
+        }
         // Projection vacuity, source then target.
         let decl_count = |g: GroupId| {
             r.group_members.iter().filter(|gm| gm.group == g).count()
@@ -2199,6 +2307,7 @@ pub fn judge_endpoints(
     model: &ApplicationModel,
     source_bases: &[u32],
 ) -> Vec<Judged> {
+    let mut refused_ordinals: BTreeSet<u32> = BTreeSet::new();
     let e = &model.entities;
     let r = &model.relations;
     let claim_span = |pid: ProvenanceId| -> Span {
@@ -2315,6 +2424,25 @@ pub fn judge_endpoints(
     for row in &table.rows {
         let mut diags: Vec<Diag> = Vec::new();
         let row_span = claim_span(row.provenance);
+        // A domain law selection already refused holds nothing —
+        // see `empty_refused_domain`.
+        let refused_domain = match &row.law {
+            ClaimIr::RequireEndpoint { group, .. }
+            | ClaimIr::RequireSealed { group }
+            | ClaimIr::Cover { group, .. } => {
+                !domain_is_judgable(table, group)
+            }
+            _ => false,
+        };
+        // NB: the refusal does not short-circuit the arm. Its
+        // validation diagnostics are the evaluator's and must still
+        // be emitted — what a refused domain forbids is a VERDICT,
+        // so the arm runs and every verdict it produced is forced
+        // after the loop (arms `continue` from several points, so
+        // the rewrite cannot live at the bottom of the body).
+        if refused_domain {
+            refused_ordinals.insert(row.ordinal);
+        }
         // Shared validation helpers over ClaimIr refs.
         let group_decl_names: Vec<&str> =
             e.groups.iter().map(|g| g.display.as_str()).collect();
@@ -2940,6 +3068,11 @@ pub fn judge_endpoints(
         }
         let _ = (&fn_raw, &fn_disp, &fnkey_order);
     }
+    for j in out.iter_mut() {
+        if refused_ordinals.contains(&j.ordinal) {
+            j.verdict = Verdict::Invalid;
+        }
+    }
     out
 }
 
@@ -2953,6 +3086,7 @@ pub fn judge_bound(
     model: &ApplicationModel,
     source_bases: &[u32],
 ) -> Vec<Judged> {
+    let mut refused_ordinals: BTreeSet<u32> = BTreeSet::new();
     let e = &model.entities;
     let r = &model.relations;
     let claim_span = |pid: ProvenanceId| -> Span {
@@ -3190,6 +3324,11 @@ pub fn judge_bound(
         };
         let mut diags: Vec<Diag> = Vec::new();
         let row_span = claim_span(row.provenance);
+        // As in the endpoint family: the arm still runs and still
+        // reports, and only the verdict is refused.
+        if !domain_is_judgable(table, from) {
+            refused_ordinals.insert(row.ordinal);
+        }
         // ---- validation: group + class rules ----
         let group_decl_names: Vec<&str> =
             e.groups.iter().map(|g| g.display.as_str()).collect();
@@ -3966,6 +4105,11 @@ pub fn judge_bound(
             foreign: Vec::new(),
         });
     }
+    for j in out.iter_mut() {
+        if refused_ordinals.contains(&j.ordinal) {
+            j.verdict = Verdict::Invalid;
+        }
+    }
     out
 }
 
@@ -4246,4 +4390,107 @@ fn severity(v: Verdict) -> u8 {
         Verdict::Violated => 2,
         Verdict::Invalid => 3,
     }
+}
+
+/// GH #476 Change 9 — the CHECK path's claim diagnostics, from the
+/// same judgment the artifact projects.
+///
+/// `hale check` used to call a second evaluator (`claims.rs`) that
+/// re-derived these four families from source, in parallel with the
+/// engines here deriving them from the model. Two authorities for
+/// one question is the defect this epic exists to remove: the
+/// corpus differentials could only ever hold them equal, never make
+/// them the same answer. This is the same answer.
+///
+/// Scope is the MIGRATED, self-judged families — reachability,
+/// boundary, endpoint, bound. Certificates are deliberately absent:
+/// `judge_certificates` judges rows against evidence the effects
+/// engine produced, and that engine emits its own diagnostics in
+/// check; re-emitting them here would duplicate, which is the thing
+/// being deleted. `Unmigrated` rows keep their existing single
+/// authority (`frontier`, `quantitative`, `budget_check`).
+pub fn claim_law_diags(bundle: &crate::symbol::Bundle<'_>) -> Vec<Diag> {
+    // The epic's demand rule: a program that swears to nothing has
+    // nothing to judge, and must not pay for a model derivation.
+    // The scan is structural and AST-cheap — no resolution, no
+    // summary — so the no-claims path (the LSP's) stays what it was.
+    if !has_claim_surface(bundle) {
+        return Vec::new();
+    }
+    let model = crate::model_builder::derive_application_model(bundle);
+    let table = crate::claim_lowering::lower_claims(bundle, &model);
+    // Law-SELECTION invalidity (unknown/cyclic constitution, illegal
+    // adoption, collisions) produced no row to judge, so it must be
+    // reported from the table itself or it disappears between
+    // checking and the artifact.
+    let source_bases: Vec<u32> =
+        bundle.sources.iter().map(|f| f.base).collect();
+    let mut out: Vec<Diag> = Vec::new();
+    // Law-SELECTION issues are NOT emitted here: `claims::
+    // selection_diags` is their one authority (they are questions
+    // about which laws exist, not about what a law says), and the
+    // check path calls it alongside this. The table still carries
+    // them for the artifact, whose law account must show every
+    // issue in one document.
+    let evidence = crate::evidence::derive_certificate_evidence(
+        bundle, &table, &model,
+    );
+    let (pre, judged) = crate::topology_projection::judge_all(
+        &table,
+        &model,
+        &evidence,
+        &source_bases,
+    );
+    // Table-level pre-pass first (duplicate claim names), then each
+    // row in AUTHORED order — the evaluator's order, which the
+    // diagnostics differential holds byte-equal.
+    out.extend(pre);
+    for row in &table.rows {
+        if !matches!(
+            row.family(),
+            hale_model::JudgmentFamily::Reachability
+                | hale_model::JudgmentFamily::Boundary
+                | hale_model::JudgmentFamily::Endpoint
+                | hale_model::JudgmentFamily::Bound
+        ) {
+            continue;
+        }
+        if let Some(j) = judged.get(&row.ordinal) {
+            out.extend(j.diags.iter().cloned());
+        }
+    }
+    crate::stdlib_bodies::demangle_imports(&mut out, &bundle.import_renames);
+    // Law diagnostics are `Claim`-kinded at the source, exactly as
+    // the evaluator emitted them. `check` re-kinds its whole law
+    // block defensively; a consumer that reads this function
+    // directly (the LSP, a test) gets the right kind without it.
+    for d in &mut out {
+        if d.kind == hale_syntax::error::DiagKind::Type {
+            d.kind = hale_syntax::error::DiagKind::Claim;
+        }
+    }
+    out
+}
+
+/// Does this bundle declare any claim the judgment engines would
+/// judge — a `claims { }` block (world tier or library tier) or a
+/// `constitution` to adopt one from?
+///
+/// Annotations are deliberately not a claim surface here: their
+/// rows are the certificate family, whose diagnostics belong to the
+/// effects engine (see [`claim_law_diags`]).
+fn has_claim_surface(bundle: &crate::symbol::Bundle<'_>) -> bool {
+    use hale_syntax::ast::{LocusMember, TopDecl};
+    fn walk(items: &[TopDecl]) -> bool {
+        items.iter().any(|item| match item {
+            TopDecl::Claims(_) | TopDecl::Constitution(_) => true,
+            TopDecl::Locus(l) => l
+                .members
+                .iter()
+                .any(|m| matches!(m, LocusMember::Claims(_))),
+            TopDecl::Module(m) => walk(&m.items),
+            _ => false,
+        })
+    }
+    bundle.programs.values().any(|p| walk(&p.items))
 }

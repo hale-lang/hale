@@ -571,7 +571,74 @@ documented places (a certificate naming a cyclically-defined or
 undeclared effect class is `invalid`, never a vacuous `holds`;
 `require attributed` over an unanalyzable body is `uncertified`,
 never a fail-open `holds`), and the document `verdict` follows
-the machine. A **provenance**
+the machine.
+
+**One authority (GH #476 Change 9).** Those verdicts are also what
+`hale check` reports. Until Change 9 the checker ran a second
+evaluator that re-derived reachability, boundary, endpoint and
+bound from source while the artifact read the judgment engines over
+the canonical model; a corpus differential could hold the two
+equal, but only one of them could be right about a program the
+differential did not contain. The checker now judges over the
+model, so a document and the compiler that produced it cannot
+disagree about a law. Two consequences are user-visible:
+
+  * the stricter rules above now apply at check time too — a
+    `require attributed` claim over a body with an indirect or
+    opaque call is `uncertified`, and a build that passed on the
+    old fail-open now fails;
+  * an `only edges` grant naming an undeclared topic is refused as
+    an invalid law (with a did-you-mean hint) instead of being
+    silently dropped, which had the effect of evaluating a weaker
+    claim than the one written.
+
+What the claim surface still owns is law SELECTION — which laws
+exist at all: clause enumeration, constitution adoption and
+identity, group resolution, the library/world tier rule. Selection
+is not judgment, and it has exactly one implementation, consumed by
+BOTH the checker and the artifact lowering: a selection refusal
+appears in the document's law-issue account, so the two cannot
+report opposite answers about one program.
+
+Selection's verdict on each group declaration is CARRIED with the
+lowered laws, in four states — resolved; intentionally empty
+(`may_be_empty` on a group whose every selector resolved); selector
+failed; declaration refused (declared twice, or empty without
+saying so). Every GROUP OPERAND is a domain — the source and destination sets,
+`only edges`' two ends, `bound`'s `from`, an endpoint family's
+group, and `forbid reaches`' `avoiding` gate, whose members become
+the mask that removes paths from the walk. A law quantifying over a
+group in either invalid state, in ANY of those positions, is
+**invalid**, never a vacuous `holds`: a verdict over a domain the
+compiler rejected has no witness and describes no program. Only the
+intentionally-empty state holds vacuously — that is what declaring
+`may_be_empty` is for, and it authorizes an empty group, not a
+misspelled member.
+
+The status is carried rather than re-derived because the two are not
+the same question. An unresolved selector leaves nothing behind in
+the model, so a member-count test reads `{ Missing } may_be_empty`
+as intentional, `{ Worker, Missing }` as whole, and a name declared
+twice as fine — while the model keeps the LAST declaration and
+selection keeps the first. Each judges a law against a domain
+selection refused.
+
+Judgment runs only over a program that denotes a valid model. The
+model is a description of a checked program, and some
+parser-valid, checker-invalid programs derive deliberately unlawful
+models (a key filter on an unkeyed topic mirrors the checker's own
+refusal). The checker therefore judges claims only once the
+resolver and the type checker agree; claim errors themselves do not
+gate it, since a program whose only failures are broken laws still
+has a valid model, and hiding the rest of its laws behind one
+failure would be its own fail-open.
+
+The artifact's own identity is pinned by a committed baseline of
+`origin -> shape_hash` over the corpus rather than by a rival
+serializer: a model change that would move an artifact hash — and
+with it the replay admission of every existing recording of that
+program — fails the baseline gate with a regenerate hint, so the
+move is a decision in a diff. A **provenance**
 section carries per-edge and per-decl source spans as
 bundle-global byte offsets; it is excluded from the hash on
 purpose — moving code must not change the shape identity.

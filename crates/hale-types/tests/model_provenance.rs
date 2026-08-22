@@ -167,7 +167,7 @@ fn a_stdlib_interior_crossing_emits_no_foreign_span() {
         }
         fn main() {
             let r = std::http::Router { };
-            r.get("/", Hello { });
+            r.add("GET", "/", Hello { });
             let req = std::http::Request {
                 method: "GET", path: "/", body: ""
             };

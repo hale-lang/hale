@@ -1,6 +1,25 @@
 //! GH #382 — claims: named, bundle-level sentences over the program
 //! graph.
 //!
+//! ## What this module is, after GH #476 Change 9
+//!
+//! LAW SELECTION — which laws exist at all. Clause enumeration,
+//! constitution adoption and its identities, group resolution, the
+//! library/world tier rule: questions about the claim SURFACE.
+//! `selection_diags` and `constitution_identities` are the
+//! production entry points, and the model builder calls a handful
+//! of vocabulary helpers here.
+//!
+//! It no longer judges. The evaluator below — `claims_report`,
+//! `validate_claim`, every `evaluate_*` — has no production caller:
+//! verdicts come from `judgment.rs` over the canonical model, for
+//! `hale check` and the artifact alike, which is what makes them one
+//! answer instead of two that a differential could only ever hold
+//! equal. What the evaluator still does is serve as the comparison
+//! arm of three corpus differentials, and that role is enforced by
+//! `tests/legacy_oracle_is_test_only.rs` so it cannot drift back
+//! into being an authority.
+//!
 //! Every structural proof the compiler performs is one judgment form:
 //! over a graph derived from source, evaluate a property, and on
 //! failure produce a witness. This module makes that layer a
@@ -50,6 +69,7 @@ use crate::alloc_summary::{AllocSummary, Callee, EffectSiteKind, FnKey};
 use crate::bus_graph::BusGraph;
 use crate::model_graph;
 use crate::verdict::Verdict;
+use hale_model::GroupSelection;
 use crate::callgraph;
 use crate::effects::{
     close, declared_of, defs_of, effect_names_of, ffi_names,
@@ -85,6 +105,87 @@ pub fn claims_diags(
     claims_report(programs, graph, import_renames).0
 }
 
+/// THE law-selection result: the clauses selected, and every
+/// diagnostic selection produced.
+///
+/// GH #476 Change 9 review: `selection_diags` and `lower_claims`
+/// were BOTH doing selection, and doing different amounts of it.
+/// The lowering called `enumerate_clauses` alone, so it saw
+/// constitution problems but not group resolution — an unknown
+/// group member failed `hale check` while the artifact recorded no
+/// issue for it and could serialize the dependent law as `holds`.
+/// The checker and the document then gave opposite machine-readable
+/// answers about the same program, which is worse than the two
+/// implementations this change set out to delete.
+///
+/// One result, two consumers. The claim rows come from `universe`;
+/// the issues are `diags`, which cover clause enumeration AND group
+/// resolution AND vacuity.
+pub(crate) struct Selection<'a> {
+    pub universe: ClauseUniverse<'a>,
+    pub diags: Vec<Diag>,
+    /// Per-group outcome, by RAW name — carried, never re-derived.
+    pub groups: BTreeMap<String, GroupSelection>,
+}
+
+pub(crate) fn select<'a>(
+    programs: &[&'a Program],
+    graph: &BusGraph,
+    import_renames: &[(Vec<String>, String)],
+) -> Selection<'a> {
+    let universe = enumerate_clauses(programs, import_renames);
+    let (mut diags, _, _, groups) =
+        claims_report_inner(programs, graph, import_renames, true);
+    crate::stdlib_bodies::demangle_imports(&mut diags, import_renames);
+    for d in &mut diags {
+        if d.kind == hale_syntax::error::DiagKind::Type {
+            d.kind = hale_syntax::error::DiagKind::Claim;
+        }
+    }
+    Selection { universe, diags, groups }
+}
+
+/// The identities of the constitutions actually adopted — GH #409's
+/// normalized-closure digests.
+///
+/// GH #476 Change 9: both consumers (the artifact's constitution
+/// section, `hale fleet`'s matrix) wanted ONLY the identities and
+/// discarded the diagnostics and outcomes that came with them,
+/// which meant every artifact dump ran the whole legacy evaluation
+/// for a value it threw away. Adoption is settled during law
+/// selection, so this stops there.
+pub fn constitution_identities(
+    programs: &[&Program],
+    graph: &BusGraph,
+    import_renames: &[(Vec<String>, String)],
+) -> Adoption {
+    let (_d, _o, adoption, _groups) =
+        claims_report_inner(programs, graph, import_renames, true);
+    adoption_identities(programs, adoption)
+}
+
+/// GH #476 Change 9 — LAW SELECTION only: which laws exist at all.
+///
+/// Clause enumeration (constitutions: unknown, cyclic, illegally
+/// adopted, colliding), group resolution (a member naming nothing,
+/// a group resolving to nothing without `may_be_empty`), and the
+/// library/world tier rule. These are questions about the claim
+/// SURFACE, and this module is their one authority.
+///
+/// What it deliberately does NOT do is judge. Verdicts — and the
+/// validation diagnostics that precede them — come from the
+/// judgment engines over the canonical model
+/// (`judgment::claim_law_diags`). Before Change 9 both halves lived
+/// here AND in the engines, and `hale check` read this copy while
+/// the artifact read the other.
+pub fn selection_diags(
+    programs: &[&Program],
+    graph: &BusGraph,
+    import_renames: &[(Vec<String>, String)],
+) -> Vec<Diag> {
+    select(programs, graph, import_renames).diags
+}
+
 /// Diagnostics plus per-claim outcomes (the artifact's rows).
 /// Demangles cross-seed symbols in the diagnostics so witnesses name
 /// what the author wrote.
@@ -115,9 +216,19 @@ pub fn claims_report_with_identities(
     graph: &BusGraph,
     import_renames: &[(Vec<String>, String)],
 ) -> (Vec<Diag>, Vec<ClaimOutcome>, Adoption) {
-    let (mut d, o, adoption) =
-        claims_report_inner(programs, graph, import_renames);
+    let (mut d, o, adoption, _groups) =
+        claims_report_inner(programs, graph, import_renames, false);
     crate::stdlib_bodies::demangle_imports(&mut d, import_renames);
+    (d, o, adoption_identities(programs, adoption))
+}
+
+/// Resolve an adoption's names to identities (name + normalized
+/// closure digest). Shared by the full report and by
+/// `constitution_identities`.
+fn adoption_identities(
+    programs: &[&Program],
+    adoption: AdoptionInfo,
+) -> Adoption {
     let mut consts: Vec<&ConstitutionDecl> = Vec::new();
     fn walk<'a>(items: &'a [TopDecl], out: &mut Vec<&'a ConstitutionDecl>) {
         for i in items {
@@ -137,11 +248,10 @@ pub fn claims_report_with_identities(
         name: n.clone(),
         digest: constitution_digest(n, &by_name, &mut Vec::new()),
     };
-    let out = Adoption {
+    Adoption {
         roots: adoption.roots.iter().map(&id_of).collect(),
         closure: adoption.closure.iter().map(&id_of).collect(),
-    };
-    (d, o, out)
+    }
 }
 
 /// The identities an evaluation adopted: the roots it named directly,
@@ -207,8 +317,8 @@ pub fn claims_report(
     graph: &BusGraph,
     import_renames: &[(Vec<String>, String)],
 ) -> (Vec<Diag>, Vec<ClaimOutcome>) {
-    let (mut out, outcomes, _adoption) =
-        claims_report_inner(programs, graph, import_renames);
+    let (mut out, outcomes, _adoption, _groups) =
+        claims_report_inner(programs, graph, import_renames, false);
     crate::stdlib_bodies::demangle_imports(&mut out, import_renames);
     // Mark the whole batch at the one place they all funnel through,
     // rather than at ~30 construction sites. Rendering is unchanged
@@ -786,7 +896,19 @@ fn claims_report_inner(
     programs: &[&Program],
     graph: &BusGraph,
     import_renames: &[(Vec<String>, String)],
-) -> (Vec<Diag>, Vec<ClaimOutcome>, AdoptionInfo) {
+    // GH #476 Change 9: stop after LAW SELECTION — clause
+    // enumeration, group resolution, constitution adoption — and
+    // return before any claim is validated or evaluated. Selection
+    // is this module's remaining authority; the verdicts moved to
+    // the judgment engines over the canonical model, and running
+    // both would put two answers to one question on screen.
+    selection_only: bool,
+) -> (
+    Vec<Diag>,
+    Vec<ClaimOutcome>,
+    AdoptionInfo,
+    BTreeMap<String, GroupSelection>,
+) {
     let ClauseUniverse {
         claims,
         origins,
@@ -797,7 +919,7 @@ fn claims_report_inner(
     } = enumerate_clauses(programs, import_renames);
     let mut diags = diags;
     if group_decls.is_empty() && claims.is_empty() {
-        return (diags, Vec::new(), adoption);
+        return (diags, Vec::new(), adoption, BTreeMap::new());
     }
 
     // ---- decl indexes for member / topic resolution ----
@@ -847,7 +969,18 @@ fn claims_report_inner(
     }
 
     // ---- resolve groups ----
+    //
+    // Each declaration's OUTCOME is recorded as it is decided (GH
+    // #476 Change 9, review round 2). Downstream must not
+    // re-derive "did selection accept this group?" from the model's
+    // member count: an unresolved selector leaves no member behind,
+    // so a misspelled name is indistinguishable from an
+    // intentionally empty group, a partly-resolved group looks
+    // whole, and a duplicated name looks fine while the model keeps
+    // the LAST declaration and selection keeps the first.
     let mut groups: BTreeMap<String, ResolvedGroup> = BTreeMap::new();
+    let mut group_selection: BTreeMap<String, GroupSelection> =
+        BTreeMap::new();
     for g in &group_decls {
         if groups.contains_key(&g.name.name) {
             diags.push(Diag::ty(
@@ -857,6 +990,10 @@ fn claims_report_inner(
                     g.name.name
                 ),
             ));
+            // The NAME is refused, whichever declaration a later
+            // stage happens to keep.
+            group_selection
+                .insert(g.name.name.clone(), GroupSelection::Refused);
             continue;
         }
         let mut rg = ResolvedGroup {
@@ -865,7 +1002,9 @@ fn claims_report_inner(
             loci: BTreeSet::new(),
             free_fns: BTreeSet::new(),
         };
+        let mut selector_failed = false;
         for m in &g.members {
+            let before = diags.len();
             resolve_member(
                 m,
                 &locus_names,
@@ -874,6 +1013,10 @@ fn claims_report_inner(
                 &mut rg,
                 &mut diags,
             );
+            // `resolve_member` reports an unresolvable selector and
+            // contributes nothing — its failure is otherwise
+            // invisible by construction.
+            selector_failed |= diags.len() > before;
         }
         // Vacuity: judged at the DECL grain. A `forbid` over an
         // empty domain holds trivially — fail-open — so an empty
@@ -890,11 +1033,30 @@ fn claims_report_inner(
                 ),
             ));
         }
+        let status = if selector_failed {
+            // `may_be_empty` authorizes an intentionally empty
+            // group; it does not turn a misspelled member into
+            // intent.
+            GroupSelection::SelectorFailed
+        } else if rg.decl_count == 0 {
+            if rg.may_be_empty {
+                GroupSelection::IntentionallyEmpty
+            } else {
+                GroupSelection::Refused
+            }
+        } else {
+            GroupSelection::Resolved
+        };
+        group_selection.insert(g.name.name.clone(), status);
         groups.insert(g.name.name.clone(), rg);
     }
 
     if claims.is_empty() {
-        return (diags, Vec::new(), adoption);
+        return (diags, Vec::new(), adoption, group_selection);
+    }
+
+    if selection_only {
+        return (diags, Vec::new(), adoption, group_selection);
     }
 
     // ---- claim names are the contract-of-record ----
@@ -976,7 +1138,7 @@ fn claims_report_inner(
             source: origins.get(&c.name.name).cloned(),
         });
     }
-    (diags, outcomes, adoption)
+    (diags, outcomes, adoption, group_selection)
 }
 
 // ===================== validation =================================

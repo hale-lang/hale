@@ -145,7 +145,8 @@ pub use application::{
 pub use capability::Capabilities;
 pub use claim_ir::{
     bus_ref_matches, bus_topic_tail, is_builtin_effect_class, ClaimIr, ClaimIrError, ClaimIrTable, ClaimOrigin, ClaimRow, JudgmentFamily,
-    CountCmpIr, EffectClassRef, GrantIr, GroupRef, LoweringIssue,
+    CountCmpIr, EffectClassRef, GrantIr, GroupRef, GroupSelection,
+    LoweringIssue,
     NameRef, PhaseIrRef, QuantDimIr, SeedIrRef, SetIr,
     BusSelector, TopicIrRef,
 };

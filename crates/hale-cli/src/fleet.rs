@@ -1609,6 +1609,7 @@ pub fn lower_plan_claims(
             // is not one law. Structured invalidity, not a split.
             let pid = prov(&mut table, &c.name);
             table.issues.push(hale_model::LoweringIssue {
+                family: Some(hale_model::JudgmentFamily::Fleet),
                 message: format!(
                     "plan claim `{}` sets {} verbs — a claim is ONE \
                      sentence with one verdict",

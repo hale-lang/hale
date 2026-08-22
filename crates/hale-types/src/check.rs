@@ -473,11 +473,25 @@ pub fn check_bundle(
             // `forbid reaches` evaluation with countermodel
             // witnesses. Errors, gating check from day one: an
             // advisory claim reads as law and doesn't bind.
-            diags.extend(crate::claims::claims_diags(
+            // GH #476 Change 9: ONE authority per question. Law
+            // SELECTION (which laws exist: constitutions, group
+            // resolution, the tier rule) stays with the claim
+            // surface; the VERDICTS come from the judgment engines
+            // over the canonical model — the same judgment the
+            // artifact projects, instead of a second evaluator
+            // that re-derived the same four families from source.
+            // `tests/claim_diags_differential.rs` held the two
+            // byte-equal over the corpus through the cutover.
+            diags.extend(crate::claims::selection_diags(
                 &programs_vec,
                 &graph,
                 &bundle.import_renames,
             ));
+            // The VERDICTS are appended by `check_bundle_opts`,
+            // after this whole pass establishes that the program
+            // denotes a valid model — see the note there. Selection
+            // stays here: it reads the claim surface directly and is
+            // meaningful even for a program that does not typecheck.
             diags.extend(crate::frontier::supervised_diags(&programs_vec));
             diags.extend(crate::frontier::secret_taint_diags(&programs_vec));
             diags.extend(crate::quantitative::quantitative_diags(

@@ -41,18 +41,31 @@ main locus App {
 fn main() { App { }; }
 "#;
 
+/// No claims, no model. The epic's demand rule survives Change 9:
+/// a program that swears to nothing gives `hale check` nothing to
+/// judge, so the diagnostics-only path must not build the model —
+/// this is the LSP's cost contract, and "cached" must not quietly
+/// become "always built".
+///
+/// What DID change at Change 9: a program that carries claims is
+/// now a model consumer in check too. Its verdicts used to come
+/// from a second evaluator that re-derived the same four families
+/// from source while the artifact read the judgment engines; there
+/// is one authority now, and it reads the model.
 #[test]
-fn plain_check_never_builds_the_model() {
+fn check_builds_the_model_only_when_there_are_claims() {
     let dir = workdir("nodemand");
-    let src = dir.join("app.hl");
-    std::fs::write(&src, APP).unwrap();
 
-    // Diagnostics-only check — with CLAIMS present, even: nothing
-    // demands the model until the Change-5 evaluator migration, so
-    // the builder must not run.
+    // A claim-free program: the model must not be derived.
+    let quiet = dir.join("quiet.hl");
+    std::fs::write(
+        &quiet,
+        "locus W { params { n: Int = 0; } fn bump() { self.n = self.n + 1; } }\n         main locus App { params { w: W = W { }; } run() { self.w.bump(); } }\n         fn main() { App { }; }\n",
+    )
+    .unwrap();
     let out = hale()
         .arg("check")
-        .arg(&src)
+        .arg(&quiet)
         .env("HALE_MODEL_TRACE", "1")
         .output()
         .expect("hale check");
@@ -60,14 +73,27 @@ fn plain_check_never_builds_the_model() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
         !err.contains("[hale-model]"),
-        "a no-demand check must not derive the model:\n{}",
+        "a claim-free check must not derive the model:\n{}",
         err
     );
 
-    // The artifact dump path DOES demand it (GH #476 Change 6:
-    // the artifact's law rows are projected from the model). The
-    // demand boundary this canary guards is the diagnostics-only
-    // path above — artifact emission is a legitimate consumer.
+    // The same program WITH a claim: checking it means judging it,
+    // and judging reads the model.
+    let src = dir.join("app.hl");
+    std::fs::write(&src, APP).unwrap();
+    let out = hale()
+        .arg("check")
+        .arg(&src)
+        .env("HALE_MODEL_TRACE", "1")
+        .output()
+        .expect("hale check");
+    assert!(out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("[hale-model]"),
+        "claims are judged over the canonical model (Change 9)"
+    );
+
+    // …as does artifact emission, whose law rows are projected.
     let out = hale()
         .arg("check")
         .arg(&src)

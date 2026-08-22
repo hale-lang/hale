@@ -8,6 +8,118 @@ behavior.
 
 ## Unreleased
 
+### One authority per question (GH #476 Change 9)
+
+The canonical-model epic's last change: the duplicate authorities
+are gone.
+
+**Claim verdicts.** `hale check` reported reachability, boundary,
+endpoint and bound verdicts from an evaluator that re-derived them
+from source, while the artifact reported the same four families from
+the judgment engines over the canonical model. Check now calls the
+judgment engines, so the document and the compiler that produced it
+cannot disagree about a law. The judgment merge that had lived
+inside the artifact projection is extracted as `judge_all` — one
+entry point, two consumers. What stays with the claim surface is law
+SELECTION (which laws exist at all: constitutions, adoption, group
+resolution, the tier rule), which is not judgment and has one
+implementation.
+
+Two user-visible consequences, both fail-closed corrections:
+
+- `require attributed` over a body with an indirect or opaque call
+  is `uncertified` at check time, where the old evaluator fail-OPEN
+  held. A build that passed on that fail-open now fails. The
+  artifact has judged it this way since Change 6 (`semantics` 2).
+- `only edges A -> B { publish Metrix; }` naming an undeclared topic
+  is refused as an invalid law with a did-you-mean hint. It used to
+  drop the grant silently, which evaluated a WEAKER claim than the
+  one written and reported its violations as if the author had
+  chosen them.
+
+Review round 1 (PR #492), three blockers:
+
+- **Selection is one result, consumed twice.** The lowering ran only
+  clause enumeration, so it never saw group resolution: an unknown
+  group member failed `hale check` while the artifact recorded no
+  issue and could serialize the dependent law as `holds` — the
+  checker and the document giving opposite machine-readable answers
+  about one program, which is worse than the two implementations
+  this change set out to delete. Both now consume
+  `claims::select`. A law over a group selection refused is
+  `invalid` rather than vacuously true; `may_be_empty` groups keep
+  holding vacuously, which is what declaring it means.
+
+  Round 2: selection's verdict on each group is CARRIED with the
+  lowered laws (resolved / intentionally empty / selector failed /
+  declaration refused) instead of being re-derived from the model's
+  member count. Those are different questions, and the difference
+  had three exploitable shapes: an unresolved selector leaves no
+  member behind, so `{ Missing } may_be_empty` read as intentional
+  vacuity, `{ Worker, Missing }` read as whole and was judged over
+  the surviving subset, and a name declared twice read as fine while
+  the model keeps the LAST declaration and selection keeps the
+  first.
+
+  Round 3: the guard covers every group OPERAND, not the endpoints
+  only. `avoiding` is a domain too — its members become the mask
+  that removes paths from the walk, so a partially-resolved gate
+  masked with whatever survived and the claim was proved against a
+  subset of the gate the author wrote. A table-driven control now
+  pins all eight group-operand positions across the five families,
+  and asserts its own coverage count so a new operand fails it.
+- **Judgment requires a program that denotes a model.** Check called
+  the judgment whenever a claim surface existed, including on
+  ill-typed programs whose models are deliberately unlawful (a key
+  filter on an unkeyed topic) — a debug-build panic at the builder's
+  own assertion, and in release a walk over relations whose indexing
+  assumes lawfulness. The model half now runs only when the resolver
+  and type checker are clean; claim errors do not gate it. This
+  surfaced a stale stdlib API in a test fixture that had been
+  ill-typed and judged anyway.
+- **Claim spans survive a bundle with no source map.** Claim lowering
+  collapsed unplaceable spans to synthetic records, which every
+  consumer renders at 0..0 — so through the public `check_program`
+  and the LSP, every migrated claim diagnostic anchored at byte zero
+  of the first file. Lowering now keeps the offsets, exactly as the
+  model builder already did, and the LSP installs the source map it
+  has always had.
+
+**The artifact's second serialization.** Change 6 made production
+emit the projection of `ApplicationModel` but kept the legacy
+gathering as the corpus differential's comparison arm — relation
+rows, labels, unknowns, groups, supervision, the whole unhashed
+provenance tail, re-derived from source and thrown away. Deleted
+(-752 lines from `topology.rs`), along with the collectors that fed
+only it. `dump_topology_parts` returns one String.
+
+Artifact identity is now pinned by a committed baseline of
+`origin -> shape_hash` over 1398 corpus programs instead of by a
+rival implementation. A model change that moves an artifact hash —
+re-keying replay admission for every existing recording of that
+program — fails the gate with the moved rows named and a regenerate
+hint, so the move is a decision somebody made rather than one
+noticed later. The emitter also still owes self-consistency: the
+artifact it writes must hash to what the projection says, and its
+emitted model half must BE the projection.
+
+**Demand.** A claim-free program still never derives the model in
+check — the LSP's cost contract. A program WITH claims now does,
+because judging it means reading the model.
+
+`LoweringIssue` gains a `family`, so the artifact (which carries
+every issue) and check (which reports only issues no other engine
+owns) filter coherently instead of guessing from message text.
+`constitution_identities` stops the adoption walk at selection: both
+consumers wanted only the identities and discarded the evaluation
+that came with them.
+
+The old evaluator survives as the comparison arm of three corpus
+differentials — an independent implementation disagreeing is
+evidence a baseline cannot give — with no production callers, a
+boundary enforced by `legacy_oracle_is_test_only.rs` rather than
+documented and hoped for.
+
 ### Deployment consumers: the arrangement + the dispatch plan (GH #476 Change 8)
 
 Review round 1 (PR #491), five blockers plus two identity bugs they

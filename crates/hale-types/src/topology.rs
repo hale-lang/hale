@@ -73,7 +73,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::*;
 
-use crate::alloc_summary::{self, Callee, EffectSiteKind, FnKey};
+use crate::alloc_summary::{self, FnKey};
 use crate::symbol::Bundle;
 
 /// 1.10 (downstream handoff P25, 2026-08-12): `supervision` in the
@@ -176,19 +176,19 @@ pub fn model_shape_hash(bundle: &Bundle<'_>) -> u64 {
 /// Serialize the bundle's model + claim results as the topology
 /// artifact (JSON).
 pub fn dump_topology(bundle: &Bundle<'_>) -> String {
-    dump_topology_parts(bundle).0
+    dump_topology_parts(bundle)
 }
 
-/// The artifact PLUS the legacy model-half string (GH #476
-/// Change 6, review round 1): production emits the PROJECTION of
-/// `ApplicationModel` (`project_model_half` — one semantic
-/// authority); the legacy gathering remains ONLY as the
-/// differential's comparison arm until Change 9 retires it. It
-/// never supplies emitted rows.
+/// The artifact. One authority: every emitted section is a
+/// PROJECTION of `ApplicationModel` (GH #476 Change 6 inverted the
+/// direction; Change 9 deleted the legacy gathering that had stayed
+/// behind as the corpus differential's comparison arm).
+///
+/// Retained under its Change-6 name because the claim/law pipeline
+/// below it is one long function; `dump_topology` is the caller
+/// everything else uses.
 #[doc(hidden)]
-pub fn dump_topology_parts(
-    bundle: &Bundle<'_>,
-) -> (String, String, String) {
+pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
     let programs: Vec<&Program> =
         bundle.programs.values().copied().collect();
     let (top, _resolve_diags) = crate::resolve::build_top_scope(bundle);
@@ -270,61 +270,12 @@ pub fn dump_topology_parts(
         }
     }
 
-    // ---- relations, with weights (#392) ----
-    // A call row's weights: merged over parallel edges between one
-    // (from, to) pair, in the conservative direction (any loop-
-    // nested edge marks the row looped).
-    #[derive(Default)]
-    struct EdgeMeta {
-        looped: bool,
-        unbounded: bool,
-        via_interface: Option<String>,
-    }
-    let mut calls: BTreeMap<(String, String), EdgeMeta> =
-        BTreeMap::new();
-    let mut publishes: BTreeSet<(String, String)> = BTreeSet::new();
-    // Provenance (unhashed): bundle-global byte-offset spans.
-    let mut call_spans: BTreeSet<(String, String, u32, u32)> =
-        BTreeSet::new();
-    let mut publish_spans: BTreeSet<(String, String, u32, u32)> =
-        BTreeSet::new();
-    for (k, fs) in &summary.fns {
-        if !user_key(k) {
-            continue;
-        }
-        for edge in &fs.calls {
-            if let Callee::Resolved(next) = &edge.callee {
-                if user_key(next) {
-                    let m = calls
-                        .entry((fn_name(k), fn_name(next)))
-                        .or_default();
-                    m.looped |= edge.loop_depth > 0;
-                    m.unbounded |= edge.in_unbounded_loop;
-                    if let Some(i) = &edge.via_interface {
-                        m.via_interface = Some(name(i));
-                    }
-                    call_spans.insert((
-                        fn_name(k),
-                        fn_name(next),
-                        edge.span.start.as_usize() as u32,
-                        edge.span.end.as_usize() as u32,
-                    ));
-                }
-            }
-        }
-        for site in &fs.effect_sites {
-            if let EffectSiteKind::Publish(Some(s)) = &site.kind {
-                publishes.insert((fn_name(k), name(&s.text)));
-                publish_spans.insert((
-                    fn_name(k),
-                    name(&s.text),
-                    site.span.start.as_usize() as u32,
-                    site.span.end.as_usize() as u32,
-                ));
-            }
-        }
-    }
-
+    // GH #476 Change 9: the legacy relation gathering (calls,
+    // publishes, subscribes, labels, unknowns, group rows) lived
+    // here and served only the second serialization. Every one of
+    // those sections is now projected from `ApplicationModel`,
+    // which holds the same facts at finer grain — so the gathering
+    // is deleted rather than left running unpublished.
     // ---- through-stdlib contraction (#392) ----
     // The evaluator walks the stdlib-merged summary; the artifact
     // deliberately serializes only user rows. Collapse every path
@@ -349,26 +300,6 @@ pub fn dump_topology_parts(
             .entry((fn_name(&k), fn_name(&next)))
             .or_insert(false);
         *e |= looped;
-    }
-    let mut subscribes: BTreeSet<(String, String, String)> =
-        BTreeSet::new();
-    let mut subscribe_spans: BTreeSet<(String, String, String, u32, u32)> =
-        BTreeSet::new();
-    for (subject, info) in &graph.subjects {
-        for s in &info.subscribers {
-            subscribes.insert((
-                name(subject),
-                name(&s.locus),
-                s.handler.clone(),
-            ));
-            subscribe_spans.insert((
-                name(subject),
-                name(&s.locus),
-                s.handler.clone(),
-                s.span.start.as_usize() as u32,
-                s.span.end.as_usize() as u32,
-            ));
-        }
     }
 
     // ---- the normalized model (#392): phases, seeds, decl spans ----
@@ -410,205 +341,12 @@ pub fn dump_topology_parts(
             derived_effects.insert(fn_name(k), classes);
         }
     }
-    // Decl spans (unhashed provenance).
-    let mut decl_spans: BTreeMap<String, (u32, u32)> = BTreeMap::new();
-    for (decl, info) in &vmodel.decls {
-        decl_spans.insert(
-            name(decl),
-            (
-                info.span.start.as_usize() as u32,
-                info.span.end.as_usize() as u32,
-            ),
-        );
-    }
-    // Downstream handoff P24 (2026-08-12): topic DECLARATIONS are
-    // spanned decls too. `provenance.publishes` / `.subscribes`
-    // carry the sites, but the `topic Orders { … }` line — the one
-    // a developer looks at when asking "is this topic live?" — had
-    // no entry, so an editor lens could anchor on every use and
-    // not on the declaration. Every name in `sorts.topics` now has
-    // a `provenance.decls` row.
-    {
-        fn walk_topics<'a>(
-            items: &'a [TopDecl],
-            out: &mut Vec<&'a TopicDecl>,
-        ) {
-            for item in items {
-                match item {
-                    TopDecl::Topic(t) => out.push(t),
-                    TopDecl::Module(m) => walk_topics(&m.items, out),
-                    _ => {}
-                }
-            }
-        }
-        let mut topic_decls = Vec::new();
-        for p in &programs {
-            walk_topics(&p.items, &mut topic_decls);
-        }
-        for t in topic_decls {
-            decl_spans.entry(name(&t.name.name)).or_insert((
-                t.name.span.start.as_usize() as u32,
-                t.name.span.end.as_usize() as u32,
-            ));
-        }
-    }
-
-    // ---- groups (the claim vocabulary, as declared) ----
-    let mut group_rows: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    fn walk_groups<'a>(items: &'a [TopDecl], out: &mut Vec<&'a GroupDecl>) {
-        for item in items {
-            match item {
-                TopDecl::Group(g) => out.push(g),
-                TopDecl::Module(m) => walk_groups(&m.items, out),
-                _ => {}
-            }
-        }
-    }
-    let mut group_decls = Vec::new();
-    for p in &programs {
-        walk_groups(&p.items, &mut group_decls);
-    }
-    for g in group_decls {
-        group_rows.insert(
-            name(&g.name.name),
-            g.members.iter().map(|m| name(&m.display())).collect(),
-        );
-    }
-
-    // ---- supervision (downstream handoff P25, 2026-08-12) ----
-    //
-    // `on_failure` had NO representation: not a decl, not a
-    // relation, no section — while RESTART / SUPERV_TRANS /
-    // LOCUS_DISSOLVE are the richest live signal an observer has,
-    // with nothing in the model to anchor to ("declared retry cap
-    // 3, observed 3 in 40s" was structurally impossible). One row
-    // per on_failure handler: the supervising locus, the
-    // supervised child + error types, the recovery ops its body
-    // invokes, and a literal retry bound when one is written
-    // (`restart(c) for N`). HASHED — a policy change is a
-    // topology change. Spans ride in provenance.supervision.
-    struct SupRow {
-        locus: String,
-        child: String,
-        err: String,
-        ops: Vec<String>,
-        retry: Option<i64>,
-        span: (u32, u32),
-    }
-    let mut sup_rows: Vec<SupRow> = Vec::new();
-    {
-        fn te_name(t: &TypeExpr) -> String {
-            match t {
-                TypeExpr::Named { path, .. } => path
-                    .segments
-                    .iter()
-                    .map(|s| s.name.clone())
-                    .collect::<Vec<_>>()
-                    .join("::"),
-                _ => "?".to_string(),
-            }
-        }
-        fn walk_ops(
-            b: &Block,
-            ops: &mut Vec<String>,
-            retry: &mut Option<i64>,
-        ) {
-            for st in &b.stmts {
-                match st {
-                    Stmt::Recovery { op, modifier, .. } => {
-                        let n = match op {
-                            RecoveryOp::Restart => "restart",
-                            RecoveryOp::RestartInPlace => {
-                                "restart_in_place"
-                            }
-                            RecoveryOp::Quarantine => "quarantine",
-                            RecoveryOp::Reorganize => "reorganize",
-                            RecoveryOp::Bubble => "bubble",
-                        };
-                        if !ops.iter().any(|o| o == n) {
-                            ops.push(n.to_string());
-                        }
-                        if let Some(RecoveryModifier::For(
-                            Expr::Literal(Literal::Int(k), _),
-                        )) = modifier
-                        {
-                            *retry = Some(*k);
-                        }
-                    }
-                    Stmt::If(i) => {
-                        walk_ops(&i.then_block, ops, retry);
-                        let mut cur = i.else_block.as_deref();
-                        while let Some(eb) = cur {
-                            match eb {
-                                ElseBranch::Else(bb) => {
-                                    walk_ops(bb, ops, retry);
-                                    cur = None;
-                                }
-                                ElseBranch::ElseIf(ei) => {
-                                    walk_ops(&ei.then_block, ops, retry);
-                                    cur = ei.else_block.as_deref();
-                                }
-                            }
-                        }
-                    }
-                    Stmt::While { body, .. }
-                    | Stmt::For { body, .. } => walk_ops(body, ops, retry),
-                    Stmt::Block(bb) => walk_ops(bb, ops, retry),
-                    _ => {}
-                }
-            }
-        }
-        fn walk_loci<'a>(
-            items: &'a [TopDecl],
-            out: &mut Vec<&'a LocusDecl>,
-        ) {
-            for item in items {
-                match item {
-                    TopDecl::Locus(l) => out.push(l),
-                    TopDecl::Module(m) => walk_loci(&m.items, out),
-                    _ => {}
-                }
-            }
-        }
-        let mut loci = Vec::new();
-        for p in &programs {
-            walk_loci(&p.items, &mut loci);
-        }
-        for l in loci {
-            for member in &l.members {
-                if let LocusMember::Failure(fd) = member {
-                    let mut ops = Vec::new();
-                    let mut retry = None;
-                    walk_ops(&fd.body, &mut ops, &mut retry);
-                    sup_rows.push(SupRow {
-                        locus: name(&l.name.name),
-                        child: fd
-                            .params
-                            .first()
-                            .map(|p| name(&te_name(&p.ty)))
-                            .unwrap_or_else(|| "?".to_string()),
-                        err: fd
-                            .params
-                            .get(1)
-                            .map(|p| name(&te_name(&p.ty)))
-                            .unwrap_or_else(|| "?".to_string()),
-                        ops,
-                        retry,
-                        span: (
-                            fd.span.start.as_usize() as u32,
-                            fd.span.end.as_usize() as u32,
-                        ),
-                    });
-                }
-            }
-        }
-        sup_rows.sort_by(|a, b| {
-            (&a.locus, &a.child).cmp(&(&b.locus, &b.child))
-        });
-    }
+    // GH #476 Change 9: the supervision rows the legacy
+    // gathering collected here are gone with it — the artifact's
+    // supervision section projects from the model's `supervises`
+    // relation, which is where the fact lives.
 
     // ---- labels: declared effect carriers (`is:` tags) ----
-    let mut labels: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (k, set) in &summary.carries {
         if !user_key(k) {
             continue;
@@ -616,85 +354,19 @@ pub fn dump_topology_parts(
         let classes =
             crate::frontier::render_effects_named(*set, &effect_names);
         if !classes.is_empty() {
-            labels.insert(fn_name(k), classes);
-        }
-    }
-
-    // ---- unknowns: where the evaluator fails closed ----
-    let mut unknowns: BTreeMap<String, BTreeSet<String>> =
-        BTreeMap::new();
-    for (k, fs) in &summary.fns {
-        if !user_key(k) {
-            continue;
-        }
-        for edge in &fs.calls {
-            match &edge.callee {
-                Callee::Resolved(_) => {}
-                Callee::Unresolved(n) => {
-                    if edge.indirect
-                        || fs.fn_params.iter().any(|p| p == n)
-                    {
-                        unknowns
-                            .entry(fn_name(k))
-                            .or_default()
-                            .insert("indirect_call".to_string());
-                    } else if let Some(iface) = &edge.via_interface {
-                        // #392: a call through an interface no locus
-                        // in the build conforms to. Not an unknown
-                        // in the fail-closed sense — an uninhabited
-                        // interface has no values in a closed world,
-                        // so every walker treats the site as DEAD.
-                        // Recorded (inside the hashed model half) so
-                        // an outside evaluator applies the same rule
-                        // and a conformer appearing later changes
-                        // `shape_hash`. (A dispatch WITH conformers
-                        // is already fanned out to ordinary resolved
-                        // call edges above and never lands here.)
-                        unknowns.entry(fn_name(k)).or_default().insert(
-                            format!(
-                                "uninhabited_interface_call:{}.{}",
-                                name(iface),
-                                n
-                            ),
-                        );
-                    } else if edge.receiver_present
-                        && edge.recv_ty.is_none()
-                    {
-                        // The wrapper-shaped hole: a method call on
-                        // a receiver the summarizer cannot type.
-                        // Recorded WITH the callee name so an
-                        // outside evaluator can apply the same
-                        // fail-closed rule — and so introducing one
-                        // changes shape_hash.
-                        unknowns.entry(fn_name(k)).or_default().insert(
-                            format!("untyped_receiver_call:{}", n),
-                        );
-                    }
-                }
-            }
-        }
-        for site in &fs.effect_sites {
-            if matches!(site.kind, EffectSiteKind::Publish(None)) {
-                unknowns
-                    .entry(fn_name(k))
-                    .or_default()
-                    .insert("computed_publish".to_string());
-            }
         }
     }
 
     // ---- claims ----
-    // GH #476 Change 6: the artifact's law rows are PROJECTED from
-    // the canonical path (ClaimIr renders the forms, the Change-5
-    // judgments produce the verdicts, the evidence sidecar carries
-    // the certificate results). The evaluator report is still run
-    // for the constitution identities — and it remains the CHECK
-    // authority until Change 9; the artifact_law_projection corpus
-    // differential holds the two row sets equal (modulo the
-    // Change-5 documented divergences, which the SEMANTICS bump
-    // records).
-    let (_diags, _old_outcomes, identities) =
-        crate::claims::claims_report_with_identities(
+    // The artifact's law rows are PROJECTED from the canonical path
+    // (ClaimIr renders the forms, the Change-5 judgments produce
+    // the verdicts, the evidence sidecar carries the certificate
+    // results) — and since Change 9 that same judgment is what
+    // `hale check` reports, so the document and the checker cannot
+    // disagree about a law. Law SELECTION still comes from the
+    // claim surface, which is where adoption is settled; this call
+    // takes the constitution identities from it and nothing else.
+    let identities = crate::claims::constitution_identities(
         &programs,
         &graph,
         &bundle.import_renames,
@@ -737,203 +409,18 @@ pub fn dump_topology_parts(
         s
     };
 
-    // ---- serialize (canonical: BTree order throughout) ----
-    let mut model = String::new();
-    model.push_str("  \"sorts\": {\n");
-    model.push_str(&format!(
-        "    \"loci\": [{}],\n",
-        join_str(loci.iter())
-    ));
-    model.push_str(&format!(
-        "    \"fns\": [{}],\n",
-        join_str(fns.iter())
-    ));
-    model.push_str(&format!(
-        "    \"topics\": [{}]\n",
-        join_str(topics.iter())
-    ));
-    model.push_str("  },\n");
-    // GH #436 review: sealing is a MODEL fact, not merely a claim
-    // input. A locus gaining or losing `@sealed` changes what the
-    // program structurally confines; if `shape_hash` did not move,
-    // the one diff a reviewer most needs to see would be invisible.
-    let sealed: BTreeSet<String> = {
-        let mut out = BTreeSet::new();
-        fn walk(items: &[TopDecl], out: &mut BTreeSet<String>) {
-            for item in items {
-                match item {
-                    TopDecl::Locus(l) if l.sealed => {
-                        out.insert(l.name.name.clone());
-                    }
-                    TopDecl::Module(m) => walk(&m.items, out),
-                    _ => {}
-                }
-            }
-        }
-        for p in &programs {
-            walk(&p.items, &mut out);
-        }
-        out
-    };
-    // Its own key rather than a row inside `labels`: that map is
-    // fn -> effect classes, and a locus-level structural property is
-    // a different shape. (An earlier draft emitted a second `labels`
-    // object, producing a duplicate JSON key that every parser
-    // silently resolved to the LAST one — the sealed set vanished
-    // while `shape_hash` still moved, which is the worst of both.)
-    model.push_str(&format!(
-        "  \"sealed\": [{}],\n",
-        join_str(sealed.iter().map(|s| name(s)).collect::<Vec<_>>().iter())
-    ));
-    model.push_str("  \"relations\": {\n    \"calls\": [\n");
-    for ((from, to), meta) in &calls {
-        let mut row = format!(
-            "      {{\"from\": {}, \"to\": {}",
-            quote(from),
-            quote(to)
-        );
-        if meta.looped {
-            row.push_str(", \"loop\": true");
-        }
-        if meta.unbounded {
-            row.push_str(", \"unbounded\": true");
-        }
-        if let Some(i) = &meta.via_interface {
-            row.push_str(&format!(", \"via_interface\": {}", quote(i)));
-        }
-        row.push_str("},\n");
-        model.push_str(&row);
-    }
-    trim_trailing_comma(&mut model);
-    // Contracted through-stdlib user→user edges (#392): what the
-    // evaluator's stdlib-merged walk reaches, collapsed to user
-    // endpoints. Reachability replay composes `calls` ∪ this.
-    model.push_str("    ],\n    \"calls_via_stdlib\": [\n");
-    for ((from, to), looped) in &via_stdlib {
-        let mut row = format!(
-            "      {{\"from\": {}, \"to\": {}",
-            quote(from),
-            quote(to)
-        );
-        if *looped {
-            row.push_str(", \"loop\": true");
-        }
-        row.push_str("},\n");
-        model.push_str(&row);
-    }
-    trim_trailing_comma(&mut model);
-    model.push_str("    ],\n    \"publishes\": [\n");
-    for (f, s) in &publishes {
-        model.push_str(&format!(
-            "      {{\"fn\": {}, \"subject\": {}}},\n",
-            quote(f),
-            quote(s)
-        ));
-    }
-    trim_trailing_comma(&mut model);
-    model.push_str("    ],\n    \"subscribes\": [\n");
-    for (subj, locus, handler) in &subscribes {
-        model.push_str(&format!(
-            "      {{\"subject\": {}, \"locus\": {}, \"handler\": {}}},\n",
-            quote(subj),
-            quote(locus),
-            quote(handler)
-        ));
-    }
-    trim_trailing_comma(&mut model);
-    model.push_str("    ]\n  },\n");
-    // Groups, labels, and unknowns are VERIFICATION-relevant, so
-    // they live inside the hashed model half: a carrier added, a
-    // group widened, or a new fail-closed site all change the
-    // shape identity (the review's "two identities" concern,
-    // resolved by making the one hash cover what evaluation reads).
-    model.push_str("  \"groups\": {\n");
-    for (g, members) in &group_rows {
-        model.push_str(&format!(
-            "    {}: [{}],\n",
-            quote(g),
-            join_str(members.iter())
-        ));
-    }
-    trim_trailing_comma(&mut model);
-    model.push_str("  },\n  \"labels\": {\n");
-    for (f, classes) in &labels {
-        model.push_str(&format!(
-            "    {}: [{}],\n",
-            quote(f),
-            join_str(classes.iter())
-        ));
-    }
-    trim_trailing_comma(&mut model);
-    // #392: the phase relation, the seed sort, and the compiler-
-    // derived per-fn effect sets — the rows `during`, `cover`, and
-    // effect-class endpoints evaluate against. Hashed: each is
-    // verification-relevant, so changing one changes the identity.
-    model.push_str("  },\n  \"phases\": {\n");
-    for (f, (phase, hook)) in &phase_rows {
-        model.push_str(&format!(
-            "    {}: {{\"phase\": {}, \"kind\": {}}},\n",
-            quote(f),
-            quote(phase),
-            quote(if *hook { "hook" } else { "method" })
-        ));
-    }
-    trim_trailing_comma(&mut model);
-    model.push_str("  },\n  \"seeds\": {\n");
-    for (alias, members) in &seed_rows {
-        model.push_str(&format!(
-            "    {}: [{}],\n",
-            quote(alias),
-            join_str(members.iter())
-        ));
-    }
-    trim_trailing_comma(&mut model);
-    model.push_str("  },\n  \"effects\": {\n");
-    for (f, classes) in &derived_effects {
-        model.push_str(&format!(
-            "    {}: [{}],\n",
-            quote(f),
-            join_str(classes.iter())
-        ));
-    }
-    trim_trailing_comma(&mut model);
-    model.push_str("  },\n  \"supervision\": [\n");
-    for r in &sup_rows {
-        let retry = r
-            .retry
-            .map(|n| format!(", \"retry_bound\": {}", n))
-            .unwrap_or_default();
-        model.push_str(&format!(
-            "    {{\"locus\": {}, \"child\": {}, \"err\": {}, \"ops\": [{}]{}}},\n",
-            quote(&r.locus),
-            quote(&r.child),
-            quote(&r.err),
-            join_str(r.ops.iter()),
-            retry
-        ));
-    }
-    trim_trailing_comma(&mut model);
-    model.push_str("  ],\n  \"unknowns\": [\n");
-    for (f, reasons) in &unknowns {
-        let rs = reasons
-            .iter()
-            .map(|r| quote(r))
-            .collect::<Vec<_>>()
-            .join(", ");
-        model.push_str(&format!(
-            "    {{\"fn\": {}, \"reasons\": [{}]}},\n",
-            quote(f),
-            rs
-        ));
-    }
-    trim_trailing_comma(&mut model);
-    model.push_str("  ]");
+    // ---- the hashed model half ----
+    //
+    // GH #476 Change 9: PROJECTED, full stop. Change 6 inverted
+    // the direction (production emits the projection) but kept the
+    // legacy gathering here as the corpus differential's
+    // comparison arm; that arm was ~190 lines of second
+    // serialization of facts the model already holds, and it is
+    // deleted with the rest of the duplicate authorities.
+    // `tests/topology_projection.rs` now pins artifact identity
+    // against a committed baseline instead of against a rival
+    // implementation.
 
-    // GH #476 Change 6 (review round 1): the emitted model half is
-    // the PROJECTION — artifact generation projects the model
-    // (acceptance criterion 6). The legacy string just built above
-    // is returned for the corpus differential only.
-    let legacy_model = model;
     let model =
         crate::topology_projection::project_model_half(&vmodel);
     let shape_hash = fnv1a64(model.as_bytes());
@@ -965,177 +452,10 @@ pub fn dump_topology_parts(
     // carry a content digest, so an artifact stays comparable across
     // machines and a consumer can tell a stale pairing from a fresh
     // one.
-    // GH #476 Change 6 (round 2): the UNHASHED tail — sources,
-    // provenance, topics — is PROJECTED from the model; the legacy
-    // gathering below feeds only the corpus differential.
-    let mut legacy_tail = String::new();
-    legacy_tail.push_str(",\n  \"sources\": [\n");
-    for (i, sf) in bundle.sources.iter().enumerate() {
-        legacy_tail.push_str(&format!(
-            "    {{\"id\": {}, \"path\": {}, \"digest\": {}}}{}\n",
-            sf.id,
-            quote(&sf.path),
-            quote(&sf.digest),
-            if i + 1 == bundle.sources.len() { "" } else { "," }
-        ));
-    }
-    legacy_tail.push_str("  ]");
-
-    // Provenance (#392): source spans, now resolved to
-    // `(source, [local_start, local_end])`. UNHASHED by `shape_hash`
-    // on purpose — moving code must not change the shape identity —
-    // so it sits in the results half beside the claim rows.
-    let loc = |pos: u32| -> (i64, u32) {
-        match bundle
-            .sources
-            .iter()
-            .filter(|f| pos >= f.base && pos < f.base.saturating_add(f.len + 1))
-            .max_by_key(|f| f.base)
-        {
-            Some(f) => (f.id as i64, pos - f.base),
-            // -1 rather than a guessed file: a span the map cannot
-            // place is better reported as unplaceable than attributed
-            // to the wrong source.
-            None => (-1, pos),
-        }
-    };
-    legacy_tail.push_str(",\n  \"provenance\": {\n    \"calls\": [\n");
-    for (from, to, s, e) in &call_spans {
-        legacy_tail.push_str(&format!(
-            "      {{\"from\": {}, \"to\": {}, \"source\": {}, \"span\": [{}, {}]}},\n",
-            quote(from),
-            quote(to),
-            loc(*s).0,
-            loc(*s).1,
-            loc(*e).1
-        ));
-    }
-    trim_trailing_comma(&mut legacy_tail);
-    legacy_tail.push_str("    ],\n    \"publishes\": [\n");
-    for (f, subj, s, e) in &publish_spans {
-        legacy_tail.push_str(&format!(
-            "      {{\"fn\": {}, \"subject\": {}, \"source\": {}, \"span\": [{}, {}]}},\n",
-            quote(f),
-            quote(subj),
-            loc(*s).0,
-            loc(*s).1,
-            // BOTH endpoints localize. This end was the raw
-            // bundle-global offset while every other provenance
-            // section localized both, so a publish in any source
-            // whose virtual base is nonzero produced a row naming a
-            // file and a span reaching past the end of it — a
-            // file-local start with a bundle-global end, which is not
-            // a coordinate in any single system. A consumer resolving
-            // it lands outside the file it was told to open.
-            loc(*e).1
-        ));
-    }
-    trim_trailing_comma(&mut legacy_tail);
-    legacy_tail.push_str("    ],\n    \"subscribes\": [\n");
-    for (subj, locus, handler, s, e) in &subscribe_spans {
-        legacy_tail.push_str(&format!(
-            "      {{\"subject\": {}, \"locus\": {}, \"handler\": {}, \
-             \"source\": {}, \"span\": [{}, {}]}},\n",
-            quote(subj),
-            quote(locus),
-            quote(handler),
-            loc(*s).0,
-            loc(*s).1,
-            loc(*e).1
-        ));
-    }
-    trim_trailing_comma(&mut legacy_tail);
-    legacy_tail.push_str("    ],\n    \"decls\": {\n");
-    for (decl, (s, e)) in &decl_spans {
-        legacy_tail.push_str(&format!(
-            "      {}: {{\"source\": {}, \"span\": [{}, {}]}},\n",
-            quote(decl),
-            loc(*s).0,
-            loc(*s).1,
-            loc(*e).1
-        ));
-    }
-    trim_trailing_comma(&mut legacy_tail);
-    legacy_tail.push_str("    },\n    \"supervision\": [\n");
-    for r in &sup_rows {
-        legacy_tail.push_str(&format!(
-            "      {{\"locus\": {}, \"child\": {}, \"source\": {}, \"span\": [{}, {}]}},\n",
-            quote(&r.locus),
-            quote(&r.child),
-            loc(r.span.0).0,
-            loc(r.span.0).1,
-            loc(r.span.1).1
-        ));
-    }
-    trim_trailing_comma(&mut legacy_tail);
-    legacy_tail.push_str("    ]\n  }");
-    // #399: the per-topic OBSERVATION identity — the join between
-    // this artifact and a recording. The runtime manifest fuses
-    // topics on (name, shape_hash) where shape_hash =
-    // FNV-1a/64(wire_subject ++ ':' ++ canonical_shape); a WAL
-    // segment carrying that pair matches a row here, which names
-    // the exact checked topology it ran under. Computed by the
-    // SAME `topic_identity` functions codegen registers shapes
-    // with, so the artifact and the emitted binary cannot drift.
-    // UNHASHED by ruling: payload field shape does not affect
-    // claim evaluation, so it is not part of the model identity —
-    // the artifact document is the reference, not the fusion.
-    legacy_tail.push_str(",\n  \"topics\": [\n");
-    {
-        let mut rows: BTreeSet<(String, String, String, u64)> =
-            BTreeSet::new();
-        for p in &programs {
-            let wire =
-                crate::topic_identity::topic_wire_subjects(&p.items);
-            fn topics_of<'a>(
-                items: &'a [TopDecl],
-                out: &mut Vec<&'a TopicDecl>,
-            ) {
-                for item in items {
-                    match item {
-                        TopDecl::Topic(t) => out.push(t),
-                        TopDecl::Module(m) => {
-                            topics_of(&m.items, out)
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            let mut ts = Vec::new();
-            topics_of(&p.items, &mut ts);
-            for t in ts {
-                let subj = wire
-                    .get(&t.name.name)
-                    .cloned()
-                    .unwrap_or_else(|| t.name.name.clone());
-                let shape =
-                    crate::topic_identity::canonical_topic_shape(
-                        &p.items, t,
-                    );
-                let h = crate::topic_identity::topic_shape_hash(
-                    &subj, &shape,
-                );
-                rows.insert((
-                    name(&t.name.name),
-                    subj,
-                    shape,
-                    h,
-                ));
-            }
-        }
-        for (tname, subj, shape, h) in &rows {
-            legacy_tail.push_str(&format!(
-                "    {{\"name\": {}, \"subject\": {}, \"shape\": {}, \
-                 \"payload_hash\": \"{:016x}\"}},\n",
-                quote(tname),
-                quote(subj),
-                quote(shape),
-                h
-            ));
-        }
-    }
-    trim_trailing_comma(&mut legacy_tail);
-    legacy_tail.push_str("  ]");
+    // GH #476 Change 9: the UNHASHED tail — sources, provenance,
+    // topics — is PROJECTED from the model, and the legacy
+    // gathering that used to be rebuilt here for the corpus
+    // differential is gone with the rest of the second authority.
     out.push_str(
         &crate::topology_projection::project_unhashed_tail(&vmodel),
     );
@@ -1944,7 +1264,7 @@ pub fn dump_topology_parts(
         "{}{:016x}\"\n}}\n",
         ARTIFACT_DIGEST_KEY, digest
     ));
-    (out, legacy_model, legacy_tail)
+    out
 }
 
 /// The exact byte sequence introducing the integrity digest. It is

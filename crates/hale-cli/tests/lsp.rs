@@ -989,3 +989,108 @@ fn lsp_stdlib_cache_files_get_no_diagnostics() {
     }));
     let _ = lsp.child.wait();
 }
+
+/// GH #476 Change 9 (review round 1): a claim diagnostic must be
+/// published against the file the claim is IN.
+///
+/// Claim verdicts are judged over the canonical model, whose
+/// provenance resolves through the bundle's source map — and the
+/// LSP was building its bundle with `Bundle::new`, which leaves
+/// that map empty, even though the editor already holds every
+/// base, path and text. Unplaceable claim spans then collapsed to
+/// byte zero, which the LSP resolves to the first line of the first
+/// file in the seed. A two-file seed makes that visible: the claim
+/// lives in the SECOND file, so a byte-zero regression publishes it
+/// against the first.
+#[test]
+fn lsp_publishes_claim_diagnostics_against_the_right_file() {
+    let seed = std::env::temp_dir().join(format!(
+        "hale_lsp_claims_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&seed);
+    std::fs::create_dir_all(&seed).expect("mkdir");
+
+    // File one sorts first and holds the loci; the claim is in file
+    // two, well past byte zero of the seed.
+    let a = seed.join("a_domain.hl");
+    let b = seed.join("b_app.hl");
+    std::fs::write(
+        &a,
+        "locus B { params { n: Int = 0; } fn stop() { self.n = self.n + 1; } }\n\
+         locus A {\n    params { b: B = B { }; }\n    fn go() { self.b.stop(); }\n}\n\
+         group src = { A };\ngroup dst = { B };\n",
+    )
+    .expect("write a");
+    let app = "main locus App {\n    params { a: A = A { }; }\n    claims {\n        isolation: forbid reaches(src, dst);\n    }\n    run() { self.a.go(); }\n}\nfn main() { App { }; }\n";
+    std::fs::write(&b, app).expect("write b");
+
+    let uri_b = format!("file://{}", b.display());
+    let mut lsp = Lsp::start();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": { "capabilities": {} }
+    }));
+    let _ = lsp.recv();
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "initialized", "params": {}
+    }));
+    lsp.send(serde_json::json!({
+        "jsonrpc": "2.0", "method": "textDocument/didOpen",
+        "params": { "textDocument": {
+            "uri": uri_b, "languageId": "hale", "version": 1, "text": app
+        }}
+    }));
+
+    // Collect publishes until we see the claim (the server may
+    // publish per-file).
+    let mut found: Option<(String, u64)> = None;
+    for _ in 0..8 {
+        let msg = lsp.recv();
+        if msg.get("method").and_then(|m| m.as_str())
+            != Some("textDocument/publishDiagnostics")
+        {
+            continue;
+        }
+        let uri = msg.pointer("/params/uri").and_then(|u| u.as_str())
+            .unwrap_or("")
+            .to_string();
+        let empty = Vec::new();
+        let diags = msg
+            .pointer("/params/diagnostics")
+            .and_then(|d| d.as_array())
+            .unwrap_or(&empty);
+        for d in diags {
+            let m = d["message"].as_str().unwrap_or("");
+            // The PRIMARY violation only. The secondary notes
+            // ("the boundary is crossed by this call", "the
+            // forbidden destination is declared here") legitimately
+            // live in the other file — that they do is the
+            // multi-file placement working, not a failure.
+            if m.contains("claim `isolation` violated") {
+                found = Some((
+                    uri.clone(),
+                    d["range"]["start"]["line"].as_u64().unwrap_or(u64::MAX),
+                ));
+            }
+        }
+        if found.is_some() {
+            break;
+        }
+    }
+    let (uri, line) = found.expect(
+        "the violated claim must be published as a diagnostic",
+    );
+    assert!(
+        uri.ends_with("b_app.hl"),
+        "the claim lives in b_app.hl but was published against {}",
+        uri
+    );
+    // `claims {` is line 2 (0-based) and the clause is line 3.
+    assert_eq!(
+        line, 3,
+        "expected the claim clause's own line, got line {} in {}",
+        line, uri
+    );
+    let _ = std::fs::remove_dir_all(&seed);
+}
