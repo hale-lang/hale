@@ -435,7 +435,15 @@ fn check_and_publish(
             .iter()
             .map(|(p, prog)| (p.display().to_string(), prog))
             .collect();
-        let bundle = hale_types::Bundle::new(bundle_programs);
+        let mut bundle = hale_types::Bundle::new(bundle_programs);
+        // GH #476 Change 9 (review round 1): install the SOURCE MAP.
+        // Claim rows are judged over the canonical model, whose
+        // provenance resolves through `bundle.sources`; without it
+        // every claim diagnostic in a multi-file seed would have to
+        // be placed from raw bundle-global offsets alone. The editor
+        // already has the bases, paths and text — there is no reason
+        // to make the analyzer guess.
+        bundle.sources = source_files(&file_bases, &sources);
         let mut diags = hale_types::check_bundle_opts(&bundle, false);
         diags.extend(hale_types::unbounded_alloc_warnings(&bundle, true));
         for d in &diags {
@@ -650,13 +658,47 @@ impl SeedAnalysis {
             .map(|(b, _, _)| *b)
     }
     fn bundle(&self) -> hale_types::Bundle<'_> {
-        hale_types::Bundle::new(
+        let mut b = hale_types::Bundle::new(
             self.programs
                 .iter()
                 .map(|(p, prog)| (p.display().to_string(), prog))
                 .collect(),
-        )
+        );
+        b.sources = source_files(&self.file_bases, &self.sources);
+        b
     }
+}
+
+/// The seed's source map, in the shape the analyzer's provenance
+/// resolves through. One per parsed file, in base order.
+fn source_files(
+    file_bases: &[(u32, PathBuf, u32)],
+    sources: &BTreeMap<PathBuf, String>,
+) -> Vec<hale_types::symbol::SourceFile> {
+    file_bases
+        .iter()
+        .enumerate()
+        .map(|(i, (base, path, len))| {
+            let digest = sources
+                .get(path)
+                .map(|src| {
+                    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+                    for b in src.as_bytes() {
+                        h ^= *b as u64;
+                        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+                    }
+                    format!("{:016x}", h)
+                })
+                .unwrap_or_else(|| "unknown".to_string());
+            hale_types::symbol::SourceFile {
+                id: i as u32,
+                path: path.display().to_string(),
+                digest,
+                base: *base,
+                len: *len,
+            }
+        })
+        .collect()
 }
 
 /// LSP (0-based line, UTF-16 col) → byte offset.

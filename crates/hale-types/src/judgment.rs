@@ -205,6 +205,41 @@ fn span_of(
 /// pre-pass diagnostics (duplicate claim names — the evaluator
 /// emits them before any validation or evaluation) and the judged
 /// rows.
+/// A group domain that resolves to NO declarations and was not
+/// declared `may_be_empty`.
+///
+/// GH #476 Change 9 review: law selection refuses such a program
+/// (an unknown member, or an empty group that never said it could
+/// be) — but the engines quantified over the empty set anyway and
+/// returned `holds`, so the artifact could record a law as holding
+/// on a domain the compiler had just rejected. There is no witness
+/// behind that verdict and no program it describes: the row is
+/// INVALID. No diagnostic is emitted here on purpose — selection
+/// owns the message, and saying it twice is the duplication this
+/// change removes.
+///
+/// `may_be_empty` is deliberately excluded: an author who declared
+/// the group may be empty has opted into vacuous truth, and the
+/// evaluator has always granted it.
+fn empty_refused_domain(
+    model: &ApplicationModel,
+    gid: GroupId,
+) -> bool {
+    let declared_empty_ok = model
+        .entities
+        .groups
+        .get(gid.index())
+        .is_some_and(|g| g.may_be_empty);
+    if declared_empty_ok {
+        return false;
+    }
+    !model
+        .relations
+        .group_members
+        .iter()
+        .any(|gm| gm.group == gid)
+}
+
 pub fn judge_forbid_reaches(
     table: &ClaimIrTable,
     model: &ApplicationModel,
@@ -713,6 +748,18 @@ pub fn judge_forbid_reaches(
             ));
             true
         };
+        if empty_refused_domain(model, src_gid)
+            || matches!(dst, SetIr::Group(g)
+                if g.group.is_some_and(|d| empty_refused_domain(model, d)))
+        {
+            out.push(Judged {
+                ordinal: row.ordinal,
+                verdict: Verdict::Invalid,
+                diags,
+                foreign: Vec::new(),
+            });
+            continue;
+        }
         if vacuous(src_gid, src_ref, "source", &mut diags) {
             out.push(Judged {
                 ordinal: row.ordinal,
@@ -1819,6 +1866,17 @@ pub fn judge_only_edges(
         }
         let (src_gid, dst_gid) =
             (src.group.unwrap(), dst.group.unwrap());
+        if empty_refused_domain(model, src_gid)
+            || empty_refused_domain(model, dst_gid)
+        {
+            out.push(Judged {
+                ordinal: row.ordinal,
+                verdict: Verdict::Invalid,
+                diags,
+                foreign: Vec::new(),
+            });
+            continue;
+        }
         // Projection vacuity, source then target.
         let decl_count = |g: GroupId| {
             r.group_members.iter().filter(|gm| gm.group == g).count()
@@ -2357,6 +2415,25 @@ pub fn judge_endpoints(
     for row in &table.rows {
         let mut diags: Vec<Diag> = Vec::new();
         let row_span = claim_span(row.provenance);
+        // A domain law selection already refused holds nothing —
+        // see `empty_refused_domain`.
+        let refused_domain = match &row.law {
+            ClaimIr::RequireEndpoint { group, .. }
+            | ClaimIr::RequireSealed { group }
+            | ClaimIr::Cover { group, .. } => group
+                .group
+                .is_some_and(|g| empty_refused_domain(model, g)),
+            _ => false,
+        };
+        if refused_domain {
+            out.push(Judged {
+                ordinal: row.ordinal,
+                verdict: Verdict::Invalid,
+                diags,
+                foreign: Vec::new(),
+            });
+            continue;
+        }
         // Shared validation helpers over ClaimIr refs.
         let group_decl_names: Vec<&str> =
             e.groups.iter().map(|g| g.display.as_str()).collect();
@@ -3232,6 +3309,15 @@ pub fn judge_bound(
         };
         let mut diags: Vec<Diag> = Vec::new();
         let row_span = claim_span(row.provenance);
+        if from.group.is_some_and(|g| empty_refused_domain(model, g)) {
+            out.push(Judged {
+                ordinal: row.ordinal,
+                verdict: Verdict::Invalid,
+                diags,
+                foreign: Vec::new(),
+            });
+            continue;
+        }
         // ---- validation: group + class rules ----
         let group_decl_names: Vec<&str> =
             e.groups.iter().map(|g| g.display.as_str()).collect();

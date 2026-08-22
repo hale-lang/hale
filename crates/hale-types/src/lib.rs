@@ -158,6 +158,29 @@ pub fn check_bundle_opts(
 ) -> Vec<Diag> {
     let (top, mut diags) = resolve::build_top_scope(bundle);
     diags.extend(check::check_bundle(bundle, &top, allow_unowned_subscriber));
+    // GH #476 Change 9 (review): claim VERDICTS are judged over the
+    // canonical model, and a model is a description of a CHECKED
+    // program — `derive_application_model` says so, and ends with a
+    // debug assertion that the model it built is lawful. Some
+    // parser-valid, checker-invalid programs deliberately derive
+    // UNLAWFUL models (a key filter on an unkeyed topic; an illegal
+    // fallback), which was harmless only while nothing on the
+    // ordinary check path consumed them. Judging one would panic in
+    // a debug build and, in release, walk evidence and relation code
+    // whose indexing assumes lawfulness.
+    //
+    // So the model half runs only once the resolver and the checker
+    // agree the program denotes something. Claim errors do not gate
+    // it: a program whose only errors are broken LAWS still has a
+    // valid model, and refusing to judge the rest of its claims
+    // because one of them failed would hide law violations behind
+    // each other.
+    let denotes_a_model = !diags.iter().any(|d| {
+        d.is_error() && d.kind != hale_syntax::error::DiagKind::Claim
+    });
+    if denotes_a_model {
+        diags.extend(judgment::claim_law_diags(bundle));
+    }
     // GH #470: diagnostics speak the user's spelling at EVERY
     // consumer — CLI, LSP, library callers, tests — not just the
     // CLI, which used to be the only layer applying the stdlib

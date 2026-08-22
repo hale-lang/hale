@@ -149,8 +149,17 @@ pub fn lower_claims(
                 span: (ls, le.max(ls)),
             }
         } else {
-            Provenance::Synthetic {
-                origin: "unplaceable span".to_string(),
+            // An unplaceable span keeps its OFFSETS, exactly as the
+            // model builder does (`ForeignSpan` is verbatim
+            // offset-space). Collapsing to `Synthetic` threw the
+            // position away, and every consumer that resolves a
+            // synthetic record renders span 0..0 — so a bundle with
+            // no source map (the public `check_program`, the LSP)
+            // anchored EVERY claim diagnostic at byte zero of the
+            // first file, however far from the claim that was. GH
+            // #476 Change 9, review round 1.
+            Provenance::ForeignSpan {
+                span: (s, span.end.as_usize() as u32),
             }
         });
         id
@@ -362,14 +371,26 @@ pub fn lower_claims(
         CountCmp::Ge => CountCmpIr::Ge,
     };
 
-    // ---- 1. claims-block forms, via the evaluator's enumeration ----
-    let universe = crate::claims::enumerate_clauses(
+    // ---- 1. claims-block forms, via the shared LAW SELECTION ----
+    //
+    // The same selection `hale check` reports (GH #476 Change 9
+    // review): clause enumeration AND group resolution AND vacuity.
+    // Taking `enumerate_clauses` alone left the lowering blind to an
+    // unresolvable group member — the checker rejected the program
+    // while this table recorded no issue for it, so the artifact
+    // could serialize the dependent law as `holds` and contradict
+    // the compiler that produced it.
+    let (top, _) = crate::resolve::build_top_scope(bundle);
+    let graph = crate::bus_graph::build_bus_graph(bundle, &top);
+    let selection = crate::claims::select(
         &programs,
+        &graph,
         &bundle.import_renames,
     );
+    let universe = selection.universe;
     // Law-SELECTION invalidity becomes structured issues — never
     // silently dropped (review round 15).
-    for d in &universe.diags {
+    for d in &selection.diags {
         let pid = intern(&mut table.provenance.records, d.span);
         table.issues.push(LoweringIssue {
             message: d.message.clone(),

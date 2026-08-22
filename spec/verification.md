@@ -595,7 +595,26 @@ disagree about a law. Two consequences are user-visible:
 What the claim surface still owns is law SELECTION — which laws
 exist at all: clause enumeration, constitution adoption and
 identity, group resolution, the library/world tier rule. Selection
-is not judgment, and it has exactly one implementation.
+is not judgment, and it has exactly one implementation, consumed by
+BOTH the checker and the artifact lowering: a selection refusal
+appears in the document's law-issue account, so the two cannot
+report opposite answers about one program. A law quantifying over a
+group selection refused — an unknown member, or an empty group that
+did not declare `may_be_empty` — is **invalid**, never a vacuous
+`holds`: a verdict over a domain the compiler rejected has no
+witness and describes no program. A group that DID declare
+`may_be_empty` keeps holding vacuously; that is what the
+declaration is for.
+
+Judgment runs only over a program that denotes a valid model. The
+model is a description of a checked program, and some
+parser-valid, checker-invalid programs derive deliberately unlawful
+models (a key filter on an unkeyed topic mirrors the checker's own
+refusal). The checker therefore judges claims only once the
+resolver and the type checker agree; claim errors themselves do not
+gate it, since a program whose only failures are broken laws still
+has a valid model, and hiding the rest of its laws behind one
+failure would be its own fail-open.
 
 The artifact's own identity is pinned by a committed baseline of
 `origin -> shape_hash` over the corpus rather than by a rival

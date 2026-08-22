@@ -104,6 +104,44 @@ pub fn claims_diags(
     claims_report(programs, graph, import_renames).0
 }
 
+/// THE law-selection result: the clauses selected, and every
+/// diagnostic selection produced.
+///
+/// GH #476 Change 9 review: `selection_diags` and `lower_claims`
+/// were BOTH doing selection, and doing different amounts of it.
+/// The lowering called `enumerate_clauses` alone, so it saw
+/// constitution problems but not group resolution — an unknown
+/// group member failed `hale check` while the artifact recorded no
+/// issue for it and could serialize the dependent law as `holds`.
+/// The checker and the document then gave opposite machine-readable
+/// answers about the same program, which is worse than the two
+/// implementations this change set out to delete.
+///
+/// One result, two consumers. The claim rows come from `universe`;
+/// the issues are `diags`, which cover clause enumeration AND group
+/// resolution AND vacuity.
+pub(crate) struct Selection<'a> {
+    pub universe: ClauseUniverse<'a>,
+    pub diags: Vec<Diag>,
+}
+
+pub(crate) fn select<'a>(
+    programs: &[&'a Program],
+    graph: &BusGraph,
+    import_renames: &[(Vec<String>, String)],
+) -> Selection<'a> {
+    let universe = enumerate_clauses(programs, import_renames);
+    let (mut diags, _, _) =
+        claims_report_inner(programs, graph, import_renames, true);
+    crate::stdlib_bodies::demangle_imports(&mut diags, import_renames);
+    for d in &mut diags {
+        if d.kind == hale_syntax::error::DiagKind::Type {
+            d.kind = hale_syntax::error::DiagKind::Claim;
+        }
+    }
+    Selection { universe, diags }
+}
+
 /// The identities of the constitutions actually adopted — GH #409's
 /// normalized-closure digests.
 ///
@@ -142,15 +180,7 @@ pub fn selection_diags(
     graph: &BusGraph,
     import_renames: &[(Vec<String>, String)],
 ) -> Vec<Diag> {
-    let (mut d, _, _) =
-        claims_report_inner(programs, graph, import_renames, true);
-    crate::stdlib_bodies::demangle_imports(&mut d, import_renames);
-    for x in &mut d {
-        if x.kind == hale_syntax::error::DiagKind::Type {
-            x.kind = hale_syntax::error::DiagKind::Claim;
-        }
-    }
-    d
+    select(programs, graph, import_renames).diags
 }
 
 /// Diagnostics plus per-claim outcomes (the artifact's rows).

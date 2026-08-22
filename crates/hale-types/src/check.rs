@@ -487,7 +487,11 @@ pub fn check_bundle(
                 &graph,
                 &bundle.import_renames,
             ));
-            diags.extend(crate::judgment::claim_law_diags(bundle));
+            // The VERDICTS are appended by `check_bundle_opts`,
+            // after this whole pass establishes that the program
+            // denotes a valid model — see the note there. Selection
+            // stays here: it reads the claim surface directly and is
+            // meaningful even for a program that does not typecheck.
             diags.extend(crate::frontier::supervised_diags(&programs_vec));
             diags.extend(crate::frontier::secret_taint_diags(&programs_vec));
             diags.extend(crate::quantitative::quantitative_diags(

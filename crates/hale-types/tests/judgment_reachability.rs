@@ -137,10 +137,33 @@ fn diff_one(
                 h.hides
                     .intersects(hale_model::RelationSet::EFFECTS)
             });
-        if attributed_hole_carveout {
+        // Change-9 review divergence: a law over a group law
+        // SELECTION refused (unknown member, or empty without
+        // `may_be_empty`) is Invalid, where the evaluator held
+        // vacuously over the empty set. Selection rejects the
+        // program either way; what changes is that the artifact no
+        // longer records an unwitnessed `holds` about a domain the
+        // compiler refused.
+        let refused_domain_carveout = **old
+            == hale_types::verdict::Verdict::Holds
+            && j.verdict == hale_types::verdict::Verdict::Invalid
+            && model.entities.groups.iter().enumerate().any(
+                |(i, g)| {
+                    !g.may_be_empty
+                        && !model
+                            .relations
+                            .group_members
+                            .iter()
+                            .any(|gm| gm.group.index() == i)
+                },
+            );
+        if attributed_hole_carveout || refused_domain_carveout {
             carved_out.insert(j.ordinal);
         }
-        if **old != j.verdict && !attributed_hole_carveout {
+        if **old != j.verdict
+            && !attributed_hole_carveout
+            && !refused_domain_carveout
+        {
             return Err(format!(
                 "{}: claim `{}` verdict diverges: old {:?}, new {:?}",
                 origin, row.name, old, j.verdict

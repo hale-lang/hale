@@ -61,6 +61,7 @@ crates/hale-cli/tests/fleet_cross_tier.rs#5 74534bdd47d17023
 crates/hale-cli/tests/fleet_model_soundness.rs#2 096bf948a953c55c
 crates/hale-cli/tests/fleet_model_soundness.rs#3 0307e1dae8efcf77
 crates/hale-cli/tests/fleet_sign.rs#0 c4804249b5a05260
+crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#2 eee350907cf202be
 crates/hale-cli/tests/lsp.rs#0 3533bcfd7c9f71d5
 crates/hale-cli/tests/lsp.rs#1 68987e25a83ab8b0
 crates/hale-cli/tests/lsp.rs#2 b29607ed90e8c752

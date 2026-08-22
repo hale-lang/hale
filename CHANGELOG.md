@@ -37,6 +37,35 @@ Two user-visible consequences, both fail-closed corrections:
   one written and reported its violations as if the author had
   chosen them.
 
+Review round 1 (PR #492), three blockers:
+
+- **Selection is one result, consumed twice.** The lowering ran only
+  clause enumeration, so it never saw group resolution: an unknown
+  group member failed `hale check` while the artifact recorded no
+  issue and could serialize the dependent law as `holds` — the
+  checker and the document giving opposite machine-readable answers
+  about one program, which is worse than the two implementations
+  this change set out to delete. Both now consume
+  `claims::select`. A law over a group selection refused is
+  `invalid` rather than vacuously true; `may_be_empty` groups keep
+  holding vacuously, which is what declaring it means.
+- **Judgment requires a program that denotes a model.** Check called
+  the judgment whenever a claim surface existed, including on
+  ill-typed programs whose models are deliberately unlawful (a key
+  filter on an unkeyed topic) — a debug-build panic at the builder's
+  own assertion, and in release a walk over relations whose indexing
+  assumes lawfulness. The model half now runs only when the resolver
+  and type checker are clean; claim errors do not gate it. This
+  surfaced a stale stdlib API in a test fixture that had been
+  ill-typed and judged anyway.
+- **Claim spans survive a bundle with no source map.** Claim lowering
+  collapsed unplaceable spans to synthetic records, which every
+  consumer renders at 0..0 — so through the public `check_program`
+  and the LSP, every migrated claim diagnostic anchored at byte zero
+  of the first file. Lowering now keeps the offsets, exactly as the
+  model builder already did, and the LSP installs the source map it
+  has always had.
+
 **The artifact's second serialization.** Change 6 made production
 emit the projection of `ApplicationModel` but kept the legacy
 gathering as the corpus differential's comparison arm — relation
