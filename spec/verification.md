@@ -604,8 +604,12 @@ Selection's verdict on each group declaration is CARRIED with the
 lowered laws, in four states — resolved; intentionally empty
 (`may_be_empty` on a group whose every selector resolved); selector
 failed; declaration refused (declared twice, or empty without
-saying so). A law quantifying over a group in either invalid state
-is **invalid**, never a vacuous `holds`: a verdict over a domain the
+saying so). Every GROUP OPERAND is a domain — the source and destination sets,
+`only edges`' two ends, `bound`'s `from`, an endpoint family's
+group, and `forbid reaches`' `avoiding` gate, whose members become
+the mask that removes paths from the walk. A law quantifying over a
+group in either invalid state, in ANY of those positions, is
+**invalid**, never a vacuous `holds`: a verdict over a domain the
 compiler rejected has no witness and describes no program. Only the
 intentionally-empty state holds vacuously — that is what declaring
 `may_be_empty` is for, and it authorizes an empty group, not a

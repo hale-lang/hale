@@ -745,9 +745,20 @@ pub fn judge_forbid_reaches(
             ));
             true
         };
+        // EVERY group operand, not just the endpoints. `avoiding`
+        // is a domain too: its members become the mask that removes
+        // paths from the walk, so a partially-resolved gate masks
+        // with the members that happened to survive and the claim
+        // can be proved by a subset of the gate the author wrote.
+        // Checked here — after validation, so the shape diagnostics
+        // still fire — and before roots, mask, or any verdict is
+        // derived from a refused group (review round 3).
         if !domain_is_judgable(table, src_ref)
             || matches!(dst, SetIr::Group(g)
                 if !domain_is_judgable(table, g))
+            || avoiding
+                .as_ref()
+                .is_some_and(|a| !domain_is_judgable(table, a))
         {
             out.push(Judged {
                 ordinal: row.ordinal,
@@ -2296,6 +2307,7 @@ pub fn judge_endpoints(
     model: &ApplicationModel,
     source_bases: &[u32],
 ) -> Vec<Judged> {
+    let mut refused_ordinals: BTreeSet<u32> = BTreeSet::new();
     let e = &model.entities;
     let r = &model.relations;
     let claim_span = |pid: ProvenanceId| -> Span {
@@ -2422,14 +2434,14 @@ pub fn judge_endpoints(
             }
             _ => false,
         };
+        // NB: the refusal does not short-circuit the arm. Its
+        // validation diagnostics are the evaluator's and must still
+        // be emitted — what a refused domain forbids is a VERDICT,
+        // so the arm runs and every verdict it produced is forced
+        // after the loop (arms `continue` from several points, so
+        // the rewrite cannot live at the bottom of the body).
         if refused_domain {
-            out.push(Judged {
-                ordinal: row.ordinal,
-                verdict: Verdict::Invalid,
-                diags,
-                foreign: Vec::new(),
-            });
-            continue;
+            refused_ordinals.insert(row.ordinal);
         }
         // Shared validation helpers over ClaimIr refs.
         let group_decl_names: Vec<&str> =
@@ -3056,6 +3068,11 @@ pub fn judge_endpoints(
         }
         let _ = (&fn_raw, &fn_disp, &fnkey_order);
     }
+    for j in out.iter_mut() {
+        if refused_ordinals.contains(&j.ordinal) {
+            j.verdict = Verdict::Invalid;
+        }
+    }
     out
 }
 
@@ -3069,6 +3086,7 @@ pub fn judge_bound(
     model: &ApplicationModel,
     source_bases: &[u32],
 ) -> Vec<Judged> {
+    let mut refused_ordinals: BTreeSet<u32> = BTreeSet::new();
     let e = &model.entities;
     let r = &model.relations;
     let claim_span = |pid: ProvenanceId| -> Span {
@@ -3306,14 +3324,10 @@ pub fn judge_bound(
         };
         let mut diags: Vec<Diag> = Vec::new();
         let row_span = claim_span(row.provenance);
+        // As in the endpoint family: the arm still runs and still
+        // reports, and only the verdict is refused.
         if !domain_is_judgable(table, from) {
-            out.push(Judged {
-                ordinal: row.ordinal,
-                verdict: Verdict::Invalid,
-                diags,
-                foreign: Vec::new(),
-            });
-            continue;
+            refused_ordinals.insert(row.ordinal);
         }
         // ---- validation: group + class rules ----
         let group_decl_names: Vec<&str> =
@@ -4090,6 +4104,11 @@ pub fn judge_bound(
             diags,
             foreign: Vec::new(),
         });
+    }
+    for j in out.iter_mut() {
+        if refused_ordinals.contains(&j.ordinal) {
+            j.verdict = Verdict::Invalid;
+        }
     }
     out
 }

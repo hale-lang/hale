@@ -1198,6 +1198,7 @@ crates/hale-types/tests/bus_graph_corpus.rs#3 0b5c9b076f8709fc
 crates/hale-types/tests/call_arity.rs#2 b7d8eb3457fbbdd2
 crates/hale-types/tests/call_arity.rs#4 a7b8a9fb4144cb0b
 crates/hale-types/tests/callgraph_witness.rs#0 2c8a176eca798985
+crates/hale-types/tests/claim_judgment_gating.rs#10 a251233ff9ad4297
 crates/hale-types/tests/claim_lowering.rs#10 24f90bce01bf8af1
 crates/hale-types/tests/claim_lowering.rs#11 8d95b6ed57982b91
 crates/hale-types/tests/claim_lowering.rs#12 a464286d577685cc

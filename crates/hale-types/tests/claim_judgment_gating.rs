@@ -204,3 +204,192 @@ fn main() { App { }; }
         claim.message
     );
 }
+
+/// Review round 3 — the whole operand surface, not one operand.
+///
+/// A refused group has now slipped through in three positions
+/// across three rounds: the source domain, then `avoiding`, with the
+/// partial/duplicate shapes in between. The pattern is that every
+/// GROUP OPERAND of every family is a domain, and a guard that
+/// covers the operands someone happened to think of is the same
+/// defect waiting. This enumerates every group-bearing position in
+/// the lowered law shapes and requires each to refuse the row.
+///
+/// If a new family or a new group operand is added, the honest way
+/// for this test to fail is for it to be missing a case — so it
+/// asserts its own coverage count too.
+#[test]
+fn every_group_operand_position_refuses_a_refused_group() {
+    // (label, program) — each puts an unresolvable member in ONE
+    // operand position and nowhere else.
+    let cases: Vec<(&str, String)> = vec![
+        (
+            "reaches:src",
+            r#"{PRELUDE}
+group bad = { Worker, MissingOne };
+group other = { Sink };
+main locus App {
+    params { w: Worker = Worker { }; s: Sink = Sink { }; }
+    claims { law_reach_src: forbid reaches(bad, other); }
+    run() { self.w.work(); self.s.take(); }
+}
+"#
+            .to_string(),
+        ),
+        (
+            "reaches:dst",
+            r#"{PRELUDE}
+group other = { Sink };
+group bad = { Worker, MissingOne };
+main locus App {
+    params { w: Worker = Worker { }; s: Sink = Sink { }; }
+    claims { law_reach_dst: forbid reaches(other, bad); }
+    run() { self.w.work(); self.s.take(); }
+}
+"#
+            .to_string(),
+        ),
+        (
+            "reaches:avoiding",
+            r#"{PRELUDE}
+group src_g = { Worker };
+group dst_g = { Sink };
+group bad = { Worker, MissingOne };
+main locus App {
+    params { w: Worker = Worker { }; s: Sink = Sink { }; }
+    claims { law_reach_avoid: forbid reaches(src_g, dst_g) avoiding bad; }
+    run() { self.w.work(); self.s.take(); }
+}
+"#
+            .to_string(),
+        ),
+        (
+            "only_edges:src",
+            r#"{PRELUDE}
+group bad = { Worker, MissingOne };
+group other = { Sink };
+main locus App {
+    params { w: Worker = Worker { }; s: Sink = Sink { }; }
+    claims { law_edges_src: only edges bad -> other { }; }
+    run() { self.w.work(); self.s.take(); }
+}
+"#
+            .to_string(),
+        ),
+        (
+            "only_edges:dst",
+            r#"{PRELUDE}
+group other = { Sink };
+group bad = { Worker, MissingOne };
+main locus App {
+    params { w: Worker = Worker { }; s: Sink = Sink { }; }
+    claims { law_edges_dst: only edges other -> bad { }; }
+    run() { self.w.work(); self.s.take(); }
+}
+"#
+            .to_string(),
+        ),
+        (
+            "bound:from",
+            r#"{PRELUDE}
+effect money;
+group bad = { Worker, MissingOne };
+main locus App {
+    params { w: Worker = Worker { }; s: Sink = Sink { }; }
+    claims { law_bound: bound money <= 0 on paths from bad; }
+    run() { self.w.work(); self.s.take(); }
+}
+"#
+            .to_string(),
+        ),
+        (
+            "require_sealed:group",
+            r#"{PRELUDE}
+group bad = { Worker, MissingOne };
+main locus App {
+    params { w: Worker = Worker { }; s: Sink = Sink { }; }
+    claims { law_sealed: require sealed(all bad); }
+    run() { self.w.work(); self.s.take(); }
+}
+"#
+            .to_string(),
+        ),
+        (
+            "require_endpoint:group",
+            r#"{PRELUDE}
+type M { n: Int = 0; }
+topic T { payload: M; subject: "t"; }
+group bad = { Worker, MissingOne };
+main locus App {
+    params { w: Worker = Worker { }; s: Sink = Sink { }; }
+    bus { publish T; }
+    claims { law_endpoint: require subscribes(some bad, topic T); }
+    run() { self.w.work(); self.s.take(); T <- M { n: 1 }; }
+}
+"#
+            .to_string(),
+        ),
+    ];
+    const PRELUDE: &str = r#"
+locus Worker { params { n: Int = 0; } fn work() { self.n = self.n + 1; } }
+locus Sink { params { n: Int = 0; } fn take() { self.n = self.n + 1; } }
+"#;
+
+    let mut checked = 0usize;
+    for (label, body) in &cases {
+        let src = format!(
+            "{}\nfn main() {{ App {{ }}; }}\n",
+            body.replace("{PRELUDE}", PRELUDE)
+        );
+        let program = hale_syntax::parse_source(&src)
+            .unwrap_or_else(|e| panic!("{}: parse: {:?}", label, e));
+        let bundle = bundle_of(&src, &program);
+        let model = derive_application_model(&bundle);
+        model
+            .validate()
+            .unwrap_or_else(|e| panic!("{}: unlawful model: {:?}", label, e));
+        let table = hale_types::claim_lowering::lower_claims(&bundle, &model);
+        // Premise: exactly the intended group is refused, and the
+        // law really was lowered (an unlowered law would vacuously
+        // "pass" this test).
+        assert_eq!(
+            table.group_selection.get("bad"),
+            Some(&hale_model::GroupSelection::SelectorFailed),
+            "{}: fixture premise: `bad` must be selector-failed, got {:?}",
+            label,
+            table.group_selection
+        );
+        let row = table
+            .rows
+            .iter()
+            .find(|r| r.name.starts_with("law_"))
+            .unwrap_or_else(|| panic!("{}: the law did not lower", label));
+
+        let evidence = hale_types::evidence::derive_certificate_evidence(
+            &bundle, &table, &model,
+        );
+        let bases: Vec<u32> =
+            bundle.sources.iter().map(|f| f.base).collect();
+        let (_pre, judged) =
+            hale_types::topology_projection::judge_all(
+                &table, &model, &evidence, &bases,
+            );
+        let verdict = judged
+            .get(&row.ordinal)
+            .map(|j| j.verdict)
+            .unwrap_or_else(|| panic!("{}: the law was not judged", label));
+        assert_eq!(
+            verdict,
+            hale_types::verdict::Verdict::Invalid,
+            "{}: a law over a refused group was judged anyway",
+            label
+        );
+        checked += 1;
+    }
+    assert_eq!(
+        checked,
+        8,
+        "every group operand position must be covered; if a family \
+         or operand was added, add its case here"
+    );
+}

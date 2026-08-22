@@ -60,6 +60,14 @@ Review round 1 (PR #492), three blockers:
   the surviving subset, and a name declared twice read as fine while
   the model keeps the LAST declaration and selection keeps the
   first.
+
+  Round 3: the guard covers every group OPERAND, not the endpoints
+  only. `avoiding` is a domain too — its members become the mask
+  that removes paths from the walk, so a partially-resolved gate
+  masked with whatever survived and the claim was proved against a
+  subset of the gate the author wrote. A table-driven control now
+  pins all eight group-operand positions across the five families,
+  and asserts its own coverage count so a new operand fails it.
 - **Judgment requires a program that denotes a model.** Check called
   the judgment whenever a claim surface existed, including on
   ill-typed programs whose models are deliberately unlawful (a key

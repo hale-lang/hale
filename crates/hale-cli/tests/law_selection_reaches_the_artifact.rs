@@ -365,3 +365,60 @@ fn main() { App { }; }
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Review round 3: `avoiding` is a domain too.
+///
+/// The gate's members become the MASK that removes paths from the
+/// walk, so a partially-resolved gate masks with whatever members
+/// survived — and the claim gets proved by a subset of the gate the
+/// author wrote. Here `Gate` masks the only path from `sources` to
+/// `targets`; with `MissingGate` unresolved and the status ignored,
+/// the walk finds nothing and the law reads as holding.
+#[test]
+fn a_refused_avoiding_gate_refuses_the_law() {
+    let dir = workdir("avoiding");
+    let (stderr, artifact) = check_and_dump(
+        &dir,
+        r#"
+locus Target {
+    params { n: Int = 0; }
+    fn stop() { self.n = self.n + 1; }
+}
+locus Gate {
+    params { target: Target = Target { }; }
+    fn hop() { self.target.stop(); }
+}
+locus Source {
+    params { gate: Gate = Gate { }; }
+    fn go() { self.gate.hop(); }
+}
+group sources = { Source };
+group targets = { Target };
+group mask = { Gate, MissingGate };
+main locus App {
+    params { source: Source = Source { }; }
+    claims {
+        isolation: forbid reaches(sources, targets) avoiding mask;
+    }
+    run() { self.source.go(); }
+}
+fn main() { App { }; }
+"#,
+    );
+    assert!(
+        stderr.contains("MissingGate"),
+        "fixture premise: the unresolved gate member is reported:\n{}",
+        stderr
+    );
+    assert!(
+        issues(&artifact).iter().any(|m| m.contains("MissingGate")),
+        "the artifact must carry the selection issue: {:?}",
+        issues(&artifact)
+    );
+    assert_eq!(
+        law_row(&artifact, "isolation")["verdict"], "invalid",
+        "the law was proved against a mask built from the members \
+         that happened to resolve"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
