@@ -24,10 +24,23 @@ Deleted, because they were duplicate authorities inside the model:
   walk's verbatim output (one Boolean, no revisit), carried so the
   hashed `calls_via_stdlib` loop bit could not move away from what
   that walk produced. The artifact now projects the model's own
-  `ViaStdlib` call rows. Over the whole corpus the two agree: the
-  committed shape-hash baseline did not move, so the compatibility
-  carve-out was guarding a divergence no real program exhibits. The
-  walk itself and its shared helper are deleted.
+  `ViaStdlib` call rows, and the walk and its shared helper are
+  deleted.
+
+  **This is a versioned shape transition: schema 1.12 -> 1.13.** The
+  two interpretations agree on endpoints and can disagree on the
+  hashed `loop` bit: the old walk kept a set-valued `seen` per
+  caller, so a stdlib body first reached on a non-looped path was
+  never revisited when a looped path reached it later, while the
+  model's relation revisits on strengthening. The model's answer is
+  the sound one for what the bit asks — does this carrier repeat per
+  iteration — and a program in the distinguishing class gets a new
+  `shape_hash` and must be re-recorded once. No such program exists
+  today: the stdlib re-emerges into user code only from inside its
+  own loops, which sets the bit either way, so not one committed
+  baseline hash moved. The schema still bumps, because the
+  interpretation changed and identity discipline is about what the
+  bytes MEAN, not about whether a corpus happened to notice.
 
 Kept and renamed, because they are facts about the program that no
 other table holds: `Analyses` carries the bus graph's per-subject

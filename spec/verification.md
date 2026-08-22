@@ -294,7 +294,7 @@ earlier in the same file as the family. Companion:
 class along any path, with the same loop/indirect unboundedness
 rules as every per-call dimension.
 
-**The topology artifact** (#382 phase 2; schema 1.12):
+**The topology artifact** (#382 phase 2; schema 1.13):
 `hale check <t> --dump-topology` emits the serialized model —
 sorts (loci, fns, topics), relations (calls with **weights**: loop
 nesting, unbounded-loop membership, interface-dispatch tags;
@@ -302,7 +302,11 @@ publishes; subscribes), the through-stdlib **contracted** edges
 (`calls_via_stdlib`: user→user paths whose interior is stdlib
 bodies, collapsed to their endpoints with a conservative loop
 flag, so reachability over the artifact matches reachability as
-evaluated), the declared **groups**, the effect **labels**
+evaluated — the flag is the MODEL's, true whenever any contracted
+path is loop-nested; schema 1.13 adopted that reading over the
+pre-model walk's, which never revisited a stdlib body a looped
+path reached second, and a program where the two differ takes a
+new `shape_hash` and one re-record), the declared **groups**, the effect **labels**
 (declared carriers), the **phase relation**, the **seed sort**,
 the compiler-**derived** per-fn effect sets, the **supervision**
 relation (schema 1.10, downstream handoff — one row per
