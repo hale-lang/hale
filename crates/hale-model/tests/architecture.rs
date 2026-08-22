@@ -215,15 +215,7 @@ fn tiny_model() -> ApplicationModel {
             ..Capabilities::default()
         },
         provenance: prov,
-        legacy: LegacyProjection {
-            // Round 11 coverage law: the legacy fn sort IS the
-            // summarized set.
-            topology_v1_fns: vec![
-                FunctionId(0),
-                FunctionId(1),
-            ],
-            ..LegacyProjection::default()
-        },
+        analyses: Analyses::default(),
     }
 }
 
@@ -1354,20 +1346,34 @@ fn declared_publisher_ends_are_typed_rows() {
     );
 }
 
-/// The legacy projection is validated: sorted, in range.
+/// The summarized fn set is DERIVED, not stored beside the flag it
+/// restates.
+///
+/// It used to be a table (`legacy.topology_v1_fns`) whose only model
+/// law asserted that it agreed with `Function.summarized` — one
+/// fact, written twice, plus a law to keep the copies honest. The
+/// view cannot disagree with the flag, so the law is gone with the
+/// table.
 #[test]
-fn legacy_projection_is_validated() {
-    let mut m = tiny_model();
-    m.legacy.topology_v1_fns = vec![FunctionId(0), FunctionId(1)];
-    m.validate().expect("sorted legacy sort is lawful");
-    m.legacy.topology_v1_fns = vec![FunctionId(9)];
-    assert_eq!(
-        m.validate(),
-        Err(ModelError::DanglingId {
-            table: "legacy.topology_v1_fns",
-            index: 0
-        })
+fn the_summarized_set_is_derived_from_the_flag() {
+    let m = tiny_model();
+    let expected: Vec<FunctionId> = m
+        .entities
+        .functions
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.summarized)
+        .map(|(i, _)| FunctionId(i as u32))
+        .collect();
+    assert!(
+        !expected.is_empty(),
+        "fixture premise: the tiny model summarizes something"
     );
+    let derived: Vec<FunctionId> = m.summarized_fns().collect();
+    assert_eq!(derived, expected);
+    // Canonical (ascending) order — the artifact's fn-keyed sections
+    // range over this, so the order is part of the shape identity.
+    assert!(derived.windows(2).all(|w| w[0].0 < w[1].0));
 }
 
 /// Round 11: label rows are grouped by entity in canonical entity

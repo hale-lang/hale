@@ -22,7 +22,7 @@
 //! composition, `member_of` ∩ the summary universe for groups,
 //! `phase_of` for `during`, typed holes for the fail-closed edges)
 //! and INTERIOR stdlib vertices from the legacy absorption sidecar
-//! (`LegacyProjection::stdlib_absorption`), which preserves the
+//! (`Analyses::stdlib_absorption`), which preserves the
 //! evaluator's BFS layering through stdlib bodies — hole-vs-hit
 //! timing and interior witness spellings included.
 
@@ -250,7 +250,7 @@ pub fn judge_forbid_reaches(
     let model_span = |pid: ProvenanceId| -> Span {
         span_of(&model.provenance, source_bases, pid)
     };
-    let absorption = &model.legacy.stdlib_absorption;
+    let absorption = &model.analyses.stdlib_absorption;
     let display = |v: V| -> String {
         match v {
             V::User(f) => e.functions[f.index()].display.clone(),
@@ -263,7 +263,7 @@ pub fn judge_forbid_reaches(
 
     // The summary universe: only these functions are walk vertices.
     let v1: BTreeSet<FunctionId> =
-        model.legacy.topology_v1_fns.iter().copied().collect();
+        model.summarized_fns().collect();
 
     // Group → fn-grain projection (the evaluator's `fn_set`):
     // member loci project through the SUMMARY universe (v1), but a
@@ -1618,7 +1618,7 @@ pub fn judge_only_edges(
     };
     let fn_disp = |f: FunctionId| e.functions[f.index()].display.clone();
     let v1: BTreeSet<FunctionId> =
-        model.legacy.topology_v1_fns.iter().copied().collect();
+        model.summarized_fns().collect();
 
     // Group projections (fn grain + locus decl grain), evaluator
     // iteration order: FnKey Ord = (locus: None < Some, name) —
@@ -3095,7 +3095,7 @@ pub fn judge_bound(
     let model_span = |pid: ProvenanceId| -> Span {
         span_of(&model.provenance, source_bases, pid)
     };
-    let absorption = &model.legacy.stdlib_absorption;
+    let absorption = &model.analyses.stdlib_absorption;
     let display = |v: V| -> String {
         match v {
             V::User(f) => e.functions[f.index()].display.clone(),
@@ -3106,7 +3106,7 @@ pub fn judge_bound(
         }
     };
     let v1: BTreeSet<FunctionId> =
-        model.legacy.topology_v1_fns.iter().copied().collect();
+        model.summarized_fns().collect();
     let mut by_locus: BTreeMap<u32, Vec<FunctionId>> = BTreeMap::new();
     for mo in &r.member_of {
         by_locus.entry(mo.locus.0).or_default().push(mo.function);

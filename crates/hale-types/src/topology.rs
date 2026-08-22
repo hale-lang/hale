@@ -287,21 +287,6 @@ pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
         &programs,
         &bundle.import_renames,
     );
-    // The walk itself lives in `callgraph::legacy_via_stdlib_contraction`,
-    // shared with the model builder's `LegacyProjection` so the
-    // projected `TopologyShapeV1` hash and this serialization cannot
-    // drift (GH #476 Change 2, review round 9).
-    let mut via_stdlib: BTreeMap<(String, String), bool> =
-        BTreeMap::new();
-    for ((k, next), looped) in
-        crate::callgraph::legacy_via_stdlib_contraction(&merged, &user_key)
-    {
-        let e = via_stdlib
-            .entry((fn_name(&k), fn_name(&next)))
-            .or_insert(false);
-        *e |= looped;
-    }
-
     // ---- the normalized model (#392): phases, seeds, decl spans ----
     let vmodel =
         crate::model::Model::derive(&programs, &bundle.import_renames);

@@ -239,13 +239,10 @@ fn model_and_artifact_extract_the_same_facts() {
         "artifact fn sort ⊆ model universe; missing: {:?}",
         art_fns.difference(&model_fns).collect::<Vec<_>>()
     );
-    // …and the legacy projection recovers the EXACT legacy sort from
-    // the model alone (round 7): no summary/AST side channel for
-    // Change 3.
+    // …and the artifact's fn sort is exactly the model's summarized
+    // set, derived from the flag rather than carried beside it.
     let legacy_fns: BTreeSet<String> = m
-        .legacy
-        .topology_v1_fns
-        .iter()
+        .summarized_fns()
         .map(|id| e.functions[id.index()].display.clone())
         .collect();
     assert_eq!(
@@ -1410,14 +1407,21 @@ fn main() { App { }; }
     );
 }
 
-/// P1 (round 9): `LegacyProjection.topology_v1_calls_via_stdlib`
-/// reproduces the artifact's serialized rows EXACTLY — from/to AND
-/// the loop bit, which sits inside the hashed model half. The
-/// projection runs the shared LEGACY walk (one Boolean, no
-/// revisit), not the model's lattice, whose loop bits may be
-/// legitimately stronger.
+/// The artifact's `calls_via_stdlib` rows come from the model's OWN
+/// `ViaStdlib` call relation — from/to AND the loop bit, which sits
+/// inside the hashed model half.
+///
+/// They used to come from a copy of the legacy walk's output
+/// (one Boolean, no revisit) carried beside the model, because that
+/// walk can leave a loop bit false where the model's
+/// revisit-on-strengthen lattice sets it, and moving the bit moves
+/// the shape hash. Nothing reproduces that walk any more; the
+/// artifact reports what the model knows. Over the whole corpus the
+/// two agree — the committed shape-hash baseline did not move when
+/// the source changed — so the carve-out was guarding a divergence
+/// no real program exhibits.
 #[test]
-fn legacy_via_stdlib_projection_matches_the_artifact_exactly() {
+fn via_stdlib_rows_project_from_the_model_relation() {
     // The #392 recipe that manufactures a real user→stdlib→user
     // contracted edge: Router.dispatch's interior reaches the
     // registered user handler.
@@ -1473,19 +1477,34 @@ fn main() {
         !art_rows.is_empty(),
         "the recipe must manufacture a contracted edge"
     );
-    // Artifact strings are DISPLAY — project through display fields.
-    let proj_rows: BTreeSet<(String, String, bool)> = m
-        .legacy
-        .topology_v1_calls_via_stdlib
-        .iter()
-        .map(|(f, t, l)| {
-            (
-                e.functions[f.index()].display.clone(),
-                e.functions[t.index()].display.clone(),
-                *l,
-            )
-        })
-        .collect();
+    // Artifact strings are DISPLAY — project through display
+    // fields. The rows come from the model's OWN `ViaStdlib` call
+    // relation now: the legacy walk's verbatim output used to be
+    // carried beside the model so the serialized loop bit could not
+    // move, and nothing depends on reproducing that walk any more.
+    let proj_rows: BTreeSet<(String, String, bool)> = {
+        let summarized: BTreeSet<u32> =
+            m.summarized_fns().map(|f| f.0).collect();
+        let mut merged: BTreeMap<(String, String), bool> =
+            BTreeMap::new();
+        for c in m
+            .relations
+            .calls
+            .iter()
+            .filter(|c| c.dispatch == DispatchKind::ViaStdlib)
+            .filter(|c| {
+                summarized.contains(&c.from.0)
+                    && summarized.contains(&c.to.0)
+            })
+        {
+            let k = (
+                e.functions[c.from.index()].display.clone(),
+                e.functions[c.to.index()].display.clone(),
+            );
+            *merged.entry(k).or_insert(false) |= c.in_loop;
+        }
+        merged.into_iter().map(|((f, t), l)| (f, t, l)).collect()
+    };
     assert_eq!(
         art_rows, proj_rows,
         "projection reproduces serialized rows incl. loop bits"
