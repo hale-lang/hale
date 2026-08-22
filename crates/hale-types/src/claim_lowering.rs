@@ -374,6 +374,10 @@ pub fn lower_claims(
         table.issues.push(LoweringIssue {
             message: d.message.clone(),
             provenance: pid,
+            // Law SELECTION: which laws exist at all (group
+            // resolution, constitution adoption, name collisions).
+            // No family owns it, and no other engine reports it.
+            family: None,
         });
     }
     let recs = &mut table.provenance.records;
@@ -800,6 +804,9 @@ pub fn lower_claims(
         table.issues.push(LoweringIssue {
             message,
             provenance: pid,
+            // The ANNOTATION surface — `@effects` / `@budget` /
+            // `@no_*`. The effects engine reports these in check.
+            family: Some(hale_model::JudgmentFamily::Certificate),
         });
     }
 

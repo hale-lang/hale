@@ -966,6 +966,54 @@ pub fn legacy_unmigrated_verdicts(
     out
 }
 
+/// GH #476 Change 9: run every migrated judgment family over one
+/// (table, model, evidence) and merge the rows by ordinal.
+///
+/// This is THE judgment entry point. It existed inline inside
+/// `project_law_rows`, which made the artifact the only consumer
+/// and left `hale check` on a second, independently-written
+/// evaluator for the same laws — the duplicate authority this
+/// change removes. Both consumers now call this.
+///
+/// Returns the table-level pre-pass diagnostics (duplicate claim
+/// names) and the per-ordinal judgments.
+pub fn judge_all(
+    table: &hale_model::ClaimIrTable,
+    model: &ApplicationModel,
+    evidence: &hale_model::EvidenceTable,
+    source_bases: &[u32],
+) -> (
+    Vec<hale_syntax::Diag>,
+    BTreeMap<u32, crate::judgment::Judged>,
+) {
+    let mut judged: BTreeMap<u32, crate::judgment::Judged> =
+        BTreeMap::new();
+    let (pre, r5a) =
+        crate::judgment::judge_forbid_reaches(table, model, source_bases);
+    for j in r5a {
+        judged.insert(j.ordinal, j);
+    }
+    for j in crate::judgment::judge_only_edges(table, model, source_bases)
+    {
+        judged.insert(j.ordinal, j);
+    }
+    for j in crate::judgment::judge_endpoints(table, model, source_bases) {
+        judged.insert(j.ordinal, j);
+    }
+    for j in crate::judgment::judge_bound(table, model, source_bases) {
+        judged.insert(j.ordinal, j);
+    }
+    for j in crate::judgment::judge_certificates(
+        table,
+        model,
+        evidence,
+        source_bases,
+    ) {
+        judged.insert(j.ordinal, j);
+    }
+    (pre, judged)
+}
+
 /// Project the artifact's claim/evidence rows from the canonical
 /// path: `ClaimIr` rows rendered by the model-side authority
 /// ([`hale_model::ClaimRow::claims_form`]), verdicts from the
@@ -999,46 +1047,8 @@ pub fn project_law_rows(
 ) {
     use hale_model::{ClaimIr, ClaimOrigin};
     let _ = bundle;
-    // Merge every judged family by ordinal.
-    let mut judged: std::collections::BTreeMap<
-        u32,
-        crate::judgment::Judged,
-    > = std::collections::BTreeMap::new();
-    let (pre, r5a) = crate::judgment::judge_forbid_reaches(
-        table,
-        model,
-        source_bases,
-    );
-    for j in r5a {
-        judged.insert(j.ordinal, j);
-    }
-    for j in crate::judgment::judge_only_edges(
-        table,
-        model,
-        source_bases,
-    ) {
-        judged.insert(j.ordinal, j);
-    }
-    for j in crate::judgment::judge_endpoints(
-        table,
-        model,
-        source_bases,
-    ) {
-        judged.insert(j.ordinal, j);
-    }
-    for j in
-        crate::judgment::judge_bound(table, model, source_bases)
-    {
-        judged.insert(j.ordinal, j);
-    }
-    for j in crate::judgment::judge_certificates(
-        table,
-        model,
-        evidence,
-        source_bases,
-    ) {
-        judged.insert(j.ordinal, j);
-    }
+    let (pre, judged) =
+        judge_all(table, model, evidence, source_bases);
     // Bundle-global diag spans → (source path, local span), the
     // same placement rule the artifact's provenance section uses.
     let locate = |sp: hale_syntax::Span|

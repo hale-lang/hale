@@ -399,6 +399,20 @@ pub struct ClaimRow {
 pub struct LoweringIssue {
     pub message: String,
     pub provenance: ProvenanceId,
+    /// Which family's row this issue prevented, when one owns it —
+    /// `None` for table-level LAW SELECTION (an unknown or cyclic
+    /// constitution, a name declared twice, a group that resolves
+    /// to nothing), which belongs to no single family.
+    ///
+    /// GH #476 Change 9: the two consumers of this table report
+    /// different subsets, and they must not guess. The artifact
+    /// carries every issue; the CHECK path reports only the ones no
+    /// other engine already owns — law selection is its own
+    /// authority, while an annotation-surface issue (an undeclared
+    /// effect class, say) is reported by the effects engine, and
+    /// emitting it here too would put the same message on screen
+    /// twice.
+    pub family: Option<JudgmentFamily>,
 }
 
 /// The lowered law table for one application (or one plan).
@@ -416,7 +430,7 @@ pub struct ClaimIrTable {
 /// The judgment family that owns a lowered row — the unit at which
 /// Change-5 migration, artifact adequacy, and the corpus
 /// differentials are organized (GH #476 Change 6).
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum JudgmentFamily {
     /// `forbid reaches` (Change 5a).
     Reachability,

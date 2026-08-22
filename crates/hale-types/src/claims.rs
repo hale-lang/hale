@@ -85,6 +85,36 @@ pub fn claims_diags(
     claims_report(programs, graph, import_renames).0
 }
 
+/// GH #476 Change 9 — LAW SELECTION only: which laws exist at all.
+///
+/// Clause enumeration (constitutions: unknown, cyclic, illegally
+/// adopted, colliding), group resolution (a member naming nothing,
+/// a group resolving to nothing without `may_be_empty`), and the
+/// library/world tier rule. These are questions about the claim
+/// SURFACE, and this module is their one authority.
+///
+/// What it deliberately does NOT do is judge. Verdicts — and the
+/// validation diagnostics that precede them — come from the
+/// judgment engines over the canonical model
+/// (`judgment::claim_law_diags`). Before Change 9 both halves lived
+/// here AND in the engines, and `hale check` read this copy while
+/// the artifact read the other.
+pub fn selection_diags(
+    programs: &[&Program],
+    graph: &BusGraph,
+    import_renames: &[(Vec<String>, String)],
+) -> Vec<Diag> {
+    let (mut d, _, _) =
+        claims_report_inner(programs, graph, import_renames, true);
+    crate::stdlib_bodies::demangle_imports(&mut d, import_renames);
+    for x in &mut d {
+        if x.kind == hale_syntax::error::DiagKind::Type {
+            x.kind = hale_syntax::error::DiagKind::Claim;
+        }
+    }
+    d
+}
+
 /// Diagnostics plus per-claim outcomes (the artifact's rows).
 /// Demangles cross-seed symbols in the diagnostics so witnesses name
 /// what the author wrote.
@@ -116,7 +146,7 @@ pub fn claims_report_with_identities(
     import_renames: &[(Vec<String>, String)],
 ) -> (Vec<Diag>, Vec<ClaimOutcome>, Adoption) {
     let (mut d, o, adoption) =
-        claims_report_inner(programs, graph, import_renames);
+        claims_report_inner(programs, graph, import_renames, false);
     crate::stdlib_bodies::demangle_imports(&mut d, import_renames);
     let mut consts: Vec<&ConstitutionDecl> = Vec::new();
     fn walk<'a>(items: &'a [TopDecl], out: &mut Vec<&'a ConstitutionDecl>) {
@@ -208,7 +238,7 @@ pub fn claims_report(
     import_renames: &[(Vec<String>, String)],
 ) -> (Vec<Diag>, Vec<ClaimOutcome>) {
     let (mut out, outcomes, _adoption) =
-        claims_report_inner(programs, graph, import_renames);
+        claims_report_inner(programs, graph, import_renames, false);
     crate::stdlib_bodies::demangle_imports(&mut out, import_renames);
     // Mark the whole batch at the one place they all funnel through,
     // rather than at ~30 construction sites. Rendering is unchanged
@@ -786,6 +816,13 @@ fn claims_report_inner(
     programs: &[&Program],
     graph: &BusGraph,
     import_renames: &[(Vec<String>, String)],
+    // GH #476 Change 9: stop after LAW SELECTION — clause
+    // enumeration, group resolution, constitution adoption — and
+    // return before any claim is validated or evaluated. Selection
+    // is this module's remaining authority; the verdicts moved to
+    // the judgment engines over the canonical model, and running
+    // both would put two answers to one question on screen.
+    selection_only: bool,
 ) -> (Vec<Diag>, Vec<ClaimOutcome>, AdoptionInfo) {
     let ClauseUniverse {
         claims,
@@ -894,6 +931,10 @@ fn claims_report_inner(
     }
 
     if claims.is_empty() {
+        return (diags, Vec::new(), adoption);
+    }
+
+    if selection_only {
         return (diags, Vec::new(), adoption);
     }
 

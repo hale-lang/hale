@@ -1766,6 +1766,43 @@ pub fn judge_only_edges(
                 ok = false;
             }
         }
+        // …and unknown GRANT topics. A grant names the reviewable
+        // declaration that admits an edge, so a grant naming
+        // nothing is an invalid law, not a law with one fewer
+        // grant — silently dropping it would evaluate a WEAKER
+        // claim than the one written and report its violations as
+        // if the author had chosen them. (GH #476 Change 9: the
+        // evaluator validated this and the engine did not; the
+        // corpus differential could not see it, because the
+        // fixture that covers it is a `format!` template the
+        // corpus provider skips.)
+        let topic_names: Vec<&str> =
+            e.topics.iter().map(|t| t.display.as_str()).collect();
+        for g in grants {
+            if g.topic.topic.is_some() {
+                continue;
+            }
+            let mut near: Vec<&&str> = topic_names
+                .iter()
+                .filter(|n| {
+                    crate::effects::close(n, &g.topic.name.raw)
+                })
+                .collect();
+            near.sort();
+            let hint = match near.first() {
+                Some(n) => format!(" Did you mean `{}`?", n),
+                None => String::new(),
+            };
+            diags.push(Diag::ty(
+                claim_span(g.topic.provenance),
+                format!(
+                    "claim `{}` names topic `{}`, which is never \
+                     declared.{}",
+                    row.name, g.topic.name.raw, hint
+                ),
+            ));
+            ok = false;
+        }
         if !ok {
             out.push(Judged {
                 ordinal: row.ordinal,
@@ -4246,4 +4283,107 @@ fn severity(v: Verdict) -> u8 {
         Verdict::Violated => 2,
         Verdict::Invalid => 3,
     }
+}
+
+/// GH #476 Change 9 — the CHECK path's claim diagnostics, from the
+/// same judgment the artifact projects.
+///
+/// `hale check` used to call a second evaluator (`claims.rs`) that
+/// re-derived these four families from source, in parallel with the
+/// engines here deriving them from the model. Two authorities for
+/// one question is the defect this epic exists to remove: the
+/// corpus differentials could only ever hold them equal, never make
+/// them the same answer. This is the same answer.
+///
+/// Scope is the MIGRATED, self-judged families — reachability,
+/// boundary, endpoint, bound. Certificates are deliberately absent:
+/// `judge_certificates` judges rows against evidence the effects
+/// engine produced, and that engine emits its own diagnostics in
+/// check; re-emitting them here would duplicate, which is the thing
+/// being deleted. `Unmigrated` rows keep their existing single
+/// authority (`frontier`, `quantitative`, `budget_check`).
+pub fn claim_law_diags(bundle: &crate::symbol::Bundle<'_>) -> Vec<Diag> {
+    // The epic's demand rule: a program that swears to nothing has
+    // nothing to judge, and must not pay for a model derivation.
+    // The scan is structural and AST-cheap — no resolution, no
+    // summary — so the no-claims path (the LSP's) stays what it was.
+    if !has_claim_surface(bundle) {
+        return Vec::new();
+    }
+    let model = crate::model_builder::derive_application_model(bundle);
+    let table = crate::claim_lowering::lower_claims(bundle, &model);
+    // Law-SELECTION invalidity (unknown/cyclic constitution, illegal
+    // adoption, collisions) produced no row to judge, so it must be
+    // reported from the table itself or it disappears between
+    // checking and the artifact.
+    let source_bases: Vec<u32> =
+        bundle.sources.iter().map(|f| f.base).collect();
+    let mut out: Vec<Diag> = Vec::new();
+    // Law-SELECTION issues are NOT emitted here: `claims::
+    // selection_diags` is their one authority (they are questions
+    // about which laws exist, not about what a law says), and the
+    // check path calls it alongside this. The table still carries
+    // them for the artifact, whose law account must show every
+    // issue in one document.
+    let evidence = crate::evidence::derive_certificate_evidence(
+        bundle, &table, &model,
+    );
+    let (pre, judged) = crate::topology_projection::judge_all(
+        &table,
+        &model,
+        &evidence,
+        &source_bases,
+    );
+    // Table-level pre-pass first (duplicate claim names), then each
+    // row in AUTHORED order — the evaluator's order, which the
+    // diagnostics differential holds byte-equal.
+    out.extend(pre);
+    for row in &table.rows {
+        if !matches!(
+            row.family(),
+            hale_model::JudgmentFamily::Reachability
+                | hale_model::JudgmentFamily::Boundary
+                | hale_model::JudgmentFamily::Endpoint
+                | hale_model::JudgmentFamily::Bound
+        ) {
+            continue;
+        }
+        if let Some(j) = judged.get(&row.ordinal) {
+            out.extend(j.diags.iter().cloned());
+        }
+    }
+    crate::stdlib_bodies::demangle_imports(&mut out, &bundle.import_renames);
+    // Law diagnostics are `Claim`-kinded at the source, exactly as
+    // the evaluator emitted them. `check` re-kinds its whole law
+    // block defensively; a consumer that reads this function
+    // directly (the LSP, a test) gets the right kind without it.
+    for d in &mut out {
+        if d.kind == hale_syntax::error::DiagKind::Type {
+            d.kind = hale_syntax::error::DiagKind::Claim;
+        }
+    }
+    out
+}
+
+/// Does this bundle declare any claim the judgment engines would
+/// judge — a `claims { }` block (world tier or library tier) or a
+/// `constitution` to adopt one from?
+///
+/// Annotations are deliberately not a claim surface here: their
+/// rows are the certificate family, whose diagnostics belong to the
+/// effects engine (see [`claim_law_diags`]).
+fn has_claim_surface(bundle: &crate::symbol::Bundle<'_>) -> bool {
+    use hale_syntax::ast::{LocusMember, TopDecl};
+    fn walk(items: &[TopDecl]) -> bool {
+        items.iter().any(|item| match item {
+            TopDecl::Claims(_) | TopDecl::Constitution(_) => true,
+            TopDecl::Locus(l) => l
+                .members
+                .iter()
+                .any(|m| matches!(m, LocusMember::Claims(_))),
+            TopDecl::Module(m) => walk(&m.items),
+            _ => false,
+        })
+    }
+    bundle.programs.values().any(|p| walk(&p.items))
 }
