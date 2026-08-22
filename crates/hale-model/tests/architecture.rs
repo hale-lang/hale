@@ -110,7 +110,11 @@ fn tiny_model() -> ApplicationModel {
                 },
             ],
             locus_instances: vec![LocusInstance {
-                path: "App.w".to_string(),
+                // A replica instance: the path carries the index
+                // and `replica` carries the SAME index (Change 8's
+                // contiguity law — an index on a non-replica path,
+                // or a path whose index disagrees, is not a model).
+                path: "App.w[0]".to_string(),
                 decl: LocusDeclId(1),
                 replica: Some(0),
                 provenance: p,

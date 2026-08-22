@@ -126,10 +126,12 @@
 pub mod application;
 pub mod capability;
 pub mod claim_ir;
+pub mod dispatch_plan;
 pub mod entity;
 pub mod hole;
 pub mod ids;
 pub mod keys;
+pub mod obs_ids;
 pub mod provenance;
 pub mod relation;
 
@@ -138,7 +140,7 @@ pub use application::{
     ApplicationModel, Entities, CertificateEvidence, EvidenceRow, EvidenceTable, LabelRow,
     LegacyProjection, StdlibAbsorption,
     VerdictIr, ModelError, ModelHashKind, ModelHeader,
-    Relations, WeightRow, MODEL_SEMANTICS_V1,
+    Relations, WeightRow, MODEL_SEMANTICS_V1, DispatchGate,
 };
 pub use capability::Capabilities;
 pub use claim_ir::{

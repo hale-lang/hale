@@ -675,6 +675,7 @@ fn looped_stdlib_entry_with_carrier_is_unbounded() {
         capabilities: Capabilities::default(),
         provenance: prov,
         legacy: LegacyProjection {
+            dispatch_gates: Vec::new(),
             topology_v1_fns: vec![FunctionId(0)],
             topology_v1_calls_via_stdlib: Vec::new(),
             stdlib_absorption: vec![StdlibAbsorption {
@@ -2889,6 +2890,7 @@ fn mixed_dispatch_alternatives_share_one_group() {
         capabilities: Capabilities::default(),
         provenance: prov,
         legacy: LegacyProjection {
+            dispatch_gates: Vec::new(),
             topology_v1_fns: vec![FunctionId(0), FunctionId(1)],
             topology_v1_calls_via_stdlib: Vec::new(),
             // The stdlib alternative of the SAME authored dispatch

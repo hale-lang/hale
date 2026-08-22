@@ -8,6 +8,122 @@ behavior.
 
 ## Unreleased
 
+### Deployment consumers: the arrangement + the dispatch plan (GH #476 Change 8)
+
+Review round 1 (PR #491), five blockers plus two identity bugs they
+uncovered:
+
+- **Replica rows carry their index, not the count.** `replicas = 3`
+  produced `[3, 3, 3]` where the runtime has replicas 0, 1, 2 — the
+  keyed-delivery model the arrangement exists to feed would have
+  named a population no process has. `validate` now enforces that a
+  replicated field's instances form a contiguous 0-based set and
+  that the index in the path and the index in the row agree.
+- **Binding rows are decoded, not defaulted.** Every unix binding
+  was modeled `role: Listen, loss: WaitCapable` regardless of what
+  was authored, so an explicit (or inferred) `connect` binding was
+  its own opposite in the model. Roles now come from ONE rule shared
+  with the desugar, loss follows the role, and rows are canonically
+  sorted BEFORE ids are assigned — two bindings authored in reverse
+  subject order used to produce a model that failed its own
+  canonical-order law.
+- **A partly dynamic population is not same-domain.** The plan built
+  its domain map from arranged instances only, so a locus with one
+  arranged instance and one dynamic birth answered "main" for the
+  whole population — a false stage-0 optimization opportunity, and
+  an unsafe precondition for the placement-driven lowering it is
+  meant to inform. A placement hole now deletes the locus's answer.
+- **`hale build` artifacts carry an execution identity.** The
+  identity plumbing reached `hale run` and `hale replay` but not the
+  path that produces the binaries users ship, which set a model hash
+  and no digest at all. It now stamps the digest from the FINAL
+  build options plus the plan.
+- **Canonical ids are identity-bound and total.** `model_hash` does
+  not cover every table these ids index (binding rows are not in the
+  artifact), so the header publishes `entity_id_digest` at `0x88`
+  (proto 0.3) over the exact stamped rows: a consumer recomputes it
+  from its own model and joins only on a match. The mapping table
+  grows with the program instead of silently dropping entities past
+  a fixed 512 — a dropped row read back as "unstamped", which is
+  what a build with no ids at all looks like. Out of memory now
+  withholds the whole channel, loudly, rather than half of it.
+
+**Fix (observation identity).** A program with a `bindings { }`
+block published `model_hash 0` for its whole life: registering a
+binding creates the observation segment, segment creation snapshots
+the identity fields, and the prelude stamped them afterwards. The
+identity setters now run before anything that can register. Eager
+recording/replay init deliberately stays after binding realization,
+so a backend with no replay class still refuses at its own seam.
+
+Review round 2: the replica-index law read `path.rfind('[')`, so any
+descendant of a replica (`App.workers[0].leaf` — the arrangement
+walks into each replica, and a leaf beneath one is an ordinary
+child) was treated as a malformed replica row and refused the whole
+model. Replica-ness is a property of the last path component only.
+
+**Fix (binding role inference).** The documented inference
+(publish-only → `connect`, subscribe-only → `listen`) was dead code:
+the desugar ran it after rewriting topic references to literal
+subjects, so it saw no topic ends and filled in nothing, and codegen
+refused every binding that did not spell `role:` explicitly.
+
+The model's arrangement tables are populated and their consumers
+land on them. `locus_instances` / `realizes` / `owns` /
+`placed_in` / `thread_domains` / `bindings` / `binds` now carry
+the static deployment: the params-default tree rooted at the main
+locus, `pinned(replicas = K)` fanned to K instances, thread domains
+by the runtime's own rule (pinned owns a domain, `cooperative(pool
+= X)` runs on X's worker, everything else inherits its owner, the
+root is `main`, a binding reader is its own domain). What the
+arrangement cannot see is a typed hole, not silence: instances born
+outside it (method bodies AND free functions - `fn main() { W { };
+}` is the corpus's most common shape) hide OWNS|PLACED at the born
+locus, adapter transports hide BINDS|DELIVERY at the topic, and the
+capability account gains `exact_ownership` / `exact_placement` /
+`exact_routes` accordingly. This closed a fail-open: a program whose
+loci are all born in `fn main` used to claim exact placement over
+zero modeled instances.
+
+`DispatchPlan::derive(&ApplicationModel)` owns the lowering
+decision: one row per subject with the flavor (dynamic /
+static_bucket / static_direct), the gate's reason, the subscriber
+list, publisher and subscriber THREAD DOMAINS, and `same_domain` -
+GH #464's stage-0 survey question as a model query rather than a
+bespoke topology walk. `hale model dump` prints the plan and the
+same-domain count. Codegen no longer decides: it still computes its
+own gate facts over the merged, desugared program it emits from,
+but the ladder is `DispatchFlavor::of` in hale-model and its ids /
+direct set / direct-subscriber lists come from the plan. A corpus
+differential runs both fact sources through the real binaries and
+requires agreement on every subject the model names.
+
+The plan is part of build identity: `exec_digest` frames
+`DispatchPlan::digest()`, so two builds of identical sources that
+lower dispatch differently - notably the `LOTUS_NO_BUS_DEVIRT=1`
+control arm - no longer share a recording identity, and replay
+across that boundary is refused by name.
+
+Iris joins by ID instead of by name: manifest rows carry the
+canonical model entity id in `aux_b` (a field in the entry layout
+since v0, written as 0 by every path until now). MK_TOPIC rows
+carry the `SubjectId` (the manifest fuses publishers by wire
+subject), MK_LOCUS_TYPE the `LocusDeclId`, MK_BINDING the
+`BindingId`, all as `index + 1` so **0 still means unstamped** -
+harness builds, and entities the model does not name, read exactly
+as before. The ids are indices into the model whose `shape_hash`
+the header already carries, so the two travel together.
+
+**Fix (bus dispatch, transport-bound subjects).** A subject named
+by a `bindings { }` entry is exempt from devirtualization - the
+adapter's peer is the real counterparty - but the exemption was
+keyed only by the topic DECL name, while codegen builds its graph
+after topic desugaring, where subjects are wire strings. A bound
+topic could therefore be lowered into a static bucket its own
+adapter is not part of. The gate now records both grains. Found by
+the Change-8 plan differential: 1 of 21 bus programs in the corpus
+disagreed.
+
 ### Typed FleetModel + the versioned shape transition (GH #476 Change 7)
 
 Round 6: completeness with the polarity of the law. The blanket

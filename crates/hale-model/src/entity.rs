@@ -112,8 +112,14 @@ pub struct LocusInstance {
     /// Canonical instance path, e.g. `App.w` or `App.workers[3]`.
     pub path: String,
     pub decl: LocusDeclId,
-    /// `Some(k)` for a `replicas = K` member; feeds `EqReplica`
-    /// coverage in keyed-delivery judgments.
+    /// This instance's REPLICA INDEX (0-based) when it came from a
+    /// `pinned(..., replicas = K)` field, `None` otherwise. It is
+    /// the index, not the count: the runtime pins replica `i` to
+    /// one core, and a keyed subscriber on a replicated field
+    /// registers under `key == i` — so `EqReplica` coverage in
+    /// keyed-delivery judgments only works if the model names the
+    /// same `i` codegen bakes. `validate` enforces that the
+    /// replicas of one field form a contiguous 0-based set.
     pub replica: Option<u32>,
     pub provenance: ProvenanceId,
 }

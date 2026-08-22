@@ -4595,6 +4595,7 @@ fn compile_and_exec(
     user_args: &[String],
     model_hash: u64,
     exec_digest: [u64; 4],
+    obs_entity_ids: Vec<hale_model::obs_ids::ObsEntityId>,
 ) -> ExitCode {
     let mut bin = std::env::temp_dir();
     let mut h = DefaultHasher::new();
@@ -4604,6 +4605,7 @@ fn compile_and_exec(
     let options = hale_codegen::BuildOptions {
         model_hash: Some(model_hash),
         exec_digest: Some(exec_digest),
+        obs_entity_ids,
         ..Default::default()
     };
     if let Err(e) = hale_codegen::build_executable_with_options(
@@ -4641,10 +4643,52 @@ fn compile_and_exec(
 /// inputs". Residue it cannot see: the LLVM/libc toolchain outside
 /// this binary and the linker environment — a post-link binary
 /// digest is the staged stronger form.
+/// GH #476 Change 8: everything the BUILD needs from the canonical
+/// model, from ONE derivation — the dispatch plan's digest (folded
+/// into the execution identity below) and the canonical entity ids
+/// codegen stamps into the observation manifest.
+///
+/// `LOTUS_NO_BUS_DEVIRT=1` (the differential harness's control arm)
+/// makes codegen emit the empty plan — every subject dynamic — so
+/// the identity folded into the exec digest must be the EMPTY
+/// plan's, not the model's. Otherwise the control arm and the live
+/// arm would share a build identity while running different
+/// lowerings, and a recording taken under one would be admitted
+/// against the other.
+/// The build-options half of the execution identity. One spelling,
+/// so `hale build` and `hale run` fingerprint the same options the
+/// same way (they did not: the build path never computed a digest
+/// at all — GH #476 Change 8 review).
+fn options_fingerprint(o: &hale_codegen::BuildOptions) -> String {
+    format!(
+        "target={:?};cpu={:?};dev={};debug={}",
+        o.target,
+        o.target_cpu,
+        o.dev_profile,
+        o.debug.is_some()
+    )
+}
+
+fn model_identity(
+    bundle: &hale_types::Bundle<'_>,
+) -> (u64, Vec<hale_model::obs_ids::ObsEntityId>) {
+    let model = hale_types::model_builder::derive_application_model(bundle);
+    let plan_digest = if std::env::var("LOTUS_NO_BUS_DEVIRT")
+        .map(|v| v == "1" || v == "true" || v == "TRUE")
+        .unwrap_or(false)
+    {
+        hale_model::dispatch_plan::DispatchPlan::default().digest()
+    } else {
+        hale_model::dispatch_plan::DispatchPlan::derive(&model).digest()
+    };
+    (plan_digest, hale_model::obs_ids::obs_entity_ids(&model))
+}
+
 fn exec_digest(
     sources: &BTreeMap<PathBuf, String>,
     entry: &Path,
     options_fp: &str,
+    plan_digest: u64,
 ) -> [u64; 4] {
     let mut buf: Vec<u8> = Vec::new();
     let frame = |b: &[u8], buf: &mut Vec<u8>| {
@@ -4660,6 +4704,14 @@ fn exec_digest(
     frame(env!("HALE_TOOLCHAIN_SHA256").as_bytes(), &mut buf);
     frame(env!("CARGO_PKG_VERSION").as_bytes(), &mut buf);
     frame(options_fp.as_bytes(), &mut buf);
+    // GH #476 Change 8: the DISPATCH PLAN is part of what a build
+    // is. Two builds of byte-identical sources by one toolchain
+    // still run different code if the bus lowering differs (an
+    // env-forced all-dynamic plan, a future placement-driven
+    // flavor), and a recording admitted across that boundary would
+    // replay against a program whose bus behaves differently. The
+    // plan's digest is framed here so the boundary is a refusal.
+    frame(&plan_digest.to_le_bytes(), &mut buf);
     buf.extend_from_slice(&(sources.len() as u64).to_le_bytes());
     // Logical (entry-relative) source ids: identical trees checked
     // out under different roots are the same build inputs.
@@ -5168,15 +5220,10 @@ fn run_replay(args: &[String]) -> ExitCode {
         }
     }
     let model_hash = hale_types::topology::model_shape_hash(&bundle);
-    let base_options = hale_codegen::BuildOptions::default();
-    let options_fp = format!(
-        "target={:?};cpu={:?};dev={};debug={}",
-        base_options.target,
-        base_options.target_cpu,
-        base_options.dev_profile,
-        base_options.debug.is_some()
-    );
-    let digest = exec_digest(&sources, &prog, &options_fp);
+    let options_fp =
+        options_fingerprint(&hale_codegen::BuildOptions::default());
+    let (plan_digest, obs_ids) = model_identity(&bundle);
+    let digest = exec_digest(&sources, &prog, &options_fp, plan_digest);
 
     // GH #296 phase 5b (review round): a binding backend with no
     // replay class cannot be suppressed OR injected — replaying or
@@ -5382,6 +5429,7 @@ fn run_replay(args: &[String]) -> ExitCode {
     let options = hale_codegen::BuildOptions {
         model_hash: Some(model_hash),
         exec_digest: Some(digest),
+        obs_entity_ids: obs_ids.clone(),
         ..Default::default()
     };
     if let Err(e) = hale_codegen::build_executable_with_options(
@@ -5629,17 +5677,13 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
         // P26: stamp the model identity of the bundle just checked.
         let model_hash =
             hale_types::topology::model_shape_hash(&bundle);
-        let base_options = hale_codegen::BuildOptions::default();
-        let options_fp = format!(
-            "target={:?};cpu={:?};dev={};debug={}",
-            base_options.target,
-            base_options.target_cpu,
-            base_options.dev_profile,
-            base_options.debug.is_some()
-        );
-        let digest = exec_digest(&sources, target, &options_fp);
+        let options_fp =
+            options_fingerprint(&hale_codegen::BuildOptions::default());
+        let (plan_digest, obs_ids) = model_identity(&bundle);
+        let digest =
+            exec_digest(&sources, target, &options_fp, plan_digest);
         return compile_and_exec(
-            &program, &renames, user_args, model_hash, digest,
+            &program, &renames, user_args, model_hash, digest, obs_ids,
         );
     }
 
@@ -5761,16 +5805,14 @@ fn run_program(target: &Path, user_args: &[String]) -> ExitCode {
     }
     // P26: stamp the model identity of the bundle just checked.
     let model_hash = hale_types::topology::model_shape_hash(&bundle);
-    let base_options = hale_codegen::BuildOptions::default();
-    let options_fp = format!(
-        "target={:?};cpu={:?};dev={};debug={}",
-        base_options.target,
-        base_options.target_cpu,
-        base_options.dev_profile,
-        base_options.debug.is_some()
-    );
-    let digest = exec_digest(&path_sources, target, &options_fp);
-    compile_and_exec(&program, &renames, user_args, model_hash, digest)
+    let options_fp =
+        options_fingerprint(&hale_codegen::BuildOptions::default());
+    let (plan_digest, obs_ids) = model_identity(&bundle);
+    let digest =
+        exec_digest(&path_sources, target, &options_fp, plan_digest);
+    compile_and_exec(
+        &program, &renames, user_args, model_hash, digest, obs_ids,
+    )
 }
 
 fn run_build(target: &Path) -> ExitCode {
@@ -6000,6 +6042,13 @@ fn run_build(target: &Path) -> ExitCode {
     // the binary, for the observation segment header.
     options.model_hash =
         Some(hale_types::topology::model_shape_hash(&bundle));
+    // GH #476 Change 8: the canonical entity ids a consumer joins
+    // the live manifest to that model with, and the dispatch
+    // plan's digest — held here and folded into the execution
+    // identity once the options are FINAL (below), since the
+    // fingerprint covers options that are still being set.
+    let (plan_digest, obs_ids) = model_identity(&bundle);
+    options.obs_entity_ids = obs_ids;
     // WASM plan: a wasm build emits `<stem>.wasm` (a relocatable wasm
     // object at this stage) rather than the extension-less native binary.
     // Output naming is a property of the target, not a special case
@@ -6154,6 +6203,19 @@ fn run_build(target: &Path) -> ExitCode {
                 .collect(),
         });
     }
+    // The execution identity, stamped LAST: every option that
+    // alters emitted code is set by now, and the digest frames the
+    // finalized fingerprint together with the dispatch plan. Before
+    // this, `hale build` artifacts carried a model hash and no
+    // execution identity at all — so a recording from one could not
+    // be refused against a differently-lowered sibling, which is
+    // exactly what the identity is for.
+    options.exec_digest = Some(exec_digest(
+        &sources,
+        target,
+        &options_fingerprint(&options),
+        plan_digest,
+    ));
     match hale_codegen::build_executable_with_options(
         &program,
         &output,

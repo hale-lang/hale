@@ -56,8 +56,18 @@ struct TopicEntry {
 pub fn desugar_topics(program: &mut Program) {
     let mut topics: BTreeMap<String, TopicEntry> = BTreeMap::new();
     collect_topics(&program.items, &mut topics);
-    rewrite_items(&mut program.items, &topics);
+    // BEFORE the rewrite: role inference reads `BusSubject::Topic`
+    // ends, and `rewrite_items` turns every one of them into a
+    // literal subject. Running it after (as this did) meant the
+    // publish/subscribe sets were always empty, no role was ever
+    // inferred, and codegen refused every binding that did not
+    // spell `role:` explicitly — the documented inference was
+    // dead code. GH #476 Change 8 review: the canonical model
+    // derives binding roles through the same rule, over the
+    // authored AST where the topic ends are still visible, so the
+    // two must actually agree.
     desugar_binding_roles(program);
+    rewrite_items(&mut program.items, &topics);
 }
 
 /// `--wrap-main` (browser playground): turn a bare-`main` program into a
@@ -171,6 +181,45 @@ fn desugar_binding_roles(program: &mut Program) {
     fill_roles_in_items(&mut program.items, &pubs, &subs);
 }
 
+/// THE binding-role rule, for callers that must agree with the
+/// desugar without mutating a program.
+///
+/// The canonical model (GH #476 Change 8) derives its binding rows
+/// from the AUTHORED bundle — the desugar has not run there, so
+/// `role` is still `None` on every inferred binding. Reading the
+/// syntax field directly would model a publish-only `unix(...)`
+/// binding as whatever the model happened to default to, which is
+/// the second-authority failure this epic exists to remove. Both
+/// callers go through here instead: explicit role wins, otherwise
+/// publish-only is `Connect` and subscribe-only is `Listen`, and
+/// `None` means "not inferable" (typecheck has already diagnosed
+/// it; codegen refuses to lower it).
+pub fn binding_role_for(
+    items: &[TopDecl],
+    topic: &str,
+    explicit: Option<TransportRole>,
+) -> Option<TransportRole> {
+    if explicit.is_some() {
+        return explicit;
+    }
+    role_from_ends(
+        collect_topic_publishers(items).contains(topic),
+        collect_topic_subscribers(items).contains(topic),
+    )
+}
+
+/// The rule itself, over the two ends. One body, two callers (the
+/// desugar's in-place fill and `binding_role_for`).
+fn role_from_ends(p: bool, s: bool) -> Option<TransportRole> {
+    match (p, s) {
+        // Ambiguous (both) and unused (neither) are typecheck
+        // diagnostics, not defaults.
+        (true, false) => Some(TransportRole::Connect),
+        (false, true) => Some(TransportRole::Listen),
+        _ => None,
+    }
+}
+
 fn collect_topic_publishers(items: &[TopDecl]) -> std::collections::BTreeSet<String> {
     let mut out = std::collections::BTreeSet::new();
     fn walk(items: &[TopDecl], out: &mut std::collections::BTreeSet<String>) {
@@ -244,16 +293,17 @@ fn fill_roles_in_items(
                                 &mut entry.transport
                             {
                                 if role.is_none() {
-                                    let p = pubs.contains(&entry.topic.name);
-                                    let s = subs.contains(&entry.topic.name);
-                                    // Typecheck emits a diag for (p && s)
-                                    // and (!p && !s); here we only fill in
-                                    // the unambiguous cases.
-                                    if p && !s {
-                                        *role = Some(TransportRole::Connect);
-                                    } else if s && !p {
-                                        *role = Some(TransportRole::Listen);
-                                    }
+                                    // Typecheck emits a diag for the
+                                    // ambiguous (both) and unused
+                                    // (neither) cases; `role_from_ends`
+                                    // fills in only the unambiguous
+                                    // ones, and the canonical model
+                                    // reads the SAME rule through
+                                    // `binding_role_for`.
+                                    *role = role_from_ends(
+                                        pubs.contains(&entry.topic.name),
+                                        subs.contains(&entry.topic.name),
+                                    );
                                 }
                             }
                         }

@@ -161,6 +161,24 @@ handler on a closed-world local subject lowers to a direct
 synchronous call — even when the publisher and subscriber are
 distinct locus types.
 
+A topic your deployment binds to a transport keeps the real bus
+path no matter how simple it looks: once a `bindings { }` entry
+names it, an external peer may be the counterparty, and the send
+has to go out the transport rather than into a local call.
+
+You can see what the compiler decided for each subject:
+
+```sh
+hale model dump app.hl        # …then read the dispatch_plan section
+```
+
+Each row names the wire subject, the flavor it lowers to
+(`dynamic`, `static_bucket`, `static_direct`), why — when the
+answer is "dynamic" — and which thread domains the publishers and
+subscribers actually run in. The decision is part of the build's
+identity, so a recording made from one build is never replayed
+against another that dispatches differently.
+
 ## Routing keys: one topic, sharded by a field
 
 By default every subscriber to a topic sees every message. When

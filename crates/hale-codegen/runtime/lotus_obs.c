@@ -143,6 +143,16 @@ typedef struct {
    * Complementary to the per-topic payload shape_hash rows: model
    * identity deliberately excludes payload field shape. */
   uint64_t model_hash;
+  /* GH #476 Change 8 (proto 0.3): the identity of the CANONICAL
+   * ENTITY ID TABLE whose ids this segment's manifest rows carry in
+   * `aux_b`. `model_hash` is structural model identity and does not
+   * cover every table those ids index (the arrangement's binding
+   * rows, for one, are not in the topology artifact at all), so two
+   * builds could share a model_hash while numbering entities
+   * differently. This digest covers the exact (kind, name, id) rows
+   * the build stamped: a consumer recomputes it from the model it
+   * holds and uses the ids only on a match. 0 = unstamped. */
+  uint64_t entity_id_digest;
 } obs_hdr_t;
 
 typedef struct { _Atomic uint32_t observer_count, sample_n; } obs_ctrl_t;
@@ -169,6 +179,95 @@ static _Atomic int g_obs_state = 0;
  * any probe can lazily create the segment. */
 static uint64_t g_obs_model_hash = 0;
 void lotus_obs_model_hash_set(uint64_t h) { g_obs_model_hash = h; }
+/* GH #476 Change 8: canonical model entity ids, stamped by the
+ * codegen prelude before any probe can add a manifest entry.
+ *
+ * The manifest identifies entities by NAME and by a
+ * registration-order id, so a consumer joining a live process
+ * against the source-derived model had to match on strings and hope
+ * the two spellings agreed. These rows give the compiler's answer
+ * instead: for each (kind, name) the canonical `ApplicationModel`
+ * entity id, published in the manifest entry's `aux_b` — a field
+ * that has been in the ABI since v0 and written as 0 by every path,
+ * so no consumer's layout moves. `aux_b == 0` still means "no
+ * canonical id" (harness builds, or an entity the model doesn't
+ * name, e.g. a stdlib subject).
+ *
+ * Entity ids are only meaningful WITH the header's `model_hash`:
+ * they are indices into that model's tables, not stable names. */
+/* The mapping table GROWS: codegen stamps one row per canonical
+ * entity, and a program is free to declare more entities than any
+ * fixed cap would allow. A dropped row is not a smaller table, it
+ * is a row that silently reads back as `aux_b == 0` — documented
+ * as "unstamped" — so partial canonicalization would put a consumer
+ * back to name matching without telling it. There is no cap;
+ * allocation failure is loud and disables the whole channel rather
+ * than publishing a partial one. */
+static struct obs_model_id_row {
+  uint8_t kind;
+  char *name;
+  uint64_t model_id;
+} *g_model_ids = NULL;
+static int g_model_id_count = 0;
+static int g_model_id_cap = 0;
+/* Set once the table is known to be incomplete: every id is then
+ * withheld (the digest is zeroed too), because a consumer cannot
+ * tell a missing row from an entity the model never named. */
+static int g_model_ids_broken = 0;
+static uint64_t g_obs_entity_id_digest = 0;
+
+void lotus_obs_entity_id_digest_set(uint64_t d) {
+  /* A broken (partial) table publishes NO identity: the stamps a
+   * consumer would validate against are not all there. */
+  if (g_model_ids_broken) return;
+  g_obs_entity_id_digest = d;
+}
+
+static uint64_t obs_model_id_for(uint8_t kind, const char *name) {
+  if (g_model_ids_broken) return 0;
+  for (int i = 0; i < g_model_id_count; i++)
+    if (g_model_ids[i].kind == kind &&
+        strcmp(g_model_ids[i].name, name) == 0)
+      return g_model_ids[i].model_id;
+  return 0;
+}
+
+static void obs_model_ids_fail(void) {
+  if (!g_model_ids_broken) {
+    g_model_ids_broken = 1;
+    g_obs_entity_id_digest = 0;
+    fprintf(stderr,
+            "lotus: out of memory registering canonical model entity "
+            "ids; observation manifest rows will carry none "
+            "(consumers must join by name for this process)\n");
+  }
+}
+
+void lotus_obs_model_id(uint32_t kind, const char *name,
+                        uint64_t model_id) {
+  if (!name || g_model_ids_broken) return;
+  if (g_model_id_count == g_model_id_cap) {
+    int next = g_model_id_cap ? g_model_id_cap * 2 : 64;
+    struct obs_model_id_row *grown = (struct obs_model_id_row *)realloc(
+        g_model_ids, (size_t)next * sizeof(*g_model_ids));
+    if (!grown) {
+      obs_model_ids_fail();
+      return;
+    }
+    g_model_ids = grown;
+    g_model_id_cap = next;
+  }
+  char *copy = strdup(name);
+  if (!copy) {
+    obs_model_ids_fail();
+    return;
+  }
+  g_model_ids[g_model_id_count].kind = (uint8_t)kind;
+  g_model_ids[g_model_id_count].name = copy;
+  g_model_ids[g_model_id_count].model_id = model_id;
+  g_model_id_count++;
+}
+
 /* GH #296 review finding 2: shape_hash is structural compatibility,
  * not executable identity. The CLI stamps a digest of the compiler
  * version + every source byte; exact replay admits on THIS. */
@@ -1776,7 +1875,7 @@ static int obs_create(int64_t rings, int64_t slots) {
   memset(MODE, 2 /* PACKED */, OBS_ENTRY_CAP);
   memset(g_cnt_line_for, -1, sizeof g_cnt_line_for);
 
-  *H = (obs_hdr_t){ .magic = OBS_MAGIC, .proto_major = 0, .proto_minor = 2,
+  *H = (obs_hdr_t){ .magic = OBS_MAGIC, .proto_major = 0, .proto_minor = 3,
     .header_len = sizeof(obs_hdr_t), .total_len = g_seg_len,
     .pid = (uint32_t)getpid(), .ring_count = (uint32_t)rings,
     .ring_slots = (uint32_t)slots, .ts_shift = 4,
@@ -1784,7 +1883,8 @@ static int obs_create(int64_t rings, int64_t slots) {
     .control_off = control_off, .manifest_off = manifest_off,
     .manifest_len = manifest_len, .modemask_off = modemask_off,
     .counters_off = counters_off, .counters_len = counters_len,
-    .rings_off = rings_off, .model_hash = g_obs_model_hash };
+    .rings_off = rings_off, .model_hash = g_obs_model_hash,
+    .entity_id_digest = g_obs_entity_id_digest };
   for (int64_t i = 0; i < rings; i++)
     RD[i] = (obs_rdesc_t){
         .data_off = rings_off + rings_hdr + (uint64_t)i * ring_bytes,
@@ -2130,6 +2230,10 @@ static int64_t obs_manifest_add(uint8_t kind, uint8_t flg,
   uint32_t len = (uint32_t)strlen(name);
   uint32_t noff = atomic_fetch_add(&MH->pool_used, len);
   memcpy(POOL + noff, name, len);
+  /* GH #476 Change 8: fill in the canonical model entity id for
+   * this (kind, name), when the build stamped one. Every existing
+   * caller passes aux_b = 0; an explicit value still wins. */
+  if (aux_b == 0) aux_b = obs_model_id_for(kind, name);
   ME[i] = (obs_me_t){ .shape_hash = shape, .aux_b = aux_b,
                       .id = (uint32_t)id, .name_off = noff,
                       .name_len = (uint16_t)len, .aux_a = aux_a,

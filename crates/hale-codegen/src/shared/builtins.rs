@@ -1195,6 +1195,34 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .fn_type(&[i64_t2.into()], false),
             None,
         );
+        // GH #476 Change 8: canonical model entity ids, stamped in
+        // the prelude so a manifest entry created later (lazily, at
+        // first publish or birth) carries the compiler's id for the
+        // entity instead of leaving a consumer to match on names.
+        // declare void @lotus_obs_model_id(i32 kind, ptr name, i64 id)
+        self.module.add_function(
+            "lotus_obs_model_id",
+            self.context.void_type().fn_type(
+                &[
+                    self.context.i32_type().into(),
+                    ptr_t.into(),
+                    i64_t2.into(),
+                ],
+                false,
+            ),
+            None,
+        );
+        // GH #476 Change 8: the identity of the entity-id table
+        // above, published in the segment header so a consumer can
+        // verify the ids index the tables it holds.
+        // declare void @lotus_obs_entity_id_digest_set(i64 d)
+        self.module.add_function(
+            "lotus_obs_entity_id_digest_set",
+            self.context
+                .void_type()
+                .fn_type(&[i64_t2.into()], false),
+            None,
+        );
         // GH #296: build-manifest identity for recording headers,
         // stamped as four u64 parts of a framed SHA-256.
         // declare void @lotus_obs_exec_digest_set(i64 part, i64 v)

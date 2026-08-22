@@ -2511,6 +2511,80 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         }
     }
 
+    // GH #476 Change 8: the BusGraph's per-subject dispatch gates,
+    // bridged verbatim — DispatchPlan::derive combines them with
+    // the arrangement into the typed lowering plan.
+    //
+    // Keyed at WIRE grain, not at `BusSubject::canonical()` grain.
+    // The graph this builder runs over sees the AUTHORED program, so
+    // a topic-addressed site keys by the topic's declaration name
+    // (`Evt`); codegen desugars topics to their wire subject before
+    // building its graph, so the very same dispatch keys by `evt`
+    // there — and the wire string is the identity the runtime, the
+    // artifact (Change 7's route grain), and the static bucket all
+    // use. Mapping here is what makes the two plans comparable at
+    // all.
+    //
+    // A program that addresses one topic BOTH ways (`Evt <- x` in
+    // one locus, `"evt" <- x` in another) has two authored subjects
+    // collapsing onto one wire subject — codegen computes ONE
+    // eligibility over the union of those sites, so the merge is
+    // conjunctive (a subject is static/direct here only if every
+    // authored view of it was) with the site sets unioned. That is
+    // the conservative side: the plan can under-promote relative to
+    // codegen, never over-promote.
+    let mut gate_by_wire: BTreeMap<String, hale_model::DispatchGate> =
+        BTreeMap::new();
+    for (subject, info) in &graph.subjects {
+        let wire = topic_decl_by_name
+            .get(subject.as_str())
+            .map(|t| t.wire.clone())
+            .unwrap_or_else(|| subject.clone());
+        let publisher_loci: Vec<String> =
+            info.publishers.iter().map(|p| p.locus.clone()).collect();
+        let subscribers: Vec<(String, String)> = info
+            .subscribers
+            .iter()
+            .map(|s2| (s2.locus.clone(), s2.handler.clone()))
+            .collect();
+        let reason =
+            info.ineligible_reason.as_ref().map(|r| r.tag().to_string());
+        match gate_by_wire.get_mut(&wire) {
+            Some(g) => {
+                g.static_eligible &= info.eligible;
+                g.direct_eligible &= info.direct_call_eligible;
+                if g.ineligible_reason.is_none() {
+                    g.ineligible_reason = reason;
+                }
+                g.publisher_loci.extend(publisher_loci);
+                g.subscribers.extend(subscribers);
+            }
+            None => {
+                gate_by_wire.insert(
+                    wire.clone(),
+                    hale_model::DispatchGate {
+                        subject: wire,
+                        static_eligible: info.eligible,
+                        direct_eligible: info.direct_call_eligible,
+                        ineligible_reason: reason,
+                        publisher_loci,
+                        subscribers,
+                    },
+                );
+            }
+        }
+    }
+    let dispatch_gates: Vec<hale_model::DispatchGate> = gate_by_wire
+        .into_values()
+        .map(|mut g| {
+            g.publisher_loci.sort();
+            g.publisher_loci.dedup();
+            g.subscribers.sort();
+            g.subscribers.dedup();
+            g
+        })
+        .collect();
+
     // The Change-3 bridge: the legacy artifact's fn sort, recorded
     // so TopologyShapeV1 projects from the model alone.
     let mut legacy_fns: Vec<hale_model::FunctionId> = summary
@@ -2811,6 +2885,563 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     stdlib_absorption.sort_by_key(|a| (a.from, a.site));
 
     // holes, canonically ordered.
+    // ==== GH #476 Change 8: the ARRANGEMENT — instances,
+    // ownership, placement, thread domains, bindings. These are
+    // the tables Change 2 deliberately left empty ("no current
+    // fragment exports them"); their consumers land here
+    // (#464's DispatchPlan, iris instance IDs). None of this
+    // participates in the artifact's model half, so shape
+    // identity is untouched.
+    {
+        use hale_model::{
+            Binding, BindingId, BindingRole, LocusInstance,
+            LocusInstanceId, Owns, PlacedIn, Realizes,
+            ThreadDomain, ThreadDomainId, TopicBinding,
+            TransportKind,
+        };
+        use hale_syntax::ast::{
+            LocusMember, PlacementSpec, TopDecl, TransportSpec,
+        };
+        // Locus decls by RAW name, with their members, across the
+        // whole bundle (modules included — a module locus can be
+        // arranged like any other).
+        let mut decls_by_name: BTreeMap<
+            &str,
+            &hale_syntax::ast::LocusDecl,
+        > = BTreeMap::new();
+        fn walk_loci<'a>(
+            items: &'a [TopDecl],
+            out: &mut BTreeMap<
+                &'a str,
+                &'a hale_syntax::ast::LocusDecl,
+            >,
+        ) {
+            for item in items {
+                match item {
+                    TopDecl::Locus(l) => {
+                        out.entry(l.name.name.as_str()).or_insert(l);
+                    }
+                    TopDecl::Module(m) => {
+                        walk_loci(&m.items, out)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for pr in &programs {
+            walk_loci(&pr.items, &mut decls_by_name);
+        }
+        // The recursive arrangement walk. Placement semantics
+        // mirror the runtime invariant: `pinned` owns a thread
+        // (its own domain), `cooperative(pool = X ≠ main)` runs on
+        // pool X's single worker, everything else runs on the
+        // OWNER's thread (inherits the parent's domain; the root
+        // is `main`).
+        struct Arranged {
+            path: String,
+            decl: String,
+            replica: Option<u32>,
+            domain: String,
+            parent: Option<String>,
+            span: hale_syntax::Span,
+        }
+        let mut arranged: Vec<Arranged> = Vec::new();
+        let mut pool_names: BTreeSet<String> = BTreeSet::new();
+        #[allow(clippy::too_many_arguments)]
+        fn walk_arrangement(
+            decl_name: &str,
+            path: &str,
+            domain: &str,
+            decls: &BTreeMap<&str, &hale_syntax::ast::LocusDecl>,
+            stack: &mut Vec<String>,
+            arranged: &mut Vec<Arranged>,
+            pool_names: &mut BTreeSet<String>,
+        ) {
+            if stack.iter().any(|s| s == decl_name)
+                || stack.len() > 32
+            {
+                return; // cycle / depth guard
+            }
+            stack.push(decl_name.to_string());
+            let Some(decl) = decls.get(decl_name) else {
+                stack.pop();
+                return;
+            };
+            // field → (type, span); field → placement spec.
+            let mut field_ty: BTreeMap<
+                &str,
+                (&str, hale_syntax::Span),
+            > = BTreeMap::new();
+            for m in &decl.members {
+                if let LocusMember::Params(pb) = m {
+                    for pa in &pb.params {
+                        if let Some(ty) = &pa.ty {
+                            if let Some(n) =
+                                crate::bus_graph::single_named_type(ty)
+                            {
+                                field_ty.insert(
+                                    pa.name.name.as_str(),
+                                    (
+                                        Box::leak(
+                                            n.into_boxed_str(),
+                                        ),
+                                        pa.name.span,
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            let mut field_place: BTreeMap<
+                &str,
+                &PlacementSpec,
+            > = BTreeMap::new();
+            for m in &decl.members {
+                if let LocusMember::Placement(pb) = m {
+                    for e2 in &pb.entries {
+                        field_place.insert(
+                            e2.field.name.as_str(),
+                            &e2.spec,
+                        );
+                    }
+                }
+            }
+            for (field, (ty, span)) in &field_ty {
+                if !decls.contains_key(ty) {
+                    continue; // not a locus type
+                }
+                let spec = field_place.get(field);
+                let (fanout, pinned, pool) = match spec {
+                    Some(PlacementSpec::Pinned {
+                        replicas,
+                        ..
+                    }) => (
+                        replicas.map(|k| k.max(1)).unwrap_or(1)
+                            as u32,
+                        true,
+                        None,
+                    ),
+                    Some(PlacementSpec::Cooperative {
+                        pool,
+                        ..
+                    }) => (
+                        1,
+                        false,
+                        pool.as_ref()
+                            .filter(|p2| p2.name != "main")
+                            .map(|p2| p2.name.clone()),
+                    ),
+                    None => (1, false, None),
+                };
+                if let Some(p2) = &pool {
+                    pool_names.insert(p2.clone());
+                }
+                for i in 0..fanout {
+                    let child_path = if fanout > 1 {
+                        format!("{}.{}[{}]", path, field, i)
+                    } else {
+                        format!("{}.{}", path, field)
+                    };
+                    let child_domain = if pinned {
+                        format!("pinned:{}", child_path)
+                    } else if let Some(p2) = &pool {
+                        format!("pool:{}", p2)
+                    } else {
+                        domain.to_string()
+                    };
+                    arranged.push(Arranged {
+                        path: child_path.clone(),
+                        decl: (*ty).to_string(),
+                        // The instance's OWN replica index — what
+                        // codegen bakes into replica `i` and what a
+                        // keyed subscriber on this field registers
+                        // under. (`validate` enforces contiguity.)
+                        replica: if fanout > 1 { Some(i) } else { None },
+                        domain: child_domain.clone(),
+                        parent: Some(path.to_string()),
+                        span: *span,
+                    });
+                    walk_arrangement(
+                        ty,
+                        &child_path,
+                        &child_domain,
+                        decls,
+                        stack,
+                        arranged,
+                        pool_names,
+                    );
+                }
+            }
+            stack.pop();
+        }
+        let main_decl =
+            ast.loci.iter().find(|l| l.is_main).map(|l| {
+                (l.name.name.clone(), l.name.span)
+            });
+        if let Some((main_name, main_span)) = &main_decl {
+            arranged.push(Arranged {
+                path: main_name.clone(),
+                decl: main_name.clone(),
+                replica: None,
+                domain: "main".to_string(),
+                parent: None,
+                span: *main_span,
+            });
+            let mut stack = Vec::new();
+            walk_arrangement(
+                main_name,
+                main_name,
+                "main",
+                &decls_by_name,
+                &mut stack,
+                &mut arranged,
+                &mut pool_names,
+            );
+        }
+        // Thread domains, canonical order: every domain any
+        // instance landed in, plus a reader domain per binding
+        // entry (#468: a binding's reader thread is a real
+        // domain).
+        let mut domain_names: BTreeSet<String> = arranged
+            .iter()
+            .map(|a| a.domain.clone())
+            .collect();
+        // Bindings (main's `bindings { }` block).
+        struct BindingEntry {
+            topic: String,
+            span: hale_syntax::Span,
+            /// `None` for adapter/shm transports — a declared
+            /// external boundary, holed out rather than guessed.
+            unix_role: Option<hale_syntax::ast::TransportRole>,
+            adapter: bool,
+        }
+        let mut binding_entries: Vec<BindingEntry> = Vec::new();
+        if let Some((main_name, _)) = &main_decl {
+            if let Some(decl) = decls_by_name.get(main_name.as_str())
+            {
+                for m in &decl.members {
+                    if let LocusMember::Bindings(bb) = m {
+                        for e2 in &bb.entries {
+                            let adapter = !matches!(
+                                e2.transport,
+                                TransportSpec::Unix { .. }
+                            );
+                            // The AUTHORED role, resolved through
+                            // the ONE rule the desugar uses (this
+                            // bundle is not desugared, so the field
+                            // is still `None` on every inferred
+                            // binding — reading it raw would model
+                            // a publish-only `connect` binding as
+                            // whatever the builder defaulted to).
+                            let unix_role = match &e2.transport {
+                                TransportSpec::Unix {
+                                    role, ..
+                                } => hale_syntax::desugar::binding_role_for(
+                                    &all_items,
+                                    &e2.topic.name,
+                                    *role,
+                                ),
+                                _ => None,
+                            };
+                            binding_entries.push(BindingEntry {
+                                topic: e2.topic.name.clone(),
+                                span: e2.span,
+                                unix_role,
+                                adapter,
+                            });
+                            domain_names.insert(format!(
+                                "binding:{}",
+                                e2.topic.name
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        let domain_id: BTreeMap<&String, ThreadDomainId> =
+            domain_names
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (n, ThreadDomainId(i as u32)))
+                .collect();
+        for n in &domain_names {
+            let pid =
+                intern_synth(&mut records, "thread domain");
+            e.thread_domains.push(ThreadDomain {
+                name: n.clone(),
+                provenance: pid,
+            });
+        }
+        // Instances in canonical (path-sorted) order.
+        arranged.sort_by(|a, b| a.path.cmp(&b.path));
+        let inst_id: BTreeMap<&String, LocusInstanceId> =
+            arranged
+                .iter()
+                .enumerate()
+                .map(|(i, a)| {
+                    (&a.path, LocusInstanceId(i as u32))
+                })
+                .collect();
+        for a in &arranged {
+            let pid = intern_span(&mut records, a.span);
+            e.locus_instances.push(LocusInstance {
+                path: a.path.clone(),
+                decl: locus_id[&a.decl],
+                replica: a.replica,
+                provenance: pid,
+            });
+        }
+        for a in &arranged {
+            let pid =
+                intern_synth(&mut records, "arrangement");
+            r.realizes.push(Realizes {
+                instance: inst_id[&a.path],
+                decl: locus_id[&a.decl],
+                provenance: pid,
+            });
+            r.placed_in.push(PlacedIn {
+                instance: inst_id[&a.path],
+                domain: domain_id[&a.domain],
+                provenance: pid,
+            });
+        }
+        let mut own_edges: Vec<(
+            LocusInstanceId,
+            LocusInstanceId,
+        )> = arranged
+            .iter()
+            .filter_map(|a| {
+                a.parent.as_ref().map(|p2| {
+                    (inst_id[p2], inst_id[&a.path])
+                })
+            })
+            .collect();
+        own_edges.sort();
+        for (parent, child) in own_edges {
+            let pid =
+                intern_synth(&mut records, "arrangement");
+            r.owns.push(Owns {
+                parent,
+                child,
+                provenance: pid,
+            });
+        }
+        // Binding entities + binds rows. Adapter transports are
+        // declared external boundaries with opaque internals —
+        // they hole out instead of guessing loss semantics.
+        //
+        // Decoded FIRST, sorted canonically SECOND, ids assigned
+        // THIRD. `validate` requires the entity table sorted by
+        // (subject, transport, role); assigning ids in source order
+        // would hand back an invalid model for a perfectly valid
+        // main locus whose two binding entries are authored in
+        // reverse subject order.
+        struct DecodedBinding {
+            topic: hale_model::TopicId,
+            subject: hale_model::SubjectId,
+            transport: TransportKind,
+            role: BindingRole,
+            loss: hale_model::keys::BindingLossBehavior,
+            span: hale_syntax::Span,
+        }
+        let mut decoded: Vec<DecodedBinding> = Vec::new();
+        for entry in &binding_entries {
+            let Some(tid) = topic_id.get(&entry.topic) else {
+                continue;
+            };
+            let pid = intern_span(&mut records, entry.span);
+            // An adapter transport, or a unix binding whose role
+            // is not inferable (typecheck has diagnosed it; codegen
+            // refuses to lower it), is a boundary the model does
+            // not describe — a hole, never a guessed row.
+            let role = match (entry.adapter, entry.unix_role) {
+                (false, Some(hale_syntax::ast::TransportRole::Listen)) => {
+                    Some(BindingRole::Listen)
+                }
+                (false, Some(hale_syntax::ast::TransportRole::Connect)) => {
+                    Some(BindingRole::Connect)
+                }
+                _ => None,
+            };
+            let Some(role) = role else {
+                holes
+                    .entry((
+                        EntityRef::Topic(*tid),
+                        HoleKind::ExternalOpaque,
+                        if entry.adapter {
+                            "adapter transport: external boundary \
+                             with opaque internals"
+                                .to_string()
+                        } else {
+                            "binding role is not inferable: the \
+                             route this topic takes is undetermined"
+                                .to_string()
+                        },
+                    ))
+                    .or_insert((
+                        hale_model::RelationSet::BINDS.union(
+                            hale_model::RelationSet::DELIVERY,
+                        ),
+                        None,
+                        pid,
+                    ));
+                continue;
+            };
+            // Loss behavior follows the ROLE, because that is what
+            // the runtime does: the connect side is the publish
+            // side, where a send failure marks the entry lost and
+            // `or wait` can park through the reconnect window
+            // (WaitCapable); the listen side re-arms on peer EOF
+            // (peer EOF is not connection loss) and a link it
+            // cannot serve is structural (Fail).
+            let loss = match role {
+                BindingRole::Connect => {
+                    hale_model::keys::BindingLossBehavior::WaitCapable
+                }
+                BindingRole::Listen => {
+                    hale_model::keys::BindingLossBehavior::Fail
+                }
+            };
+            decoded.push(DecodedBinding {
+                topic: *tid,
+                subject: e.topics[tid.index()].subject,
+                transport: TransportKind::Unix,
+                role,
+                loss,
+                span: entry.span,
+            });
+        }
+        decoded.sort_by_key(|d| {
+            (d.subject, d.transport.clone(), d.role, d.topic)
+        });
+        decoded.dedup_by_key(|d| {
+            (d.subject, d.transport.clone(), d.role)
+        });
+        let mut bind_rows: Vec<(
+            hale_model::TopicId,
+            BindingId,
+        )> = Vec::new();
+        for (i, d) in decoded.iter().enumerate() {
+            let pid = intern_span(&mut records, d.span);
+            let bid = BindingId(i as u32);
+            e.bindings.push(Binding {
+                subject: d.subject,
+                transport: d.transport.clone(),
+                role: d.role,
+                loss: d.loss,
+                provenance: pid,
+            });
+            bind_rows.push((d.topic, bid));
+        }
+        bind_rows.sort();
+        for (t, b) in bind_rows {
+            let pid = intern_synth(&mut records, "binding");
+            r.binds.push(TopicBinding {
+                topic: t,
+                binding: b,
+                provenance: pid,
+            });
+        }
+        // Dynamic births: a method-body instantiation site's
+        // instance is not in the arrangement — its ownership and
+        // placement are runtime facts. Typed holes keep the
+        // capability account honest (RuntimeInheritedPlacement is
+        // exactly this shape).
+        let og = crate::ownership_graph::build_ownership_graph(
+            bundle, &top,
+        );
+        let free_fn_births =
+            crate::ownership_graph::free_fn_birth_sites(bundle);
+        // Params-default births ARE the arrangement — only sites
+        // outside every params block of their enclosing locus are
+        // dynamic.
+        let params_spans: BTreeMap<
+            &str,
+            Vec<hale_syntax::Span>,
+        > = decls_by_name
+            .iter()
+            .map(|(n, d)| {
+                (
+                    *n,
+                    d.members
+                        .iter()
+                        .filter_map(|m| match m {
+                            LocusMember::Params(pb) => {
+                                Some(pb.span)
+                            }
+                            _ => None,
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+        // Method-body births (the ownership graph's sites) PLUS
+        // free-function births — `fn main() { EchoL { }; }` is the
+        // most common arrangement-free program shape in the corpus,
+        // and it must not read as "no instances, exact placement".
+        let dyn_sites: Vec<(&str, &str, hale_syntax::Span)> = og
+            .sites
+            .iter()
+            .map(|s| {
+                (
+                    s.child_ty.as_str(),
+                    s.enclosing_locus.as_str(),
+                    s.span,
+                )
+            })
+            .chain(
+                free_fn_births
+                    .iter()
+                    .map(|(ty, sp)| (ty.as_str(), "", *sp)),
+            )
+            .collect();
+        for (child_ty, enclosing, span) in dyn_sites {
+            // `fn main() { App { }; }` — the birth of the
+            // arrangement ROOT — is not a dynamic birth: it is how
+            // the arrangement is entered, and the root instance is
+            // already modeled (path `App`, domain `main`). Every
+            // OTHER free-standing birth is outside the arrangement.
+            if main_decl.as_ref().is_some_and(|(n, _)| n == child_ty) {
+                continue;
+            }
+            let in_arrangement = params_spans
+                .get(enclosing)
+                .is_some_and(|spans| {
+                    spans.iter().any(|ps| {
+                        span.start >= ps.start && span.end <= ps.end
+                    })
+                });
+            if in_arrangement {
+                continue;
+            }
+            let pid = intern_span(&mut records, span);
+            // Anchored at the BORN locus, not the birthplace: the
+            // fact hidden is "instances of this locus exist that
+            // the arrangement does not name", which is true of the
+            // child whether it was born in a method or a free fn.
+            let Some(lid) = locus_id.get(&child_ty.to_string()) else {
+                continue;
+            };
+            let at = EntityRef::LocusDecl(*lid);
+            holes
+                .entry((
+                    at,
+                    HoleKind::RuntimeInheritedPlacement,
+                    "instance born outside the arrangement: \
+                     owner and placement resolve at runtime"
+                        .to_string(),
+                ))
+                .or_insert((
+                    hale_model::RelationSet::OWNS.union(
+                        hale_model::RelationSet::PLACED,
+                    ),
+                    None,
+                    pid,
+                ));
+        }
+    }
+
     let mut hole_rows: Vec<Hole> = holes
         .into_iter()
         .map(|((at, kind, reason), (hides, site, pid))| Hole {
@@ -2892,6 +3523,15 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         exact_cardinality: !hides_any(
             hale_model::RelationSet::CARDINALITY,
         ),
+        // Change 8: the arrangement tables are populated, so the
+        // ownership/placement/binding accounts are positive unless
+        // a hole (a dynamic birth, an adapter boundary) withdraws
+        // them.
+        exact_ownership: !hides_any(hale_model::RelationSet::OWNS),
+        exact_placement: !hides_any(
+            hale_model::RelationSet::PLACED,
+        ),
+        exact_routes: !hides_any(hale_model::RelationSet::BINDS),
         ..Capabilities::default()
     };
 
@@ -2907,6 +3547,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     let model = ApplicationModel {
         legacy: hale_model::LegacyProjection {
             topology_v1_fns: legacy_fns,
+            dispatch_gates,
             topology_v1_calls_via_stdlib: legacy_via,
             stdlib_absorption,
         },
@@ -3151,5 +3792,35 @@ pub fn render_internal(m: &ApplicationModel) -> String {
         m.capabilities.exact_key_filters,
         m.capabilities.exact_effects
     ));
+    s.push_str(&format!(
+        " ownership={} placement={} routes={}\n",
+        m.capabilities.exact_ownership,
+        m.capabilities.exact_placement,
+        m.capabilities.exact_routes
+    ));
+    // GH #476 Change 8: the derived lowering plan. Not model rows —
+    // a CONCLUSION, printed here because this dump is the survey
+    // surface #464's stage 0 asks its question of ("how much queued
+    // bus traffic is same-thread-domain?").
+    let plan = hale_model::dispatch_plan::DispatchPlan::derive(m);
+    let (same, total) = plan.same_domain_queued();
+    s.push_str(&format!(
+        "dispatch_plan ({} subjects, {} same-domain queued):\n",
+        total, same
+    ));
+    for sp in &plan.subjects {
+        s.push_str(&format!(
+            "  {} {}{} pub[{}] sub[{}]{}\n",
+            sp.subject,
+            sp.flavor.as_str(),
+            sp.ineligible_reason
+                .as_deref()
+                .map(|r| format!(" ({})", r))
+                .unwrap_or_default(),
+            sp.publisher_domains.join(","),
+            sp.subscriber_domains.join(","),
+            if sp.same_domain { " same-domain" } else { "" }
+        ));
+    }
     s
 }

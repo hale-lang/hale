@@ -192,6 +192,24 @@ pub fn allowed_hole_families(
         (EntityRef::Function(_), K::UnanalyzedBody) => {
             Some((c.union(p).union(e), c.union(p).union(e)))
         }
+        // Change 8: a locus whose method bodies give birth outside
+        // the arrangement — the born instance's owner and
+        // placement resolve at runtime, so the ownership and
+        // placement accounts are both withdrawn.
+        (
+            EntityRef::LocusDecl(_),
+            K::RuntimeInheritedPlacement,
+        ) => Some((
+            RelationSet::OWNS.union(RelationSet::PLACED),
+            RelationSet::OWNS.union(RelationSet::PLACED),
+        )),
+        // Change 8: an adapter-transport binding is a declared
+        // external boundary with opaque internals — the binding
+        // route and its delivery contract are unknown.
+        (EntityRef::Topic(_), K::ExternalOpaque) => Some((
+            RelationSet::BINDS.union(RelationSet::DELIVERY),
+            RelationSet::BINDS.union(RelationSet::DELIVERY),
+        )),
         // Set-level endpoint knowledge: each bit is independently
         // meaningful (publisher-incomplete vs
         // subscriber-incomplete are distinct facts), so nothing

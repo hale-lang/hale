@@ -594,6 +594,14 @@ pub struct BuildOptions {
     /// builds on this; shape_hash is the structural compatibility
     /// check only.
     pub exec_digest: Option<[u64; 4]>,
+    /// GH #476 Change 8: canonical model entity ids for the
+    /// observation manifest (`hale_model::obs_ids`). Stamped in the
+    /// prelude so a manifest row created later carries the
+    /// compiler's id for the entity — a consumer joining a live
+    /// process to the source-derived model stops matching on
+    /// strings. Meaningful only together with `model_hash`; harness
+    /// callers leave it empty and every row reads 0 as before.
+    pub obs_entity_ids: Vec<hale_model::obs_ids::ObsEntityId>,
 }
 
 /// The per-build source table for DWARF emission: each entry is one
@@ -1059,9 +1067,60 @@ pub fn build_executable_with_options(
     } else {
         let (top, _diags) = hale_types::resolve::build_top_scope(&bundle);
         let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top);
-        // Deterministic ids: eligible subjects sorted by wire string
-        // (BTreeMap iteration order is sorted), 0..N. The direct-call
-        // subset reuses those very ids (its bucket is the same one
+        // GH #476 Change 8: the flavor decision is NOT made here. The
+        // gate facts are bridged into the canonical shape and
+        // `DispatchPlan` — the same procedure the model-side
+        // `DispatchPlan::derive` runs, and whose digest the execution
+        // identity folds in — decides. Codegen's gates come from the
+        // MERGED (user + stdlib, desugared) graph its own lowering
+        // must agree with, so the source of facts is local; only the
+        // ladder is shared. `dispatch_plan_agrees_with_the_model` in
+        // hale-cli pins the two fact sources against each other over
+        // the corpus.
+        let gates: Vec<hale_model::DispatchGate> = graph
+            .subjects
+            .iter()
+            .map(|(subject, info)| hale_model::DispatchGate {
+                subject: subject.clone(),
+                static_eligible: info.eligible,
+                direct_eligible: info.direct_call_eligible,
+                ineligible_reason: info
+                    .ineligible_reason
+                    .as_ref()
+                    .map(|r| r.tag().to_string()),
+                publisher_loci: {
+                    let mut p: Vec<String> = info
+                        .publishers
+                        .iter()
+                        .map(|s| s.locus.clone())
+                        .collect();
+                    p.sort();
+                    p.dedup();
+                    p
+                },
+                subscribers: info
+                    .subscribers
+                    .iter()
+                    .map(|s| (s.locus.clone(), s.handler.clone()))
+                    .collect(),
+            })
+            .collect();
+        let plan = hale_model::dispatch_plan::DispatchPlan::from_gates(
+            &gates,
+            &std::collections::BTreeMap::new(),
+        );
+        if env_flag("HALE_DISPATCH_TRACE") {
+            for s in &plan.subjects {
+                eprintln!(
+                    "[hale-dispatch] {} {}",
+                    s.subject,
+                    s.flavor.as_str()
+                );
+            }
+        }
+        // Deterministic ids: static subjects in wire-string order
+        // (the plan sorts by subject), 0..N. The direct-call subset
+        // reuses those very ids (its bucket is the same one
         // lotus_bus_register_static populates), so we collect both in
         // one pass.
         let mut ids: std::collections::BTreeMap<String, u32> =
@@ -1075,21 +1134,14 @@ pub fn build_executable_with_options(
             String,
             Vec<(String, String)>,
         > = std::collections::BTreeMap::new();
-        let mut next: u32 = 0;
-        for (subject, info) in &graph.subjects {
-            if info.eligible {
-                ids.insert(subject.clone(), next);
-                next += 1;
-                if info.direct_call_eligible {
-                    direct.insert(subject.clone());
-                    direct_subs.insert(
-                        subject.clone(),
-                        info.subscribers
-                            .iter()
-                            .map(|s| (s.locus.clone(), s.handler.clone()))
-                            .collect(),
-                    );
-                }
+        for (next, s) in plan.static_subjects().iter().enumerate() {
+            ids.insert(s.subject.clone(), next as u32);
+            if s.flavor
+                == hale_model::dispatch_plan::DispatchFlavor::StaticDirect
+            {
+                direct.insert(s.subject.clone());
+                direct_subs
+                    .insert(s.subject.clone(), s.subscribers.clone());
             }
         }
         (ids, direct, direct_subs)
@@ -1406,7 +1458,8 @@ pub fn build_executable_with_options(
         returned_bindings: compute_returned_bindings(&merged),
         assign_moved_bindings: compute_assign_moved_bindings(&merged),
         model_hash: options.model_hash,
-            exec_digest: options.exec_digest,
+        exec_digest: options.exec_digest,
+        obs_entity_ids: options.obs_entity_ids.clone(),
         replica_index_for_next_locus_instantiation: None,
         current_instantiation_replica_index: 0,
         suppress_fresh_temp: false,
@@ -4030,6 +4083,9 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// segment header (None = harness build, header reads 0).
     pub(crate) model_hash: Option<u64>,
     pub(crate) exec_digest: Option<[u64; 4]>,
+    /// GH #476 Change 8: canonical model entity ids, stamped into
+    /// the observation manifest by the prelude.
+    pub(crate) obs_entity_ids: Vec<hale_model::obs_ids::ObsEntityId>,
     /// Replica keys (2026-08-12): the replica index the NEXT locus
     /// instantiation carries — set by the Phase-1c fan-out loop for
     /// replicas 1..K, absent (= replica 0) everywhere else. Consumed
@@ -8858,23 +8914,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // lotus_bus_register_remote(subject, url, role) per entry
         // in the main locus's bindings { } block. These run BEFORE
         // load_config so an env-var override can layer on top.
-        self.emit_bindings_prelude()?;
-
-        // m58: load the deployment-config map (subject -> transport
-        // URL + role) from the path in $LOTUS_BUS_CONFIG. Emitted
-        // unconditionally — programs without the env var set hit
-        // the C-runtime's `if (!path) return` early-out and pay one
-        // syscall + one branch at startup. Programs with it set
-        // get their cross-process bus routes opened before any
-        // user code runs (so `<- "subj" | ...` calls reach remote
-        // subscribers from the very first publish).
-        // WASM plan (entry inversion): skip the cross-process transport
-        // loader on wasm. `lotus_bus_load_config` opens unix/udp sockets
-        // and spawns reader threads for `listen` routes — its body
-        // references socket/bind/connect/pthread_create, which (being
-        // reachable from `main`) would otherwise survive gc-sections and
-        // become host imports. The browser bus is in-memory / WebSocket-
-        // adapter-driven (a later slice), never cross-process sockets.
+        // GH #476 Change 8 review: the observation IDENTITY is
+        // stamped FIRST — before bindings register, before the
+        // config loader opens routes, before anything else that
+        // can touch a probe. A `bindings { }` entry registers a
+        // manifest row at startup, which CREATES the observation
+        // segment, and segment creation snapshots the identity
+        // fields; stamping afterwards left every bound program
+        // publishing model_hash 0 (and, once they existed,
+        // entity ids with no published identity) for its whole
+        // life. Same failure the GH #296 round-5 eager-init fix
+        // closed for recording processes, on a different path.
         // iris handoff-2 P6: register every declared topic's
         // canonical shape (subject + field structure, never the
         // declaring type's name) before any traffic — two
@@ -8975,23 +9025,96 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
-            // GH #296 round 5: eager recording/replay init, AFTER
-            // the identity setters — segment creation snapshots
-            // them into the shared header, and a constructor-driven
-            // init published a live segment with model_hash 0 for
-            // its whole life. Still before any user code or probe,
-            // so probe-free programs record. No-op when neither
-            // LOTUS_OBS_RECORD nor LOTUS_REPLAY is set.
-            {
-                let eager_fn = self
+            // GH #476 Change 8: canonical model entity ids. Stamped
+            // here, with the other identity setters, because the
+            // manifest rows they annotate are created LAZILY — the
+            // first publish on a subject, the first birth of a locus
+            // type — and the runtime needs the mapping in hand
+            // before any of that can happen. Only meaningful next to
+            // `model_hash` above: these are indices into that
+            // model's tables.
+            if !self.obs_entity_ids.is_empty() {
+                let id_fn = self
                     .module
-                    .get_function("lotus_obs_eager_init")
-                    .expect("lotus_obs_eager_init declared");
+                    .get_function("lotus_obs_model_id")
+                    .expect("lotus_obs_model_id declared");
+                let i32_t = self.context.i32_type();
+                let i64_t = self.context.i64_type();
+                for e in self.obs_entity_ids.clone() {
+                    let ng = self.global_string(&e.name);
+                    self.builder
+                        .build_call(
+                            id_fn,
+                            &[
+                                i32_t
+                                    .const_int(e.kind as u64, false)
+                                    .into(),
+                                ng.into(),
+                                i64_t.const_int(e.id, false).into(),
+                            ],
+                            "obs.model_id",
+                        )
+                        .map_err(|e2| {
+                            CodegenError::LlvmEmit(e2.to_string())
+                        })?;
+                }
+                // …and the table's own identity, since `model_hash`
+                // does not cover every table these ids index. A
+                // consumer recomputes this from its model and joins
+                // only on a match.
+                let d = hale_model::obs_ids::digest(&self.obs_entity_ids);
+                let dig_fn = self
+                    .module
+                    .get_function("lotus_obs_entity_id_digest_set")
+                    .expect("lotus_obs_entity_id_digest_set declared");
                 self.builder
-                    .build_call(eager_fn, &[], "obs.eager_init")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    .build_call(
+                        dig_fn,
+                        &[i64_t.const_int(d, false).into()],
+                        "obs.entity_id_digest",
+                    )
+                    .map_err(|e2| {
+                        CodegenError::LlvmEmit(e2.to_string())
+                    })?;
             }
         }
+
+        self.emit_bindings_prelude()?;
+
+        // GH #296 round 5: eager recording/replay init, AFTER the
+        // identity setters (above) and after the bindings prelude —
+        // its position relative to binding REALIZATION is load
+        // bearing: a backend with no replay class must refuse at its
+        // own seam, naming itself, rather than be pre-empted by a
+        // generic identity refusal. Segment creation snapshots the
+        // identity fields, which the setters have already published.
+        // Still before any user code. No-op when neither
+        // LOTUS_OBS_RECORD nor LOTUS_REPLAY is set.
+        if !self.is_wasm {
+            let eager_fn = self
+                .module
+                .get_function("lotus_obs_eager_init")
+                .expect("lotus_obs_eager_init declared");
+            self.builder
+                .build_call(eager_fn, &[], "obs.eager_init")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+
+        // m58: load the deployment-config map (subject -> transport
+        // URL + role) from the path in $LOTUS_BUS_CONFIG. Emitted
+        // unconditionally — programs without the env var set hit
+        // the C-runtime's `if (!path) return` early-out and pay one
+        // syscall + one branch at startup. Programs with it set
+        // get their cross-process bus routes opened before any
+        // user code runs (so `<- "subj" | ...` calls reach remote
+        // subscribers from the very first publish).
+        // WASM plan (entry inversion): skip the cross-process transport
+        // loader on wasm. `lotus_bus_load_config` opens unix/udp sockets
+        // and spawns reader threads for `listen` routes — its body
+        // references socket/bind/connect/pthread_create, which (being
+        // reachable from `main`) would otherwise survive gc-sections and
+        // become host imports. The browser bus is in-memory / WebSocket-
+        // adapter-driven (a later slice), never cross-process sockets.
         if !self.is_wasm {
             let load_cfg_fn = self
                 .module
