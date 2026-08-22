@@ -4494,3 +4494,200 @@ fn has_claim_surface(bundle: &crate::symbol::Bundle<'_>) -> bool {
     }
     bundle.programs.values().any(|p| walk(&p.items))
 }
+
+/// GH #476 Change 5f — `@effects(causes: {…})` over the model.
+///
+/// "What can this fn cause ANYWHERE in the system": its own effects,
+/// plus everything the subscribers of every subject it transitively
+/// publishes to perform. Only classes reached THROUGH the bus are
+/// reported — a fn's direct effects are the `none:` form's business,
+/// and subtracting them is what makes this the CAUSAL surface.
+///
+/// One divergence from the evaluator, in the fail-CLOSED direction
+/// and carved out in the differential: the evaluator infers effects
+/// from the user-only summary, so a subscriber whose `syscall` comes
+/// from a stdlib call reads as pure to it and its causal
+/// contribution disappears. The model's effect sets are the
+/// stdlib-merged ones, so the class is seen. An undeclared causal
+/// effect is exactly what this law exists to catch; not seeing it
+/// through a stdlib body was an accident of which summary the engine
+/// happened to hold.
+pub fn judge_causes(
+    table: &ClaimIrTable,
+    model: &ApplicationModel,
+    source_bases: &[u32],
+) -> Vec<Judged> {
+    let e = &model.entities;
+    let r = &model.relations;
+    let claim_span = |pid: ProvenanceId| -> Span {
+        span_of(&table.provenance, source_bases, pid)
+    };
+    // A class's atomic expansion — composed classes own no bit, a
+    // cyclic one expands to nothing (the checker refuses it at the
+    // declaration).
+    let class_atoms = |name: &str| -> BTreeSet<String> {
+        match e.effect_classes.iter().find(|c| c.name == name) {
+            Some(c) => match &c.definition {
+                hale_model::EffectClassDefinition::Composed { atoms } => {
+                    atoms.iter().cloned().collect()
+                }
+                hale_model::EffectClassDefinition::Atomic => {
+                    std::iter::once(name.to_string()).collect()
+                }
+                hale_model::EffectClassDefinition::InvalidCycle => {
+                    BTreeSet::new()
+                }
+            },
+            // Built-ins are their own atom.
+            None => std::iter::once(name.to_string()).collect(),
+        }
+    };
+    // The derived (transitive) classes of a function, as the model
+    // records them. `unclassified` is a residue marker, never a
+    // class a causal set can be measured against.
+    let effects_of = |f: FunctionId| -> BTreeSet<String> {
+        e.functions[f.index()]
+            .effects
+            .iter()
+            .filter(|c| c.as_str() != "unclassified")
+            .cloned()
+            .collect()
+    };
+    let is_unclassified = |f: FunctionId| -> bool {
+        e.functions[f.index()]
+            .effects
+            .iter()
+            .any(|c| c == "unclassified")
+    };
+    // Endpoint spelling: a declared endpoint speaks its topic's
+    // name, a literal one its pattern — the same rule every other
+    // witness renders subjects by.
+    let subject_text = |declared: Option<hale_model::TopicId>,
+                        subject: hale_model::SubjectId|
+     -> String {
+        match declared {
+            Some(t) => e.topics[t.index()].display.clone(),
+            None => e.subjects[subject.index()].pattern.clone(),
+        }
+    };
+    // calls: caller -> callees, for the transitive publish walk.
+    let mut callees: BTreeMap<u32, Vec<FunctionId>> = BTreeMap::new();
+    for c in &r.calls {
+        callees.entry(c.from.0).or_default().push(c.to);
+    }
+
+    let mut out: Vec<Judged> = Vec::new();
+    for row in &table.rows {
+        let ClaimIr::EffectCauses { at, classes } = &row.law else {
+            continue;
+        };
+        let Some(fid) = at.0 else {
+            // The annotated fn is not in the model's universe —
+            // nothing to judge, and the certificate machinery
+            // reports the unresolved reference.
+            continue;
+        };
+        let mut diags: Vec<Diag> = Vec::new();
+        // A class that resolves to nothing makes the contract
+        // vacuous, so the law is INVALID before evaluation — the
+        // same rule the certificate family applies, and the reason
+        // a cyclic definition is refused at its declaration. No
+        // diagnostic here: the declaration owns that message.
+        if classes.iter().any(|c| {
+            c.class.is_some_and(|id| {
+                matches!(
+                    e.effect_classes[id.index()].definition,
+                    hale_model::EffectClassDefinition::InvalidCycle
+                )
+            })
+        }) {
+            out.push(Judged {
+                ordinal: row.ordinal,
+                verdict: Verdict::Invalid,
+                diags,
+                foreign: Vec::new(),
+            });
+            continue;
+        }
+        // Subjects this fn transitively publishes to, in the
+        // evaluator's order (subject text, ascending).
+        let mut subjects: BTreeSet<String> = BTreeSet::new();
+        {
+            let mut seen: BTreeSet<u32> = BTreeSet::new();
+            let mut stack = vec![fid];
+            while let Some(f) = stack.pop() {
+                if !seen.insert(f.0) {
+                    continue;
+                }
+                for p in r.publishes.iter().filter(|p| p.function == f) {
+                    subjects.insert(subject_text(p.declared_topic, p.subject));
+                }
+                for next in callees.get(&f.0).into_iter().flatten() {
+                    stack.push(*next);
+                }
+            }
+        }
+        // …and what their subscribers do.
+        let mut actual = effects_of(fid);
+        let mut via: Vec<String> = Vec::new();
+        for subj in &subjects {
+            for s in r.subscribes.iter().filter(|s| {
+                subject_text(s.declared_topic, s.subject) == *subj
+            }) {
+                if is_unclassified(s.handler) {
+                    continue;
+                }
+                let eff = effects_of(s.handler);
+                if eff.is_empty() {
+                    continue;
+                }
+                via.push(format!(
+                    "`{}` -> subject `{}` -> `{}`",
+                    e.functions[fid.index()].display,
+                    subj,
+                    e.functions[s.handler.index()].display
+                ));
+                actual.extend(eff);
+            }
+        }
+        let mut allowed: BTreeSet<String> = BTreeSet::new();
+        for c in classes {
+            allowed.extend(class_atoms(&c.name));
+        }
+        let direct = effects_of(fid);
+        let excess: Vec<String> = actual
+            .difference(&direct)
+            .filter(|c| !allowed.contains(*c))
+            .cloned()
+            .collect();
+        let verdict = if excess.is_empty() {
+            Verdict::Holds
+        } else {
+            diags.push(Diag::ty(
+                claim_span(row.provenance),
+                format!(
+                    "declared causal set violated: `{}` can transitively \
+                     cause {} through the bus, which its \
+                     `@effects(causes: …)` does not declare.{} Add the \
+                     class to the declaration, or route the publish to a \
+                     subject whose subscribers don't perform it.",
+                    e.functions[fid.index()].display,
+                    excess.join(", "),
+                    if via.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" Path: {}.", via.join("; "))
+                    }
+                ),
+            ));
+            Verdict::Violated
+        };
+        out.push(Judged {
+            ordinal: row.ordinal,
+            verdict,
+            diags,
+            foreign: Vec::new(),
+        });
+    }
+    out
+}
