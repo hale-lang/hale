@@ -598,13 +598,26 @@ identity, group resolution, the library/world tier rule. Selection
 is not judgment, and it has exactly one implementation, consumed by
 BOTH the checker and the artifact lowering: a selection refusal
 appears in the document's law-issue account, so the two cannot
-report opposite answers about one program. A law quantifying over a
-group selection refused — an unknown member, or an empty group that
-did not declare `may_be_empty` — is **invalid**, never a vacuous
-`holds`: a verdict over a domain the compiler rejected has no
-witness and describes no program. A group that DID declare
-`may_be_empty` keeps holding vacuously; that is what the
-declaration is for.
+report opposite answers about one program.
+
+Selection's verdict on each group declaration is CARRIED with the
+lowered laws, in four states — resolved; intentionally empty
+(`may_be_empty` on a group whose every selector resolved); selector
+failed; declaration refused (declared twice, or empty without
+saying so). A law quantifying over a group in either invalid state
+is **invalid**, never a vacuous `holds`: a verdict over a domain the
+compiler rejected has no witness and describes no program. Only the
+intentionally-empty state holds vacuously — that is what declaring
+`may_be_empty` is for, and it authorizes an empty group, not a
+misspelled member.
+
+The status is carried rather than re-derived because the two are not
+the same question. An unresolved selector leaves nothing behind in
+the model, so a member-count test reads `{ Missing } may_be_empty`
+as intentional, `{ Worker, Missing }` as whole, and a name declared
+twice as fine — while the model keeps the LAST declaration and
+selection keeps the first. Each judges a law against a domain
+selection refused.
 
 Judgment runs only over a program that denotes a valid model. The
 model is a description of a checked program, and some

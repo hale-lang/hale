@@ -388,6 +388,10 @@ pub fn lower_claims(
         &bundle.import_renames,
     );
     let universe = selection.universe;
+    // Carried, not re-derived: what selection concluded about each
+    // group declaration travels WITH the laws that quantify over
+    // them.
+    table.group_selection = selection.groups;
     // Law-SELECTION invalidity becomes structured issues — never
     // silently dropped (review round 15).
     for d in &selection.diags {

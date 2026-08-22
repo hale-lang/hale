@@ -69,6 +69,7 @@ use crate::alloc_summary::{AllocSummary, Callee, EffectSiteKind, FnKey};
 use crate::bus_graph::BusGraph;
 use crate::model_graph;
 use crate::verdict::Verdict;
+use hale_model::GroupSelection;
 use crate::callgraph;
 use crate::effects::{
     close, declared_of, defs_of, effect_names_of, ffi_names,
@@ -123,6 +124,8 @@ pub fn claims_diags(
 pub(crate) struct Selection<'a> {
     pub universe: ClauseUniverse<'a>,
     pub diags: Vec<Diag>,
+    /// Per-group outcome, by RAW name — carried, never re-derived.
+    pub groups: BTreeMap<String, GroupSelection>,
 }
 
 pub(crate) fn select<'a>(
@@ -131,7 +134,7 @@ pub(crate) fn select<'a>(
     import_renames: &[(Vec<String>, String)],
 ) -> Selection<'a> {
     let universe = enumerate_clauses(programs, import_renames);
-    let (mut diags, _, _) =
+    let (mut diags, _, _, groups) =
         claims_report_inner(programs, graph, import_renames, true);
     crate::stdlib_bodies::demangle_imports(&mut diags, import_renames);
     for d in &mut diags {
@@ -139,7 +142,7 @@ pub(crate) fn select<'a>(
             d.kind = hale_syntax::error::DiagKind::Claim;
         }
     }
-    Selection { universe, diags }
+    Selection { universe, diags, groups }
 }
 
 /// The identities of the constitutions actually adopted — GH #409's
@@ -156,7 +159,7 @@ pub fn constitution_identities(
     graph: &BusGraph,
     import_renames: &[(Vec<String>, String)],
 ) -> Adoption {
-    let (_d, _o, adoption) =
+    let (_d, _o, adoption, _groups) =
         claims_report_inner(programs, graph, import_renames, true);
     adoption_identities(programs, adoption)
 }
@@ -213,7 +216,7 @@ pub fn claims_report_with_identities(
     graph: &BusGraph,
     import_renames: &[(Vec<String>, String)],
 ) -> (Vec<Diag>, Vec<ClaimOutcome>, Adoption) {
-    let (mut d, o, adoption) =
+    let (mut d, o, adoption, _groups) =
         claims_report_inner(programs, graph, import_renames, false);
     crate::stdlib_bodies::demangle_imports(&mut d, import_renames);
     (d, o, adoption_identities(programs, adoption))
@@ -314,7 +317,7 @@ pub fn claims_report(
     graph: &BusGraph,
     import_renames: &[(Vec<String>, String)],
 ) -> (Vec<Diag>, Vec<ClaimOutcome>) {
-    let (mut out, outcomes, _adoption) =
+    let (mut out, outcomes, _adoption, _groups) =
         claims_report_inner(programs, graph, import_renames, false);
     crate::stdlib_bodies::demangle_imports(&mut out, import_renames);
     // Mark the whole batch at the one place they all funnel through,
@@ -900,7 +903,12 @@ fn claims_report_inner(
     // the judgment engines over the canonical model, and running
     // both would put two answers to one question on screen.
     selection_only: bool,
-) -> (Vec<Diag>, Vec<ClaimOutcome>, AdoptionInfo) {
+) -> (
+    Vec<Diag>,
+    Vec<ClaimOutcome>,
+    AdoptionInfo,
+    BTreeMap<String, GroupSelection>,
+) {
     let ClauseUniverse {
         claims,
         origins,
@@ -911,7 +919,7 @@ fn claims_report_inner(
     } = enumerate_clauses(programs, import_renames);
     let mut diags = diags;
     if group_decls.is_empty() && claims.is_empty() {
-        return (diags, Vec::new(), adoption);
+        return (diags, Vec::new(), adoption, BTreeMap::new());
     }
 
     // ---- decl indexes for member / topic resolution ----
@@ -961,7 +969,18 @@ fn claims_report_inner(
     }
 
     // ---- resolve groups ----
+    //
+    // Each declaration's OUTCOME is recorded as it is decided (GH
+    // #476 Change 9, review round 2). Downstream must not
+    // re-derive "did selection accept this group?" from the model's
+    // member count: an unresolved selector leaves no member behind,
+    // so a misspelled name is indistinguishable from an
+    // intentionally empty group, a partly-resolved group looks
+    // whole, and a duplicated name looks fine while the model keeps
+    // the LAST declaration and selection keeps the first.
     let mut groups: BTreeMap<String, ResolvedGroup> = BTreeMap::new();
+    let mut group_selection: BTreeMap<String, GroupSelection> =
+        BTreeMap::new();
     for g in &group_decls {
         if groups.contains_key(&g.name.name) {
             diags.push(Diag::ty(
@@ -971,6 +990,10 @@ fn claims_report_inner(
                     g.name.name
                 ),
             ));
+            // The NAME is refused, whichever declaration a later
+            // stage happens to keep.
+            group_selection
+                .insert(g.name.name.clone(), GroupSelection::Refused);
             continue;
         }
         let mut rg = ResolvedGroup {
@@ -979,7 +1002,9 @@ fn claims_report_inner(
             loci: BTreeSet::new(),
             free_fns: BTreeSet::new(),
         };
+        let mut selector_failed = false;
         for m in &g.members {
+            let before = diags.len();
             resolve_member(
                 m,
                 &locus_names,
@@ -988,6 +1013,10 @@ fn claims_report_inner(
                 &mut rg,
                 &mut diags,
             );
+            // `resolve_member` reports an unresolvable selector and
+            // contributes nothing — its failure is otherwise
+            // invisible by construction.
+            selector_failed |= diags.len() > before;
         }
         // Vacuity: judged at the DECL grain. A `forbid` over an
         // empty domain holds trivially — fail-open — so an empty
@@ -1004,15 +1033,30 @@ fn claims_report_inner(
                 ),
             ));
         }
+        let status = if selector_failed {
+            // `may_be_empty` authorizes an intentionally empty
+            // group; it does not turn a misspelled member into
+            // intent.
+            GroupSelection::SelectorFailed
+        } else if rg.decl_count == 0 {
+            if rg.may_be_empty {
+                GroupSelection::IntentionallyEmpty
+            } else {
+                GroupSelection::Refused
+            }
+        } else {
+            GroupSelection::Resolved
+        };
+        group_selection.insert(g.name.name.clone(), status);
         groups.insert(g.name.name.clone(), rg);
     }
 
     if claims.is_empty() {
-        return (diags, Vec::new(), adoption);
+        return (diags, Vec::new(), adoption, group_selection);
     }
 
     if selection_only {
-        return (diags, Vec::new(), adoption);
+        return (diags, Vec::new(), adoption, group_selection);
     }
 
     // ---- claim names are the contract-of-record ----
@@ -1094,7 +1138,7 @@ fn claims_report_inner(
             source: origins.get(&c.name.name).cloned(),
         });
     }
-    (diags, outcomes, adoption)
+    (diags, outcomes, adoption, group_selection)
 }
 
 // ===================== validation =================================

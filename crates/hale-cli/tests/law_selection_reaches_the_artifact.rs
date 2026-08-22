@@ -215,3 +215,153 @@ fn main() { App { }; }
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Review round 2: `may_be_empty` authorizes an intentionally empty
+/// group. It does not turn a MISSPELLED member into intent.
+///
+/// The model builder emits no member for a selector it cannot
+/// resolve, so this group is empty in the model — and a guard that
+/// asked "empty, and did it declare may_be_empty?" exempted it and
+/// let the law hold over no roots at all.
+#[test]
+fn may_be_empty_does_not_rescue_an_unknown_member() {
+    let dir = workdir("mbe_unknown");
+    let (stderr, artifact) = check_and_dump(
+        &dir,
+        r#"
+locus Worker {
+    params { n: Int = 0; }
+    fn run_job() { self.n = self.n + 1; }
+}
+group probes = { MissingWorker } may_be_empty;
+group workers = { Worker };
+main locus App {
+    params { w: Worker = Worker { }; }
+    claims {
+        isolation: forbid reaches(probes, workers);
+    }
+    run() { self.w.run_job(); }
+}
+fn main() { App { }; }
+"#,
+    );
+    assert!(
+        stderr.contains("MissingWorker"),
+        "fixture premise: the unknown member is still an error:\n{}",
+        stderr
+    );
+    assert!(
+        issues(&artifact).iter().any(|m| m.contains("MissingWorker")),
+        "the artifact must carry the selection issue: {:?}",
+        issues(&artifact)
+    );
+    assert_ne!(
+        law_row(&artifact, "isolation")["verdict"], "holds",
+        "`may_be_empty` turned a misspelled member into vacuous truth"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Review round 2: a PARTIALLY resolved group is not a valid
+/// domain. One member survives, so the group is non-empty in the
+/// model — but the law was authored over both, and judging it over
+/// the surviving subset answers a question nobody asked.
+#[test]
+fn a_partly_resolved_group_is_not_judged_over_the_subset() {
+    let dir = workdir("partial");
+    let (stderr, artifact) = check_and_dump(
+        &dir,
+        r#"
+locus Worker {
+    params { n: Int = 0; }
+    fn run_job() { self.n = self.n + 1; }
+}
+locus Sink {
+    params { n: Int = 0; }
+    fn take() { self.n = self.n + 1; }
+}
+group probes = { Worker, MissingWorker };
+group sinks = { Sink };
+main locus App {
+    params { w: Worker = Worker { }; s: Sink = Sink { }; }
+    claims {
+        isolation: forbid reaches(probes, sinks);
+    }
+    run() { self.w.run_job(); self.s.take(); }
+}
+fn main() { App { }; }
+"#,
+    );
+    assert!(
+        stderr.contains("MissingWorker"),
+        "fixture premise: the unknown member is reported:\n{}",
+        stderr
+    );
+    // Premise: the surviving member makes the group NON-empty in
+    // the model, which is exactly why a member-count guard passed
+    // it through.
+    assert!(
+        issues(&artifact).iter().any(|m| m.contains("MissingWorker")),
+        "the artifact must carry the selection issue: {:?}",
+        issues(&artifact)
+    );
+    assert_eq!(
+        law_row(&artifact, "isolation")["verdict"], "invalid",
+        "the law was judged over the resolved subset instead of \
+         being refused with its domain"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Review round 2: a name declared twice is judged against neither
+/// definition.
+///
+/// Selection keeps the FIRST declaration and reports the duplicate;
+/// the model builder inserts declarations into a map, so the LAST
+/// one wins. A law referencing that name was therefore selected in
+/// one context and judged in another — two answers to one question,
+/// one layer below the one this change closes.
+#[test]
+fn a_duplicated_group_is_judged_against_neither_definition() {
+    let dir = workdir("dup");
+    let (stderr, artifact) = check_and_dump(
+        &dir,
+        r#"
+locus Worker {
+    params { n: Int = 0; }
+    fn run_job() { self.n = self.n + 1; }
+}
+locus Sink {
+    params { n: Int = 0; }
+    fn take() { self.n = self.n + 1; }
+}
+group probes = { Worker };
+group probes = { Sink };
+group sinks = { Sink };
+main locus App {
+    params { w: Worker = Worker { }; s: Sink = Sink { }; }
+    claims {
+        isolation: forbid reaches(probes, sinks);
+    }
+    run() { self.w.run_job(); self.s.take(); }
+}
+fn main() { App { }; }
+"#,
+    );
+    assert!(
+        stderr.contains("declared more than once"),
+        "fixture premise: the duplicate is reported:\n{}",
+        stderr
+    );
+    assert!(
+        issues(&artifact).iter().any(|m| m.contains("declared more than once")),
+        "the artifact must carry the duplicate-declaration issue: {:?}",
+        issues(&artifact)
+    );
+    assert_eq!(
+        law_row(&artifact, "isolation")["verdict"], "invalid",
+        "the law was judged against one of two definitions the \
+         compiler refused to choose between"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

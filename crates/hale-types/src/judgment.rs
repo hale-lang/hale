@@ -205,39 +205,36 @@ fn span_of(
 /// pre-pass diagnostics (duplicate claim names — the evaluator
 /// emits them before any validation or evaluation) and the judged
 /// rows.
-/// A group domain that resolves to NO declarations and was not
-/// declared `may_be_empty`.
+/// May a law quantifying over this group be judged at all?
 ///
-/// GH #476 Change 9 review: law selection refuses such a program
-/// (an unknown member, or an empty group that never said it could
-/// be) — but the engines quantified over the empty set anyway and
-/// returned `holds`, so the artifact could record a law as holding
-/// on a domain the compiler had just rejected. There is no witness
-/// behind that verdict and no program it describes: the row is
-/// INVALID. No diagnostic is emitted here on purpose — selection
-/// owns the message, and saying it twice is the duplication this
-/// change removes.
+/// The answer is CARRIED from law selection
+/// ([`hale_model::GroupSelection`]), never re-derived here. The
+/// first version of this guard asked the model "does the group have
+/// members, and did it declare `may_be_empty`?", and that is a
+/// different question with three wrong answers: a group whose only
+/// member is misspelled resolves to nothing, so `{ Missing }
+/// may_be_empty` read as intentionally empty; `{ Worker, Missing }`
+/// read as resolved because one member survived, and the law was
+/// judged over a subset of the domain the author wrote; and a name
+/// declared twice read as fine, while the model keeps the LAST
+/// declaration and selection keeps the first — so the law was
+/// judged against a definition selection had discarded.
 ///
-/// `may_be_empty` is deliberately excluded: an author who declared
-/// the group may be empty has opted into vacuous truth, and the
-/// evaluator has always granted it.
-fn empty_refused_domain(
-    model: &ApplicationModel,
-    gid: GroupId,
+/// No diagnostic is emitted at the refusal: selection owns the
+/// message. What this decides is only whether a VERDICT may be
+/// recorded, and over a refused domain the honest answer is
+/// `Invalid` — there is no witness and no program it describes.
+fn domain_is_judgable(
+    table: &ClaimIrTable,
+    gref: &hale_model::GroupRef,
 ) -> bool {
-    let declared_empty_ok = model
-        .entities
-        .groups
-        .get(gid.index())
-        .is_some_and(|g| g.may_be_empty);
-    if declared_empty_ok {
-        return false;
+    match table.group_selection.get(&gref.name.raw) {
+        Some(status) => status.is_judgable(),
+        // A group selection never saw at all: the reference is
+        // unresolved, which the per-family validation already
+        // reports and refuses.
+        None => true,
     }
-    !model
-        .relations
-        .group_members
-        .iter()
-        .any(|gm| gm.group == gid)
 }
 
 pub fn judge_forbid_reaches(
@@ -748,9 +745,9 @@ pub fn judge_forbid_reaches(
             ));
             true
         };
-        if empty_refused_domain(model, src_gid)
+        if !domain_is_judgable(table, src_ref)
             || matches!(dst, SetIr::Group(g)
-                if g.group.is_some_and(|d| empty_refused_domain(model, d)))
+                if !domain_is_judgable(table, g))
         {
             out.push(Judged {
                 ordinal: row.ordinal,
@@ -1866,8 +1863,8 @@ pub fn judge_only_edges(
         }
         let (src_gid, dst_gid) =
             (src.group.unwrap(), dst.group.unwrap());
-        if empty_refused_domain(model, src_gid)
-            || empty_refused_domain(model, dst_gid)
+        if !domain_is_judgable(table, src)
+            || !domain_is_judgable(table, dst)
         {
             out.push(Judged {
                 ordinal: row.ordinal,
@@ -2420,9 +2417,9 @@ pub fn judge_endpoints(
         let refused_domain = match &row.law {
             ClaimIr::RequireEndpoint { group, .. }
             | ClaimIr::RequireSealed { group }
-            | ClaimIr::Cover { group, .. } => group
-                .group
-                .is_some_and(|g| empty_refused_domain(model, g)),
+            | ClaimIr::Cover { group, .. } => {
+                !domain_is_judgable(table, group)
+            }
             _ => false,
         };
         if refused_domain {
@@ -3309,7 +3306,7 @@ pub fn judge_bound(
         };
         let mut diags: Vec<Diag> = Vec::new();
         let row_span = claim_span(row.provenance);
-        if from.group.is_some_and(|g| empty_refused_domain(model, g)) {
+        if !domain_is_judgable(table, from) {
             out.push(Judged {
                 ordinal: row.ordinal,
                 verdict: Verdict::Invalid,

@@ -49,6 +49,17 @@ Review round 1 (PR #492), three blockers:
   `claims::select`. A law over a group selection refused is
   `invalid` rather than vacuously true; `may_be_empty` groups keep
   holding vacuously, which is what declaring it means.
+
+  Round 2: selection's verdict on each group is CARRIED with the
+  lowered laws (resolved / intentionally empty / selector failed /
+  declaration refused) instead of being re-derived from the model's
+  member count. Those are different questions, and the difference
+  had three exploitable shapes: an unresolved selector leaves no
+  member behind, so `{ Missing } may_be_empty` read as intentional
+  vacuity, `{ Worker, Missing }` read as whole and was judged over
+  the surviving subset, and a name declared twice read as fine while
+  the model keeps the LAST declaration and selection keeps the
+  first.
 - **Judgment requires a program that denotes a model.** Check called
   the judgment whenever a claim surface existed, including on
   ill-typed programs whose models are deliberately unlawful (a key

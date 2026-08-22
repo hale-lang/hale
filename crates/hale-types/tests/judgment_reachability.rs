@@ -144,19 +144,12 @@ fn diff_one(
         // program either way; what changes is that the artifact no
         // longer records an unwitnessed `holds` about a domain the
         // compiler refused.
-        let refused_domain_carveout = **old
-            == hale_types::verdict::Verdict::Holds
-            && j.verdict == hale_types::verdict::Verdict::Invalid
-            && model.entities.groups.iter().enumerate().any(
-                |(i, g)| {
-                    !g.may_be_empty
-                        && !model
-                            .relations
-                            .group_members
-                            .iter()
-                            .any(|gm| gm.group.index() == i)
-                },
-            );
+        // Keyed on the CARRIED selection status, like the engine
+        // itself — a member-count guess is what round 2 removed.
+        let refused_domain_carveout = j.verdict
+            == hale_types::verdict::Verdict::Invalid
+            && **old != hale_types::verdict::Verdict::Invalid
+            && table.group_selection.values().any(|st| !st.is_judgable());
         if attributed_hole_carveout || refused_domain_carveout {
             carved_out.insert(j.ordinal);
         }
