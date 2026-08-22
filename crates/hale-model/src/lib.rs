@@ -4,9 +4,10 @@
 //! application — the value every structural consumer will read
 //! instead of re-deriving its own partial graph. This crate is the
 //! **schema and its laws**; derivation from a checked bundle
-//! (Change 2), the legacy-artifact projection and hash compatibility
-//! (Change 3), `ClaimIr` (Change 4), and the judgment engine
-//! (Changes 5a–5e) land separately per the epic's build order.
+//! (Change 2), the artifact projection (Change 3), `ClaimIr`
+//! (Change 4), and the judgment engine (Changes 5a–5e) live in
+//! `hale-types`. The epic is complete: the model is the single
+//! authority its consumers read.
 //!
 //! ## The architectural law
 //!
@@ -84,13 +85,14 @@
 //!
 //! ## Identity and replay compatibility
 //!
-//! [`ModelHashKind`] names hash algorithms explicitly. The first
-//! model-backed artifact encoder must reproduce the legacy
-//! `TopologyShapeV1` hash exactly over the corpus before any cutover
-//! (Change 3); a richer identity is a **versioned transition** with
-//! an exact recording diagnostic, never a silent reinterpretation of
-//! the existing `u64`. Existing `.halerec` admission behavior is an
-//! acceptance criterion, not a casualty.
+//! [`ModelHashKind`] names hash algorithms explicitly. The
+//! model-backed encoder reproduced the pre-model `TopologyShapeV1`
+//! hash exactly over the corpus before the cutover, and artifact
+//! identity is now pinned by a committed per-program baseline: a
+//! richer identity is a **versioned transition** with an exact
+//! recording diagnostic, never a silent reinterpretation of the
+//! existing `u64`. `.halerec` admission behavior is an acceptance
+//! criterion, not a casualty.
 //!
 //! ## Demand and the LSP contract
 //!
@@ -138,7 +140,7 @@ pub mod relation;
 pub use application::{
     AbsorbedEvent, AbsorbedHoleKind, AbsorbedNode, AbsorbedTarget,
     ApplicationModel, Entities, CertificateEvidence, EvidenceRow, EvidenceTable, LabelRow,
-    LegacyProjection, StdlibAbsorption,
+    Analyses, StdlibAbsorption,
     VerdictIr, ModelError, ModelHashKind, ModelHeader,
     Relations, WeightRow, MODEL_SEMANTICS_V1, DispatchGate,
 };

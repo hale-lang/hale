@@ -8,6 +8,47 @@ behavior.
 
 ## Unreleased
 
+### `LegacyProjection` is gone (GH #476 follow-up)
+
+The model carried a compartment named for compatibility that held
+two different things: data no other table held, and copies kept
+only so serialized bytes would not move. Split and settled.
+
+Deleted, because they were duplicate authorities inside the model:
+
+- **`topology_v1_fns`** — the artifact's fn universe, stored beside
+  `Function.summarized`, which is the same set. Its only model law
+  asserted the two agreed. Derived now via
+  `ApplicationModel::summarized_fns`, so they cannot.
+- **`topology_v1_calls_via_stdlib`** — the pre-model contraction
+  walk's verbatim output (one Boolean, no revisit), carried so the
+  hashed `calls_via_stdlib` loop bit could not move away from what
+  that walk produced. The artifact now projects the model's own
+  `ViaStdlib` call rows, and the walk and its shared helper are
+  deleted.
+
+  **This is a versioned shape transition: schema 1.12 -> 1.13.** The
+  two interpretations agree on endpoints and can disagree on the
+  hashed `loop` bit: the old walk kept a set-valued `seen` per
+  caller, so a stdlib body first reached on a non-looped path was
+  never revisited when a looped path reached it later, while the
+  model's relation revisits on strengthening. The model's answer is
+  the sound one for what the bit asks — does this carrier repeat per
+  iteration — and a program in the distinguishing class gets a new
+  `shape_hash` and must be re-recorded once. No such program exists
+  today: the stdlib re-emerges into user code only from inside its
+  own loops, which sets the bit either way, so not one committed
+  baseline hash moved. The schema still bumps, because the
+  interpretation changed and identity discipline is about what the
+  bytes MEAN, not about whether a corpus happened to notice.
+
+Kept and renamed, because they are facts about the program that no
+other table holds: `Analyses` carries the bus graph's per-subject
+`dispatch_gates` and the `stdlib_absorption` interiors a
+reachability walk needs. Neither is a bridge to anything.
+
+`ApplicationModel.legacy` is now `ApplicationModel.analyses`.
+
 ### One authority per question (GH #476 Change 9)
 
 The canonical-model epic's last change: the duplicate authorities

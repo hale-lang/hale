@@ -141,35 +141,18 @@ pub struct DispatchGate {
 
 /// the legacy artifact schema is versioned past.
 #[derive(Clone, Debug, Default)]
-pub struct LegacyProjection {
-    /// The legacy artifact's fn sort (behavior-summary keys): a
-    /// strict subset of `entities.functions` — a module-scoped or
-    /// empty declaration exists in the universe but not here.
-    pub topology_v1_fns: Vec<FunctionId>,
-    /// The legacy artifact's `calls_via_stdlib` rows, verbatim:
-    /// the output of the legacy one-Boolean, no-revisit contraction
-    /// walk, NOT of the model's two-component lattice. The two can
-    /// legitimately disagree on a loop bit — a stdlib node first
-    /// reached on a non-looped path is never revisited by the
-    /// legacy walk, while the lattice strengthens it — and the
-    /// loop bit is inside the hashed model half, so projecting the
-    /// lattice rows would silently change `TopologyShapeV1` for
-    /// unchanged source. Both endpoints are legacy fns
-    /// (∈ `topology_v1_fns`).
-    pub topology_v1_calls_via_stdlib: Vec<(FunctionId, FunctionId, bool)>,
-    /// GH #476 Change 8: the BusGraph's per-subject dispatch gates
-    /// — the trusted devirtualization analysis, bridged like every
-    /// other legacy engine. `DispatchPlan::derive` combines these
-    /// facts with the arrangement into the typed lowering plan.
+pub struct Analyses {
+    /// The BusGraph's per-subject dispatch gates — the trusted
+    /// devirtualization analysis. `DispatchPlan::derive` combines
+    /// these facts with the arrangement into the typed lowering
+    /// plan (GH #476 Change 8).
     pub dispatch_gates: Vec<DispatchGate>,
-    /// GH #476 Change 5a: what the evaluator's merged-summary walk
-    /// sees INSIDE stdlib bodies reachable from a user fn — interior
-    /// fail-closed holes (with the stdlib fn's display for the
-    /// diagnostic), and user→user re-emergence edges with their
-    /// interior witness path. The reachability judgment consumes
-    /// this to reproduce the evaluator byte-for-byte; deleted at
-    /// Change 9 with the rest of the projection. Sorted by
-    /// (from, site).
+    /// What a merged-summary walk sees INSIDE stdlib bodies
+    /// reachable from a user fn: interior fail-closed holes (with
+    /// the stdlib fn's display for the diagnostic), and user→user
+    /// re-emergence edges with their interior witness path. The
+    /// reachability judgment walks this to reason about paths that
+    /// leave user code and come back. Sorted by (from, site).
     pub stdlib_absorption: Vec<StdlibAbsorption>,
 }
 
@@ -528,34 +511,25 @@ impl ApplicationModel {
                 });
             }
         }
-        // Summarized set == legacy fn sort (in-range rows only;
-        // out-of-range is the DanglingId defect).
-        {
-            let summarized: std::collections::BTreeSet<u32> = e
-                .functions
-                .iter()
-                .enumerate()
-                .filter(|(_, f)| f.summarized)
-                .map(|(i, _)| i as u32)
-                .collect();
-            let legacy: std::collections::BTreeSet<u32> = self
-                .legacy
-                .topology_v1_fns
-                .iter()
-                .map(|f| f.0)
-                .collect();
-            let in_range = legacy
-                .iter()
-                .all(|i| (*i as usize) < e.functions.len());
-            if in_range && summarized != legacy {
-                return Err(ModelError::CoverageLaw {
-                    index: usize::MAX,
-                    law: "the legacy fn sort is the summarized \
-                          set",
-                });
-            }
-        }
         Ok(())
+    }
+
+    /// The functions a behavior summary exists for, in canonical
+    /// order — what the artifact's fn-keyed sections range over.
+    ///
+    /// This used to be a stored table (`legacy.topology_v1_fns`)
+    /// beside `Function.summarized`, which is the same fact written
+    /// twice: the model's own coverage law existed only to assert
+    /// the two agreed. Derived here instead, so they cannot.
+    pub fn summarized_fns(
+        &self,
+    ) -> impl Iterator<Item = crate::ids::FunctionId> + '_ {
+        self.entities
+            .functions
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.summarized)
+            .map(|(i, _)| crate::ids::FunctionId(i as u32))
     }
 
     /// The model's analysis-coverage identity (round 10): fnv1a64
@@ -834,7 +808,12 @@ pub struct ApplicationModel {
     pub holes: Vec<Hole>,
     pub capabilities: Capabilities,
     pub provenance: ProvenanceTable,
-    pub legacy: LegacyProjection,
+    /// Analysis products the model carries but does not derive
+    /// itself — the bus graph's dispatch gates and the stdlib
+    /// interiors a reachability walk needs. Not a compatibility
+    /// bridge: these are facts about the program that no other
+    /// table holds.
+    pub analyses: Analyses,
 }
 
 /// A violated model law. `validate` returns the FIRST violation —
@@ -956,7 +935,7 @@ impl ApplicationModel {
         for h in &self.holes {
             m = m.union(h.hides);
         }
-        for a in &self.legacy.stdlib_absorption {
+        for a in &self.analyses.stdlib_absorption {
             for n in &a.nodes {
                 for ev in &n.events {
                     match ev {
@@ -1768,24 +1747,12 @@ impl ApplicationModel {
             prov("holes", i, h.provenance)?;
         }
 
-        // --- legacy projection: sorted ids, all in range.
-        check_sorted_keys(
-            "legacy.topology_v1_fns",
-            self.legacy.topology_v1_fns.iter(),
-        )?;
-        for (i, f) in self.legacy.topology_v1_fns.iter().enumerate() {
-            if f.index() >= fns {
-                return Err(ModelError::DanglingId {
-                    table: "legacy.topology_v1_fns",
-                    index: i,
-                });
-            }
-        }
+        // --- analyses: sorted ids, all in range.
         // NON-strict ordering: one dispatch site can fan out to
         // SEVERAL stdlib conformers — multiple entries legitimately
         // share (from, site).
         for (i, w) in
-            self.legacy.stdlib_absorption.windows(2).enumerate()
+            self.analyses.stdlib_absorption.windows(2).enumerate()
         {
             if (w[0].from, w[0].site) > (w[1].from, w[1].site) {
                 return Err(ModelError::NotCanonical {
@@ -1863,7 +1830,7 @@ impl ApplicationModel {
                 };
                 join((c.from.0, c.site), pair);
             }
-            for a in &self.legacy.stdlib_absorption {
+            for a in &self.analyses.stdlib_absorption {
                 join(
                     (a.from.0, a.site),
                     a.entry_dispatch.clone(),
@@ -1884,7 +1851,7 @@ impl ApplicationModel {
             }
         }
 
-        for (i, a) in self.legacy.stdlib_absorption.iter().enumerate()
+        for (i, a) in self.analyses.stdlib_absorption.iter().enumerate()
         {
             if a.from.index() >= fns || a.nodes.is_empty() {
                 return Err(ModelError::DanglingId {
@@ -2047,33 +2014,6 @@ impl ApplicationModel {
                 }
             }
         }
-        check_sorted_keys(
-            "legacy.topology_v1_calls_via_stdlib",
-            self.legacy
-                .topology_v1_calls_via_stdlib
-                .iter()
-                .map(|(f, t, _)| (f, t)),
-        )?;
-        {
-            let legacy_set: std::collections::BTreeSet<&FunctionId> =
-                self.legacy.topology_v1_fns.iter().collect();
-            for (i, (f, t, _)) in self
-                .legacy
-                .topology_v1_calls_via_stdlib
-                .iter()
-                .enumerate()
-            {
-                // Endpoint law: a legacy contracted row only ever
-                // connects legacy fns — the legacy walk starts and
-                // ends at its own serialized sort.
-                if !legacy_set.contains(f) || !legacy_set.contains(t) {
-                    return Err(ModelError::DanglingId {
-                        table: "legacy.topology_v1_calls_via_stdlib",
-                        index: i,
-                    });
-                }
-            }
-        }
 
         // --- capability/hole contradiction: exactness may not be
         // claimed for a family any hole hides. Every capability is
@@ -2108,7 +2048,7 @@ impl ApplicationModel {
                     .or_default()
                     .resolved = true;
             }
-            for a in &self.legacy.stdlib_absorption {
+            for a in &self.analyses.stdlib_absorption {
                 call_sites
                     .entry((a.from.0, a.site))
                     .or_default()
@@ -2205,7 +2145,7 @@ impl ApplicationModel {
                 u32,
                 std::collections::BTreeSet<u32>,
             > = std::collections::BTreeMap::new();
-            for a in &self.legacy.stdlib_absorption {
+            for a in &self.analyses.stdlib_absorption {
                 let set =
                     absorbed.entry(a.from.0).or_default();
                 for n in &a.nodes {

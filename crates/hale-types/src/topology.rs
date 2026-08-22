@@ -131,7 +131,25 @@ use crate::symbol::Bundle;
 // HASHED model half — an explicitly versioned shape transition.
 // Shape hashes change for every bus-carrying program; recorded
 // baselines and `.halerec` admissions must be re-recorded once.
-pub const TOPOLOGY_SCHEMA: &str = "1.12";
+// 1.13: `relations.calls_via_stdlib` is INTERPRETED by the model's
+// contraction, not by the pre-model walk it used to reproduce.
+//
+// Both answer "which user fns does a path through stdlib bodies
+// connect", and they agree on endpoints; they can disagree on the
+// hashed `loop` bit. The old walk kept a set-valued `seen` per
+// caller, so a stdlib body first reached on a non-looped path was
+// never revisited when a looped path reached it later — the bit
+// stayed false. The model's relation revisits on strengthening, so
+// the bit is true whenever ANY path is loop-nested. The model's
+// answer is the sound one for the question the bit is asked
+// (does this carrier repeat per iteration?), and this is the
+// versioned transition that adopts it: a program in the
+// distinguishing class gets a new `shape_hash` and must be
+// re-recorded once. No corpus program is in that class — today's
+// stdlib re-emerges into user code only from inside its own loops,
+// which sets the bit either way — so this bumps the schema without
+// moving a single committed baseline hash.
+pub const TOPOLOGY_SCHEMA: &str = "1.13";
 
 /// GH #408 Phase 0: what the rows MEAN, as distinct from their shape.
 ///
@@ -287,21 +305,6 @@ pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
         &programs,
         &bundle.import_renames,
     );
-    // The walk itself lives in `callgraph::legacy_via_stdlib_contraction`,
-    // shared with the model builder's `LegacyProjection` so the
-    // projected `TopologyShapeV1` hash and this serialization cannot
-    // drift (GH #476 Change 2, review round 9).
-    let mut via_stdlib: BTreeMap<(String, String), bool> =
-        BTreeMap::new();
-    for ((k, next), looped) in
-        crate::callgraph::legacy_via_stdlib_contraction(&merged, &user_key)
-    {
-        let e = via_stdlib
-            .entry((fn_name(&k), fn_name(&next)))
-            .or_insert(false);
-        *e |= looped;
-    }
-
     // ---- the normalized model (#392): phases, seeds, decl spans ----
     let vmodel =
         crate::model::Model::derive(&programs, &bundle.import_renames);

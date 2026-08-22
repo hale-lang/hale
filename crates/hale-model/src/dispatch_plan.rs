@@ -155,7 +155,7 @@ impl DispatchPlan {
                 }
             }
         }
-        DispatchPlan::from_gates(&m.legacy.dispatch_gates, &domains_of)
+        DispatchPlan::from_gates(&m.analyses.dispatch_gates, &domains_of)
     }
 
     /// The plan over raw gate facts plus a locus-display → thread

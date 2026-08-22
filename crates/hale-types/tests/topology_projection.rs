@@ -613,9 +613,11 @@ fn labels_and_effects_are_restricted_to_the_v1_universe() {
         origin: "test".to_string(),
     });
     let p = ProvenanceId(0);
-    let f = |name: &str, effects: Vec<&str>| Function {
-        analyzed: true,
-        summarized: true,
+    // `summarized` IS the V1 universe now (it always was the same
+    // set; the model used to carry a second copy of it).
+    let f = |name: &str, effects: Vec<&str>, summarized: bool| Function {
+        analyzed: summarized,
+        summarized,
         owner: None,
         name: name.to_string(),
         display: name.to_string(),
@@ -634,8 +636,8 @@ fn labels_and_effects_are_restricted_to_the_v1_universe() {
         },
         entities: Entities {
             functions: vec![
-                f("analyzed", vec!["alloc"]),
-                f("hidden_extra", vec!["syscall"]),
+                f("analyzed", vec!["alloc"], true),
+                f("hidden_extra", vec!["syscall"], false),
             ],
             ..Entities::default()
         },
@@ -656,10 +658,8 @@ fn labels_and_effects_are_restricted_to_the_v1_universe() {
         holes: Vec::new(),
         capabilities: Capabilities::default(),
         provenance: prov,
-        legacy: LegacyProjection {
+        analyses: Analyses {
             dispatch_gates: Vec::new(),
-            topology_v1_fns: vec![FunctionId(0)],
-            topology_v1_calls_via_stdlib: Vec::new(),
             stdlib_absorption: Vec::new(),
         },
     };
@@ -674,9 +674,13 @@ fn labels_and_effects_are_restricted_to_the_v1_universe() {
         "a non-V1 fn appears in NO fn-keyed section:\n{}",
         out
     );
-    // …and with the extra fn enrolled, both sections carry it —
-    // the filter is the universe, not the function.
-    m.legacy.topology_v1_fns = vec![FunctionId(0), FunctionId(1)];
+    // …and with the extra fn enrolled in the summarized set, both
+    // sections carry it — the filter is the universe, not the
+    // function. (The universe is the `summarized` flag now, not a
+    // table beside it.)
+    for f in m.entities.functions.iter_mut() {
+        f.summarized = true;
+    }
     let out = project_model_half(&m);
     assert!(out.contains("\"hidden_extra\": [\"syscall\"]"));
     assert!(out.contains("\"hidden_extra\": [\"money\"]"));

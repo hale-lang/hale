@@ -8,36 +8,36 @@
 //! existing `.halerec` recordings keep admitting and a topology
 //! diff never moves because the derivation changed hands.
 //!
-//! Until the Change-6 versioned transition, BOTH derivations stay
-//! live and `tests/topology_projection.rs` holds them byte-equal
-//! over every corpus fixture — the same conformance-loop shape as
-//! the effects manifest. A model-builder change that would alter
-//! the artifact identity fails that differential loudly instead of
-//! silently re-keying replay admission. At Change 6 the legacy
-//! derivation and [`hale_model::LegacyProjection`] are deleted
-//! together and the artifact becomes a pure projection of the
-//! model.
+//! Change 9 deleted the legacy derivation; a committed baseline of
+//! `origin -> shape_hash` over the corpus now pins artifact
+//! identity, so a model-builder change that would move a hash
+//! fails loudly instead of silently re-keying replay admission.
 //!
-//! ## Projection rules (legacy artifact = DISPLAY spelling)
+//! ## Projection rules (the artifact speaks DISPLAY spelling)
 //!
 //! The model keys everything by RAW post-merge symbol and carries
-//! author spelling in `display` fields; the legacy artifact renders
+//! author spelling in `display` fields; the artifact renders
 //! displays. Specifically:
 //!
 //!  * `sorts.fns` / call endpoints — `Function.display`, restricted
-//!    to `legacy.topology_v1_fns` (the behavior-summary universe;
+//!    to the SUMMARIZED set (`ApplicationModel::summarized_fns`):
 //!    module-scoped and empty declarations exist in the model but
-//!    not in the legacy sort).
-//!  * `calls_via_stdlib` — `legacy.topology_v1_calls_via_stdlib`
-//!    verbatim: the legacy one-Boolean no-revisit walk's rows, NOT
-//!    the model's lattice rows (whose loop bits may be stronger).
+//!    have no behavior summary, so no fn-keyed section ranges over
+//!    them.
+//!  * `calls_via_stdlib` — the model's own `ViaStdlib` call rows,
+//!    merged to endpoint grain with the loop bit OR'd. These were
+//!    once carried beside the model as the legacy walk's verbatim
+//!    output, because that walk's one Boolean and no-revisit rule
+//!    can leave a loop bit false where the model's lattice
+//!    strengthens it, and the bit is inside the hashed half.
+//!    Nothing reproduces that walk any more.
 //!  * publish/subscribe subjects — a declared endpoint renders its
-//!    topic's display NAME (the legacy artifact never wrote wire
+//!    topic's display NAME (the artifact does not write wire
 //!    subjects into relations); an undeclared endpoint renders its
 //!    literal/authored pattern, which is author-spelled already.
 //!  * `unknowns` — re-folded from typed holes plus
 //!    `dead_interface_calls` (the model separates dead dispatches
-//!    from genuine residue; the legacy section conflates them).
+//!    from genuine residue; the artifact's section conflates them).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -153,17 +153,13 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
     // The legacy fn universe: only these functions appear in the
     // artifact's fn-keyed sections.
     let v1: BTreeSet<hale_model::FunctionId> =
-        m.legacy.topology_v1_fns.iter().copied().collect();
+        m.summarized_fns().collect();
 
     // ---- sorts ----
     let loci: BTreeSet<String> =
         e.loci.iter().map(|l| l.display.clone()).collect();
-    let fns: BTreeSet<String> = m
-        .legacy
-        .topology_v1_fns
-        .iter()
-        .map(|id| fn_display(*id))
-        .collect();
+    let fns: BTreeSet<String> =
+        m.summarized_fns().map(fn_display).collect();
     let topics: BTreeSet<String> =
         e.topics.iter().map(|t| t.display.clone()).collect();
     // RAW-name order with display values: the legacy encoder sorts
@@ -222,12 +218,28 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
             }
         }
     }
+    // Through-stdlib contraction rows, from the model's OWN
+    // relation. They used to be carried beside the model as the
+    // legacy walk's verbatim output — one Boolean, no revisit —
+    // because the model's two-component lattice can strengthen a
+    // loop bit the legacy walk left false, and that bit is inside
+    // the hashed half. Nothing depends on reproducing the old walk
+    // any more, so the artifact reports what the model actually
+    // knows: a carrier reached through a loop-nested stdlib entry
+    // repeats per iteration whether or not the first path to it
+    // did.
     let mut via_stdlib: BTreeMap<(String, String), bool> = BTreeMap::new();
-    for (f, t, looped) in &m.legacy.topology_v1_calls_via_stdlib {
+    for c in &r.calls {
+        if c.dispatch != DispatchKind::ViaStdlib {
+            continue;
+        }
+        if !v1.contains(&c.from) || !v1.contains(&c.to) {
+            continue;
+        }
         let entry = via_stdlib
-            .entry((fn_display(*f), fn_display(*t)))
+            .entry((fn_display(c.from), fn_display(c.to)))
             .or_insert(false);
-        *entry |= *looped;
+        *entry |= c.in_loop;
     }
     // Subjects: a declared endpoint renders the topic display NAME;
     // an undeclared endpoint renders its authored pattern.
@@ -390,7 +402,7 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
     // stdlib-merged summary's user keys — the V1 universe — never
     // the model's broader declaration universe (review round 12).
     let mut derived_effects: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for id in &m.legacy.topology_v1_fns {
+    for id in m.summarized_fns() {
         let f = &e.functions[id.index()];
         if !f.effects.is_empty() {
             derived_effects.insert(f.display.clone(), f.effects.clone());
@@ -1435,12 +1447,8 @@ pub fn project_unhashed_tail(m: &ApplicationModel) -> String {
         // endpoints in the summary (v1) universe — a
         // declaration-universe-recovered edge (known edge + hole
         // coexisting) has no legacy span row.
-        let v1: BTreeSet<u32> = m
-            .legacy
-            .topology_v1_fns
-            .iter()
-            .map(|f| f.0)
-            .collect();
+        let v1: BTreeSet<u32> =
+            m.summarized_fns().map(|f| f.0).collect();
         let mut rows: BTreeSet<(String, String, i64, u32, u32)> =
             BTreeSet::new();
         for c in &r.calls {

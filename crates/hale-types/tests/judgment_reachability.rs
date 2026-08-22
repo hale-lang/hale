@@ -690,10 +690,8 @@ fn looped_stdlib_entry_with_carrier_is_unbounded() {
         holes: Vec::new(),
         capabilities: Capabilities::default(),
         provenance: prov,
-        legacy: LegacyProjection {
+        analyses: Analyses {
             dispatch_gates: Vec::new(),
-            topology_v1_fns: vec![FunctionId(0)],
-            topology_v1_calls_via_stdlib: Vec::new(),
             stdlib_absorption: vec![StdlibAbsorption {
                 from: FunctionId(0),
                 site: 0,
@@ -1008,7 +1006,7 @@ fn main() {
     let table = lower_claims(&bundle, &model);
     // Truncate the absorption: interior knowledge stops at the
     // entry, so the walk must report the step ceiling — Violated.
-    for a in &mut model.legacy.stdlib_absorption {
+    for a in &mut model.analyses.stdlib_absorption {
         for n in &mut a.nodes {
             n.direct_effects.clear();
             n.events.clear();
@@ -1018,7 +1016,7 @@ fn main() {
             .push(hale_model::AbsorbedEvent::Truncated);
     }
     assert!(
-        !model.legacy.stdlib_absorption.is_empty(),
+        !model.analyses.stdlib_absorption.is_empty(),
         "the fixture absorbs a stdlib call"
     );
     let (_p, judged) = judge_forbid_reaches(&table, &model, &[0]);
@@ -1186,7 +1184,7 @@ fn main() {
     // Append a truncated frontier node beside the intact interior
     // (which still holds the alloc witness) and wire an edge to it.
     let a = model
-        .legacy
+        .analyses
         .stdlib_absorption
         .first_mut()
         .expect("absorption");
@@ -1605,12 +1603,12 @@ fn main() {
     let base = derive_application_model(&bundle);
     base.validate().expect("the built model is lawful");
     assert!(
-        !base.legacy.stdlib_absorption.is_empty(),
+        !base.analyses.stdlib_absorption.is_empty(),
         "the fixture absorbs a stdlib call"
     );
     // Dangling topic id.
     let mut m = base.clone();
-    m.legacy.stdlib_absorption[0].nodes[0].events.push(
+    m.analyses.stdlib_absorption[0].nodes[0].events.push(
         hale_model::AbsorbedEvent::Publish {
             subject: "Orders".to_string(),
             declared_topic: Some(hale_model::TopicId(999)),
@@ -1818,8 +1816,8 @@ fn main() {
     base.validate().expect("the built model is lawful");
     // An interior call whose label names a method its target is not.
     let mut m = base.clone();
-    let n = m.legacy.stdlib_absorption[0].nodes.len() as u32;
-    m.legacy.stdlib_absorption[0].nodes.push(
+    let n = m.analyses.stdlib_absorption[0].nodes.len() as u32;
+    m.analyses.stdlib_absorption[0].nodes.push(
         hale_model::AbsorbedNode {
             display: "std::x::Ledger::charge_a".to_string(),
             carries: Vec::new(),
@@ -1827,7 +1825,7 @@ fn main() {
             events: Vec::new(),
         },
     );
-    m.legacy.stdlib_absorption[0].nodes[0].events.push(
+    m.analyses.stdlib_absorption[0].nodes[0].events.push(
         hale_model::AbsorbedEvent::Call {
             target: hale_model::AbsorbedTarget::Interior(n),
             dispatch: Some((
@@ -1844,7 +1842,7 @@ fn main() {
     );
     // An entry label that is not node zero's method.
     let mut m = base.clone();
-    m.legacy.stdlib_absorption[0].entry_dispatch = Some((
+    m.analyses.stdlib_absorption[0].entry_dispatch = Some((
         "Payer".to_string(),
         "pay".to_string(),
     ));
@@ -1881,7 +1879,7 @@ fn main() {
     let base = derive_application_model(&bundle);
     base.validate().expect("the built model is lawful");
     let mut m = base.clone();
-    m.legacy.stdlib_absorption[0].nodes[0].events.push(
+    m.analyses.stdlib_absorption[0].nodes[0].events.push(
         hale_model::AbsorbedEvent::CallHole(
             hale_model::AbsorbedHoleKind::IndirectCall,
         ),
@@ -2020,7 +2018,7 @@ fn main() {
     // A contracted row whose interior is gone: every judgment
     // would discard the only modeled edge.
     let mut m = base.clone();
-    m.legacy.stdlib_absorption.clear();
+    m.analyses.stdlib_absorption.clear();
     m.capabilities = hale_model::Capabilities::default();
     assert!(
         m.validate().is_err(),
@@ -2035,7 +2033,7 @@ fn main() {
         .position(|f| f.display == "Hello::handle")
         .expect("Hello::handle") as u32;
     let probe_entry = m
-        .legacy
+        .analyses
         .stdlib_absorption
         .iter()
         .position(|a| {
@@ -2043,7 +2041,7 @@ fn main() {
                 != "Gate::probe"
         })
         .unwrap_or(0);
-    m.legacy.stdlib_absorption[probe_entry].nodes[0]
+    m.analyses.stdlib_absorption[probe_entry].nodes[0]
         .events
         .push(hale_model::AbsorbedEvent::Call {
             target: hale_model::AbsorbedTarget::User(
@@ -2905,10 +2903,8 @@ fn mixed_dispatch_alternatives_share_one_group() {
         holes: Vec::new(),
         capabilities: Capabilities::default(),
         provenance: prov,
-        legacy: LegacyProjection {
+        analyses: Analyses {
             dispatch_gates: Vec::new(),
-            topology_v1_fns: vec![FunctionId(0), FunctionId(1)],
-            topology_v1_calls_via_stdlib: Vec::new(),
             // The stdlib alternative of the SAME authored dispatch
             // (site 0), carrying a summary-global group id that
             // differs from the local ordinal.
@@ -3448,8 +3444,8 @@ fn main() {
     base.validate().expect("the built model is lawful");
     let carrier = |m: &mut hale_model::ApplicationModel,
                    display: &str| {
-        let n = m.legacy.stdlib_absorption[0].nodes.len() as u32;
-        m.legacy.stdlib_absorption[0].nodes.push(
+        let n = m.analyses.stdlib_absorption[0].nodes.len() as u32;
+        m.analyses.stdlib_absorption[0].nodes.push(
             hale_model::AbsorbedNode {
                 display: display.to_string(),
                 carries: vec!["money".to_string()],
@@ -3465,7 +3461,7 @@ fn main() {
     let a = carrier(&mut m, "std::x::A::pay");
     let b = carrier(&mut m, "std::x::B::pay");
     for t in [a, b] {
-        m.legacy.stdlib_absorption[0].nodes[0].events.push(
+        m.analyses.stdlib_absorption[0].nodes[0].events.push(
             hale_model::AbsorbedEvent::Call {
                 target: hale_model::AbsorbedTarget::Interior(t),
                 dispatch: None,
@@ -3483,7 +3479,7 @@ fn main() {
     let a = carrier(&mut m, "std::x::A::pay");
     let b = carrier(&mut m, "std::x::B::refund");
     for (t, method) in [(a, "pay"), (b, "refund")] {
-        m.legacy.stdlib_absorption[0].nodes[0].events.push(
+        m.analyses.stdlib_absorption[0].nodes[0].events.push(
             hale_model::AbsorbedEvent::Call {
                 target: hale_model::AbsorbedTarget::Interior(t),
                 dispatch: Some((
@@ -3504,7 +3500,7 @@ fn main() {
     let a = carrier(&mut m, "std::x::A::pay");
     let b = carrier(&mut m, "std::x::B::pay");
     for t in [a, b] {
-        m.legacy.stdlib_absorption[0].nodes[0].events.push(
+        m.analyses.stdlib_absorption[0].nodes[0].events.push(
             hale_model::AbsorbedEvent::Call {
                 target: hale_model::AbsorbedTarget::Interior(t),
                 dispatch: Some((

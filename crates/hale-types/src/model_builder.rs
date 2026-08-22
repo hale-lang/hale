@@ -2587,42 +2587,6 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
 
     // The Change-3 bridge: the legacy artifact's fn sort, recorded
     // so TopologyShapeV1 projects from the model alone.
-    let mut legacy_fns: Vec<hale_model::FunctionId> = summary
-        .fns
-        .keys()
-        .filter(|k| user_key(k))
-        .map(|k| fn_id[&fn_name(k)])
-        .collect();
-    legacy_fns.sort();
-    legacy_fns.dedup();
-    // …and the legacy contracted rows, from the SHARED legacy walk
-    // (one Boolean, no revisit) — NOT from the model's lattice rows,
-    // whose loop bits can legitimately be stronger. This is what
-    // lets Change 3 reproduce serialized `calls_via_stdlib` (and
-    // therefore the TopologyShapeV1 hash) from the model alone
-    // (round 9).
-    let legacy_via: Vec<(
-        hale_model::FunctionId,
-        hale_model::FunctionId,
-        bool,
-    )> = {
-        let mut rows: BTreeMap<
-            (hale_model::FunctionId, hale_model::FunctionId),
-            bool,
-        > = BTreeMap::new();
-        for ((k, next), looped) in
-            crate::callgraph::legacy_via_stdlib_contraction(
-                &merged, &user_key,
-            )
-        {
-            let e = rows
-                .entry((fn_id[&fn_name(&k)], fn_id[&fn_name(&next)]))
-                .or_insert(false);
-            *e |= looped;
-        }
-        rows.into_iter().map(|((f, t), l)| (f, t, l)).collect()
-    };
-
     // GH #476 Change 5a: the stdlib-absorption sidecar — what the
     // evaluator's merged-summary walk sees inside stdlib bodies
     // reachable from each user call site. Site ordinals replicate
@@ -3545,10 +3509,8 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
 
     prov.records = records;
     let model = ApplicationModel {
-        legacy: hale_model::LegacyProjection {
-            topology_v1_fns: legacy_fns,
+        analyses: hale_model::Analyses {
             dispatch_gates,
-            topology_v1_calls_via_stdlib: legacy_via,
             stdlib_absorption,
         },
         header: ModelHeader {

@@ -239,13 +239,10 @@ fn model_and_artifact_extract_the_same_facts() {
         "artifact fn sort ⊆ model universe; missing: {:?}",
         art_fns.difference(&model_fns).collect::<Vec<_>>()
     );
-    // …and the legacy projection recovers the EXACT legacy sort from
-    // the model alone (round 7): no summary/AST side channel for
-    // Change 3.
+    // …and the artifact's fn sort is exactly the model's summarized
+    // set, derived from the flag rather than carried beside it.
     let legacy_fns: BTreeSet<String> = m
-        .legacy
-        .topology_v1_fns
-        .iter()
+        .summarized_fns()
         .map(|id| e.functions[id.index()].display.clone())
         .collect();
     assert_eq!(
@@ -1410,14 +1407,21 @@ fn main() { App { }; }
     );
 }
 
-/// P1 (round 9): `LegacyProjection.topology_v1_calls_via_stdlib`
-/// reproduces the artifact's serialized rows EXACTLY — from/to AND
-/// the loop bit, which sits inside the hashed model half. The
-/// projection runs the shared LEGACY walk (one Boolean, no
-/// revisit), not the model's lattice, whose loop bits may be
-/// legitimately stronger.
+/// The artifact's `calls_via_stdlib` rows come from the model's OWN
+/// `ViaStdlib` call relation — from/to AND the loop bit, which sits
+/// inside the hashed model half.
+///
+/// They used to come from a copy of the legacy walk's output
+/// (one Boolean, no revisit) carried beside the model, because that
+/// walk can leave a loop bit false where the model's
+/// revisit-on-strengthen lattice sets it, and moving the bit moves
+/// the shape hash. Nothing reproduces that walk any more; the
+/// artifact reports what the model knows. Over the whole corpus the
+/// two agree — the committed shape-hash baseline did not move when
+/// the source changed — so the carve-out was guarding a divergence
+/// no real program exhibits.
 #[test]
-fn legacy_via_stdlib_projection_matches_the_artifact_exactly() {
+fn via_stdlib_rows_project_from_the_model_relation() {
     // The #392 recipe that manufactures a real user→stdlib→user
     // contracted edge: Router.dispatch's interior reaches the
     // registered user handler.
@@ -1473,19 +1477,34 @@ fn main() {
         !art_rows.is_empty(),
         "the recipe must manufacture a contracted edge"
     );
-    // Artifact strings are DISPLAY — project through display fields.
-    let proj_rows: BTreeSet<(String, String, bool)> = m
-        .legacy
-        .topology_v1_calls_via_stdlib
-        .iter()
-        .map(|(f, t, l)| {
-            (
-                e.functions[f.index()].display.clone(),
-                e.functions[t.index()].display.clone(),
-                *l,
-            )
-        })
-        .collect();
+    // Artifact strings are DISPLAY — project through display
+    // fields. The rows come from the model's OWN `ViaStdlib` call
+    // relation now: the legacy walk's verbatim output used to be
+    // carried beside the model so the serialized loop bit could not
+    // move, and nothing depends on reproducing that walk any more.
+    let proj_rows: BTreeSet<(String, String, bool)> = {
+        let summarized: BTreeSet<u32> =
+            m.summarized_fns().map(|f| f.0).collect();
+        let mut merged: BTreeMap<(String, String), bool> =
+            BTreeMap::new();
+        for c in m
+            .relations
+            .calls
+            .iter()
+            .filter(|c| c.dispatch == DispatchKind::ViaStdlib)
+            .filter(|c| {
+                summarized.contains(&c.from.0)
+                    && summarized.contains(&c.to.0)
+            })
+        {
+            let k = (
+                e.functions[c.from.index()].display.clone(),
+                e.functions[c.to.index()].display.clone(),
+            );
+            *merged.entry(k).or_insert(false) |= c.in_loop;
+        }
+        merged.into_iter().map(|((f, t), l)| (f, t, l)).collect()
+    };
     assert_eq!(
         art_rows, proj_rows,
         "projection reproduces serialized rows incl. loop bits"
@@ -1712,4 +1731,111 @@ fn main() { App { }; }
     assert_eq!(shape_at("a"), "opaque:Int");
     assert_eq!(shape_at("b"), "opaque:(Int,Bool)");
     assert_eq!(shape_at("c"), "opaque:[Int; 4]");
+}
+
+/// The versioned transition's control (PR #493 review): the loop
+/// bit in `calls_via_stdlib` is the MODEL's, and the two
+/// interpretations are pinned against each other on the shape that
+/// distinguishes them.
+///
+/// One user fn enters the same stdlib body twice — once outside a
+/// loop, once inside. The pre-model walk kept a set-valued `seen`
+/// per caller, so the second entry was discarded and the bit stayed
+/// whatever the FIRST path said. The model's relation revisits on
+/// strengthening, so the bit is true whenever any path is
+/// loop-nested.
+///
+/// The reviewer's version of this fixture does not actually
+/// diverge, and the reason is worth recording: today's stdlib
+/// re-emerges into user code only from inside its own loops (the
+/// router walks its entry list), which sets the bit on the interior
+/// edge whatever the caller did. The two interpretations therefore
+/// agree on every program the corpus and the stdlib can express —
+/// which is why the schema bump moves no committed hash. What this
+/// test pins is that the artifact's bit now comes from the model
+/// relation, so if a stdlib callback ever becomes loop-free the
+/// answer follows the model rather than an accident of walk order.
+#[test]
+fn the_via_stdlib_loop_bit_is_the_models() {
+    let src = r#"
+locus Hello {
+    fn handle(ctx: std::http::Context) -> std::http::Response {
+        return std::http::Response {
+            status: 200,
+            content_type: "text/plain",
+            body: "hi"
+        };
+    }
+}
+locus Gate {
+    fn probe(r: std::http::Router, req: std::http::Request) -> Int {
+        let first = r.dispatch(req);
+        let mut i = 0;
+        while i < 1 {
+            r.dispatch(std::http::Request {
+                method: "GET", path: "/", body: ""
+            });
+            i = i + 1;
+        }
+        return first.status;
+    }
+}
+fn main() {
+    let r = std::http::Router { };
+    r.add("GET", "/", Hello { });
+    let req = std::http::Request { method: "GET", path: "/", body: "" };
+    println(Gate { }.probe(r, req));
+}
+"#;
+    let m = derive(src);
+    let e = &m.entities;
+    // Premise: the fixture really does contract a path through a
+    // stdlib body back into user code, twice, at different loop
+    // depths.
+    let rows: Vec<(&str, &str, bool)> = m
+        .relations
+        .calls
+        .iter()
+        .filter(|c| c.dispatch == DispatchKind::ViaStdlib)
+        .map(|c| {
+            (
+                e.functions[c.from.index()].display.as_str(),
+                e.functions[c.to.index()].display.as_str(),
+                c.in_loop,
+            )
+        })
+        .collect();
+    assert!(
+        rows.iter().any(|(f, t, _)| *f == "Gate::probe"
+            && *t == "Hello::handle"),
+        "fixture premise: a contracted user→stdlib→user row: {:?}",
+        rows
+    );
+    // The model's answer: some path is loop-nested, so the carrier
+    // repeats per iteration.
+    assert!(
+        rows.iter().any(|(f, t, l)| *f == "Gate::probe"
+            && *t == "Hello::handle"
+            && *l),
+        "the model must record the strengthened loop bit: {:?}",
+        rows
+    );
+    // …and the artifact reports exactly that, rather than a second
+    // walk's opinion of it.
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let mut programs = BTreeMap::new();
+    programs.insert("app.hl".to_string(), &program);
+    let art = hale_types::topology::dump_topology(&Bundle::new(programs));
+    assert!(
+        art.contains("\"from\": \"Gate::probe\"")
+            && art.contains("\"to\": \"Hello::handle\""),
+        "artifact carries the contracted row"
+    );
+    let row_start = art.find("\"from\": \"Gate::probe\"").unwrap();
+    let row = &art[row_start..row_start + 200];
+    assert!(
+        row.contains("\"loop\": true"),
+        "the artifact's loop bit is the model's:\n{}",
+        row
+    );
 }
