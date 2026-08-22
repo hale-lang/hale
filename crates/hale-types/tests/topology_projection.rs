@@ -1,17 +1,30 @@
-//! GH #476 Change 3 — the projection differential.
+//! GH #476 Change 3/9 — the model-backed artifact encoder.
 //!
-//! `topology_projection::project_model_half(derive(bundle))` must be
-//! BYTE-IDENTICAL to the LEGACY model-half gathering (Change 6
-//! inverted the direction: production emits the projection, and
-//! the legacy arm — `dump_topology_parts(..).1` — exists only for
-//! this differential until Change 9 retires it); it must also be
-//! from its own derivation, for every program in the corpus — the
-//! epic's exit criterion ("reproduce the legacy `TopologyShapeV1`
-//! hash exactly over the corpus before any cutover"). Until the
-//! Change-6 versioned transition this differential is a permanent
-//! conformance gate: a model-builder change that would alter the
-//! artifact identity fails HERE, loudly, instead of silently
-//! re-keying `.halerec` replay admission.
+//! Changes 3–8 held this projection byte-equal to a LEGACY
+//! gathering that re-serialized the same facts from source, so the
+//! cutover could not silently re-key `.halerec` replay admission.
+//! Change 9 deleted that second serialization along with the other
+//! duplicate authorities — which leaves this file with a real
+//! question: what pins artifact identity now that there is nothing
+//! to compare against?
+//!
+//! A committed BASELINE. `fixtures/topology_shape_baseline.txt`
+//! records `origin -> shape_hash` for every corpus program; the
+//! corpus test recomputes and diffs, and a change to the model
+//! builder that moves an artifact hash fails here with a
+//! regenerate hint instead of passing quietly. Same shape as the
+//! effects-manifest gate. Regenerate deliberately:
+//!
+//! ```sh
+//! HALE_REGEN_TOPOLOGY_BASELINE=1 cargo test -p hale-types \
+//!     --test topology_projection
+//! ```
+//!
+//! The per-fixture tests below keep their charter unchanged — each
+//! pins one V1 spelling or ordering rule (authored-order interface
+//! ties, declaration-order labels, supervision ties, raw-order
+//! sealed rendering, the full retry literal) — but they assert on
+//! the PROJECTED bytes, which are now the only bytes there are.
 
 use std::collections::BTreeMap;
 
@@ -32,25 +45,6 @@ fn model_half_of(artifact: &str) -> &str {
         .find(",\n  \"sources\": [")
         .expect("artifact has a sources section");
     &artifact[start..end]
-}
-
-/// The DIFFERENTIAL's comparison arm: the legacy gathering string
-/// `dump_topology_parts` returns beside the artifact. Kept as a
-/// named helper so the direction of the comparison is explicit —
-/// production emits the projection; the legacy arm exists only
-/// here.
-fn legacy_arm(legacy_half: &str) -> &str {
-    legacy_half
-}
-
-/// Change 7 (schema 1.12): `endpoint_identity` is new hashed
-/// content the legacy gathering never produced — strip it before a
-/// V1 byte comparison.
-fn strip_endpoint_identity(projected: &str) -> &str {
-    projected
-        .split(",\n  \"endpoint_identity\": [")
-        .next()
-        .unwrap_or(projected)
 }
 
 fn artifact_shape_hash(artifact: &str) -> u64 {
@@ -84,102 +78,146 @@ fn first_diff(a: &str, b: &str) -> String {
     )
 }
 
-fn check_one(
+/// One baseline row: `origin -> shape_hash`, plus the
+/// self-consistency the emitter still owes (the artifact it wrote
+/// must hash to what the projection says it does).
+fn baseline_row(
     origin: &str,
     program: &hale_syntax::ast::Program,
     bad: &mut Vec<String>,
-) {
+) -> Option<(String, u64)> {
     let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
         || {
             let mut programs = BTreeMap::new();
             programs.insert("app.hl".to_string(), program);
             let bundle = Bundle::new(programs);
-            let (art, legacy_half, legacy_tail) =
-                hale_types::topology::dump_topology_parts(&bundle);
+            let art = hale_types::topology::dump_topology_parts(&bundle);
             let model = derive_application_model(&bundle);
-            (art, legacy_half, legacy_tail, model)
+            (art, model)
         },
     ));
-    let Ok((art, legacy_half, legacy_tail, model)) = caught else {
+    let Ok((art, model)) = caught else {
         bad.push(format!("{}: PANIC", origin));
-        return;
+        return None;
     };
-    // The differential is a property of CHECKED programs — the
-    // corpus's negative fixtures can carry shapes the two
-    // derivations legitimately read differently, and the checker
-    // refuses them before either output exists.
-    let checks_clean = hale_types::check_program(program)
-        .iter()
-        .all(|d| !d.is_error());
-    if !checks_clean {
-        return;
+    // A property of CHECKED programs only: the corpus's negative
+    // fixtures are refused before an artifact exists.
+    if hale_types::check_program(program).iter().any(|d| d.is_error()) {
+        return None;
     }
-    let legacy = legacy_arm(&legacy_half);
-    let _ = model_half_of(&art);
-    let projected_full = project_model_half(&model);
-    // Change 7 (schema 1.12): `endpoint_identity` is NEW hashed
-    // content the legacy gathering never produced — the versioned
-    // shape transition. The differential's charter is the V1
-    // subset: strip the new section, compare the rest byte-exact.
-    let projected = strip_endpoint_identity(&projected_full);
-    if legacy != projected {
+    // The emitter and the projection are one authority now, so this
+    // is self-consistency rather than a differential — but an
+    // emitter that stamped a hash of something OTHER than what it
+    // wrote would still be a silent replay-admission bug.
+    let stamped = artifact_shape_hash(&art);
+    let projected = project_shape_hash(&model);
+    if stamped != projected {
         bad.push(format!(
-            "{}: model half diverges.\n{}",
-            origin,
-            first_diff(legacy, &projected)
+            "{}: artifact stamps {:016x} but the projection hashes \
+             {:016x} — the emitter and the projection disagree",
+            origin, stamped, projected
         ));
-        return;
+        return None;
     }
-    if artifact_shape_hash(&art) != project_shape_hash(&model) {
+    if model_half_of(&art) != project_model_half(&model) {
         bad.push(format!(
-            "{}: byte-equal halves but hash mismatch (?)",
+            "{}: emitted model half is not the projection",
             origin
         ));
-        return;
+        return None;
     }
-    // Round 2: the UNHASHED tail (sources/provenance/topics) is
-    // projected too — same differential, same direction.
-    let projected_tail =
-        hale_types::topology_projection::project_unhashed_tail(
-            &model,
-        );
-    if legacy_tail != projected_tail {
-        bad.push(format!(
-            "{}: unhashed tail diverges.\n{}",
-            origin,
-            first_diff(&legacy_tail, &projected_tail)
-        ));
-    }
+    Some((origin.to_string(), stamped))
 }
 
-/// THE Change-3 gate: byte equality over every checkable corpus
-/// program.
+fn baseline_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/topology_shape_baseline.txt")
+}
+
+/// THE identity gate, post-Change-9: every checkable corpus
+/// program's artifact hash matches the committed baseline.
+///
+/// This is what the legacy differential was really protecting. A
+/// model-builder change that moves an artifact identity re-keys
+/// `.halerec` replay admission for every existing recording of
+/// every affected program, and it must therefore be a decision
+/// somebody made, recorded in a diff — not a side effect noticed
+/// later.
 #[test]
-fn projection_matches_legacy_over_the_corpus() {
+fn corpus_artifact_hashes_match_the_committed_baseline() {
     let mut bad: Vec<String> = Vec::new();
-    let mut checked = 0usize;
+    let mut rows: Vec<(String, u64)> = Vec::new();
     for p in
         hale_corpus::parseable(|s| hale_syntax::parse_source(s).is_ok())
     {
         let Ok(program) = hale_syntax::parse_source(&p.source) else {
             continue;
         };
-        let before = bad.len();
-        check_one(&p.origin, &program, &mut bad);
-        if bad.len() == before {
-            checked += 1;
+        if let Some(row) = baseline_row(&p.origin, &program, &mut bad) {
+            rows.push(row);
         }
     }
     assert!(
-        checked > 100,
+        rows.len() > 100,
         "the corpus sweep must actually cover programs (got {})",
-        checked
+        rows.len()
     );
     assert!(
         bad.is_empty(),
-        "{} corpus programs diverge:\n{}",
+        "{} corpus programs are internally inconsistent:\n{}",
         bad.len(),
         bad.join("\n\n")
+    );
+    rows.sort();
+    let rendered: String = rows
+        .iter()
+        .map(|(o, h)| format!("{} {:016x}\n", o, h))
+        .collect();
+    let path = baseline_path();
+    if std::env::var("HALE_REGEN_TOPOLOGY_BASELINE").as_deref() == Ok("1")
+    {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &rendered).unwrap();
+        eprintln!("regenerated {}", path.display());
+        return;
+    }
+    let committed = std::fs::read_to_string(&path).unwrap_or_default();
+    if committed == rendered {
+        return;
+    }
+    // Report the moved rows, not a wall of bytes.
+    let old: BTreeMap<&str, &str> = committed
+        .lines()
+        .filter_map(|l| l.split_once(' '))
+        .collect();
+    let new: BTreeMap<&str, &str> = rendered
+        .lines()
+        .filter_map(|l| l.split_once(' '))
+        .collect();
+    let mut moved: Vec<String> = Vec::new();
+    for (origin, hash) in &new {
+        match old.get(origin) {
+            Some(prev) if prev == hash => {}
+            Some(prev) => moved.push(format!(
+                "  {} {} -> {}",
+                origin, prev, hash
+            )),
+            None => moved.push(format!("  {} ADDED {}", origin, hash)),
+        }
+    }
+    for origin in old.keys() {
+        if !new.contains_key(origin) {
+            moved.push(format!("  {} REMOVED", origin));
+        }
+    }
+    panic!(
+        "{} corpus artifact identities moved:\n{}\n\nEvery existing \
+         recording of an affected program stops being admitted for \
+         exact replay. If that is intended, regenerate:\n  \
+         HALE_REGEN_TOPOLOGY_BASELINE=1 cargo test -p hale-types \
+         --test topology_projection",
+        moved.len(),
+        moved.join("\n")
     );
 }
 
@@ -189,7 +227,7 @@ fn projection_matches_legacy_over_the_corpus() {
 /// + keyed topics + literal endpoints in ONE artifact pins the
 /// interleaving.
 #[test]
-fn projection_matches_legacy_on_a_dense_fixture() {
+fn the_dense_fixture_projects_every_hashed_section() {
     let src = r#"
 type Reading { sensor: Int = 0; v: Int = 0; }
 type Note { text: String = ""; }
@@ -248,14 +286,13 @@ fn main() { App { }; }
 "#;
     let program = hale_syntax::parse_source(src).expect("parse");
     let mut bad = Vec::new();
-    check_one("dense fixture", &program, &mut bad);
+    baseline_row("dense fixture", &program, &mut bad);
     assert!(bad.is_empty(), "{}", bad.join("\n"));
     // …and the fixture actually reaches the sections it claims to:
     let mut programs = BTreeMap::new();
     programs.insert("app.hl".to_string(), &program);
     let bundle = Bundle::new(programs);
-    let (art, legacy_half, _legacy_tail) =
-        hale_types::topology::dump_topology_parts(&bundle);
+    let art = hale_types::topology::dump_topology_parts(&bundle);
     for needle in [
         "\"sealed\": [\"Vault\"]",
         "\"supervision\": [\n    {\"locus\": \"Worker\"",
@@ -275,7 +312,7 @@ fn main() { App { }; }
 /// Cross-seed: display-spelled artifact strings from a raw-keyed
 /// model — the projection's whole job is this mapping.
 #[test]
-fn projection_matches_legacy_across_seeds() {
+fn cross_seed_projection_keeps_author_spelling() {
     let lib = r#"
 type __lib_x_kv_Item { n: Int = 0; }
 topic __lib_x_kv_Changed { payload: __lib_x_kv_Item; }
@@ -316,13 +353,15 @@ fn main() { App { }; }
             "__lib_x_kv_Store".to_string(),
         ),
     ];
-    let (art, legacy_half, _legacy_tail) =
-        hale_types::topology::dump_topology_parts(&bundle);
+    let art = hale_types::topology::dump_topology_parts(&bundle);
     let model = derive_application_model(&bundle);
-    let legacy = legacy_arm(&legacy_half);
-    let _ = model_half_of(&art);
-    let projected_full = project_model_half(&model);
-    let projected = strip_endpoint_identity(&projected_full);
+    let projected = project_model_half(&model);
+    assert_eq!(
+        model_half_of(&art),
+        projected,
+        "emitted half is not the projection"
+    );
+    let legacy = projected.as_str();
     assert!(
         legacy.contains("kv::Store"),
         "artifact spells the import author-side:\n{}",
@@ -344,21 +383,19 @@ fn assert_projection_matches(src: &str, label: &str) -> String {
     let mut programs = BTreeMap::new();
     programs.insert("app.hl".to_string(), &program);
     let bundle = Bundle::new(programs);
-    let (art, legacy_half, _legacy_tail) =
-        hale_types::topology::dump_topology_parts(&bundle);
+    let art = hale_types::topology::dump_topology_parts(&bundle);
     let model = derive_application_model(&bundle);
-    let legacy = legacy_arm(&legacy_half).to_string();
-    let _ = model_half_of(&art);
-    let projected_full = project_model_half(&model);
-    let projected = strip_endpoint_identity(&projected_full);
+    // The emitted half IS the projection (Change 9: there is no
+    // other producer). Assert that, then hand the bytes back so the
+    // caller can pin the V1 spelling rule it cares about.
+    let projected = project_model_half(&model);
     assert_eq!(
-        legacy,
+        model_half_of(&art),
         projected,
-        "{}: {}",
-        label,
-        first_diff(&legacy, &projected)
+        "{}: emitted half is not the projection",
+        label
     );
-    legacy
+    projected
 }
 
 /// P1 (round 11): when one (from, to) pair is dispatched through
@@ -487,19 +524,20 @@ fn main() { App { }; }
         vec!["kv".to_string(), "Item".to_string()],
         "__lib_x_kv_Item".to_string(),
     )];
-    let (art, legacy_half, _legacy_tail) =
-        hale_types::topology::dump_topology_parts(&bundle);
+    let art = hale_types::topology::dump_topology_parts(&bundle);
     let model = derive_application_model(&bundle);
-    let legacy = legacy_arm(&legacy_half);
-    let _ = model_half_of(&art);
-    let projected_full = project_model_half(&model);
-    let projected = strip_endpoint_identity(&projected_full);
+    let projected = project_model_half(&model);
+    assert_eq!(
+        model_half_of(&art),
+        projected,
+        "emitted half is not the projection"
+    );
+    let legacy = projected.as_str();
     assert!(
         legacy.contains("\"subject\": \"kv::Item\""),
         "V1 demangles the colliding literal:\n{}",
         legacy
     );
-    assert_eq!(legacy, projected, "{}", first_diff(legacy, projected));
 }
 
 /// P1 (round 12): the V1 display map is EXACT-renames scope. A
@@ -544,19 +582,20 @@ fn main() { App { }; }
             "__lib_x_kv_Store".to_string(),
         ),
     ];
-    let (art, legacy_half, _legacy_tail) =
-        hale_types::topology::dump_topology_parts(&bundle);
+    let art = hale_types::topology::dump_topology_parts(&bundle);
     let model = derive_application_model(&bundle);
-    let legacy = legacy_arm(&legacy_half);
-    let _ = model_half_of(&art);
-    let projected_full = project_model_half(&model);
-    let projected = strip_endpoint_identity(&projected_full);
+    let projected = project_model_half(&model);
+    assert_eq!(
+        model_half_of(&art),
+        projected,
+        "emitted half is not the projection"
+    );
+    let legacy = projected.as_str();
     assert!(
         legacy.contains("\"subject\": \"__lib_x_kv_Store::bump\""),
         "V1 keeps the method-shaped literal verbatim:\n{}",
         legacy
     );
-    assert_eq!(legacy, projected, "{}", first_diff(legacy, projected));
 }
 
 /// P1 (round 12): labels and effects are V1-universe sections. The
@@ -687,19 +726,20 @@ fn main() { App { }; }
             "__lib_b_pack_A".to_string(),
         ),
     ];
-    let (art, legacy_half, _legacy_tail) =
-        hale_types::topology::dump_topology_parts(&bundle);
+    let art = hale_types::topology::dump_topology_parts(&bundle);
     let model = derive_application_model(&bundle);
-    let legacy = legacy_arm(&legacy_half);
-    let _ = model_half_of(&art);
-    let projected_full = project_model_half(&model);
-    let projected = strip_endpoint_identity(&projected_full);
+    let projected = project_model_half(&model);
+    assert_eq!(
+        model_half_of(&art),
+        projected,
+        "emitted half is not the projection"
+    );
+    let legacy = projected.as_str();
     assert!(
         legacy.contains("\"sealed\": [\"z::Z\", \"a::A\"]"),
         "raw order, display values:\n{}",
         legacy
     );
-    assert_eq!(legacy, projected, "{}", first_diff(legacy, projected));
 }
 
 /// P1 (round 13): a retry bound is the literal AS WRITTEN — i64.
