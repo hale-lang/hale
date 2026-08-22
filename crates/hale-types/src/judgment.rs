@@ -2,14 +2,19 @@
 //! `ClaimIr` × `ApplicationModel`.
 //!
 //! Family-by-family migration of the claim evaluators onto the
-//! canonical model. Each family lands with DIAGNOSTICS PARITY —
-//! the same public spelling, spans, and related notes the
-//! authoritative evaluator emits, held byte-equal by a permanent
-//! corpus differential — plus negative controls proving the engine
-//! reads the model relations it claims to (dropping a family's
-//! rows must change its verdicts). The old evaluators in
-//! `claims.rs` stay live and authoritative until Change 9 removes
-//! the duplicate authorities.
+//! canonical model. Each family landed with DIAGNOSTICS PARITY —
+//! the same public spelling, spans, and related notes the old
+//! evaluator emitted, held byte-equal by a permanent corpus
+//! differential — plus negative controls proving the engine reads
+//! the model relations it claims to (dropping a family's rows must
+//! change its verdicts).
+//!
+//! Change 9 finished it: these engines ARE the authority now, for
+//! `hale check` (via [`claim_law_diags`]) as well as for the
+//! artifact. The evaluator in `claims.rs` keeps law SELECTION —
+//! which laws exist at all — and is otherwise a test oracle with no
+//! production callers, enforced by
+//! `tests/legacy_oracle_is_test_only.rs`.
 //!
 //! 5a: reachability (`forbid reaches`) + holes. The walk reuses
 //! `model_graph::search` with a two-kind vertex: user functions

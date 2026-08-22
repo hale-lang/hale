@@ -364,7 +364,11 @@ matters).
 
 - A grant names a declared topic. `publish T` and `subscribe T`
   admit **the same edge** — the verb documents which end's
-  declaration a reviewer should go read.
+  declaration a reviewer should go read. A grant naming a topic
+  that does not exist is an error (with a did-you-mean hint), not a
+  grant that quietly does nothing: a dropped grant would evaluate a
+  weaker claim than the one you wrote and report its violations as
+  if you had chosen them.
 - **Call edges are never grantable.** A direct call from A into B
   is always an un-granted edge: a permitted cross-domain
   dependency should be a named bus edge, not an invisible method

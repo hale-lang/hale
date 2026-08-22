@@ -1,6 +1,25 @@
 //! GH #382 — claims: named, bundle-level sentences over the program
 //! graph.
 //!
+//! ## What this module is, after GH #476 Change 9
+//!
+//! LAW SELECTION — which laws exist at all. Clause enumeration,
+//! constitution adoption and its identities, group resolution, the
+//! library/world tier rule: questions about the claim SURFACE.
+//! `selection_diags` and `constitution_identities` are the
+//! production entry points, and the model builder calls a handful
+//! of vocabulary helpers here.
+//!
+//! It no longer judges. The evaluator below — `claims_report`,
+//! `validate_claim`, every `evaluate_*` — has no production caller:
+//! verdicts come from `judgment.rs` over the canonical model, for
+//! `hale check` and the artifact alike, which is what makes them one
+//! answer instead of two that a differential could only ever hold
+//! equal. What the evaluator still does is serve as the comparison
+//! arm of three corpus differentials, and that role is enforced by
+//! `tests/legacy_oracle_is_test_only.rs` so it cannot drift back
+//! into being an authority.
+//!
 //! Every structural proof the compiler performs is one judgment form:
 //! over a graph derived from source, evaluate a property, and on
 //! failure produce a witness. This module makes that layer a
@@ -85,6 +104,25 @@ pub fn claims_diags(
     claims_report(programs, graph, import_renames).0
 }
 
+/// The identities of the constitutions actually adopted — GH #409's
+/// normalized-closure digests.
+///
+/// GH #476 Change 9: both consumers (the artifact's constitution
+/// section, `hale fleet`'s matrix) wanted ONLY the identities and
+/// discarded the diagnostics and outcomes that came with them,
+/// which meant every artifact dump ran the whole legacy evaluation
+/// for a value it threw away. Adoption is settled during law
+/// selection, so this stops there.
+pub fn constitution_identities(
+    programs: &[&Program],
+    graph: &BusGraph,
+    import_renames: &[(Vec<String>, String)],
+) -> Adoption {
+    let (_d, _o, adoption) =
+        claims_report_inner(programs, graph, import_renames, true);
+    adoption_identities(programs, adoption)
+}
+
 /// GH #476 Change 9 — LAW SELECTION only: which laws exist at all.
 ///
 /// Clause enumeration (constitutions: unknown, cyclic, illegally
@@ -148,6 +186,16 @@ pub fn claims_report_with_identities(
     let (mut d, o, adoption) =
         claims_report_inner(programs, graph, import_renames, false);
     crate::stdlib_bodies::demangle_imports(&mut d, import_renames);
+    (d, o, adoption_identities(programs, adoption))
+}
+
+/// Resolve an adoption's names to identities (name + normalized
+/// closure digest). Shared by the full report and by
+/// `constitution_identities`.
+fn adoption_identities(
+    programs: &[&Program],
+    adoption: AdoptionInfo,
+) -> Adoption {
     let mut consts: Vec<&ConstitutionDecl> = Vec::new();
     fn walk<'a>(items: &'a [TopDecl], out: &mut Vec<&'a ConstitutionDecl>) {
         for i in items {
@@ -167,11 +215,10 @@ pub fn claims_report_with_identities(
         name: n.clone(),
         digest: constitution_digest(n, &by_name, &mut Vec::new()),
     };
-    let out = Adoption {
+    Adoption {
         roots: adoption.roots.iter().map(&id_of).collect(),
         closure: adoption.closure.iter().map(&id_of).collect(),
-    };
-    (d, o, out)
+    }
 }
 
 /// The identities an evaluation adopted: the roots it named directly,

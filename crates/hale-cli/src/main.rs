@@ -3462,7 +3462,7 @@ fn constitution_identities(
     let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top);
     let progs: Vec<&Program> =
         bundle.programs.values().copied().collect();
-    let (_d, _o, ids) = hale_types::claims::claims_report_with_identities(
+    let ids = hale_types::claims::constitution_identities(
         &progs,
         &graph,
         &bundle.import_renames,

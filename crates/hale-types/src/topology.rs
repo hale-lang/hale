@@ -358,17 +358,15 @@ pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
     }
 
     // ---- claims ----
-    // GH #476 Change 6: the artifact's law rows are PROJECTED from
-    // the canonical path (ClaimIr renders the forms, the Change-5
-    // judgments produce the verdicts, the evidence sidecar carries
-    // the certificate results). The evaluator report is still run
-    // for the constitution identities — and it remains the CHECK
-    // authority until Change 9; the artifact_law_projection corpus
-    // differential holds the two row sets equal (modulo the
-    // Change-5 documented divergences, which the SEMANTICS bump
-    // records).
-    let (_diags, _old_outcomes, identities) =
-        crate::claims::claims_report_with_identities(
+    // The artifact's law rows are PROJECTED from the canonical path
+    // (ClaimIr renders the forms, the Change-5 judgments produce
+    // the verdicts, the evidence sidecar carries the certificate
+    // results) — and since Change 9 that same judgment is what
+    // `hale check` reports, so the document and the checker cannot
+    // disagree about a law. Law SELECTION still comes from the
+    // claim surface, which is where adoption is settled; this call
+    // takes the constitution identities from it and nothing else.
+    let identities = crate::claims::constitution_identities(
         &programs,
         &graph,
         &bundle.import_renames,

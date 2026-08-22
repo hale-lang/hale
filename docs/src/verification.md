@@ -382,7 +382,11 @@ claims {
 built-in, so every program means the same class by it.)
 
 Every fn that actually touches the OS must name a purpose with a user
-effect class. These are independent: I/O can be perfectly gated and
+effect class. Where the checker cannot see — a fn making an indirect
+or opaque call, naming no purpose of its own — the claim is
+**uncertified** rather than quietly satisfied: unknown is not the
+same as clean. Classify the caller with `@effects(is: {...})`, or
+bind the callee so it resolves. These are independent: I/O can be perfectly gated and
 still tell you nothing about why any given write happened, or be
 scattered across forty loci while each one says exactly what it's for.
 The second also covers code nobody has written yet — it quantifies over

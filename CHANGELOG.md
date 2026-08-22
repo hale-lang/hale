@@ -8,6 +8,70 @@ behavior.
 
 ## Unreleased
 
+### One authority per question (GH #476 Change 9)
+
+The canonical-model epic's last change: the duplicate authorities
+are gone.
+
+**Claim verdicts.** `hale check` reported reachability, boundary,
+endpoint and bound verdicts from an evaluator that re-derived them
+from source, while the artifact reported the same four families from
+the judgment engines over the canonical model. Check now calls the
+judgment engines, so the document and the compiler that produced it
+cannot disagree about a law. The judgment merge that had lived
+inside the artifact projection is extracted as `judge_all` — one
+entry point, two consumers. What stays with the claim surface is law
+SELECTION (which laws exist at all: constitutions, adoption, group
+resolution, the tier rule), which is not judgment and has one
+implementation.
+
+Two user-visible consequences, both fail-closed corrections:
+
+- `require attributed` over a body with an indirect or opaque call
+  is `uncertified` at check time, where the old evaluator fail-OPEN
+  held. A build that passed on that fail-open now fails. The
+  artifact has judged it this way since Change 6 (`semantics` 2).
+- `only edges A -> B { publish Metrix; }` naming an undeclared topic
+  is refused as an invalid law with a did-you-mean hint. It used to
+  drop the grant silently, which evaluated a WEAKER claim than the
+  one written and reported its violations as if the author had
+  chosen them.
+
+**The artifact's second serialization.** Change 6 made production
+emit the projection of `ApplicationModel` but kept the legacy
+gathering as the corpus differential's comparison arm — relation
+rows, labels, unknowns, groups, supervision, the whole unhashed
+provenance tail, re-derived from source and thrown away. Deleted
+(-752 lines from `topology.rs`), along with the collectors that fed
+only it. `dump_topology_parts` returns one String.
+
+Artifact identity is now pinned by a committed baseline of
+`origin -> shape_hash` over 1398 corpus programs instead of by a
+rival implementation. A model change that moves an artifact hash —
+re-keying replay admission for every existing recording of that
+program — fails the gate with the moved rows named and a regenerate
+hint, so the move is a decision somebody made rather than one
+noticed later. The emitter also still owes self-consistency: the
+artifact it writes must hash to what the projection says, and its
+emitted model half must BE the projection.
+
+**Demand.** A claim-free program still never derives the model in
+check — the LSP's cost contract. A program WITH claims now does,
+because judging it means reading the model.
+
+`LoweringIssue` gains a `family`, so the artifact (which carries
+every issue) and check (which reports only issues no other engine
+owns) filter coherently instead of guessing from message text.
+`constitution_identities` stops the adoption walk at selection: both
+consumers wanted only the identities and discarded the evaluation
+that came with them.
+
+The old evaluator survives as the comparison arm of three corpus
+differentials — an independent implementation disagreeing is
+evidence a baseline cannot give — with no production callers, a
+boundary enforced by `legacy_oracle_is_test_only.rs` rather than
+documented and hoped for.
+
 ### Deployment consumers: the arrangement + the dispatch plan (GH #476 Change 8)
 
 Review round 1 (PR #491), five blockers plus two identity bugs they

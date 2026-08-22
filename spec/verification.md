@@ -571,7 +571,38 @@ documented places (a certificate naming a cyclically-defined or
 undeclared effect class is `invalid`, never a vacuous `holds`;
 `require attributed` over an unanalyzable body is `uncertified`,
 never a fail-open `holds`), and the document `verdict` follows
-the machine. A **provenance**
+the machine.
+
+**One authority (GH #476 Change 9).** Those verdicts are also what
+`hale check` reports. Until Change 9 the checker ran a second
+evaluator that re-derived reachability, boundary, endpoint and
+bound from source while the artifact read the judgment engines over
+the canonical model; a corpus differential could hold the two
+equal, but only one of them could be right about a program the
+differential did not contain. The checker now judges over the
+model, so a document and the compiler that produced it cannot
+disagree about a law. Two consequences are user-visible:
+
+  * the stricter rules above now apply at check time too — a
+    `require attributed` claim over a body with an indirect or
+    opaque call is `uncertified`, and a build that passed on the
+    old fail-open now fails;
+  * an `only edges` grant naming an undeclared topic is refused as
+    an invalid law (with a did-you-mean hint) instead of being
+    silently dropped, which had the effect of evaluating a weaker
+    claim than the one written.
+
+What the claim surface still owns is law SELECTION — which laws
+exist at all: clause enumeration, constitution adoption and
+identity, group resolution, the library/world tier rule. Selection
+is not judgment, and it has exactly one implementation.
+
+The artifact's own identity is pinned by a committed baseline of
+`origin -> shape_hash` over the corpus rather than by a rival
+serializer: a model change that would move an artifact hash — and
+with it the replay admission of every existing recording of that
+program — fails the baseline gate with a regenerate hint, so the
+move is a decision in a diff. A **provenance**
 section carries per-edge and per-decl source spans as
 bundle-global byte offsets; it is excluded from the hash on
 purpose — moving code must not change the shape identity.
