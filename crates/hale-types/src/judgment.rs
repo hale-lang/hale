@@ -4947,10 +4947,16 @@ pub fn judge_causes_witnessed(
                 // DELIVERY (the must-deliver guarantee), plus
                 // KEY_FILTERS, since an unknown filter widens who
                 // may receive.
-                // The topic identity comes from the PUBLISH ROW,
-                // not from the first topic that happens to share an
-                // address.
-                let topic_here = pubrow.declared_topic;
+                // Everything below joins on the WIRE SUBJECT.
+                // `declared_topic` is the syntactic link — a literal
+                // `"t" <- …` send carries `None` even when its text
+                // is a declared topic's wire subject, and after
+                // lowering the runtime cannot tell the two spellings
+                // apart. Keying the route or the residue on the
+                // declaration link therefore missed every
+                // literal-spelled send into a bound topic (review
+                // round 5, the same wire-vs-syntax distinction the
+                // delivery join already makes).
                 let wire =
                     e.subjects[subject.index()].pattern.as_str();
                 if model.holes.iter().any(|h| {
@@ -4980,7 +4986,14 @@ pub fn judge_causes_witnessed(
                                 || (pat.contains("**")
                                     && crate::wildcard_match(pat, wire))
                         }
-                        EntityRef::Topic(t) => Some(t) == topic_here,
+                        // A topic-anchored hole is relevant when
+                        // the topic ADDRESSES this wire, however the
+                        // send happened to spell it.
+                        EntityRef::Topic(t) => {
+                            e.topics.get(t.index()).is_some_and(|tp| {
+                                tp.subject == subject
+                            })
+                        }
                         _ => false,
                     };
                     relevant && here
@@ -4997,12 +5010,11 @@ pub fn judge_causes_witnessed(
                 // only `holes` saw an opaque adapter and missed an
                 // ordinary `unix(..., role: connect)` (review round
                 // 4).
-                let outbound = topic_here.is_some_and(|t| {
-                    r.binds.iter().any(|b| {
-                        b.topic == t
-                            && e.bindings[b.binding.index()].role
-                                == hale_model::BindingRole::Connect
-                    })
+                let outbound = r.binds.iter().any(|b| {
+                    let binding = &e.bindings[b.binding.index()];
+                    binding.subject == subject
+                        && binding.role
+                            == hale_model::BindingRole::Connect
                 });
                 if outbound {
                     uncertain = true;

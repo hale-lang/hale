@@ -1277,7 +1277,9 @@ crates/hale-types/tests/judgment_causes.rs#1 ecb02bdcda68d85d
 crates/hale-types/tests/judgment_causes.rs#11 c81fa6ad060c49cb
 crates/hale-types/tests/judgment_causes.rs#14 cdd341d141c5f482
 crates/hale-types/tests/judgment_causes.rs#17 64c5fba72e9e8d81
+crates/hale-types/tests/judgment_causes.rs#19 cc291c164767f1cb
 crates/hale-types/tests/judgment_causes.rs#2 94b7976c2733d0a0
+crates/hale-types/tests/judgment_causes.rs#20 7a1742d24f862fac
 crates/hale-types/tests/judgment_causes.rs#3 e29c8ecbbd11aea2
 crates/hale-types/tests/judgment_causes.rs#6 09afaf25ad4e9907
 crates/hale-types/tests/judgment_causes.rs#7 9cdb5c4f31c9bea7

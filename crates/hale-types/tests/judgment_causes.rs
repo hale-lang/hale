@@ -1157,3 +1157,69 @@ fn main() { App { }; }
     assert_eq!(judged[0].verdict, Verdict::Holds);
     assert_eq!(judged[1].verdict, Verdict::Violated);
 }
+
+/// Review round 5: the route query joins on the WIRE, not on the
+/// syntactic declaration link. A literal `"t" <- …` send carries
+/// `declared_topic: None` even though its text is the bound topic's
+/// wire subject, and after lowering the runtime cannot tell the two
+/// spellings apart — the send reaches the binding installed for
+/// that wire.
+#[test]
+fn a_literal_send_into_a_connect_bound_wire_leaves_the_application() {
+    let (v, _) = judge(
+        r#"
+type Msg { n: Int = 0; }
+topic T { payload: Msg; subject: "t"; }
+locus Source {
+    bus { publish "t" of type Msg; }
+    @effects(causes: { publish, alloc })
+    fn fire() { "t" <- Msg { n: 1 }; }
+}
+main locus App {
+    params { p: Source = Source { }; }
+    bindings { T: unix("/tmp/t.sock", role: connect); }
+    run() { self.p.fire(); }
+}
+fn main() { App { }; }
+"#,
+    );
+    assert_eq!(
+        v,
+        Verdict::Uncertified,
+        "a literal send on the bound wire reaches the peer just as \
+         a topic-spelled one does"
+    );
+}
+
+/// …and the same for an opaque adapter boundary, whose hole is
+/// anchored at the TOPIC while the publish names the wire.
+#[test]
+fn a_literal_send_into_an_adapter_bound_wire_is_uncertified() {
+    let (v, _) = judge(
+        r#"
+type Msg { n: Int = 0; }
+topic T { payload: Msg; subject: "t"; }
+locus MyAdapter {
+    params { n: Int = 0; }
+    fn send(subject: String, bytes: Bytes) { self.n = self.n + 1; }
+}
+locus Source {
+    bus { publish "t" of type Msg; }
+    @effects(causes: { publish, alloc })
+    fn fire() { "t" <- Msg { n: 1 }; }
+}
+main locus App {
+    params { p: Source = Source { }; }
+    bindings { T: MyAdapter { }; }
+    run() { self.p.fire(); }
+}
+fn main() { App { }; }
+"#,
+    );
+    assert_eq!(
+        v,
+        Verdict::Uncertified,
+        "the ExternalOpaque hole is anchored at the topic; the \
+         publish names the wire; they are one address"
+    );
+}
