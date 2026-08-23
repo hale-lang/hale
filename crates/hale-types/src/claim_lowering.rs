@@ -552,6 +552,7 @@ pub fn lower_claims(
         walk_decls(&p.items, &mut sites);
     }
     let mut ann_issues: Vec<(String, hale_syntax::Span)> = Vec::new();
+    let mut budget_issues: Vec<(String, hale_syntax::Span)> = Vec::new();
     let effect_names = crate::effects::effect_names_of(&programs);
     let declared_classes = crate::effects::declared_of(&programs);
     let lower_fn_anns = |recs: &mut Vec<Provenance>,
@@ -561,6 +562,10 @@ pub fn lower_claims(
         ClaimIr,
         hale_syntax::Span,
     )>,
+                         budget_issues_out: &mut Vec<(
+                             String,
+                             hale_syntax::Span,
+                         )>,
                          issues_out: &mut Vec<(
         String,
         hale_syntax::Span,
@@ -717,7 +722,12 @@ pub fn lower_claims(
                         Some(n) => format!(" Did you mean `{}`?", n),
                         None => String::new(),
                     };
-                    issues_out.push((
+                    // Change 5h: routed to the BUDGET bucket. The
+                    // quantitative engine used to say this in
+                    // check; it no longer runs there, so this issue
+                    // is now the only voice and `claim_law_diags`
+                    // emits it.
+                    budget_issues_out.push((
                         format!(
                             "`{}` budgets effect class `{}`, which is \
                              never declared. Add `effect {};` at the \
@@ -759,6 +769,7 @@ pub fn lower_claims(
             AnnSite::Free(f) => lower_fn_anns(
                 recs,
                 &mut rows,
+                &mut budget_issues,
                 &mut ann_issues,
                 &f.name.name,
                 f,
@@ -814,6 +825,7 @@ pub fn lower_claims(
                         lower_fn_anns(
                             recs,
                             &mut rows,
+                            &mut budget_issues,
                             &mut ann_issues,
                             &raw,
                             f,
@@ -829,9 +841,21 @@ pub fn lower_claims(
         table.issues.push(LoweringIssue {
             message,
             provenance: pid,
-            // The ANNOTATION surface — `@effects` / `@budget` /
-            // `@no_*`. The effects engine reports these in check.
+            // The ANNOTATION surface — `@effects` / `@no_*`. The
+            // effects engine reports these in check.
             family: Some(hale_model::JudgmentFamily::Certificate),
+        });
+    }
+    // Change 5h: a misspelt `@budget(<class>)` dimension. Its old
+    // reporter was the quantitative engine, which no longer runs on
+    // the check path — so unlike the certificate issues above, this
+    // one has no other voice and `claim_law_diags` emits it.
+    for (message, span) in budget_issues {
+        let pid = intern(recs, span);
+        table.issues.push(LoweringIssue {
+            message,
+            provenance: pid,
+            family: Some(hale_model::JudgmentFamily::Budget),
         });
     }
 

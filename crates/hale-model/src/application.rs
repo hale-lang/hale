@@ -660,7 +660,17 @@ impl EvidenceTable {
                     | crate::claim_ir::ClaimIr::EffectPublishSet {
                         at, ..
                     }
-                    | crate::claim_ir::ClaimIr::NoPanic { at },
+                    | crate::claim_ir::ClaimIr::NoPanic { at }
+                    // Change 5h: a budget contract is eligible on
+                    // exactly the same terms — its subject must be
+                    // a fn the engines actually analyzed and
+                    // summarized, or no report about it can exist.
+                    | crate::claim_ir::ClaimIr::AllocBudget {
+                        at, ..
+                    }
+                    | crate::claim_ir::ClaimIr::QuantBudget {
+                        at, ..
+                    },
                 ) => at.0.is_some_and(|f| {
                     // Round 14: eligibility requires the HASHED
                     // anchor too — a coverage bit upgraded on an

@@ -66,10 +66,35 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
             &graph,
             &[],
         );
-    let old_lowered = hale_types::effects::certificate_rows(
+    // Change 5h: `@budget` certificates come from the same
+    // projection now, so the comparison arm is every engine that
+    // produced a `lowered` row before — effects, then alloc, then
+    // quantitative. They are compared as a BAG below: the legacy
+    // list has never been consumed by position (admission binds it
+    // by re-rendered form), and the projection emits in law-table
+    // order rather than engine order.
+    let mut old_lowered = hale_types::effects::certificate_rows(
         &programs_v,
         &[],
     );
+    old_lowered.extend(hale_types::budget_check::certificate_rows(
+        &programs_v,
+        &[],
+    ));
+    let top2 = hale_types::resolve::build_top_scope(&bundle).0;
+    let graph2 =
+        hale_types::bus_graph::build_bus_graph(&bundle, &top2);
+    let fanout = |subj: &str| -> u64 {
+        graph2
+            .subjects
+            .get(subj)
+            .map(|si| si.subscribers.len().max(1) as u64)
+            .unwrap_or(1)
+    };
+    old_lowered.extend(hale_types::quantitative::certificate_rows(
+        &programs_v,
+        &fanout,
+    ));
 
     // ---- claims parity (with documented carve-outs) ----
     if outcomes.len() != claims.len() {
@@ -133,62 +158,76 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
         }
     }
 
-    // ---- lowered parity (the effects family; budget/quant rows
-    // keep their old producers and are compared in the artifact
-    // itself) ----
-    // Merge walk (round 8): the projection may carry EXTRA rows
-    // the old evaluator never emitted — the synthetic `Holds`
-    // certificate for an implicit lifecycle phase with no hook
-    // body (a documented divergence: no hook performs no effects,
-    // so the truthful certificate exists even though the legacy
-    // walk skipped the phase). Everything else must match in
-    // order.
-    let mut oi = 0usize;
+    // ---- lowered parity ----
+    //
+    // Compared as a BAG keyed by (subject, form), not by position.
+    // The legacy list has never been consumed positionally —
+    // admission binds each row by its form re-rendered from the
+    // typed operands — and since Change 5h the projection emits
+    // budget certificates in law-table order while their engines
+    // produced them grouped by engine. Reordering a bag nothing
+    // reads by index is not a divergence; a row appearing,
+    // vanishing, or changing its verdict still is.
+    let mut old_by: std::collections::BTreeMap<
+        (String, String),
+        Vec<Verdict>,
+    > = std::collections::BTreeMap::new();
+    for o in &old_lowered {
+        old_by
+            .entry((o.subject.clone(), o.form.clone()))
+            .or_default()
+            .push(o.result);
+    }
     for c in lowered.iter() {
-        let o = old_lowered.get(oi);
-        let matches_old = o.is_some_and(|o| {
-            o.subject == c.subject && o.form == c.form
-        });
-        if !matches_old {
-            let synthetic = c.form.contains(" during ")
-                && c.result == Verdict::Holds;
-            if synthetic {
+        let key = (c.subject.clone(), c.form.clone());
+        let Some(slot) = old_by.get_mut(&key) else {
+            // Round 8: the projection may carry EXTRA rows the old
+            // evaluator never emitted — the synthetic `Holds`
+            // certificate for an implicit lifecycle phase with no
+            // hook body. No hook performs no effects, so the
+            // truthful certificate exists even though the legacy
+            // walk skipped the phase.
+            if c.form.contains(" during ") && c.result == Verdict::Holds
+            {
                 continue;
             }
             return Err(format!(
-                "{}: lowered row diverges:\n  old: {:?}\n  \
+                "{}: lowered row has no legacy counterpart:\n  \
                  new: {:?} {:?} {:?}",
-                origin,
-                o.map(|o| (&o.subject, &o.form, o.result)),
-                c.subject,
-                c.form,
-                c.result
+                origin, c.subject, c.form, c.result
             ));
-        }
-        let o = o.expect("matched");
+        };
+        let Some(old_result) = slot.pop() else {
+            return Err(format!(
+                "{}: lowered row {:?} {:?} appears more often than \
+                 the evaluator produced it",
+                origin, c.subject, c.form
+            ));
+        };
         n += 1;
         // The 5e documented divergences: cyclic and undeclared
         // classes judge Invalid where the evaluator's certificate
         // held vacuously.
-        let class_carveout = c.result == Verdict::Invalid
-            && o.result == Verdict::Holds;
-        if o.result != c.result && !class_carveout {
+        let class_carveout =
+            c.result == Verdict::Invalid && old_result == Verdict::Holds;
+        if old_result != c.result && !class_carveout {
             return Err(format!(
                 "{}: lowered row diverges:\n  old: {:?} {:?} {:?}\n  \
                  new: {:?} {:?} {:?}",
-                origin, o.subject, o.form, o.result, c.subject,
+                origin, c.subject, c.form, old_result, c.subject,
                 c.form, c.result
             ));
         }
-        oi += 1;
     }
-    if oi != old_lowered.len() {
+    let dropped: Vec<_> = old_by
+        .iter()
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(k, _)| k.clone())
+        .collect();
+    if !dropped.is_empty() {
         return Err(format!(
-            "{}: the projection dropped legacy lowered rows \
-             (consumed {} of {})",
-            origin,
-            oi,
-            old_lowered.len()
+            "{}: the projection dropped legacy lowered rows: {:?}",
+            origin, dropped
         ));
     }
     Ok(n)

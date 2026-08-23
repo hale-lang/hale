@@ -98,9 +98,79 @@ pub fn derive_certificate_evidence(
 ) -> EvidenceTable {
     let programs: Vec<&hale_syntax::ast::Program> =
         bundle.programs.values().copied().collect();
-    let (_flat, groups) = crate::effects::effect_report_grouped(
+    let (_flat, mut groups) = crate::effects::effect_report_grouped(
         &programs,
         &bundle.import_renames,
+    );
+    // Change 5h: `@budget` joins the same evidence pipeline. The
+    // counting engines stay the authority on WHAT they measured —
+    // that is an analysis, not a law — and hand over their
+    // certificate and their own diagnostics. The VERDICT becomes
+    // the judgment's, which is the duplicate authority #476
+    // removes: `hale check` and the artifact previously read the
+    // engines' answer directly, each in its own way.
+    // The `false` is the stdlib-origin flag: the budget engines
+    // report at the annotated fn and its own offender sites, all
+    // user spans by construction.
+    groups.extend(
+        crate::budget_check::certificate_groups(
+            &programs,
+            &bundle.import_renames,
+        )
+        .into_iter()
+        .map(|(row, ds)| {
+            (row, ds.into_iter().map(|d| (d, false)).collect())
+        }),
+    );
+    // Fan-out is a bus-graph question, and the model already
+    // answers it — one subject's subscriber count, joined the same
+    // way delivery is.
+    let fanout_of = |subject: &str| -> u64 {
+        // The engine hands over the AUTHOR'S text for the send: a
+        // topic name where the send named a topic, a wire subject
+        // where it was a literal. Both address one endpoint, so
+        // both must resolve — matching only the wire pattern
+        // silently counted 1 subscriber for every topic-named
+        // publish, which is a fail-open on a fan-out bound.
+        let by_pattern = model
+            .entities
+            .subjects
+            .iter()
+            .position(|s| s.pattern == subject);
+        let by_topic = || {
+            model
+                .entities
+                .topics
+                .iter()
+                .find(|t| t.display == subject || t.name == subject)
+                .map(|t| t.subject.index())
+        };
+        let Some(sid) = by_pattern.or_else(by_topic) else {
+            return 1;
+        };
+        let sid = hale_model::SubjectId(sid as u32);
+        let n = model
+            .relations
+            .subscribes
+            .iter()
+            .filter(|su| {
+                crate::model_query::subscription_covers(
+                    &model.entities,
+                    su,
+                    sid,
+                )
+            })
+            .count() as u64;
+        n.max(1)
+    };
+    groups.extend(
+        crate::quantitative::certificate_groups(
+            &programs, &fanout_of,
+        )
+        .into_iter()
+        .map(|(row, ds)| {
+            (row, ds.into_iter().map(|d| (d, false)).collect())
+        }),
     );
     let mut out = EvidenceTable {
         model_shape: crate::topology_projection::project_shape_hash(
@@ -180,7 +250,13 @@ pub fn derive_certificate_evidence(
             ClaimIr::EffectForbid { at, .. }
             | ClaimIr::EffectOnly { at, .. }
             | ClaimIr::EffectPublishSet { at, .. }
-            | ClaimIr::NoPanic { at } => at.0,
+            | ClaimIr::NoPanic { at }
+            // Change 5h: a budget contract's subject is its
+            // annotated fn, and the judgment refuses evidence whose
+            // subject disagrees — so this list must track the one
+            // there exactly.
+            | ClaimIr::AllocBudget { at, .. }
+            | ClaimIr::QuantBudget { at, .. } => at.0,
             _ => None,
         };
         let mut certs: Vec<CertificateEvidence> = Vec::new();

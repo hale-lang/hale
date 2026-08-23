@@ -326,8 +326,8 @@ topology under different law keeps one shape). Schema 1.11+
 sections: **`law`** — every lowered `ClaimIr` row with its
 ordinal, origin (`main` / `constitution:<name>` / `library` /
 `annotation`), judgment **family** (`reachability` / `boundary` /
-`endpoint` / `bound` / `causes` / `depends` / `certificate` /
-`unmigrated` / `fleet`),
+`endpoint` / `bound` / `causes` / `depends` / `budget` /
+`certificate` / `unmigrated` / `fleet`),
 machine **verdict**, a TYPED **`law` payload** (one tagged object
 per `ClaimIr` variant carrying the law's operands — each reference
 as `{"name": <raw canonical identity>, "display": <author
@@ -399,9 +399,9 @@ their evidence even in an annotation-only artifact — recomputes
 per-row and document verdicts from the evidence, checks the
 one-to-one claims-to-law projection in both directions, requires
 the `law.legacy` report (the old engines' verdicts for the rows
-that are still `unmigrated` — as of schema 1.15 that is `@budget`
-alone, `causes:` and `depends:` having become judged families —
-keyed by ordinal and by a form FINGERPRINT re-rendered
+that are still `unmigrated` — as of schema 1.16 there are NONE, so
+the report is empty for every program; it survives so an artifact
+written by an older toolchain still decodes — keyed by ordinal and by a form FINGERPRINT re-rendered
 from the typed operands; an operand mutation orphans the entry.
 A migrated row imports no outside verdict, so it carries no
 legacy entry and states its own `form` instead, which admission

@@ -8,6 +8,45 @@ behavior.
 
 ## Unreleased
 
+### `@budget` is judged over the canonical model (GH #476 Change 5h)
+
+The last law answered by an engine of its own. `@budget` now
+certifies through the **evidence sidecar**, the same path the
+`@effects` certificates take: the counting engines still measure —
+that is an analysis, not a law — and hand over their certificate
+and their own diagnostics. The VERDICT is the judgment's.
+
+That removes the duplicate authority without duplicating the
+analysis. `hale check` and the artifact previously read the
+engines' answer directly, each in its own way; both now read one
+judgment over one model.
+
+Supporting facts, added in the same change:
+
+- `relations.costs` — per-call cost sites (`alloc`, `block`,
+  `frame_bytes`), SITE-grained, because a per-call budget is a
+  statement about one invocation and the loop flag is what turns a
+  finite count into an unbounded one.
+- `RelationSet::COSTS` and the `exact_costs` capability. The three
+  call-hole kinds (indirect call, untyped receiver, open interface)
+  now REQUIRE the COSTS bit: a call whose target the caller chooses
+  is exactly where a quantitative law must not certify through.
+- Fan-out is read off the model's own delivery join rather than a
+  second graph, and it resolves a send spelled as a TOPIC as well
+  as one spelled as a wire subject — matching only the wire pattern
+  silently counted one subscriber for every topic-named publish,
+  which was a fail-open on a fan-out bound.
+
+**Artifact schema 1.15 → 1.16.** `@budget` rows carry
+`"family": "budget"` with their own `certs` evidence. `law.legacy`
+is now empty for every program — no family is `unmigrated` any
+more — and the section survives only so artifacts written by older
+toolchains still decode.
+
+One behavior note: a `@budget` diagnostic is now `Claim`-kind and
+is reported only for programs that typecheck, like every other law.
+A fixture that never typechecked no longer gets a budget verdict.
+
 ### `depends:` is judged over the canonical model (GH #476 Change 5g)
 
 `@effects(depends: {…})` on a locus (RFC #330) is the backward dual

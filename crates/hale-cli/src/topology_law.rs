@@ -2216,8 +2216,7 @@ pub fn family_of(law: &Law) -> &'static str {
         | Law::PhaseEffects { .. } => "certificate",
         Law::EffectCauses { .. } => "causes",
         Law::DependsSet { .. } => "depends",
-        Law::AllocBudget { .. }
-        | Law::QuantBudget { .. } => "unmigrated",
+        Law::AllocBudget { .. } | Law::QuantBudget { .. } => "budget",
     }
 }
 
@@ -2377,6 +2376,12 @@ pub fn expected_cert_forms(law: &Law) -> Option<Vec<String>> {
                 )
             })
             .collect(),
+        // Change 5h: a budget contract generates exactly one
+        // certificate, and its form is the same string the budget
+        // binding already re-rendered — so the two cannot drift.
+        Law::AllocBudget { .. } | Law::QuantBudget { .. } => {
+            vec![expected_budget_form(law)?]
+        }
         _ => return None,
     })
 }
@@ -2474,6 +2479,7 @@ pub fn validate_law_account(
         "certificate",
         "causes",
         "depends",
+        "budget",
         "unmigrated",
     ];
     const VERDICTS: &[&str] =
@@ -2545,9 +2551,8 @@ pub fn validate_law_account(
             // `depends:` is an annotation on a LOCUS, `causes:` one
             // on a function; neither can arrive from a claims block
             // or a constitution.
-            "certificate" | "causes" | "depends" | "unmigrated" => {
-                origin == "annotation"
-            }
+            "certificate" | "causes" | "depends" | "budget"
+            | "unmigrated" => origin == "annotation",
             _ => {
                 origin == "main"
                     || origin == "library"

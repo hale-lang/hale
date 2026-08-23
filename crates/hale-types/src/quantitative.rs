@@ -377,7 +377,11 @@ pub fn certificate_rows(
 fn quantitative_report(
     programs: &[&Program],
     fanout_of: &dyn Fn(&str) -> u64,
-) -> (Vec<Diag>, Vec<crate::effects::LoweredCertificate>) {
+) -> (
+    Vec<Diag>,
+    Vec<crate::effects::LoweredCertificate>,
+    Vec<(usize, usize)>,
+) {
     let mut roots: Vec<(FnKey, Vec<(QuantDim, u64)>, Span)> = Vec::new();
     for program in programs {
         for item in &program.items {
@@ -408,7 +412,7 @@ fn quantitative_report(
         }
     }
     if roots.is_empty() {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), Vec::new());
     }
     let summary = alloc_summary::summarize_programs(programs);
     let frames = frame_map(programs);
@@ -417,8 +421,19 @@ fn quantitative_report(
     let defs = crate::effects::defs_of(programs);
     let mut diags = Vec::new();
     let mut rows = Vec::new();
+    // Where each row's own diagnostics begin (Change 5h) — the
+    // grouped report hands them to the evidence sidecar without a
+    // second evaluation.
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
     for (key, dims, span) in &roots {
         for (dim, cap) in dims {
+            // Closed at the end of this iteration. An undeclared
+            // class `continue`s before a row exists, and its
+            // diagnostic must NOT fall into the previous row's
+            // group — it is a lowering issue, and the judgment
+            // makes such a row Invalid from the class reference
+            // alone.
+            let base = diags.len();
             // #382 phase 3: a user-class dimension must name a
             // DECLARED class — the misspelt-class rule, applied to
             // budget keys.
@@ -483,6 +498,7 @@ fn quantitative_report(
                     )
                 }
             };
+            ranges.push((base, base));
             rows.push(crate::effects::LoweredCertificate {
                 subject: key.display(),
                 form: format!(
@@ -532,7 +548,31 @@ fn quantitative_report(
                     extra
                 ),
             ));
+            if let Some(last) = ranges.last_mut() {
+                last.1 = diags.len();
+            }
         }
     }
-    (diags, rows)
+    (diags, rows, ranges)
+}
+
+/// #476 Change 5h: every quantitative `@budget(<dim> = N)` contract
+/// as a lowered certificate WITH the engine's own diagnostics.
+///
+/// Measuring stays this engine's question; the evidence sidecar
+/// carries what it measured, and the VERDICT becomes the
+/// judgment's — the duplicate authority #476 removes.
+pub fn certificate_groups(
+    programs: &[&Program],
+    fanout_of: &dyn Fn(&str) -> u64,
+) -> Vec<(crate::effects::LoweredCertificate, Vec<Diag>)> {
+    let (diags, rows, ranges) = quantitative_report(programs, fanout_of);
+    rows.into_iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let (from, to) =
+                ranges.get(i).copied().unwrap_or((0, 0));
+            (row, diags[from..to].to_vec())
+        })
+        .collect()
 }

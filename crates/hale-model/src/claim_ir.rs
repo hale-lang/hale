@@ -506,8 +506,14 @@ pub enum JudgmentFamily {
     /// `@effects(depends: …)` — the backward dual of `causes:`
     /// (Change 5g).
     Depends,
-    /// Lowered but its engine has not migrated (`@budget`) —
-    /// judged at minimum `uncertified`.
+    /// `@budget(...)` — the quantitative contracts, certified
+    /// through the evidence sidecar (Change 5h).
+    Budget,
+    /// Lowered but its engine has not migrated. As of Change 5h
+    /// NOTHING is: the variant stays as the typed name for that
+    /// state so a future family has somewhere to land before its
+    /// engine arrives, and so an artifact written by an older
+    /// toolchain still decodes.
     Unmigrated,
     /// Fleet plan rows — Change 7's `FleetModel`.
     Fleet,
@@ -523,6 +529,7 @@ impl JudgmentFamily {
             JudgmentFamily::Certificate => "certificate",
             JudgmentFamily::Causes => "causes",
             JudgmentFamily::Depends => "depends",
+            JudgmentFamily::Budget => "budget",
             JudgmentFamily::Unmigrated => "unmigrated",
             JudgmentFamily::Fleet => "fleet",
         }
@@ -569,6 +576,14 @@ impl JudgmentFamily {
                 .union(R::SUBSCRIBES)
                 .union(R::DELIVERY)
                 .union(R::OWNS),
+            // `@budget` counts over per-call COSTS along CALLS;
+            // `publish` and `fanout` add the bus dimensions, which
+            // is why PUBLISHES and DELIVERY are here rather than a
+            // duplicated count.
+            JudgmentFamily::Budget => R::CALLS
+                .union(R::COSTS)
+                .union(R::PUBLISHES)
+                .union(R::DELIVERY),
             JudgmentFamily::Unmigrated | JudgmentFamily::Fleet => {
                 crate::hole::RelationSet(0)
             }
@@ -1061,9 +1076,7 @@ impl ClaimRow {
             ClaimIr::EffectCauses { .. } => JudgmentFamily::Causes,
             ClaimIr::DependsSet { .. } => JudgmentFamily::Depends,
             ClaimIr::AllocBudget { .. }
-            | ClaimIr::QuantBudget { .. } => {
-                JudgmentFamily::Unmigrated
-            }
+            | ClaimIr::QuantBudget { .. } => JudgmentFamily::Budget,
             ClaimIr::FleetForbidReaches { .. }
             | ClaimIr::FleetOnlyEdges { .. }
             | ClaimIr::FleetRequireEndpoint { .. }
@@ -1337,6 +1350,22 @@ impl ClaimRow {
                     )
                 })
                 .collect(),
+            // Change 5h: the budget engines produce one certificate
+            // per contract, and its `form` is the SAME string
+            // `budget_lowered_form` renders — one spelling, so the
+            // evidence join cannot drift from the artifact's row.
+            ClaimIr::AllocBudget { .. }
+            | ClaimIr::QuantBudget { .. } => {
+                let at = match &self.law {
+                    ClaimIr::AllocBudget { at, .. }
+                    | ClaimIr::QuantBudget { at, .. } => at,
+                    _ => unreachable!(),
+                };
+                match self.budget_lowered_form() {
+                    Some(f) => vec![(subject_disp(at), f)],
+                    None => Vec::new(),
+                }
+            }
             _ => Vec::new(),
         }
     }
