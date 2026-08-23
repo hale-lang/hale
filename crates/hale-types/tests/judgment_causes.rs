@@ -65,59 +65,48 @@ fn strength(v: Verdict) -> u8 {
     }
 }
 
-/// Why the model may legitimately be stricter than the evaluator on
-/// this program. Computed from the model, never from the output.
-fn divergence_premises(
+/// Why the model may legitimately differ from the evaluator ON THIS
+/// ROW — read from the row's own traversal witness, never from
+/// facts elsewhere in the program. A hole on an unrelated topic, an
+/// unclassified function nothing delivers to, a stdlib interior
+/// another law crosses: none of them excuse a different answer
+/// here.
+fn row_premises(
     model: &hale_model::ApplicationModel,
+    w: &hale_types::judgment::CausesWitness,
 ) -> Vec<&'static str> {
-    let e = &model.entities;
-    let r = &model.relations;
     let mut out = Vec::new();
-    // The evaluator infers effects from the user-only summary, so a
-    // subscriber whose class arrives through a stdlib call reads as
-    // pure to it.
-    if r.subscribes.iter().any(|s| {
-        !e.functions[s.handler.index()].effects.is_empty()
-    }) {
-        out.push("subscriber-effects");
+    if !w.unknown_handlers.is_empty() {
+        out.push("unclassified-handler-on-path");
     }
-    // Unknown downstream behaviour: the model refuses to certify,
-    // the evaluator counts it as nothing.
-    if e.functions.iter().any(|f| {
-        f.effects.iter().any(|c| c == "unclassified")
-    }) {
-        out.push("unclassified-subscriber");
+    if !w.incomplete_endpoints.is_empty() {
+        out.push("incomplete-endpoint-on-path");
     }
-    if !model.holes.is_empty() {
-        out.push("completeness-hole");
+    if !w.incomplete_discovery.is_empty() {
+        out.push("incomplete-discovery-on-path");
     }
-    if !model.analyses.stdlib_absorption.is_empty() {
-        out.push("stdlib-interior");
+    if w.crossed_stdlib_interior {
+        out.push("stdlib-interior-on-path");
     }
-    // A publish and a subscription on ONE wire whose written forms
-    // differ — the join the evaluator does by text misses it.
-    if r.publishes.iter().any(|p| {
-        r.subscribes.iter().any(|s| {
-            s.subject == p.subject
-                && s.declared_topic != p.declared_topic
-        })
-    }) {
-        out.push("wire-vs-text-join");
-    }
-    // A subscriber that publishes: a second hop the evaluator's
-    // one-level walk never takes.
-    if r.subscribes
-        .iter()
-        .any(|s| r.publishes.iter().any(|p| p.function == s.handler))
-    {
+    if w.multi_hop {
         out.push("second-hop");
+    }
+    // The evaluator infers effects from the user-only summary, so a
+    // handler this row reaches whose classes come through a stdlib
+    // call reads as pure to it.
+    if w.reached_handlers.iter().any(|h| {
+        !model.entities.functions[h.index()]
+            .effect_lower_bound
+            .is_empty()
+    }) {
+        out.push("reached-handler-effects");
     }
     out
 }
 
 #[test]
 fn causes_judgment_matches_the_evaluator_over_the_corpus() {
-    let mut with_rows = 0usize;
+    let mut rows_compared = 0usize;
     let mut strengthened = 0usize;
     let mut bad: Vec<String> = Vec::new();
     for p in
@@ -144,136 +133,135 @@ fn causes_judgment_matches_the_evaluator_over_the_corpus() {
         }) {
             continue;
         }
-        with_rows += 1;
 
         let programs_v: Vec<&hale_syntax::ast::Program> = vec![&program];
         let (top, _) = hale_types::resolve::build_top_scope(&bundle);
         let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top);
-        let old_diags: Vec<String> =
-            hale_types::frontier::causes_diags(&programs_v, &graph)
-                .iter()
-                .map(render)
-                .collect();
+        let old: Vec<hale_syntax::Diag> =
+            hale_types::frontier::causes_diags(&programs_v, &graph);
         let bases: Vec<u32> =
             bundle.sources.iter().map(|f| f.base).collect();
-        let judged =
-            hale_types::judgment::judge_causes(&table, &model, &bases);
-        let new_diags: Vec<String> = judged
-            .iter()
-            .flat_map(|j| j.diags.iter())
-            .map(render)
-            .collect();
+        let judged = hale_types::judgment::judge_causes_witnessed(
+            &table, &model, &bases,
+        );
 
-        // The evaluator has no verdict channel: a diagnostic is a
-        // violation, silence is a pass. Compare at that grain.
-        let old_v = if old_diags.is_empty() {
-            Verdict::Holds
-        } else {
-            Verdict::Violated
-        };
-        // How each side expresses "I don't know". The evaluator
-        // SATURATES: the unclassified bit unions in as every class
-        // at once, so its message asserts `can transitively cause
-        // syscall, block, time, entropy, env, secret_use` — a
-        // definite claim about classes nobody observed, built on the
-        // absence of information. The model answers `Uncertified`,
-        // which is the vocabulary this epic settled on for exactly
-        // that evidence (Change 6: uncertified is a state distinct
-        // from violated). Neither certifies; they differ in what
-        // they are willing to assert.
-        //
-        // Read off the MODEL, not the message: an unclassified body
-        // sits on a delivered-to path.
-        let premises_here = divergence_premises(&model);
-        let evaluator_guessed =
-            premises_here.contains(&"unclassified-subscriber");
-        for j in &judged {
-            let weaker = strength(j.verdict) < strength(old_v);
-            let honest_uncertified = evaluator_guessed
-                && j.verdict == Verdict::Uncertified;
-            if weaker && !honest_uncertified {
-                bad.push(format!(
-                    "{}: model is WEAKER ({:?} vs evaluator {:?}) — a \
-                     fail-open",
-                    p.origin, j.verdict, old_v
-                ));
+        // ONE LAW TO ONE LAW. Both sides anchor a causes diagnostic
+        // at the annotated fn's name span, which is also the row's
+        // provenance — so the rows and the evaluator's outcomes join
+        // on span. A program-wide "any diagnostic means violated"
+        // compares row B against row A's answer.
+        for (j, w) in &judged {
+            let row = table
+                .rows
+                .iter()
+                .find(|r| r.ordinal == j.ordinal)
+                .expect("judged row exists");
+            let row_span = hale_types::judgment::claim_row_span(
+                &table, &bases, row,
+            );
+            let mine: Vec<&hale_syntax::Diag> =
+                old.iter().filter(|d| d.span == row_span).collect();
+            let old_v = if mine.is_empty() {
+                Verdict::Holds
+            } else {
+                Verdict::Violated
+            };
+            rows_compared += 1;
+            let premises = row_premises(&model, w);
+            // The evaluator SATURATES on unknown: it unions the
+            // unclassified marker as every class at once and asserts
+            // them. `Uncertified` is this epic's vocabulary for that
+            // same evidence, so it is not a weakening — but only
+            // when an unknown handler is actually on THIS row's
+            // path.
+            let saturating = premises
+                .contains(&"unclassified-handler-on-path");
+            let mine_text: String = mine
+                .iter()
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let new_text: String = j
+                .diags
+                .iter()
+                .map(|d| d.message.clone())
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            if strength(j.verdict) < strength(old_v) {
+                if !(saturating && j.verdict == Verdict::Uncertified) {
+                    bad.push(format!(
+                        "{} ordinal {}: model is WEAKER ({:?} vs {:?}) \
+                         — a fail-open",
+                        p.origin, j.ordinal, j.verdict, old_v
+                    ));
+                }
+                strengthened += 1;
+                continue;
             }
-        }
-        if evaluator_guessed
-            && judged.iter().all(|j| j.verdict == Verdict::Uncertified)
-        {
-            strengthened += 1;
-            continue;
-        }
-        let model_v = judged
-            .iter()
-            .map(|j| j.verdict)
-            .max_by_key(|v| strength(*v))
-            .unwrap_or(Verdict::Holds);
-        if strength(model_v) == strength(old_v) {
-            // When the evaluator saturated, its message lists every
-            // class at once and the model's lists only what it
-            // knows. Comparable as a SUBSET, not byte-for-byte: the
-            // model may name fewer classes, never a class the
-            // evaluator did not.
-            if evaluator_guessed {
-                let evaluator_text = old_diags.join(" ");
+            if strength(j.verdict) > strength(old_v) {
+                if premises.is_empty() {
+                    bad.push(format!(
+                        "{} ordinal {}: model is stricter ({:?} vs \
+                         {:?}) with NO premise on this row's path\n  \
+                         evaluator: {}\n  model: {}",
+                        p.origin, j.ordinal, j.verdict, old_v,
+                        mine_text, new_text
+                    ));
+                }
+                strengthened += 1;
+                continue;
+            }
+            // Equal strength: byte-equal messages, except that a
+            // saturated evaluator message is compared as a SUPERSET
+            // of the model's class list.
+            if saturating {
                 let invented: Vec<&str> = [
                     "syscall", "block", "publish", "time", "entropy",
                     "env", "alloc", "secret_use",
                 ]
                 .into_iter()
                 .filter(|c| {
-                    new_diags.iter().any(|d| d.contains(c))
-                        && !evaluator_text.contains(c)
+                    new_text.contains(c) && !mine_text.contains(c)
                 })
                 .collect();
                 if !invented.is_empty() {
                     bad.push(format!(
-                        "{}: the model names classes the evaluator \
-                         did not: {:?}",
-                        p.origin, invented
+                        "{} ordinal {}: the model names classes the \
+                         evaluator did not: {:?}",
+                        p.origin, j.ordinal, invented
                     ));
                 }
-                strengthened += 1;
                 continue;
             }
-            if old_diags != new_diags {
+            let old_rendered: Vec<String> =
+                mine.iter().map(|d| render(d)).collect();
+            let new_rendered: Vec<String> =
+                j.diags.iter().map(render).collect();
+            if old_rendered != new_rendered {
                 bad.push(format!(
-                    "{}: same verdict, different diagnostics:\n  \
-                     evaluator: {:?}\n  model:     {:?}",
-                    p.origin, old_diags, new_diags
+                    "{} ordinal {}: same verdict, different \
+                     diagnostics:\n  evaluator: {:?}\n  model: {:?}",
+                    p.origin, j.ordinal, old_rendered, new_rendered
                 ));
             }
-            continue;
         }
-        // Stricter: allowed only with a premise, and the premise is
-        // read off the model.
-        let premises = premises_here;
-        if premises.is_empty() {
-            bad.push(format!(
-                "{}: model is stricter ({:?} vs {:?}) with NO premise \
-                 that explains it:\n  evaluator: {:?}\n  model:     {:?}",
-                p.origin, model_v, old_v, old_diags, new_diags
-            ));
-            continue;
-        }
-        strengthened += 1;
     }
     assert!(
-        with_rows > 0,
+        rows_compared > 0,
         "the corpus must exercise `causes:` — the differential \
          would pass vacuously"
     );
     assert!(
         bad.is_empty(),
-        "{} programs disagree:\n{}",
+        "{} rows disagree:\n{}",
         bad.len(),
         bad.join("\n")
     );
     eprintln!(
-        "causes differential: {} programs, {} strengthened",
-        with_rows, strengthened
+        "causes differential: {} rows, {} with a documented \
+         divergence",
+        rows_compared, strengthened
     );
 }
 
@@ -876,4 +864,109 @@ fn main() { App { }; }
 "#,
     );
     assert_eq!(v, Verdict::Violated);
+}
+
+/// Review round 3, blocker 2: a binding on the PUBLISHED topic is
+/// an opaque boundary. The publish leaves the program; whatever the
+/// adapter or its peer does is not in this graph, so the law cannot
+/// be certified — the mirror of the unrelated-binding control,
+/// which must stay `Holds`.
+#[test]
+fn a_binding_on_the_published_topic_is_uncertified() {
+    let (v, _) = judge(
+        r#"
+type Msg { n: Int = 0; }
+topic T { payload: Msg; subject: "t"; }
+locus MyAdapter {
+    params { n: Int = 0; }
+    fn send(subject: String, bytes: Bytes) { self.n = self.n + 1; }
+}
+locus Source {
+    bus { publish T; }
+    @effects(causes: { publish, alloc })
+    fn fire() { T <- Msg { n: 1 }; }
+}
+main locus App {
+    params { p: Source = Source { }; }
+    bindings { T: MyAdapter { }; }
+    run() { self.p.fire(); }
+}
+fn main() { App { }; }
+"#,
+    );
+    assert_eq!(
+        v,
+        Verdict::Uncertified,
+        "the publish crosses an opaque external boundary"
+    );
+}
+
+/// Review round 3, blocker 1: publish SITES survive the delivery
+/// query. Two sites on one subject with different exact key
+/// domains — only one of which reaches the `key == 2` subscriber —
+/// must not collapse before `may_deliver` runs.
+///
+/// The builder records `AnyOfType` for a literal send, so the exact
+/// domains are set on the derived model (a lawful state `validate`
+/// accepts) to reach the shape the engine must handle.
+#[test]
+fn publish_sites_survive_the_delivery_query() {
+    use hale_model::keys::{KeyDomain, KeyValue};
+    let src = r#"
+type Msg { shard: Int = 0; }
+topic T { payload: Msg; subject: "t"; keyed_by shard; }
+locus Sink {
+    params { n: Int = 0; }
+    bus { subscribe T as on_t where key == 2; }
+    fn on_t(m: Msg) { println("io"); }
+}
+locus Source {
+    bus { publish T; }
+    @effects(causes: { publish, alloc })
+    fn fire() {
+        T <- Msg { shard: 1 };
+        T <- Msg { shard: 2 };
+    }
+}
+main locus App {
+    params { s: Sink = Sink { }; p: Source = Source { }; }
+    run() { self.p.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let mut model = derive_application_model(&bundle);
+    // Two sites, distinct exact domains: site 0 produces key 1
+    // (never delivered), site 1 produces key 2 (delivered).
+    let mut sites: Vec<usize> = model
+        .relations
+        .publishes
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.key_domain.is_some())
+        .map(|(i, _)| i)
+        .collect();
+    sites.sort();
+    assert_eq!(
+        sites.len(),
+        2,
+        "fixture premise: two keyed publish sites"
+    );
+    model.relations.publishes[sites[0]].key_domain =
+        Some(KeyDomain::Exact(vec![KeyValue::Int(1)]));
+    model.relations.publishes[sites[1]].key_domain =
+        Some(KeyDomain::Exact(vec![KeyValue::Int(2)]));
+    model.validate().expect("still a lawful model");
+
+    let table = hale_types::claim_lowering::lower_claims(&bundle, &model);
+    let bases: Vec<u32> = bundle.sources.iter().map(|f| f.base).collect();
+    let judged =
+        hale_types::judgment::judge_causes(&table, &model, &bases);
+    assert_eq!(
+        judged.first().expect("a row").verdict,
+        Verdict::Violated,
+        "the site that delivers was collapsed away before the \
+         delivery query ran"
+    );
 }

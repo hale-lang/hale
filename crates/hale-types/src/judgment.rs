@@ -4675,11 +4675,61 @@ pub fn render_effect_classes(
 ///    interiors). Comparing rendered subject text missed ordinary
 ///    deliveries between a topic-name publish and a literal
 ///    subscribe on the same wire.
+/// One claim row's own span, in bundle-global offsets — the anchor
+/// both the evaluator and the judgment put a row's diagnostic on,
+/// and therefore the key a differential joins one law to one law by.
+pub fn claim_row_span(
+    table: &ClaimIrTable,
+    source_bases: &[u32],
+    row: &hale_model::ClaimRow,
+) -> Span {
+    span_of(&table.provenance, source_bases, row.provenance)
+}
+
+/// What one `causes:` row's traversal actually reached.
+///
+/// The differential needs this to authorize a divergence against
+/// THIS row rather than against facts anywhere in the program (a
+/// hole on an unrelated topic must not excuse a wrong answer here).
+/// Recomputing the closure inside the test would re-implement the
+/// engine in its own test, which is how a test starts agreeing with
+/// a bug — so the engine reports what it saw.
+#[derive(Clone, Debug, Default)]
+pub struct CausesWitness {
+    /// Handlers a publish on this row's closure may deliver to.
+    pub reached_handlers: Vec<FunctionId>,
+    /// Handlers among those whose effect set is not fully known.
+    pub unknown_handlers: Vec<FunctionId>,
+    /// Endpoints whose downstream is incomplete (subscriber set,
+    /// key filter, or an opaque external boundary).
+    pub incomplete_endpoints: Vec<hale_model::SubjectId>,
+    /// Functions on the closure whose outgoing calls or publish
+    /// sites are not fully known — an unfollowable call or a
+    /// computed subject means the publish set is a lower bound.
+    pub incomplete_discovery: Vec<FunctionId>,
+    /// The closure left user code through a stdlib interior.
+    pub crossed_stdlib_interior: bool,
+    /// The closure took more than one bus hop.
+    pub multi_hop: bool,
+}
+
 pub fn judge_causes(
     table: &ClaimIrTable,
     model: &ApplicationModel,
     source_bases: &[u32],
 ) -> Vec<Judged> {
+    judge_causes_witnessed(table, model, source_bases)
+        .into_iter()
+        .map(|(j, _)| j)
+        .collect()
+}
+
+/// [`judge_causes`], with each row's traversal witness.
+pub fn judge_causes_witnessed(
+    table: &ClaimIrTable,
+    model: &ApplicationModel,
+    source_bases: &[u32],
+) -> Vec<(Judged, CausesWitness)> {
     let e = &model.entities;
     let r = &model.relations;
     let claim_span = |pid: ProvenanceId| -> Span {
@@ -4761,7 +4811,7 @@ pub fn judge_causes(
         callees.entry(c.from.0).or_default().push(c.to);
     }
 
-    let mut out: Vec<Judged> = Vec::new();
+    let mut out: Vec<(Judged, CausesWitness)> = Vec::new();
     for row in &table.rows {
         let ClaimIr::EffectCauses { at, classes } = &row.law else {
             continue;
@@ -4779,12 +4829,15 @@ pub fn judge_causes(
                 )
             })
         }) {
-            out.push(Judged {
-                ordinal: row.ordinal,
-                verdict: Verdict::Invalid,
-                diags,
-                foreign: Vec::new(),
-            });
+            out.push((
+                Judged {
+                    ordinal: row.ordinal,
+                    verdict: Verdict::Invalid,
+                    diags,
+                    foreign: Vec::new(),
+                },
+                CausesWitness::default(),
+            ));
             continue;
         }
 
@@ -4793,6 +4846,7 @@ pub fn judge_causes(
         // handlers they may deliver to, and — because a handler may
         // publish in turn — onward until it settles.
         let mut uncertain = false;
+        let mut witness = CausesWitness::default();
         let mut caused: BTreeSet<String> = BTreeSet::new();
         let mut via: Vec<String> = Vec::new();
         let mut fn_frontier: Vec<FunctionId> = vec![fid];
@@ -4812,6 +4866,15 @@ pub fn judge_causes(
             ) || interior_unknown.contains(&f.0)
             {
                 uncertain = true;
+                witness.incomplete_discovery.push(f);
+            }
+            if interior_pubs.contains_key(&f.0)
+                || interior_unknown.contains(&f.0)
+            {
+                witness.crossed_stdlib_interior = true;
+            }
+            if f != fid {
+                witness.multi_hop = true;
             }
             // (subject id, AUTHORED spelling). The join below is on
             // the id; the witness renders what the author wrote —
@@ -4857,8 +4920,16 @@ pub fn judge_causes(
                     )
                 }),
             );
-            published.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
-            published.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+            // NOT deduplicated. Publishes are site-grained on
+            // purpose: one function may publish one subject at
+            // several sites with different key domains, and
+            // collapsing them before the delivery query throws away
+            // the site that actually delivers. Handler facts are
+            // deduplicated AFTER every site has been evaluated
+            // (review round 3).
+            published.sort_by(|a, b| {
+                (a.0, &a.1, a.2.site).cmp(&(b.0, &b.1, b.2.site))
+            });
             for (subject, written, pubrow) in published {
                 // Delivery incompleteness, SCOPED TO THIS ENDPOINT.
                 // A hole somewhere else in the application says
@@ -4872,25 +4943,46 @@ pub fn judge_causes(
                 // DELIVERY (the must-deliver guarantee), plus
                 // KEY_FILTERS, since an unknown filter widens who
                 // may receive.
-                let topic_here = e
-                    .topics
-                    .iter()
-                    .position(|t| t.subject == subject)
-                    .map(|i| hale_model::TopicId(i as u32));
+                // The topic identity comes from the PUBLISH ROW,
+                // not from the first topic that happens to share an
+                // address.
+                let topic_here = pubrow.declared_topic;
+                let wire =
+                    e.subjects[subject.index()].pattern.as_str();
                 if model.holes.iter().any(|h| {
+                    // Three ways this endpoint's downstream can be
+                    // incomplete: the possible handler set is not
+                    // fully known (SUBSCRIBES), a filter that
+                    // decides who receives is not known
+                    // (KEY_FILTERS), or the route leaves the
+                    // program entirely — an adapter-bound topic is
+                    // an ExternalOpaque hole hiding BINDS|DELIVERY,
+                    // and whatever the peer does is not in this
+                    // graph at all.
                     let relevant = h.hides.intersects(
-                        hale_model::RelationSet::SUBSCRIBES.union(
-                            hale_model::RelationSet::KEY_FILTERS,
-                        ),
+                        hale_model::RelationSet::SUBSCRIBES
+                            .union(hale_model::RelationSet::KEY_FILTERS)
+                            .union(hale_model::RelationSet::DELIVERY),
                     );
                     let here = match h.at {
-                        EntityRef::Subject(s) => s == subject,
+                        // Subject-grained residue covers by
+                        // PATTERN: a hole on `orders.**` is
+                        // relevant to a publish on `orders.created`.
+                        EntityRef::Subject(sid) => {
+                            let pat = e.subjects[sid.index()]
+                                .pattern
+                                .as_str();
+                            sid == subject
+                                || (pat.contains("**")
+                                    && crate::wildcard_match(pat, wire))
+                        }
                         EntityRef::Topic(t) => Some(t) == topic_here,
                         _ => false,
                     };
                     relevant && here
                 }) {
                     uncertain = true;
+                    witness.incomplete_endpoints.push(subject);
                 }
                 for su in r
                     .subscribes
@@ -4898,7 +4990,9 @@ pub fn judge_causes(
                     .filter(|su| may_deliver(e, &pubrow, su))
                 {
                     let (eff, unknown) = effects_of(su.handler);
+                    witness.reached_handlers.push(su.handler);
                     if unknown {
+                        witness.unknown_handlers.push(su.handler);
                         // The handler reaches something unnameable:
                         // whatever it causes is not measurable here.
                         uncertain = true;
@@ -4955,12 +5049,23 @@ pub fn judge_causes(
         } else {
             Verdict::Holds
         };
-        out.push(Judged {
-            ordinal: row.ordinal,
-            verdict,
-            diags,
-            foreign: Vec::new(),
-        });
+        witness.reached_handlers.sort();
+        witness.reached_handlers.dedup();
+        witness.unknown_handlers.sort();
+        witness.unknown_handlers.dedup();
+        witness.incomplete_endpoints.sort();
+        witness.incomplete_endpoints.dedup();
+        witness.incomplete_discovery.sort();
+        witness.incomplete_discovery.dedup();
+        out.push((
+            Judged {
+                ordinal: row.ordinal,
+                verdict,
+                diags,
+                foreign: Vec::new(),
+            },
+            witness,
+        ));
     }
     out
 }
