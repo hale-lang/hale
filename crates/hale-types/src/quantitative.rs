@@ -141,7 +141,12 @@ fn frame_bytes(fd: &FnDecl) -> u64 {
 }
 
 /// Per-fn frame sizes for the bundle, keyed like the call graph.
-fn frame_map(programs: &[&Program]) -> BTreeMap<FnKey, u64> {
+///
+/// `pub(crate)` since Change 5h: the model builder records these as
+/// `FrameBytes` cost sites so the migrated `@budget(stack_bytes)`
+/// judgment counts over the model. ONE authority — the estimate is
+/// computed here and called, not re-derived there.
+pub(crate) fn frame_map(programs: &[&Program]) -> BTreeMap<FnKey, u64> {
     let mut out = BTreeMap::new();
     for p in programs {
         for item in &p.items {

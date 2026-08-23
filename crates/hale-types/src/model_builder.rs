@@ -1129,9 +1129,15 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                                 format!("call through `{}`", n),
                             ))
                             .or_insert((
-                                hale_model::RelationSet::CALLS.union(
-                                    hale_model::RelationSet::EFFECTS,
-                                ),
+                                hale_model::RelationSet::CALLS
+                                    .union(hale_model::RelationSet::EFFECTS)
+                                    // Change 5h: a call whose target
+                                    // is chosen by the caller hides
+                                    // its COSTS too — this is exactly
+                                    // where the budget engines
+                                    // saturate rather than count
+                                    // zero (#353).
+                                    .union(hale_model::RelationSet::COSTS),
                                 Some(site),
                                 pid,
                             ));
@@ -1156,9 +1162,13 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                                 ),
                             ))
                             .or_insert((
-                                hale_model::RelationSet::CALLS.union(
-                                    hale_model::RelationSet::EFFECTS,
-                                ),
+                                hale_model::RelationSet::CALLS
+                                    .union(hale_model::RelationSet::EFFECTS)
+                                    // #382's untypeable receiver is
+                                    // the same rule as the indirect
+                                    // call above, in the method
+                                    // shape.
+                                    .union(hale_model::RelationSet::COSTS),
                                 Some(site),
                                 pid,
                             ));
@@ -3561,8 +3571,55 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             hale_model::RelationSet::PLACED,
         ),
         exact_routes: !hides_any(hale_model::RelationSet::BINDS),
+        exact_costs: !hides_any(hale_model::RelationSet::COSTS),
         ..Capabilities::default()
     };
+
+    // ---- per-call COST sites (GH #476 Change 5h) ----
+    //
+    // Site-grained like publishes, and for the same reason: a
+    // per-call budget is a statement about ONE invocation, so
+    // whether a site sits inside a loop is the difference between a
+    // finite count and an unbounded one. `publish` and `fanout` are
+    // deliberately absent — `relations.publishes` plus the delivery
+    // join already answer those, and a second copy would be a
+    // second authority.
+    {
+        let frames = crate::quantitative::frame_map(&programs);
+        for (k, fs) in &summary.fns {
+            if !user_key(k) {
+                continue;
+            }
+            let Some(f) = fn_id.get(&fn_name(k)) else { continue };
+            for site in &fs.sites {
+                let pid = intern_span(&mut records, site.span);
+                r.costs.push(hale_model::CostSite {
+                    function: *f,
+                    dimension: hale_model::CostDimension::Alloc,
+                    amount: 1,
+                    in_loop: site.loop_depth > 0,
+                    provenance: pid,
+                });
+            }
+            if let Some(bytes) = frames.get(k) {
+                let fn_prov = e.functions[f.index()].provenance;
+                r.costs.push(hale_model::CostSite {
+                    function: *f,
+                    dimension: hale_model::CostDimension::FrameBytes,
+                    amount: *bytes,
+                    // A frame is charged once per call, never per
+                    // loop iteration — the same frame is reused.
+                    in_loop: false,
+                    provenance: fn_prov,
+                });
+            }
+        }
+        r.costs.sort_by(|a, b| {
+            (a.function.0, a.dimension, a.provenance.0)
+                .cmp(&(b.function.0, b.dimension, b.provenance.0))
+        });
+    }
+
 
     // entrypoint: the main locus, else "main".
     let entrypoint = ast

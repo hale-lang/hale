@@ -168,7 +168,7 @@ pub use keys::{
     PublishDisposition, ShedPolicy, TopicBound, TopicKey, TopicOnFull,
 };
 pub use provenance::{Provenance, ProvenanceTable};
-pub use relation::{
+pub use relation::{CostDimension, CostSite,
     AffinedTo, Call, CoreSet, DeadInterfaceCall, DeclaredIn, DeclaresPublish, DispatchKind, GroupMember,
     GroupSelector, MemberOf, Owns, PhaseOf, PlacedIn, Publish, Realizes, SelectorForm, Subscribe,
     Supervises, SupervisedRef, SupervisionPolicy, TopicBinding,

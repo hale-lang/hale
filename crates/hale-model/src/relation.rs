@@ -322,3 +322,49 @@ pub struct Supervises {
     pub authored_ordinal: u32,
     pub provenance: ProvenanceId,
 }
+
+/// One per-call COST the model can see inside a function body
+/// (GH #476 Change 5h) — what the quantitative `@budget` laws
+/// count over.
+///
+/// Site-grained on purpose, exactly like `Publish`: a per-call
+/// budget is a statement about ONE invocation, so whether the site
+/// sits inside a loop is the difference between a finite count and
+/// an unbounded one. Collapsing sites to a per-function total
+/// before the judgment throws away the site that saturates.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct CostSite {
+    pub function: FunctionId,
+    pub dimension: CostDimension,
+    /// How much this site costs, in the dimension's own unit.
+    pub amount: u64,
+    /// Inside a loop — a per-call bound cannot survive it.
+    pub in_loop: bool,
+    pub provenance: ProvenanceId,
+}
+
+/// The cost dimensions the model records DIRECTLY. Deliberately
+/// short: `publish` and `fanout` are NOT here, because
+/// `relations.publishes` plus the delivery join already answer
+/// them, and a second copy would be a second authority.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum CostDimension {
+    /// One arena allocation the summary can see.
+    Alloc,
+    /// One blocking operation.
+    Block,
+    /// This function's own stack frame, in bytes — an estimate from
+    /// declared shapes, not measured from codegen. Recorded once
+    /// per function, never inside a loop.
+    FrameBytes,
+}
+
+impl CostDimension {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CostDimension::Alloc => "alloc",
+            CostDimension::Block => "block",
+            CostDimension::FrameBytes => "frame_bytes",
+        }
+    }
+}

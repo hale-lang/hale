@@ -301,8 +301,12 @@ fn a_capability_cannot_claim_exactness_over_a_hole() {
         kind: HoleKind::IndirectCall,
         // Site-shaped holes carry their authored ordinal (round
         // 8) and the kind's REQUIRED families (round 9): an
-        // unfollowable call hides its effects too, always.
-        hides: RelationSet::CALLS.union(RelationSet::EFFECTS),
+        // unfollowable call hides its effects too, always — and
+        // since Change 5h its per-call COSTS, which is where
+        // `@budget` has to saturate.
+        hides: RelationSet::CALLS
+            .union(RelationSet::EFFECTS)
+            .union(RelationSet::COSTS),
         reason: "call through fn param `f`".to_string(),
         authored_site: Some(0),
         provenance: ProvenanceId(0),
@@ -586,9 +590,10 @@ fn every_capability_flag_is_mapped_to_a_family() {
         exact_effects: true,
         exact_cardinality: true,
         exact_delivery_guarantees: true,
+        exact_costs: true,
     };
     let vouched = all.vouched_families();
-    assert_eq!(vouched.len(), 10, "every flag appears exactly once");
+    assert_eq!(vouched.len(), 11, "every flag appears exactly once");
     for (name, claimed, family) in vouched {
         assert!(claimed, "{} must carry its flag", name);
         assert!(!family.is_empty(), "{} must vouch a real family", name);

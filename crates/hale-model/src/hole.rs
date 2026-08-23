@@ -38,13 +38,18 @@ impl RelationSet {
     pub const CARDINALITY: RelationSet = RelationSet(1 << 10);
     /// Delivery-guarantee knowledge (the must-deliver side).
     pub const DELIVERY: RelationSet = RelationSet(1 << 11);
+    /// Per-call COST knowledge: allocation sites, frame sizes,
+    /// blocking points. The quantitative laws (`@budget`) count over
+    /// these, and a hole here is exactly the "opaque call whose
+    /// costs I cannot see" the budget engines saturate on.
+    pub const COSTS: RelationSet = RelationSet(1 << 12);
 
     /// Every DEFINED family bit. A hides mask outside this set
     /// names a family no judgment or capability knows — accepting
     /// it would create a valid-but-invisible hole and defeat the
     /// rule that adding a family is a reviewed schema change
     /// (round 7).
-    pub const ALL_KNOWN: RelationSet = RelationSet((1 << 12) - 1);
+    pub const ALL_KNOWN: RelationSet = RelationSet((1 << 13) - 1);
 
     pub const fn union(self, other: RelationSet) -> RelationSet {
         RelationSet(self.0 | other.0)
@@ -172,10 +177,17 @@ pub fn allowed_hole_families(
         // kinds, the call walks select by CALLS, and the
         // effects(C)-destination scan consumes EFFECTS: both bits
         // are REQUIRED (rounds 2–3, 9).
+        //
+        // Change 5h adds COSTS to the same three, and REQUIRES it:
+        // a call whose target the caller chooses is precisely where
+        // `@budget` must saturate rather than count zero (#353), so
+        // a call hole that did not withdraw the cost account would
+        // let a quantitative law certify through it.
         (EntityRef::Function(_), K::IndirectCall)
         | (EntityRef::Function(_), K::UntypedReceiver { .. })
         | (EntityRef::Function(_), K::OpenInterface) => {
-            Some((c.union(e), c.union(e)))
+            let m = c.union(e).union(RelationSet::COSTS);
+            Some((m, m))
         }
         (EntityRef::Function(_), K::ComputedSubject) => {
             Some((p, p))

@@ -3263,6 +3263,7 @@ pub fn validate_law_account(
         ("exact_effects", 1 << 7),
         ("exact_cardinality", 1 << 10),
         ("exact_delivery_guarantees", 1 << 11),
+        ("exact_costs", 1 << 12),
     ];
     let caps = v["capabilities"].as_object().ok_or_else(|| {
         format!("{}: capabilities must be an object", label)

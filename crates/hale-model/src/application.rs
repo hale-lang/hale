@@ -19,7 +19,7 @@ use crate::claim_ir::{ClaimIrError, ClaimIrTable, ClaimRow};
 use crate::provenance::{Provenance, ProvenanceTable};
 use crate::relation::{
     AffinedTo, Call, DeadInterfaceCall, DeclaredIn, DeclaresPublish,
-    GroupMember, GroupSelector, MemberOf, Owns, PhaseOf, PlacedIn,
+    CostSite, GroupMember, GroupSelector, MemberOf, Owns, PhaseOf, PlacedIn,
     Publish, Realizes, SelectorForm, Subscribe, Supervises, TopicBinding,
 };
 
@@ -115,6 +115,9 @@ pub struct Relations {
     /// The AUTHORED selector lists (legacy-hash grain), alongside
     /// the resolved `group_members` (judgment grain).
     pub group_selectors: Vec<GroupSelector>,
+    /// Per-call cost sites (Change 5h), sorted by
+    /// (function, dimension, provenance).
+    pub costs: Vec<CostSite>,
 }
 
 /// The Change-3 bridge, quarantined in one named structure: the
