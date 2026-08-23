@@ -425,7 +425,7 @@ impl<'a> QualifiedRenameApplier<'a> {
                 // (#334) — at the mangle stage, never by name-suffix
                 // matching. `alias::Name` collapses to the mangled
                 // single segment. Glob members (`alias::*`) stay as
-                // written and expand in `claims::claims_diags` via
+                // written and expand in the law judgment via
                 // the bundle's rename table.
                 for m in &mut g.members {
                     if m.glob || m.segments.len() < 2 {

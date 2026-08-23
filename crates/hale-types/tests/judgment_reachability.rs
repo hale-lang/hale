@@ -64,204 +64,15 @@ fn family_names(
         .collect()
 }
 
-/// Old-vs-new for one program. Returns Err(description) on any
-/// divergence.
-fn diff_one(
-    src: &str,
-    origin: &str,
-) -> Result<usize, String> {
-    let program = hale_syntax::parse_source(src)
-        .map_err(|_| format!("{}: parse", origin))?;
-    let bundle = bundle_of(src, &program);
-    let model = derive_application_model(&bundle);
-    let table = lower_claims(&bundle, &model);
-    let names = family_names(&table);
-    if names.is_empty() {
-        return Ok(0);
-    }
-    // Old: evaluator outcomes + diags.
-    let programs_v: Vec<&hale_syntax::ast::Program> = vec![&program];
-    let top = hale_types::resolve::build_top_scope(&bundle).0;
-    let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top);
-    let (old_diags, outcomes, _a) =
-        hale_types::claims::claims_report_with_identities(
-            &programs_v,
-            &graph,
-            &[],
-        );
-    // New: engine over the lowered rows — both migrated families,
-    // merged back into ordinal order (the evaluator's claim order).
-    let (pre_diags, judged_fr) =
-        judge_forbid_reaches(&table, &model, &[0]);
-    let judged_oe = judge_only_edges(&table, &model, &[0]);
-    let judged_ep = judge_endpoints(&table, &model, &[0]);
-    let judged_bd = judge_bound(&table, &model, &[0]);
-    let mut judged: Vec<hale_types::judgment::Judged> = judged_fr
-        .into_iter()
-        .chain(judged_oe.into_iter())
-        .chain(judged_ep.into_iter())
-        .chain(judged_bd.into_iter())
-        .collect();
-    judged.sort_by_key(|j| j.ordinal);
-    // Verdict parity, matched by claim name.
-    let old_verdicts: BTreeMap<&str, &hale_types::verdict::Verdict> =
-        outcomes
-            .iter()
-            .filter(|o| names.iter().any(|n| *n == o.name))
-            .map(|o| (o.name.as_str(), &o.result))
-            .collect();
-    let by_ordinal: BTreeMap<u32, &hale_model::ClaimRow> =
-        table.rows.iter().map(|r| (r.ordinal, r)).collect();
-    // Rows under the documented 5c divergence: their (new-only)
-    // diagnostics are excluded from the byte comparison too.
-    let mut carved_out: std::collections::BTreeSet<u32> =
-        std::collections::BTreeSet::new();
-    for j in &judged {
-        let row = by_ordinal[&j.ordinal];
-        let Some(old) = old_verdicts.get(row.name.as_str()) else {
-            return Err(format!(
-                "{}: claim `{}` judged but has no outcome",
-                origin, row.name
-            ));
-        };
-        // Documented divergence (5c round 2): the evaluator never
-        // sees unanalyzed bodies (module fns, on_failure hooks), so
-        // `require attributed` fail-opens to Holds where the model
-        // records an EFFECTS-hiding hole and the judgment refuses.
-        let attributed_hole_carveout = matches!(
-            row.law,
-            ClaimIr::RequireAttributed { .. }
-        ) && **old == hale_types::verdict::Verdict::Holds
-            && j.verdict == hale_types::verdict::Verdict::Uncertified
-            && model.holes.iter().any(|h| {
-                h.hides
-                    .intersects(hale_model::RelationSet::EFFECTS)
-            });
-        // Change-9 review divergence: a law over a group law
-        // SELECTION refused (unknown member, or empty without
-        // `may_be_empty`) is Invalid, where the evaluator held
-        // vacuously over the empty set. Selection rejects the
-        // program either way; what changes is that the artifact no
-        // longer records an unwitnessed `holds` about a domain the
-        // compiler refused.
-        // Keyed on the CARRIED selection status, like the engine
-        // itself — a member-count guess is what round 2 removed.
-        let refused_domain_carveout = j.verdict
-            == hale_types::verdict::Verdict::Invalid
-            && **old != hale_types::verdict::Verdict::Invalid
-            && table.group_selection.values().any(|st| !st.is_judgable());
-        if attributed_hole_carveout || refused_domain_carveout {
-            carved_out.insert(j.ordinal);
-        }
-        if **old != j.verdict
-            && !attributed_hole_carveout
-            && !refused_domain_carveout
-        {
-            return Err(format!(
-                "{}: claim `{}` verdict diverges: old {:?}, new {:?}",
-                origin, row.name, old, j.verdict
-            ));
-        }
-    }
-    // Diagnostic parity: the old diags belonging to the family
-    // (identified by the evaluator's own "claim `NAME`" spelling),
-    // in order, must equal the engine's diags in ordinal order.
-    let old_family: Vec<(String, hale_syntax::Span)> = old_diags
-        .iter()
-        .filter(|d| {
-            names
-                .iter()
-                .any(|n| d.message.contains(&format!("claim `{}`", n)))
-        })
-        .map(|d| (d.message.clone(), d.span))
-        .collect();
-    // The evaluator's stream: enumeration diagnostics first (the
-    // lowering preserves them as table ISSUES), then the dup
-    // pre-pass, then per-row validation+evaluation.
-    let issue_span = |pid: hale_model::ProvenanceId| {
-        match table.provenance.records.get(pid.index()) {
-            Some(hale_model::Provenance::Source { span, .. }) => {
-                hale_syntax::Span::new(
-                    span.0 as usize,
-                    span.1 as usize,
-                )
-            }
-            _ => hale_syntax::Span::new(0, 0),
-        }
-    };
-    let new_family: Vec<(String, hale_syntax::Span)> = table
-        .issues
-        .iter()
-        .filter(|i| {
-            names.iter().any(|n| {
-                i.message.contains(&format!("claim `{}`", n))
-            })
-        })
-        .map(|i| (i.message.clone(), issue_span(i.provenance)))
-        .chain(
-            pre_diags
-                .iter()
-                .chain(
-                    judged
-                        .iter()
-                        .filter(|j| !carved_out.contains(&j.ordinal))
-                        .flat_map(|j| j.diags.iter()),
-                )
-                .map(|d| (d.message.clone(), d.span)),
-        )
-        .collect();
-    if old_family != new_family {
-        let first = old_family
-            .iter()
-            .zip(new_family.iter())
-            .position(|(a, b)| a != b)
-            .unwrap_or(old_family.len().min(new_family.len()));
-        return Err(format!(
-            "{}: family diags diverge at {} (old {} / new {}):\n  \
-             old: {:?}\n  new: {:?}",
-            origin,
-            first,
-            old_family.len(),
-            new_family.len(),
-            old_family.get(first),
-            new_family.get(first),
-        ));
-    }
-    Ok(names.len())
-}
+// Change 10: the corpus differential that lived here compared this
+// family's verdicts against the legacy evaluator, claim by claim.
+// The evaluator is deleted, and its last word over the corpus is
+// committed in `artifact_law_projection`'s verdict snapshot — which
+// covers every family at once rather than this one alone. What
+// stays here is what the differential could never do: negative
+// controls that clear a relation and prove the verdict actually
+// derives from it.
 
-/// THE 5a gate: verdict + diagnostic parity over every corpus
-/// program that carries the family.
-#[test]
-fn reachability_judgment_matches_the_evaluator_over_the_corpus() {
-    let mut bad: Vec<String> = Vec::new();
-    let mut family_claims = 0usize;
-    for p in
-        hale_corpus::parseable(|s| hale_syntax::parse_source(s).is_ok())
-    {
-        let caught = std::panic::catch_unwind(
-            std::panic::AssertUnwindSafe(|| {
-                diff_one(&p.source, &p.origin)
-            }),
-        );
-        match caught {
-            Err(_) => bad.push(format!("{}: PANIC", p.origin)),
-            Ok(Err(e)) => bad.push(e),
-            Ok(Ok(n)) => family_claims += n,
-        }
-    }
-    assert!(
-        family_claims > 10,
-        "the corpus must exercise forbid-reaches ({} claims seen)",
-        family_claims
-    );
-    assert!(
-        bad.is_empty(),
-        "{} corpus programs diverge:\n{}",
-        bad.len(),
-        bad.join("\n\n")
-    );
-}
 
 /// Negative control: the engine READS the calls relation — clearing
 /// it flips a violated claim, proving the family's verdicts derive
@@ -360,15 +171,6 @@ main locus App {
 }
 fn main() { App { }; }
 "#;
-    let legacy = {
-        let program = hale_syntax::parse_source(src).expect("parse");
-        let bundle = bundle_of(src, &program);
-        let out = diff_one(src, "declaration-only free fn");
-        let _ = bundle;
-        let _ = program;
-        out
-    };
-    assert!(legacy.is_ok(), "old/new agree: {:?}", legacy);
     // …and the verdict is the evaluator's, not vacuous-Invalid.
     let program = hale_syntax::parse_source(src).expect("parse");
     let bundle = bundle_of(src, &program);
@@ -418,8 +220,6 @@ fn main() {
     println(Gate { }.probe(r, req));
 }
 "#;
-    let out = diff_one(src, "stdlib effect sink");
-    assert!(out.is_ok(), "old/new agree: {:?}", out);
     let program = hale_syntax::parse_source(src).expect("parse");
     let bundle = bundle_of(src, &program);
     let model = derive_application_model(&bundle);
@@ -500,8 +300,6 @@ main locus App {
 }
 fn main() { App { }; }
 "#;
-    let out = diff_one(src, "hole before crossing");
-    assert!(out.is_ok(), "old/new agree: {:?}", out);
     let program = hale_syntax::parse_source(src).expect("parse");
     let bundle = bundle_of(src, &program);
     let model = derive_application_model(&bundle);
@@ -575,8 +373,6 @@ main locus App {
 }
 fn main() { App { }; }
 "#;
-    let out = diff_one(src, "composed attribution");
-    assert!(out.is_ok(), "old/new agree: {:?}", out);
     let program = hale_syntax::parse_source(src).expect("parse");
     let bundle = bundle_of(src, &program);
     let model = derive_application_model(&bundle);
@@ -2090,8 +1886,6 @@ main locus App {
 }
 fn main() { App { }; }
 "#;
-    let out = diff_one(src, "computed publish first");
-    assert!(out.is_ok(), "old/new agree: {:?}", out);
     let program = hale_syntax::parse_source(src).expect("parse");
     let bundle = bundle_of(src, &program);
     let model = derive_application_model(&bundle);
@@ -2142,8 +1936,6 @@ main locus App {
 }
 fn main() { App { }; }
 "#;
-    let out = diff_one(src, "known violation first");
-    assert!(out.is_ok(), "old/new agree: {:?}", out);
     let program = hale_syntax::parse_source(src).expect("parse");
     let bundle = bundle_of(src, &program);
     let model = derive_application_model(&bundle);
@@ -2835,8 +2627,6 @@ main locus App {
 }
 fn main() { App { }; }
 "#;
-    let out = diff_one(src, "declaration-only bound root");
-    assert!(out.is_ok(), "old/new agree: {:?}", out);
     let program = hale_syntax::parse_source(src).expect("parse");
     let bundle = bundle_of(src, &program);
     let model = derive_application_model(&bundle);

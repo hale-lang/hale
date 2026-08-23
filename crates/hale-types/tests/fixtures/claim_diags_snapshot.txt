@@ -1,0 +1,352 @@
+--- crates/hale-cli/tests/fixtures/xseed-claims/app/main.hl ---
+Claim [204..212] group member `delta::*` names no import alias — the glob form expands `import "…" as delta`, which this bundle does not declare. Unknown names are errors, never empty sets
+Claim [183..215] group `delta_wing` resolves to no declarations. A claim quantifying over an empty group holds vacuously — if the group may legitimately be empty, say `may_be_empty`
+Claim [237..252] group member `gamma::Research` does not resolve — no imported declaration matches this path. Unknown names are errors, never empty sets
+Claim [216..255] group `gamma_wing` resolves to no declarations. A claim quantifying over an empty group holds vacuously — if the group may legitimately be empty, say `may_be_empty`
+--- crates/hale-cli/tests/fixtures/xseed-claims-cover-ok/app/main.hl ---
+Claim [534..535] claim `no_orphans`: `seed(t)` names no import alias with declared topics — the coverage domain would be empty, and a universal over an empty domain holds vacuously
+--- crates/hale-cli/tests/fixtures/xseed-claims-verbs/app/main.hl ---
+Claim [509..517] claim `wired`: topic reference `t::Tasks` does not resolve — no imported topic matches this path. Unknown names are errors, never empty sets
+Claim [559..567] claim `single`: topic reference `t::Tasks` does not resolve — no imported topic matches this path. Unknown names are errors, never empty sets
+Claim [615..616] claim `no_orphans`: `seed(t)` names no import alias with declared topics — the coverage domain would be empty, and a universal over an empty domain holds vacuously
+Claim [686..711] claim `data_iso` names effect class `knowledge(delta)`, which is never declared. Add `effect knowledge(delta);` at the top level.
+--- crates/hale-cli/tests/claims_artifact_unknowns.rs#0 ---
+Claim [360..363] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -> `Bridge::hop` -> `B::work`
+Claim [133..147] claim `iso`: the boundary into `b_side` is crossed by this call
+Claim [7..8] claim `iso`: the forbidden destination `B` is declared here
+--- crates/hale-cli/tests/claims_artifact_unknowns.rs#1 ---
+Claim [366..369] claim `iso` violated: `a_side` reaches `sinks` — witness: `A::go` -(dispatches Notifier.send)-> `Email::send`
+Claim [233..250] claim `iso`: the boundary into `sinks` is crossed by this dispatch through `Notifier`. A call on an interface reaches EVERY conforming locus, whatever this expression happens to construct — so the witness names one the claim forbids. Narrow the receiver's type, or exclude the conformer from the group
+Claim [54..59] claim `iso`: the forbidden destination `Email` is declared here
+--- crates/hale-cli/tests/claims_artifact_unknowns.rs#3 ---
+Claim [294..297] claim `iso` cannot be certified: `std::io::tcp::Stream::send` (reachable from `a_side`) publishes to a computed subject, which could route to any subscriber. An unresolvable edge fails closed
+--- crates/hale-cli/tests/fleet_cross_tier.rs#4 ---
+Claim [161..173] claim `no_llm` names effect class `llm`, which is never declared. Add `effect llm;` at the top level.
+--- crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#0 ---
+Claim [104..117] group member `MissingWorker` names no declared locus or fn. Unknown names are errors, never empty sets.
+Claim [87..120] group `probes` resolves to no declarations. A claim quantifying over an empty group holds vacuously — if the group may legitimately be empty, say `may_be_empty`
+--- crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#1 ---
+Claim [87..106] group `probes` resolves to no declarations. A claim quantifying over an empty group holds vacuously — if the group may legitimately be empty, say `may_be_empty`
+--- crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#3 ---
+Claim [104..117] group member `MissingWorker` names no declared locus or fn. Unknown names are errors, never empty sets.
+--- crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#4 ---
+Claim [193..206] group member `MissingWorker` names no declared locus or fn. Unknown names are errors, never empty sets.
+--- crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#5 ---
+Claim [201..207] group `probes` is declared more than once
+--- crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#6 ---
+Claim [345..356] group member `MissingGate` names no declared locus or fn. Unknown names are errors, never empty sets.
+--- crates/hale-cli/tests/model_cli.rs#2 ---
+Claim [37..41] group member `p::*` names no import alias — the glob form expands `import "…" as p`, which this bundle does not declare. Unknown names are errors, never empty sets
+Claim [23..44] group `kvs` resolves to no declarations. A claim quantifying over an empty group holds vacuously — if the group may legitimately be empty, say `may_be_empty`
+--- crates/hale-cli/tests/topology_artifact_contract.rs#1 ---
+Claim [255..260] claim `wired` violated: no member of `subs` subscribes `Tk`
+--- crates/hale-cli/tests/topology_artifact_contract.rs#3 ---
+Claim [75..80] hot-path budget exceeded: `boxed` declares `@budget(alloc_per_call = 0)` but the compiler counts 1 arena allocation(s) per call. For a zero-alloc hot path: hoist per-iteration allocations to reused fields, read with `recv_into` into a reused `std::bytes::BytesBuilder`, and keep locus instantiation out of the fn. If the allocation is intentional, drop `@budget` for `@unbounded fn`.
+Claim [103..113] counts against `boxed`'s alloc budget: a `P` instantiation
+--- crates/hale-cli/tests/topology_graph_cli.rs#18 ---
+Claim [192..195] claim `iso` violated: `a_side` reaches `b_side` — witness: `touchy` -> `leak`
+Claim [72..79] claim `iso`: the boundary into `b_side` is crossed by this call
+Claim [4..8] claim `iso`: the forbidden destination `leak` is declared here
+--- crates/hale-cli/tests/topology_graph_cli.rs#20 ---
+Claim [102..109] claim `bad`: `require attributed` takes a built-in class with countable DIRECT sites — `syscall`, `block`, `publish`, `time`, `entropy`, `env`, `alloc`, `secret_use`. `purpose` is not one of those: a user class would be trivially true, and `ffi` / `spawn` / `recursion` are structural properties with no site to attribute.
+--- crates/hale-cli/tests/topology_graph_cli.rs#22 ---
+Claim [235..238] claim `iso` is declared more than once — the name is the contract-of-record and must be unique
+--- crates/hale-cli/tests/topology_v2.rs#0 ---
+Claim [425..428] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::birth` -> `B::work`
+Claim [170..184] claim `iso`: the boundary into `b_side` is crossed by this call
+Claim [21..22] claim `iso`: the forbidden destination `B` is declared here
+--- crates/hale-types/tests/artifact_integrity.rs#1 ---
+Claim [358..361] claim `iso` cannot be certified: `Src::go` (reachable from `srcs`) calls through a function-typed parameter, whose target is not knowable statically. An unresolvable edge fails closed
+--- crates/hale-types/tests/artifact_law_projection.rs#0 ---
+Claim [245..248] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -> `quiet`
+Claim [124..132] claim `iso`: the boundary into `b_side` is crossed by this call
+Claim [18..23] claim `iso`: the forbidden destination `quiet` is declared here
+--- crates/hale-types/tests/artifact_law_projection.rs#5 ---
+Claim [55..58] hot-path budget exceeded: `hot` declares `@budget(alloc_per_call = 0)` but the compiler counts 1 arena allocation(s) per call. For a zero-alloc hot path: hoist per-iteration allocations to reused fields, read with `recv_into` into a reused `std::bytes::BytesBuilder`, and keep locus instantiation out of the fn. If the allocation is intentional, drop `@budget` for `@unbounded fn`.
+Claim [81..91] counts against `hot`'s alloc budget: a `P` instantiation
+--- crates/hale-types/tests/artifact_law_projection.rs#15 ---
+Claim [411..415] claim `iso`: phase `boot` names nothing in group `a_side` — no member locus declares it. A claim over an empty phase holds vacuously
+--- crates/hale-types/tests/budget_contract.rs#3 ---
+Claim [52..56] hot-path budget exceeded: `make` declares `@budget(alloc_per_call = 0)` but the compiler counts 1 arena allocation(s) per call. For a zero-alloc hot path: hoist per-iteration allocations to reused fields, read with `recv_into` into a reused `std::bytes::BytesBuilder`, and keep locus instantiation out of the fn. If the allocation is intentional, drop `@budget` for `@unbounded fn`.
+Claim [70..80] counts against `make`'s alloc budget: a `P` instantiation
+--- crates/hale-types/tests/budget_contract.rs#4 ---
+Claim [89..95] hot-path budget exceeded: `caller` declares `@budget(alloc_per_call = 0)` but the compiler counts 1 arena allocation(s) per call. For a zero-alloc hot path: hoist per-iteration allocations to reused fields, read with `recv_into` into a reused `std::bytes::BytesBuilder`, and keep locus instantiation out of the fn. If the allocation is intentional, drop `@budget` for `@unbounded fn`.
+Claim [44..54] counts against `caller`'s alloc budget: a `P` instantiation
+--- crates/hale-types/tests/budget_contract.rs#5 ---
+Claim [52..56] hot-path budget exceeded: `spin` declares `@budget(alloc_per_call = 4)` but the compiler counts an unbounded number of arena allocation(s) per call. Reduce per-call allocations (hoist to reused fields, use `recv_into`), raise the budget, or drop `@budget` for `@unbounded fn` if the allocation is intentional.
+Claim [115..125] counts against `spin`'s alloc budget: a `P` instantiation inside a loop — a fresh allocation every iteration
+--- crates/hale-types/tests/budget_contract.rs#6 ---
+Claim [32..36] hot-path budget exceeded: `pump` declares `@budget(alloc_per_call = 0)` but the compiler counts an unbounded number of arena allocation(s) per call. For a zero-alloc hot path: hoist per-iteration allocations to reused fields, read with `recv_into` into a reused `std::bytes::BytesBuilder`, and keep locus instantiation out of the fn. If the allocation is intentional, drop `@budget` for `@unbounded fn`.
+Claim [111..139] counts against `pump`'s alloc budget: `std::io::udp::recv` inside a loop allocates a fresh buffer every iteration — use `recv_into` with a reused `BytesBuilder`
+--- crates/hale-types/tests/budget_contract.rs#7 ---
+Claim [52..55] hot-path budget exceeded: `two` declares `@budget(alloc_per_call = 1)` but the compiler counts 2 arena allocation(s) per call. Reduce per-call allocations (hoist to reused fields, use `recv_into`), raise the budget, or drop `@budget` for `@unbounded fn` if the allocation is intentional.
+Claim [77..87] counts against `two`'s alloc budget: a `P` instantiation
+Claim [101..111] counts against `two`'s alloc budget: a `P` instantiation
+--- crates/hale-types/tests/claim_judgment_gating.rs#1 ---
+Claim [248..257] claim `isolation` violated: `src` reaches `dst` — witness: `A::go` -> `B::stop`
+Claim [124..137] claim `isolation`: the boundary into `dst` is crossed by this call
+Claim [7..8] claim `isolation`: the forbidden destination `B` is declared here
+--- crates/hale-types/tests/claim_lowering.rs#0 ---
+Claim [552..557] claim `iso`: `avoiding gates` overlaps `gates` — masking an endpoint makes the claim weaker than it reads (a masked target holds vacuously; a masked source drops roots). Make the gate disjoint from the endpoints
+Claim [552..557] claim `iso`: `avoiding gates` overlaps `wings` — masking an endpoint makes the claim weaker than it reads (a masked target holds vacuously; a masked source drops roots). Make the gate disjoint from the endpoints
+Claim [750..755] claim `vault` violated: a locus in `gates` is not `@sealed`, so its state is readable by anything holding it — Gate
+Claim [792..798] claim `tagged` violated: a fn performs `syscall` with no declared purpose — classify it (`@effects(is: {...})`) with a user effect class so the operation is attributable: App::run
+--- crates/hale-types/tests/claim_lowering.rs#1 ---
+Claim [104..109] claim `quiet` violated: counted 1 subscriber(s) (`Worker`) of `Evt`, claim requires == 0
+--- crates/hale-types/tests/claim_lowering.rs#2 ---
+Claim [37..44] unknown constitution `Missing` — nothing declares it
+--- crates/hale-types/tests/claims.rs#1 ---
+Claim [330..333] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -> `B::work`
+Claim [159..173] claim `iso`: the boundary into `b_side` is crossed by this call
+Claim [15..16] claim `iso`: the forbidden destination `B` is declared here
+--- crates/hale-types/tests/claims.rs#2 ---
+Claim [374..383] claim `read_only` violated: `quote_api` reaches `effects(money)` — witness: `Quote::handle` -> `quote_helper` -> `charge`
+Claim [156..165] claim `read_only`: the boundary into `effects(money)` is crossed by this call
+Claim [64..70] claim `read_only`: the forbidden destination `charge` is declared here
+--- crates/hale-types/tests/claims.rs#4 ---
+Claim [72..82] group member `DeltaTriag` names no declared locus or fn. Unknown names are errors, never empty sets. Did you mean `DeltaTriage`?
+Claim [51..85] group `delta_wing` resolves to no declarations. A claim quantifying over an empty group holds vacuously — if the group may legitimately be empty, say `may_be_empty`
+--- crates/hale-types/tests/claims.rs#5 ---
+Claim [53..66] group member `nosuch::Thing` does not resolve — no imported declaration matches this path. Unknown names are errors, never empty sets
+Claim [41..69] group `g` resolves to no declarations. A claim quantifying over an empty group holds vacuously — if the group may legitimately be empty, say `may_be_empty`
+--- crates/hale-types/tests/claims.rs#6 ---
+Claim [9..28] group `probes` resolves to no declarations. A claim quantifying over an empty group holds vacuously — if the group may legitimately be empty, say `may_be_empty`
+--- crates/hale-types/tests/claims.rs#8 ---
+Claim [174..180] claim `iso` names group `b_side`, which is never declared. Add `group b_side = { … };` at the top level.
+--- crates/hale-types/tests/claims.rs#9 ---
+Claim [194..208] claim `m` names effect class `monye`, which is never declared. Add `effect monye;` at the top level. Did you mean `money`?
+--- crates/hale-types/tests/claims.rs#10 ---
+Claim [257..260] claim `iso` is declared more than once — the name is the contract-of-record and must be unique
+Claim [192..195] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go`
+Claim [15..16] claim `iso`: the forbidden destination `A` is declared here
+Claim [257..260] claim `iso` violated: `b_side` reaches `a_side` — witness: `A::go`
+Claim [15..16] claim `iso`: the forbidden destination `A` is declared here
+--- crates/hale-types/tests/claims.rs#13 ---
+Claim [278..281] claim `iso` cannot be certified: `A::go` (reachable from `a_side`) calls through a function-typed parameter, whose target is not knowable statically. An unresolvable edge fails closed
+--- crates/hale-types/tests/claims_edges.rs#1 ---
+Claim [480..483] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -(publishes "T")-> `B::on_m`
+Claim [137..153] claim `iso`: the crossing publish happens here
+Claim [237..257] claim `iso`: delivered at this subscription
+Claim [180..181] claim `iso`: the forbidden destination `B` is declared here
+--- crates/hale-types/tests/claims_edges.rs#2 ---
+Claim [176..179] claim `iso` violated: `a_side` reaches `b_side` — witness: `X::go`
+Claim [15..16] claim `iso`: the forbidden destination `X` is declared here
+--- crates/hale-types/tests/claims_edges.rs#3 ---
+Claim [397..401] claim `g`: `avoiding gate` overlaps `b_side` — masking an endpoint makes the claim weaker than it reads (a masked target holds vacuously; a masked source drops roots). Make the gate disjoint from the endpoints
+--- crates/hale-types/tests/claims_edges.rs#4 ---
+Claim [642..650] claim `no_spend` violated: `api` reaches `effects(money)` — witness: `Api::handle` -(publishes "Charge")-> `Worker::on_cmd` -> `charge`
+Claim [473..488] claim `no_spend`: the boundary into `effects(money)` is crossed by this call
+Claim [64..70] claim `no_spend`: the forbidden destination `charge` is declared here
+--- crates/hale-types/tests/claims_edges.rs#6 ---
+Claim [532..533] claim `q` violated: `a_side` reaches `b_side` — witness: `A::tick` -(publishes "T")-> `B::on_m`
+Claim [139..155] claim `q`: the crossing publish happens here
+Claim [289..309] claim `q`: delivered at this subscription
+Claim [232..233] claim `q`: the forbidden destination `B` is declared here
+--- crates/hale-types/tests/claims_edges.rs#8 ---
+Claim [552..555] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -(publishes "T")-> `B::on_m`
+Claim [137..153] claim `iso`: the crossing publish happens here
+Claim [237..257] claim `iso`: delivered at this subscription
+Claim [180..181] claim `iso`: the forbidden destination `B` is declared here
+--- crates/hale-types/tests/claims_edges.rs#10 ---
+Claim [463..467] claim `gate` violated: un-granted edge `A::go` -(publishes "log.app")-> `B::on_log`. Granted: none. If this edge is intended, name it in the grant list — a grant is a reviewable line
+Claim [98..113] claim `gate`: the un-granted publish happens here
+Claim [197..238] claim `gate`: received here. Grant this edge with `publish log.app;` if it is intended
+--- crates/hale-types/tests/claims_edges.rs#11 ---
+Claim [673..676] claim `one` violated: heaviest path from `planners` carries 2 `llm` sites, limit 1 — path: `Planner::kick` -> `Worker::on_plan` -> `model_call`
+--- crates/hale-types/tests/claims_edges.rs#14 ---
+Claim [187..196] claim `w`: topic reference `nosuch::T` does not resolve — no imported topic matches this path. Unknown names are errors, never empty sets
+--- crates/hale-types/tests/claims_edges.rs#15 ---
+Claim [169..170] claim `c`: `seed(t)` names no import alias with declared topics — the coverage domain would be empty, and a universal over an empty domain holds vacuously
+--- crates/hale-types/tests/claims_edges.rs#19 ---
+Claim [427..430] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -> `Bridge::hop` -> `B::work`
+Claim [165..179] claim `iso`: the boundary into `b_side` is crossed by this call
+Claim [15..16] claim `iso`: the forbidden destination `B` is declared here
+--- crates/hale-types/tests/claims_edges.rs#21 ---
+Claim [393..401] claim `no_spend` violated: `a_side` reaches `effects(money)` — witness: `A::go` -> `Bridge::hop` -> `charge`
+Claim [166..175] claim `no_spend`: the boundary into `effects(money)` is crossed by this call
+Claim [64..70] claim `no_spend`: the forbidden destination `charge` is declared here
+--- crates/hale-types/tests/claims_edges.rs#22 ---
+Claim [411..415] claim `none` violated: heaviest path from `planners` carries 1 `llm` sites, limit 0 — path: `Planner::plan` -> `Bridge::hop` -> `ask`
+--- crates/hale-types/tests/claims_edges.rs#23 ---
+Claim [354..357] claim `iso` cannot be certified: `A::go` (reachable from `a_side`) calls `work` on a receiver the compiler cannot type, so the walk cannot follow the edge. An unresolvable edge fails closed — bind the receiver to a typed field or local so the call resolves
+--- crates/hale-types/tests/claims_edges.rs#24 ---
+Claim [542..548] claim `no_sms` violated: `callers` reaches `texting` — witness: `A::go` -> `notify` -(dispatches Notifier.send)-> `Sms::send`
+Claim [380..389] claim `no_sms`: the boundary into `texting` is crossed by this dispatch through `Notifier`. A call on an interface reaches EVERY conforming locus, whatever this expression happens to construct — so the witness names one the claim forbids. Narrow the receiver's type, or exclude the conformer from the group
+Claim [146..149] claim `no_sms`: the forbidden destination `Sms` is declared here
+--- crates/hale-types/tests/claims_edges.rs#25 ---
+Claim [295..298] claim `iso` violated: `srcs` reaches `sinks` — witness: `Src::go` -> `reach` -> `Sink::take`
+Claim [154..162] claim `iso`: the boundary into `sinks` is crossed by this call
+Claim [7..11] claim `iso`: the forbidden destination `Sink` is declared here
+--- crates/hale-types/tests/claims_edges.rs#26 ---
+Claim [723..731] claim `boundary` violated: un-granted edge `Ops::act` -> `Core::poked` — call edges are not grantable; the boundary between `ops` and `core` must be a bus edge named in the grant list
+Claim [340..349] claim `boundary`: this call crosses the boundary. A call cannot be granted — route it through a topic named in the grant list, or move the callee out of `core`
+Claim [723..731] claim `boundary` violated: un-granted edge `Ops::act` -(publishes "Sneaky")-> `Core::on_sneaky`. Granted: `Allowed`. If this edge is intended, name it in the grant list — a grant is a reviewable line
+Claim [293..305] claim `boundary`: the un-granted publish happens here
+Claim [442..472] claim `boundary`: received here. Grant this edge with `publish Sneaky;` if it is intended
+--- crates/hale-types/tests/claims_phases.rs#1 ---
+Claim [330..334] claim `gate` violated: un-granted edge `A::go` -> `B::work` — call edges are not grantable; the boundary between `a_side` and `b_side` must be a bus edge named in the grant list
+Claim [159..173] claim `gate`: this call crosses the boundary. A call cannot be granted — route it through a topic named in the grant list, or move the callee out of `b_side`
+--- crates/hale-types/tests/claims_phases.rs#6 ---
+Claim [601..603] claim `sw` violated: counted 2 publisher(s) (`P1`, `P2`) of `Tasks`, claim requires == 1
+--- crates/hale-types/tests/constitutions.rs#1 ---
+Claim [52..59] claim `tenant_iso` names group `billing`, which is never declared. Add `group billing = { … };` at the top level.
+Claim [61..69] claim `tenant_iso` names group `research`, which is never declared. Add `group research = { … };` at the top level.
+--- crates/hale-types/tests/constitutions.rs#2 ---
+Claim [48..55] claim `tenant_iso` names group `billing`, which is never declared. Add `group billing = { … };` at the top level.
+Claim [57..65] claim `tenant_iso` names group `research`, which is never declared. Add `group research = { … };` at the top level.
+Claim [133..140] claim `quiet` names topic `Settled`, which is never declared.
+--- crates/hale-types/tests/constitutions.rs#3 ---
+Claim [91..95] claim `rule` is declared by two constitutions, `A` and `B`. Composition is union, so a name must mean one thing across the whole adopted set
+Claim [47..54] claim `rule` names topic `Settled`, which is never declared.
+--- crates/hale-types/tests/constitutions.rs#4 ---
+Claim [18..22] claim `rule` is declared in this main AND adopted from constitution `A`. A local clause cannot replace an adopted one — that is how a law gets quietly weakened. Rename one; a stricter variant is a separate named claim
+Claim [201..208] claim `rule` names topic `Settled`, which is never declared.
+--- crates/hale-types/tests/constitutions.rs#5 ---
+Claim [52..59] claim `shared` names topic `Settled`, which is never declared.
+Claim [126..133] claim `l` names topic `Settled`, which is never declared.
+Claim [191..198] claim `r` names group `billing`, which is never declared. Add `group billing = { … };` at the top level.
+Claim [200..208] claim `r` names group `research`, which is never declared. Add `group research = { … };` at the top level.
+--- crates/hale-types/tests/constitutions.rs#6 ---
+Claim [96..97] constitution `A` extends itself, directly or through A -> B
+Claim [129..136] claim `two` names topic `Settled`, which is never declared.
+Claim [56..63] claim `one` names topic `Settled`, which is never declared.
+--- crates/hale-types/tests/constitutions.rs#7 ---
+Claim [171..175] unknown constitution `Coer` — nothing declares it. Did you mean `Core`?
+--- crates/hale-types/tests/constitutions.rs#8 ---
+Claim [79..83] constitution `Core` is declared twice — the second would silently shadow the first, and a claimset cited by name must resolve to one thing
+Claim [115..122] claim `two` names topic `Settled`, which is never declared.
+--- crates/hale-types/tests/constitutions.rs#10 ---
+Claim [70..74] constitution `A` declares claim `rule` twice. The second would silently replace nothing and go unchecked — claim names are the contract of record, so one name means one clause
+Claim [51..58] claim `rule` names topic `Settled`, which is never declared.
+--- crates/hale-types/tests/constitutions.rs#12 ---
+Claim [47..54] claim `r` names topic `Settled`, which is never declared.
+--- crates/hale-types/tests/constitutions.rs#13 ---
+Claim [47..54] claim `r` names topic `Settled`, which is never declared.
+Claim [123..130] claim `d` names topic `Settled`, which is never declared.
+--- crates/hale-types/tests/constitutions.rs#14 ---
+Claim [47..54] claim `r` names topic `Settled`, which is never declared.
+--- crates/hale-types/tests/constitutions.rs#16 ---
+Claim [47..54] claim `r` names topic `Settled`, which is never declared.
+--- crates/hale-types/tests/constitutions.rs#18 ---
+Claim [47..54] claim `r` names topic `Settled`, which is never declared.
+--- crates/hale-types/tests/constitutions.rs#19 ---
+Claim [26..33] unknown constitution `Missing` — nothing declares it
+Claim [62..69] claim `d` names topic `Settled`, which is never declared.
+--- crates/hale-types/tests/depends_set.rs#0 ---
+Claim [376..383] declared dependency set is invalid: `Carry` names `DECLARED`, which is not a topic or subject in this application — so the set constrains nothing and cannot be judged. Name a declared topic, or remove the entry.
+--- crates/hale-types/tests/frontier_items.rs#0 ---
+Claim [394..400] declared causal set violated: `Api::handle` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Api::handle` -> subject `Orders` -> `Audit::on_order`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
+--- crates/hale-types/tests/interface_dispatch.rs#4 ---
+Claim [478..481] claim `iso` violated: `a_side` reaches `sinks` — witness: `A::go` -(dispatches Notifier.send)-> `Email::send`
+Claim [289..306] claim `iso`: the boundary into `sinks` is crossed by this dispatch through `Notifier`. A call on an interface reaches EVERY conforming locus, whatever this expression happens to construct — so the witness names one the claim forbids. Narrow the receiver's type, or exclude the conformer from the group
+Claim [70..75] claim `iso`: the forbidden destination `Email` is declared here
+--- crates/hale-types/tests/interface_dispatch.rs#5 ---
+Claim [551..554] claim `iso` cannot be certified: `std::io::tcp::Stream::send` (reachable from `a_side`) publishes to a computed subject, which could route to any subscriber. An unresolvable edge fails closed
+--- crates/hale-types/tests/interface_dispatch.rs#10 ---
+Claim [688..696] claim `one_call` violated: heaviest path from `planners` carries 2 `llm` sites, limit 1 — path: `Planner::plan` -> `Deep::ask` -> `model_call`
+--- crates/hale-types/tests/interface_dispatch.rs#11 ---
+Claim [116..120] hot-path budget exceeded: `zero` declares `@budget(alloc_per_call = 0)` but the compiler counts an unbounded number of arena allocation(s) per call. For a zero-alloc hot path: hoist per-iteration allocations to reused fields, read with `recv_into` into a reused `std::bytes::BytesBuilder`, and keep locus instantiation out of the fn. If the allocation is intentional, drop `@budget` for `@unbounded fn`.
+Claim [151..162] counts against `zero`'s alloc budget: an array literal
+Claim [152..161] counts against `zero`'s alloc budget: a `Maker` instantiation
+Claim [176..189] counts against `zero`'s alloc budget: `make` is a method call on a receiver the compiler cannot type — its target, and so its allocation count, is not knowable here
+--- crates/hale-types/tests/interface_dispatch.rs#12 ---
+Claim [158..162] hot-path budget exceeded: `zero` declares `@budget(alloc_per_call = 0)` but the compiler counts 1 arena allocation(s) per call. For a zero-alloc hot path: hoist per-iteration allocations to reused fields, read with `recv_into` into a reused `std::bytes::BytesBuilder`, and keep locus instantiation out of the fn. If the allocation is intentional, drop `@budget` for `@unbounded fn`.
+Claim [110..120] counts against `zero`'s alloc budget: a `P` instantiation
+--- crates/hale-types/tests/judgment_causes.rs#1 ---
+Claim [314..318] declared causal set violated: `Source::fire` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Source::fire` -> subject `Orders` -> `Sink::on_order`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
+--- crates/hale-types/tests/judgment_causes.rs#2 ---
+Claim [282..286] declared causal set violated: `Source::fire` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Source::fire` -> subject `T` -> `Sink::on_t`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
+--- crates/hale-types/tests/judgment_causes.rs#4 ---
+Claim [434..438] declared causal set violated: `Source::fire` can transitively cause syscall, zeta, alpha through the bus, which its `@effects(causes: …)` does not declare. Path: `Source::fire` -> subject `T` -> `Sink::on_t`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
+--- crates/hale-types/tests/judgment_causes.rs#5 ---
+Claim [303..307] declared causal set violated: `Source::fire` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Source::fire` -> subject `T` -> `Sink::on_t`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
+--- crates/hale-types/tests/judgment_causes.rs#6 ---
+Claim [484..488] declared causal set violated: `Source::fire` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Source::fire` -> subject `First` -> `Relay::on_first`; `Source::fire` -> subject `Second` -> `Deep::on_second`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
+--- crates/hale-types/tests/judgment_causes.rs#7 ---
+Claim [318..322] declared causal set violated: `Source::fire` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Source::fire` -> subject `Created` -> `Audit::on_any`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
+--- crates/hale-types/tests/judgment_causes.rs#9 ---
+Claim [421..425] declared causal set violated: `Source::fire` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Source::fire` -> subject `T` -> `Sink::on_t`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
+--- crates/hale-types/tests/judgment_causes.rs#12 ---
+Claim [301..305] declared causal set violated: `Source::fire` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Source::fire` -> subject `T` -> `Sink::on_t`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
+--- crates/hale-types/tests/judgment_causes.rs#13 ---
+Claim [301..305] declared causal set violated: `Source::fire` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Source::fire` -> subject `T` -> `Sink::on_t`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
+--- crates/hale-types/tests/judgment_causes.rs#15 ---
+Claim [301..305] declared causal set violated: `Source::fire` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Source::fire` -> subject `T` -> `Sink::on_t`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
+--- crates/hale-types/tests/judgment_causes.rs#18 ---
+Claim [296..300] declared causal set violated: `Source::fire` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Source::fire` -> subject `T` -> `Sink::on_t`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
+--- crates/hale-types/tests/judgment_certificates.rs#4 ---
+Claim [55..58] hot-path budget exceeded: `hot` declares `@budget(alloc_per_call = 0)` but the compiler counts 1 arena allocation(s) per call. For a zero-alloc hot path: hoist per-iteration allocations to reused fields, read with `recv_into` into a reused `std::bytes::BytesBuilder`, and keep locus instantiation out of the fn. If the allocation is intentional, drop `@budget` for `@unbounded fn`.
+Claim [84..94] counts against `hot`'s alloc budget: a `T` instantiation
+--- crates/hale-types/tests/judgment_certificates.rs#16 ---
+Claim [37..45] `transfer` budgets effect class `monye`, which is never declared. Add `effect monye;` at the top level. Did you mean `money`?
+--- crates/hale-types/tests/judgment_depends.rs#0 ---
+Claim [305..312] declared dependency set is invalid: `Carry` names `DECLARED`, which is not a topic or subject in this application — so the set constrains nothing and cannot be judged. Name a declared topic, or remove the entry.
+--- crates/hale-types/tests/judgment_reachability.rs#0 ---
+Claim [228..231] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -> `leak`
+Claim [72..79] claim `iso`: the boundary into `b_side` is crossed by this call
+Claim [88..92] claim `iso`: the forbidden destination `leak` is declared here
+--- crates/hale-types/tests/judgment_reachability.rs#1 ---
+Claim [245..248] claim `iso` cannot be certified: `A::go` (reachable from `a_side`) calls through a function-typed parameter, whose target is not knowable statically. An unresolvable edge fails closed
+--- crates/hale-types/tests/judgment_reachability.rs#2 ---
+Claim [190..193] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -> `sink`
+Claim [72..78] claim `iso`: the boundary into `b_side` is crossed by this call
+Claim [4..8] claim `iso`: the forbidden destination `sink` is declared here
+--- crates/hale-types/tests/judgment_reachability.rs#3 ---
+Claim [431..435] claim `pure` violated: `gates` reaches `effects(alloc)` — witness: `Gate::probe` -> `std::http::Router::dispatch`
+Claim [324..339] claim `pure`: the boundary into `effects(alloc)` is crossed by this call
+--- crates/hale-types/tests/judgment_reachability.rs#4 ---
+Claim [440..448] claim `boundary` violated: un-granted edge `Ops::act` -(publishes "Sneaky")-> `Core::on_sneaky`. Granted: none. If this edge is intended, name it in the grant list — a grant is a reviewable line
+Claim [162..180] claim `boundary`: the un-granted publish happens here
+Claim [235..265] claim `boundary`: received here. Grant this edge with `publish Sneaky;` if it is intended
+--- crates/hale-types/tests/judgment_reachability.rs#5 ---
+Claim [282..290] claim `boundary` cannot be certified: `A::go` calls through a function-typed parameter, whose target is not knowable statically. An unresolvable edge fails closed
+--- crates/hale-types/tests/judgment_reachability.rs#7 ---
+Claim [163..169] claim `tagged` violated: a fn performs `alloc` with no declared purpose — classify it (`@effects(is: {...})`) with a user effect class so the operation is attributable: main
+--- crates/hale-types/tests/judgment_reachability.rs#8 ---
+Claim [253..256] claim `cap` violated: heaviest path from `gates` carries 2 `money` sites, limit 1 — path: `A::go` -> `spend`
+--- crates/hale-types/tests/judgment_reachability.rs#11 ---
+Claim [228..231] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -> `leak`
+Claim [72..79] claim `iso`: the boundary into `b_side` is crossed by this call
+Claim [88..92] claim `iso`: the forbidden destination `leak` is declared here
+--- crates/hale-types/tests/judgment_reachability.rs#13 ---
+Claim [209..213] claim `pure` violated: `gates` reaches `effects(alloc)` — witness: `Gate::probe` -> `std::http::Router::dispatch`
+Claim [102..117] claim `pure`: the boundary into `effects(alloc)` is crossed by this call
+--- crates/hale-types/tests/judgment_reachability.rs#20 ---
+Claim [409..412] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -(publishes "Sig")-> `B::on_sig`
+Claim [156..171] claim `iso`: the crossing publish happens here
+Claim [223..247] claim `iso`: delivered at this subscription
+Claim [182..183] claim `iso`: the forbidden destination `B` is declared here
+--- crates/hale-types/tests/judgment_reachability.rs#38 ---
+Claim [172..178] claim `tagged` uncertified: a fn makes an indirect or opaque call whose target this check cannot resolve, and names no purpose of its own — so whether a `syscall` boundary is crossed there is unknown. Classify the caller (`@effects(is: {...})`) or bind the callee so it resolves: Sup::on_failure(Violation)
+--- crates/hale-types/tests/judgment_reachability.rs#39 ---
+Claim [358..365] claim `someone` violated: no member of `pubs` subscribes `T`
+--- crates/hale-types/tests/judgment_reachability.rs#41 ---
+Claim [189..191] claim `covered`: `seed(kv)` names no import alias with declared topics — the coverage domain would be empty, and a universal over an empty domain holds vacuously
+--- crates/hale-types/tests/judgment_reachability.rs#48 ---
+Claim [244..247] claim `cap` violated: heaviest path from `roots` carries 1 `money` sites, limit 0 — path: `A::go` -> `charge`
+--- crates/hale-types/tests/library_claims.rs#0 ---
+Claim [96..173] a top-level `claims { }` block is the LIBRARY tier — a seed swearing about itself and its own boundary. This seed declares `main locus`, the closed-world gate: state world law inside it
+--- crates/hale-types/tests/library_claims.rs#1 ---
+Claim [434..440] claim `single` violated: counted 2 subscriber(s) (`A`, `B`) of `T`, claim requires <= 1
+--- crates/hale-types/tests/model_provenance.rs#1 ---
+Claim [480..483] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -(publishes "T")-> `B::on_m`
+Claim [137..153] claim `iso`: the crossing publish happens here
+Claim [237..257] claim `iso`: delivered at this subscription
+Claim [180..181] claim `iso`: the forbidden destination `B` is declared here
+--- crates/hale-types/tests/model_provenance.rs#2 ---
+Claim [654..657] claim `iso` violated: `gates` reaches `handlers` — witness: `Gate::probe` -> `std::http::Router::dispatch` -> `__http_run_chain` -(dispatches std::http::RouteHandler.handle)-> `Hello::handle`
+Claim [15..20] claim `iso`: the forbidden destination `Hello` is declared here
+--- crates/hale-types/tests/model_provenance.rs#3 ---
+Claim [422..427] claim `iso`: phase `PHASE` names nothing in group `a_side` — no member locus declares it. A claim over an empty phase holds vacuously
+--- crates/hale-types/tests/quantitative_budgets.rs#1 ---
+Claim [170..172] budget exceeded: `a_` declares `@budget(stack_bytes = 48)` but the compiler measures 160 bytes of stack. Frame sizes are estimated from declared shapes and over-approximate; a recursive path is unbounded (pair with `@no_recursion`).
+--- crates/hale-types/tests/quantitative_budgets.rs#2 ---
+Claim [152..157] budget exceeded: `entry` declares `@budget(stack_bytes = 65536)` but the compiler measures an unbounded number of bytes of stack. Frame sizes are estimated from declared shapes and over-approximate; a recursive path is unbounded (pair with `@no_recursion`).
+--- crates/hale-types/tests/quantitative_budgets.rs#3 ---
+Claim [274..285] budget exceeded: `H::reply_twice` declares `@budget(publish = 1)` but the compiler measures 2 publish(es). A contributor inside a loop is unbounded per call.
+--- crates/hale-types/tests/quantitative_budgets.rs#4 ---
+Claim [167..172] budget exceeded: `H::spray` declares `@budget(publish = 4)` but the compiler measures an unbounded number of publish(es). A contributor inside a loop is unbounded per call.
+--- crates/hale-types/tests/quantitative_budgets.rs#5 ---
+Claim [379..383] budget exceeded: `P::emit` declares `@budget(fanout = 2)` but the compiler measures 3 subscriber delivery/deliveries. Fan-out counts transitive subscriber deliveries — a publish to a many-subscriber subject amplifies.
+--- crates/hale-types/tests/quantitative_budgets.rs#6 ---
+Claim [152..160] budget exceeded: `too_many` declares `@budget(block_points = 1)` but the compiler measures 2 blocking operation(s). A contributor inside a loop is unbounded per call.

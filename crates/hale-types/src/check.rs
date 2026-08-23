@@ -5876,7 +5876,7 @@ impl<'a> Checker<'a> {
             TopDecl::Group(_) => {
                 // GH #382: claim vocabulary. Membership resolution
                 // (unknown name = error, vacuity) is a bundle-level
-                // pass — `claims::claims_diags` — because members
+                // pass — the law judgment — because members
                 // may name imported decls only the merged bundle
                 // can see. Nothing per-decl to check here.
             }
@@ -8559,7 +8559,7 @@ impl<'a> Checker<'a> {
             }
             LocusMember::Claims(_) => {
                 // GH #382: claims are evaluated by the dedicated
-                // bundle-level pass (`claims::claims_diags`) — they
+                // bundle-level law judgment — they
                 // quantify over the merged bundle, not this locus.
                 // The parser already enforces "main-only".
             }
