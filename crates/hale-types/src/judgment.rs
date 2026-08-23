@@ -4452,6 +4452,7 @@ pub fn claim_law_diags(bundle: &crate::symbol::Bundle<'_>) -> Vec<Diag> {
                 | hale_model::JudgmentFamily::Boundary
                 | hale_model::JudgmentFamily::Endpoint
                 | hale_model::JudgmentFamily::Bound
+                | hale_model::JudgmentFamily::Causes
         ) {
             continue;
         }
@@ -4476,18 +4477,26 @@ pub fn claim_law_diags(bundle: &crate::symbol::Bundle<'_>) -> Vec<Diag> {
 /// judge — a `claims { }` block (world tier or library tier) or a
 /// `constitution` to adopt one from?
 ///
-/// Annotations are deliberately not a claim surface here: their
-/// rows are the certificate family, whose diagnostics belong to the
-/// effects engine (see [`claim_law_diags`]).
+/// …plus `@effects(causes: …)`, which is annotation-carried but
+/// judged here since Change 5f. Other annotations are deliberately
+/// NOT a claim surface: their rows are the certificate family,
+/// whose diagnostics belong to the effects engine.
 fn has_claim_surface(bundle: &crate::symbol::Bundle<'_>) -> bool {
-    use hale_syntax::ast::{LocusMember, TopDecl};
+    use hale_syntax::ast::{EffectAssert, FnDecl, LocusMember, TopDecl};
+    fn causes(fd: &FnDecl) -> bool {
+        fd.effects
+            .iter()
+            .any(|a| matches!(a, EffectAssert::Causes(_)))
+    }
     fn walk(items: &[TopDecl]) -> bool {
         items.iter().any(|item| match item {
             TopDecl::Claims(_) | TopDecl::Constitution(_) => true,
-            TopDecl::Locus(l) => l
-                .members
-                .iter()
-                .any(|m| matches!(m, LocusMember::Claims(_))),
+            TopDecl::Fn(f) => causes(f),
+            TopDecl::Locus(l) => l.members.iter().any(|m| match m {
+                LocusMember::Claims(_) => true,
+                LocusMember::Fn(f) => causes(f),
+                _ => false,
+            }),
             TopDecl::Module(m) => walk(&m.items),
             _ => false,
         })

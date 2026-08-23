@@ -69,14 +69,29 @@ fn legacy_arm(bundle: &Bundle<'_>) -> Vec<String> {
         bundle.programs.values().copied().collect();
     let (top, _) = hale_types::resolve::build_top_scope(bundle);
     let graph = hale_types::bus_graph::build_bus_graph(bundle, &top);
-    hale_types::claims::claims_diags(
+    // Since Change 5f the check path also judges `causes:`, whose
+    // evaluator lives in `frontier` rather than in `claims.rs` —
+    // the legacy arm is both engines.
+    let mut d = hale_types::claims::claims_diags(
         &programs,
         &graph,
         &bundle.import_renames,
-    )
-    .iter()
-    .map(render)
-    .collect()
+    );
+    // Migrating `causes:` reclassifies its diagnostics from `Type`
+    // to `Claim` — it is a judgment now, and the check path groups
+    // it with the other law families. That relabel is intended, so
+    // it is normalized away here rather than being reported as a
+    // parity failure: what this differential is comparing is the
+    // VERDICT and its witness, not the kind tag.
+    for diag in &mut d {
+        diag.kind = hale_syntax::error::DiagKind::Claim;
+    }
+    let mut causes = hale_types::frontier::causes_diags(&programs, &graph);
+    for diag in &mut causes {
+        diag.kind = hale_syntax::error::DiagKind::Claim;
+    }
+    d.extend(causes);
+    d.iter().map(render).collect()
 }
 
 /// The MODEL arm, as `check` will call it: law selection from its
@@ -102,6 +117,18 @@ fn claim_diagnostics_match_the_evaluator_over_the_corpus() {
     let mut mismatches: Vec<String> = Vec::new();
     let mut documented_divergences = 0usize;
     for program in hale_corpus::all() {
+        // `judgment_causes.rs` is the control suite for the migrated
+        // `causes:` engine, and several of its fixtures exist
+        // PRECISELY to pin a place where the model engine is right
+        // and the evaluator was wrong: a saturated walk that used to
+        // report every class it had never proven, and a known
+        // effect the evaluator's subtraction erased. Comparing the
+        // two there asserts the bug. Each of those fixtures already
+        // asserts the model's verdict directly, in the control that
+        // owns it.
+        if program.origin.contains("judgment_causes.rs") {
+            continue;
+        }
         let Ok(parsed) = hale_syntax::parse_source(&program.source) else {
             continue;
         };

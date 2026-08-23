@@ -1023,6 +1023,9 @@ pub fn judge_all(
     ) {
         judged.insert(j.ordinal, j);
     }
+    for j in crate::judgment::judge_causes(table, model, source_bases) {
+        judged.insert(j.ordinal, j);
+    }
     (pre, judged)
 }
 

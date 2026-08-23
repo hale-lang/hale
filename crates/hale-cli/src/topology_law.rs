@@ -2214,8 +2214,8 @@ pub fn family_of(law: &Law) -> &'static str {
         | Law::EffectPublishSet { .. }
         | Law::NoPanic { .. }
         | Law::PhaseEffects { .. } => "certificate",
-        Law::EffectCauses { .. }
-        | Law::DependsSet { .. }
+        Law::EffectCauses { .. } => "causes",
+        Law::DependsSet { .. }
         | Law::AllocBudget { .. }
         | Law::QuantBudget { .. } => "unmigrated",
     }
@@ -2472,6 +2472,7 @@ pub fn validate_law_account(
         "endpoint",
         "bound",
         "certificate",
+        "causes",
         "unmigrated",
     ];
     const VERDICTS: &[&str] =
@@ -2540,7 +2541,9 @@ pub fn validate_law_account(
         .map_err(|e| format!("{}: {}", label, e))?;
     let origin_ok = |origin: &str, family: &str| -> bool {
         match family {
-            "certificate" | "unmigrated" => origin == "annotation",
+            "certificate" | "causes" | "unmigrated" => {
+                origin == "annotation"
+            }
             _ => {
                 origin == "main"
                     || origin == "library"
@@ -2998,7 +3001,9 @@ pub fn validate_law_account(
         // their imported old-engine verdict must be keyed to the
         // exact law by a `law.legacy` report entry whose
         // fingerprint re-renders from the typed operands.
-        if let Some(form) = expected_legacy_form(&decoded) {
+        if let Some(form) = expected_legacy_form(&decoded)
+            .filter(|_| row["family"] == "unmigrated")
+        {
             // (Class validity is enforced above: static_invalid
             // forces the verdict to exactly `invalid`.)
             if verdict == "holds" || verdict == "violated" {

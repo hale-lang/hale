@@ -131,6 +131,13 @@ use crate::symbol::Bundle;
 // HASHED model half — an explicitly versioned shape transition.
 // Shape hashes change for every bus-carrying program; recorded
 // baselines and `.halerec` admissions must be re-recorded once.
+// 1.14: `causes:` is a judged family (GH #476 Change 5f), not an
+// unmigrated row importing an outside verdict. Its rows now carry
+// `"family": "causes"` and their own rendered `form`, and they no
+// longer appear in `law.legacy` — which is why this is a version
+// transition and not an additive field: a 1.13 consumer looking
+// for a legacy entry to justify a causes row finds none.
+//
 // 1.13: `relations.calls_via_stdlib` is INTERPRETED by the model's
 // contraction, not by the pre-model walk it used to reproduce.
 //
@@ -149,7 +156,7 @@ use crate::symbol::Bundle;
 // stdlib re-emerges into user code only from inside its own loops,
 // which sets the bit either way — so this bumps the schema without
 // moving a single committed baseline hash.
-pub const TOPOLOGY_SCHEMA: &str = "1.13";
+pub const TOPOLOGY_SCHEMA: &str = "1.14";
 
 /// GH #408 Phase 0: what the rows MEAN, as distinct from their shape.
 ///
@@ -1120,6 +1127,12 @@ pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
     {
         let mut entries: Vec<String> = Vec::new();
         for row in &law_table.rows {
+            // A MIGRATED family renders a form (the row states it,
+            // and admission re-renders it) but imports no outside
+            // verdict, so it claims no entry here.
+            if row.family() != hale_model::JudgmentFamily::Unmigrated {
+                continue;
+            }
             let Some(form) = row.legacy_form() else { continue };
             let Some(vd) = legacy_unmigrated.get(&row.ordinal)
             else {
