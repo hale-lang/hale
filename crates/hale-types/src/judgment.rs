@@ -4495,23 +4495,167 @@ fn has_claim_surface(bundle: &crate::symbol::Bundle<'_>) -> bool {
     bundle.programs.values().any(|p| walk(&p.items))
 }
 
+
+// ================= possible delivery (shared) =====================
+
+/// Whether a publish to one endpoint can be DELIVERED to one
+/// subscription, and whether the model is sure.
+///
+/// The join is the model's typed wire identity — `SubjectId` — not
+/// a rendered spelling. `topic Orders { subject: "orders"; }`
+/// published by name and `subscribe "orders"` by literal are the
+/// SAME address and the runtime delivers between them; comparing
+/// display text sees two unrelated strings and certifies the edge
+/// away (GH #476 Change 5f review). `declared_topic` is a link to
+/// the declaration, never the delivery identity.
+///
+/// Wildcards widen it: a subscription whose pattern contains `**`
+/// covers every concrete subject it matches. Key filters are
+/// deliberately NOT consulted — a key predicate can only ever
+/// REMOVE deliveries, so ignoring it over-approximates the reach,
+/// which is the sound direction for any law that asks what a
+/// publish can cause.
+pub fn possibly_delivers(
+    e: &hale_model::Entities,
+    published: hale_model::SubjectId,
+    sub: &hale_model::Subscribe,
+) -> bool {
+    if sub.subject == published {
+        return true;
+    }
+    let pat = e.subjects[sub.subject.index()].pattern.as_str();
+    let wire = e.subjects[published.index()].pattern.as_str();
+    pat.contains("**") && crate::wildcard_match(pat, wire)
+}
+
+/// A class name's ATOMS, with the language's built-in folding
+/// applied: `ffi` is the `syscall` bit (an FFI call is a syscall as
+/// far as every contract is concerned), `spawn` and `recursion` own
+/// no effect bit at all, a composed class means its expansion, and
+/// a cyclic one means nothing. One helper, because a second reading
+/// of "what does this class name mean" is how a contract starts
+/// certifying the wrong set (review: `@effects(causes: {ffi})` was
+/// rejected against an actual set that spells the same bit
+/// `syscall`).
+pub fn effect_class_atoms(
+    e: &hale_model::Entities,
+    name: &str,
+) -> BTreeSet<String> {
+    fn builtin_atom(n: &str) -> Option<&'static str> {
+        Some(match n {
+            "syscall" | "ffi" => "syscall",
+            "block" => "block",
+            "publish" => "publish",
+            "time" => "time",
+            "entropy" => "entropy",
+            "env" => "env",
+            "alloc" => "alloc",
+            "secret_use" => "secret_use",
+            // Own no bit: a contract naming them constrains nothing.
+            "spawn" | "recursion" => return None,
+            _ => return None,
+        })
+    }
+    match e.effect_classes.iter().find(|c| c.name == name) {
+        Some(c) => match &c.definition {
+            hale_model::EffectClassDefinition::Composed { atoms } => {
+                atoms
+                    .iter()
+                    .flat_map(|a| effect_class_atoms(e, a))
+                    .collect()
+            }
+            hale_model::EffectClassDefinition::Atomic => {
+                match builtin_atom(name) {
+                    Some(b) => std::iter::once(b.to_string()).collect(),
+                    None => std::iter::once(name.to_string()).collect(),
+                }
+            }
+            hale_model::EffectClassDefinition::InvalidCycle => {
+                BTreeSet::new()
+            }
+        },
+        None => match builtin_atom(name) {
+            Some(b) => std::iter::once(b.to_string()).collect(),
+            None if name == "spawn" || name == "recursion" => {
+                BTreeSet::new()
+            }
+            // A bare reference to an undeclared user class: its own
+            // atom. (The declaration itself is diagnosed elsewhere.)
+            None => std::iter::once(name.to_string()).collect(),
+        },
+    }
+}
+
+/// Render a set of effect classes in the language's canonical
+/// order: built-ins in their fixed order, then user classes in
+/// DECLARATION order. Diagnostics are byte-compared, so this order
+/// is part of the contract.
+pub fn render_effect_classes(
+    e: &hale_model::Entities,
+    classes: &BTreeSet<String>,
+) -> Vec<String> {
+    const BUILTINS: &[&str] = &[
+        "syscall",
+        "block",
+        "publish",
+        "time",
+        "entropy",
+        "env",
+        "alloc",
+        "secret_use",
+    ];
+    let mut out: Vec<String> = Vec::new();
+    for b in BUILTINS {
+        if classes.contains(*b) {
+            out.push((*b).to_string());
+        }
+    }
+    let mut user: Vec<(u32, &String)> = classes
+        .iter()
+        .filter(|c| !BUILTINS.contains(&c.as_str()))
+        .map(|c| {
+            let idx = e
+                .effect_classes
+                .iter()
+                .find(|ec| ec.name == *c)
+                .map(|ec| ec.declaration_index)
+                .unwrap_or(u32::MAX);
+            (idx, c)
+        })
+        .collect();
+    user.sort();
+    out.extend(user.into_iter().map(|(_, c)| c.clone()));
+    out
+}
+
 /// GH #476 Change 5f — `@effects(causes: {…})` over the model.
 ///
-/// "What can this fn cause ANYWHERE in the system": its own effects,
-/// plus everything the subscribers of every subject it transitively
-/// publishes to perform. Only classes reached THROUGH the bus are
-/// reported — a fn's direct effects are the `none:` form's business,
-/// and subtracting them is what makes this the CAUSAL surface.
+/// "What can this fn cause ANYWHERE in the system": the effects of
+/// every handler a publish it can reach may be delivered to,
+/// following further hops when those handlers publish in turn.
 ///
-/// One divergence from the evaluator, in the fail-CLOSED direction
-/// and carved out in the differential: the evaluator infers effects
-/// from the user-only summary, so a subscriber whose `syscall` comes
-/// from a stdlib call reads as pure to it and its causal
-/// contribution disappears. The model's effect sets are the
-/// stdlib-merged ones, so the class is seen. An undeclared causal
-/// effect is exactly what this law exists to catch; not seeing it
-/// through a stdlib body was an accident of which summary the engine
-/// happened to hold.
+/// Three rules the first draft of this engine got wrong, each of
+/// which certified an absence it could not see:
+///
+///  * **The causal set is accumulated, never subtracted.** It holds
+///    only what DOWNSTREAM handlers do. Seeding it with the root's
+///    own effects and subtracting them back out cannot express
+///    provenance: one `syscall` member subtracted once erases the
+///    downstream occurrence along with the local one, and the
+///    undeclared causal effect disappears. (The evaluator has this
+///    bug; the model is the canonical authority and does not
+///    inherit it.)
+///  * **Incompleteness survives as `Uncertified`.** An unclassified
+///    handler, a computed publish subject, an unfollowable call, a
+///    truncated stdlib interior — each means the causal set is a
+///    lower bound, not an answer. A known excess still wins as
+///    `Violated`; otherwise relevant uncertainty refuses to certify.
+///  * **Delivery is the typed wire identity**, via
+///    [`possibly_delivers`], including wildcard coverage and
+///    publishes that happen inside stdlib bodies (the absorption
+///    interiors). Comparing rendered subject text missed ordinary
+///    deliveries between a topic-name publish and a literal
+///    subscribe on the same wire.
 pub fn judge_causes(
     table: &ClaimIrTable,
     model: &ApplicationModel,
@@ -4522,55 +4666,75 @@ pub fn judge_causes(
     let claim_span = |pid: ProvenanceId| -> Span {
         span_of(&table.provenance, source_bases, pid)
     };
-    // A class's atomic expansion — composed classes own no bit, a
-    // cyclic one expands to nothing (the checker refuses it at the
-    // declaration).
-    let class_atoms = |name: &str| -> BTreeSet<String> {
-        match e.effect_classes.iter().find(|c| c.name == name) {
-            Some(c) => match &c.definition {
-                hale_model::EffectClassDefinition::Composed { atoms } => {
-                    atoms.iter().cloned().collect()
-                }
-                hale_model::EffectClassDefinition::Atomic => {
-                    std::iter::once(name.to_string()).collect()
-                }
-                hale_model::EffectClassDefinition::InvalidCycle => {
-                    BTreeSet::new()
-                }
-            },
-            // Built-ins are their own atom.
-            None => std::iter::once(name.to_string()).collect(),
-        }
-    };
-    // The derived (transitive) classes of a function, as the model
-    // records them. `unclassified` is a residue marker, never a
-    // class a causal set can be measured against.
-    let effects_of = |f: FunctionId| -> BTreeSet<String> {
-        e.functions[f.index()]
+    // A function's DERIVED classes, and whether they are known at
+    // all. `unclassified` is the analysis saying "this body reaches
+    // something I cannot name" — it is not the empty set.
+    let effects_of = |f: FunctionId| -> (BTreeSet<String>, bool) {
+        let row = &e.functions[f.index()];
+        let unknown = row.effects.iter().any(|c| c == "unclassified");
+        let known: BTreeSet<String> = row
             .effects
             .iter()
             .filter(|c| c.as_str() != "unclassified")
-            .cloned()
-            .collect()
+            .flat_map(|c| effect_class_atoms(e, c))
+            .collect();
+        (known, unknown)
     };
-    let is_unclassified = |f: FunctionId| -> bool {
-        e.functions[f.index()]
-            .effects
-            .iter()
-            .any(|c| c == "unclassified")
+    // Which relation families a hole at a function hides.
+    let hole_hides = |f: FunctionId, mask: hale_model::RelationSet| {
+        model.holes.iter().any(|h| {
+            h.at == EntityRef::Function(f) && h.hides.intersects(mask)
+        })
     };
-    // Endpoint spelling: a declared endpoint speaks its topic's
-    // name, a literal one its pattern — the same rule every other
-    // witness renders subjects by.
-    let subject_text = |declared: Option<hale_model::TopicId>,
-                        subject: hale_model::SubjectId|
-     -> String {
-        match declared {
-            Some(t) => e.topics[t.index()].display.clone(),
-            None => e.subjects[subject.index()].pattern.clone(),
+    // Interior stdlib publishes, keyed by the user fn they are
+    // reached from, plus whether that interior is fully explored.
+    let mut interior_pubs: BTreeMap<u32, Vec<hale_model::SubjectId>> =
+        BTreeMap::new();
+    let mut interior_unknown: BTreeSet<u32> = BTreeSet::new();
+    for a in &model.analyses.stdlib_absorption {
+        for node in &a.nodes {
+            for ev in &node.events {
+                match ev {
+                    hale_model::AbsorbedEvent::Publish {
+                        subject,
+                        declared_topic,
+                        ..
+                    } => {
+                        // Interior publishes name a subject by wire
+                        // text (or a declared topic); resolve to the
+                        // typed id the delivery query joins on.
+                        let sid = declared_topic
+                            .map(|t| e.topics[t.index()].subject)
+                            .or_else(|| {
+                                e.subjects
+                                    .iter()
+                                    .position(|s| s.pattern == *subject)
+                                    .map(|i| {
+                                        hale_model::SubjectId(i as u32)
+                                    })
+                            });
+                        match sid {
+                            Some(sid) => interior_pubs
+                                .entry(a.from.0)
+                                .or_default()
+                                .push(sid),
+                            // A subject the model has no row for is
+                            // an address it cannot reason about.
+                            None => {
+                                interior_unknown.insert(a.from.0);
+                            }
+                        }
+                    }
+                    hale_model::AbsorbedEvent::PublishHole
+                    | hale_model::AbsorbedEvent::Truncated
+                    | hale_model::AbsorbedEvent::CallHole(_) => {
+                        interior_unknown.insert(a.from.0);
+                    }
+                    hale_model::AbsorbedEvent::Call { .. } => {}
+                }
+            }
         }
-    };
-    // calls: caller -> callees, for the transitive publish walk.
+    }
     let mut callees: BTreeMap<u32, Vec<FunctionId>> = BTreeMap::new();
     for c in &r.calls {
         callees.entry(c.from.0).or_default().push(c.to);
@@ -4581,18 +4745,11 @@ pub fn judge_causes(
         let ClaimIr::EffectCauses { at, classes } = &row.law else {
             continue;
         };
-        let Some(fid) = at.0 else {
-            // The annotated fn is not in the model's universe —
-            // nothing to judge, and the certificate machinery
-            // reports the unresolved reference.
-            continue;
-        };
+        let Some(fid) = at.0 else { continue };
         let mut diags: Vec<Diag> = Vec::new();
         // A class that resolves to nothing makes the contract
-        // vacuous, so the law is INVALID before evaluation — the
-        // same rule the certificate family applies, and the reason
-        // a cyclic definition is refused at its declaration. No
-        // diagnostic here: the declaration owns that message.
+        // vacuous: invalid before evaluation, as in the certificate
+        // family. The declaration owns the diagnostic.
         if classes.iter().any(|c| {
             c.class.is_some_and(|id| {
                 matches!(
@@ -4609,60 +4766,114 @@ pub fn judge_causes(
             });
             continue;
         }
-        // Subjects this fn transitively publishes to, in the
-        // evaluator's order (subject text, ascending).
-        let mut subjects: BTreeSet<String> = BTreeSet::new();
-        {
-            let mut seen: BTreeSet<u32> = BTreeSet::new();
-            let mut stack = vec![fid];
-            while let Some(f) = stack.pop() {
-                if !seen.insert(f.0) {
-                    continue;
-                }
-                for p in r.publishes.iter().filter(|p| p.function == f) {
-                    subjects.insert(subject_text(p.declared_topic, p.subject));
-                }
-                for next in callees.get(&f.0).into_iter().flatten() {
-                    stack.push(*next);
-                }
-            }
-        }
-        // …and what their subscribers do.
-        let mut actual = effects_of(fid);
+
+        // ---- the causal closure ----
+        // Publishes reachable from the root (through calls), the
+        // handlers they may deliver to, and — because a handler may
+        // publish in turn — onward until it settles.
+        let mut uncertain = false;
+        let mut caused: BTreeSet<String> = BTreeSet::new();
         let mut via: Vec<String> = Vec::new();
-        for subj in &subjects {
-            for s in r.subscribes.iter().filter(|s| {
-                subject_text(s.declared_topic, s.subject) == *subj
-            }) {
-                if is_unclassified(s.handler) {
-                    continue;
+        let mut fn_frontier: Vec<FunctionId> = vec![fid];
+        let mut fn_seen: BTreeSet<u32> = BTreeSet::new();
+        let mut handled: BTreeSet<u32> = BTreeSet::new();
+        while let Some(f) = fn_frontier.pop() {
+            if !fn_seen.insert(f.0) {
+                continue;
+            }
+            // Discovery incompleteness: an unfollowable call or a
+            // computed subject means the publish set is a lower
+            // bound.
+            if hole_hides(
+                f,
+                hale_model::RelationSet::CALLS
+                    .union(hale_model::RelationSet::PUBLISHES),
+            ) || interior_unknown.contains(&f.0)
+            {
+                uncertain = true;
+            }
+            // (subject id, AUTHORED spelling). The join below is on
+            // the id; the witness renders what the author wrote —
+            // `Orders`, not `orders` — because a path a developer
+            // reads must name the declaration they can go look at.
+            let mut published: Vec<(hale_model::SubjectId, String)> = r
+                .publishes
+                .iter()
+                .filter(|p| p.function == f)
+                .map(|p| {
+                    let written = match p.declared_topic {
+                        Some(t) => e.topics[t.index()].display.clone(),
+                        None => e.subjects[p.subject.index()]
+                            .pattern
+                            .clone(),
+                    };
+                    (p.subject, written)
+                })
+                .collect();
+            published.extend(
+                interior_pubs
+                    .get(&f.0)
+                    .into_iter()
+                    .flatten()
+                    .map(|s| {
+                        (*s, e.subjects[s.index()].pattern.clone())
+                    }),
+            );
+            published.sort();
+            published.dedup();
+            for (subject, written) in published {
+                // Delivery incompleteness: the model admits it may
+                // not know every subscriber of this address.
+                if model.holes.iter().any(|h| {
+                    h.hides
+                        .intersects(hale_model::RelationSet::DELIVERY)
+                        && matches!(
+                            h.at,
+                            EntityRef::Topic(_) | EntityRef::Subject(_)
+                        )
+                }) {
+                    uncertain = true;
                 }
-                let eff = effects_of(s.handler);
-                if eff.is_empty() {
-                    continue;
+                for su in r
+                    .subscribes
+                    .iter()
+                    .filter(|su| possibly_delivers(e, subject, su))
+                {
+                    let (eff, unknown) = effects_of(su.handler);
+                    if unknown {
+                        // The handler reaches something unnameable:
+                        // whatever it causes is not measurable here.
+                        uncertain = true;
+                    }
+                    if handled.insert(su.handler.0) && !eff.is_empty() {
+                        via.push(format!(
+                            "`{}` -> subject `{}` -> `{}`",
+                            e.functions[fid.index()].display,
+                            written,
+                            e.functions[su.handler.index()].display
+                        ));
+                    }
+                    caused.extend(eff);
+                    // Onward hops: what this handler publishes is
+                    // also caused by the root.
+                    fn_frontier.push(su.handler);
                 }
-                via.push(format!(
-                    "`{}` -> subject `{}` -> `{}`",
-                    e.functions[fid.index()].display,
-                    subj,
-                    e.functions[s.handler.index()].display
-                ));
-                actual.extend(eff);
+            }
+            for next in callees.get(&f.0).into_iter().flatten() {
+                fn_frontier.push(*next);
             }
         }
+
         let mut allowed: BTreeSet<String> = BTreeSet::new();
         for c in classes {
-            allowed.extend(class_atoms(&c.name));
+            allowed.extend(effect_class_atoms(e, &c.name));
         }
-        let direct = effects_of(fid);
-        let excess: Vec<String> = actual
-            .difference(&direct)
-            .filter(|c| !allowed.contains(*c))
-            .cloned()
+        let excess: BTreeSet<String> = caused
+            .into_iter()
+            .filter(|c| !allowed.contains(c))
             .collect();
-        let verdict = if excess.is_empty() {
-            Verdict::Holds
-        } else {
+        let verdict = if !excess.is_empty() {
+            // A KNOWN excess is an answer, whatever else is unknown.
             diags.push(Diag::ty(
                 claim_span(row.provenance),
                 format!(
@@ -4672,7 +4883,7 @@ pub fn judge_causes(
                      class to the declaration, or route the publish to a \
                      subject whose subscribers don't perform it.",
                     e.functions[fid.index()].display,
-                    excess.join(", "),
+                    render_effect_classes(e, &excess).join(", "),
                     if via.is_empty() {
                         String::new()
                     } else {
@@ -4681,6 +4892,10 @@ pub fn judge_causes(
                 ),
             ));
             Verdict::Violated
+        } else if uncertain {
+            Verdict::Uncertified
+        } else {
+            Verdict::Holds
         };
         out.push(Judged {
             ordinal: row.ordinal,

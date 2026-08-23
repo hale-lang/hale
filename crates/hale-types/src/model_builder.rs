@@ -1987,6 +1987,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             );
             rows.push(hale_model::EffectClassDecl {
                 name: n.clone(),
+                declaration_index: i as u32,
                 declared: declared.contains(&(i as u16)),
                 definition,
                 provenance: pid,

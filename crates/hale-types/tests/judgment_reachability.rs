@@ -677,6 +677,7 @@ fn looped_stdlib_entry_with_carrier_is_unbounded() {
                 provenance: p,
             }],
             effect_classes: vec![EffectClassDecl {
+                declaration_index: 0,
                 name: "money".to_string(),
                 declared: true,
                 definition: EffectClassDefinition::Atomic,
@@ -2886,6 +2887,7 @@ fn mixed_dispatch_alternatives_share_one_group() {
                 provenance: p,
             }],
             effect_classes: vec![EffectClassDecl {
+                declaration_index: 0,
                 name: "money".to_string(),
                 declared: true,
                 definition: EffectClassDefinition::Atomic,

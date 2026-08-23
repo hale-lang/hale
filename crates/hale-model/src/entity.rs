@@ -258,6 +258,16 @@ pub struct Phase {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct EffectClassDecl {
     pub name: String,
+    /// The class's position in the seed's declaration order.
+    ///
+    /// The table is name-sorted (canonical identity), but rendering
+    /// a set of classes is order-SENSITIVE: the language renders
+    /// built-ins in a fixed order and user classes in the order they
+    /// were declared, and a diagnostic naming two of them is
+    /// byte-compared. Sorting the table threw that fact away, so it
+    /// is carried explicitly rather than reconstructed from a side
+    /// channel (GH #476 Change 5f).
+    pub declaration_index: u32,
     /// `effect NAME;` exists (false = bare reference only).
     pub declared: bool,
     pub definition: EffectClassDefinition,
