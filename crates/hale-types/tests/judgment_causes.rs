@@ -108,6 +108,7 @@ fn row_premises(
 fn causes_judgment_matches_the_evaluator_over_the_corpus() {
     let mut rows_compared = 0usize;
     let mut strengthened = 0usize;
+    let mut unenumerated = 0usize;
     let mut bad: Vec<String> = Vec::new();
     for p in
         hale_corpus::parseable(|s| hale_syntax::parse_source(s).is_ok())
@@ -137,8 +138,13 @@ fn causes_judgment_matches_the_evaluator_over_the_corpus() {
         let programs_v: Vec<&hale_syntax::ast::Program> = vec![&program];
         let (top, _) = hale_types::resolve::build_top_scope(&bundle);
         let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top);
-        let old: Vec<hale_syntax::Diag> =
-            hale_types::frontier::causes_diags(&programs_v, &graph);
+        // PER-ASSERTION outcomes. A function may carry several
+        // `causes:` clauses and every one of them anchors its
+        // diagnostic at the same fn-name span, so a span is not an
+        // identity — joining on it lets one clause's diagnostic
+        // stand in as another clause's answer (review round 4).
+        let old: Vec<hale_types::frontier::CausesReport> =
+            hale_types::frontier::causes_reports(&programs_v, &graph);
         let bases: Vec<u32> =
             bundle.sources.iter().map(|f| f.base).collect();
         let judged = hale_types::judgment::judge_causes_witnessed(
@@ -156,11 +162,56 @@ fn causes_judgment_matches_the_evaluator_over_the_corpus() {
                 .iter()
                 .find(|r| r.ordinal == j.ordinal)
                 .expect("judged row exists");
-            let row_span = hale_types::judgment::claim_row_span(
-                &table, &bases, row,
-            );
-            let mine: Vec<&hale_syntax::Diag> =
-                old.iter().filter(|d| d.span == row_span).collect();
+            // (function, assertion ordinal) — the key both sides
+            // can produce. The lowering emits one row per `causes:`
+            // clause in source order, which is the order the
+            // evaluator enumerates them in.
+            let hale_model::ClaimIr::EffectCauses { at, .. } = &row.law
+            else {
+                continue;
+            };
+            let fn_display = at
+                .0
+                .map(|f| {
+                    model.entities.functions[f.index()].display.clone()
+                })
+                .unwrap_or_else(|| at.1.display.clone());
+            let assertion_ordinal = table
+                .rows
+                .iter()
+                .filter(|r| {
+                    matches!(
+                        &r.law,
+                        hale_model::ClaimIr::EffectCauses { at: a, .. }
+                            if a.0 == at.0
+                    )
+                })
+                .position(|r| r.ordinal == row.ordinal)
+                .expect("this row is one of its fn's causes rows");
+            let mine: Vec<&hale_syntax::Diag> = old
+                .iter()
+                .filter(|r| {
+                    r.function == fn_display
+                        && r.ordinal == assertion_ordinal
+                })
+                .filter_map(|r| r.diag.as_ref())
+                .collect();
+            let matched = old.iter().any(|r| {
+                r.function == fn_display
+                    && r.ordinal == assertion_ordinal
+            });
+            if !matched {
+                // No oracle for this row. The evaluator's root walk
+                // is non-recursive over modules, so a module-scoped
+                // `causes:` annotation is never enumerated by it —
+                // the documented Change-6 rule that unmigrated rows
+                // bridge to the old engines ONLY where the old walk
+                // demonstrably saw them. Nothing to compare against;
+                // `a_module_scoped_row_has_no_evaluator_outcome`
+                // pins that this is the reason.
+                unenumerated += 1;
+                continue;
+            }
             let old_v = if mine.is_empty() {
                 Verdict::Holds
             } else {
@@ -259,9 +310,9 @@ fn causes_judgment_matches_the_evaluator_over_the_corpus() {
         bad.join("\n")
     );
     eprintln!(
-        "causes differential: {} rows, {} with a documented \
-         divergence",
-        rows_compared, strengthened
+        "causes differential: {} rows compared, {} with a \
+         documented divergence, {} the evaluator never enumerated",
+        rows_compared, strengthened, unenumerated
     );
 }
 
@@ -969,4 +1020,140 @@ fn main() { App { }; }
         "the site that delivers was collapsed away before the \
          delivery query ran"
     );
+}
+
+/// The evaluator's root walk does not recurse into modules, so a
+/// module-scoped `causes:` annotation produces no outcome from it at
+/// all — the documented rule that unmigrated rows bridge to the old
+/// engines only where the old walk demonstrably enumerated them.
+///
+/// This is why the corpus differential SKIPS such rows rather than
+/// treating a missing outcome as `holds`: comparing against silence
+/// that means "never looked" would let anything through.
+#[test]
+fn a_module_scoped_row_has_no_evaluator_outcome() {
+    let src = r#"
+effect money;
+module billing {
+    @effects(causes: { money })
+    fn poke(v: Int) -> Int { return v; }
+}
+main locus App {
+    params { n: Int = 0; }
+    run() { println(1); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let (top, _) = hale_types::resolve::build_top_scope(&bundle);
+    let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top);
+    let reports = hale_types::frontier::causes_reports(
+        &vec![&program],
+        &graph,
+    );
+    assert!(
+        reports.is_empty(),
+        "fixture premise: the evaluator never enumerates a \
+         module-scoped annotation: {:?}",
+        reports.iter().map(|r| &r.function).collect::<Vec<_>>()
+    );
+    // …while the model lowers the row and judges it.
+    let model = derive_application_model(&bundle);
+    let table = hale_types::claim_lowering::lower_claims(&bundle, &model);
+    let bases: Vec<u32> = bundle.sources.iter().map(|f| f.base).collect();
+    assert_eq!(
+        hale_types::judgment::judge_causes(&table, &model, &bases).len(),
+        1,
+        "the model judges what the evaluator could not see"
+    );
+}
+
+/// Review round 4, blocker 1: an ordinary typed outbound binding
+/// takes the causal closure out of the application. The transport
+/// is fully modeled — no hole — but the peer's behaviour is not
+/// here, so the law cannot be certified.
+#[test]
+fn a_connect_binding_leaves_the_application() {
+    let (v, _) = judge(
+        r#"
+type Msg { n: Int = 0; }
+topic T { payload: Msg; subject: "t"; }
+locus Source {
+    bus { publish T; }
+    @effects(causes: { publish, alloc })
+    fn fire() { T <- Msg { n: 1 }; }
+}
+main locus App {
+    params { p: Source = Source { }; }
+    bindings { T: unix("/tmp/t.sock", role: connect); }
+    run() { self.p.fire(); }
+}
+fn main() { App { }; }
+"#,
+    );
+    assert_eq!(
+        v,
+        Verdict::Uncertified,
+        "a connect-role send is handed to a peer this model does \
+         not contain"
+    );
+}
+
+/// Review round 4, blocker 2: two `causes:` clauses on ONE function
+/// share a span, so a span cannot be the join key. One holds and one
+/// is violated; each model row must be matched to its OWN evaluator
+/// outcome.
+#[test]
+fn two_clauses_on_one_fn_are_judged_separately() {
+    let src = r#"
+type Msg { n: Int = 0; }
+topic T { payload: Msg; subject: "t"; }
+locus Sink {
+    params { n: Int = 0; }
+    bus { subscribe T as on_t; }
+    fn on_t(m: Msg) { println("io"); }
+}
+locus Source {
+    bus { publish T; }
+    @effects(causes: { syscall, publish, alloc }, causes: { publish })
+    fn fire() { T <- Msg { n: 1 }; }
+}
+main locus App {
+    params { s: Sink = Sink { }; p: Source = Source { }; }
+    run() { self.p.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let (top, _) = hale_types::resolve::build_top_scope(&bundle);
+    let graph = hale_types::bus_graph::build_bus_graph(&bundle, &top);
+    let reports =
+        hale_types::frontier::causes_reports(&vec![&program], &graph);
+    assert_eq!(
+        reports.len(),
+        2,
+        "fixture premise: two assertions on one fn: {:?}",
+        reports.iter().map(|r| (&r.function, r.ordinal)).collect::<Vec<_>>()
+    );
+    // Same span on both — which is exactly why the ordinal is the
+    // identity.
+    let spans: Vec<_> = reports
+        .iter()
+        .filter_map(|r| r.diag.as_ref().map(|d| d.span))
+        .collect();
+    assert!(spans.windows(2).all(|w| w[0] == w[1]));
+    // The first clause covers syscall and holds; the second does not.
+    assert!(reports[0].diag.is_none(), "clause 0 holds");
+    assert!(reports[1].diag.is_some(), "clause 1 is violated");
+
+    let model = derive_application_model(&bundle);
+    let table = hale_types::claim_lowering::lower_claims(&bundle, &model);
+    let bases: Vec<u32> = bundle.sources.iter().map(|f| f.base).collect();
+    let judged =
+        hale_types::judgment::judge_causes(&table, &model, &bases);
+    assert_eq!(judged.len(), 2, "the model lowers both clauses");
+    assert_eq!(judged[0].verdict, Verdict::Holds);
+    assert_eq!(judged[1].verdict, Verdict::Violated);
 }

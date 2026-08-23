@@ -356,12 +356,49 @@ fn collect_published_subjects(
     }
 }
 
+/// One `causes:` assertion's outcome, keyed so a caller can join it
+/// to the lowered law row it came from.
+///
+/// A function may carry SEVERAL `causes:` clauses, and every one of
+/// them anchors its diagnostic at the same fn-name span — so a span
+/// is not an identity (GH #476 Change 5f, review round 4). The
+/// ordinal is the assertion's position among that function's
+/// `causes:` clauses, in source order, which is exactly the order
+/// the lowering emits rows in.
+pub struct CausesReport {
+    /// The annotated function, as the evaluator displays it.
+    pub function: String,
+    /// 0-based position among this function's `causes:` clauses.
+    pub ordinal: usize,
+    /// `None` when the assertion holds.
+    pub diag: Option<Diag>,
+}
+
+/// Per-assertion `causes:` outcomes — the oracle a differential
+/// joins one law to one law by.
+pub fn causes_reports(
+    programs: &[&Program],
+    graph: &BusGraph,
+) -> Vec<CausesReport> {
+    causes_inner(programs, graph)
+}
+
 /// `@effects(causes: {…})` — check the declared causal set against
 /// what the fn can actually cause through bus edges.
 pub fn causes_diags(
     programs: &[&Program],
     graph: &BusGraph,
 ) -> Vec<Diag> {
+    causes_inner(programs, graph)
+        .into_iter()
+        .filter_map(|r| r.diag)
+        .collect()
+}
+
+fn causes_inner(
+    programs: &[&Program],
+    graph: &BusGraph,
+) -> Vec<CausesReport> {
     // The seed's user effect-class table, so an excess class renders
     // as `money` rather than as nothing at all.
     let names: Vec<String> = programs
@@ -370,13 +407,24 @@ pub fn causes_diags(
         .find(|n| !n.is_empty())
         .cloned()
         .unwrap_or_default();
-    let mut roots: Vec<(FnKey, Vec<EffectClass>, Span)> = Vec::new();
+    // (fn, declared classes, span, per-fn assertion ordinal). A fn
+    // may carry several `causes:` clauses; the ordinal is what makes
+    // each one identifiable, since they share a span.
+    let mut roots: Vec<(FnKey, Vec<EffectClass>, Span, usize)> =
+        Vec::new();
     for p in programs {
         for item in &p.items {
             let mut push = |key: FnKey, fd: &FnDecl| {
+                let mut ordinal = 0usize;
                 for a in &fd.effects {
                     if let EffectAssert::Causes(cs) = a {
-                        roots.push((key.clone(), cs.clone(), fd.name.span));
+                        roots.push((
+                            key.clone(),
+                            cs.clone(),
+                            fd.name.span,
+                            ordinal,
+                        ));
+                        ordinal += 1;
                     }
                 }
             };
@@ -419,8 +467,8 @@ pub fn causes_diags(
         .find(|d| !d.is_empty())
         .cloned()
         .unwrap_or_default();
-    let mut diags = Vec::new();
-    for (key, declared, span) in &roots {
+    let mut reports: Vec<CausesReport> = Vec::new();
+    for (key, declared, span, ordinal) in &roots {
         let (actual, via) = causal_effects(&summary, graph, key, &ffi);
         let mut allowed = EffectSet::PURE;
         for c in declared {
@@ -431,8 +479,8 @@ pub fn causes_diags(
         let direct = infer_effects(&summary, key, &ffi);
         let caused_only = EffectSet(actual.0 & !direct.0);
         let excess = EffectSet(caused_only.0 & !allowed.0);
-        if excess.0 != 0 {
-            diags.push(Diag::ty(
+        let diag = if excess.0 != 0 {
+            Some(Diag::ty(
                 *span,
                 format!(
                     "declared causal set violated: `{}` can transitively \
@@ -448,10 +496,17 @@ pub fn causes_diags(
                         format!(" Path: {}.", via.join("; "))
                     }
                 ),
-            ));
-        }
+            ))
+        } else {
+            None
+        };
+        reports.push(CausesReport {
+            function: key.display(),
+            ordinal: *ordinal,
+            diag,
+        });
     }
-    diags
+    reports
 }
 
 

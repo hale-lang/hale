@@ -4709,6 +4709,10 @@ pub struct CausesWitness {
     pub incomplete_discovery: Vec<FunctionId>,
     /// The closure left user code through a stdlib interior.
     pub crossed_stdlib_interior: bool,
+    /// A publish on the closure is routed off-process by a typed
+    /// outbound binding — the peer's behaviour is outside this
+    /// model even though the transport is understood.
+    pub crosses_external_route: bool,
     /// The closure took more than one bus hop.
     pub multi_hop: bool,
 }
@@ -4983,6 +4987,27 @@ pub fn judge_causes_witnessed(
                 }) {
                     uncertain = true;
                     witness.incomplete_endpoints.push(subject);
+                }
+                // …and the routes the model DOES understand. A
+                // typed outbound binding is not a hole — the
+                // transport is fully modeled — but the causal
+                // closure still leaves the application at it: a
+                // `connect`-role send is handed to a peer whose
+                // behaviour is not in this model at all. Reading
+                // only `holes` saw an opaque adapter and missed an
+                // ordinary `unix(..., role: connect)` (review round
+                // 4).
+                let outbound = topic_here.is_some_and(|t| {
+                    r.binds.iter().any(|b| {
+                        b.topic == t
+                            && e.bindings[b.binding.index()].role
+                                == hale_model::BindingRole::Connect
+                    })
+                });
+                if outbound {
+                    uncertain = true;
+                    witness.incomplete_endpoints.push(subject);
+                    witness.crosses_external_route = true;
                 }
                 for su in r
                     .subscribes
