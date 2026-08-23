@@ -2215,8 +2215,8 @@ pub fn family_of(law: &Law) -> &'static str {
         | Law::NoPanic { .. }
         | Law::PhaseEffects { .. } => "certificate",
         Law::EffectCauses { .. } => "causes",
-        Law::DependsSet { .. }
-        | Law::AllocBudget { .. }
+        Law::DependsSet { .. } => "depends",
+        Law::AllocBudget { .. }
         | Law::QuantBudget { .. } => "unmigrated",
     }
 }
@@ -2473,6 +2473,7 @@ pub fn validate_law_account(
         "bound",
         "certificate",
         "causes",
+        "depends",
         "unmigrated",
     ];
     const VERDICTS: &[&str] =
@@ -2541,7 +2542,10 @@ pub fn validate_law_account(
         .map_err(|e| format!("{}: {}", label, e))?;
     let origin_ok = |origin: &str, family: &str| -> bool {
         match family {
-            "certificate" | "causes" | "unmigrated" => {
+            // `depends:` is an annotation on a LOCUS, `causes:` one
+            // on a function; neither can arrive from a claims block
+            // or a constitution.
+            "certificate" | "causes" | "depends" | "unmigrated" => {
                 origin == "annotation"
             }
             _ => {

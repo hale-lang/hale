@@ -69,9 +69,9 @@ fn legacy_arm(bundle: &Bundle<'_>) -> Vec<String> {
         bundle.programs.values().copied().collect();
     let (top, _) = hale_types::resolve::build_top_scope(bundle);
     let graph = hale_types::bus_graph::build_bus_graph(bundle, &top);
-    // Since Change 5f the check path also judges `causes:`, whose
-    // evaluator lives in `frontier` rather than in `claims.rs` —
-    // the legacy arm is both engines.
+    // Since Changes 5f and 5g the check path also judges `causes:`
+    // and `depends:`, whose evaluators live in `frontier` rather
+    // than in `claims.rs` — the legacy arm is all three engines.
     let mut d = hale_types::claims::claims_diags(
         &programs,
         &graph,
@@ -86,11 +86,12 @@ fn legacy_arm(bundle: &Bundle<'_>) -> Vec<String> {
     for diag in &mut d {
         diag.kind = hale_syntax::error::DiagKind::Claim;
     }
-    let mut causes = hale_types::frontier::causes_diags(&programs, &graph);
-    for diag in &mut causes {
+    let mut migrated = hale_types::frontier::causes_diags(&programs, &graph);
+    migrated.extend(hale_types::frontier::depends_diags(&programs, &graph));
+    for diag in &mut migrated {
         diag.kind = hale_syntax::error::DiagKind::Claim;
     }
-    d.extend(causes);
+    d.extend(migrated);
     d.iter().map(render).collect()
 }
 
@@ -110,6 +111,62 @@ fn model_arm(bundle: &Bundle<'_>) -> Vec<String> {
     out.iter().map(render).collect()
 }
 
+
+/// The two ways the migrated `depends:` engine parts company with
+/// the evaluator, each admitted only when the ROW's own verdict is
+/// the explanation.
+///
+/// **Invalid operands.** The evaluator matched declared entries by
+/// NAME. An entry naming nothing therefore covered nothing, and
+/// every subject that reached the locus came back as an omission —
+/// a violation report about the subjects, when the defect is the
+/// typo. The model refuses: an unresolved operand makes `invalid`
+/// the only admissible verdict, the same rule the artifact's
+/// admission already enforced.
+///
+/// **Wire identity.** `@effects(depends: { "evt" })` names the WIRE
+/// SUBJECT of a topic spelled `Evt`. Those are one endpoint, and
+/// the evaluator's name comparison said they were two — the same
+/// defect the `causes:` rounds settled, in the backward direction.
+fn depends_divergence_is_explained(
+    bundle: &Bundle<'_>,
+    legacy_only: &[&String],
+    model_only: &[&String],
+) -> bool {
+    if legacy_only.is_empty()
+        || !legacy_only
+            .iter()
+            .all(|l| l.contains("declared dependency set violated"))
+    {
+        return false;
+    }
+    let model = hale_types::model_builder::derive_application_model(bundle);
+    let table = hale_types::claim_lowering::lower_claims(bundle, &model);
+    let bases: Vec<u32> = bundle.sources.iter().map(|f| f.base).collect();
+    let judged =
+        hale_types::judgment::judge_depends_witnessed(&table, &model, &bases);
+    if judged.is_empty() {
+        return false;
+    }
+    // Class A: the row is INVALID, and that is exactly what the
+    // model said instead.
+    let invalid = judged.iter().any(|(j, _)| {
+        j.verdict == hale_types::verdict::Verdict::Invalid
+    });
+    if invalid {
+        return model_only.iter().all(|l| {
+            l.contains("declared dependency set is invalid")
+        });
+    }
+    // Class B: the row HOLDS, adding nothing, because every subject
+    // the walk reached is named — by wire subject where the
+    // evaluator wanted the topic's spelling.
+    model_only.is_empty()
+        && judged.iter().all(|(j, _)| {
+            j.verdict == hale_types::verdict::Verdict::Holds
+        })
+}
+
 #[test]
 fn claim_diagnostics_match_the_evaluator_over_the_corpus() {
     let mut compared = 0usize;
@@ -117,8 +174,9 @@ fn claim_diagnostics_match_the_evaluator_over_the_corpus() {
     let mut mismatches: Vec<String> = Vec::new();
     let mut documented_divergences = 0usize;
     for program in hale_corpus::all() {
-        // `judgment_causes.rs` is the control suite for the migrated
-        // `causes:` engine, and several of its fixtures exist
+        // `judgment_causes.rs` and `judgment_depends.rs` are the
+        // control suites for the migrated engines, and several of
+        // their fixtures exist
         // PRECISELY to pin a place where the model engine is right
         // and the evaluator was wrong: a saturated walk that used to
         // report every class it had never proven, and a known
@@ -126,7 +184,9 @@ fn claim_diagnostics_match_the_evaluator_over_the_corpus() {
         // two there asserts the bug. Each of those fixtures already
         // asserts the model's verdict directly, in the control that
         // owns it.
-        if program.origin.contains("judgment_causes.rs") {
+        if program.origin.contains("judgment_causes.rs")
+            || program.origin.contains("judgment_depends.rs")
+        {
             continue;
         }
         let Ok(parsed) = hale_syntax::parse_source(&program.source) else {
@@ -170,6 +230,17 @@ fn claim_diagnostics_match_the_evaluator_over_the_corpus() {
                     .iter()
                     .all(|l| l.contains("uncertified:"))
             {
+                documented_divergences += 1;
+                continue;
+            }
+            // Change 5g. `depends:` diverges in two places, and
+            // each premise is ROW-LOCAL — read off the judgment's
+            // own verdict for the row, never off the program.
+            if depends_divergence_is_explained(
+                &bundle,
+                &legacy_only,
+                &model_only,
+            ) {
                 documented_divergences += 1;
                 continue;
             }

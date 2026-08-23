@@ -503,8 +503,11 @@ pub enum JudgmentFamily {
     /// `@effects(causes: …)` — the cross-actor causal surface
     /// (Change 5f).
     Causes,
-    /// Lowered but its engine has not migrated (`depends:`,
-    /// `@budget`) — judged at minimum `uncertified`.
+    /// `@effects(depends: …)` — the backward dual of `causes:`
+    /// (Change 5g).
+    Depends,
+    /// Lowered but its engine has not migrated (`@budget`) —
+    /// judged at minimum `uncertified`.
     Unmigrated,
     /// Fleet plan rows — Change 7's `FleetModel`.
     Fleet,
@@ -519,6 +522,7 @@ impl JudgmentFamily {
             JudgmentFamily::Bound => "bound",
             JudgmentFamily::Certificate => "certificate",
             JudgmentFamily::Causes => "causes",
+            JudgmentFamily::Depends => "depends",
             JudgmentFamily::Unmigrated => "unmigrated",
             JudgmentFamily::Fleet => "fleet",
         }
@@ -556,6 +560,15 @@ impl JudgmentFamily {
                 .union(R::PUBLISHES)
                 .union(R::DELIVERY)
                 .union(R::EFFECTS),
+            // `depends` walks the same graph BACKWARD, and owes
+            // nothing to EFFECTS: the claim is reachability of a
+            // subject, not what anything does with it. OWNS is how
+            // a locus's handler set is found, and losing it means
+            // the subscription set is not known to be complete.
+            JudgmentFamily::Depends => R::PUBLISHES
+                .union(R::SUBSCRIBES)
+                .union(R::DELIVERY)
+                .union(R::OWNS),
             JudgmentFamily::Unmigrated | JudgmentFamily::Fleet => {
                 crate::hole::RelationSet(0)
             }
@@ -1046,8 +1059,8 @@ impl ClaimRow {
                 JudgmentFamily::Certificate
             }
             ClaimIr::EffectCauses { .. } => JudgmentFamily::Causes,
-            ClaimIr::DependsSet { .. }
-            | ClaimIr::AllocBudget { .. }
+            ClaimIr::DependsSet { .. } => JudgmentFamily::Depends,
+            ClaimIr::AllocBudget { .. }
             | ClaimIr::QuantBudget { .. } => {
                 JudgmentFamily::Unmigrated
             }

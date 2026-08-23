@@ -154,7 +154,7 @@ pub use claim_ir::{
 };
 pub use entity::{
     Binding, BindingRole, DeclKind, Declaration, EffectClassDecl, EffectClassDefinition, Function, FunctionKind, Group, InterfaceDecl,
-    LocusDecl, LocusInstance, PayloadContract, Phase, Seed, Subject, ThreadDomain, Topic,
+    LocusDecl, LocusInstance, LocusParam, PayloadContract, Phase, Seed, Subject, ThreadDomain, Topic,
     TransportKind, TypeDecl,
 };
 pub use hole::{allowed_hole_families, hole_site_shaped, Hole, HoleKind, RelationSet};

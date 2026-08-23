@@ -451,11 +451,42 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
 
     // ---- entity tables (canonical order via BTree keys, RAW) ----
     // Loci.
-    let mut locus_rows: BTreeMap<String, (bool, hale_syntax::Span)> =
-        BTreeMap::new();
+    struct LocusRow {
+        sealed: bool,
+        span: hale_syntax::Span,
+        sync_form: bool,
+        /// (param name, declared type's last segment)
+        params: Vec<(String, String)>,
+    }
+    let mut locus_rows: BTreeMap<String, LocusRow> = BTreeMap::new();
     for l in &ast.loci {
-        locus_rows
-            .insert(l.name.name.clone(), (l.sealed, l.name.span));
+        // #340: the `sync` discipline is read off the form's own
+        // declaration. There is no annotation for it, and there
+        // should not be — it is a property of how the form is
+        // shared, not a claim about it.
+        let sync_form = l.form.as_ref().is_some_and(|f| {
+            f.args.iter().any(|a| a.name.name == "sync")
+        });
+        let mut params = Vec::new();
+        for m in &l.members {
+            let LocusMember::Params(pb) = m else { continue };
+            for prm in &pb.params {
+                let Some(TypeExpr::Named { path, .. }) = &prm.ty else {
+                    continue;
+                };
+                let Some(seg) = path.segments.last() else { continue };
+                params.push((prm.name.name.clone(), seg.name.clone()));
+            }
+        }
+        locus_rows.insert(
+            l.name.name.clone(),
+            LocusRow {
+                sealed: l.sealed,
+                span: l.name.span,
+                sync_form,
+                params,
+            },
+        );
     }
     let locus_id: BTreeMap<&String, LocusDeclId> = locus_rows
         .keys()
@@ -2047,13 +2078,23 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         }
         out
     };
-    for (n, (sealed, sp)) in &locus_rows {
-        let pid = intern_span(&mut records, *sp);
+    for (n, row) in &locus_rows {
+        let pid = intern_span(&mut records, row.span);
         e.loci.push(LocusDecl {
             name: n.clone(),
             display: name(n),
-            sealed: *sealed,
+            sealed: row.sealed,
             analyzable: !module_loci.contains(n),
+            sync_form: row.sync_form,
+            params: row
+                .params
+                .iter()
+                .map(|(pn, ty)| hale_model::LocusParam {
+                    name: pn.clone(),
+                    type_name: ty.clone(),
+                    decl: locus_id.get(ty).copied(),
+                })
+                .collect(),
             provenance: pid,
         });
     }

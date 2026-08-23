@@ -124,7 +124,28 @@ pub struct LocusDecl {
     /// sets it from its declaration walk; the evidence layer and
     /// the artifact emitter read it here, never re-walking source.
     pub analyzable: bool,
+    /// This locus's own `@form(…, sync)` discipline (#340). A locus
+    /// holding one as a param is reachable by another pool's WRITES,
+    /// with no bus edge recording it — an input channel the message
+    /// graph cannot see, which is why `depends:` must refuse to
+    /// certify over it.
+    pub sync_form: bool,
+    /// Declared `params { … }`, at DECLARATION grain. Deliberately
+    /// not the same fact as [`LocusInstance`]: an instance exists
+    /// only for a statically exact birth, while a param with no
+    /// default still declares what this locus may hold.
+    pub params: Vec<LocusParam>,
     pub provenance: ProvenanceId,
+}
+
+/// One entry of a locus's `params { … }` block.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct LocusParam {
+    pub name: String,
+    /// Last path segment of the declared type, in author spelling.
+    pub type_name: String,
+    /// Resolved when the type names a locus in this application.
+    pub decl: Option<LocusDeclId>,
 }
 
 /// A statically exact instance in the main arrangement, e.g. the

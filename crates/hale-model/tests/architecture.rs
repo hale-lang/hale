@@ -103,6 +103,8 @@ fn tiny_model() -> ApplicationModel {
                     display: "App".to_string(),
                     sealed: false,
                     analyzable: true,
+                    sync_form: false,
+                    params: Vec::new(),
                     provenance: p,
                 },
                 LocusDecl {
@@ -110,6 +112,8 @@ fn tiny_model() -> ApplicationModel {
                     display: "Worker".to_string(),
                     sealed: false,
                     analyzable: true,
+                    sync_form: false,
+                    params: Vec::new(),
                     provenance: p,
                 },
             ],

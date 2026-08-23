@@ -4453,6 +4453,7 @@ pub fn claim_law_diags(bundle: &crate::symbol::Bundle<'_>) -> Vec<Diag> {
                 | hale_model::JudgmentFamily::Endpoint
                 | hale_model::JudgmentFamily::Bound
                 | hale_model::JudgmentFamily::Causes
+                | hale_model::JudgmentFamily::Depends
         ) {
             continue;
         }
@@ -4477,10 +4478,11 @@ pub fn claim_law_diags(bundle: &crate::symbol::Bundle<'_>) -> Vec<Diag> {
 /// judge — a `claims { }` block (world tier or library tier) or a
 /// `constitution` to adopt one from?
 ///
-/// …plus `@effects(causes: …)`, which is annotation-carried but
-/// judged here since Change 5f. Other annotations are deliberately
-/// NOT a claim surface: their rows are the certificate family,
-/// whose diagnostics belong to the effects engine.
+/// …plus `@effects(causes: …)` on a function and
+/// `@effects(depends: …)` on a locus, which are annotation-carried
+/// but judged here since Changes 5f and 5g. Other annotations are
+/// deliberately NOT a claim surface: their rows are the certificate
+/// family, whose diagnostics belong to the effects engine.
 fn has_claim_surface(bundle: &crate::symbol::Bundle<'_>) -> bool {
     use hale_syntax::ast::{EffectAssert, FnDecl, LocusMember, TopDecl};
     fn causes(fd: &FnDecl) -> bool {
@@ -4492,11 +4494,14 @@ fn has_claim_surface(bundle: &crate::symbol::Bundle<'_>) -> bool {
         items.iter().any(|item| match item {
             TopDecl::Claims(_) | TopDecl::Constitution(_) => true,
             TopDecl::Fn(f) => causes(f),
-            TopDecl::Locus(l) => l.members.iter().any(|m| match m {
-                LocusMember::Claims(_) => true,
-                LocusMember::Fn(f) => causes(f),
-                _ => false,
-            }),
+            TopDecl::Locus(l) => {
+                l.depends.is_some()
+                    || l.members.iter().any(|m| match m {
+                        LocusMember::Claims(_) => true,
+                        LocusMember::Fn(f) => causes(f),
+                        _ => false,
+                    })
+            }
             TopDecl::Module(m) => walk(&m.items),
             _ => false,
         })
@@ -4888,6 +4893,339 @@ pub fn judge_causes_witnessed(
         witness.incomplete_endpoints.dedup();
         witness.incomplete_discovery.sort();
         witness.incomplete_discovery.dedup();
+        out.push((
+            Judged {
+                ordinal: row.ordinal,
+                verdict,
+                diags,
+                foreign: Vec::new(),
+            },
+            witness,
+        ));
+    }
+    out
+}
+
+/// The traversal witness a `depends:` row leaves behind — what the
+/// backward walk reached, and everywhere it could not see.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct DependsWitness {
+    /// Every subject that can reach this locus, in the order the
+    /// walk settled them.
+    pub reached_subjects: Vec<hale_model::SubjectId>,
+    /// Reached subjects whose upstream is not fully modeled.
+    pub incomplete_endpoints: Vec<hale_model::SubjectId>,
+    /// Params typed as a `sync`-discipline form: input channels
+    /// outside the message graph entirely.
+    pub sync_form_params: Vec<String>,
+}
+
+/// GH #476 Change 5g — `@effects(depends: {A, B})` on a locus,
+/// judged over the canonical model.
+///
+/// The backward dual of [`judge_causes`], and deliberately built
+/// from the same shared queries: `causes:` asks what a publish can
+/// REACH, `depends:` asks what can reach a subscription. Running
+/// them on different joins is exactly the defect
+/// [`crate::model_query`] exists to prevent — a dependence routed
+/// through one republishing intermediary is invisible in the
+/// depending locus's own `bus {}` block, so the walk has to be
+/// transitive and it has to agree with delivery.
+///
+/// It is a COMPLETE declaration: every subject that can transitively
+/// reach any handler this locus owns must be named. Reachability,
+/// not dataflow — a locus subscribing to a laundered republish of S
+/// depends on S whether or not it reads the field.
+pub fn judge_depends(
+    table: &ClaimIrTable,
+    model: &ApplicationModel,
+    source_bases: &[u32],
+) -> Vec<Judged> {
+    judge_depends_witnessed(table, model, source_bases)
+        .into_iter()
+        .map(|(j, _)| j)
+        .collect()
+}
+
+/// [`judge_depends`], with each row's traversal witness.
+pub fn judge_depends_witnessed(
+    table: &ClaimIrTable,
+    model: &ApplicationModel,
+    source_bases: &[u32],
+) -> Vec<(Judged, DependsWitness)> {
+    let e = &model.entities;
+    let r = &model.relations;
+    let claim_span = |pid: ProvenanceId| -> Span {
+        span_of(&table.provenance, source_bases, pid)
+    };
+    // locus -> the functions it owns. `depends:` is a claim about a
+    // LOCUS, but subscription is a fact about a FUNCTION, and
+    // `member_of` is the only bridge.
+    let mut fns_of: BTreeMap<u32, Vec<FunctionId>> = BTreeMap::new();
+    for m in &r.member_of {
+        fns_of.entry(m.locus.0).or_default().push(m.function);
+    }
+
+    let mut out = Vec::new();
+    for row in table.rows.iter() {
+        let ClaimIr::DependsSet { locus, entries } = &row.law else {
+            continue;
+        };
+        let mut witness = DependsWitness::default();
+        let mut diags: Vec<Diag> = Vec::new();
+
+        // Static invalidity DOMINATES: an operand that names
+        // nothing cannot be certified against, and a replayed
+        // engine result is never an alternative.
+        let Some(lid) = locus.0 else {
+            out.push((
+                Judged {
+                    ordinal: row.ordinal,
+                    verdict: Verdict::Invalid,
+                    diags,
+                    foreign: Vec::new(),
+                },
+                witness,
+            ));
+            continue;
+        };
+        let decl = &e.loci[lid.index()];
+
+        // Obligation 1 (#340): a param typed as a form carrying a
+        // `sync` discipline. Another pool writes it, this locus
+        // reads it, and NO bus edge records the transfer — so the
+        // message graph, which is all this walk can see, cannot
+        // support a completeness claim at all.
+        for prm in &decl.params {
+            let holds_sync = prm
+                .decl
+                .is_some_and(|d| e.loci[d.index()].sync_form);
+            if !holds_sync {
+                continue;
+            }
+            witness.sync_form_params.push(prm.name.clone());
+            diags.push(Diag::ty(
+                claim_span(row.provenance),
+                format!(
+                    "declared dependency set is incomplete: `{}` holds \
+                     `{}` as `{}`, a form carrying a `sync` discipline \
+                     — shared state another pool can write. That is an \
+                     input channel outside the bus graph, and \
+                     `depends:` closes over the message graph only.",
+                    decl.display, prm.type_name, prm.name
+                ),
+            ));
+        }
+
+        // Author spelling for a wire subject: the topic that
+        // declares it, when exactly one does. Identity stays the
+        // `SubjectId` — this is only how it is SHOWN, the same
+        // raw/display duality the topics section carries.
+        let shown = |sid: u32| -> String {
+            let subject = &e.subjects[sid as usize];
+            let mut named = e
+                .topics
+                .iter()
+                .filter(|t| t.subject.0 == sid)
+                .map(|t| t.display.clone());
+            match (named.next(), named.next()) {
+                (Some(one), None) => one,
+                _ => subject.pattern.clone(),
+            }
+        };
+        // Obligation 2: the backward closure. BFS over LOCI,
+        // remembering how each subject was reached so the
+        // diagnostic can name the path and not only the verdict.
+        let mut uncertain = false;
+        // subject -> (via locus display, into subject display)
+        let mut seen: BTreeMap<u32, Option<(String, String)>> =
+            BTreeMap::new();
+        let mut seen_locus: BTreeSet<u32> = BTreeSet::new();
+        seen_locus.insert(lid.0);
+        // (subject reaching the frontier locus, how it got there)
+        let mut queue: Vec<(hale_model::SubjectId, Option<(String, String)>)> =
+            Vec::new();
+        let subs_of = |l: u32| -> Vec<hale_model::Subscribe> {
+            let owned = fns_of.get(&l).cloned().unwrap_or_default();
+            r.subscribes
+                .iter()
+                .filter(|su| owned.contains(&su.handler))
+                .cloned()
+                .collect()
+        };
+        for su in subs_of(lid.0) {
+            queue.push((su.subject, None));
+        }
+        while let Some((subject, via)) = queue.pop() {
+            if seen.contains_key(&subject.0) {
+                continue;
+            }
+            seen.insert(subject.0, via);
+            witness.reached_subjects.push(subject);
+            // Is this endpoint's UPSTREAM fully modeled? Holes over
+            // who publishes it, an opaque delivery boundary, and a
+            // `listen` binding that accepts from a peer are all the
+            // same answer — and scoping the question to THIS
+            // subject is what keeps an unrelated adapter from
+            // poisoning a purely local claim.
+            if crate::model_query::endpoint_incomplete(
+                model,
+                subject,
+                crate::model_query::Direction::Upstream,
+            ) {
+                uncertain = true;
+                witness.incomplete_endpoints.push(subject);
+            }
+            // Who can publish INTO a subscription on this subject?
+            // The join is delivery, not the syntactic topic link: a
+            // literal `"t" <- …` send reaches a `t` subscriber, and
+            // a keyed publish that cannot meet this predicate is
+            // not an upstream at all.
+            for su in r.subscribes.iter() {
+                if !crate::model_query::subscription_covers(
+                    e, su, subject,
+                ) {
+                    continue;
+                }
+                for p in r.publishes.iter() {
+                    if !crate::model_query::may_deliver(e, p, su) {
+                        continue;
+                    }
+                    let Some(m) =
+                        r.member_of.iter().find(|m| m.function == p.function)
+                    else {
+                        // A publisher owned by no locus is a free
+                        // function: its subject still reaches here,
+                        // but there is no locus to walk on from.
+                        let pl = p.subject;
+                        if !seen.contains_key(&pl.0) {
+                            queue.push((
+                                pl,
+                                Some((
+                                    e.functions[p.function.index()]
+                                        .display
+                                        .clone(),
+                                    shown(subject.0),
+                                )),
+                            ));
+                        }
+                        continue;
+                    };
+                    let plocus = &e.loci[m.locus.index()];
+                    // The publishing locus's OWN inputs are inputs
+                    // of this one, transitively.
+                    if seen_locus.insert(m.locus.0) {
+                        for up in subs_of(m.locus.0) {
+                            queue.push((
+                                up.subject,
+                                Some((
+                                    plocus.display.clone(),
+                                    shown(subject.0),
+                                )),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Which reached subjects the declaration does NOT name. A
+        // selector resolves to typed ids at lowering, so this is an
+        // id comparison — no name matching, and no second answer to
+        // "what does this selector mean".
+        let declared: BTreeSet<u32> = entries
+            .iter()
+            .flat_map(|sel| {
+                sel.subjects
+                    .iter()
+                    .map(|s| s.0)
+                    .chain(sel.topics.iter().map(|t| {
+                        e.topics[t.index()].subject.0
+                    }))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        // An entry that resolved to nothing names no subject in
+        // this application. Static invalidity DOMINATES: the old
+        // engine matched declared entries by NAME, so an unresolved
+        // one silently covered nothing and every reached subject
+        // came back as an omission — a violation report about the
+        // subjects, when the actual defect is the typo. A law whose
+        // operands do not resolve cannot be certified against, and
+        // it cannot be violated either.
+        let unresolved: Vec<&hale_model::BusSelector> = entries
+            .iter()
+            .filter(|sel| sel.subjects.is_empty() && sel.topics.is_empty())
+            .collect();
+        if !unresolved.is_empty() {
+            let names: Vec<String> =
+                unresolved.iter().map(|s| s.name.clone()).collect();
+            diags.push(Diag::ty(
+                claim_span(row.provenance),
+                format!(
+                    "declared dependency set is invalid: `{}` names `{}`, which is not a topic or subject in this application — so the set constrains nothing and cannot be judged. Name a declared topic, or remove the entry.",
+                    decl.display,
+                    names.join("`, `")
+                ),
+            ));
+            out.push((
+                Judged {
+                    ordinal: row.ordinal,
+                    verdict: Verdict::Invalid,
+                    diags,
+                    foreign: Vec::new(),
+                },
+                witness,
+            ));
+            continue;
+        }
+
+        let mut undeclared: Vec<(u32, Option<(String, String)>)> = seen
+            .iter()
+            .filter(|(sid, _)| !declared.contains(sid))
+            .map(|(sid, via)| (*sid, via.clone()))
+            .collect();
+        undeclared.sort_by_key(|(sid, _)| *sid);
+        for (sid, via) in &undeclared {
+            let path = match via {
+                Some((locus, into)) => format!(
+                    " Path: subject `{}` -> `{}` -> subject `{}` -> `{}`.",
+                    shown(*sid),
+                    locus,
+                    into,
+                    decl.display
+                ),
+                None => format!(
+                    " It is subscribed directly by `{}`.",
+                    decl.display
+                ),
+            };
+            diags.push(Diag::ty(
+                claim_span(row.provenance),
+                format!(
+                    "declared dependency set violated: `{}` can \
+                     transitively depend on `{}` through the bus, which \
+                     its `@effects(depends: …)` does not declare.{} Add \
+                     the subject to the set, or route the input through \
+                     a subject this locus doesn't reach.",
+                    decl.display,
+                    shown(*sid),
+                    path
+                ),
+            ));
+        }
+
+        // A KNOWN excess is an answer, whatever else is unknown —
+        // the same precedence `causes:` settled on in round 2.
+        let verdict = if !diags.is_empty() {
+            Verdict::Violated
+        } else if uncertain {
+            Verdict::Uncertified
+        } else {
+            Verdict::Holds
+        };
+        witness.incomplete_endpoints.sort();
+        witness.incomplete_endpoints.dedup();
         out.push((
             Judged {
                 ordinal: row.ordinal,
