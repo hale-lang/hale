@@ -45,7 +45,30 @@ pub struct Function {
     /// DERIVED effect classes in declaration order (the stdlib-merged
     /// transitive walk; order is semantic in the existing artifact
     /// and is preserved).
+    ///
+    /// RENDERED, and therefore lossy: when the walk reaches
+    /// something it cannot name, this collapses to the single token
+    /// `unclassified` and every simultaneously-known class is
+    /// discarded. That is fine for the artifact, which reports what
+    /// the old engine reported; it is NOT a basis for judgment. Use
+    /// [`Function::effect_lower_bound`] and
+    /// [`Function::effects_unknown`] for that.
     pub effects: Vec<String>,
+    /// The classes this function is KNOWN to reach, whether or not
+    /// the walk also hit something unnameable — the sound lower
+    /// bound, in canonical order (GH #476 Change 5f review).
+    ///
+    /// Judging over `effects` alone cannot express "definitely
+    /// syscall, and possibly more": a handler that performs a
+    /// syscall AND makes an indirect call renders as exactly
+    /// `unclassified`, so a law that a known effect already
+    /// violates reads as merely uncertain. The pair is the model's
+    /// job to keep, not the judgment's to reconstruct.
+    pub effect_lower_bound: Vec<String>,
+    /// The derived walk reached something it could not name, so
+    /// [`Function::effect_lower_bound`] is a lower bound and not the
+    /// whole answer.
+    pub effects_unknown: bool,
     /// DIRECT effect classes, sorted — what this body itself
     /// performs (carriers, own alloc/publish/spawn sites, ffi and
     /// classified stdlib callees), before propagation. The

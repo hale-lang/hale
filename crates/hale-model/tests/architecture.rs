@@ -65,6 +65,8 @@ fn tiny_model() -> ApplicationModel {
             effect_classes: Vec::new(),
             functions: vec![
                 Function {
+                    effect_lower_bound: Vec::new(),
+                    effects_unknown: false,
                     analyzed: true,
                     summarized: true,
                     owner: Some(LocusDeclId(0)),
@@ -79,6 +81,8 @@ fn tiny_model() -> ApplicationModel {
                     provenance: p,
                 },
                 Function {
+                    effect_lower_bound: Vec::new(),
+                    effects_unknown: false,
                     analyzed: true,
                     summarized: true,
                     owner: Some(LocusDeclId(1)),

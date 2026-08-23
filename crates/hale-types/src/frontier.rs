@@ -35,6 +35,113 @@ use crate::stdlib_surface::{self, EffectSet};
 
 // ===================== inferred effect sets =====================
 
+/// The KNOWN part of a function's derived effect set, and whether
+/// the walk also reached something it could not name.
+///
+/// [`infer_effects`] saturates: `UNCLASSIFIED` is `u64::MAX`, so one
+/// indirect call turns the whole set into "may do anything" and the
+/// classes the walk had already proven are gone. That is the right
+/// answer to "what might this do"; it is the wrong input to "what
+/// does this definitely do", and a judgment needs both — a handler
+/// that performs a syscall AND makes an indirect call already
+/// violates a law the syscall exceeds, whatever the indirect call
+/// turns out to do (GH #476 Change 5f review).
+///
+/// Same walk, same union rules; the difference is that an
+/// unnameable edge sets the flag instead of saturating the set.
+pub fn infer_effects_lower_bound(
+    summary: &AllocSummary,
+    key: &FnKey,
+    ffi: &BTreeSet<String>,
+) -> (EffectSet, bool) {
+    fn walk(
+        summary: &AllocSummary,
+        key: &FnKey,
+        ffi: &BTreeSet<String>,
+        seen: &mut BTreeSet<FnKey>,
+        steps: &mut u32,
+        unknown: &mut bool,
+    ) -> EffectSet {
+        if !seen.insert(key.clone()) {
+            return EffectSet::PURE;
+        }
+        *steps += 1;
+        if *steps > callgraph::MAX_STEPS {
+            *unknown = true;
+            return EffectSet::PURE;
+        }
+        let Some(fs) = summary.fns.get(key) else {
+            return EffectSet::PURE;
+        };
+        let mut acc = EffectSet::PURE;
+        if let Some(c) = summary.carries.get(key) {
+            if c.is_unclassified() {
+                *unknown = true;
+            } else {
+                acc = acc.union(*c);
+            }
+        }
+        if !fs.sites.is_empty() {
+            acc = acc.union(EffectSet::ALLOC);
+        }
+        for site in &fs.effect_sites {
+            acc = acc.union(match site.kind {
+                alloc_summary::EffectSiteKind::Publish(_) => {
+                    EffectSet::PUBLISH
+                }
+                alloc_summary::EffectSiteKind::Spawn(_) => {
+                    EffectSet::ALLOC
+                }
+            });
+        }
+        for edge in &fs.calls {
+            match &edge.callee {
+                Callee::Resolved(k) => {
+                    if let Some(c) = summary.carries.get(k) {
+                        if c.is_unclassified() {
+                            *unknown = true;
+                        } else {
+                            acc = acc.union(*c);
+                        }
+                    }
+                    if k.locus.is_none() && ffi.contains(&k.fn_name) {
+                        acc = acc.union(EffectSet::SYSCALL);
+                    }
+                    acc = acc.union(walk(
+                        summary, k, ffi, seen, steps, unknown,
+                    ));
+                }
+                Callee::Unresolved(name) => {
+                    // The two shapes that make a set unknowable —
+                    // an indirect call and an untypeable receiver —
+                    // set the flag and contribute nothing, rather
+                    // than swallowing what is already known.
+                    if fs.fn_params.iter().any(|p| p == name)
+                        || edge.opaque_method_call()
+                    {
+                        *unknown = true;
+                        continue;
+                    }
+                    let segs: Vec<&str> = name.split("::").collect();
+                    match stdlib_surface::effects_for(&segs) {
+                        Some(e) if !e.is_unclassified() => {
+                            acc = acc.union(e)
+                        }
+                        Some(_) => *unknown = true,
+                        None => {}
+                    }
+                }
+            }
+        }
+        acc
+    }
+    let mut seen = BTreeSet::new();
+    let mut steps = 0u32;
+    let mut unknown = false;
+    let set = walk(summary, key, ffi, &mut seen, &mut steps, &mut unknown);
+    (set, unknown)
+}
+
 /// The effect set a fn actually performs, transitively — inferred,
 /// never declared. Used by the manifest (a report) and by the
 /// causality check (which needs each subscriber's set).

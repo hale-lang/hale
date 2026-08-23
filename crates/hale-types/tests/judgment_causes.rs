@@ -211,6 +211,33 @@ fn causes_judgment_matches_the_evaluator_over_the_corpus() {
             .max_by_key(|v| strength(*v))
             .unwrap_or(Verdict::Holds);
         if strength(model_v) == strength(old_v) {
+            // When the evaluator saturated, its message lists every
+            // class at once and the model's lists only what it
+            // knows. Comparable as a SUBSET, not byte-for-byte: the
+            // model may name fewer classes, never a class the
+            // evaluator did not.
+            if evaluator_guessed {
+                let evaluator_text = old_diags.join(" ");
+                let invented: Vec<&str> = [
+                    "syscall", "block", "publish", "time", "entropy",
+                    "env", "alloc", "secret_use",
+                ]
+                .into_iter()
+                .filter(|c| {
+                    new_diags.iter().any(|d| d.contains(c))
+                        && !evaluator_text.contains(c)
+                })
+                .collect();
+                if !invented.is_empty() {
+                    bad.push(format!(
+                        "{}: the model names classes the evaluator \
+                         did not: {:?}",
+                        p.origin, invented
+                    ));
+                }
+                strengthened += 1;
+                continue;
+            }
             if old_diags != new_diags {
                 bad.push(format!(
                     "{}: same verdict, different diagnostics:\n  \
@@ -589,4 +616,264 @@ fn main() { App { }; }
 "#,
     );
     assert_eq!(v, Verdict::Holds, "nothing undeclared is caused: {}", msg);
+}
+
+/// Review round 2, blocker 1: a KNOWN excess beats uncertainty.
+///
+/// The handler definitely performs a syscall AND makes an indirect
+/// call. The declaration does not cover syscall, so the law is
+/// already violated whatever the indirect call turns out to do —
+/// monotone, and the reason the model must keep a lower bound
+/// rather than a rendered `unclassified` token that discards it.
+#[test]
+fn a_known_excess_beats_uncertainty() {
+    let (v, msg) = judge(
+        r#"
+type Msg { n: Int = 0; }
+topic T { payload: Msg; subject: "t"; }
+fn id(x: Int) -> Int { return x; }
+fn apply(f: fn (Int) -> Int, x: Int) -> Int { return f(x); }
+locus Sink {
+    params { n: Int = 0; }
+    bus { subscribe T as on_t; }
+    fn on_t(m: Msg) {
+        println("definite syscall");
+        self.n = apply(id, m.n);
+    }
+}
+locus Source {
+    bus { publish T; }
+    @effects(causes: { publish, alloc })
+    fn fire() { T <- Msg { n: 1 }; }
+}
+main locus App {
+    params { s: Sink = Sink { }; p: Source = Source { }; }
+    run() { self.p.fire(); }
+}
+fn main() { App { }; }
+"#,
+    );
+    assert_eq!(
+        v,
+        Verdict::Violated,
+        "a known syscall already exceeds the declaration: {}",
+        msg
+    );
+    assert!(msg.contains("syscall"), "{}", msg);
+}
+
+/// …and the anti-control: the SAME indirect call with nothing known
+/// beyond the declaration stays `Uncertified`. Without this, an
+/// engine that answered `Violated` on any uncertainty would pass
+/// the test above.
+#[test]
+fn uncertainty_without_a_known_excess_is_uncertified() {
+    let (v, _) = judge(
+        r#"
+type Msg { n: Int = 0; }
+topic T { payload: Msg; subject: "t"; }
+fn id(x: Int) -> Int { return x; }
+fn apply(f: fn (Int) -> Int, x: Int) -> Int { return f(x); }
+locus Sink {
+    params { n: Int = 0; }
+    bus { subscribe T as on_t; }
+    fn on_t(m: Msg) { self.n = apply(id, m.n); }
+}
+locus Source {
+    bus { publish T; }
+    @effects(causes: { publish, alloc })
+    fn fire() { T <- Msg { n: 1 }; }
+}
+main locus App {
+    params { s: Sink = Sink { }; p: Source = Source { }; }
+    run() { self.p.fire(); }
+}
+fn main() { App { }; }
+"#,
+    );
+    assert_eq!(v, Verdict::Uncertified);
+}
+
+/// Review round 2, blocker 2: uncertainty is RELEVANCE-SCOPED. An
+/// unrelated adapter-bound topic is a hole somewhere else in the
+/// application; nothing on this causal closure reaches it, so it
+/// must not turn a local `Holds` into `Uncertified`.
+#[test]
+fn an_unrelated_binding_does_not_poison_the_law() {
+    let (v, _) = judge(
+        r#"
+type Msg { n: Int = 0; }
+topic T { payload: Msg; subject: "t"; }
+topic Unrelated { payload: Msg; subject: "unrelated"; }
+locus MyAdapter {
+    params { n: Int = 0; }
+    fn send(subject: String, bytes: Bytes) { self.n = self.n + 1; }
+}
+locus Sink {
+    params { n: Int = 0; }
+    bus { subscribe T as on_t; }
+    fn on_t(m: Msg) { self.n = m.n + 1; }
+}
+locus Source {
+    bus { publish T; }
+    @effects(causes: { publish, alloc })
+    fn fire() { T <- Msg { n: 1 }; }
+}
+main locus App {
+    params { s: Sink = Sink { }; p: Source = Source { }; }
+    bindings { Unrelated: MyAdapter { }; }
+    run() { self.p.fire(); }
+}
+fn main() { App { }; }
+"#,
+    );
+    assert_eq!(
+        v,
+        Verdict::Holds,
+        "a hole on an unrelated topic says nothing about this \
+         causal closure"
+    );
+}
+
+/// Keyed delivery widens when the produced key is not statically
+/// known. The builder records this publish's domain as
+/// `AnyOfType(Int)` — it does not read `1` out of the literal — so
+/// the edge is possible and the law is violated. The conservative
+/// direction, and the reviewer's "unknown domain still creates the
+/// possible edge" control.
+#[test]
+fn an_unknown_key_domain_widens_conservatively() {
+    let (v, _) = judge(
+        r#"
+type Msg { shard: Int = 0; }
+topic T { payload: Msg; subject: "t"; keyed_by shard; }
+locus Sink {
+    params { n: Int = 0; }
+    bus { subscribe T as on_t where key == 2; }
+    fn on_t(m: Msg) { println("io"); }
+}
+locus Source {
+    bus { publish T; }
+    @effects(causes: { publish, alloc })
+    fn fire() { T <- Msg { shard: 1 }; }
+}
+main locus App {
+    params { s: Sink = Sink { }; p: Source = Source { }; }
+    run() { self.p.fire(); }
+}
+fn main() { App { }; }
+"#,
+    );
+    assert_eq!(
+        v,
+        Verdict::Violated,
+        "an unknown produced key cannot rule the delivery out"
+    );
+}
+
+/// …and the disjointness rule itself, pinned where it lives. A
+/// lawful model CAN carry an exact domain (`validate` accepts it as
+/// a first-class fact); the builder simply does not infer one from
+/// a literal today, so the rule is exercised on the query directly
+/// rather than through a program that cannot reach the state.
+#[test]
+fn may_deliver_decides_exact_key_domains() {
+    use hale_model::keys::{KeyDomain, KeyPredicate, KeyValue};
+    let e = hale_model::Entities {
+        subjects: vec![hale_model::Subject {
+            pattern: "t".to_string(),
+            exact: true,
+            provenance: hale_model::ProvenanceId(0),
+        }],
+        ..Default::default()
+    };
+    let sid = hale_model::SubjectId(0);
+    let publish = |domain: Option<KeyDomain>| hale_model::Publish {
+        function: hale_model::FunctionId(0),
+        subject: sid,
+        declared_topic: None,
+        payload: hale_model::PayloadContractId(0),
+        site: 0,
+        in_loop: false,
+        key_domain: domain,
+        disposition: hale_model::keys::PublishDisposition::Default,
+        provenance: hale_model::ProvenanceId(0),
+    };
+    let sub = |pred: KeyPredicate| hale_model::Subscribe {
+        subject: sid,
+        declared_topic: None,
+        payload: hale_model::PayloadContractId(0),
+        handler: hale_model::FunctionId(0),
+        site: 0,
+        key_predicate: pred,
+        capacity: hale_model::keys::Capacity::Unbounded,
+        shed: hale_model::keys::ShedPolicy::None,
+        provenance: hale_model::ProvenanceId(0),
+    };
+    let exact_one =
+        Some(KeyDomain::Exact(vec![KeyValue::Int(1)]));
+    assert!(
+        !hale_types::judgment::may_deliver(
+            &e,
+            &publish(exact_one.clone()),
+            &sub(KeyPredicate::EqLiteral(KeyValue::Int(2)))
+        ),
+        "an exact key set of {{1}} never reaches a `key == 2` filter"
+    );
+    assert!(hale_types::judgment::may_deliver(
+        &e,
+        &publish(exact_one.clone()),
+        &sub(KeyPredicate::EqLiteral(KeyValue::Int(1)))
+    ));
+    // Ranges decide the same way…
+    assert!(!hale_types::judgment::may_deliver(
+        &e,
+        &publish(Some(KeyDomain::IntRange { min: 0, max: 3 })),
+        &sub(KeyPredicate::EqLiteral(KeyValue::Int(9)))
+    ));
+    // …and everything unknown widens: an unknown domain, an
+    // unkeyed subscription, a replica filter, an unknown filter.
+    assert!(hale_types::judgment::may_deliver(
+        &e,
+        &publish(Some(KeyDomain::Unknown)),
+        &sub(KeyPredicate::EqLiteral(KeyValue::Int(2)))
+    ));
+    assert!(hale_types::judgment::may_deliver(
+        &e,
+        &publish(exact_one.clone()),
+        &sub(KeyPredicate::Any)
+    ));
+    assert!(hale_types::judgment::may_deliver(
+        &e,
+        &publish(exact_one),
+        &sub(KeyPredicate::EqReplica)
+    ));
+}
+
+/// A matching literal filter delivers — the keyed path is not an
+/// unconditional "keyed means no edge".
+#[test]
+fn a_matching_key_filter_creates_the_edge() {
+    let (v, _) = judge(
+        r#"
+type Msg { shard: Int = 0; }
+topic T { payload: Msg; subject: "t"; keyed_by shard; }
+locus Sink {
+    params { n: Int = 0; }
+    bus { subscribe T as on_t where key == 1; }
+    fn on_t(m: Msg) { println("io"); }
+}
+locus Source {
+    bus { publish T; }
+    @effects(causes: { publish, alloc })
+    fn fire() { T <- Msg { shard: 1 }; }
+}
+main locus App {
+    params { s: Sink = Sink { }; p: Source = Source { }; }
+    run() { self.p.fire(); }
+}
+fn main() { App { }; }
+"#,
+    );
+    assert_eq!(v, Verdict::Violated);
 }

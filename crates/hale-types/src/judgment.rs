@@ -4499,33 +4499,52 @@ fn has_claim_surface(bundle: &crate::symbol::Bundle<'_>) -> bool {
 // ================= possible delivery (shared) =====================
 
 /// Whether a publish to one endpoint can be DELIVERED to one
-/// subscription, and whether the model is sure.
+/// subscription.
 ///
 /// The join is the model's typed wire identity — `SubjectId` — not
-/// a rendered spelling. `topic Orders { subject: "orders"; }`
+/// a rendered spelling: `topic Orders { subject: "orders"; }`
 /// published by name and `subscribe "orders"` by literal are the
-/// SAME address and the runtime delivers between them; comparing
-/// display text sees two unrelated strings and certifies the edge
-/// away (GH #476 Change 5f review). `declared_topic` is a link to
-/// the declaration, never the delivery identity.
+/// SAME address and the runtime delivers between them. Wildcards
+/// widen it. `declared_topic` is a link to the declaration, never
+/// the delivery identity.
 ///
-/// Wildcards widen it: a subscription whose pattern contains `**`
-/// covers every concrete subject it matches. Key filters are
-/// deliberately NOT consulted — a key predicate can only ever
-/// REMOVE deliveries, so ignoring it over-approximates the reach,
-/// which is the sound direction for any law that asks what a
-/// publish can cause.
-pub fn possibly_delivers(
+/// KEYS decide the rest. A keyed publish whose domain is statically
+/// exact and a subscription whose predicate is a literal outside it
+/// cannot meet — treating keyed delivery as broadcast is the
+/// failure mode the keyed schema names. Everything unknown widens:
+/// an unknown domain, an unknown predicate, a replica or fallback
+/// filter all leave the edge possible, because over-approximating
+/// reach is the sound direction for a law asking what a publish can
+/// cause.
+pub fn may_deliver(
     e: &hale_model::Entities,
-    published: hale_model::SubjectId,
+    publish: &hale_model::Publish,
     sub: &hale_model::Subscribe,
 ) -> bool {
-    if sub.subject == published {
-        return true;
+    let addressed = sub.subject == publish.subject || {
+        let pat = e.subjects[sub.subject.index()].pattern.as_str();
+        let wire = e.subjects[publish.subject.index()].pattern.as_str();
+        pat.contains("**") && crate::wildcard_match(pat, wire)
+    };
+    if !addressed {
+        return false;
     }
-    let pat = e.subjects[sub.subject.index()].pattern.as_str();
-    let wire = e.subjects[published.index()].pattern.as_str();
-    pat.contains("**") && crate::wildcard_match(pat, wire)
+    use hale_model::keys::{KeyDomain, KeyPredicate};
+    match (&publish.key_domain, &sub.key_predicate) {
+        // Decidable disjointness: an exact produced set and a
+        // literal filter that is not in it.
+        (Some(KeyDomain::Exact(vals)), KeyPredicate::EqLiteral(k)) => {
+            vals.contains(k)
+        }
+        (
+            Some(KeyDomain::IntRange { min, max }),
+            KeyPredicate::EqLiteral(hale_model::keys::KeyValue::Int(k)),
+        ) => k >= min && k <= max,
+        // Everything else is possible: unknown domains, unknown
+        // filters, replica and fallback selection, unkeyed
+        // subscriptions.
+        _ => true,
+    }
 }
 
 /// A class name's ATOMS, with the language's built-in folding
@@ -4669,16 +4688,18 @@ pub fn judge_causes(
     // A function's DERIVED classes, and whether they are known at
     // all. `unclassified` is the analysis saying "this body reaches
     // something I cannot name" — it is not the empty set.
+    // The KNOWN classes and whether anything is unknown — the
+    // typed pair the model carries, not a reading of the rendered
+    // `effects` vector, which collapses to `unclassified` and
+    // discards every simultaneously known class.
     let effects_of = |f: FunctionId| -> (BTreeSet<String>, bool) {
         let row = &e.functions[f.index()];
-        let unknown = row.effects.iter().any(|c| c == "unclassified");
         let known: BTreeSet<String> = row
-            .effects
+            .effect_lower_bound
             .iter()
-            .filter(|c| c.as_str() != "unclassified")
             .flat_map(|c| effect_class_atoms(e, c))
             .collect();
-        (known, unknown)
+        (known, row.effects_unknown)
     };
     // Which relation families a hole at a function hides.
     let hole_hides = |f: FunctionId, mask: hale_model::RelationSet| {
@@ -4796,7 +4817,11 @@ pub fn judge_causes(
             // the id; the witness renders what the author wrote —
             // `Orders`, not `orders` — because a path a developer
             // reads must name the declaration they can go look at.
-            let mut published: Vec<(hale_model::SubjectId, String)> = r
+            let mut published: Vec<(
+                hale_model::SubjectId,
+                String,
+                hale_model::Publish,
+            )> = r
                 .publishes
                 .iter()
                 .filter(|p| p.function == f)
@@ -4807,37 +4832,70 @@ pub fn judge_causes(
                             .pattern
                             .clone(),
                     };
-                    (p.subject, written)
+                    (p.subject, written, p.clone())
                 })
                 .collect();
+            // An interior stdlib publish has no key domain the model
+            // records, so it widens like any unknown one.
             published.extend(
-                interior_pubs
-                    .get(&f.0)
-                    .into_iter()
-                    .flatten()
-                    .map(|s| {
-                        (*s, e.subjects[s.index()].pattern.clone())
-                    }),
+                interior_pubs.get(&f.0).into_iter().flatten().map(|s| {
+                    (
+                        *s,
+                        e.subjects[s.index()].pattern.clone(),
+                        hale_model::Publish {
+                            function: f,
+                            subject: *s,
+                            declared_topic: None,
+                            payload: hale_model::PayloadContractId(0),
+                            site: 0,
+                            in_loop: false,
+                            key_domain: None,
+                            disposition:
+                                hale_model::keys::PublishDisposition::Default,
+                            provenance: hale_model::ProvenanceId(0),
+                        },
+                    )
+                }),
             );
-            published.sort();
-            published.dedup();
-            for (subject, written) in published {
-                // Delivery incompleteness: the model admits it may
-                // not know every subscriber of this address.
+            published.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+            published.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+            for (subject, written, pubrow) in published {
+                // Delivery incompleteness, SCOPED TO THIS ENDPOINT.
+                // A hole somewhere else in the application says
+                // nothing about this causal closure — the model's
+                // hole law is reachability-scoped, and a global
+                // check turns an unrelated adapter binding into
+                // uncertainty about a purely local publish.
+                //
+                // The relation that matters is SUBSCRIBES (is the
+                // set of possible handlers complete?) rather than
+                // DELIVERY (the must-deliver guarantee), plus
+                // KEY_FILTERS, since an unknown filter widens who
+                // may receive.
+                let topic_here = e
+                    .topics
+                    .iter()
+                    .position(|t| t.subject == subject)
+                    .map(|i| hale_model::TopicId(i as u32));
                 if model.holes.iter().any(|h| {
-                    h.hides
-                        .intersects(hale_model::RelationSet::DELIVERY)
-                        && matches!(
-                            h.at,
-                            EntityRef::Topic(_) | EntityRef::Subject(_)
-                        )
+                    let relevant = h.hides.intersects(
+                        hale_model::RelationSet::SUBSCRIBES.union(
+                            hale_model::RelationSet::KEY_FILTERS,
+                        ),
+                    );
+                    let here = match h.at {
+                        EntityRef::Subject(s) => s == subject,
+                        EntityRef::Topic(t) => Some(t) == topic_here,
+                        _ => false,
+                    };
+                    relevant && here
                 }) {
                     uncertain = true;
                 }
                 for su in r
                     .subscribes
                     .iter()
-                    .filter(|su| possibly_delivers(e, subject, su))
+                    .filter(|su| may_deliver(e, &pubrow, su))
                 {
                     let (eff, unknown) = effects_of(su.handler);
                     if unknown {
