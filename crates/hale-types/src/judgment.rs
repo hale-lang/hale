@@ -4496,156 +4496,9 @@ fn has_claim_surface(bundle: &crate::symbol::Bundle<'_>) -> bool {
 }
 
 
-// ================= possible delivery (shared) =====================
-
-/// Whether a publish to one endpoint can be DELIVERED to one
-/// subscription.
-///
-/// The join is the model's typed wire identity — `SubjectId` — not
-/// a rendered spelling: `topic Orders { subject: "orders"; }`
-/// published by name and `subscribe "orders"` by literal are the
-/// SAME address and the runtime delivers between them. Wildcards
-/// widen it. `declared_topic` is a link to the declaration, never
-/// the delivery identity.
-///
-/// KEYS decide the rest. A keyed publish whose domain is statically
-/// exact and a subscription whose predicate is a literal outside it
-/// cannot meet — treating keyed delivery as broadcast is the
-/// failure mode the keyed schema names. Everything unknown widens:
-/// an unknown domain, an unknown predicate, a replica or fallback
-/// filter all leave the edge possible, because over-approximating
-/// reach is the sound direction for a law asking what a publish can
-/// cause.
-pub fn may_deliver(
-    e: &hale_model::Entities,
-    publish: &hale_model::Publish,
-    sub: &hale_model::Subscribe,
-) -> bool {
-    let addressed = sub.subject == publish.subject || {
-        let pat = e.subjects[sub.subject.index()].pattern.as_str();
-        let wire = e.subjects[publish.subject.index()].pattern.as_str();
-        pat.contains("**") && crate::wildcard_match(pat, wire)
-    };
-    if !addressed {
-        return false;
-    }
-    use hale_model::keys::{KeyDomain, KeyPredicate};
-    match (&publish.key_domain, &sub.key_predicate) {
-        // Decidable disjointness: an exact produced set and a
-        // literal filter that is not in it.
-        (Some(KeyDomain::Exact(vals)), KeyPredicate::EqLiteral(k)) => {
-            vals.contains(k)
-        }
-        (
-            Some(KeyDomain::IntRange { min, max }),
-            KeyPredicate::EqLiteral(hale_model::keys::KeyValue::Int(k)),
-        ) => k >= min && k <= max,
-        // Everything else is possible: unknown domains, unknown
-        // filters, replica and fallback selection, unkeyed
-        // subscriptions.
-        _ => true,
-    }
-}
-
-/// A class name's ATOMS, with the language's built-in folding
-/// applied: `ffi` is the `syscall` bit (an FFI call is a syscall as
-/// far as every contract is concerned), `spawn` and `recursion` own
-/// no effect bit at all, a composed class means its expansion, and
-/// a cyclic one means nothing. One helper, because a second reading
-/// of "what does this class name mean" is how a contract starts
-/// certifying the wrong set (review: `@effects(causes: {ffi})` was
-/// rejected against an actual set that spells the same bit
-/// `syscall`).
-pub fn effect_class_atoms(
-    e: &hale_model::Entities,
-    name: &str,
-) -> BTreeSet<String> {
-    fn builtin_atom(n: &str) -> Option<&'static str> {
-        Some(match n {
-            "syscall" | "ffi" => "syscall",
-            "block" => "block",
-            "publish" => "publish",
-            "time" => "time",
-            "entropy" => "entropy",
-            "env" => "env",
-            "alloc" => "alloc",
-            "secret_use" => "secret_use",
-            // Own no bit: a contract naming them constrains nothing.
-            "spawn" | "recursion" => return None,
-            _ => return None,
-        })
-    }
-    match e.effect_classes.iter().find(|c| c.name == name) {
-        Some(c) => match &c.definition {
-            hale_model::EffectClassDefinition::Composed { atoms } => {
-                atoms
-                    .iter()
-                    .flat_map(|a| effect_class_atoms(e, a))
-                    .collect()
-            }
-            hale_model::EffectClassDefinition::Atomic => {
-                match builtin_atom(name) {
-                    Some(b) => std::iter::once(b.to_string()).collect(),
-                    None => std::iter::once(name.to_string()).collect(),
-                }
-            }
-            hale_model::EffectClassDefinition::InvalidCycle => {
-                BTreeSet::new()
-            }
-        },
-        None => match builtin_atom(name) {
-            Some(b) => std::iter::once(b.to_string()).collect(),
-            None if name == "spawn" || name == "recursion" => {
-                BTreeSet::new()
-            }
-            // A bare reference to an undeclared user class: its own
-            // atom. (The declaration itself is diagnosed elsewhere.)
-            None => std::iter::once(name.to_string()).collect(),
-        },
-    }
-}
-
-/// Render a set of effect classes in the language's canonical
-/// order: built-ins in their fixed order, then user classes in
-/// DECLARATION order. Diagnostics are byte-compared, so this order
-/// is part of the contract.
-pub fn render_effect_classes(
-    e: &hale_model::Entities,
-    classes: &BTreeSet<String>,
-) -> Vec<String> {
-    const BUILTINS: &[&str] = &[
-        "syscall",
-        "block",
-        "publish",
-        "time",
-        "entropy",
-        "env",
-        "alloc",
-        "secret_use",
-    ];
-    let mut out: Vec<String> = Vec::new();
-    for b in BUILTINS {
-        if classes.contains(*b) {
-            out.push((*b).to_string());
-        }
-    }
-    let mut user: Vec<(u32, &String)> = classes
-        .iter()
-        .filter(|c| !BUILTINS.contains(&c.as_str()))
-        .map(|c| {
-            let idx = e
-                .effect_classes
-                .iter()
-                .find(|ec| ec.name == *c)
-                .map(|ec| ec.declaration_index)
-                .unwrap_or(u32::MAX);
-            (idx, c)
-        })
-        .collect();
-    user.sort();
-    out.extend(user.into_iter().map(|(_, c)| c.clone()));
-    out
-}
+pub use crate::model_query::{
+    effect_class_atoms, may_deliver, render_effect_classes,
+};
 
 /// GH #476 Change 5f — `@effects(causes: {…})` over the model.
 ///
@@ -4742,19 +4595,8 @@ pub fn judge_causes_witnessed(
     // A function's DERIVED classes, and whether they are known at
     // all. `unclassified` is the analysis saying "this body reaches
     // something I cannot name" — it is not the empty set.
-    // The KNOWN classes and whether anything is unknown — the
-    // typed pair the model carries, not a reading of the rendered
-    // `effects` vector, which collapses to `unclassified` and
-    // discards every simultaneously known class.
-    let effects_of = |f: FunctionId| -> (BTreeSet<String>, bool) {
-        let row = &e.functions[f.index()];
-        let known: BTreeSet<String> = row
-            .effect_lower_bound
-            .iter()
-            .flat_map(|c| effect_class_atoms(e, c))
-            .collect();
-        (known, row.effects_unknown)
-    };
+    let effects_of =
+        |f: FunctionId| crate::model_query::effects_of(e, f);
     // Which relation families a hole at a function hides.
     let hole_hides = |f: FunctionId, mask: hale_model::RelationSet| {
         model.holes.iter().any(|h| {
@@ -4947,84 +4789,27 @@ pub fn judge_causes_witnessed(
                 // DELIVERY (the must-deliver guarantee), plus
                 // KEY_FILTERS, since an unknown filter widens who
                 // may receive.
-                // Everything below joins on the WIRE SUBJECT.
-                // `declared_topic` is the syntactic link — a literal
-                // `"t" <- …` send carries `None` even when its text
-                // is a declared topic's wire subject, and after
-                // lowering the runtime cannot tell the two spellings
-                // apart. Keying the route or the residue on the
-                // declaration link therefore missed every
-                // literal-spelled send into a bound topic (review
-                // round 5, the same wire-vs-syntax distinction the
-                // delivery join already makes).
-                let wire =
-                    e.subjects[subject.index()].pattern.as_str();
-                if model.holes.iter().any(|h| {
-                    // Three ways this endpoint's downstream can be
-                    // incomplete: the possible handler set is not
-                    // fully known (SUBSCRIBES), a filter that
-                    // decides who receives is not known
-                    // (KEY_FILTERS), or the route leaves the
-                    // program entirely — an adapter-bound topic is
-                    // an ExternalOpaque hole hiding BINDS|DELIVERY,
-                    // and whatever the peer does is not in this
-                    // graph at all.
-                    let relevant = h.hides.intersects(
-                        hale_model::RelationSet::SUBSCRIBES
-                            .union(hale_model::RelationSet::KEY_FILTERS)
-                            .union(hale_model::RelationSet::DELIVERY),
-                    );
-                    let here = match h.at {
-                        // Subject-grained residue covers by
-                        // PATTERN: a hole on `orders.**` is
-                        // relevant to a publish on `orders.created`.
-                        EntityRef::Subject(sid) => {
-                            let pat = e.subjects[sid.index()]
-                                .pattern
-                                .as_str();
-                            sid == subject
-                                || (pat.contains("**")
-                                    && crate::wildcard_match(pat, wire))
-                        }
-                        // A topic-anchored hole is relevant when
-                        // the topic ADDRESSES this wire, however the
-                        // send happened to spell it.
-                        EntityRef::Topic(t) => {
-                            e.topics.get(t.index()).is_some_and(|tp| {
-                                tp.subject == subject
-                            })
-                        }
-                        _ => false,
-                    };
-                    relevant && here
-                }) {
+                // ONE question, asked in one place: is what lies
+                // beyond this endpoint fully modeled? Holes about
+                // the handler set or its filters, an opaque
+                // boundary, and a typed outbound route that leaves
+                // the application are all the same answer, and
+                // scoping them to this endpoint is what keeps an
+                // unrelated binding from poisoning a local law.
+                if crate::model_query::endpoint_incomplete(
+                    model,
+                    subject,
+                    crate::model_query::Direction::Downstream,
+                ) {
                     uncertain = true;
                     witness.incomplete_endpoints.push(subject);
-                }
-                // …and the routes the model DOES understand. A
-                // typed outbound binding is not a hole — the
-                // transport is fully modeled — but the causal
-                // closure still leaves the application at it: a
-                // `connect`-role send is handed to a peer whose
-                // behaviour is not in this model at all. Reading
-                // only `holes` saw an opaque adapter and missed an
-                // ordinary `unix(..., role: connect)` (review round
-                // 4).
-                let outbound = r.binds.iter().any(|b| {
-                    let binding = &e.bindings[b.binding.index()];
-                    binding.subject == subject
-                        && binding.role
-                            == hale_model::BindingRole::Connect
-                });
-                if outbound {
-                    uncertain = true;
-                    witness.incomplete_endpoints.push(subject);
-                    witness.crosses_external_route = true;
                 }
                 for su in r
                     .subscribes
                     .iter()
-                    .filter(|su| may_deliver(e, &pubrow, su))
+                    .filter(|su| {
+                        crate::model_query::may_deliver(e, &pubrow, su)
+                    })
                 {
                     let (eff, unknown) = effects_of(su.handler);
                     witness.reached_handlers.push(su.handler);

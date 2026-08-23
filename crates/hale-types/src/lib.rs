@@ -34,6 +34,7 @@ pub mod claims;
 pub mod model;
 pub mod judgment;
 pub mod model_builder;
+pub mod model_query;
 pub mod topic_identity;
 pub mod topology;
 pub mod topology_projection;
