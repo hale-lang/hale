@@ -35,6 +35,113 @@ use crate::stdlib_surface::{self, EffectSet};
 
 // ===================== inferred effect sets =====================
 
+/// The KNOWN part of a function's derived effect set, and whether
+/// the walk also reached something it could not name.
+///
+/// [`infer_effects`] saturates: `UNCLASSIFIED` is `u64::MAX`, so one
+/// indirect call turns the whole set into "may do anything" and the
+/// classes the walk had already proven are gone. That is the right
+/// answer to "what might this do"; it is the wrong input to "what
+/// does this definitely do", and a judgment needs both — a handler
+/// that performs a syscall AND makes an indirect call already
+/// violates a law the syscall exceeds, whatever the indirect call
+/// turns out to do (GH #476 Change 5f review).
+///
+/// Same walk, same union rules; the difference is that an
+/// unnameable edge sets the flag instead of saturating the set.
+pub fn infer_effects_lower_bound(
+    summary: &AllocSummary,
+    key: &FnKey,
+    ffi: &BTreeSet<String>,
+) -> (EffectSet, bool) {
+    fn walk(
+        summary: &AllocSummary,
+        key: &FnKey,
+        ffi: &BTreeSet<String>,
+        seen: &mut BTreeSet<FnKey>,
+        steps: &mut u32,
+        unknown: &mut bool,
+    ) -> EffectSet {
+        if !seen.insert(key.clone()) {
+            return EffectSet::PURE;
+        }
+        *steps += 1;
+        if *steps > callgraph::MAX_STEPS {
+            *unknown = true;
+            return EffectSet::PURE;
+        }
+        let Some(fs) = summary.fns.get(key) else {
+            return EffectSet::PURE;
+        };
+        let mut acc = EffectSet::PURE;
+        if let Some(c) = summary.carries.get(key) {
+            if c.is_unclassified() {
+                *unknown = true;
+            } else {
+                acc = acc.union(*c);
+            }
+        }
+        if !fs.sites.is_empty() {
+            acc = acc.union(EffectSet::ALLOC);
+        }
+        for site in &fs.effect_sites {
+            acc = acc.union(match site.kind {
+                alloc_summary::EffectSiteKind::Publish(_) => {
+                    EffectSet::PUBLISH
+                }
+                alloc_summary::EffectSiteKind::Spawn(_) => {
+                    EffectSet::ALLOC
+                }
+            });
+        }
+        for edge in &fs.calls {
+            match &edge.callee {
+                Callee::Resolved(k) => {
+                    if let Some(c) = summary.carries.get(k) {
+                        if c.is_unclassified() {
+                            *unknown = true;
+                        } else {
+                            acc = acc.union(*c);
+                        }
+                    }
+                    if k.locus.is_none() && ffi.contains(&k.fn_name) {
+                        acc = acc.union(EffectSet::SYSCALL);
+                    }
+                    acc = acc.union(walk(
+                        summary, k, ffi, seen, steps, unknown,
+                    ));
+                }
+                Callee::Unresolved(name) => {
+                    // The two shapes that make a set unknowable —
+                    // an indirect call and an untypeable receiver —
+                    // set the flag and contribute nothing, rather
+                    // than swallowing what is already known.
+                    if fs.fn_params.iter().any(|p| p == name)
+                        || edge.opaque_method_call()
+                    {
+                        *unknown = true;
+                        continue;
+                    }
+                    let segs: Vec<&str> = name.split("::").collect();
+                    match stdlib_surface::effects_for(&segs) {
+                        Some(e) if !e.is_unclassified() => {
+                            acc = acc.union(e)
+                        }
+                        Some(_) => *unknown = true,
+                        None => {}
+                    }
+                }
+            }
+        }
+        acc
+    }
+    let mut seen = BTreeSet::new();
+    let mut steps = 0u32;
+    let mut unknown = false;
+    let set = walk(summary, key, ffi, &mut seen, &mut steps, &mut unknown);
+    (set, unknown)
+}
+
 /// The effect set a fn actually performs, transitively — inferred,
 /// never declared. Used by the manifest (a report) and by the
 /// causality check (which needs each subscriber's set).
@@ -249,12 +356,49 @@ fn collect_published_subjects(
     }
 }
 
+/// One `causes:` assertion's outcome, keyed so a caller can join it
+/// to the lowered law row it came from.
+///
+/// A function may carry SEVERAL `causes:` clauses, and every one of
+/// them anchors its diagnostic at the same fn-name span — so a span
+/// is not an identity (GH #476 Change 5f, review round 4). The
+/// ordinal is the assertion's position among that function's
+/// `causes:` clauses, in source order, which is exactly the order
+/// the lowering emits rows in.
+pub struct CausesReport {
+    /// The annotated function, as the evaluator displays it.
+    pub function: String,
+    /// 0-based position among this function's `causes:` clauses.
+    pub ordinal: usize,
+    /// `None` when the assertion holds.
+    pub diag: Option<Diag>,
+}
+
+/// Per-assertion `causes:` outcomes — the oracle a differential
+/// joins one law to one law by.
+pub fn causes_reports(
+    programs: &[&Program],
+    graph: &BusGraph,
+) -> Vec<CausesReport> {
+    causes_inner(programs, graph)
+}
+
 /// `@effects(causes: {…})` — check the declared causal set against
 /// what the fn can actually cause through bus edges.
 pub fn causes_diags(
     programs: &[&Program],
     graph: &BusGraph,
 ) -> Vec<Diag> {
+    causes_inner(programs, graph)
+        .into_iter()
+        .filter_map(|r| r.diag)
+        .collect()
+}
+
+fn causes_inner(
+    programs: &[&Program],
+    graph: &BusGraph,
+) -> Vec<CausesReport> {
     // The seed's user effect-class table, so an excess class renders
     // as `money` rather than as nothing at all.
     let names: Vec<String> = programs
@@ -263,13 +407,24 @@ pub fn causes_diags(
         .find(|n| !n.is_empty())
         .cloned()
         .unwrap_or_default();
-    let mut roots: Vec<(FnKey, Vec<EffectClass>, Span)> = Vec::new();
+    // (fn, declared classes, span, per-fn assertion ordinal). A fn
+    // may carry several `causes:` clauses; the ordinal is what makes
+    // each one identifiable, since they share a span.
+    let mut roots: Vec<(FnKey, Vec<EffectClass>, Span, usize)> =
+        Vec::new();
     for p in programs {
         for item in &p.items {
             let mut push = |key: FnKey, fd: &FnDecl| {
+                let mut ordinal = 0usize;
                 for a in &fd.effects {
                     if let EffectAssert::Causes(cs) = a {
-                        roots.push((key.clone(), cs.clone(), fd.name.span));
+                        roots.push((
+                            key.clone(),
+                            cs.clone(),
+                            fd.name.span,
+                            ordinal,
+                        ));
+                        ordinal += 1;
                     }
                 }
             };
@@ -312,8 +467,8 @@ pub fn causes_diags(
         .find(|d| !d.is_empty())
         .cloned()
         .unwrap_or_default();
-    let mut diags = Vec::new();
-    for (key, declared, span) in &roots {
+    let mut reports: Vec<CausesReport> = Vec::new();
+    for (key, declared, span, ordinal) in &roots {
         let (actual, via) = causal_effects(&summary, graph, key, &ffi);
         let mut allowed = EffectSet::PURE;
         for c in declared {
@@ -324,8 +479,8 @@ pub fn causes_diags(
         let direct = infer_effects(&summary, key, &ffi);
         let caused_only = EffectSet(actual.0 & !direct.0);
         let excess = EffectSet(caused_only.0 & !allowed.0);
-        if excess.0 != 0 {
-            diags.push(Diag::ty(
+        let diag = if excess.0 != 0 {
+            Some(Diag::ty(
                 *span,
                 format!(
                     "declared causal set violated: `{}` can transitively \
@@ -341,10 +496,17 @@ pub fn causes_diags(
                         format!(" Path: {}.", via.join("; "))
                     }
                 ),
-            ));
-        }
+            ))
+        } else {
+            None
+        };
+        reports.push(CausesReport {
+            function: key.display(),
+            ordinal: *ordinal,
+            diag,
+        });
     }
-    diags
+    reports
 }
 
 

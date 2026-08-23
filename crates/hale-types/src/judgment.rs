@@ -4494,3 +4494,615 @@ fn has_claim_surface(bundle: &crate::symbol::Bundle<'_>) -> bool {
     }
     bundle.programs.values().any(|p| walk(&p.items))
 }
+
+
+// ================= possible delivery (shared) =====================
+
+/// Whether a publish to one endpoint can be DELIVERED to one
+/// subscription.
+///
+/// The join is the model's typed wire identity — `SubjectId` — not
+/// a rendered spelling: `topic Orders { subject: "orders"; }`
+/// published by name and `subscribe "orders"` by literal are the
+/// SAME address and the runtime delivers between them. Wildcards
+/// widen it. `declared_topic` is a link to the declaration, never
+/// the delivery identity.
+///
+/// KEYS decide the rest. A keyed publish whose domain is statically
+/// exact and a subscription whose predicate is a literal outside it
+/// cannot meet — treating keyed delivery as broadcast is the
+/// failure mode the keyed schema names. Everything unknown widens:
+/// an unknown domain, an unknown predicate, a replica or fallback
+/// filter all leave the edge possible, because over-approximating
+/// reach is the sound direction for a law asking what a publish can
+/// cause.
+pub fn may_deliver(
+    e: &hale_model::Entities,
+    publish: &hale_model::Publish,
+    sub: &hale_model::Subscribe,
+) -> bool {
+    let addressed = sub.subject == publish.subject || {
+        let pat = e.subjects[sub.subject.index()].pattern.as_str();
+        let wire = e.subjects[publish.subject.index()].pattern.as_str();
+        pat.contains("**") && crate::wildcard_match(pat, wire)
+    };
+    if !addressed {
+        return false;
+    }
+    use hale_model::keys::{KeyDomain, KeyPredicate};
+    match (&publish.key_domain, &sub.key_predicate) {
+        // Decidable disjointness: an exact produced set and a
+        // literal filter that is not in it.
+        (Some(KeyDomain::Exact(vals)), KeyPredicate::EqLiteral(k)) => {
+            vals.contains(k)
+        }
+        (
+            Some(KeyDomain::IntRange { min, max }),
+            KeyPredicate::EqLiteral(hale_model::keys::KeyValue::Int(k)),
+        ) => k >= min && k <= max,
+        // Everything else is possible: unknown domains, unknown
+        // filters, replica and fallback selection, unkeyed
+        // subscriptions.
+        _ => true,
+    }
+}
+
+/// A class name's ATOMS, with the language's built-in folding
+/// applied: `ffi` is the `syscall` bit (an FFI call is a syscall as
+/// far as every contract is concerned), `spawn` and `recursion` own
+/// no effect bit at all, a composed class means its expansion, and
+/// a cyclic one means nothing. One helper, because a second reading
+/// of "what does this class name mean" is how a contract starts
+/// certifying the wrong set (review: `@effects(causes: {ffi})` was
+/// rejected against an actual set that spells the same bit
+/// `syscall`).
+pub fn effect_class_atoms(
+    e: &hale_model::Entities,
+    name: &str,
+) -> BTreeSet<String> {
+    fn builtin_atom(n: &str) -> Option<&'static str> {
+        Some(match n {
+            "syscall" | "ffi" => "syscall",
+            "block" => "block",
+            "publish" => "publish",
+            "time" => "time",
+            "entropy" => "entropy",
+            "env" => "env",
+            "alloc" => "alloc",
+            "secret_use" => "secret_use",
+            // Own no bit: a contract naming them constrains nothing.
+            "spawn" | "recursion" => return None,
+            _ => return None,
+        })
+    }
+    match e.effect_classes.iter().find(|c| c.name == name) {
+        Some(c) => match &c.definition {
+            hale_model::EffectClassDefinition::Composed { atoms } => {
+                atoms
+                    .iter()
+                    .flat_map(|a| effect_class_atoms(e, a))
+                    .collect()
+            }
+            hale_model::EffectClassDefinition::Atomic => {
+                match builtin_atom(name) {
+                    Some(b) => std::iter::once(b.to_string()).collect(),
+                    None => std::iter::once(name.to_string()).collect(),
+                }
+            }
+            hale_model::EffectClassDefinition::InvalidCycle => {
+                BTreeSet::new()
+            }
+        },
+        None => match builtin_atom(name) {
+            Some(b) => std::iter::once(b.to_string()).collect(),
+            None if name == "spawn" || name == "recursion" => {
+                BTreeSet::new()
+            }
+            // A bare reference to an undeclared user class: its own
+            // atom. (The declaration itself is diagnosed elsewhere.)
+            None => std::iter::once(name.to_string()).collect(),
+        },
+    }
+}
+
+/// Render a set of effect classes in the language's canonical
+/// order: built-ins in their fixed order, then user classes in
+/// DECLARATION order. Diagnostics are byte-compared, so this order
+/// is part of the contract.
+pub fn render_effect_classes(
+    e: &hale_model::Entities,
+    classes: &BTreeSet<String>,
+) -> Vec<String> {
+    const BUILTINS: &[&str] = &[
+        "syscall",
+        "block",
+        "publish",
+        "time",
+        "entropy",
+        "env",
+        "alloc",
+        "secret_use",
+    ];
+    let mut out: Vec<String> = Vec::new();
+    for b in BUILTINS {
+        if classes.contains(*b) {
+            out.push((*b).to_string());
+        }
+    }
+    let mut user: Vec<(u32, &String)> = classes
+        .iter()
+        .filter(|c| !BUILTINS.contains(&c.as_str()))
+        .map(|c| {
+            let idx = e
+                .effect_classes
+                .iter()
+                .find(|ec| ec.name == *c)
+                .map(|ec| ec.declaration_index)
+                .unwrap_or(u32::MAX);
+            (idx, c)
+        })
+        .collect();
+    user.sort();
+    out.extend(user.into_iter().map(|(_, c)| c.clone()));
+    out
+}
+
+/// GH #476 Change 5f — `@effects(causes: {…})` over the model.
+///
+/// "What can this fn cause ANYWHERE in the system": the effects of
+/// every handler a publish it can reach may be delivered to,
+/// following further hops when those handlers publish in turn.
+///
+/// Three rules the first draft of this engine got wrong, each of
+/// which certified an absence it could not see:
+///
+///  * **The causal set is accumulated, never subtracted.** It holds
+///    only what DOWNSTREAM handlers do. Seeding it with the root's
+///    own effects and subtracting them back out cannot express
+///    provenance: one `syscall` member subtracted once erases the
+///    downstream occurrence along with the local one, and the
+///    undeclared causal effect disappears. (The evaluator has this
+///    bug; the model is the canonical authority and does not
+///    inherit it.)
+///  * **Incompleteness survives as `Uncertified`.** An unclassified
+///    handler, a computed publish subject, an unfollowable call, a
+///    truncated stdlib interior — each means the causal set is a
+///    lower bound, not an answer. A known excess still wins as
+///    `Violated`; otherwise relevant uncertainty refuses to certify.
+///  * **Delivery is the typed wire identity**, via
+///    [`possibly_delivers`], including wildcard coverage and
+///    publishes that happen inside stdlib bodies (the absorption
+///    interiors). Comparing rendered subject text missed ordinary
+///    deliveries between a topic-name publish and a literal
+///    subscribe on the same wire.
+/// One claim row's own span, in bundle-global offsets — the anchor
+/// both the evaluator and the judgment put a row's diagnostic on,
+/// and therefore the key a differential joins one law to one law by.
+pub fn claim_row_span(
+    table: &ClaimIrTable,
+    source_bases: &[u32],
+    row: &hale_model::ClaimRow,
+) -> Span {
+    span_of(&table.provenance, source_bases, row.provenance)
+}
+
+/// What one `causes:` row's traversal actually reached.
+///
+/// The differential needs this to authorize a divergence against
+/// THIS row rather than against facts anywhere in the program (a
+/// hole on an unrelated topic must not excuse a wrong answer here).
+/// Recomputing the closure inside the test would re-implement the
+/// engine in its own test, which is how a test starts agreeing with
+/// a bug — so the engine reports what it saw.
+#[derive(Clone, Debug, Default)]
+pub struct CausesWitness {
+    /// Handlers a publish on this row's closure may deliver to.
+    pub reached_handlers: Vec<FunctionId>,
+    /// Handlers among those whose effect set is not fully known.
+    pub unknown_handlers: Vec<FunctionId>,
+    /// Endpoints whose downstream is incomplete (subscriber set,
+    /// key filter, or an opaque external boundary).
+    pub incomplete_endpoints: Vec<hale_model::SubjectId>,
+    /// Functions on the closure whose outgoing calls or publish
+    /// sites are not fully known — an unfollowable call or a
+    /// computed subject means the publish set is a lower bound.
+    pub incomplete_discovery: Vec<FunctionId>,
+    /// The closure left user code through a stdlib interior.
+    pub crossed_stdlib_interior: bool,
+    /// A publish on the closure is routed off-process by a typed
+    /// outbound binding — the peer's behaviour is outside this
+    /// model even though the transport is understood.
+    pub crosses_external_route: bool,
+    /// The closure took more than one bus hop.
+    pub multi_hop: bool,
+}
+
+pub fn judge_causes(
+    table: &ClaimIrTable,
+    model: &ApplicationModel,
+    source_bases: &[u32],
+) -> Vec<Judged> {
+    judge_causes_witnessed(table, model, source_bases)
+        .into_iter()
+        .map(|(j, _)| j)
+        .collect()
+}
+
+/// [`judge_causes`], with each row's traversal witness.
+pub fn judge_causes_witnessed(
+    table: &ClaimIrTable,
+    model: &ApplicationModel,
+    source_bases: &[u32],
+) -> Vec<(Judged, CausesWitness)> {
+    let e = &model.entities;
+    let r = &model.relations;
+    let claim_span = |pid: ProvenanceId| -> Span {
+        span_of(&table.provenance, source_bases, pid)
+    };
+    // A function's DERIVED classes, and whether they are known at
+    // all. `unclassified` is the analysis saying "this body reaches
+    // something I cannot name" — it is not the empty set.
+    // The KNOWN classes and whether anything is unknown — the
+    // typed pair the model carries, not a reading of the rendered
+    // `effects` vector, which collapses to `unclassified` and
+    // discards every simultaneously known class.
+    let effects_of = |f: FunctionId| -> (BTreeSet<String>, bool) {
+        let row = &e.functions[f.index()];
+        let known: BTreeSet<String> = row
+            .effect_lower_bound
+            .iter()
+            .flat_map(|c| effect_class_atoms(e, c))
+            .collect();
+        (known, row.effects_unknown)
+    };
+    // Which relation families a hole at a function hides.
+    let hole_hides = |f: FunctionId, mask: hale_model::RelationSet| {
+        model.holes.iter().any(|h| {
+            h.at == EntityRef::Function(f) && h.hides.intersects(mask)
+        })
+    };
+    // Interior stdlib publishes, keyed by the user fn they are
+    // reached from, plus whether that interior is fully explored.
+    let mut interior_pubs: BTreeMap<u32, Vec<hale_model::SubjectId>> =
+        BTreeMap::new();
+    let mut interior_unknown: BTreeSet<u32> = BTreeSet::new();
+    for a in &model.analyses.stdlib_absorption {
+        for node in &a.nodes {
+            for ev in &node.events {
+                match ev {
+                    hale_model::AbsorbedEvent::Publish {
+                        subject,
+                        declared_topic,
+                        ..
+                    } => {
+                        // Interior publishes name a subject by wire
+                        // text (or a declared topic); resolve to the
+                        // typed id the delivery query joins on.
+                        let sid = declared_topic
+                            .map(|t| e.topics[t.index()].subject)
+                            .or_else(|| {
+                                e.subjects
+                                    .iter()
+                                    .position(|s| s.pattern == *subject)
+                                    .map(|i| {
+                                        hale_model::SubjectId(i as u32)
+                                    })
+                            });
+                        match sid {
+                            Some(sid) => interior_pubs
+                                .entry(a.from.0)
+                                .or_default()
+                                .push(sid),
+                            // A subject the model has no row for is
+                            // an address it cannot reason about.
+                            None => {
+                                interior_unknown.insert(a.from.0);
+                            }
+                        }
+                    }
+                    hale_model::AbsorbedEvent::PublishHole
+                    | hale_model::AbsorbedEvent::Truncated
+                    | hale_model::AbsorbedEvent::CallHole(_) => {
+                        interior_unknown.insert(a.from.0);
+                    }
+                    hale_model::AbsorbedEvent::Call { .. } => {}
+                }
+            }
+        }
+    }
+    let mut callees: BTreeMap<u32, Vec<FunctionId>> = BTreeMap::new();
+    for c in &r.calls {
+        callees.entry(c.from.0).or_default().push(c.to);
+    }
+
+    let mut out: Vec<(Judged, CausesWitness)> = Vec::new();
+    for row in &table.rows {
+        let ClaimIr::EffectCauses { at, classes } = &row.law else {
+            continue;
+        };
+        let Some(fid) = at.0 else { continue };
+        let mut diags: Vec<Diag> = Vec::new();
+        // A class that resolves to nothing makes the contract
+        // vacuous: invalid before evaluation, as in the certificate
+        // family. The declaration owns the diagnostic.
+        if classes.iter().any(|c| {
+            c.class.is_some_and(|id| {
+                matches!(
+                    e.effect_classes[id.index()].definition,
+                    hale_model::EffectClassDefinition::InvalidCycle
+                )
+            })
+        }) {
+            out.push((
+                Judged {
+                    ordinal: row.ordinal,
+                    verdict: Verdict::Invalid,
+                    diags,
+                    foreign: Vec::new(),
+                },
+                CausesWitness::default(),
+            ));
+            continue;
+        }
+
+        // ---- the causal closure ----
+        // Publishes reachable from the root (through calls), the
+        // handlers they may deliver to, and — because a handler may
+        // publish in turn — onward until it settles.
+        let mut uncertain = false;
+        let mut witness = CausesWitness::default();
+        let mut caused: BTreeSet<String> = BTreeSet::new();
+        let mut via: Vec<String> = Vec::new();
+        let mut fn_frontier: Vec<FunctionId> = vec![fid];
+        let mut fn_seen: BTreeSet<u32> = BTreeSet::new();
+        let mut handled: BTreeSet<u32> = BTreeSet::new();
+        while let Some(f) = fn_frontier.pop() {
+            if !fn_seen.insert(f.0) {
+                continue;
+            }
+            // Discovery incompleteness: an unfollowable call or a
+            // computed subject means the publish set is a lower
+            // bound.
+            if hole_hides(
+                f,
+                hale_model::RelationSet::CALLS
+                    .union(hale_model::RelationSet::PUBLISHES),
+            ) || interior_unknown.contains(&f.0)
+            {
+                uncertain = true;
+                witness.incomplete_discovery.push(f);
+            }
+            if interior_pubs.contains_key(&f.0)
+                || interior_unknown.contains(&f.0)
+            {
+                witness.crossed_stdlib_interior = true;
+            }
+            if f != fid {
+                witness.multi_hop = true;
+            }
+            // (subject id, AUTHORED spelling). The join below is on
+            // the id; the witness renders what the author wrote —
+            // `Orders`, not `orders` — because a path a developer
+            // reads must name the declaration they can go look at.
+            let mut published: Vec<(
+                hale_model::SubjectId,
+                String,
+                hale_model::Publish,
+            )> = r
+                .publishes
+                .iter()
+                .filter(|p| p.function == f)
+                .map(|p| {
+                    let written = match p.declared_topic {
+                        Some(t) => e.topics[t.index()].display.clone(),
+                        None => e.subjects[p.subject.index()]
+                            .pattern
+                            .clone(),
+                    };
+                    (p.subject, written, p.clone())
+                })
+                .collect();
+            // An interior stdlib publish has no key domain the model
+            // records, so it widens like any unknown one.
+            published.extend(
+                interior_pubs.get(&f.0).into_iter().flatten().map(|s| {
+                    (
+                        *s,
+                        e.subjects[s.index()].pattern.clone(),
+                        hale_model::Publish {
+                            function: f,
+                            subject: *s,
+                            declared_topic: None,
+                            payload: hale_model::PayloadContractId(0),
+                            site: 0,
+                            in_loop: false,
+                            key_domain: None,
+                            disposition:
+                                hale_model::keys::PublishDisposition::Default,
+                            provenance: hale_model::ProvenanceId(0),
+                        },
+                    )
+                }),
+            );
+            // NOT deduplicated. Publishes are site-grained on
+            // purpose: one function may publish one subject at
+            // several sites with different key domains, and
+            // collapsing them before the delivery query throws away
+            // the site that actually delivers. Handler facts are
+            // deduplicated AFTER every site has been evaluated
+            // (review round 3).
+            published.sort_by(|a, b| {
+                (a.0, &a.1, a.2.site).cmp(&(b.0, &b.1, b.2.site))
+            });
+            for (subject, written, pubrow) in published {
+                // Delivery incompleteness, SCOPED TO THIS ENDPOINT.
+                // A hole somewhere else in the application says
+                // nothing about this causal closure — the model's
+                // hole law is reachability-scoped, and a global
+                // check turns an unrelated adapter binding into
+                // uncertainty about a purely local publish.
+                //
+                // The relation that matters is SUBSCRIBES (is the
+                // set of possible handlers complete?) rather than
+                // DELIVERY (the must-deliver guarantee), plus
+                // KEY_FILTERS, since an unknown filter widens who
+                // may receive.
+                // Everything below joins on the WIRE SUBJECT.
+                // `declared_topic` is the syntactic link — a literal
+                // `"t" <- …` send carries `None` even when its text
+                // is a declared topic's wire subject, and after
+                // lowering the runtime cannot tell the two spellings
+                // apart. Keying the route or the residue on the
+                // declaration link therefore missed every
+                // literal-spelled send into a bound topic (review
+                // round 5, the same wire-vs-syntax distinction the
+                // delivery join already makes).
+                let wire =
+                    e.subjects[subject.index()].pattern.as_str();
+                if model.holes.iter().any(|h| {
+                    // Three ways this endpoint's downstream can be
+                    // incomplete: the possible handler set is not
+                    // fully known (SUBSCRIBES), a filter that
+                    // decides who receives is not known
+                    // (KEY_FILTERS), or the route leaves the
+                    // program entirely — an adapter-bound topic is
+                    // an ExternalOpaque hole hiding BINDS|DELIVERY,
+                    // and whatever the peer does is not in this
+                    // graph at all.
+                    let relevant = h.hides.intersects(
+                        hale_model::RelationSet::SUBSCRIBES
+                            .union(hale_model::RelationSet::KEY_FILTERS)
+                            .union(hale_model::RelationSet::DELIVERY),
+                    );
+                    let here = match h.at {
+                        // Subject-grained residue covers by
+                        // PATTERN: a hole on `orders.**` is
+                        // relevant to a publish on `orders.created`.
+                        EntityRef::Subject(sid) => {
+                            let pat = e.subjects[sid.index()]
+                                .pattern
+                                .as_str();
+                            sid == subject
+                                || (pat.contains("**")
+                                    && crate::wildcard_match(pat, wire))
+                        }
+                        // A topic-anchored hole is relevant when
+                        // the topic ADDRESSES this wire, however the
+                        // send happened to spell it.
+                        EntityRef::Topic(t) => {
+                            e.topics.get(t.index()).is_some_and(|tp| {
+                                tp.subject == subject
+                            })
+                        }
+                        _ => false,
+                    };
+                    relevant && here
+                }) {
+                    uncertain = true;
+                    witness.incomplete_endpoints.push(subject);
+                }
+                // …and the routes the model DOES understand. A
+                // typed outbound binding is not a hole — the
+                // transport is fully modeled — but the causal
+                // closure still leaves the application at it: a
+                // `connect`-role send is handed to a peer whose
+                // behaviour is not in this model at all. Reading
+                // only `holes` saw an opaque adapter and missed an
+                // ordinary `unix(..., role: connect)` (review round
+                // 4).
+                let outbound = r.binds.iter().any(|b| {
+                    let binding = &e.bindings[b.binding.index()];
+                    binding.subject == subject
+                        && binding.role
+                            == hale_model::BindingRole::Connect
+                });
+                if outbound {
+                    uncertain = true;
+                    witness.incomplete_endpoints.push(subject);
+                    witness.crosses_external_route = true;
+                }
+                for su in r
+                    .subscribes
+                    .iter()
+                    .filter(|su| may_deliver(e, &pubrow, su))
+                {
+                    let (eff, unknown) = effects_of(su.handler);
+                    witness.reached_handlers.push(su.handler);
+                    if unknown {
+                        witness.unknown_handlers.push(su.handler);
+                        // The handler reaches something unnameable:
+                        // whatever it causes is not measurable here.
+                        uncertain = true;
+                    }
+                    if handled.insert(su.handler.0) && !eff.is_empty() {
+                        via.push(format!(
+                            "`{}` -> subject `{}` -> `{}`",
+                            e.functions[fid.index()].display,
+                            written,
+                            e.functions[su.handler.index()].display
+                        ));
+                    }
+                    caused.extend(eff);
+                    // Onward hops: what this handler publishes is
+                    // also caused by the root.
+                    fn_frontier.push(su.handler);
+                }
+            }
+            for next in callees.get(&f.0).into_iter().flatten() {
+                fn_frontier.push(*next);
+            }
+        }
+
+        let mut allowed: BTreeSet<String> = BTreeSet::new();
+        for c in classes {
+            allowed.extend(effect_class_atoms(e, &c.name));
+        }
+        let excess: BTreeSet<String> = caused
+            .into_iter()
+            .filter(|c| !allowed.contains(c))
+            .collect();
+        let verdict = if !excess.is_empty() {
+            // A KNOWN excess is an answer, whatever else is unknown.
+            diags.push(Diag::ty(
+                claim_span(row.provenance),
+                format!(
+                    "declared causal set violated: `{}` can transitively \
+                     cause {} through the bus, which its \
+                     `@effects(causes: …)` does not declare.{} Add the \
+                     class to the declaration, or route the publish to a \
+                     subject whose subscribers don't perform it.",
+                    e.functions[fid.index()].display,
+                    render_effect_classes(e, &excess).join(", "),
+                    if via.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" Path: {}.", via.join("; "))
+                    }
+                ),
+            ));
+            Verdict::Violated
+        } else if uncertain {
+            Verdict::Uncertified
+        } else {
+            Verdict::Holds
+        };
+        witness.reached_handlers.sort();
+        witness.reached_handlers.dedup();
+        witness.unknown_handlers.sort();
+        witness.unknown_handlers.dedup();
+        witness.incomplete_endpoints.sort();
+        witness.incomplete_endpoints.dedup();
+        witness.incomplete_discovery.sort();
+        witness.incomplete_discovery.dedup();
+        out.push((
+            Judged {
+                ordinal: row.ordinal,
+                verdict,
+                diags,
+                foreign: Vec::new(),
+            },
+            witness,
+        ));
+    }
+    out
+}

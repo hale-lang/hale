@@ -1987,6 +1987,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             );
             rows.push(hale_model::EffectClassDecl {
                 name: n.clone(),
+                declaration_index: i as u32,
                 declared: declared.contains(&(i as u16)),
                 definition,
                 provenance: pid,
@@ -2065,6 +2066,9 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         BTreeMap::new();
     let mut direct_effects: BTreeMap<String, Vec<String>> =
         BTreeMap::new();
+    let mut effect_lower_bounds: BTreeMap<String, Vec<String>> =
+        BTreeMap::new();
+    let mut effects_unknown: BTreeSet<String> = BTreeSet::new();
     for k in merged.fns.keys() {
         if !user_key(k) {
             continue;
@@ -2074,6 +2078,21 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             crate::frontier::render_effects_named(eff, &effect_names);
         if !classes.is_empty() {
             derived_effects.insert(fn_name(k), classes);
+        }
+        // …and the LOWER BOUND, kept apart from the rendering.
+        // `UNCLASSIFIED` is saturation, not a bit, so the known
+        // classes cannot be masked back out of `eff` — they need a
+        // walk that flags an unnameable edge instead of swallowing
+        // the set (GH #476 Change 5f review).
+        let (known, unknown) =
+            crate::frontier::infer_effects_lower_bound(&merged, k, &ffi);
+        let known_classes =
+            crate::frontier::render_effects_named(known, &effect_names);
+        if !known_classes.is_empty() {
+            effect_lower_bounds.insert(fn_name(k), known_classes);
+        }
+        if unknown {
+            effects_unknown.insert(fn_name(k));
         }
     }
     let authored_user_class: BTreeSet<String> =
@@ -2140,6 +2159,11 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
             display: info.display.clone(),
             kind: info.kind,
             effects: derived_effects.get(n).cloned().unwrap_or_default(),
+            effect_lower_bound: effect_lower_bounds
+                .get(n)
+                .cloned()
+                .unwrap_or_default(),
+            effects_unknown: effects_unknown.contains(n),
             direct_effects: direct_effects
                 .get(n)
                 .cloned()

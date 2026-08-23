@@ -650,6 +650,8 @@ fn looped_stdlib_entry_with_carrier_is_unbounded() {
     });
     let p = ProvenanceId(0);
     let f = |name: &str| Function {
+        effect_lower_bound: Vec::new(),
+        effects_unknown: false,
         analyzed: true,
         summarized: true,
         owner: None,
@@ -677,6 +679,7 @@ fn looped_stdlib_entry_with_carrier_is_unbounded() {
                 provenance: p,
             }],
             effect_classes: vec![EffectClassDecl {
+                declaration_index: 0,
                 name: "money".to_string(),
                 declared: true,
                 definition: EffectClassDefinition::Atomic,
@@ -2859,6 +2862,8 @@ fn mixed_dispatch_alternatives_share_one_group() {
     });
     let p = ProvenanceId(0);
     let f = |name: &str| Function {
+        effect_lower_bound: Vec::new(),
+        effects_unknown: false,
         analyzed: true,
         summarized: true,
         owner: None,
@@ -2886,6 +2891,7 @@ fn mixed_dispatch_alternatives_share_one_group() {
                 provenance: p,
             }],
             effect_classes: vec![EffectClassDecl {
+                declaration_index: 0,
                 name: "money".to_string(),
                 declared: true,
                 definition: EffectClassDefinition::Atomic,

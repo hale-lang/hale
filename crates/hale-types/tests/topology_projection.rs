@@ -616,6 +616,8 @@ fn labels_and_effects_are_restricted_to_the_v1_universe() {
     // `summarized` IS the V1 universe now (it always was the same
     // set; the model used to carry a second copy of it).
     let f = |name: &str, effects: Vec<&str>, summarized: bool| Function {
+        effect_lower_bound: Vec::new(),
+        effects_unknown: false,
         analyzed: summarized,
         summarized,
         owner: None,
