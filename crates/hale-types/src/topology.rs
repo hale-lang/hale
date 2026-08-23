@@ -824,9 +824,28 @@ pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
                 diag_list(&r.evidence)
             )
         };
+        // The row's own RENDERED FORM. Admission re-renders it from
+        // the typed payload, so editing an operand orphans it — the
+        // defense that already covers claims-block rows through the
+        // compatibility `claims` section, extended to the
+        // annotation-origin families that have no entry there
+        // (GH #476 Change 5f: this is what `law.legacy` was
+        // providing for rows that imported an outside verdict, and
+        // it must not disappear when a family stops importing one).
+        let form = match law_table
+            .rows
+            .iter()
+            .find(|lr| lr.ordinal == r.ordinal)
+            .and_then(|lr| lr.legacy_form())
+        {
+            Some(f) => {
+                format!(", \"form\": {}", quote(&demangle_str(&f)))
+            }
+            None => String::new(),
+        };
         rows_out.push_str(&format!(
             "      {{\"ordinal\": {}, \"name\": {}, \"origin\": {}, \
-             \"family\": {}, \"verdict\": {}, \"law\": {}{}{}{}}},\n",
+             \"family\": {}, \"verdict\": {}, \"law\": {}{}{}{}{}}},\n",
             r.ordinal,
             quote(&demangle_str(&r.name)),
             quote(&r.origin),
@@ -836,6 +855,7 @@ pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
             // DISPLAY spellings side by side — demangling the
             // whole object would collapse the raw identity.
             r.law,
+            form,
             certs,
             evidence,
             prov

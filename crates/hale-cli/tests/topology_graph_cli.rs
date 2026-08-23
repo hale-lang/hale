@@ -1498,8 +1498,8 @@ fn main() { App { }; }
     assert!(!out.status.success());
     assert!(
         String::from_utf8_lossy(&out.stderr)
-            .contains("does not re-render from the typed law"),
-        "the legacy-report fingerprint refuses the operand \
+            .contains("typed payload renders"),
+        "the rendered form refuses the operand \
          swap: {}",
         String::from_utf8_lossy(&out.stderr)
     );
@@ -3193,3 +3193,4 @@ fn main() { App { }; }
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+

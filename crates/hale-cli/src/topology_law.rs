@@ -2649,7 +2649,7 @@ pub fn validate_law_account(
             "law row",
             &["ordinal", "name", "origin", "family", "verdict",
               "law"],
-            &["certs", "evidence", "file", "span"],
+            &["form", "certs", "evidence", "file", "span"],
         )
         .map_err(|e| format!("{}: law.rows[{}]: {}", label, i, e))?;
         // Fleet rows are refused BY NAME: the application
@@ -2967,6 +2967,31 @@ pub fn validate_law_account(
                         false,
                     ),
                 );
+            }
+        }
+        // The row's rendered form must re-render from the typed
+        // payload. This is the operand-substitution defense for
+        // every family: editing a class or a group in the payload
+        // orphans the form, whether or not the row also imports an
+        // outside verdict (GH #476 Change 5f).
+        if let Some(stated) = row["form"].as_str() {
+            match expected_legacy_form(&decoded) {
+                Some(expected) if expected == stated => {}
+                Some(expected) => {
+                    return Err(format!(
+                        "{}: malformed artifact — law.rows[{}] \
+                         states form `{}` but its typed payload \
+                         renders `{}`",
+                        label, i, stated, expected
+                    ));
+                }
+                None => {
+                    return Err(format!(
+                        "{}: malformed artifact — law.rows[{}] \
+                         states a form its family does not render",
+                        label, i
+                    ));
+                }
             }
         }
         // Unmigrated non-budget rows (`causes:` / `depends:`):
