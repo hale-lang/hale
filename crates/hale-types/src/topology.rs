@@ -131,6 +131,14 @@ use crate::symbol::Bundle;
 // HASHED model half — an explicitly versioned shape transition.
 // Shape hashes change for every bus-carrying program; recorded
 // baselines and `.halerec` admissions must be re-recorded once.
+// 1.14: every typed law row that renders a compatibility form now
+// STATES it, and admission REQUIRES it — a row whose law renders a
+// form and omits the field is refused. That is a decoding-contract
+// change, not an additive field: a schema-1.13 artifact carries
+// rows without the key and would be refused under a 1.13 reader
+// built from this tree. Requiring a field is a version transition
+// (review round 2 of #496), so the number moves with it.
+//
 // 1.13: `relations.calls_via_stdlib` is INTERPRETED by the model's
 // contraction, not by the pre-model walk it used to reproduce.
 //
@@ -149,7 +157,7 @@ use crate::symbol::Bundle;
 // stdlib re-emerges into user code only from inside its own loops,
 // which sets the bit either way — so this bumps the schema without
 // moving a single committed baseline hash.
-pub const TOPOLOGY_SCHEMA: &str = "1.13";
+pub const TOPOLOGY_SCHEMA: &str = "1.14";
 
 /// GH #408 Phase 0: what the rows MEAN, as distinct from their shape.
 ///
