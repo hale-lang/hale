@@ -58,7 +58,18 @@ use crate::symbol::Bundle;
 // disagrees with, and `validate` treats an equal `inputs_digest`
 // as proof of current semantics. It does not hash the
 // implementation, so this constant is the identity.
-pub const ANALYSIS_SEMANTICS_VERSION: u32 = 4;
+// 5 (review round 8): the fan-out semiring completed. `loop x 0 =
+// 0` now reaches the model supplier — a repeated publish or call
+// that delivers nothing delivers nothing, where the supplier used
+// to refuse before the contribution was known; an unknown filter
+// on a locus with no instances routes nothing; and key scenarios
+// are built from the DISTINCT ACTIVE routing partition rather than
+// from declarations, which both invented impossible `fallback`
+// executions (a `Bool` domain is exhausted by its two filters) and
+// omitted real ones (two declarations naming one value do not
+// cover a two-value interval). Results moved in both directions,
+// including a false PASS, so v4 evidence must not be replayed.
+pub const ANALYSIS_SEMANTICS_VERSION: u32 = 5;
 
 /// Digest of the certificate engines' inputs OUTSIDE the model:
 /// the analysis-semantics version above, the Hale-source stdlib
@@ -210,9 +221,12 @@ pub fn model_fanout<'a>(
             // A productive bus cycle amplifies without bound.
             return None;
         }
-        if publish.in_loop {
-            return None;
-        }
+        // NOTE: `publish.in_loop` is deliberately NOT checked here.
+        // Repeating a publish that delivers to nobody is still
+        // nobody — `loop x 0 = 0` is the law the quantitative
+        // semiring already states, and refusing before the
+        // contribution is known made an exact zero read as
+        // unbounded (round 8). The decision is at the bottom.
         // An outbound route delivers to peers this application does
         // not model — scoped to THIS subject, so an unrelated
         // adapter cannot poison the count.
@@ -235,118 +249,111 @@ pub fn model_fanout<'a>(
             match &sub.key_predicate {
                 KeyPredicate::Any => unkeyed.push(sub),
                 // A filter whose value is unknown may or may not
-                // match; it can never support a bound.
-                KeyPredicate::Unknown => return None,
+                // match — but only if the registration EXISTS.
+                // An unknown expression on a locus with no instance
+                // belongs to a registration that never happens
+                // (round 8).
+                KeyPredicate::Unknown => {
+                    match population_of(model, owner_of(model, sub)?) {
+                        Some(0) => {}
+                        _ => return None,
+                    }
+                }
                 _ => keyed.push(sub),
             }
         }
         // Candidate key values this site can produce. `None` stands
         // for "some value no filter names", which only a `fallback`
         // receives.
-        let mut candidates: Vec<Option<KeyValue>> = Vec::new();
-        // Round 7: the domain CONSTRAINS the scenarios. `IntRange`
-        // is not uncertainty — it is an exact interval, and the
-        // shared delivery query already rules out literals outside
-        // it. Enumerating every filter literal plus an unmatched
-        // scenario regardless of domain costed executions the site
-        // cannot produce: a `min: 1, max: 1` publish would be
-        // charged a 20-instance `fallback` that can never fire.
-        let admits = |v: &KeyValue| -> bool {
-            match (&publish.key_domain, v) {
-                (Some(KeyDomain::Exact(vals)), v) => vals.contains(v),
-                (
-                    Some(KeyDomain::IntRange { min, max }),
-                    KeyValue::Int(k),
-                ) => k >= min && k <= max,
-                // A non-integer literal cannot come from an integer
-                // interval.
-                (Some(KeyDomain::IntRange { .. }), _) => false,
-                _ => true,
+        //
+        // Round 8: scenarios come from the ACTIVE routing
+        // partition, not from declarations.
+        //
+        // The specific keys that can actually match are the ones
+        // whose registration EXISTS — a filter on a locus with no
+        // instances routes nothing — and they are a SET: two
+        // declarations naming key 0 cover one value, not two. Two
+        // failures followed from getting this wrong. A type-wide
+        // `Bool` domain always got a synthetic "no filter names
+        // this" scenario even though `false` and `true` exhaust it,
+        // so a `fallback` fired where it never can. And an
+        // `IntRange` counted duplicate declarations as distinct
+        // coverage, concluding a two-value interval was covered by
+        // two same-valued filters and never costing the real
+        // unmatched scenario — a false PASS.
+        let mut active: Vec<KeyValue> = Vec::new();
+        for sub in &keyed {
+            match &sub.key_predicate {
+                KeyPredicate::EqLiteral(v) => {
+                    if population_of(model, owner_of(model, sub)?)
+                        .is_some_and(|n| n > 0)
+                    {
+                        active.push(v.clone());
+                    }
+                }
+                KeyPredicate::EqReplica => {
+                    let owner = owner_of(model, sub)?;
+                    for i in
+                        e.locus_instances.iter().filter(|i| i.decl == owner)
+                    {
+                        active.push(KeyValue::Int(effective_replica(i)));
+                    }
+                }
+                _ => {}
             }
-        };
-        // Is there a value the site can produce that NO filter
-        // names? Only then can a `fallback` fire.
-        let has_uncovered = |named: &[KeyValue]| -> bool {
+        }
+        active.sort();
+        active.dedup();
+        let mut candidates: Vec<Option<KeyValue>> = Vec::new();
+        if keyed.is_empty() {
+            candidates.push(None);
+        } else {
             match &publish.key_domain {
+                // The site's own values ARE the scenarios; a value
+                // no filter names simply finds nothing specific and
+                // falls back, which the recipient walk handles.
                 Some(KeyDomain::Exact(vals)) => {
-                    vals.iter().any(|v| !named.contains(v))
+                    candidates.extend(vals.iter().cloned().map(Some));
                 }
                 Some(KeyDomain::IntRange { min, max }) => {
-                    let span = max.saturating_sub(*min).saturating_add(1);
-                    let covered = named
+                    for v in &active {
+                        if let KeyValue::Int(k) = v {
+                            if k >= min && k <= max {
+                                candidates.push(Some(v.clone()));
+                            }
+                        }
+                    }
+                    // One representative of "inside the interval,
+                    // named by nobody" — only when such a value
+                    // exists.
+                    let span =
+                        max.saturating_sub(*min).saturating_add(1);
+                    let covered = active
                         .iter()
                         .filter(|v| match v {
                             KeyValue::Int(k) => k >= min && k <= max,
                             _ => false,
                         })
                         .count() as i64;
-                    span > covered
-                }
-                // An unknown or type-wide domain can always produce
-                // something no filter names.
-                _ => true,
-            }
-        };
-        if keyed.is_empty() {
-            candidates.push(None);
-        } else {
-            match &publish.key_domain {
-                Some(KeyDomain::Exact(vals)) => {
-                    candidates.extend(vals.iter().cloned().map(Some));
-                    // …and, if the site can produce a value no
-                    // filter names, the unmatched scenario.
-                    let named: Vec<KeyValue> = keyed
-                        .iter()
-                        .filter_map(|s| match &s.key_predicate {
-                            KeyPredicate::EqLiteral(v) => {
-                                Some(v.clone())
-                            }
-                            _ => None,
-                        })
-                        .collect();
-                    if has_uncovered(&named) {
+                    if span > covered {
                         candidates.push(None);
                     }
                 }
+                // A FINITE type-wide domain is enumerable, and
+                // enumerating it is what stops an impossible
+                // unmatched scenario.
+                Some(KeyDomain::AnyOfType(t)) if t == "Bool" => {
+                    candidates.push(Some(KeyValue::Bool(false)));
+                    candidates.push(Some(KeyValue::Bool(true)));
+                }
+                // Anything else can produce a value no filter
+                // names, so the unmatched scenario is real.
                 _ => {
-                    for sub in &keyed {
-                        if let KeyPredicate::EqLiteral(v) =
-                            &sub.key_predicate
-                        {
-                            candidates.push(Some(v.clone()));
-                        }
-                        if sub.key_predicate == KeyPredicate::EqReplica {
-                            let owner = owner_of(model, sub)?;
-                            for i in e
-                                .locus_instances
-                                .iter()
-                                .filter(|i| i.decl == owner)
-                            {
-                                candidates.push(Some(KeyValue::Int(
-                                    effective_replica(i),
-                                )));
-                            }
-                        }
-                    }
-                    // …and "some value no filter names", only
-                    // when the domain can actually produce one.
-                    let named: Vec<KeyValue> = candidates
-                        .iter()
-                        .filter_map(|c| c.clone())
-                        .collect();
-                    if has_uncovered(&named) {
-                        candidates.push(None);
-                    }
+                    candidates.extend(active.iter().cloned().map(Some));
+                    candidates.push(None);
                 }
             }
-            // Drop scenarios the domain forbids.
-            candidates.retain(|c| match c {
-                Some(v) => admits(v),
-                None => true,
-            });
             if candidates.is_empty() {
-                // Every filter is outside the domain: no keyed
-                // subscription can receive.
                 candidates.push(None);
             }
         }
@@ -465,6 +472,11 @@ pub fn model_fanout<'a>(
             best = best.max(here);
         }
         path.pop();
+        // Repetition multiplies the contribution: zero stays zero,
+        // anything else has no per-call bound.
+        if publish.in_loop && best != 0 {
+            return None;
+        }
         Some(best)
     }
 
@@ -532,11 +544,13 @@ pub fn model_fanout<'a>(
             if c.dispatch == hale_model::DispatchKind::ViaStdlib {
                 continue;
             }
-            if c.in_loop || c.unbounded {
+            let n = bail!(fn_fanout(model, c.to, path));
+            // `loop x 0 = 0`: a looped call to a callee that
+            // delivers nothing still delivers nothing.
+            if (c.in_loop || c.unbounded) && n != 0 {
                 path.pop();
                 return None;
             }
-            let n = bail!(fn_fanout(model, c.to, path));
             by_site.entry(c.site).or_default().push(n);
         }
         for a in model
@@ -545,11 +559,11 @@ pub fn model_fanout<'a>(
             .iter()
             .filter(|a| a.from == from)
         {
-            if a.entry_in_loop {
+            let n = bail!(absorption_fanout(model, a, path));
+            if a.entry_in_loop && n != 0 {
                 path.pop();
                 return None;
             }
-            let n = bail!(absorption_fanout(model, a, path));
             by_site.entry(a.site).or_default().push(n);
         }
         for (_, alts) in by_site {
@@ -613,10 +627,6 @@ pub fn model_fanout<'a>(
                         group,
                         ..
                     } => {
-                        if *in_loop {
-                            seen.pop();
-                            return None;
-                        }
                         let c = match target {
                             hale_model::AbsorbedTarget::Interior(n) => {
                                 match node_cost(model, a, *n, seen, path)
@@ -638,6 +648,10 @@ pub fn model_fanout<'a>(
                                 }
                             }
                         };
+                        if *in_loop && c != 0 {
+                            seen.pop();
+                            return None;
+                        }
                         (c, *group)
                     }
                 };

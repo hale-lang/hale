@@ -74,7 +74,16 @@ Supporting facts, added in the same change:
   and a zero-population endpoint contributes zero however
   complicated the declaration's body.
 
-**`ANALYSIS_SEMANTICS_VERSION` 3 → 4.** These results moved, and
+Zero annihilates all the way down: a repeated publish or call that
+delivers nothing delivers nothing (`loop × 0 = 0`), and an unknown
+key filter on a locus with no instances routes nothing. Key
+scenarios are built from the distinct ACTIVE routing partition
+rather than from declarations — a `Bool` domain is exhausted by its
+`false`/`true` filters so the `_` fallback can never fire, while
+two declarations naming one value do not cover a two-value
+interval.
+
+**`ANALYSIS_SEMANTICS_VERSION` 3 → 5.** These results moved, and
 `EvidenceTable::validate` treats an equal `inputs_digest` as proof
 of current semantics rather than hashing the implementation — so a
 sidecar produced by an older toolchain could otherwise share every
