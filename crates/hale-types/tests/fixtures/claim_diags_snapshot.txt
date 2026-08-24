@@ -43,6 +43,8 @@ Claim [255..260] claim `wired` violated: no member of `subs` subscribes `Tk`
 --- crates/hale-cli/tests/topology_artifact_contract.rs#3 ---
 Claim [75..80] hot-path budget exceeded: `boxed` declares `@budget(alloc_per_call = 0)` but the compiler counts 1 arena allocation(s) per call. For a zero-alloc hot path: hoist per-iteration allocations to reused fields, read with `recv_into` into a reused `std::bytes::BytesBuilder`, and keep locus instantiation out of the fn. If the allocation is intentional, drop `@budget` for `@unbounded fn`.
 Claim [103..113] counts against `boxed`'s alloc budget: a `P` instantiation
+--- crates/hale-cli/tests/topology_graph_cli.rs#1 ---
+Claim [71..75] declared causal set cannot be certified: `poke` publishes into a closure this model does not fully know — a call this walk could not follow may publish further. The law is neither kept nor broken here; classify the effects, close the endpoint, or narrow the publish.
 --- crates/hale-cli/tests/topology_graph_cli.rs#18 ---
 Claim [192..195] claim `iso` violated: `a_side` reaches `b_side` — witness: `touchy` -> `leak`
 Claim [72..79] claim `iso`: the boundary into `b_side` is crossed by this call
@@ -252,6 +254,8 @@ Claim [176..189] counts against `zero`'s alloc budget: `make` is a method call o
 --- crates/hale-types/tests/interface_dispatch.rs#12 ---
 Claim [158..162] hot-path budget exceeded: `zero` declares `@budget(alloc_per_call = 0)` but the compiler counts 1 arena allocation(s) per call. For a zero-alloc hot path: hoist per-iteration allocations to reused fields, read with `recv_into` into a reused `std::bytes::BytesBuilder`, and keep locus instantiation out of the fn. If the allocation is intentional, drop `@budget` for `@unbounded fn`.
 Claim [110..120] counts against `zero`'s alloc budget: a `P` instantiation
+--- crates/hale-types/tests/judgment_causes.rs#0 ---
+Claim [416..420] declared causal set cannot be certified: `Source::fire` publishes into a closure this model does not fully know — the effects of `Sink::on_t` are not fully classified; a call this walk could not follow may publish further. The law is neither kept nor broken here; classify the effects, close the endpoint, or narrow the publish.
 --- crates/hale-types/tests/judgment_causes.rs#1 ---
 Claim [314..318] declared causal set violated: `Source::fire` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Source::fire` -> subject `Orders` -> `Sink::on_order`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
 --- crates/hale-types/tests/judgment_causes.rs#2 ---
@@ -266,14 +270,26 @@ Claim [484..488] declared causal set violated: `Source::fire` can transitively c
 Claim [318..322] declared causal set violated: `Source::fire` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Source::fire` -> subject `Created` -> `Audit::on_any`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
 --- crates/hale-types/tests/judgment_causes.rs#9 ---
 Claim [421..425] declared causal set violated: `Source::fire` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Source::fire` -> subject `T` -> `Sink::on_t`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
+--- crates/hale-types/tests/judgment_causes.rs#10 ---
+Claim [372..376] declared causal set cannot be certified: `Source::fire` publishes into a closure this model does not fully know — the effects of `Sink::on_t` are not fully classified; a call this walk could not follow may publish further. The law is neither kept nor broken here; classify the effects, close the endpoint, or narrow the publish.
 --- crates/hale-types/tests/judgment_causes.rs#12 ---
 Claim [301..305] declared causal set violated: `Source::fire` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Source::fire` -> subject `T` -> `Sink::on_t`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
 --- crates/hale-types/tests/judgment_causes.rs#13 ---
 Claim [301..305] declared causal set violated: `Source::fire` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Source::fire` -> subject `T` -> `Sink::on_t`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
+--- crates/hale-types/tests/judgment_causes.rs#14 ---
+Claim [267..271] declared causal set cannot be certified: `Source::fire` publishes into a closure this model does not fully know — the set of subscribers to `t` is not fully modelled (an unknown filter, an opaque boundary, or a route that leaves this application). The law is neither kept nor broken here; classify the effects, close the endpoint, or narrow the publish.
 --- crates/hale-types/tests/judgment_causes.rs#15 ---
 Claim [301..305] declared causal set violated: `Source::fire` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Source::fire` -> subject `T` -> `Sink::on_t`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
+--- crates/hale-types/tests/judgment_causes.rs#17 ---
+Claim [152..156] declared causal set cannot be certified: `Source::fire` publishes into a closure this model does not fully know — the set of subscribers to `t` is not fully modelled (an unknown filter, an opaque boundary, or a route that leaves this application). The law is neither kept nor broken here; classify the effects, close the endpoint, or narrow the publish.
 --- crates/hale-types/tests/judgment_causes.rs#18 ---
 Claim [296..300] declared causal set violated: `Source::fire` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Source::fire` -> subject `T` -> `Sink::on_t`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
+--- crates/hale-types/tests/judgment_causes.rs#19 ---
+Claim [166..170] declared causal set cannot be certified: `Source::fire` publishes into a closure this model does not fully know — the set of subscribers to `t` is not fully modelled (an unknown filter, an opaque boundary, or a route that leaves this application). The law is neither kept nor broken here; classify the effects, close the endpoint, or narrow the publish.
+--- crates/hale-types/tests/judgment_causes.rs#20 ---
+Claim [281..285] declared causal set cannot be certified: `Source::fire` publishes into a closure this model does not fully know — the set of subscribers to `t` is not fully modelled (an unknown filter, an opaque boundary, or a route that leaves this application). The law is neither kept nor broken here; classify the effects, close the endpoint, or narrow the publish.
+--- crates/hale-types/tests/judgment_causes.rs#21 ---
+Claim [552..556] declared causal set cannot be certified: `App::fire` publishes into a closure this model does not fully know — the effects of `Ledger::on_settled` are not fully classified; a call this walk could not follow may publish further. The law is neither kept nor broken here; classify the effects, close the endpoint, or narrow the publish.
 --- crates/hale-types/tests/judgment_certificates.rs#4 ---
 Claim [55..58] hot-path budget exceeded: `hot` declares `@budget(alloc_per_call = 0)` but the compiler counts 1 arena allocation(s) per call. For a zero-alloc hot path: hoist per-iteration allocations to reused fields, read with `recv_into` into a reused `std::bytes::BytesBuilder`, and keep locus instantiation out of the fn. If the allocation is intentional, drop `@budget` for `@unbounded fn`.
 Claim [84..94] counts against `hot`'s alloc budget: a `T` instantiation
@@ -281,6 +297,8 @@ Claim [84..94] counts against `hot`'s alloc budget: a `T` instantiation
 Claim [37..45] `transfer` budgets effect class `monye`, which is never declared. Add `effect monye;` at the top level. Did you mean `money`?
 --- crates/hale-types/tests/judgment_depends.rs#0 ---
 Claim [305..312] declared dependency set is invalid: `Carry` names `DECLARED`, which is not a topic or subject in this application — so the set constrains nothing and cannot be judged. Name a declared topic, or remove the entry.
+--- crates/hale-types/tests/judgment_depends.rs#3 ---
+Claim [99..106] declared dependency set cannot be certified: `Carry` is reached from a closure this model does not fully know — `Recalled` can be published into from outside this application (an inbound route or an opaque boundary). The law is neither kept nor broken here; close the endpoint, resolve the call, or name the subject.
 --- crates/hale-types/tests/judgment_reachability.rs#0 ---
 Claim [228..231] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -> `leak`
 Claim [72..79] claim `iso`: the boundary into `b_side` is crossed by this call
@@ -332,6 +350,8 @@ Claim [434..440] claim `single` violated: counted 2 subscriber(s) (`A`, `B`) of 
 Claim [369..373] budget exceeded: `App::beat` declares `@budget(fanout = 1)` but the compiler measures 3 subscriber delivery/deliveries. Fan-out counts transitive subscriber deliveries — a publish to a many-subscriber subject amplifies.
 --- crates/hale-types/tests/model_fanout.rs#2 ---
 Claim [402..406] budget exceeded: `App::beat` declares `@budget(fanout = 1)` but the compiler measures an unbounded number of subscriber delivery/deliveries. Fan-out counts transitive subscriber deliveries — a publish to a many-subscriber subject amplifies.
+--- crates/hale-types/tests/model_fanout.rs#3 ---
+Claim [530..534] budget exceeded: `App::fire` declares `@budget(fanout = 3)` but the compiler measures 4 subscriber delivery/deliveries. Fan-out counts transitive subscriber deliveries — a publish to a many-subscriber subject amplifies.
 --- crates/hale-types/tests/model_provenance.rs#1 ---
 Claim [480..483] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -(publishes "T")-> `B::on_m`
 Claim [137..153] claim `iso`: the crossing publish happens here
