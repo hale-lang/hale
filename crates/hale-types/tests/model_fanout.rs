@@ -1057,3 +1057,233 @@ fn a_site_mixing_both_call_accounts_is_one_dispatch() {
         "one authored site is one choice across both accounts"
     );
 }
+
+/// Review pin (round 8): `loop × 0 = 0`.
+///
+/// The supplier refused a looped publish before knowing what it
+/// delivered, so an exact zero read as unbounded. The surrounding
+/// quantitative semiring already states the law; the model side has
+/// to reach it.
+#[test]
+fn a_looped_publish_to_nobody_is_still_nobody() {
+    let src = r#"
+type T { n: Int = 0; }
+topic A { payload: T; subject: "a"; }
+locus Unused {
+    bus { subscribe A as on_a; }
+    params { n: Int = 0; }
+    fn on_a(t: T) { self.n = t.n; }
+}
+main locus App {
+    params { n: Int = 0; }
+    bus { publish A; }
+    @budget(fanout = 0)
+    fn fire() {
+        let mut i = 0;
+        while i < 4 { A <- T { n: i }; i = i + 1; }
+    }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let ds = diags(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("budget exceeded")
+            && m.contains("fanout")),
+        "no registration, so repeating it changes nothing: {:?}",
+        ds
+    );
+}
+
+/// …and a looped PURE helper behind one real delivery is still
+/// bounded by that delivery.
+#[test]
+fn a_looped_non_publishing_helper_keeps_the_bound() {
+    let src = r#"
+type T { n: Int = 0; }
+topic A { payload: T; subject: "a"; }
+locus Sink {
+    bus { subscribe A as on_a; }
+    params { n: Int = 0; }
+    fn tick(v: Int) -> Int { return v + 1; }
+    fn on_a(t: T) {
+        let mut i = 0;
+        while i < 4 { self.n = self.tick(self.n); i = i + 1; }
+    }
+}
+main locus App {
+    params { s: Sink = Sink { }; }
+    bus { publish A; }
+    @budget(fanout = 1)
+    fn fire() { A <- T { n: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let ds = diags(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("budget exceeded")
+            && m.contains("fanout")),
+        "a looped helper that publishes nothing amplifies nothing: \
+         {:?}",
+        ds
+    );
+}
+
+/// An UNKNOWN filter on a locus with no instances belongs to a
+/// registration that never happens.
+#[test]
+fn an_unknown_filter_without_a_registration_keeps_the_bound() {
+    let src = r#"
+type T { n: Int = 0; }
+topic A { payload: T; subject: "a"; keyed_by n; }
+locus Unused {
+    bus { subscribe A as on_a where key == self.my_key; }
+    params { my_key: Int = 1; n: Int = 0; }
+    fn on_a(t: T) { self.n = t.n; }
+}
+main locus App {
+    params { n: Int = 0; }
+    bus { publish A; }
+    @budget(fanout = 0)
+    fn fire() { A <- T { n: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let ds = diags(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("budget exceeded")
+            && m.contains("fanout")),
+        "an unknown expression on a locus with no instance routes \
+         nothing: {:?}",
+        ds
+    );
+}
+
+/// Review pin (round 8): a FINITE type-wide domain is enumerable,
+/// and enumerating it removes the impossible unmatched scenario.
+///
+/// A Boolean message is `false` or `true`; one of the two specific
+/// registrations always matches, so the `_` fallback can never
+/// fire. Inventing an unmatched scenario charged all three fallback
+/// replicas.
+#[test]
+fn a_boolean_key_domain_leaves_the_fallback_unreachable() {
+    let src = r#"
+type Ev { key: Bool = false; }
+topic K {
+    payload: Ev;
+    subject: "k";
+    keyed_by key;
+    on_unmatched: fallback;
+}
+locus FalseSink {
+    bus { subscribe K as on_k where key == false; }
+    params { n: Int = 0; }
+    fn on_k(e: Ev) { self.n = 1; }
+}
+locus TrueSink {
+    bus { subscribe K as on_k where key == true; }
+    params { n: Int = 0; }
+    fn on_k(e: Ev) { self.n = 1; }
+}
+locus FallbackSink {
+    bus { subscribe K as on_k where key == _; }
+    params { n: Int = 0; }
+    fn on_k(e: Ev) { self.n = 1; }
+}
+main locus App {
+    params {
+        f: FalseSink = FalseSink { };
+        t: TrueSink = TrueSink { };
+        fb: FallbackSink = FallbackSink { };
+    }
+    placement { fb: pinned(replicas = 3); }
+    bus { publish K; }
+    @budget(fanout = 1)
+    fn fire() { K <- Ev { key: true }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let ds = diags(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("budget exceeded")
+            && m.contains("fanout")),
+        "`false` and `true` exhaust the domain, so `_` never \
+         receives: {:?}",
+        ds
+    );
+}
+
+/// Review pin (round 8): interval coverage is a DISTINCT SET of
+/// active keys, not a count of declarations.
+///
+/// Two subscriptions both naming key 0 cover ONE value of a
+/// two-value interval, so key 1 is still possible and the fallback
+/// still fires there. Counting declarations concluded the interval
+/// was covered and never costed that scenario — a false pass, not a
+/// conservative refusal.
+#[test]
+fn duplicate_specific_keys_do_not_cover_an_interval() {
+    let src = r#"
+type Ev { k: Int = 0; }
+topic K {
+    payload: Ev;
+    subject: "k";
+    keyed_by k;
+    on_unmatched: fallback;
+}
+locus A0 {
+    bus { subscribe K as on_k where key == 0; }
+    params { n: Int = 0; }
+    fn on_k(e: Ev) { self.n = 1; }
+}
+locus B0 {
+    bus { subscribe K as on_k where key == 0; }
+    params { n: Int = 0; }
+    fn on_k(e: Ev) { self.n = 1; }
+}
+locus Fb {
+    bus { subscribe K as on_k where key == _; }
+    params { n: Int = 0; }
+    fn on_k(e: Ev) { self.n = 1; }
+}
+main locus App {
+    params {
+        a: A0 = A0 { }; b: B0 = B0 { }; fb: Fb = Fb { };
+    }
+    placement { fb: pinned(replicas = 5); }
+    bus { publish K; }
+    fn fire() { K <- Ev { k: 0 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let (mut m, _b) = model_and_ids(src);
+    // Shape the lawful fact the source builder does not yet infer:
+    // this site's keys lie in [0, 1].
+    let fire = fn_id(&m, "App::fire");
+    for p in m.relations.publishes.iter_mut() {
+        if p.function == fire {
+            p.key_domain =
+                Some(hale_model::keys::KeyDomain::IntRange {
+                    min: 0,
+                    max: 1,
+                });
+        }
+    }
+    let f = hale_types::evidence::model_fanout(&m);
+    let n = f(
+        &hale_types::alloc_summary::FnKey::method("App", "fire"),
+        0,
+        "k",
+    );
+    assert_eq!(
+        n,
+        Some(5),
+        "key 0 reaches two specific subscribers; key 1 reaches five \
+         fallback replicas, and that is the maximum"
+    );
+}
