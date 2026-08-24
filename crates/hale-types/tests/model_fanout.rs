@@ -562,3 +562,320 @@ fn main() { App { }; }
         ds
     );
 }
+
+/// Review pin (round 6): the per-key SCENARIO survives into the
+/// downstream walk.
+///
+/// The immediate count chose one key while the downstream traversal
+/// followed every handler reachable under ANY key. One message
+/// carries one key, so `where key == replica` selects one relay —
+/// and only that relay's onward publish happens.
+#[test]
+fn a_keyed_hop_carries_its_key_choice_downstream() {
+    let src = r#"
+type T { shard: Int = 0; }
+topic A { payload: T; subject: "a"; keyed_by shard; }
+topic B { payload: T; subject: "b"; }
+locus Relay {
+    bus { subscribe A as on_a where key == replica; publish B; }
+    params { n: Int = 0; }
+    fn on_a(t: T) { B <- T { shard: t.shard }; }
+}
+locus Sink {
+    bus { subscribe B as on_b; }
+    params { n: Int = 0; }
+    fn on_b(t: T) { self.n = t.shard; }
+}
+main locus App {
+    params { relays: Relay = Relay { }; sink: Sink = Sink { }; }
+    placement { relays: pinned(replicas = 3); }
+    bus { publish A; }
+    @budget(fanout = 2)
+    fn fire() { A <- T { shard: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let ds = diags(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("budget exceeded")
+            && m.contains("fanout")),
+        "one relay receives and one relay republishes: {:?}",
+        ds
+    );
+}
+
+/// …and the same program does NOT fit in one.
+#[test]
+fn the_keyed_hop_still_costs_its_second_delivery() {
+    let src = r#"
+type T { shard: Int = 0; }
+topic A { payload: T; subject: "a"; keyed_by shard; }
+topic B { payload: T; subject: "b"; }
+locus Relay {
+    bus { subscribe A as on_a where key == replica; publish B; }
+    params { n: Int = 0; }
+    fn on_a(t: T) { B <- T { shard: t.shard }; }
+}
+locus Sink {
+    bus { subscribe B as on_b; }
+    params { n: Int = 0; }
+    fn on_b(t: T) { self.n = t.shard; }
+}
+main locus App {
+    params { relays: Relay = Relay { }; sink: Sink = Sink { }; }
+    placement { relays: pinned(replicas = 3); }
+    bus { publish A; }
+    @budget(fanout = 1)
+    fn fire() { A <- T { shard: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let ds = diags(src);
+    assert!(
+        ds.iter().any(|m| m.contains("budget exceeded")
+            && m.contains("fanout")),
+        "the relay's own republish is a second delivery: {:?}",
+        ds
+    );
+}
+
+/// Review pin (round 6): interface alternatives are a CHOICE, and
+/// the choice is made over whole contributions.
+///
+/// A pointwise max over publish sites keeps one entry per site
+/// across alternatives — a union, not a choice — so two conformers
+/// publishing different subjects both counted. One dispatch runs
+/// one conformer.
+#[test]
+fn interface_alternatives_take_the_max_of_whole_contributions() {
+    let src = r#"
+type T { n: Int = 0; }
+topic A { payload: T; subject: "a"; }
+topic X { payload: T; subject: "x"; }
+topic Y { payload: T; subject: "y"; }
+interface Runner { fn go(v: Int) -> Int; }
+locus Left {
+    bus { publish X; }
+    params { n: Int = 0; }
+    fn go(v: Int) -> Int { X <- T { n: v }; return v; }
+}
+locus Right {
+    bus { publish Y; }
+    params { n: Int = 0; }
+    fn go(v: Int) -> Int { Y <- T { n: v }; return v; }
+}
+locus SinkX {
+    bus { subscribe X as on_x; }
+    params { n: Int = 0; }
+    fn on_x(t: T) { self.n = t.n; }
+}
+locus SinkY {
+    bus { subscribe Y as on_y; }
+    params { n: Int = 0; }
+    fn on_y(t: T) { self.n = t.n; }
+}
+locus Handler {
+    bus { subscribe A as on_a; }
+    params { r: Runner = Left { }; }
+    fn on_a(t: T) { self.r.go(t.n); }
+}
+main locus App {
+    params {
+        h: Handler = Handler { };
+        sx: SinkX = SinkX { }; sy: SinkY = SinkY { };
+    }
+    bus { publish A; }
+    @budget(fanout = 2)
+    fn fire() { A <- T { n: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let ds = diags(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("budget exceeded")
+            && m.contains("fanout")),
+        "one dispatch runs one conformer: {:?}",
+        ds
+    );
+}
+
+// ---------------------------------------------------------------
+// Through-stdlib entries. The absorption account is the AUTHORED
+// site grain — one `StdlibAbsorption` row per entry site, with
+// `entry_group` marking alternatives of one dispatch — while
+// `relations.calls`' `ViaStdlib` rows are the CONTRACTED endpoint
+// pair and collapse several entries into one. Counting the
+// contraction lost a second entry's execution; counting both would
+// double. These pin the account the traversal actually reads.
+//
+// Built by deriving a real model and shaping its absorption rows,
+// the established pattern for absorption controls — no stdlib
+// function takes a user callback, so the shape is not writable in
+// source today.
+// ---------------------------------------------------------------
+
+fn model_and_ids(
+    src: &str,
+) -> (hale_model::ApplicationModel, hale_types::Bundle<'static>) {
+    let program: &'static hale_syntax::ast::Program = Box::leak(
+        Box::new(hale_syntax::parse_source(src).expect("parse")),
+    );
+    let src: &'static str = Box::leak(src.to_string().into_boxed_str());
+    let mut programs = BTreeMap::new();
+    programs.insert("app.hl".to_string(), program);
+    let mut b = hale_types::Bundle::new(programs);
+    b.sources = vec![SourceFile {
+        id: 0,
+        path: "app.hl".to_string(),
+        digest: "0".to_string(),
+        base: 0,
+        len: src.len() as u32,
+    }];
+    let m = hale_types::model_builder::derive_application_model(&b);
+    (m, b)
+}
+
+fn fn_id(
+    m: &hale_model::ApplicationModel,
+    name: &str,
+) -> hale_model::FunctionId {
+    hale_model::FunctionId(
+        m.entities
+            .functions
+            .iter()
+            .position(|f| f.name == name)
+            .unwrap_or_else(|| panic!("no fn `{}`", name))
+            as u32,
+    )
+}
+
+const HOP: &str = r#"
+type T { n: Int = 0; }
+topic A { payload: T; subject: "a"; }
+topic B { payload: T; subject: "b"; }
+locus Emitter {
+    bus { publish B; }
+    params { n: Int = 0; }
+    fn emit(v: Int) { B <- T { n: v }; }
+}
+locus Handler {
+    bus { subscribe A as on_a; }
+    params { e: Emitter = Emitter { }; }
+    fn on_a(t: T) { self.e.emit(t.n); }
+}
+locus Sink {
+    bus { subscribe B as on_b; }
+    params { n: Int = 0; }
+    fn on_b(t: T) { self.n = t.n; }
+}
+main locus App {
+    params {
+        h: Handler = Handler { }; s: Sink = Sink { };
+        e: Emitter = Emitter { };
+    }
+    bus { publish A; }
+    fn fire() { A <- T { n: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+
+/// Two bounded stdlib ENTRY SITES re-emerging at one publishing
+/// callback are two executions of it.
+#[test]
+fn two_stdlib_entries_to_one_callback_count_twice() {
+    let (mut m, _b) = model_and_ids(HOP);
+    let handler = fn_id(&m, "Handler::on_a");
+    let emitter = fn_id(&m, "Emitter::emit");
+    // Replace the direct call with two absorbed entry sites that
+    // both re-emerge at `Emitter::emit`.
+    m.relations.calls.retain(|c| c.from != handler);
+    for site in 0..2u32 {
+        m.analyses.stdlib_absorption.push(
+            hale_model::StdlibAbsorption {
+                from: handler,
+                site,
+                entry_dispatch: None,
+                entry_in_loop: false,
+                entry_group: None,
+                entry_provenance: hale_model::ProvenanceId(0),
+                nodes: vec![hale_model::AbsorbedNode {
+                    display: "std::x::apply".to_string(),
+                    carries: Vec::new(),
+                    direct_effects: Vec::new(),
+                    events: vec![hale_model::AbsorbedEvent::Call {
+                        target: hale_model::AbsorbedTarget::User(
+                            emitter,
+                        ),
+                        dispatch: None,
+                        in_loop: false,
+                        group: None,
+                    }],
+                }],
+            },
+        );
+    }
+    let f = hale_types::evidence::model_fanout(&m);
+    let n = f(
+        &hale_types::alloc_summary::FnKey::method("App", "fire"),
+        0,
+        "a",
+    );
+    assert_eq!(
+        n,
+        Some(3),
+        "one delivery to Handler plus TWO callback publishes, each \
+         reaching one Sink"
+    );
+}
+
+/// …and two entries sharing an `entry_group` are alternatives of
+/// ONE dispatch: their whole contributions take the max.
+#[test]
+fn stdlib_conformer_alternatives_take_the_max() {
+    let (mut m, _b) = model_and_ids(HOP);
+    let handler = fn_id(&m, "Handler::on_a");
+    let emitter = fn_id(&m, "Emitter::emit");
+    m.relations.calls.retain(|c| c.from != handler);
+    for site in 0..2u32 {
+        m.analyses.stdlib_absorption.push(
+            hale_model::StdlibAbsorption {
+                from: handler,
+                site,
+                entry_dispatch: None,
+                entry_in_loop: false,
+                // One dispatch, two conformers.
+                entry_group: Some(7),
+                entry_provenance: hale_model::ProvenanceId(0),
+                nodes: vec![hale_model::AbsorbedNode {
+                    display: "std::x::apply".to_string(),
+                    carries: Vec::new(),
+                    direct_effects: Vec::new(),
+                    events: vec![hale_model::AbsorbedEvent::Call {
+                        target: hale_model::AbsorbedTarget::User(
+                            emitter,
+                        ),
+                        dispatch: None,
+                        in_loop: false,
+                        group: None,
+                    }],
+                }],
+            },
+        );
+    }
+    let f = hale_types::evidence::model_fanout(&m);
+    let n = f(
+        &hale_types::alloc_summary::FnKey::method("App", "fire"),
+        0,
+        "a",
+    );
+    assert_eq!(
+        n,
+        Some(2),
+        "one dispatch runs one conformer: one delivery to Handler \
+         plus one callback publish"
+    );
+}

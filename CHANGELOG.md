@@ -56,7 +56,15 @@ Supporting facts, added in the same change:
   message carries one key, so disjoint literal filters cannot both
   receive it and `where key == replica` selects the single instance
   whose index equals that key. A declared but never instantiated
-  subscriber receives exactly zero, not "unknown".
+  subscriber receives exactly zero, not "unknown". The choice of
+  key and the choice of interface conformer are carried through the
+  WHOLE downstream calculation before any maximum is taken —
+  `max over keys of (immediate + downstream)`, and
+  `max over alternatives of (sum over that alternative)`, rather
+  than a maximum followed by the union of every branch. Through-
+  stdlib multiplicity comes from the per-entry absorption account
+  rather than the contracted endpoint relation, which collapses
+  two entry sites into one.
 - **Quantitative budgets cross seed boundaries.** The migrated
   evidence path called the engine without the import-rename table,
   so `lib::expensive()` stayed an unresolved qualified free call
