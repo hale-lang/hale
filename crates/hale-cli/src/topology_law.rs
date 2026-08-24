@@ -3310,8 +3310,18 @@ pub fn validate_law_account(
         ("certificate", JF::Certificate),
         ("causes", JF::Causes),
     ];
+    const MIGRATED_115: &[(&str, JF)] = &[
+        ("reachability", JF::Reachability),
+        ("boundary", JF::Boundary),
+        ("endpoint", JF::Endpoint),
+        ("bound", JF::Bound),
+        ("certificate", JF::Certificate),
+        ("causes", JF::Causes),
+        ("depends", JF::Depends),
+    ];
     let schema = v["schema"].as_str().unwrap_or_default();
     let migrated: &[(&str, JF)] = match schema {
+        "1.15" => MIGRATED_115,
         "1.14" => MIGRATED_114,
         _ => MIGRATED_113,
     };

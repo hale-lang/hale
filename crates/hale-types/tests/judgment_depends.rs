@@ -315,3 +315,102 @@ fn main() { App { }; }
     let (v, ds) = judge(src);
     assert_eq!(v, Verdict::Holds, "{:?}", ds);
 }
+
+/// Review pin (round 2): the backward walk climbs reverse CALLS.
+///
+/// The walk used to stop at a free-function publisher, recording
+/// its subject and giving up because there was no owner locus to
+/// inspect. But a handler that calls a free helper which publishes
+/// is a real path, and stopping there let a locus certify a
+/// dependency set that omitted the subject driving it.
+const LAUNDERED_VIA_HELPER: &str = r#"
+type Msg { n: Int = 0; }
+topic Secret { payload: Msg; subject: "secret"; }
+topic Clean  { payload: Msg; subject: "clean"; }
+
+fn emit_clean() { Clean <- Msg { n: 1 }; }
+
+locus Relay {
+    bus { subscribe Secret as on_secret; publish Clean; }
+    params { n: Int = 0; }
+    fn on_secret(m: Msg) { emit_clean(); }
+}
+@effects(depends: {DECLARED})
+locus Target {
+    bus { subscribe Clean as on_clean; }
+    params { n: Int = 0; }
+    fn on_clean(m: Msg) { self.n = m.n; }
+}
+locus Source {
+    bus { publish Secret; }
+    fn go() { Secret <- Msg { n: 7 }; }
+}
+main locus App {
+    params {
+        r: Relay = Relay { };
+        t: Target = Target { };
+        s: Source = Source { };
+    }
+}
+fn main() { App { }; }
+"#;
+
+#[test]
+fn a_free_helper_publish_carries_its_callers_inputs() {
+    // `Secret -> Relay::on_secret -> emit_clean() -> Clean ->
+    //  Target::on_clean`. Declaring only `Clean` is incomplete.
+    let (v, ds) =
+        judge(&LAUNDERED_VIA_HELPER.replace("DECLARED", "Clean"));
+    assert_eq!(
+        v,
+        Verdict::Violated,
+        "the helper's publish belongs to the loci that can reach \
+         it: {:?}",
+        ds
+    );
+    assert!(
+        ds.iter().any(|m| m.contains("Secret")),
+        "and the omitted subject is named: {:?}",
+        ds
+    );
+}
+
+#[test]
+fn declaring_the_helper_mediated_closure_holds() {
+    let (v, ds) = judge(
+        &LAUNDERED_VIA_HELPER.replace("DECLARED", "Clean, Secret"),
+    );
+    assert_eq!(v, Verdict::Holds, "{:?}", ds);
+}
+
+#[test]
+fn a_computed_publisher_upstream_is_uncertified() {
+    // A publish whose subject the model could not name is a
+    // function-grained PUBLISHES hole, anchored to no subject at
+    // all — so neither the endpoint query nor the publish-row walk
+    // can see it. It might name this wire.
+    let src = r#"
+type Msg { n: Int = 0; }
+topic Clean { payload: Msg; subject: "clean"; }
+fn pick(n: Int) -> String { if n > 0 { return "clean"; } return "other"; }
+fn shout(n: Int) { pick(n) <- Msg { n: n }; }
+@effects(depends: {Clean})
+locus Target {
+    bus { subscribe Clean as on_clean; }
+    params { n: Int = 0; }
+    fn on_clean(m: Msg) { self.n = m.n; }
+}
+main locus App {
+    params { t: Target = Target { }; }
+    run() { shout(1); }
+}
+fn main() { App { }; }
+"#;
+    let (v, ds) = judge(src);
+    assert_eq!(
+        v,
+        Verdict::Uncertified,
+        "an unnameable publisher cannot be certified around: {:?}",
+        ds
+    );
+}

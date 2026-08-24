@@ -581,9 +581,19 @@ impl JudgmentFamily {
             // subject, not what anything does with it. OWNS is how
             // a locus's handler set is found, and losing it means
             // the subscription set is not known to be complete.
-            JudgmentFamily::Depends => R::PUBLISHES
+            // Round 2: CALLS joins the list. The backward walk
+            // climbs reverse call edges from a publish site to
+            // every locus that can reach it — a publish inside a
+            // free helper belongs to its callers — so an incomplete
+            // call account is an incomplete dependency account.
+            // ROUTES for the same reason it appears under `causes`:
+            // an inbound binding is an upstream the model cannot
+            // see past.
+            JudgmentFamily::Depends => R::CALLS
+                .union(R::PUBLISHES)
                 .union(R::SUBSCRIBES)
                 .union(R::DELIVERY)
+                .union(R::ROUTES)
                 .union(R::OWNS),
             JudgmentFamily::Unmigrated | JudgmentFamily::Fleet => {
                 crate::hole::RelationSet(0)

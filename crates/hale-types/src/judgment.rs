@@ -4965,6 +4965,66 @@ pub fn judge_depends_witnessed(
     for m in &r.member_of {
         fns_of.entry(m.locus.0).or_default().push(m.function);
     }
+    // Reverse CALLS. A publish inside a free helper belongs to
+    // every locus that can reach that helper, so the backward walk
+    // has to climb the call graph before it can ask "whose inputs
+    // are these?".
+    let mut callers_of: BTreeMap<u32, Vec<FunctionId>> =
+        BTreeMap::new();
+    for c in &r.calls {
+        callers_of.entry(c.to.0).or_default().push(c.from);
+    }
+    // …and through the stdlib: a user fn that reaches a user fn
+    // through a stdlib interior is still a caller.
+    for a in &model.analyses.stdlib_absorption {
+        for node in &a.nodes {
+            for ev in &node.events {
+                if let hale_model::AbsorbedEvent::Call {
+                    target: hale_model::AbsorbedTarget::User(u),
+                    ..
+                } = ev
+                {
+                    callers_of.entry(u.0).or_default().push(a.from);
+                }
+            }
+        }
+    }
+    let owner_of: BTreeMap<u32, hale_model::LocusDeclId> = r
+        .member_of
+        .iter()
+        .map(|m| (m.function.0, m.locus))
+        .collect();
+    // Every locus that owns a function which can transitively reach
+    // `f` — including `f`'s own owner.
+    // Functions whose publish set the model could not resolve.
+    let computed_publishers: BTreeSet<u32> = model
+        .holes
+        .iter()
+        .filter(|h| h.hides.intersects(hale_model::RelationSet::PUBLISHES))
+        .filter_map(|h| match h.at {
+            EntityRef::Function(f) => Some(f.0),
+            _ => None,
+        })
+        .collect();
+    let owning_loci = |f: FunctionId| -> Vec<hale_model::LocusDeclId> {
+        let mut seen_fn: BTreeSet<u32> = BTreeSet::new();
+        let mut out: BTreeSet<u32> = BTreeSet::new();
+        let mut frontier = vec![f];
+        while let Some(cur) = frontier.pop() {
+            if !seen_fn.insert(cur.0) {
+                continue;
+            }
+            if let Some(l) = owner_of.get(&cur.0) {
+                out.insert(l.0);
+                // A method's own locus is an answer; its callers
+                // still matter (another locus may call into it).
+            }
+            for up in callers_of.get(&cur.0).into_iter().flatten() {
+                frontier.push(*up);
+            }
+        }
+        out.into_iter().map(hale_model::LocusDeclId).collect()
+    };
 
     let mut out = Vec::new();
     for row in table.rows.iter() {
@@ -5076,6 +5136,23 @@ pub fn judge_depends_witnessed(
                 uncertain = true;
                 witness.incomplete_endpoints.push(subject);
             }
+            // Function-grained publisher residue (round 2). A
+            // COMPUTED publish is recorded as a PUBLISHES hole at
+            // its function, not as a `Publish` row and not anchored
+            // to any subject — so neither the endpoint query (which
+            // reads subject- and topic-anchored holes) nor the row
+            // walk below can see it. A publisher whose subject the
+            // model could not name might name THIS wire, and a
+            // backward completeness claim cannot be certified over
+            // it.
+            //
+            // Deliberately not scoped to this subject: the hole
+            // exists precisely because the subject is unknown, so
+            // there is nothing narrower to scope it to. It
+            // downgrades to `uncertified`, never to a violation.
+            if !computed_publishers.is_empty() {
+                uncertain = true;
+            }
             // Who can publish INTO a subscription on this subject?
             // The join is delivery, not the syntactic topic link: a
             // literal `"t" <- …` send reaches a `t` subscriber, and
@@ -5091,31 +5168,26 @@ pub fn judge_depends_witnessed(
                     if !crate::model_query::may_deliver(e, p, su) {
                         continue;
                     }
-                    let Some(m) =
-                        r.member_of.iter().find(|m| m.function == p.function)
-                    else {
-                        // A publisher owned by no locus is a free
-                        // function: its subject still reaches here,
-                        // but there is no locus to walk on from.
-                        let pl = p.subject;
-                        if !seen.contains_key(&pl.0) {
-                            queue.push((
-                                pl,
-                                Some((
-                                    e.functions[p.function.index()]
-                                        .display
-                                        .clone(),
-                                    shown(subject.0),
-                                )),
-                            ));
+                    // Every LOCUS this publish can be reached FROM,
+                    // not just the one that owns the publishing
+                    // function.
+                    //
+                    // Round 2: the walk used to stop at a free
+                    // function, recording its subject and giving up
+                    // because there was no owner locus to inspect.
+                    // But a handler that calls a free helper which
+                    // publishes is a real path — `Secret ->
+                    // Relay::on_secret -> emit_clean() -> Clean ->
+                    // Target::on_clean` — and stopping there let a
+                    // locus certify `depends: {Clean}` while
+                    // `Secret` reached it. The publish site's
+                    // CALLERS are part of the backward walk.
+                    for owner in owning_loci(p.function) {
+                        let plocus = &e.loci[owner.index()];
+                        if !seen_locus.insert(owner.0) {
+                            continue;
                         }
-                        continue;
-                    };
-                    let plocus = &e.loci[m.locus.index()];
-                    // The publishing locus's OWN inputs are inputs
-                    // of this one, transitively.
-                    if seen_locus.insert(m.locus.0) {
-                        for up in subs_of(m.locus.0) {
+                        for up in subs_of(owner.0) {
                             queue.push((
                                 up.subject,
                                 Some((
@@ -5124,6 +5196,20 @@ pub fn judge_depends_witnessed(
                                 )),
                             ));
                         }
+                    }
+                    // A publish no locus can be reached from still
+                    // delivers here — record the subject even when
+                    // the walk cannot continue past it.
+                    if !seen.contains_key(&p.subject.0) {
+                        queue.push((
+                            p.subject,
+                            Some((
+                                e.functions[p.function.index()]
+                                    .display
+                                    .clone(),
+                                shown(subject.0),
+                            )),
+                        ));
                     }
                 }
             }

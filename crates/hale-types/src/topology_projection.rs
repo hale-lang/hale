@@ -1363,6 +1363,8 @@ pub fn family_adequacy(
         // artifact that could not state whether the model is exact
         // or degraded there would be internally contradictory.
         F::Causes,
+        // Change 5g, same contract.
+        F::Depends,
     ]
     .into_iter()
     .map(|f| (f, vouched.contains(f.required_relations())))
