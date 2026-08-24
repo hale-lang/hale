@@ -619,9 +619,7 @@ main locus App {
     let graph = build_bus_graph(&bundle, &top);
     let progs: Vec<&hale_syntax::ast::Program> =
         bundle.programs.values().copied().collect();
-    let a = hale_types::claims::constitution_identities(
-        &progs, &graph, &[],
-    );
+    let a = constitution_identities(&progs, &graph, &[]);
     assert_eq!(
         a.roots.len(),
         1,

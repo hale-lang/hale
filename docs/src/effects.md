@@ -126,6 +126,23 @@ subscriber *deliveries*, so publishing once to a subject with 200
 subscribers is a fan-out of 200. That's the amplification a per-fn
 count can't show you.
 
+Three details matter once you start relying on it:
+
+- It counts **runtime registrations**, not declarations. One
+  `subscribe` line on a locus arranged with `replicas = 3` is three
+  deliveries.
+- It is **transitive**. If a handler you reach republishes, those
+  deliveries are yours too — a publish reaching one relay that
+  republishes to three sinks is a fan-out of four, not one.
+- One message carries **one key**. A keyed publish reaches the
+  subscriptions whose filter that key satisfies, so
+  `where key == replica` costs one delivery, not one per replica.
+
+Where the compiler cannot know the number — a computed subject, a
+subscriber born outside the arrangement, a topic bound to a
+transport — the answer is *unbounded*, not a guess. A budget cannot
+hold over a count nobody can take.
+
 ## Effects by lifecycle phase
 
 A locus can say which effects each phase may perform:
@@ -385,11 +402,15 @@ anyway, and nothing in the depending locus's source mentions it. The
 diagnostic names the laundering path:
 
 ```
-type error: declared dependence set violated: `StatedCarry` can be
-transitively influenced by subject `Recalled`, which its
+type error: declared dependency set violated: `StatedCarry` can
+transitively depend on `Recalled` through the bus, which its
 `@effects(depends: …)` does not declare. Path: subject `Recalled` ->
 `Launderer` -> subject `SumLookup` -> `StatedCarry`.
 ```
+
+You may name the topic (`Recalled`) or its wire subject
+(`"recalled"`) — they address one endpoint, and the compiler joins
+on that identity rather than on how you spelled it.
 
 It sits on the **locus**, not a fn: dependence enters through
 subscriptions, and those are declared per-locus. A fn-level

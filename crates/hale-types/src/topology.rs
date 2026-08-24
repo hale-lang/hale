@@ -1238,10 +1238,10 @@ pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
     // the migrated families the law rows are the judgment's word —
     // stricter than the engine replay in the two documented places
     // (cyclic/undeclared classes ⇒ invalid; attributed-over-hole ⇒
-    // uncertified). Unmigrated rows carry the OLD engines'
-    // authoritative results (`legacy_unmigrated_verdicts`), so
-    // EVERY application-tier row participates: no non-passing law
-    // row can coexist with a `clean` document verdict (round 1).
+    // uncertified). EVERY application-tier row participates — no
+    // family imports an outside verdict any more — so no
+    // non-passing law row can coexist with a `clean` document
+    // verdict (round 1).
     let law_pass = law_rows.iter().all(|r| {
         matches!(r.family, hale_model::JudgmentFamily::Fleet)
             || r.verdict.passed()

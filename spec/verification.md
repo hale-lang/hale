@@ -327,7 +327,8 @@ sections: **`law`** — every lowered `ClaimIr` row with its
 ordinal, origin (`main` / `constitution:<name>` / `library` /
 `annotation`), judgment **family** (`reachability` / `boundary` /
 `endpoint` / `bound` / `causes` / `depends` / `budget` /
-`certificate` / `unmigrated` / `fleet`),
+`certificate` / `unmigrated` / `fleet`; `unmigrated` is now
+unreachable and kept only so an older artifact decodes),
 machine **verdict**, a TYPED **`law` payload** (one tagged object
 per `ClaimIr` variant carrying the law's operands — each reference
 as `{"name": <raw canonical identity>, "display": <author
@@ -341,19 +342,28 @@ consumer checks before trusting external evidence against this
 artifact; **`capabilities`** — the model's positive completeness
 account, typed (`exact_cardinality` is derived: endpoint counts
 come from a closed-world enumeration and are exact unless a hole
-says otherwise); and **`adequacy`** — per migrated judgment
+says otherwise; `exact_costs`, added by Change 5h, vouches the
+per-call COST account — allocation sites, frame estimates and
+blocking points, carried site-grained in `relations.costs`
+because a per-call budget is a statement about one invocation and
+the loop flag is what turns a finite count into an unbounded one.
+The three call-hole kinds REQUIRE the COSTS bit: a call whose
+target the caller chooses is exactly where a quantitative law must
+not certify through); and **`adequacy`** — per migrated judgment
 family, `exact` when capabilities vouch every relation family that
 judgment consumes, else `degraded` (the certificate family
 consumes PUBLISHES — a publish-set contract cannot prove a
-computed subject in-set). The UNMIGRATED families (`causes:`,
-`depends:`, `@budget`) carry the old engines' authoritative
-results in their law rows, so no non-passing law row can coexist
-with a `clean` document verdict. The emitted model half — and
+computed subject in-set). As of schema 1.17 every family is
+judged over the model: `causes:` (Change 5f), `depends:` (5g) and
+`@budget` (5h, through the evidence sidecar) import no outside
+verdict. No non-passing law row can coexist with a `clean`
+document verdict. The emitted model half — and
 `shape_hash` — come from the `ApplicationModel` projection
 (`project_model_half`), and so do the unhashed `sources`,
 `provenance`, and `topics` sections (`project_unhashed_tail`);
-the legacy gathering survives only as the corpus differential's
-comparison arm until Change 9. Bus selectors in the `law` payload
+the legacy gathering is gone: Change 10 deleted the evaluator, and
+the corpus differentials it was the comparison arm of are now
+committed snapshots of its final answers. Bus selectors in the `law` payload
 serialize their resolved CANDIDATE sets (the topic identities and
 wire patterns the selector matched) plus the selector's own
 source location; `capabilities` carries `exact_publishes` and
@@ -398,19 +408,17 @@ generated expectation must be met, so deleting law rows orphans
 their evidence even in an annotation-only artifact — recomputes
 per-row and document verdicts from the evidence, checks the
 one-to-one claims-to-law projection in both directions, requires
-the `law.legacy` report (the old engines' verdicts for the rows
-that are still `unmigrated` — as of schema 1.17 there are NONE, so
-the report is empty for every program; it survives so an artifact
-written by an older toolchain still decodes — keyed by ordinal and by a form FINGERPRINT re-rendered
-that are still `unmigrated` — as of schema 1.17 there are NONE, so
-the report is empty for every program; it survives so an artifact
-written by an older toolchain still decodes — keyed by ordinal and
-by a form FINGERPRINT re-rendered
-from the typed operands; an operand mutation orphans the entry.
-A migrated row imports no outside verdict, so it carries no
-legacy entry and states its own `form` instead, which admission
-re-renders from the typed payload; a `causes:` row naming an
-undeclared or cyclic class still cannot hold), refuses fleet-family
+the `law.legacy` report — the old engines' verdicts for rows that
+are still `unmigrated`, keyed by ordinal and by a form FINGERPRINT
+re-rendered from the typed operands, so an operand mutation
+orphans the entry. As of schema 1.17 NO family is unmigrated, so
+that report is empty for every program; the section survives only
+so an artifact written by an older toolchain still decodes. Every
+row that renders a compatibility form must STATE it, and admission
+re-renders it from the typed payload — that is the operand binding
+for a judged row, which imports no outside verdict at all. A
+`causes:` row naming an undeclared or cyclic class still cannot
+hold — refuses fleet-family
 rows outright (an application artifact does not own a fleet
 account — that is Change 7's), and recomputes `adequacy` from
 `capabilities`. Static invalidity DOMINATES (round 7): an
@@ -433,10 +441,11 @@ overlap, …) admit by RETAINING the judgment's explanation — an
 `invalid` row must carry either a decodable invalidity or its
 judgment's evidence, and an unanalyzed `uncertified` its
 residue. Machine-`invalid` rows may still
-PRESERVE the old engines' reports (`law.legacy`, keyed budget
+PRESERVE an old engine's report (`law.legacy`, keyed budget
 `lowered` rows) — bound by fingerprint as optional evidence,
-never demanded and never overriding the machine verdict, so the
-compiler's own cyclic-class artifacts admit. The catalogs are
+never demanded and never overriding the machine verdict, so an
+older artifact's cyclic-class rows still admit. Nothing the
+current compiler emits populates `law.legacy` any more. The catalogs are
 CLOSED: unique in both halves and in exact bijection with the
 `topics` / `groups` / `sorts.loci` sections (`fn_universe` covers
 `sorts.fns`), so selector recomputation cannot be widened
@@ -555,10 +564,16 @@ fingerprint covers `{issues, rows}`) and in the document verdict
 entry like any diagnostic, and the duplicate-name case is
 recomputed from the rows themselves — no claim error disappears
 between checking and artifact projection. The evidence engine's
-`ANALYSIS_SEMANTICS_VERSION` is 3: round 8's producer/judgment
-changes (synthetic implicit-phase certificates, report-less
-subjects judging `uncertified`) are result-affecting, so pre- and
-post-round-8 evidence cannot share an `inputs_digest`. Both digests are RECOMPUTED at
+`ANALYSIS_SEMANTICS_VERSION` is 6. It moves whenever the
+producer's RESULTS move, because `validate` compares digests and
+never the implementation: v3 was round 8's synthetic
+implicit-phase certificates and report-less subjects judging
+`uncertified`; v4–v6 are GH #476 Change 5h, where `@budget`
+joined the evidence pipeline and its quantitative results changed
+(fan-out became a per-scenario execution count, cross-seed calls
+resolve, an unknown subscriber population stopped reading as an
+absent one). Evidence produced under an earlier version cannot
+share an `inputs_digest` with this one. Both digests are RECOMPUTED at
 admission: `law_digest` is the canonical-JSON fingerprint over
 the law rows (serde-canonical rendering, fnv1a64 — a row edit
 under a stale digest refuses), and `inputs_digest` must equal the
@@ -574,10 +589,11 @@ span lives in a FOREIGN offset space (stdlib parse space, another
 seed) is never re-resolved against bundle sources — the
 projection carries a per-diagnostic discriminator, so numeric
 overlap with a bundle file cannot misfile stdlib evidence as
-application code. Unmigrated rows bridge to the old engines
-only where the old walk demonstrably enumerated the row
-(module-scoped annotations and ambiguous multi-assert anchors
-stay `uncertified`). The legacy `claims` / `lowered` string rows
+application code. No row bridges to an old engine: every
+family is judged over the model, and a subject the judgment
+cannot start from — a module-scoped annotation body, outside the
+analyzable universe — is `uncertified` WITH its reason rather
+than silently absent. The legacy `claims` / `lowered` string rows
 remain, now PROJECTED from the canonical model path; `semantics`
 bumps to 2 because the machine verdicts are stricter in two
 documented places (a certificate naming a cyclically-defined or
@@ -605,13 +621,33 @@ disagree about a law. Two consequences are user-visible:
     silently dropped, which had the effect of evaluating a weaker
     claim than the one written.
 
+Changes 5f–5h then migrated the last three families — `causes:`,
+`depends:` and `@budget` — and Change 10 DELETED the second
+evaluator (about 1900 lines). Its corpus differentials, which
+could only ever hold two implementations equal, are now committed
+snapshots of its final answers: a diff in
+`claim_diags_snapshot.txt` or `law_rows_snapshot.txt` is a
+user-visible change to what `hale check` says or what the artifact
+records. The lowered-certificate comparison stays a live
+differential, because the certificate ENGINES were never what was
+being migrated.
+
+A law that cannot be certified is now LOUD in every family. The
+checker appends diagnostics, not verdicts, so an `uncertified` row
+with no diagnostic used to compile clean while the artifact marked
+the document `law_failed` — the same disagreement this change
+exists to remove — and left the row with no evidence for admission
+to find. Every non-holds row states its reason.
+
 What the claim surface still owns is law SELECTION — which laws
 exist at all: clause enumeration, constitution adoption and
 identity, group resolution, the library/world tier rule. Selection
 is not judgment, and it has exactly one implementation, consumed by
 BOTH the checker and the artifact lowering: a selection refusal
 appears in the document's law-issue account, so the two cannot
-report opposite answers about one program.
+report opposite answers about one program. It does not consult the
+bus graph: deciding which laws exist is a question about clause
+text, adoption and membership.
 
 Selection's verdict on each group declaration is CARRIED with the
 lowered laws, in four states — resolved; intentionally empty
@@ -1648,8 +1684,26 @@ assume the others in a build:
     property no per-fn count reveals: a handler publishing to a
     200-subscriber subject amplifies 200×.
 
+    Counted over RUNTIME REGISTRATIONS, per message, and
+    transitively (GH #476 Change 5h). One `subscribe` declaration
+    on a locus arranged with `replicas = 3` is three deliveries; a
+    publish reaching a relay that republishes is charged its
+    onward deliveries too, multiplied by the number of handler
+    executions that reached it; and because one message carries
+    one KEY, the recipients of a keyed publish are the ones that
+    key selects — `where key == replica` costs one delivery, not
+    one per replica. The maximum is taken over the key values the
+    publish site can produce, and over the conformers of one
+    interface dispatch, each scenario costed whole before any
+    comparison. An unknowable count — a computed subject, a
+    subscriber population the arrangement does not enumerate, a
+    subject bound to a transport, an unknown key filter with a
+    live registration — is *unbounded*, never a guess.
+
   A contributor inside a loop saturates to unbounded, matching
-  `alloc_per_call`'s per-call semantics.
+  `alloc_per_call`'s per-call semantics — except where the
+  contribution is exactly ZERO, since repeating a publish that
+  reaches no registration still reaches none.
 - **Phase-indexed effects — `@phase_effects(...)` on a locus**
   (GH #265 step 6, 2026-07-29). The lifecycle model expresses what a
   function-level effect system cannot:
@@ -1729,6 +1783,21 @@ assume the others in a build:
   effects reached THROUGH the bus are reported; direct effects are
   the `none:` form's job. Actor systems without a declared message
   graph structurally cannot offer this.
+
+  Judged over the canonical model since GH #476 Change 5f, which
+  makes three things true that the earlier walk got wrong. A
+  handler whose effects are not fully classified leaves the law
+  **`uncertified` WITH its reason**, rather than reporting every
+  class it never proved — and uncertified is reported, not silent,
+  so a subject the walk cannot even start from (a module-scoped
+  body, outside the analyzable universe) now says so. A class the
+  walk DID prove survives whatever else is unknown, so a law a
+  known effect already violates reads as violated. And delivery
+  joins on WIRE IDENTITY: a literal `"t" <- …` send is judged
+  exactly like the declared spelling it lowers to, an outbound
+  binding makes the closure uncertified rather than silently
+  ending, and a keyed publish that cannot meet a subscription's
+  predicate is not a reach at all.
 - **Backward causality — `@effects(depends: {…})`** (#330,
   2026-07-31). The dual of `causes:`. `causes:` walks the bus graph
   forward; nothing walked it backward, so an independence claim
@@ -1747,6 +1816,23 @@ assume the others in a build:
   so a mandatory form would be redundant far more often than
   informative. The closure is over the **bus graph**: influence
   travelling outside it (see shared state below) is not part of it.
+
+  Judged over the canonical model since Change 5g. The backward
+  walk is SUBSCRIPTION-grained — it carries the actual `subscribe`
+  rows, so an unrelated wildcard or a disjoint key filter on the
+  same wire cannot manufacture an upstream — and it climbs reverse
+  CALLS, so a publish inside a free helper belongs to every locus
+  that can reach that helper. A stdlib interior that publishes
+  (`std::log::Logger.info` computes `log.<path>` and sends from
+  inside its own body) is a publisher like any other. A
+  declaration may name the topic or its wire subject; they address
+  one endpoint. An operand naming nothing is `invalid` rather than
+  a violation report about the subjects it failed to cover. And
+  where the model cannot complete the walk — an inbound `listen`
+  route, a computed publisher, a caller reached through a call it
+  cannot follow — the law is `uncertified` with that reason,
+  provided the residue is REACHABLE: an unfollowable call in a
+  function nothing executes withdraws nothing.
 - **User-declared effect classes — `effect NAME;` and
   `@effects(is: {…})`** (#345, 2026-08-01). A program may name its own
   effect classes and have them propagated by the same engine, with the

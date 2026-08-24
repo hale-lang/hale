@@ -11,7 +11,6 @@
 
 use std::collections::BTreeMap;
 
-use hale_model::ClaimIr;
 use hale_types::claim_lowering::lower_claims;
 use hale_types::judgment::{
     judge_bound, judge_endpoints, judge_forbid_reaches,
@@ -41,28 +40,6 @@ fn bundle_of<'a>(
     b
 }
 
-fn family_names(
-    table: &hale_model::ClaimIrTable,
-) -> Vec<String> {
-    table
-        .rows
-        .iter()
-        .filter(|r| {
-            matches!(
-                r.law,
-                ClaimIr::ForbidReaches { .. }
-                    | ClaimIr::OnlyEdges { .. }
-                    | ClaimIr::RequireEndpoint { .. }
-                    | ClaimIr::RequireSealed { .. }
-                    | ClaimIr::RequireAttributed { .. }
-                    | ClaimIr::Cover { .. }
-                    | ClaimIr::Count { .. }
-                    | ClaimIr::Bound { .. }
-            )
-        })
-        .map(|r| r.name.clone())
-        .collect()
-}
 
 // Change 10: the corpus differential that lived here compared this
 // family's verdicts against the legacy evaluator, claim by claim.
