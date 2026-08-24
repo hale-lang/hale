@@ -926,8 +926,11 @@ the artifact's canonical catalogs (exact `(name, display)` pairs,
 closed under exact bijection with the public sections), recomputes
 bus-selector candidate sets with the compiler's own matching
 rule, requires the `lowered` evidence and `law.legacy` report to
-project from the typed account, validates every diagnostic and
-requires non-holds verdicts to retain their judgment's evidence,
+project from the typed account, requires each law row that renders
+a compatibility form to STATE it (and re-renders it from the typed
+payload, so substituting an operand orphans the row), validates
+every diagnostic and requires non-holds verdicts to retain their
+judgment's evidence,
 lets static invalidity (unresolved operands, undeclared or cyclic
 classes) dominate every replayed engine result, joins `claims`
 rows to law rows one-to-one in both directions, refuses
@@ -935,11 +938,11 @@ fleet-family rows outright, and recomputes the document verdict.
 A restamped artifact whose sections disagree with each other is
 refused even though its digest verifies.
 
-The artifact shape (schema `1.12`):
+The artifact shape (schema `1.17`):
 
 ```text
 {
-  "schema": "1.12",
+  "schema": "1.17",
   "shape_hash": "<fnv1a-64 over the model half>",
   "sorts":     { "loci": […], "fns": […], "topics": […] },
   "relations": {
@@ -989,9 +992,16 @@ The artifact shape (schema `1.12`):
                  "effect_classes": [ {"name", "declared",
                                       "cyclic"} ],
                  "legacy": [ {"ordinal", "form", "result"} ],
+                 //   ^ EMPTY since 1.17: every family is judged
+                 //     over the model. The section survives so an
+                 //     older artifact still decodes.
                  "issues": [ {"message", "file"?, "span"?} ],
                  "rows": [ {"ordinal", "name", "origin",
                             "family", "verdict",
+                            "form"?,   // REQUIRED when the law
+                                       // renders one; re-rendered
+                                       // from the typed operands
+                                       // at admission
                             "law": {"kind", …typed operand refs,
                                     each with name/display/
                                     resolved and provenance…},
@@ -1003,6 +1013,10 @@ The artifact shape (schema `1.12`):
                             "file"?, "span"?} ] },
   "capabilities": { "exact_calls": bool, … },
   "adequacy":  { "<family>": "exact" | "degraded" },
+  //   families: reachability, boundary, endpoint, bound,
+  //   certificate, causes, depends, budget — every migrated
+  //   family carries an account, and admission requires exactly
+  //   the set its schema version names
   "verdict":   "clean" | "law_failed"
 }
 ```

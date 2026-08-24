@@ -11,10 +11,9 @@
 //!
 //! Change 9 finished it: these engines ARE the authority now, for
 //! `hale check` (via [`claim_law_diags`]) as well as for the
-//! artifact. The evaluator in `claims.rs` keeps law SELECTION —
-//! which laws exist at all — and is otherwise a test oracle with no
-//! production callers, enforced by
-//! `tests/legacy_oracle_is_test_only.rs`.
+//! artifact. `claims.rs` keeps law SELECTION — which laws exist at
+//! all — and nothing else: Change 10 deleted the evaluator that
+//! used to sit beside it.
 //!
 //! 5a: reachability (`forbid reaches`) + holes. The walk reuses
 //! `model_graph::search` with a two-kind vertex: user functions

@@ -461,9 +461,8 @@ fn main() { App { }; }
 }
 
 /// Review round 1: NO non-passing law row can coexist with a
-/// `clean` document verdict — over every corpus artifact. The
-/// unmigrated families carry the old engines' authoritative
-/// results (`legacy_unmigrated_verdicts`), so the invariant is
+/// `clean` document verdict — over every corpus artifact. Every
+/// family is judged over the model now, so the invariant is
 /// total: `clean` ⟺ every application-tier law row holds.
 #[test]
 fn clean_verdict_implies_every_law_row_holds() {
