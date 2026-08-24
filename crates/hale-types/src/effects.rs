@@ -55,38 +55,6 @@ pub(crate) fn ffi_names(programs: &[&Program]) -> BTreeSet<String> {
     out
 }
 
-/// GH #436: loci declared `@sealed`, for `require sealed(all G)`.
-///
-/// The stdlib sweep is defensive, not currently reachable: a group
-/// member resolves against user declarations and seed imports, and
-/// `group g = { std::secret::Signer };` is a resolution error today
-/// ("no imported declaration matches this path"). Included so that if
-/// stdlib loci ever become group-nameable, the answer is right rather
-/// than silently `false` — which for a confinement claim would read as
-/// "not sealed" and fail closed, but for the wrong reason.
-pub(crate) fn sealed_loci_of(programs: &[&Program]) -> BTreeSet<String> {
-    // Recursive: a sealed locus inside a `module` was invisible here,
-    // so `require sealed` reported a violation that is not real.
-    fn walk(items: &[TopDecl], out: &mut BTreeSet<String>) {
-        for item in items {
-            match item {
-                TopDecl::Locus(l) if l.sealed => {
-                    out.insert(l.name.name.clone());
-                }
-                TopDecl::Module(m) => walk(&m.items, out),
-                _ => {}
-            }
-        }
-    }
-    let mut out = BTreeSet::new();
-    for p in programs {
-        walk(&p.items, &mut out);
-    }
-    if let Some(sp) = crate::stdlib_bodies::program() {
-        walk(&sp.items, &mut out);
-    }
-    out
-}
 
 /// GH #436: fns declaring `@effects(is: { … })` with a USER class,
 /// for `require attributed(all C)`.

@@ -4,12 +4,11 @@
 //! Two proof obligations:
 //!  1. **Exactness** per form: each surface lowers to its variant
 //!     with resolved model ids, raw/display spellings, and origin.
-//!  2. **Parity with the evaluator**: the claims-family rows agree
-//!     with `claims_report_with_identities` outcomes on count, name,
-//!     order, and constitution source — the lowering walks EXACTLY
-//!     the clauses the evaluator walks — over fixtures AND the
-//!     whole corpus (where the lowering must also be total and
-//!     lawful).
+//!  2. **Parity with law SELECTION**: the claims-family rows agree
+//!     with `claims::selected_clauses` on count, name, order, and
+//!     constitution source — the lowering walks EXACTLY the clauses
+//!     selection selected — over fixtures AND the whole corpus
+//!     (where the lowering must also be total and lawful).
 
 use std::collections::BTreeMap;
 
@@ -264,8 +263,13 @@ fn lowering_matches_evaluator_outcomes_over_the_corpus() {
                 let graph = hale_types::bus_graph::build_bus_graph(
                     &bundle, &top,
                 );
-                let (_d, outcomes, _a) =
-                    hale_types::claims::claims_report_with_identities(
+                // Change 10: the parity partner is law SELECTION,
+                // not the deleted evaluator. That is the truer
+                // statement of the obligation anyway — the lowering
+                // must walk exactly the clauses selection SELECTED,
+                // and the evaluator only ever walked those.
+                let selected =
+                    hale_types::claims::selected_clauses(
                         &programs_v,
                         &graph,
                         &[],
@@ -287,18 +291,13 @@ fn lowering_matches_evaluator_outcomes_over_the_corpus() {
                         _ => None,
                     })
                     .collect();
-                let evaluated: Vec<(String, Option<String>)> =
-                    outcomes
-                        .iter()
-                        .map(|o| (o.name.clone(), o.source.clone()))
-                        .collect();
-                if lowered != evaluated {
+                if lowered != selected {
                     return Err(format!(
-                        "lowered {:?} != evaluated {:?}",
-                        lowered, evaluated
+                        "lowered {:?} != selected {:?}",
+                        lowered, selected
                     ));
                 }
-                Ok::<usize, String>(outcomes.len())
+                Ok::<usize, String>(selected.len())
             }),
         );
         match caught {

@@ -10,6 +10,11 @@
 //!
 //! Both prohibition checks now go through `model_graph::search`.
 //!
+//! Change 10 moved the application-tier end of this: the evaluator
+//! in `claims.rs` is deleted, and the prohibition it used to walk is
+//! `judgment.rs`'s. The invariant is unchanged and so is the file it
+//! guards against — a fresh queue instead of an import.
+//!
 //! **Scope, stated precisely.** This centralizes unweighted
 //! TRANSITIVE reachability, which is what `forbid reaches` asks at
 //! both tiers. Two neighbours are deliberately outside it:
@@ -38,7 +43,7 @@ fn read(rel: &str) -> String {
         .unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
 }
 
-const CLAIMS: &str = "src/claims.rs";
+const JUDGMENT: &str = "src/judgment.rs";
 const FLEET: &str = "../hale-cli/src/fleet.rs";
 const ENGINE: &str = "src/model_graph.rs";
 
@@ -46,7 +51,7 @@ const ENGINE: &str = "src/model_graph.rs";
 #[test]
 fn no_prohibition_evaluator_defines_a_private_bfs() {
     let mut offenders = Vec::new();
-    for rel in [CLAIMS, FLEET] {
+    for rel in [JUDGMENT, FLEET] {
         let src = read(rel);
         for (i, line) in src.lines().enumerate() {
             let l = line.trim();
@@ -78,8 +83,8 @@ fn no_prohibition_evaluator_defines_a_private_bfs() {
 #[test]
 fn both_prohibition_evaluators_call_the_shared_engine() {
     assert!(
-        read(CLAIMS).contains("model_graph::search("),
-        "`claims.rs` no longer calls the shared search"
+        read(JUDGMENT).contains("model_graph::search("),
+        "`judgment.rs` no longer calls the shared search"
     );
     // Mentioning or constructing a graph is not using it: a private
     // BFS could be restored while an unrelated `ModelGraph` reference

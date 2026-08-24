@@ -38,7 +38,11 @@ fn bundle_of<'a>(
     b
 }
 
-fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
+fn diff_one(
+    src: &str,
+    origin: &str,
+    snapshot: &mut Vec<String>,
+) -> Result<usize, String> {
     let program = hale_syntax::parse_source(src)
         .map_err(|_| format!("{}: parse", origin))?;
     let bundle = bundle_of(src, &program);
@@ -55,24 +59,17 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
         &std::collections::BTreeMap::new(),
     );
 
-    // ---- old: the evaluator rows the artifact serialized ----
+    // ---- claims rows: pinned, not compared ----
+    //
+    // Change 10. This block used to hold the artifact's claim rows
+    // byte-equal against the legacy evaluator, carve-out by
+    // carve-out. That evaluator is deleted, and its last word over
+    // the corpus is what the committed snapshot below contains —
+    // every line in it survived the final green differential run.
+    // The lowered-certificate bag underneath is still a live
+    // comparison: the certificate ENGINES were never the thing
+    // being migrated, so they can still disagree.
     let programs_v: Vec<&hale_syntax::ast::Program> = vec![&program];
-    let top = hale_types::resolve::build_top_scope(&bundle).0;
-    let graph =
-        hale_types::bus_graph::build_bus_graph(&bundle, &top);
-    let (_d, outcomes, _a) =
-        hale_types::claims::claims_report_with_identities(
-            &programs_v,
-            &graph,
-            &[],
-        );
-    // Change 5h: `@budget` certificates come from the same
-    // projection now, so the comparison arm is every engine that
-    // produced a `lowered` row before — effects, then alloc, then
-    // quantitative. They are compared as a BAG below: the legacy
-    // list has never been consumed by position (admission binds it
-    // by re-rendered form), and the projection emits in law-table
-    // order rather than engine order.
     let mut old_lowered = hale_types::effects::certificate_rows(
         &programs_v,
         &[],
@@ -89,69 +86,14 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
         &programs_v,
         &fanout,
     ));
-
-    // ---- claims parity (with documented carve-outs) ----
-    if outcomes.len() != claims.len() {
-        return Err(format!(
-            "{}: claims row count diverges: old {} / new {}",
-            origin,
-            outcomes.len(),
-            claims.len()
+    let mut n = 0usize;
+    for c in &claims {
+        n += 1;
+        snapshot.push(format!(
+            "{}\t{}\t{}\t{:?}\t{:?}",
+            origin, c.name, c.form, c.result, c.source
         ));
     }
-    let mut n = 0usize;
-    for (o, c) in outcomes.iter().zip(claims.iter()) {
-        n += 1;
-        // The 5c documented divergence: `require attributed` over
-        // an EFFECTS-hiding hole judges Uncertified where the
-        // evaluator fail-opens to Holds.
-        let attributed_carveout = o
-            .form
-            .starts_with("require attributed")
-            && o.result == Verdict::Holds
-            && c.result == Verdict::Uncertified
-            && model.holes.iter().any(|h| {
-                h.hides.intersects(
-                    hale_model::RelationSet::EFFECTS,
-                )
-            });
-        // Change-9 review divergence: a law quantifying over a
-        // group that law SELECTION refused — an unknown member, or
-        // an empty group that never declared `may_be_empty` — is
-        // Invalid, where the evaluator held vacuously over the
-        // empty set. The refusal is the program's; a verdict of
-        // `holds` over a domain the compiler rejected has no
-        // witness and describes no program.
-        let refused_domain_carveout = c.result == Verdict::Invalid
-            && o.result != Verdict::Invalid
-            && table
-                .group_selection
-                .values()
-                .any(|st| !st.is_judgable());
-        let verdict_ok = o.result == c.result
-            || attributed_carveout
-            || refused_domain_carveout;
-        if o.name != c.name
-            || o.form != c.form
-            || !verdict_ok
-            || o.source != c.source
-        {
-            return Err(format!(
-                "{}: claims row diverges:\n  old: {:?} {:?} {:?} {:?}\n  \
-                 new: {:?} {:?} {:?} {:?}",
-                origin,
-                o.name,
-                o.form,
-                o.result,
-                o.source,
-                c.name,
-                c.form,
-                c.result,
-                c.source
-            ));
-        }
-    }
-
     // ---- lowered parity ----
     //
     // Compared as a BAG keyed by (subject, form), not by position.
@@ -229,15 +171,16 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
 
 /// THE Change-6 gate.
 #[test]
-fn projected_law_rows_match_the_evaluator_over_the_corpus() {
+fn projected_law_rows_match_the_committed_snapshot() {
     let mut bad: Vec<String> = Vec::new();
     let mut rows = 0usize;
+    let mut snapshot: Vec<String> = Vec::new();
     for p in
         hale_corpus::parseable(|s| hale_syntax::parse_source(s).is_ok())
     {
         let caught = std::panic::catch_unwind(
             std::panic::AssertUnwindSafe(|| {
-                diff_one(&p.source, &p.origin)
+                diff_one(&p.source, &p.origin, &mut snapshot)
             }),
         );
         match caught {
@@ -256,6 +199,46 @@ fn projected_law_rows_match_the_evaluator_over_the_corpus() {
         "{} corpus programs diverge:\n{}",
         bad.len(),
         bad.join("\n\n")
+    );
+
+    snapshot.sort();
+    let rendered = snapshot.join("\n") + "\n";
+    let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.push("tests/fixtures/law_rows_snapshot.txt");
+    if std::env::var("HALE_REGEN_LAW_ROWS").as_deref() == Ok("1") {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &rendered).unwrap();
+        eprintln!("regenerated {}", path.display());
+        return;
+    }
+    let committed =
+        std::fs::read_to_string(&path).unwrap_or_default();
+    if committed == rendered {
+        return;
+    }
+    let old: Vec<&str> = committed.lines().collect();
+    let new: Vec<&str> = rendered.lines().collect();
+    let gone: Vec<&&str> =
+        old.iter().filter(|l| !new.contains(l)).take(8).collect();
+    let added: Vec<&&str> =
+        new.iter().filter(|l| !old.contains(l)).take(8).collect();
+    panic!(
+        "the artifact's claim rows moved ({} -> {}).\ngone:\n  \
+         {}\nadded:\n  {}\n\nEach line is `origin name form \
+         verdict source`. Every one of them survived the legacy \
+         evaluator differential before it was committed — read the \
+         diff before regenerating with HALE_REGEN_LAW_ROWS=1.",
+        old.len(),
+        new.len(),
+        gone.iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n  "),
+        added
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n  "),
     );
 }
 

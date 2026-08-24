@@ -27,7 +27,7 @@
 //!
 //! The model is DERIVED, never authored: `Model::derive` reads the
 //! merged programs and the rename table, nothing else. It must stay
-//! cheap — it is built once per `claims_report` and once per
+//! cheap — it is built once per law judgment and once per
 //! artifact dump.
 
 use std::collections::{BTreeMap, BTreeSet};

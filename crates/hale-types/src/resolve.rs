@@ -572,7 +572,7 @@ fn register_top_decls(
             TopDecl::Group(_) => {
                 // GH #382: claim vocabulary — not a value/type
                 // symbol anything references in expression
-                // position. The claims pass (`claims::claims_diags`)
+                // position. The law judgment
                 // resolves group members against the merged bundle
                 // itself, where imported decls are visible.
             }

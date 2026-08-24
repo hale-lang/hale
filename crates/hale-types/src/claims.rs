@@ -1,64 +1,33 @@
-//! GH #382 — claims: named, bundle-level sentences over the program
-//! graph.
+//! LAW SELECTION — which claims exist, over which entities.
 //!
-//! ## What this module is, after GH #476 Change 9
+//! This file used to be the claim EVALUATOR too: ~1900 lines that
+//! walked the program and returned a verdict per clause, in
+//! parallel with the judgment engines answering the same questions
+//! over the canonical model. GH #476 removed that duplication one
+//! family at a time (Changes 5a–5h), and Change 10 deleted what was
+//! left. `hale check` and the artifact read one judgment now.
 //!
-//! LAW SELECTION — which laws exist at all. Clause enumeration,
-//! constitution adoption and its identities, group resolution, the
-//! library/world tier rule: questions about the claim SURFACE.
-//! `selection_diags` and `constitution_identities` are the
-//! production entry points, and the model builder calls a handful
-//! of vocabulary helpers here.
+//! What stays is everything that runs BEFORE a verdict exists:
 //!
-//! It no longer judges. The evaluator below — `claims_report`,
-//! `validate_claim`, every `evaluate_*` — has no production caller:
-//! verdicts come from `judgment.rs` over the canonical model, for
-//! `hale check` and the artifact alike, which is what makes them one
-//! answer instead of two that a differential could only ever hold
-//! equal. What the evaluator still does is serve as the comparison
-//! arm of three corpus differentials, and that role is enforced by
-//! `tests/legacy_oracle_is_test_only.rs` so it cannot drift back
-//! into being an authority.
+//!   * **enumeration** — which clauses the bundle declares, across
+//!     the world tier (a main locus's `claims { }`) and the library
+//!     tier (a seed swearing about its own boundary);
+//!   * **adoption** — constitutions, their closures, and the
+//!     normalized digest that gives each an identity independent of
+//!     its name;
+//!   * **group resolution** — who a selector names, and whether the
+//!     result is judgable at all (an unknown member and an
+//!     undeclared-empty group are both refusals, and a law over a
+//!     refused domain has no witness);
+//!   * the small **vocabulary** helpers the model builder calls, so
+//!     the model's effect columns are computed here once rather
+//!     than approximated there.
 //!
-//! Every structural proof the compiler performs is one judgment form:
-//! over a graph derived from source, evaluate a property, and on
-//! failure produce a witness. This module makes that layer a
-//! user-facing surface: `group` declarations are the vocabulary,
-//! `claims { }` on the main locus holds the sentences, and a
-//! violation renders a minimal countermodel in author spelling.
-//!
-//! The verbs (#382 build order, phases 1–5):
-//!   - `forbid reaches(A, B) [via {calls, bus}] [during P]
-//!     [avoiding G]` — absence under the composed closure;
-//!   - `only edges A -> B { publish T; … }` — isolation with an
-//!     exhaustive grant enumeration (a grant is a reviewable line);
-//!   - `bound C <= N on paths from G` — the `@budget` semiring (sum
-//!     along paths, max at joins) over a user effect class;
-//!   - `require subscribes/publishes(some G, topic T)` — existence;
-//!   - `cover topic in seed(a): subscribed_by(some G)` — bounded
-//!     universal over a seed's declared topics;
-//!   - `count publishers/subscribers(topic T) ==/<=/>= N` — the
-//!     cardinality family (single-writer topics).
-//!
-//! Soundness posture, inherited from #265/#353/#354:
-//!   - **Unknown name = error, not empty set.** Groups, classes,
-//!     topics, phases: a reference that resolves to nothing is the
-//!     misspelt-effect-class bug wearing new clothing.
-//!   - **Empty domain = vacuity error** unless explicitly opted out
-//!     (`may_be_empty` on groups; a `cover` over a topic-less seed
-//!     is always an error). A sentence trivially satisfied by an
-//!     empty quantification domain is a fail-open in formal
-//!     clothing.
-//!   - **Unknown ⇒ violation.** An indirect call (fn-typed param)
-//!     or a computed publish subject on a relevant path cannot be
-//!     certified and is reported, exactly as `@no_syscall` treats
-//!     the same shapes. Over-approximation only ever adds edges.
-//!
-//! Claims are ERRORS gating `hale check`, never advisories: an
-//! advisory claim reads as law and doesn't bind — the #354 fail-open
-//! shape. Weakening a claim is a source diff (delete the `forbid`,
-//! widen the grant list), which is the review event this surface
-//! exists to create.
+//! Selection is deliberately not a judgment. It reads clause text,
+//! adoption, and membership — never the bus graph, and never an
+//! effect walk. The public entry points still accept a `&BusGraph`
+//! because their callers hold one and a future selection rule might
+//! need topology; nothing in here consults it today.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -67,43 +36,11 @@ use hale_syntax::Diag;
 
 use crate::alloc_summary::{AllocSummary, Callee, EffectSiteKind, FnKey};
 use crate::bus_graph::BusGraph;
-use crate::model_graph;
-use crate::verdict::Verdict;
 use hale_model::GroupSelection;
-use crate::callgraph;
-use crate::effects::{
-    close, declared_of, defs_of, effect_names_of, ffi_names,
-    fns_carrying_a_user_class, sealed_loci_of,
-};
+use crate::effects::close;
 use crate::stdlib_surface::{self, EffectSet};
 
-/// One evaluated claim, for the topology artifact (#382 phase 2).
-#[derive(Debug, Clone)]
-pub struct ClaimOutcome {
-    pub name: String,
-    /// The normalized sentence, rendered.
-    pub form: String,
-    /// See [`crate::verdict::Verdict`] — one vocabulary shared with
-    /// the fn-grained certificates in `lowered`.
-    pub result: Verdict,
-    /// GH #409: the constitution this clause came from, if it was
-    /// adopted rather than written in this main. Recorded rather
-    /// than left to an annotation because two kinds of sentence end
-    /// up in one block with opposite lifetimes — a product law true
-    /// everywhere, and an environment rail deliberately false in
-    /// production — and provenance cannot drift from reality the way
-    /// a hand-applied marker can.
-    pub source: Option<String>,
-}
 
-/// Diagnostics only — the `hale check` entry point.
-pub fn claims_diags(
-    programs: &[&Program],
-    graph: &BusGraph,
-    import_renames: &[(Vec<String>, String)],
-) -> Vec<Diag> {
-    claims_report(programs, graph, import_renames).0
-}
 
 /// THE law-selection result: the clauses selected, and every
 /// diagnostic selection produced.
@@ -130,12 +67,13 @@ pub(crate) struct Selection<'a> {
 
 pub(crate) fn select<'a>(
     programs: &[&'a Program],
-    graph: &BusGraph,
+    // Unused since Change 10 — see `claims_report_inner`.
+    _graph: &BusGraph,
     import_renames: &[(Vec<String>, String)],
 ) -> Selection<'a> {
     let universe = enumerate_clauses(programs, import_renames);
-    let (mut diags, _, _, groups) =
-        claims_report_inner(programs, graph, import_renames, true);
+    let (mut diags, _, groups) =
+        claims_report_inner(programs, import_renames);
     crate::stdlib_bodies::demangle_imports(&mut diags, import_renames);
     for d in &mut diags {
         if d.kind == hale_syntax::error::DiagKind::Type {
@@ -156,11 +94,11 @@ pub(crate) fn select<'a>(
 /// selection, so this stops there.
 pub fn constitution_identities(
     programs: &[&Program],
-    graph: &BusGraph,
+    _graph: &BusGraph,
     import_renames: &[(Vec<String>, String)],
 ) -> Adoption {
-    let (_d, _o, adoption, _groups) =
-        claims_report_inner(programs, graph, import_renames, true);
+    let (_d, adoption, _groups) =
+        claims_report_inner(programs, import_renames);
     adoption_identities(programs, adoption)
 }
 
@@ -209,18 +147,6 @@ pub struct ConstitutionIdentity {
     pub digest: String,
 }
 
-/// Diagnostics, outcomes, and the identities of the constitutions
-/// actually adopted.
-pub fn claims_report_with_identities(
-    programs: &[&Program],
-    graph: &BusGraph,
-    import_renames: &[(Vec<String>, String)],
-) -> (Vec<Diag>, Vec<ClaimOutcome>, Adoption) {
-    let (mut d, o, adoption, _groups) =
-        claims_report_inner(programs, graph, import_renames, false);
-    crate::stdlib_bodies::demangle_imports(&mut d, import_renames);
-    (d, o, adoption_identities(programs, adoption))
-}
 
 /// Resolve an adoption's names to identities (name + normalized
 /// closure digest). Shared by the full report and by
@@ -312,26 +238,6 @@ fn constitution_digest(
     format!("{:016x}", h)
 }
 
-pub fn claims_report(
-    programs: &[&Program],
-    graph: &BusGraph,
-    import_renames: &[(Vec<String>, String)],
-) -> (Vec<Diag>, Vec<ClaimOutcome>) {
-    let (mut out, outcomes, _adoption, _groups) =
-        claims_report_inner(programs, graph, import_renames, false);
-    crate::stdlib_bodies::demangle_imports(&mut out, import_renames);
-    // Mark the whole batch at the one place they all funnel through,
-    // rather than at ~30 construction sites. Rendering is unchanged
-    // (`DiagKind::Claim` prints "type error" too); the kind exists so
-    // a consumer can separate "does not typecheck" from "typechecks
-    // and breaks a law" — see `DiagKind::Claim`.
-    for d in &mut out {
-        if d.kind == hale_syntax::error::DiagKind::Type {
-            d.kind = hale_syntax::error::DiagKind::Claim;
-        }
-    }
-    (out, outcomes)
-}
 
 /// A resolved group: the decls it names, projected to the fn grain.
 ///
@@ -354,93 +260,11 @@ struct ResolvedGroup {
 }
 
 impl ResolvedGroup {
-    /// Project to the fn grain against the bundle summary.
-    fn fn_set(&self, summary: &AllocSummary) -> BTreeSet<FnKey> {
-        let mut out: BTreeSet<FnKey> = BTreeSet::new();
-        for k in summary.fns.keys() {
-            match &k.locus {
-                Some(l) if self.loci.contains(l) => {
-                    out.insert(k.clone());
-                }
-                None if self.free_fns.contains(&k.fn_name) => {
-                    out.insert(k.clone());
-                }
-                _ => {}
-            }
-        }
-        // A free fn with no summary entry (empty body) still exists
-        // as a source/sink decl.
-        for f in &self.free_fns {
-            out.insert(FnKey::free_fn(f.clone()));
-        }
-        out
-    }
 
-    /// Is this fn a member, at the decl grain?
-    fn contains_fn(&self, k: &FnKey) -> bool {
-        match &k.locus {
-            Some(l) => self.loci.contains(l),
-            None => self.free_fns.contains(&k.fn_name),
-        }
-    }
 
-    fn is_empty(&self) -> bool {
-        self.loci.is_empty() && self.free_fns.is_empty()
-    }
 }
 
-/// Projection vacuity: vocabulary-nonempty (the group names decls)
-/// is not the same as relation-projection-nonempty (this claim has
-/// executable vertices). A group of fn-less loci — pure-data stores
-/// — passes the decl-grain vacuity guard but projects to nothing
-/// the fn-grained walk can see, so a `forbid`/`bound`/`only edges`
-/// over it proves nothing while reading as law. Fail closed.
-fn projection_vacuity(
-    c: &ClaimDecl,
-    which: &str,
-    name: &Ident,
-    g: &ResolvedGroup,
-    summary: &AllocSummary,
-    diags: &mut Vec<Diag>,
-) -> bool {
-    if g.decl_count == 0 || !g.fn_set(summary).is_empty() {
-        return false;
-    }
-    diags.push(Diag::ty(
-        name.span,
-        format!(
-            "claim `{}`: group `{}` projects to no executable {} \
-             vertices — its declarations have no fns, so the claim \
-             proves nothing about them. The fn-grained walk cannot \
-             see pure-data access; name the loci that HOLD the \
-             behavior, or drop the claim",
-            c.name.name, name.name, which
-        ),
-    ));
-    true
-}
 
-/// Everything the evaluators share.
-struct Cx<'a> {
-    groups: BTreeMap<String, ResolvedGroup>,
-    topic_names: BTreeSet<String>,
-    /// Import alias -> topic decls of that seed (mangled names).
-    alias_topics: BTreeMap<String, Vec<String>>,
-    summary: AllocSummary,
-    graph: &'a BusGraph,
-    ffi: BTreeSet<String>,
-    defs: Vec<Option<Vec<EffectClass>>>,
-    declared: BTreeSet<u16>,
-    effect_names: Vec<String>,
-    /// GH #436: loci declared `@sealed`, for `require sealed(all G)`.
-    sealed: BTreeSet<String>,
-    /// GH #436: fns declaring a USER effect class, for
-    /// `require attributed(all C)`.
-    carries_user_class: BTreeSet<FnKey>,
-    /// #392: the normalized model — decl provenance (witness spans,
-    /// origin gating), the phase relation (`during`), the seed sort.
-    model: crate::model::Model,
-}
 
 /// What a deployment environment contributed to this evaluation: its
 /// label, and the constitutions it required.
@@ -732,6 +556,31 @@ pub(crate) struct ClauseUniverse<'a> {
     pub diags: Vec<Diag>,
 }
 
+/// The clauses law selection SELECTED, in authored order, each
+/// with the constitution it was adopted from (`None` for a
+/// main-block or library-tier clause).
+///
+/// Change 10: the lowering's parity obligation used to be stated
+/// against the evaluator's outcome list. That was always a proxy —
+/// the evaluator walked exactly the selected clauses — and the
+/// evaluator is gone. This is the thing it was standing in for.
+pub fn selected_clauses(
+    programs: &[&Program],
+    _graph: &BusGraph,
+    import_renames: &[(Vec<String>, String)],
+) -> Vec<(String, Option<String>)> {
+    let u = enumerate_clauses(programs, import_renames);
+    u.claims
+        .iter()
+        .map(|c| {
+            (
+                c.name.name.clone(),
+                u.origins.get(&c.name.name).cloned(),
+            )
+        })
+        .collect()
+}
+
 pub(crate) fn enumerate_clauses<'a>(
     programs: &[&'a Program],
     import_renames: &[(Vec<String>, String)],
@@ -892,26 +741,224 @@ pub(crate) fn enumerate_clauses<'a>(
     }
 }
 
+/// The normalized sentence, for the artifact.
+/// Kept with SELECTION, not the evaluator: a constitution's
+/// identity digest is the normalized text of its clause forms, so
+/// rendering a form is part of deciding WHICH laws are adopted.
+fn render_form(f: &ClaimForm) -> String {
+    match f {
+        ClaimForm::RequireSealed { group } => {
+            format!("require sealed(all {})", group.name)
+        }
+        ClaimForm::RequireAttributed { class_name } => {
+            format!("require attributed(all {})", class_name.name)
+        }
+        ClaimForm::ForbidReaches {
+            src,
+            dst,
+            via_calls,
+            via_bus,
+            during,
+            avoiding,
+        } => {
+            let mut s = format!(
+                "forbid reaches({}, {})",
+                src.display(),
+                dst.display()
+            );
+            match (via_calls, via_bus) {
+                (true, true) => {}
+                (true, false) => s.push_str(" via { calls }"),
+                (false, true) => s.push_str(" via { bus }"),
+                (false, false) => unreachable!("rejected at parse"),
+            }
+            if let Some(p) = during {
+                s.push_str(&format!(" during {}", p.name));
+            }
+            if let Some(a) = avoiding {
+                s.push_str(&format!(" avoiding {}", a.name));
+            }
+            s
+        }
+        ClaimForm::OnlyEdges { src, dst, grants } => {
+            let gs: Vec<String> = grants
+                .iter()
+                .map(|g| {
+                    format!(
+                        "{} {}",
+                        if g.publish { "publish" } else { "subscribe" },
+                        g.topic.display()
+                    )
+                })
+                .collect();
+            format!(
+                "only edges {} -> {} {{ {} }}",
+                src.name,
+                dst.name,
+                gs.join("; ")
+            )
+        }
+        ClaimForm::Bound {
+            class_name,
+            limit,
+            from,
+            ..
+        } => format!(
+            "bound {} <= {} on paths from {}",
+            class_name, limit, from.name
+        ),
+        ClaimForm::Require {
+            publishers,
+            group,
+            topic,
+        } => format!(
+            "require {}(some {}, topic {})",
+            if *publishers { "publishes" } else { "subscribes" },
+            group.name,
+            topic.display()
+        ),
+        ClaimForm::Cover { alias, group } => format!(
+            "cover topic in seed({}): subscribed_by(some {})",
+            alias.name, group.name
+        ),
+        ClaimForm::Count {
+            publishers,
+            topic,
+            cmp,
+            n,
+        } => format!(
+            "count {}(topic {}) {} {}",
+            if *publishers { "publishers" } else { "subscribers" },
+            topic.display(),
+            cmp.as_str(),
+            n
+        ),
+    }
+}
+
+/// Resolve one group member into `rg`, or push a diagnostic.
+/// Kept with SELECTION: resolving a group's members is how the
+/// selection decides which laws exist over which entities.
+fn resolve_member(
+    m: &GroupMember,
+    locus_names: &BTreeSet<String>,
+    free_fn_names: &BTreeSet<String>,
+    import_renames: &[(Vec<String>, String)],
+    rg: &mut ResolvedGroup,
+    diags: &mut Vec<Diag>,
+) {
+    if m.glob {
+        // `alias::*` — enumeration over the imported seed's declared
+        // decls, via the same rename table codegen resolves
+        // `alias::Name` through. Trailing-only, single-level.
+        if m.segments.len() != 1 {
+            diags.push(Diag::ty(
+                m.span,
+                format!(
+                    "group member `{}`: a glob expands a single import \
+                     alias (`alias::*`); nested globs are not supported",
+                    m.display()
+                ),
+            ));
+            return;
+        }
+        let alias = &m.segments[0].name;
+        let mut matched = false;
+        for (key, mangled) in import_renames {
+            if key.len() == 2 && &key[0] == alias {
+                matched = true;
+                // Only fn-bearing decls project into `reaches`;
+                // types/topics/consts in the seed are simply not
+                // path vertices.
+                if locus_names.contains(mangled) {
+                    rg.loci.insert(mangled.clone());
+                    rg.decl_count += 1;
+                } else if free_fn_names.contains(mangled) {
+                    rg.free_fns.insert(mangled.clone());
+                    rg.decl_count += 1;
+                }
+            }
+        }
+        if !matched {
+            diags.push(Diag::ty(
+                m.span,
+                format!(
+                    "group member `{}` names no import alias — the \
+                     glob form expands `import \"…\" as {}`, which \
+                     this bundle does not declare. Unknown names are \
+                     errors, never empty sets",
+                    m.display(),
+                    alias
+                ),
+            ));
+        }
+        return;
+    }
+    if m.segments.len() > 1 {
+        // Qualified members are canonicalized to the mangled single
+        // segment at the mangle stage (the #334 path). Still
+        // multi-segment here means no rename entry matched.
+        diags.push(Diag::ty(
+            m.span,
+            format!(
+                "group member `{}` does not resolve — no imported \
+                 declaration matches this path. Unknown names are \
+                 errors, never empty sets",
+                m.display()
+            ),
+        ));
+        return;
+    }
+    let name = &m.segments[0].name;
+    let mut hit = false;
+    if locus_names.contains(name) {
+        rg.loci.insert(name.clone());
+        rg.decl_count += 1;
+        hit = true;
+    }
+    if free_fn_names.contains(name) {
+        rg.free_fns.insert(name.clone());
+        rg.decl_count += 1;
+        hit = true;
+    }
+    if !hit {
+        let mut near: Vec<&String> = locus_names
+            .iter()
+            .chain(free_fn_names.iter())
+            .filter(|n| close(n, name))
+            .collect();
+        near.sort();
+        near.dedup();
+        let hint = match near.first() {
+            Some(n) => format!(" Did you mean `{}`?", n),
+            None => String::new(),
+        };
+        diags.push(Diag::ty(
+            m.span,
+            format!(
+                "group member `{}` names no declared locus or fn. \
+                 Unknown names are errors, never empty sets.{}",
+                m.display(),
+                hint
+            ),
+        ));
+    }
+}
+
+/// Change 10: selection does not consult the BUS GRAPH — that was
+/// the evaluator's input, for counting publishers and walking
+/// edges. Deciding WHICH laws exist is a question about clause
+/// text, adoption, and group membership. The public entry points
+/// still take a graph: their callers hold one anyway, and the
+/// parameter is where a future selection rule that needs topology
+/// would arrive.
 fn claims_report_inner(
     programs: &[&Program],
-    graph: &BusGraph,
     import_renames: &[(Vec<String>, String)],
-    // GH #476 Change 9: stop after LAW SELECTION — clause
-    // enumeration, group resolution, constitution adoption — and
-    // return before any claim is validated or evaluated. Selection
-    // is this module's remaining authority; the verdicts moved to
-    // the judgment engines over the canonical model, and running
-    // both would put two answers to one question on screen.
-    selection_only: bool,
-) -> (
-    Vec<Diag>,
-    Vec<ClaimOutcome>,
-    AdoptionInfo,
-    BTreeMap<String, GroupSelection>,
-) {
+) -> (Vec<Diag>, AdoptionInfo, BTreeMap<String, GroupSelection>) {
     let ClauseUniverse {
         claims,
-        origins,
+        origins: _,
         library: _,
         group_decls,
         adoption,
@@ -919,7 +966,7 @@ fn claims_report_inner(
     } = enumerate_clauses(programs, import_renames);
     let mut diags = diags;
     if group_decls.is_empty() && claims.is_empty() {
-        return (diags, Vec::new(), adoption, BTreeMap::new());
+        return (diags, adoption, BTreeMap::new());
     }
 
     // ---- decl indexes for member / topic resolution ----
@@ -1051,1583 +1098,22 @@ fn claims_report_inner(
         groups.insert(g.name.name.clone(), rg);
     }
 
-    if claims.is_empty() {
-        return (diags, Vec::new(), adoption, group_selection);
-    }
-
-    if selection_only {
-        return (diags, Vec::new(), adoption, group_selection);
-    }
-
-    // ---- claim names are the contract-of-record ----
-    let mut seen_names: BTreeMap<&str, hale_syntax::Span> =
-        BTreeMap::new();
-    for c in &claims {
-        if seen_names.insert(&c.name.name, c.name.span).is_some() {
-            diags.push(Diag::ty(
-                c.name.span,
-                format!(
-                    "claim `{}` is declared more than once — the name \
-                     is the contract-of-record and must be unique",
-                    c.name.name
-                ),
-            ));
-        }
-    }
-
-    let cx = Cx {
-        groups,
-        topic_names,
-        alias_topics,
-        // Same substrate as every shipped certificate: the bundle
-        // summary with stdlib bodies merged, so a chain through a
-        // stdlib locus method resolves instead of stopping at the
-        // boundary.
-        summary: crate::stdlib_bodies::summarize_with_stdlib_and_renames(
-            programs,
-            import_renames,
-        ),
-        graph,
-        ffi: ffi_names(programs),
-        defs: defs_of(programs),
-        declared: declared_of(programs),
-        effect_names: effect_names_of(programs),
-        sealed: sealed_loci_of(programs),
-        carries_user_class: fns_carrying_a_user_class(programs),
-        model: crate::model::Model::derive(programs, import_renames),
-    };
-
-    // ---- validate, then evaluate ----
-    let mut outcomes: Vec<ClaimOutcome> = Vec::new();
-    for c in &claims {
-        let valid = validate_claim(c, &cx, &mut diags);
-        let result = if !valid {
-            Verdict::Invalid
-        } else {
-            match &c.form {
-                ClaimForm::ForbidReaches { .. } => {
-                    evaluate_forbid_reaches(c, &cx, &mut diags)
-                }
-                ClaimForm::OnlyEdges { .. } => {
-                    evaluate_only_edges(c, &cx, &mut diags)
-                }
-                ClaimForm::Bound { .. } => {
-                    evaluate_bound(c, &cx, &mut diags)
-                }
-                ClaimForm::RequireSealed { .. } => {
-                    evaluate_require_sealed(c, &cx, &mut diags)
-                }
-                ClaimForm::RequireAttributed { .. } => {
-                    evaluate_require_attributed(c, &cx, &mut diags)
-                }
-                ClaimForm::Require { .. } => {
-                    evaluate_require(c, &cx, &mut diags)
-                }
-                ClaimForm::Cover { .. } => {
-                    evaluate_cover(c, &cx, &mut diags)
-                }
-                ClaimForm::Count { .. } => {
-                    evaluate_count(c, &cx, &mut diags)
-                }
-            }
-        };
-        outcomes.push(ClaimOutcome {
-            name: c.name.name.clone(),
-            form: render_form(&c.form),
-            result,
-            source: origins.get(&c.name.name).cloned(),
-        });
-    }
-    (diags, outcomes, adoption, group_selection)
+    (diags, adoption, group_selection)
 }
 
-// ===================== validation =================================
-
-/// Validate every name a claim references. Unknown ⇒ error, and the
-/// claim is not evaluated (its outcome is `invalid`).
-fn validate_claim(c: &ClaimDecl, cx: &Cx, diags: &mut Vec<Diag>) -> bool {
-    let mut ok = true;
-    let check_group = |name: &Ident, diags: &mut Vec<Diag>| -> bool {
-        if cx.groups.contains_key(&name.name) {
-            return true;
-        }
-        let mut near: Vec<&String> = cx
-            .groups
-            .keys()
-            .filter(|g| close(g, &name.name))
-            .collect();
-        near.sort();
-        let hint = match near.first() {
-            Some(n) => format!(" Did you mean `{}`?", n),
-            None => String::new(),
-        };
-        diags.push(Diag::ty(
-            name.span,
-            format!(
-                "claim `{}` names group `{}`, which is never declared. \
-                 Add `group {} = {{ … }};` at the top level.{}",
-                c.name.name, name.name, name.name, hint
-            ),
-        ));
-        false
-    };
-    let check_topic =
-        |t: &TopicRef, cx: &Cx, diags: &mut Vec<Diag>| -> bool {
-            if t.segments.len() == 1
-                && cx.topic_names.contains(&t.segments[0].name)
-            {
-                return true;
-            }
-            if t.segments.len() > 1 {
-                // Canonicalized at the mangle stage; still
-                // multi-segment means no rename matched.
-                diags.push(Diag::ty(
-                    t.span,
-                    format!(
-                        "claim `{}`: topic reference `{}` does not \
-                         resolve — no imported topic matches this \
-                         path. Unknown names are errors, never empty \
-                         sets",
-                        c.name.name,
-                        t.display()
-                    ),
-                ));
-                return false;
-            }
-            let bad = &t.segments[0].name;
-            let mut near: Vec<&String> = cx
-                .topic_names
-                .iter()
-                .filter(|n| close(n, bad))
-                .collect();
-            near.sort();
-            let hint = match near.first() {
-                Some(n) => format!(" Did you mean `{}`?", n),
-                None => String::new(),
-            };
-            diags.push(Diag::ty(
-                t.span,
-                format!(
-                    "claim `{}` names topic `{}`, which is never \
-                     declared.{}",
-                    c.name.name, bad, hint
-                ),
-            ));
-            false
-        };
-    let check_class = |class: &EffectClass,
-                       name: &str,
-                       span: hale_syntax::Span,
-                       cx: &Cx,
-                       diags: &mut Vec<Diag>|
-     -> bool {
-        let EffectClass::User(i) = class else { return true };
-        if cx.declared.contains(i) {
-            return true;
-        }
-        let mut near: Vec<&String> = cx
-            .effect_names
-            .iter()
-            .enumerate()
-            .filter(|(j, _)| cx.declared.contains(&(*j as u16)))
-            .map(|(_, n)| n)
-            .filter(|n| close(n, name))
-            .collect();
-        near.sort();
-        let hint = match near.first() {
-            Some(n) => format!(" Did you mean `{}`?", n),
-            None => String::new(),
-        };
-        diags.push(Diag::ty(
-            span,
-            format!(
-                "claim `{}` names effect class `{}`, which is never \
-                 declared. Add `effect {};` at the top level.{}",
-                c.name.name, name, name, hint
-            ),
-        ));
-        false
-    };
-    match &c.form {
-        ClaimForm::ForbidReaches {
-            src,
-            dst,
-            avoiding,
-            ..
-        } => {
-            match src {
-                ClaimSet::Group(n) => ok &= check_group(n, diags),
-                ClaimSet::Effects { span, .. } => {
-                    diags.push(Diag::ty(
-                        *span,
-                        format!(
-                            "claim `{}`: `effects(...)` is only valid \
-                             in target position — sources must be \
-                             declared groups",
-                            c.name.name
-                        ),
-                    ));
-                    ok = false;
-                }
-            }
-            match dst {
-                ClaimSet::Group(n) => ok &= check_group(n, diags),
-                ClaimSet::Effects { class, name, span } => {
-                    ok &= check_class(class, name, *span, cx, diags);
-                }
-            }
-            if let Some(a) = avoiding {
-                ok &= check_group(a, diags);
-                // A mask overlapping an endpoint is a fail-open in
-                // disguise: masking the target makes the claim hold
-                // vacuously (no path can end at a masked vertex),
-                // and masking a source silently drops roots. Both
-                // read as law and prove less than they say.
-                if cx.groups.contains_key(&a.name) {
-                    let av = &cx.groups[&a.name];
-                    for set in [src, dst] {
-                        let ClaimSet::Group(n) = set else { continue };
-                        let Some(gr) = cx.groups.get(&n.name) else {
-                            continue;
-                        };
-                        let overlap = av
-                            .loci
-                            .intersection(&gr.loci)
-                            .next()
-                            .is_some()
-                            || av
-                                .free_fns
-                                .intersection(&gr.free_fns)
-                                .next()
-                                .is_some();
-                        if overlap {
-                            diags.push(Diag::ty(
-                                a.span,
-                                format!(
-                                    "claim `{}`: `avoiding {}` overlaps \
-                                     `{}` — masking an endpoint makes \
-                                     the claim weaker than it reads (a \
-                                     masked target holds vacuously; a \
-                                     masked source drops roots). Make \
-                                     the gate disjoint from the \
-                                     endpoints",
-                                    c.name.name, a.name, n.name
-                                ),
-                            ));
-                            ok = false;
-                        }
-                    }
-                }
-            }
-        }
-        ClaimForm::OnlyEdges { src, dst, grants } => {
-            ok &= check_group(src, diags);
-            ok &= check_group(dst, diags);
-            for g in grants {
-                ok &= check_topic(&g.topic, cx, diags);
-            }
-        }
-        ClaimForm::Bound {
-            class,
-            class_name,
-            class_span,
-            from,
-            ..
-        } => {
-            ok &= check_group(from, diags);
-            // `secret_use` is a built-in WITHOUT a `@budget` spelling,
-            // so the rule below does not apply to it: there is no
-            // second way to write the bound, and "at most one
-            // privileged secret operation per request" is exactly the
-            // shape `bound` exists for. The rejection is about
-            // avoiding two spellings of one contract, not about
-            // built-ins as a category.
-            if matches!(class, EffectClass::User(_) | EffectClass::SecretUse)
-            {
-                if matches!(class, EffectClass::User(_)) {
-                    ok &= check_class(
-                        class, class_name, *class_span, cx, diags,
-                    );
-                }
-            } else {
-                diags.push(Diag::ty(
-                    *class_span,
-                    format!(
-                        "claim `{}`: `bound` takes a user-declared \
-                         effect class (or `secret_use`) — the counted \
-                         built-ins keep their `@budget` spellings \
-                         (`publish`, `block_points`, `alloc_per_call`), \
-                         and a second way to write one contract is \
-                         what this rejects",
-                        c.name.name
-                    ),
-                ));
-                ok = false;
-            }
-        }
-        ClaimForm::Require { group, topic, .. } => {
-            ok &= check_group(group, diags);
-            ok &= check_topic(topic, cx, diags);
-        }
-        ClaimForm::RequireSealed { group } => {
-            ok &= check_group(group, diags);
-        }
-        ClaimForm::RequireAttributed { class_name } => {
-            // Built-ins only. A USER class here would ask that every
-            // site carrying it also carries a user class — trivially
-            // true, and it would read as a real contract.
-            // Validation must use the SAME predicate as evaluation.
-            // Accepting a class the evaluator answers with
-            // unconditional `Holds` gives a sentence that reads like a
-            // security baseline and checks nothing — `ffi`, `spawn`
-            // and `recursion` are structural, carried by no registry
-            // row, so no site can be attributed for them.
-            if attributed_mask(&class_name.name).is_none() {
-                diags.push(Diag::ty(
-                    class_name.span,
-                    format!(
-                        "claim `{}`: `require attributed` takes a \
-                         built-in class with countable DIRECT sites — \
-                         `syscall`, `block`, `publish`, `time`, \
-                         `entropy`, `env`, `alloc`, `secret_use`. `{}` \
-                         is not one of those: a user class would be \
-                         trivially true, and `ffi` / `spawn` / \
-                         `recursion` are structural properties with no \
-                         site to attribute.",
-                        c.name.name, class_name.name
-                    ),
-                ));
-                ok = false;
-            }
-        }
-        ClaimForm::Cover { alias, group } => {
-            ok &= check_group(group, diags);
-            if !cx.alias_topics.contains_key(&alias.name) {
-                diags.push(Diag::ty(
-                    alias.span,
-                    format!(
-                        "claim `{}`: `seed({})` names no import alias \
-                         with declared topics — the coverage domain \
-                         would be empty, and a universal over an \
-                         empty domain holds vacuously",
-                        c.name.name, alias.name
-                    ),
-                ));
-                ok = false;
-            }
-        }
-        ClaimForm::Count { topic, .. } => {
-            ok &= check_topic(topic, cx, diags);
-        }
-    }
-    ok
-}
-
-/// The normalized sentence, for the artifact.
-fn render_form(f: &ClaimForm) -> String {
-    match f {
-        ClaimForm::RequireSealed { group } => {
-            format!("require sealed(all {})", group.name)
-        }
-        ClaimForm::RequireAttributed { class_name } => {
-            format!("require attributed(all {})", class_name.name)
-        }
-        ClaimForm::ForbidReaches {
-            src,
-            dst,
-            via_calls,
-            via_bus,
-            during,
-            avoiding,
-        } => {
-            let mut s = format!(
-                "forbid reaches({}, {})",
-                src.display(),
-                dst.display()
-            );
-            match (via_calls, via_bus) {
-                (true, true) => {}
-                (true, false) => s.push_str(" via { calls }"),
-                (false, true) => s.push_str(" via { bus }"),
-                (false, false) => unreachable!("rejected at parse"),
-            }
-            if let Some(p) = during {
-                s.push_str(&format!(" during {}", p.name));
-            }
-            if let Some(a) = avoiding {
-                s.push_str(&format!(" avoiding {}", a.name));
-            }
-            s
-        }
-        ClaimForm::OnlyEdges { src, dst, grants } => {
-            let gs: Vec<String> = grants
-                .iter()
-                .map(|g| {
-                    format!(
-                        "{} {}",
-                        if g.publish { "publish" } else { "subscribe" },
-                        g.topic.display()
-                    )
-                })
-                .collect();
-            format!(
-                "only edges {} -> {} {{ {} }}",
-                src.name,
-                dst.name,
-                gs.join("; ")
-            )
-        }
-        ClaimForm::Bound {
-            class_name,
-            limit,
-            from,
-            ..
-        } => format!(
-            "bound {} <= {} on paths from {}",
-            class_name, limit, from.name
-        ),
-        ClaimForm::Require {
-            publishers,
-            group,
-            topic,
-        } => format!(
-            "require {}(some {}, topic {})",
-            if *publishers { "publishes" } else { "subscribes" },
-            group.name,
-            topic.display()
-        ),
-        ClaimForm::Cover { alias, group } => format!(
-            "cover topic in seed({}): subscribed_by(some {})",
-            alias.name, group.name
-        ),
-        ClaimForm::Count {
-            publishers,
-            topic,
-            cmp,
-            n,
-        } => format!(
-            "count {}(topic {}) {} {}",
-            if *publishers { "publishers" } else { "subscribers" },
-            topic.display(),
-            cmp.as_str(),
-            n
-        ),
-    }
-}
-
-// ===================== group member resolution ====================
-
-/// Resolve one group member into `rg`, or push a diagnostic.
-fn resolve_member(
-    m: &GroupMember,
-    locus_names: &BTreeSet<String>,
-    free_fn_names: &BTreeSet<String>,
-    import_renames: &[(Vec<String>, String)],
-    rg: &mut ResolvedGroup,
-    diags: &mut Vec<Diag>,
-) {
-    if m.glob {
-        // `alias::*` — enumeration over the imported seed's declared
-        // decls, via the same rename table codegen resolves
-        // `alias::Name` through. Trailing-only, single-level.
-        if m.segments.len() != 1 {
-            diags.push(Diag::ty(
-                m.span,
-                format!(
-                    "group member `{}`: a glob expands a single import \
-                     alias (`alias::*`); nested globs are not supported",
-                    m.display()
-                ),
-            ));
-            return;
-        }
-        let alias = &m.segments[0].name;
-        let mut matched = false;
-        for (key, mangled) in import_renames {
-            if key.len() == 2 && &key[0] == alias {
-                matched = true;
-                // Only fn-bearing decls project into `reaches`;
-                // types/topics/consts in the seed are simply not
-                // path vertices.
-                if locus_names.contains(mangled) {
-                    rg.loci.insert(mangled.clone());
-                    rg.decl_count += 1;
-                } else if free_fn_names.contains(mangled) {
-                    rg.free_fns.insert(mangled.clone());
-                    rg.decl_count += 1;
-                }
-            }
-        }
-        if !matched {
-            diags.push(Diag::ty(
-                m.span,
-                format!(
-                    "group member `{}` names no import alias — the \
-                     glob form expands `import \"…\" as {}`, which \
-                     this bundle does not declare. Unknown names are \
-                     errors, never empty sets",
-                    m.display(),
-                    alias
-                ),
-            ));
-        }
-        return;
-    }
-    if m.segments.len() > 1 {
-        // Qualified members are canonicalized to the mangled single
-        // segment at the mangle stage (the #334 path). Still
-        // multi-segment here means no rename entry matched.
-        diags.push(Diag::ty(
-            m.span,
-            format!(
-                "group member `{}` does not resolve — no imported \
-                 declaration matches this path. Unknown names are \
-                 errors, never empty sets",
-                m.display()
-            ),
-        ));
-        return;
-    }
-    let name = &m.segments[0].name;
-    let mut hit = false;
-    if locus_names.contains(name) {
-        rg.loci.insert(name.clone());
-        rg.decl_count += 1;
-        hit = true;
-    }
-    if free_fn_names.contains(name) {
-        rg.free_fns.insert(name.clone());
-        rg.decl_count += 1;
-        hit = true;
-    }
-    if !hit {
-        let mut near: Vec<&String> = locus_names
-            .iter()
-            .chain(free_fn_names.iter())
-            .filter(|n| close(n, name))
-            .collect();
-        near.sort();
-        near.dedup();
-        let hint = match near.first() {
-            Some(n) => format!(" Did you mean `{}`?", n),
-            None => String::new(),
-        };
-        diags.push(Diag::ty(
-            m.span,
-            format!(
-                "group member `{}` names no declared locus or fn. \
-                 Unknown names are errors, never empty sets.{}",
-                m.display(),
-                hint
-            ),
-        ));
-    }
-}
-
-// ===================== unresolved-callee backstop =================
-
-/// The unresolved-callee backstop (#382 soundness audit).
-///
-/// After the receiver-typing root fix, the summarizer types struct-
-/// literal receivers, chained fields, call results, and uniform
-/// branch values — those all resolve to real edges now. What lands
-/// here is the RESIDUE: a receiver that still cannot be typed at
-/// this layer (an index result, a match value, a foreign
-/// expression), recorded as `Unresolved` with `recv_ty: None` and
-/// `receiver_present: true`. Such a call is a method of SOME bundle
-/// locus reached through an opaque expression — and because it may
-/// be a WRAPPER that reaches the target transitively, no name
-/// comparison against the target set is sound. Any judgment that
-/// traverses calls fails closed on the edge itself; the effect and
-/// budget walkers apply the same rule, so fn-level certificates
-/// and bundle-level claims agree. `recv_ty: Some` edges
-/// (synthesized form/builtin methods like `counts.set`) are known
-/// non-locus receivers and stay exempt.
-///
-/// #392: interface-dispatch calls never reach this predicate — a
-/// dispatch WITH conformers arrives already fanned out to `Resolved`
-/// alternatives, and one through an uninhabited interface is dead
-/// code (no value of the interface can exist in this closed world),
-/// which the walk skips like the summarizer's other non-edges.
-fn unresolved_opaque_receiver(
-    edge: &crate::alloc_summary::CallEdge,
-) -> bool {
-    edge.opaque_method_call()
-}
-
-// ===================== forbid reaches =============================
-
-/// One step of a witness path. #392: each step carries the span of
-/// the source decision that introduced the edge — the callsite, or
-/// the publish site + subscription decl — so a violation can say
-/// where to edit, not just which names are involved.
-enum Step {
-    Call {
-        span: hale_syntax::Span,
-        /// The interface, when this edge is one alternative of a
-        /// dispatch rather than a direct call. Rendering it is the
-        /// difference between a witness that reads as impossible and
-        /// one that reads as conservative: the compiler fans an
-        /// interface call out to EVERY conformer, so a path can end
-        /// at `Sms::send` while the line in front of you constructs
-        /// an `Email`. Shown as a direct call, that looks like a
-        /// compiler bug; named as a dispatch, it is obviously sound.
-        via_interface: Option<String>,
-    },
-    Bus {
-        subject: String,
-        publish_span: hale_syntax::Span,
-        sub_span: hale_syntax::Span,
-    },
-}
-
-/// Evaluate `forbid reaches(src, dst)` by BFS over the composed
-/// graph, emitting ONE minimal countermodel per violated claim.
-fn evaluate_forbid_reaches(
-    c: &ClaimDecl,
-    cx: &Cx,
-    diags: &mut Vec<Diag>,
-) -> Verdict {
-    let ClaimForm::ForbidReaches {
-        src,
-        dst,
-        via_calls,
-        via_bus,
-        during,
-        avoiding,
-    } = &c.form
-    else {
-        unreachable!("dispatched on form")
-    };
-    let ClaimSet::Group(src_name) = src else {
-        unreachable!("rejected in validation")
-    };
-    let src_group = &cx.groups[&src_name.name];
-    if projection_vacuity(
-        c, "source", src_name, src_group, &cx.summary, diags,
-    ) {
-        return Verdict::Invalid;
-    }
-    if let ClaimSet::Group(dst_name) = dst {
-        let dst_group = &cx.groups[&dst_name.name];
-        if projection_vacuity(
-            c, "target", dst_name, dst_group, &cx.summary, diags,
-        ) {
-            return Verdict::Invalid;
-        }
-    }
-    let mut roots = src_group.fn_set(&cx.summary);
-    // `during P` — restrict sources to the named phase of each
-    // source locus, evaluated against the model's PHASE RELATION
-    // (#392): lifecycle hooks and modes carry their runtime-driven
-    // phase, ordinary methods their own name (the shipped
-    // source-slice doctrine, now an explicit exported relation the
-    // artifact carries — which is what makes a `during` row
-    // independently re-derivable). Free fns have no phases and
-    // drop out.
-    if let Some(phase) = during {
-        roots.retain(|k| {
-            cx.model
-                .phases
-                .get(k)
-                .is_some_and(|p| p.phase == phase.name)
-        });
-        if roots.is_empty() && !src_group.is_empty() {
-            diags.push(Diag::ty(
-                phase.span,
-                format!(
-                    "claim `{}`: phase `{}` names nothing in group \
-                     `{}` — no member locus declares it. A claim over \
-                     an empty phase holds vacuously",
-                    c.name.name, phase.name, src_name.name
-                ),
-            ));
-            return Verdict::Invalid;
-        }
-    }
-    // `avoiding G` — the vertex mask. Masked vertices are neither
-    // tested nor traversed, so "no path avoiding the gate" is the
-    // interposition proof.
-    let mask_group = avoiding
-        .as_ref()
-        .map(|a| &cx.groups[&a.name]);
-
-    // The dst membership test.
-    enum DstTest<'a> {
-        Group(&'a ResolvedGroup),
-        Effects(EffectSet),
-    }
-    let dst_test = match dst {
-        ClaimSet::Group(name) => DstTest::Group(&cx.groups[&name.name]),
-        ClaimSet::Effects { class, .. } => {
-            DstTest::Effects(crate::frontier::class_mask_with(
-                *class, &cx.defs,
-            ))
-        }
-    };
-    // An empty dst domain forbids nothing; the vacuity guard already
-    // fired at the group decl if that was unintentional.
-    if let DstTest::Group(g) = &dst_test {
-        if g.is_empty() {
-            return Verdict::Holds;
-        }
-    }
-
-    // The traversal is `model_graph::search`, shared with the fleet
-    // tier. What stays here is everything that is genuinely this
-    // tier's: what a vertex is, which edges exist, what counts as the
-    // target, and — the part that cannot move — the diagnostic for
-    // each kind of edge the walk cannot follow.
-    //
-    // The two tiers make OPPOSITE choices about an unfollowable edge,
-    // and both are deliberate. Here the walk stops at it and says
-    // which edge and why, because the repair is to make that edge
-    // resolvable. The fleet tier walks past and only refuses if it
-    // finds no path at all, because there a concrete cross-binary
-    // counterexample is worth more than a refusal. That choice is
-    // `HolePolicy::Halt` versus `HolePolicy::PathWins`.
-    //
-    // NOTE for whoever changes that policy here: this closure reports
-    // `Visit::hole(())` and discards the successors it had already
-    // collected for the vertex, which is invisible under `Halt`
-    // because the engine stops anyway. Switching to `PathWins` needs
-    // the closure to scan the whole vertex and return
-    // `Visit::partial(edges, hole)` first, or every partial vertex
-    // would lose its known edges. The policy flag alone is not enough.
-    let out = model_graph::search(
-        roots.iter().cloned(),
-        |k: &FnKey| {
-            let Some(fs) = cx.summary.fns.get(k) else {
-                return model_graph::Visit::edges(Vec::new());
-            };
-            let mut edges: Vec<(FnKey, Step)> = Vec::new();
-            if *via_calls {
-                for edge in &fs.calls {
-                    match &edge.callee {
-                        Callee::Resolved(next) => {
-                            edges.push((
-                                next.clone(),
-                                Step::Call {
-                                    span: edge.span,
-                                    via_interface: edge
-                                        .via_interface
-                                        .clone(),
-                                },
-                            ));
-                        }
-                        Callee::Unresolved(name) => {
-                            // #353: a call through a fn-typed param —
-                            // the target is unknowable from here, so
-                            // the claim cannot be certified. Unknown ⇒
-                            // violation, same as every shipped
-                            // certificate.
-                            if edge.indirect
-                                || fs.fn_params.iter().any(|p| p == name)
-                            {
-                                diags.push(Diag::ty(
-                                    c.name.span,
-                                    format!(
-                                        "claim `{}` cannot be certified: \
-                                         `{}` (reachable from `{}`) calls \
-                                         through a function-typed \
-                                         parameter, whose target is not \
-                                         knowable statically. An \
-                                         unresolvable edge fails closed",
-                                        c.name.name,
-                                        k.display(),
-                                        src_name.name
-                                    ),
-                                ));
-                                return model_graph::Visit::hole(());
-                            }
-                            // The backstop: an untyped-receiver call
-                            // is a method of SOME locus, possibly a
-                            // wrapper reaching the target. Fail closed.
-                            if unresolved_opaque_receiver(edge) {
-                                diags.push(Diag::ty(
-                                    c.name.span,
-                                    format!(
-                                        "claim `{}` cannot be certified: \
-                                         `{}` (reachable from `{}`) calls \
-                                         `{}` on a receiver the compiler \
-                                         cannot type, so the walk cannot \
-                                         follow the edge. An unresolvable \
-                                         edge fails closed — bind the \
-                                         receiver to a typed field or \
-                                         local so the call resolves",
-                                        c.name.name,
-                                        k.display(),
-                                        src_name.name,
-                                        name
-                                    ),
-                                ));
-                                return model_graph::Visit::hole(());
-                            }
-                        }
-                    }
-                }
-            }
-            if *via_bus {
-                for site in &fs.effect_sites {
-                    let EffectSiteKind::Publish(subj) = &site.kind
-                    else {
-                        continue;
-                    };
-                    let Some(subj) = subj else {
-                        // Computed subject: could route anywhere the
-                        // wire reaches. Fail closed.
-                        diags.push(Diag::ty(
-                            c.name.span,
-                            format!(
-                                "claim `{}` cannot be certified: `{}` \
-                                 (reachable from `{}`) publishes to a \
-                                 computed subject, which could route to \
-                                 any subscriber. An unresolvable edge \
-                                 fails closed",
-                                c.name.name,
-                                k.display(),
-                                src_name.name
-                            ),
-                        ));
-                        return model_graph::Visit::hole(());
-                    };
-                    let subj = &subj.text;
-                    for (sub_locus, sub_handler, sub_span) in
-                        subscribers_of(cx.graph, subj)
-                    {
-                        edges.push((
-                            FnKey::method(sub_locus, sub_handler),
-                            Step::Bus {
-                                subject: subj.clone(),
-                                publish_span: site.span,
-                                sub_span,
-                            },
-                        ));
-                    }
-                }
-            }
-            model_graph::Visit::edges(edges)
-        },
-        // Roots are tested too: a decl in BOTH groups is a
-        // zero-length path — a real boundary confusion `forbid`
-        // should surface, not skip.
-        |k: &FnKey| match &dst_test {
-            DstTest::Group(g) => g.contains_fn(k),
-            DstTest::Effects(mask) => {
-                let direct = direct_effects(&cx.summary, k, &cx.ffi);
-                !direct.is_unclassified() && direct.0 & mask.0 != 0
-            }
-        },
-        |k: &FnKey| mask_group.is_some_and(|m| m.contains_fn(k)),
-        Some(callgraph::MAX_STEPS),
-        // Stop at the first unfollowable edge. The closure has
-        // already said which edge and why, and that diagnostic is
-        // the repair. (The fleet tier chooses `PathWins`; both are
-        // deliberate — see `model_graph::HolePolicy`.)
-        model_graph::HolePolicy::Halt,
-    );
-
-    match out {
-        model_graph::Search::Found { hit, parent } => {
-            render_violation(
-                c,
-                src_name,
-                &dst.display(),
-                &hit,
-                &parent,
-                cx,
-                diags,
-            );
-            Verdict::Violated
-        }
-        // The closure has already said which edge it could not
-        // follow and why.
-        model_graph::Search::Uncertified { .. } => Verdict::Uncertified,
-        model_graph::Search::Saturated { .. } => {
-            diags.push(Diag::ty(
-                c.name.span,
-                format!(
-                    "claim `{}`: reachability walk exceeded {} steps \
-                     — cannot certify",
-                    c.name.name,
-                    callgraph::MAX_STEPS
-                ),
-            ));
-            Verdict::Violated
-        }
-        model_graph::Search::NotFound => Verdict::Holds,
-    }
-}
 
 // ===================== only edges =================================
 
-/// Evaluate `only edges src -> dst { grants }`: every DIRECT edge
-/// from src to dst must match a granted line. Reports EVERY
-/// un-granted edge — the grant list is the review surface, so the
-/// full diff matters.
-fn evaluate_only_edges(
-    c: &ClaimDecl,
-    cx: &Cx,
-    diags: &mut Vec<Diag>,
-) -> Verdict {
-    let ClaimForm::OnlyEdges { src, dst, grants } = &c.form else {
-        unreachable!("dispatched on form")
-    };
-    let src_g = &cx.groups[&src.name];
-    let dst_g = &cx.groups[&dst.name];
-    if projection_vacuity(c, "source", src, src_g, &cx.summary, diags)
-        || projection_vacuity(
-            c, "target", dst, dst_g, &cx.summary, diags,
-        )
-    {
-        return Verdict::Invalid;
-    }
-    let granted: BTreeSet<&str> = grants
-        .iter()
-        .map(|g| g.topic.segments[0].name.as_str())
-        .collect();
-    let granted_disp = if granted.is_empty() {
-        "none".to_string()
-    } else {
-        granted
-            .iter()
-            .map(|s| format!("`{}`", s))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    let mut violated = false;
-    let mut reported: BTreeSet<String> = BTreeSet::new();
-    for k in src_g.fn_set(&cx.summary) {
-        let Some(fs) = cx.summary.fns.get(&k) else { continue };
-        for edge in &fs.calls {
-            match &edge.callee {
-                Callee::Resolved(next) => {
-                    if dst_g.contains_fn(next) {
-                        let key = format!(
-                            "{}->{}",
-                            k.display(),
-                            next.display()
-                        );
-                        if reported.insert(key) {
-                            diags.push(Diag::ty(
-                                c.name.span,
-                                format!(
-                                    "claim `{}` violated: un-granted \
-                                     edge `{}` -> `{}` — call edges \
-                                     are not grantable; the boundary \
-                                     between `{}` and `{}` must be a \
-                                     bus edge named in the grant list",
-                                    c.name.name,
-                                    k.display(),
-                                    next.display(),
-                                    src.name,
-                                    dst.name
-                                ),
-                            ));
-                            // #392 provenance, to `forbid` quality:
-                            // the claim line says WHAT, this says
-                            // WHERE. `only edges` is explicitly a
-                            // reviewable boundary inventory, so
-                            // anchoring only at the claim left the
-                            // reviewer to find the crossing by hand
-                            // — the one thing the inventory exists
-                            // to save them.
-                            if cx.model.is_bundle_fn(&k) {
-                                diags.push(Diag::ty(
-                                    edge.span,
-                                    format!(
-                                        "claim `{}`: this call \
-                                         crosses the boundary. A \
-                                         call cannot be granted — \
-                                         route it through a topic \
-                                         named in the grant list, or \
-                                         move the callee out of `{}`",
-                                        c.name.name, dst.name
-                                    ),
-                                ));
-                            }
-                            violated = true;
-                        }
-                    }
-                }
-                Callee::Unresolved(name) => {
-                    if edge.indirect
-                        || fs.fn_params.iter().any(|p| p == name)
-                    {
-                        diags.push(Diag::ty(
-                            c.name.span,
-                            format!(
-                                "claim `{}` cannot be certified: `{}` \
-                                 calls through a function-typed \
-                                 parameter, whose target is not \
-                                 knowable statically. An unresolvable \
-                                 edge fails closed",
-                                c.name.name,
-                                k.display()
-                            ),
-                        ));
-                        return Verdict::Uncertified;
-                    }
-                    if unresolved_opaque_receiver(edge) {
-                        diags.push(Diag::ty(
-                            c.name.span,
-                            format!(
-                                "claim `{}` cannot be certified: `{}` \
-                                 calls `{}` on a receiver the \
-                                 compiler cannot type, so the walk \
-                                 cannot follow the edge. An \
-                                 unresolvable edge fails closed — \
-                                 bind the receiver to a typed field \
-                                 or local so the call resolves",
-                                c.name.name,
-                                k.display(),
-                                name
-                            ),
-                        ));
-                        return Verdict::Uncertified;
-                    }
-                }
-            }
-        }
-        for site in &fs.effect_sites {
-            let EffectSiteKind::Publish(subj) = &site.kind else {
-                continue;
-            };
-            let Some(subj) = subj else {
-                diags.push(Diag::ty(
-                    c.name.span,
-                    format!(
-                        "claim `{}` cannot be certified: `{}` \
-                         publishes to a computed subject, which could \
-                         route to any subscriber. An unresolvable \
-                         edge fails closed",
-                        c.name.name,
-                        k.display()
-                    ),
-                ));
-                return Verdict::Uncertified;
-            };
-            let subj = &subj.text;
-            for (sub_locus, sub_handler, sub_span) in
-                subscribers_of(cx.graph, subj)
-            {
-                if !dst_g.loci.contains(&sub_locus) {
-                    continue;
-                }
-                if granted.contains(subj.as_str()) {
-                    continue;
-                }
-                let key = format!(
-                    "{}-({})->{}::{}",
-                    k.display(),
-                    subj,
-                    sub_locus,
-                    sub_handler
-                );
-                if reported.insert(key) {
-                    diags.push(Diag::ty(
-                        c.name.span,
-                        format!(
-                            "claim `{}` violated: un-granted edge \
-                             `{}` -(publishes \"{}\")-> `{}::{}`. \
-                             Granted: {}. If this edge is intended, \
-                             name it in the grant list — a grant is \
-                             a reviewable line",
-                            c.name.name,
-                            k.display(),
-                            subj,
-                            sub_locus,
-                            sub_handler,
-                            granted_disp
-                        ),
-                    ));
-                    if cx.model.is_bundle_fn(&k) {
-                        diags.push(Diag::ty(
-                            site.span,
-                            format!(
-                                "claim `{}`: the un-granted publish \
-                                 happens here",
-                                c.name.name
-                            ),
-                        ));
-                    }
-                    diags.push(Diag::ty(
-                        sub_span,
-                        format!(
-                            "claim `{}`: received here. Grant this \
-                             edge with `publish {};` if it is \
-                             intended",
-                            c.name.name, subj
-                        ),
-                    ));
-                    violated = true;
-                }
-            }
-        }
-    }
-    if violated {
-        Verdict::Violated
-    } else {
-        Verdict::Holds
-    }
-}
 
 // ===================== bound ======================================
 
-/// Why a count is unbounded — the construct AND where it is.
-///
-/// The checker has always had to classify this to reach the verdict
-/// at all; it just threw the classification away and printed a
-/// four-way disjunction at the claim line ("a recursion cycle,
-/// loop-nested carrier, indirect call, or computed publish subject
-/// makes the count unbounded"), leaving the reader to work out which
-/// of the four applied to their program. Keeping it costs one enum.
-enum Unbounded {
-    /// A recursion cycle: the walk re-entered a fn already on the
-    /// stack, so the count repeats per recursion.
-    Cycle(FnKey),
-    /// A carrier reached from inside a loop: it repeats per
-    /// iteration, exactly like every per-call contributor in
-    /// `@budget`.
-    LoopCarrier { at: FnKey, span: hale_syntax::Span },
-    /// A call the walk cannot follow — through a fn-typed parameter,
-    /// or on a receiver the compiler cannot type. Fails closed.
-    Unfollowable { at: FnKey, span: hale_syntax::Span },
-    /// A publish whose subject is computed: it could route to any
-    /// subscriber, so the contribution is uncountable.
-    ComputedSubject { at: FnKey, span: hale_syntax::Span },
-    /// The walk hit the step ceiling before settling.
-    StepCeiling,
-}
 
-impl Unbounded {
-    /// The clause that goes in the primary diagnostic.
-    fn why(&self) -> String {
-        match self {
-            Unbounded::Cycle(k) => format!(
-                "`{}` is reachable from itself, so the count repeats \
-                 per recursion",
-                k.display()
-            ),
-            Unbounded::LoopCarrier { at, .. } => format!(
-                "a carrier is reached from inside a loop in `{}`, so \
-                 it repeats per iteration",
-                at.display()
-            ),
-            Unbounded::Unfollowable { at, .. } => format!(
-                "`{}` makes a call the walk cannot follow, so the \
-                 contribution beyond it is unknown",
-                at.display()
-            ),
-            Unbounded::ComputedSubject { at, .. } => format!(
-                "`{}` publishes to a computed subject, which could \
-                 route to any subscriber",
-                at.display()
-            ),
-            Unbounded::StepCeiling => {
-                "the walk hit its step ceiling before settling".into()
-            }
-        }
-    }
 
-    /// Where to look, when there is a single site to point at. A
-    /// cycle and a step ceiling are properties of a walk rather than
-    /// of one expression, so they have none.
-    fn site(&self) -> Option<(hale_syntax::Span, &'static str)> {
-        match self {
-            Unbounded::LoopCarrier { span, .. } => {
-                Some((*span, "this is the loop-nested carrier"))
-            }
-            Unbounded::Unfollowable { span, .. } => {
-                Some((*span, "this is the call the walk cannot follow"))
-            }
-            Unbounded::ComputedSubject { span, .. } => {
-                Some((*span, "this is the computed publish subject"))
-            }
-            Unbounded::Cycle(_) | Unbounded::StepCeiling => None,
-        }
-    }
 
-    /// The fn whose body holds the site, for the bundle-span guard.
-    fn at(&self) -> Option<&FnKey> {
-        match self {
-            Unbounded::LoopCarrier { at, .. }
-            | Unbounded::Unfollowable { at, .. }
-            | Unbounded::ComputedSubject { at, .. } => Some(at),
-            Unbounded::Cycle(k) => Some(k),
-            Unbounded::StepCeiling => None,
-        }
-    }
-}
-
-/// Heaviest-path result: `Err` = unbounded, carrying why.
-type Heaviest = Result<(u64, Vec<FnKey>), Unbounded>;
-
-/// Evaluate `bound C <= N on paths from G` — sum of carrier sites
-/// along a path, max at joins, over the composed call ∘ bus graph.
-fn evaluate_bound(
-    c: &ClaimDecl,
-    cx: &Cx,
-    diags: &mut Vec<Diag>,
-) -> Verdict {
-    let ClaimForm::Bound {
-        class,
-        class_name,
-        limit,
-        from,
-        ..
-    } = &c.form
-    else {
-        unreachable!("dispatched on form")
-    };
-    let mask = crate::frontier::class_mask_with(*class, &cx.defs);
-    let group = &cx.groups[&from.name];
-    if projection_vacuity(c, "source", from, group, &cx.summary, diags)
-    {
-        return Verdict::Invalid;
-    }
-    let mut worst: (u64, Vec<FnKey>) = (0, Vec::new());
-    let mut why: Option<Unbounded> = None;
-    for root in group.fn_set(&cx.summary) {
-        let mut stack = Vec::new();
-        let mut memo: BTreeMap<FnKey, (u64, Vec<FnKey>)> =
-            BTreeMap::new();
-        let mut steps = 0u32;
-        match site_count(
-            &root, cx, mask, &mut stack, &mut memo, &mut steps,
-        ) {
-            Err(u) => {
-                why = Some(u);
-                break;
-            }
-            Ok((w, p)) => {
-                if w > worst.0 {
-                    worst = (w, p);
-                }
-            }
-        }
-    }
-    if let Some(u) = why {
-        // The checker classified the condition to reach this verdict.
-        // Saying "a recursion cycle, loop-nested carrier, indirect
-        // call, or computed publish subject" made the reader
-        // re-derive which of the four applied — from a diagnostic
-        // anchored at the claim, nowhere near the construct.
-        diags.push(Diag::ty(
-            c.name.span,
-            format!(
-                "claim `{}` violated: paths from `{}` carry an \
-                 unbounded number of `{}` sites (limit {}) — {}",
-                c.name.name,
-                from.name,
-                class_name,
-                limit,
-                u.why()
-            ),
-        ));
-        // …and point at it, on the same bundle-span rule the
-        // `forbid` witness uses.
-        if let (Some((span, label)), Some(at)) = (u.site(), u.at()) {
-            if cx.model.is_bundle_fn(at) {
-                diags.push(Diag::ty(
-                    span,
-                    format!("claim `{}`: {}", c.name.name, label),
-                ));
-            }
-        }
-        return Verdict::Violated;
-    }
-    let (w, path) = worst;
-    if w <= *limit {
-        return Verdict::Holds;
-    }
-    let chain = path
-        .iter()
-        .map(|k| format!("`{}`", k.display()))
-        .collect::<Vec<_>>()
-        .join(" -> ");
-    diags.push(Diag::ty(
-        c.name.span,
-        format!(
-            "claim `{}` violated: heaviest path from `{}` carries {} \
-             `{}` sites, limit {} — path: {}",
-            c.name.name, from.name, w, class_name, limit, chain
-        ),
-    ));
-    Verdict::Violated
-}
-
-/// DFS: total carrier sites reachable from `k` per invocation — a
-/// CALL-TREE SUM, exactly `@budget`'s per-call semantics (two calls
-/// to a carrier are two sites; "max at joins" is the stack
-/// dimension's rule, not the count's). Returns the total plus a
-/// representative chain (each hop the largest contributor) for the
-/// witness. `None` = unbounded. Memoizes only finite results
-/// computed without a cycle hit (the `stack_depth` precedent: a
-/// path-dependent verdict must not poison a diamond reached another
-/// way).
-fn site_count(
-    k: &FnKey,
-    cx: &Cx,
-    mask: EffectSet,
-    stack: &mut Vec<FnKey>,
-    memo: &mut BTreeMap<FnKey, (u64, Vec<FnKey>)>,
-    steps: &mut u32,
-) -> Heaviest {
-    if let Some(hit) = memo.get(k) {
-        return Ok(hit.clone());
-    }
-    if stack.contains(k) {
-        return Err(Unbounded::Cycle(k.clone()));
-    }
-    *steps += 1;
-    if *steps > callgraph::MAX_STEPS {
-        return Err(Unbounded::StepCeiling);
-    }
-    let own: u64 = cx
-        .summary
-        .carries
-        .get(k)
-        .map_or(0, |c| if c.0 & mask.0 != 0 { 1 } else { 0 });
-    let Some(fs) = cx.summary.fns.get(k) else {
-        let r = (own, vec![k.clone()]);
-        memo.insert(k.clone(), r.clone());
-        return Ok(r);
-    };
-    stack.push(k.clone());
-    let mut total: u64 = 0;
-    let mut best_child: (u64, Vec<FnKey>) = (0, Vec::new());
-    // #392: fanned-out interface-dispatch alternatives share a group;
-    // a dispatch invokes exactly ONE of them, so the group contributes
-    // its MAX, not its sum — summing would count phantom calls that no
-    // execution performs. (Any unbounded alternative still poisons the
-    // whole count: dispatch may choose it.)
-    let mut group_best: BTreeMap<u32, (u64, Vec<FnKey>)> =
-        BTreeMap::new();
-    let mut unbounded: Option<Unbounded> = None;
-    for edge in &fs.calls {
-        match &edge.callee {
-            Callee::Resolved(next) => {
-                match site_count(next, cx, mask, stack, memo, steps)
-                {
-                    Err(u) => {
-                        unbounded = Some(u);
-                        break;
-                    }
-                    Ok((w, p)) => {
-                        // A carrier reached inside a loop repeats
-                        // per iteration — unbounded, like every
-                        // per-call contributor in `@budget`.
-                        if edge.loop_depth > 0 && w > 0 {
-                            unbounded = Some(Unbounded::LoopCarrier {
-                                at: k.clone(),
-                                span: edge.span,
-                            });
-                            break;
-                        }
-                        match edge.dispatch_group {
-                            Some(g) => {
-                                let e = group_best
-                                    .entry(g)
-                                    .or_insert((0, Vec::new()));
-                                if w > e.0 {
-                                    *e = (w, p);
-                                }
-                            }
-                            None => {
-                                total = total.saturating_add(w);
-                                if w > best_child.0 {
-                                    best_child = (w, p);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            Callee::Unresolved(name) => {
-                if edge.indirect
-                    || fs.fn_params.iter().any(|p| p == name)
-                    // The backstop: an untyped-receiver call could
-                    // be a wrapper reaching a carrier — an
-                    // uncountable contribution. Fail closed
-                    // (unbounded).
-                    || unresolved_opaque_receiver(edge)
-                {
-                    unbounded = Some(Unbounded::Unfollowable {
-                        at: k.clone(),
-                        span: edge.span,
-                    });
-                    break;
-                }
-            }
-        }
-    }
-    if unbounded.is_none() {
-        for (w, p) in group_best.into_values() {
-            total = total.saturating_add(w);
-            if w > best_child.0 {
-                best_child = (w, p);
-            }
-        }
-    }
-    if unbounded.is_none() {
-        for site in &fs.effect_sites {
-            let EffectSiteKind::Publish(subj) = &site.kind else {
-                continue;
-            };
-            let Some(subj) = subj else {
-                unbounded = Some(Unbounded::ComputedSubject {
-                    at: k.clone(),
-                    span: site.span,
-                });
-                break;
-            };
-            let subj = &subj.text;
-            for (sub_locus, sub_handler, _sub_span) in
-                subscribers_of(cx.graph, subj)
-            {
-                let next = FnKey::method(sub_locus, sub_handler);
-                match site_count(&next, cx, mask, stack, memo, steps)
-                {
-                    Err(u) => {
-                        unbounded = Some(u);
-                        break;
-                    }
-                    Ok((w, p)) => {
-                        if site.loop_depth > 0 && w > 0 {
-                            unbounded = Some(Unbounded::LoopCarrier {
-                                at: k.clone(),
-                                span: site.span,
-                            });
-                            break;
-                        }
-                        total = total.saturating_add(w);
-                        if w > best_child.0 {
-                            best_child = (w, p);
-                        }
-                    }
-                }
-            }
-            if unbounded.is_some() {
-                break;
-            }
-        }
-    }
-    stack.pop();
-    if let Some(u) = unbounded {
-        return Err(u);
-    }
-    let mut path = vec![k.clone()];
-    path.extend(best_child.1);
-    let r = (own + total, path);
-    memo.insert(k.clone(), r.clone());
-    Ok(r)
-}
 
 // ===================== require / cover / count ====================
 
-/// `require subscribes/publishes(some G, topic T)` — over the
-/// DECLARED bus ends (the `bus { }` blocks), which is what "wired"
-/// means.
-fn evaluate_require(
-    c: &ClaimDecl,
-    cx: &Cx,
-    diags: &mut Vec<Diag>,
-) -> Verdict {
-    let ClaimForm::Require {
-        publishers,
-        group,
-        topic,
-    } = &c.form
-    else {
-        unreachable!("dispatched on form")
-    };
-    let g = &cx.groups[&group.name];
-    let subject = topic.segments[0].name.as_str();
-    let hit = cx.graph.subjects.get(subject).map_or(false, |info| {
-        if *publishers {
-            info.publishers
-                .iter()
-                .any(|p| g.loci.contains(&p.locus))
-        } else {
-            info.subscribers
-                .iter()
-                .any(|s| g.loci.contains(&s.locus))
-        }
-    });
-    if hit {
-        return Verdict::Holds;
-    }
-    diags.push(Diag::ty(
-        c.name.span,
-        format!(
-            "claim `{}` violated: no member of `{}` {} `{}`",
-            c.name.name,
-            group.name,
-            if *publishers { "publishes" } else { "subscribes" },
-            topic.display()
-        ),
-    ));
-    Verdict::Violated
-}
 
-/// GH #436: `require sealed(all G)` — every locus in the group is
-/// declared `@sealed`.
-///
-/// A universal, so it reports EVERY unsealed member rather than the
-/// first: a security baseline is adopted once and the reader wants
-/// the whole list to fix, not one name per build.
-fn evaluate_require_sealed(
-    c: &ClaimDecl,
-    cx: &Cx,
-    diags: &mut Vec<Diag>,
-) -> Verdict {
-    let ClaimForm::RequireSealed { group } = &c.form else {
-        unreachable!("dispatched on form")
-    };
-    let g = &cx.groups[&group.name];
-    // A universal over an empty projection is the fail-open this
-    // whole system exists to avoid: a group of free fns has no loci,
-    // so nothing is unsealed, so the claim "holds" while confining
-    // nothing. Same vacuity discipline the other verbs apply.
-    if g.loci.is_empty() {
-        diags.push(Diag::ty(
-            c.name.span,
-            format!(
-                "claim `{}`: group `{}` contains no loci, so \
-                 `require sealed` would quantify over an empty set and \
-                 hold while confining nothing. Sealing is a property of \
-                 loci — name a group of them.",
-                c.name.name, group.name
-            ),
-        ));
-        return Verdict::Invalid;
-    }
-    let unsealed: Vec<&str> = g
-        .loci
-        .iter()
-        .filter(|l| !cx.sealed.contains(l.as_str()))
-        .map(|l| l.as_str())
-        .collect();
-    if unsealed.is_empty() {
-        return Verdict::Holds;
-    }
-    diags.push(Diag::ty(
-        c.name.span,
-        format!(
-            "claim `{}` violated: {} in `{}` {} not `@sealed`, so {} \
-             state is readable by anything holding {} — {}",
-            c.name.name,
-            if unsealed.len() == 1 { "a locus" } else { "loci" },
-            group.name,
-            if unsealed.len() == 1 { "is" } else { "are" },
-            if unsealed.len() == 1 { "its" } else { "their" },
-            if unsealed.len() == 1 { "it" } else { "them" },
-            unsealed.join(", ")
-        ),
-    ));
-    Verdict::Violated
-}
 
 /// The classes `require attributed` can actually check: those carried
 /// by a registry row or a syntactic site, so a DIRECT site exists to
@@ -2714,283 +1200,12 @@ pub(crate) fn has_opaque_unresolved(
     })
 }
 
-/// GH #436: `require attributed(all C)` — every user fn that DIRECTLY
-/// performs an operation of built-in class `C` carries at least one
-/// user-declared effect class.
-///
-/// Orthogonal to interposition. `forbid reaches(app, effects(syscall))
-/// avoiding gate` constrains WHERE a boundary is crossed and is silent
-/// on what any crossing is FOR; this constrains attribution and is
-/// silent on location. Neither implies the other.
-///
-/// DIRECT sites only. Transitively, every caller downstream of one
-/// labelled fn inherits the label and passes, which would make the
-/// check nearly vacuous — the attribution point is the site where the
-/// boundary is actually crossed.
-///
-/// Reports every unattributed site at once: this is adopted as a
-/// baseline, and the reader wants the whole list.
-fn evaluate_require_attributed(
-    c: &ClaimDecl,
-    cx: &Cx,
-    diags: &mut Vec<Diag>,
-) -> Verdict {
-    let ClaimForm::RequireAttributed { class_name } = &c.form else {
-        unreachable!("dispatched on form")
-    };
-    let Some(mask) = attributed_mask(&class_name.name) else {
-        unreachable!("validated against the same predicate")
-    };
 
-    let mut unattributed: Vec<String> = Vec::new();
-    for (key, fs) in &cx.summary.fns {
-        // Only the bundle's own fns. A stdlib body is not the
-        // author's to annotate, and blaming one would be unactionable.
-        if !cx.model.is_bundle_fn(key) {
-            continue;
-        }
-        // GH #436 review 2: the `@ffi` DECLARATION is the boundary,
-        // not its caller. Attributing the caller was unreachable
-        // anyway — an `@ffi` fn is a bundle decl, so `is_bundle_fn`
-        // short-circuited before the FFI test — and it was the wrong
-        // shape besides: the old branch returned true for EVERY mask,
-        // so one foreign call would have read as publish, entropy and
-        // secret_use at once. The declaration is application-owned
-        // and can carry the purpose itself, which keeps ordinary
-        // callers ordinary and attribution direct.
-        let performs_directly = performs_directly_for(
-            &cx.summary,
-            &cx.model,
-            &cx.ffi,
-            key,
-            fs,
-            mask,
-        );
-        if !performs_directly {
-            continue;
-        }
-        if !fn_carries_a_user_class(key, cx) {
-            unattributed.push(match &key.locus {
-                Some(l) => format!("{}::{}", l, key.fn_name),
-                None => key.fn_name.clone(),
-            });
-        }
-    }
-    // GH #436 review 2: an unresolved call the callgraph knows is
-    // INDIRECT or opaque may do anything — the general effect engine
-    // already treats it as unclassified for exactly this reason.
-    // Attribution asked only whether the textual name sat in the
-    // stdlib registry, so a callback parameter contributed nothing
-    // and the law reported `holds` over a boundary it could not see.
-    // Same refusal-to-certify posture as the rest of the stack: a fn
-    // that already names a purpose has attributed the potential
-    // crossing; one that does not leaves the claim uncertified.
-    if unattributed.is_empty() {
-        let opaque: Vec<String> = cx
-            .summary
-            .fns
-            .iter()
-            .filter(|(key, _)| cx.model.is_bundle_fn(key))
-            .filter(|(key, fs)| {
-                !fn_carries_a_user_class(key, cx)
-                    && has_opaque_unresolved(fs)
-            })
-            .map(|(key, _)| match &key.locus {
-                Some(l) => format!("{}::{}", l, key.fn_name),
-                None => key.fn_name.clone(),
-            })
-            .collect();
-        if !opaque.is_empty() {
-            let mut names = opaque;
-            names.sort();
-            diags.push(Diag::ty(
-                c.name.span,
-                format!(
-                    "claim `{}` uncertified: {} an indirect or opaque \
-                     call whose target this check cannot resolve, and \
-                     names no purpose of its own — so whether a `{}` \
-                     boundary is crossed there is unknown. Classify \
-                     the caller (`@effects(is: {{...}})`) or bind the \
-                     callee so it resolves: {}",
-                    c.name.name,
-                    if names.len() == 1 {
-                        "a fn makes"
-                    } else {
-                        "fns make"
-                    },
-                    class_name.name,
-                    names.join(", ")
-                ),
-            ));
-            return Verdict::Uncertified;
-        }
-        return Verdict::Holds;
-    }
-    unattributed.sort();
-    diags.push(Diag::ty(
-        c.name.span,
-        format!(
-            "claim `{}` violated: {} `{}` with no declared purpose — \
-             classify {} (`@effects(is: {{...}})`) with a user effect \
-             class so the operation is attributable: {}",
-            c.name.name,
-            if unattributed.len() == 1 {
-                "a fn performs"
-            } else {
-                "fns perform"
-            },
-            class_name.name,
-            if unattributed.len() == 1 { "it" } else { "them" },
-            unattributed.join(", ")
-        ),
-    ));
-    Verdict::Violated
-}
 
-/// Does this fn declare `@effects(is: { … })` naming a USER class?
-///
-/// A built-in in `is:` restates what the compiler already infers; the
-/// point of the claim is a purpose the author supplied.
-fn fn_carries_a_user_class(key: &FnKey, cx: &Cx) -> bool {
-    cx.carries_user_class.contains(key)
-}
 
-/// `cover topic in seed(a): subscribed_by(some G)` — every topic the
-/// seed declares has a subscriber in G. Reports EVERY uncovered
-/// topic in one diagnostic.
-fn evaluate_cover(
-    c: &ClaimDecl,
-    cx: &Cx,
-    diags: &mut Vec<Diag>,
-) -> Verdict {
-    let ClaimForm::Cover { alias, group } = &c.form else {
-        unreachable!("dispatched on form")
-    };
-    let g = &cx.groups[&group.name];
-    let topics = &cx.alias_topics[&alias.name];
-    let mut uncovered: Vec<&str> = Vec::new();
-    for t in topics {
-        let covered =
-            cx.graph.subjects.get(t.as_str()).map_or(false, |info| {
-                info.subscribers
-                    .iter()
-                    .any(|s| g.loci.contains(&s.locus))
-            });
-        if !covered {
-            uncovered.push(t);
-        }
-    }
-    if uncovered.is_empty() {
-        return Verdict::Holds;
-    }
-    let list = uncovered
-        .iter()
-        .map(|t| format!("`{}`", t))
-        .collect::<Vec<_>>()
-        .join(", ");
-    diags.push(Diag::ty(
-        c.name.span,
-        format!(
-            "claim `{}` violated: {} topic(s) declared in seed `{}` \
-             have no subscriber in `{}`: {}",
-            c.name.name,
-            uncovered.len(),
-            alias.name,
-            group.name,
-            list
-        ),
-    ));
-    Verdict::Violated
-}
-
-/// `count publishers/subscribers(topic T) cmp N` — distinct loci on
-/// the declared end.
-fn evaluate_count(
-    c: &ClaimDecl,
-    cx: &Cx,
-    diags: &mut Vec<Diag>,
-) -> Verdict {
-    let ClaimForm::Count {
-        publishers,
-        topic,
-        cmp,
-        n,
-    } = &c.form
-    else {
-        unreachable!("dispatched on form")
-    };
-    let subject = topic.segments[0].name.as_str();
-    let mut loci: BTreeSet<&str> = BTreeSet::new();
-    if let Some(info) = cx.graph.subjects.get(subject) {
-        if *publishers {
-            for p in &info.publishers {
-                loci.insert(&p.locus);
-            }
-        } else {
-            for s in &info.subscribers {
-                loci.insert(&s.locus);
-            }
-        }
-    }
-    let actual = loci.len() as u64;
-    if cmp.holds(actual, *n) {
-        return Verdict::Holds;
-    }
-    let who = if loci.is_empty() {
-        String::new()
-    } else {
-        format!(
-            " ({})",
-            loci.iter()
-                .map(|l| format!("`{}`", l))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    };
-    diags.push(Diag::ty(
-        c.name.span,
-        format!(
-            "claim `{}` violated: counted {} {}{} of `{}`, claim \
-             requires {} {}",
-            c.name.name,
-            actual,
-            if *publishers {
-                "publisher(s)"
-            } else {
-                "subscriber(s)"
-            },
-            who,
-            topic.display(),
-            cmp.as_str(),
-            n
-        ),
-    ));
-    Verdict::Violated
-}
 
 // ===================== shared helpers =============================
 
-/// Subscribers of a subject, including wildcard subscribers whose
-/// pattern covers it (a `log.**` sink is an edge from every `log.x`
-/// publish — more edges, the conservative direction).
-fn subscribers_of(
-    graph: &BusGraph,
-    subject: &str,
-) -> Vec<(String, String, hale_syntax::Span)> {
-    let mut out = Vec::new();
-    for (key, info) in &graph.subjects {
-        let covers = key == subject
-            || (key.contains("**")
-                && crate::wildcard_match(key, subject));
-        if !covers {
-            continue;
-        }
-        for s in &info.subscribers {
-            out.push((s.locus.clone(), s.handler.clone(), s.span));
-        }
-    }
-    out
-}
 
 /// A fn's DIRECT effect contribution — its own body only, no
 /// recursion (the BFS supplies transitivity). Mirrors the per-node
@@ -3037,141 +1252,3 @@ pub(crate) fn direct_effects(
     acc
 }
 
-/// Render the countermodel: the path from a source root to the hit,
-/// with bus hops named. Matches the effect-witness house style —
-/// the chain in author spelling, one line.
-fn render_violation(
-    c: &ClaimDecl,
-    src_name: &Ident,
-    dst_disp: &str,
-    hit: &FnKey,
-    parent: &BTreeMap<FnKey, (FnKey, Step)>,
-    cx: &Cx,
-    diags: &mut Vec<Diag>,
-) {
-    // Walk hit -> root collecting (node, incoming step), then
-    // render forward.
-    let mut rev: Vec<(FnKey, Option<&Step>)> = Vec::new();
-    let mut cur = hit.clone();
-    loop {
-        match parent.get(&cur) {
-            Some((prev, step)) => {
-                rev.push((cur.clone(), Some(step)));
-                cur = prev.clone();
-            }
-            None => {
-                rev.push((cur.clone(), None));
-                break;
-            }
-        }
-    }
-    rev.reverse();
-    let mut path = String::new();
-    for (node, incoming) in &rev {
-        match incoming {
-            None => path.push_str(&format!("`{}`", node.display())),
-            Some(Step::Call { via_interface: Some(iface), .. }) => {
-                // `-(dispatches Notifier.send)->` rather than `->`.
-                path.push_str(&format!(
-                    " -(dispatches {}.{})-> `{}`",
-                    iface,
-                    node.fn_name,
-                    node.display()
-                ));
-            }
-            Some(Step::Call { .. }) => {
-                path.push_str(&format!(" -> `{}`", node.display()));
-            }
-            Some(Step::Bus { subject, .. }) => {
-                path.push_str(&format!(
-                    " -(publishes \"{}\")-> `{}`",
-                    subject,
-                    node.display()
-                ));
-            }
-        }
-    }
-    diags.push(Diag::ty(
-        c.name.span,
-        format!(
-            "claim `{}` violated: `{}` reaches `{}` — witness: {}",
-            c.name.name, src_name.name, dst_disp, path,
-        ),
-    ));
-    // #392 provenance: the witness names WHO; these point at WHERE
-    // to edit — the source decision that introduced the crossing
-    // edge, and the destination's declaration. Spans are emitted
-    // only for bundle decls (`Model::is_bundle_fn`): stdlib bodies
-    // parse in their own offset space, and a span from there
-    // attributed to a bundle file would point at the wrong source.
-    if let Some((entered, Some(step))) = rev.last().map(|(n, s)| (n, s))
-    {
-        // The fn whose body holds the crossing edge.
-        let from = rev.len().checked_sub(2).map(|i| &rev[i].0);
-        match step {
-            Step::Call { span, via_interface } => {
-                if from.is_some_and(|f| cx.model.is_bundle_fn(f)) {
-                    // The dispatch case needs the extra sentence.
-                    // Without it the reader looks at a line
-                    // constructing one conformer, sees a witness
-                    // naming another, and concludes the checker is
-                    // wrong — when it is being conservative on
-                    // purpose.
-                    let msg = match via_interface {
-                        Some(iface) => format!(
-                            "claim `{}`: the boundary into `{}` is \
-                             crossed by this dispatch through `{}`. \
-                             A call on an interface reaches EVERY \
-                             conforming locus, whatever this \
-                             expression happens to construct — so the \
-                             witness names one the claim forbids. \
-                             Narrow the receiver's type, or exclude \
-                             the conformer from the group",
-                            c.name.name, dst_disp, iface
-                        ),
-                        None => format!(
-                            "claim `{}`: the boundary into `{}` is \
-                             crossed by this call",
-                            c.name.name, dst_disp
-                        ),
-                    };
-                    diags.push(Diag::ty(*span, msg));
-                }
-            }
-            Step::Bus { publish_span, sub_span, .. } => {
-                if from.is_some_and(|f| cx.model.is_bundle_fn(f)) {
-                    diags.push(Diag::ty(
-                        *publish_span,
-                        format!(
-                            "claim `{}`: the crossing publish \
-                             happens here",
-                            c.name.name
-                        ),
-                    ));
-                }
-                if cx.model.is_bundle_fn(entered) {
-                    diags.push(Diag::ty(
-                        *sub_span,
-                        format!(
-                            "claim `{}`: delivered at this \
-                             subscription",
-                            c.name.name
-                        ),
-                    ));
-                }
-            }
-        }
-    }
-    let dst_decl =
-        hit.locus.as_deref().unwrap_or(hit.fn_name.as_str());
-    if let Some(span) = cx.model.decl_span(dst_decl) {
-        diags.push(Diag::ty(
-            span,
-            format!(
-                "claim `{}`: the forbidden destination `{}` is \
-                 declared here",
-                c.name.name, dst_decl
-            ),
-        ));
-    }
-}

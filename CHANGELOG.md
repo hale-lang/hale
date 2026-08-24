@@ -8,6 +8,46 @@ behavior.
 
 ## Unreleased
 
+### The legacy claim evaluator is deleted (GH #476 Change 10)
+
+`claims.rs` answered every claim family from a second walk over the
+source, in parallel with the judgment engines answering the same
+questions over the canonical model. Changes 5a–5h migrated the
+families one at a time, each held byte-equal against that evaluator
+over the whole corpus. With `causes:`, `depends:` and `@budget`
+migrated, it answered nothing for anyone shipping.
+
+It is gone — about 1900 lines, from 3177 down to 1285. What remains
+is everything that runs BEFORE a verdict exists, and that name is
+now accurate: clause enumeration across the world and library
+tiers, constitution adoption and its normalized identity digests,
+group resolution, and the vocabulary helpers the model builder
+calls. Selection turns out not to need the bus graph at all — it
+reads clause text, adoption and membership, never an effect walk.
+
+**The corpus differentials became snapshots.** A comparison against
+an independent implementation is the right instrument during a
+cutover and impossible after it. Each snapshot was generated from
+the final green differential run, so every line in it is literally
+the evaluator's last word, and had to survive that comparison to be
+committed:
+
+- `claim_diags_snapshot.txt` — what `hale check` says, per corpus
+  program (`HALE_REGEN_CLAIM_DIAGS=1`).
+- `law_rows_snapshot.txt` — the artifact's claim rows: name, form,
+  verdict, source (`HALE_REGEN_LAW_ROWS=1`).
+
+A diff in either is a user-visible change. The lowered-certificate
+comparison stays a live differential: the certificate ENGINES were
+never what was being migrated, so they can still disagree.
+
+Two invariants moved rather than died: the lowering's parity
+obligation is now stated against law selection itself
+(`claims::selected_clauses`) instead of the evaluator's outcome
+list, which is what it always stood for; and the shared-reachability
+guard now watches `judgment.rs`, since that is where the
+prohibition walk lives.
+
 ### `@budget` is judged over the canonical model (GH #476 Change 5h)
 
 The last law answered by an engine of its own. `@budget` now
@@ -37,6 +77,15 @@ Supporting facts, added in the same change:
   population: three arranged replicas of one `Sink` are three
   deliveries where a declaration count said one, and two
   mutually-exclusive key filters are no longer both charged to a
+  publish whose key can reach only one. A dynamic population, an
+  unknown key, an external route, or a computed subject is
+  unboundedness — never one. One consequence worth naming: a
+  subscriber born inside a function body rather than in the main
+  arrangement is not an instance the model enumerates, so a publish
+  reaching it now measures *unbounded* fan-out where the old count
+  reported a number. That is the honest answer — the population is
+  genuinely not known — and the verdict is unchanged in every
+  corpus program; only the diagnostic's wording moves.
   publish whose key can reach only one. It is also TRANSITIVE:
   `A → Relay::on_a → B → three Sinks` is four deliveries caused by
   one invocation, and the ordinary call graph never enters a

@@ -1,0 +1,162 @@
+crates/hale-cli/tests/claims_artifact_unknowns.rs#0	iso	forbid reaches(a_side, b_side)	Violated	None
+crates/hale-cli/tests/claims_artifact_unknowns.rs#1	iso	forbid reaches(a_side, sinks)	Violated	None
+crates/hale-cli/tests/claims_artifact_unknowns.rs#3	iso	forbid reaches(a_side, sinks)	Uncertified	None
+crates/hale-cli/tests/fixtures/topology/pipeline.hl	apart	forbid reaches(stores, workers) via { calls }	Holds	None
+crates/hale-cli/tests/fixtures/topology/pipeline.hl	one_writer	count publishers(topic Readings) <= 1	Holds	None
+crates/hale-cli/tests/fixtures/xseed-claims-cover-ok/app/main.hl	no_orphans	cover topic in seed(t): subscribed_by(some positions)	Invalid	None
+crates/hale-cli/tests/fixtures/xseed-claims-verbs/app/main.hl	data_iso	forbid reaches(staff, effects(knowledge(delta)))	Invalid	None
+crates/hale-cli/tests/fixtures/xseed-claims-verbs/app/main.hl	no_orphans	cover topic in seed(t): subscribed_by(some staff)	Invalid	None
+crates/hale-cli/tests/fixtures/xseed-claims-verbs/app/main.hl	single	count publishers(topic t::Tasks) == 1	Invalid	None
+crates/hale-cli/tests/fixtures/xseed-claims-verbs/app/main.hl	wired	require subscribes(some staff, topic t::Tasks)	Invalid	None
+crates/hale-cli/tests/fixtures/xseed-claims/app/main.hl	iso_dg	forbid reaches(delta_wing, gamma_wing)	Invalid	None
+crates/hale-cli/tests/fixtures/xseed-library-claims/lib/pay/p.hl	single_settle	count subscribers(topic Charges) <= 1	Holds	None
+crates/hale-cli/tests/fixtures/xseed-library-claims/lib/pay/p.hl	wired	require subscribes(some settlers, topic Charges)	Holds	None
+crates/hale-cli/tests/fleet_compose.rs#22	iso	forbid reaches(a_side, b_side)	Holds	None
+crates/hale-cli/tests/fleet_cross_tier.rs#4	no_llm	forbid reaches(billing, effects(llm))	Invalid	Some("Core")
+crates/hale-cli/tests/fleet_cross_tier.rs#5	no_llm	forbid reaches(billing, effects(llm))	Holds	Some("Core")
+crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#0	isolation	forbid reaches(probes, workers)	Invalid	None
+crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#1	isolation	forbid reaches(probes, workers)	Invalid	None
+crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#2	isolation	forbid reaches(probes, workers)	Holds	None
+crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#3	isolation	forbid reaches(probes, workers)	Invalid	None
+crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#4	isolation	forbid reaches(probes, sinks)	Invalid	None
+crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#5	isolation	forbid reaches(probes, sinks)	Invalid	None
+crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#6	isolation	forbid reaches(sources, targets) avoiding mask	Invalid	None
+crates/hale-cli/tests/model_cli.rs#0	wired	require subscribes(some subs, topic Evt)	Holds	None
+crates/hale-cli/tests/topology_artifact_contract.rs#0	wired	require subscribes(some subs, topic Tk)	Holds	None
+crates/hale-cli/tests/topology_artifact_contract.rs#1	wired	require subscribes(some subs, topic Tk)	Violated	None
+crates/hale-cli/tests/topology_artifact_contract.rs#2	wired	require subscribes(some subs, topic Tk)	Holds	None
+crates/hale-cli/tests/topology_graph_cli.rs#18	iso	forbid reaches(a_side, b_side)	Violated	None
+crates/hale-cli/tests/topology_graph_cli.rs#19	iso	forbid reaches(a_side, b_side)	Holds	None
+crates/hale-cli/tests/topology_graph_cli.rs#20	bad	require attributed(all purpose)	Invalid	None
+crates/hale-cli/tests/topology_graph_cli.rs#22	iso	forbid reaches(a_side, b_side)	Holds	None
+crates/hale-cli/tests/topology_graph_cli.rs#22	iso	forbid reaches(b_side, a_side)	Holds	None
+crates/hale-cli/tests/topology_graph_cli.rs#9	iso	forbid reaches(a_side, b_side)	Holds	None
+crates/hale-cli/tests/topology_graph_cli.rs#9	iso2	forbid reaches(b_side, a_side)	Holds	None
+crates/hale-cli/tests/topology_v2.rs#0	iso	forbid reaches(a_side, b_side)	Violated	None
+crates/hale-codegen/tests/fixtures/examples/claim-forms.hl	boundary	only edges planners -> workers { publish Plan }	Holds	None
+crates/hale-codegen/tests/fixtures/examples/claim-forms.hl	isolated	forbid reaches(workers, audit) via { calls }	Holds	None
+crates/hale-codegen/tests/fixtures/examples/claim-forms.hl	one_call	bound llm <= 1 on paths from planners	Holds	None
+crates/hale-codegen/tests/fixtures/examples/claim-forms.hl	one_writer	count publishers(topic Plan) <= 1	Holds	None
+crates/hale-codegen/tests/fixtures/examples/claim-forms.hl	wired	require subscribes(some workers, topic Plan)	Holds	None
+crates/hale-codegen/tests/fixtures/examples/constitutions.hl	local_rule	require publishes(some billing, topic Settled)	Holds	None
+crates/hale-codegen/tests/fixtures/examples/constitutions.hl	one_writer	count publishers(topic Settled) == 1	Holds	Some("Core")
+crates/hale-codegen/tests/fixtures/examples/constitutions.hl	quiet	count subscribers(topic Settled) == 0	Holds	Some("Dev")
+crates/hale-codegen/tests/fixtures/examples/constitutions.hl	tenant_iso	forbid reaches(billing, research)	Holds	Some("Core")
+crates/hale-codegen/tests/fixtures/examples/secrets-sealed-handler.hl	no_plugin_secrets	forbid reaches(plugins, effects(secret_use))	Holds	None
+crates/hale-codegen/tests/fixtures/examples/secrets-sealed-handler.hl	one_op_per_request	bound secret_use <= 1 on paths from handlers	Holds	None
+crates/hale-types/tests/artifact_integrity.rs#1	iso	forbid reaches(srcs, sinks)	Uncertified	None
+crates/hale-types/tests/artifact_integrity.rs#2	wired	require subscribes(some subs, topic Tk)	Holds	Some("Core")
+crates/hale-types/tests/artifact_law_projection.rs#0	iso	forbid reaches(a_side, b_side)	Violated	None
+crates/hale-types/tests/artifact_law_projection.rs#14	iso	forbid reaches(a_side, b_side)	Violated	None
+crates/hale-types/tests/artifact_law_projection.rs#15	iso	forbid reaches(a_side, b_side) during boot	Invalid	None
+crates/hale-types/tests/artifact_law_projection.rs#2	one	count publishers(topic T) == 1	Holds	None
+crates/hale-types/tests/claim_judgment_gating.rs#0	wired	require subscribes(some subs, topic Plain)	Holds	None
+crates/hale-types/tests/claim_judgment_gating.rs#1	isolation	forbid reaches(src, dst)	Violated	None
+crates/hale-types/tests/claim_lowering.rs#0	edge	only edges gates -> wings { publish Readings }	Holds	None
+crates/hale-types/tests/claim_lowering.rs#0	haveit	require subscribes(some wings, topic Readings)	Holds	None
+crates/hale-types/tests/claim_lowering.rs#0	iso	forbid reaches(gates, wings) via { calls } avoiding gates	Invalid	None
+crates/hale-types/tests/claim_lowering.rs#0	onewriter	count publishers(topic Readings) == 0	Holds	None
+crates/hale-types/tests/claim_lowering.rs#0	spendcap	bound money <= 2 on paths from gates	Holds	None
+crates/hale-types/tests/claim_lowering.rs#0	tagged	require attributed(all syscall)	Violated	None
+crates/hale-types/tests/claim_lowering.rs#0	vault	require sealed(all gates)	Violated	None
+crates/hale-types/tests/claim_lowering.rs#1	quiet	count subscribers(topic Evt) == 0	Violated	Some("Core")
+crates/hale-types/tests/claims.rs#1	iso	forbid reaches(a_side, b_side)	Violated	None
+crates/hale-types/tests/claims.rs#10	iso	forbid reaches(a_side, b_side) via { bus }	Violated	None
+crates/hale-types/tests/claims.rs#10	iso	forbid reaches(b_side, a_side) via { bus }	Violated	None
+crates/hale-types/tests/claims.rs#13	iso	forbid reaches(a_side, b_side)	Uncertified	None
+crates/hale-types/tests/claims.rs#2	read_only	forbid reaches(quote_api, effects(money))	Violated	None
+crates/hale-types/tests/claims.rs#3	read_only	forbid reaches(quote_api, effects(money))	Holds	None
+crates/hale-types/tests/claims.rs#8	iso	forbid reaches(a_side, b_side)	Invalid	None
+crates/hale-types/tests/claims.rs#9	m	forbid reaches(a_side, effects(monye))	Invalid	None
+crates/hale-types/tests/claims_edges.rs#0	iso	forbid reaches(a_side, b_side) via { bus }	Holds	None
+crates/hale-types/tests/claims_edges.rs#1	iso	forbid reaches(a_side, b_side) via { bus }	Violated	None
+crates/hale-types/tests/claims_edges.rs#10	gate	only edges a_side -> b_side {  }	Violated	None
+crates/hale-types/tests/claims_edges.rs#11	one	bound llm <= 1 on paths from planners	Violated	None
+crates/hale-types/tests/claims_edges.rs#14	w	require subscribes(some a_side, topic nosuch::T)	Invalid	None
+crates/hale-types/tests/claims_edges.rs#15	c	cover topic in seed(t): subscribed_by(some a_side)	Invalid	None
+crates/hale-types/tests/claims_edges.rs#19	iso	forbid reaches(a_side, b_side)	Violated	None
+crates/hale-types/tests/claims_edges.rs#2	iso	forbid reaches(a_side, b_side)	Violated	None
+crates/hale-types/tests/claims_edges.rs#20	iso	forbid reaches(a_side, b_side)	Holds	None
+crates/hale-types/tests/claims_edges.rs#21	no_spend	forbid reaches(a_side, effects(money))	Violated	None
+crates/hale-types/tests/claims_edges.rs#22	none	bound llm <= 0 on paths from planners	Violated	None
+crates/hale-types/tests/claims_edges.rs#23	iso	forbid reaches(a_side, b_side)	Uncertified	None
+crates/hale-types/tests/claims_edges.rs#24	no_sms	forbid reaches(callers, texting)	Violated	None
+crates/hale-types/tests/claims_edges.rs#25	iso	forbid reaches(srcs, sinks)	Violated	None
+crates/hale-types/tests/claims_edges.rs#26	boundary	only edges ops -> core { publish Allowed }	Violated	None
+crates/hale-types/tests/claims_edges.rs#3	g	forbid reaches(a_side, b_side) avoiding gate	Invalid	None
+crates/hale-types/tests/claims_edges.rs#4	no_spend	forbid reaches(api, effects(money))	Violated	None
+crates/hale-types/tests/claims_edges.rs#5	q	forbid reaches(a_side, b_side) via { calls } during birth avoiding gate	Holds	None
+crates/hale-types/tests/claims_edges.rs#6	q	forbid reaches(a_side, b_side) during tick	Violated	None
+crates/hale-types/tests/claims_edges.rs#7	p	forbid reaches(probes, b_side)	Holds	None
+crates/hale-types/tests/claims_edges.rs#8	iso	forbid reaches(a_side, b_side)	Violated	None
+crates/hale-types/tests/claims_edges.rs#8	wired	require subscribes(some b_side, topic T)	Holds	None
+crates/hale-types/tests/claims_edges.rs#9	gate	only edges a_side -> b_side {  }	Holds	None
+crates/hale-types/tests/claims_phases.rs#1	gate	only edges a_side -> b_side {  }	Violated	None
+crates/hale-types/tests/claims_phases.rs#2	gate	only edges a_side -> b_side {  }	Holds	None
+crates/hale-types/tests/claims_phases.rs#6	sw	count publishers(topic Tasks) == 1	Violated	None
+crates/hale-types/tests/claims_phases.rs#8	gated	forbid reaches(a_side, b_side) avoiding gate	Holds	None
+crates/hale-types/tests/constitutions.rs#1	tenant_iso	forbid reaches(billing, research)	Invalid	Some("Core")
+crates/hale-types/tests/constitutions.rs#10	rule	count publishers(topic Settled) == 1	Invalid	Some("A")
+crates/hale-types/tests/constitutions.rs#12	r	count publishers(topic Settled) == 1	Invalid	Some("Core")
+crates/hale-types/tests/constitutions.rs#13	d	count subscribers(topic Settled) == 0	Invalid	Some("Dev")
+crates/hale-types/tests/constitutions.rs#13	r	count publishers(topic Settled) == 1	Invalid	Some("Core")
+crates/hale-types/tests/constitutions.rs#14	r	count publishers(topic Settled) == 1	Invalid	Some("Base")
+crates/hale-types/tests/constitutions.rs#16	r	count publishers(topic Settled) == 1	Invalid	Some("Core")
+crates/hale-types/tests/constitutions.rs#18	r	count publishers(topic Settled) == 1	Invalid	Some("Core")
+crates/hale-types/tests/constitutions.rs#19	d	count publishers(topic Settled) == 1	Invalid	Some("Dev")
+crates/hale-types/tests/constitutions.rs#2	quiet	count subscribers(topic Settled) == 0	Invalid	Some("Dev")
+crates/hale-types/tests/constitutions.rs#2	tenant_iso	forbid reaches(billing, research)	Invalid	Some("Core")
+crates/hale-types/tests/constitutions.rs#3	rule	count publishers(topic Settled) == 1	Invalid	Some("A")
+crates/hale-types/tests/constitutions.rs#4	rule	count publishers(topic Settled) == 9	Invalid	None
+crates/hale-types/tests/constitutions.rs#5	l	count subscribers(topic Settled) == 0	Invalid	Some("L")
+crates/hale-types/tests/constitutions.rs#5	r	forbid reaches(billing, research)	Invalid	Some("R")
+crates/hale-types/tests/constitutions.rs#5	shared	count publishers(topic Settled) == 1	Invalid	Some("Base")
+crates/hale-types/tests/constitutions.rs#6	one	count publishers(topic Settled) == 1	Invalid	Some("A")
+crates/hale-types/tests/constitutions.rs#6	two	count subscribers(topic Settled) == 0	Invalid	Some("B")
+crates/hale-types/tests/constitutions.rs#8	two	count subscribers(topic Settled) == 0	Invalid	Some("Core")
+crates/hale-types/tests/interface_dispatch.rs#10	one_call	bound llm <= 1 on paths from planners	Violated	None
+crates/hale-types/tests/interface_dispatch.rs#4	iso	forbid reaches(a_side, sinks)	Violated	None
+crates/hale-types/tests/interface_dispatch.rs#5	iso	forbid reaches(a_side, sinks)	Uncertified	None
+crates/hale-types/tests/interface_dispatch.rs#6	iso	forbid reaches(a_side, b_side)	Holds	None
+crates/hale-types/tests/interface_dispatch.rs#9	one_call	bound llm <= 1 on paths from planners	Holds	None
+crates/hale-types/tests/judgment_reachability.rs#0	iso	forbid reaches(a_side, b_side)	Violated	None
+crates/hale-types/tests/judgment_reachability.rs#1	iso	forbid reaches(a_side, b_side)	Uncertified	None
+crates/hale-types/tests/judgment_reachability.rs#10	iso	forbid reaches(a_side, b_side) via { bus }	Holds	None
+crates/hale-types/tests/judgment_reachability.rs#11	iso	forbid reaches(a_side, b_side) via { calls }	Violated	None
+crates/hale-types/tests/judgment_reachability.rs#12	pure	forbid reaches(a_side, effects(money))	Holds	None
+crates/hale-types/tests/judgment_reachability.rs#13	pure	forbid reaches(gates, effects(alloc))	Violated	None
+crates/hale-types/tests/judgment_reachability.rs#14	iso	forbid reaches(a_side, b_side)	Holds	None
+crates/hale-types/tests/judgment_reachability.rs#17	iso	forbid reaches(a_side, b_side) via { bus }	Holds	None
+crates/hale-types/tests/judgment_reachability.rs#19	iso	forbid reaches(a_side, b_side) via { bus }	Holds	None
+crates/hale-types/tests/judgment_reachability.rs#2	iso	forbid reaches(a_side, b_side)	Violated	None
+crates/hale-types/tests/judgment_reachability.rs#20	iso	forbid reaches(a_side, b_side) via { bus }	Violated	None
+crates/hale-types/tests/judgment_reachability.rs#29	boundary	only edges ops -> core {  }	Uncertified	None
+crates/hale-types/tests/judgment_reachability.rs#3	pure	forbid reaches(gates, effects(alloc))	Violated	None
+crates/hale-types/tests/judgment_reachability.rs#30	boundary	only edges ops -> core {  }	Uncertified	None
+crates/hale-types/tests/judgment_reachability.rs#31	boundary	only edges ops -> core {  }	Holds	None
+crates/hale-types/tests/judgment_reachability.rs#32	boundary	only edges ops -> core {  }	Holds	None
+crates/hale-types/tests/judgment_reachability.rs#35	boundary	only edges ops -> core {  }	Holds	None
+crates/hale-types/tests/judgment_reachability.rs#36	boundary	only edges ops -> core {  }	Holds	None
+crates/hale-types/tests/judgment_reachability.rs#37	tagged	require attributed(all syscall)	Holds	None
+crates/hale-types/tests/judgment_reachability.rs#38	tagged	require attributed(all syscall)	Uncertified	None
+crates/hale-types/tests/judgment_reachability.rs#39	none_yet	count subscribers(topic T) <= 0	Holds	None
+crates/hale-types/tests/judgment_reachability.rs#39	one_pub	count publishers(topic T) >= 1	Holds	None
+crates/hale-types/tests/judgment_reachability.rs#39	someone	require subscribes(some pubs, topic T)	Violated	None
+crates/hale-types/tests/judgment_reachability.rs#4	boundary	only edges ops -> core {  }	Violated	None
+crates/hale-types/tests/judgment_reachability.rs#41	covered	cover topic in seed(kv): subscribed_by(some readers)	Invalid	None
+crates/hale-types/tests/judgment_reachability.rs#42	none_yet	count subscribers(topic Orders) <= 0	Holds	None
+crates/hale-types/tests/judgment_reachability.rs#43	cap	bound money <= 1 on paths from auditors	Holds	None
+crates/hale-types/tests/judgment_reachability.rs#45	cap	bound money <= 1 on paths from roots	Holds	None
+crates/hale-types/tests/judgment_reachability.rs#46	cap	bound money <= 1 on paths from roots	Holds	None
+crates/hale-types/tests/judgment_reachability.rs#47	cap	bound money <= 1 on paths from roots	Holds	None
+crates/hale-types/tests/judgment_reachability.rs#48	cap	bound money <= 0 on paths from roots	Violated	None
+crates/hale-types/tests/judgment_reachability.rs#49	cap	bound money <= 0 on paths from roots	Violated	None
+crates/hale-types/tests/judgment_reachability.rs#5	boundary	only edges a_side -> b_side {  }	Uncertified	None
+crates/hale-types/tests/judgment_reachability.rs#6	writer	require publishes(some gws, topic Orders)	Holds	None
+crates/hale-types/tests/judgment_reachability.rs#7	tagged	require attributed(all alloc)	Violated	None
+crates/hale-types/tests/judgment_reachability.rs#8	cap	bound money <= 1 on paths from gates	Violated	None
+crates/hale-types/tests/library_claims.rs#1	single	count subscribers(topic T) <= 1	Violated	None
+crates/hale-types/tests/library_claims.rs#2	single	count subscribers(topic T) <= 1	Holds	None
+crates/hale-types/tests/model_provenance.rs#1	iso	forbid reaches(a_side, b_side)	Violated	None
+crates/hale-types/tests/model_provenance.rs#2	iso	forbid reaches(gates, handlers)	Violated	None
+crates/hale-types/tests/model_provenance.rs#3	iso	forbid reaches(a_side, b_side) during PHASE	Invalid	None
