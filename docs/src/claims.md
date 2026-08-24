@@ -938,6 +938,10 @@ fleet-family rows outright, and recomputes the document verdict.
 A restamped artifact whose sections disagree with each other is
 refused even though its digest verifies.
 
+The artifact is a *projection* of the compiler's canonical model —
+see [The model](./the-model.md) for what that value is and why it
+records what it could not determine.
+
 The artifact shape (schema `1.17`):
 
 ```text

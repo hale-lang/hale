@@ -15,10 +15,13 @@
 //! Source --check/derive--> Model --judge(ClaimIr)--> Evidence
 //!                              |
 //!                              +--project--> Artifact
-//!
-//! Plan --admit/elaborate-------------------------------> Model
-//! Model --derive---------------------------------------> LoweringPlan
+//!                              +--derive---> DispatchPlan
 //! ```
+//!
+//! One direction only: the model is derived from checked source and
+//! nothing reconstructs one from an artifact or a plan. The fleet
+//! tier's `ComponentModel` is a separate, weaker structure built
+//! from artifact JSON — see `spec/model.md`, "Obtaining a model".
 //!
 //! Derive a modeled semantic fact **once**. Downstream consumers
 //! project or query it; they do not walk the AST, generic artifact
