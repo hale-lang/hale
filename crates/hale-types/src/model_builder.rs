@@ -3514,7 +3514,13 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                                 .union(hale_model::RelationSet::CALLS)
                                 .union(
                                     hale_model::RelationSet::EFFECTS,
-                                );
+                                )
+                                // Change 5h round 2: an unfollowable
+                                // interior edge may reach an
+                                // allocation or a blocking call, so
+                                // the COST account beyond it is not
+                                // complete either.
+                                .union(hale_model::RelationSet::COSTS);
                         }
                         hale_model::AbsorbedEvent::PublishHole => {
                             m = m.union(
@@ -3529,7 +3535,10 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                                 )
                                 .union(
                                     hale_model::RelationSet::EFFECTS,
-                                );
+                                )
+                                // An unexplored interior may contain
+                                // anything, costs included.
+                                .union(hale_model::RelationSet::COSTS);
                         }
                         _ => {}
                     }
@@ -3598,6 +3607,38 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                     dimension: hale_model::CostDimension::Alloc,
                     amount: 1,
                     in_loop: site.loop_depth > 0,
+                    provenance: pid,
+                });
+            }
+            // Blocking points, from the SAME stdlib classification
+            // the quantitative engine reads (round 2). `Block` was
+            // declared in the cost vocabulary but nothing emitted
+            // it, so an ordinary analyzed function calling a known
+            // blocking operation had no block row while
+            // `exact_costs` claimed its cost account was complete.
+            for edge in &fs.calls {
+                let crate::alloc_summary::Callee::Unresolved(name) =
+                    &edge.callee
+                else {
+                    continue;
+                };
+                let segs: Vec<&str> = name.split("::").collect();
+                let Some(eff) =
+                    crate::stdlib_surface::effects_for(&segs)
+                else {
+                    continue;
+                };
+                if !eff
+                    .contains(crate::stdlib_surface::EffectSet::BLOCK)
+                {
+                    continue;
+                }
+                let pid = intern_span(&mut records, edge.span);
+                r.costs.push(hale_model::CostSite {
+                    function: *f,
+                    dimension: hale_model::CostDimension::Block,
+                    amount: 1,
+                    in_loop: edge.loop_depth > 0,
                     provenance: pid,
                 });
             }

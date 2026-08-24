@@ -71,14 +71,19 @@ Supporting facts, added in the same change:
   call-hole kinds (indirect call, untyped receiver, open interface)
   now REQUIRE the COSTS bit: a call whose target the caller chooses
   is exactly where a quantitative law must not certify through.
-- Fan-out is read off the model's own delivery join rather than a
-  second graph, and it resolves a send spelled as a TOPIC as well
-  as one spelled as a wire subject — matching only the wire pattern
-  silently counted one subscriber for every topic-named publish,
-  which was a fail-open on a fan-out bound.
+- **Fan-out counts subscriber DELIVERIES, not subscription
+  declarations.** It is a publish-SITE query now, answered against
+  the model's delivery join and the arrangement's instance
+  population: three arranged replicas of one `Sink` are three
+  deliveries where a declaration count said one, and two
+  mutually-exclusive key filters are no longer both charged to a
+  publish whose key can reach only one. A dynamic population, an
+  unknown key, an external route, or a computed subject is
+  unboundedness — never one.
 
 **Artifact schema 1.15 → 1.16.** `@budget` rows carry
-`"family": "budget"` with their own `certs` evidence. `law.legacy`
+`"family": "budget"` with their own `certs` evidence and an
+`adequacy.budget` entry. `law.legacy`
 is now empty for every program — no family is `unmigrated` any
 more — and the section survives only so artifacts written by older
 toolchains still decode.
@@ -122,8 +127,8 @@ Diagnostics for the family are now `Claim`-kind, matching the other
 law families.
 
 **Artifact schema 1.14 → 1.15.** `depends:` rows carry
-`"family": "depends"` with their own rendered `form` and no
-`law.legacy` entry; that report now covers `@budget` alone.
+`"family": "depends"` with their own rendered `form`, an
+`adequacy.depends` entry, and no `law.legacy` entry; that report now covers `@budget` alone.
 
 ### `causes:` is judged over the canonical model (GH #476 Change 5f)
 
@@ -153,8 +158,9 @@ Diagnostics for the family are now `Claim`-kind, matching the
 other law families.
 
 **Artifact schema 1.13 → 1.14.** `causes:` rows carry
-`"family": "causes"` with their own rendered `form`, and no
-longer appear in `law.legacy`; admission re-renders the form from
+`"family": "causes"` with their own rendered `form`, an
+`adequacy.causes` entry stating whether the model is exact or
+degraded for the family, and no longer appear in `law.legacy`; admission re-renders the form from
 the typed payload rather than trusting an imported verdict.
 
 ### `LegacyProjection` is gone (GH #476 follow-up)

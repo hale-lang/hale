@@ -37,6 +37,26 @@ use crate::verdict::Verdict;
 use crate::alloc_summary::{self, AllocSummary, Callee, FnKey};
 use crate::callgraph;
 
+/// How many subscriber DELIVERIES one publish site can cause.
+///
+/// Round 2: this used to be `Fn(&str) -> u64` — a subject-text
+/// lookup that counted covering `subscribes` rows. A `Subscribe` row
+/// is DECLARATION-grained: one subscription declared by one handler.
+/// Three arranged replicas of one `Sink` are three runtime
+/// registrations and three deliveries, and the old count said one,
+/// so `@budget(fanout = 1)` certified a publish that dispatched
+/// three cells. Keyed subscriptions failed the other way: two
+/// mutually-exclusive filters on one subject were both charged,
+/// because address coverage is only half of delivery.
+///
+/// So the question is asked per SITE — `(publishing fn, site
+/// ordinal, subject text)` — and answered against the model's own
+/// delivery join and instance population. `None` means the answer
+/// is not knowable (a dynamic population, an unknown key, an
+/// external route), which is unboundedness, not one.
+pub type FanoutOf<'a> =
+    dyn Fn(&FnKey, u32, &str) -> Option<u64> + 'a;
+
 /// Unit rendering for a dimension's diagnostic.
 fn dim_unit(d: QuantDim) -> &'static str {
     match d {
@@ -227,7 +247,7 @@ fn count_dim(
     summary: &AllocSummary,
     key: &FnKey,
     dim: QuantDim,
-    fanout_of: &dyn Fn(&str) -> u64,
+    fanout_of: &FanoutOf<'_>,
     carrier_mask: crate::stdlib_surface::EffectSet,
     path: &mut Vec<FnKey>,
     steps: &mut u32,
@@ -236,27 +256,38 @@ fn count_dim(
         return Qty::Finite(0);
     };
     let mut total = Qty::Finite(0);
-    // Syntactic sites (publish / fanout).
+    // Syntactic sites (publish / fanout). Publish sites consume
+    // source-order ordinals, the same space the model's `Publish`
+    // rows are keyed by — that ordinal is how a fan-out question
+    // finds the site it is about.
+    let mut pub_site: u32 = 0;
     for site in &fs.effect_sites {
         *steps += 1;
         if *steps > callgraph::MAX_STEPS {
             return Qty::Unbounded;
         }
         if let alloc_summary::EffectSiteKind::Publish(subj) = &site.kind {
-            let per = match dim {
-                QuantDim::Publish => 1,
-                QuantDim::Fanout => subj
-                    .as_ref()
-                    .map(|s| fanout_of(&s.text))
-                    .unwrap_or(1),
-                _ => 0,
+            let ordinal = pub_site;
+            pub_site += 1;
+            let per: Option<u64> = match dim {
+                QuantDim::Publish => Some(1),
+                QuantDim::Fanout => match subj.as_ref() {
+                    Some(s) => fanout_of(key, ordinal, &s.text),
+                    // A computed subject can address any endpoint.
+                    None => None,
+                },
+                _ => Some(0),
             };
-            if per > 0 {
-                total = total.add(if site.loop_depth > 0 {
-                    Qty::Unbounded
-                } else {
-                    Qty::Finite(per)
-                });
+            match per {
+                None => total = total.add(Qty::Unbounded),
+                Some(0) => {}
+                Some(n) => {
+                    total = total.add(if site.loop_depth > 0 {
+                        Qty::Unbounded
+                    } else {
+                        Qty::Finite(n)
+                    });
+                }
             }
         }
     }
@@ -359,7 +390,7 @@ fn count_dim(
 /// the bus graph); callers without a graph pass a `|_| 1`.
 pub fn quantitative_diags(
     programs: &[&Program],
-    fanout_of: &dyn Fn(&str) -> u64,
+    fanout_of: &FanoutOf<'_>,
 ) -> Vec<Diag> {
     quantitative_report(programs, fanout_of).0
 }
@@ -369,14 +400,14 @@ pub fn quantitative_diags(
 /// diagnostics, so the two cannot disagree.
 pub fn certificate_rows(
     programs: &[&Program],
-    fanout_of: &dyn Fn(&str) -> u64,
+    fanout_of: &FanoutOf<'_>,
 ) -> Vec<crate::effects::LoweredCertificate> {
     quantitative_report(programs, fanout_of).1
 }
 
 fn quantitative_report(
     programs: &[&Program],
-    fanout_of: &dyn Fn(&str) -> u64,
+    fanout_of: &FanoutOf<'_>,
 ) -> (
     Vec<Diag>,
     Vec<crate::effects::LoweredCertificate>,
@@ -564,7 +595,7 @@ fn quantitative_report(
 /// judgment's — the duplicate authority #476 removes.
 pub fn certificate_groups(
     programs: &[&Program],
-    fanout_of: &dyn Fn(&str) -> u64,
+    fanout_of: &FanoutOf<'_>,
 ) -> Vec<(crate::effects::LoweredCertificate, Vec<Diag>)> {
     let (diags, rows, ranges) = quantitative_report(programs, fanout_of);
     rows.into_iter()

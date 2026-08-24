@@ -78,16 +78,10 @@ fn diff_one(
         &programs_v,
         &[],
     ));
-    let top2 = hale_types::resolve::build_top_scope(&bundle).0;
-    let graph2 =
-        hale_types::bus_graph::build_bus_graph(&bundle, &top2);
-    let fanout = |subj: &str| -> u64 {
-        graph2
-            .subjects
-            .get(subj)
-            .map(|si| si.subscribers.len().max(1) as u64)
-            .unwrap_or(1)
-    };
+        // Change 5h: fan-out is a publish-SITE question, answered by
+    // the model. Both arms take the SAME supplier — fan-out
+    // supply is not the thing under differential.
+    let fanout = hale_types::evidence::model_fanout(&model);
     old_lowered.extend(hale_types::quantitative::certificate_rows(
         &programs_v,
         &fanout,

@@ -91,6 +91,133 @@ pub fn analysis_inputs_digest() -> u64 {
 }
 
 /// Derive the sidecar for one bundle's lowered law table.
+/// The model's answer to "how many subscriber deliveries can
+/// this publish site cause?" — shared by the evidence producer
+/// and by the differentials, so fan-out supply is never the
+/// thing they differ on.
+pub fn model_fanout<'a>(
+    model: &'a ApplicationModel,
+) -> impl Fn(&crate::alloc_summary::FnKey, u32, &str) -> Option<u64> + 'a
+{
+    // Fan-out is a DELIVERY question about one publish site, and
+    // the model already answers it — the same join `causes:` uses,
+    // plus the arrangement's instance population.
+    //
+    // Round 2: counting covering `subscribes` rows was wrong twice
+    // over. A row is one DECLARATION, so three arranged replicas of
+    // a `Sink` counted as one delivery while dispatching three; and
+    // address coverage charged mutually-exclusive key filters that
+    // one exact publish key can never both reach.
+    let e = &model.entities;
+    let r = &model.relations;
+    // How many instances of a locus the arrangement contains, and
+    // whether that count is EXACT. A dynamic birth withdraws the
+    // ownership account, and an unknown population is unknown
+    // fan-out, not one.
+    let population_exact = !model.holes.iter().any(|h| {
+        h.hides.intersects(
+            hale_model::RelationSet::OWNS
+                .union(hale_model::RelationSet::CARDINALITY),
+        )
+    });
+    move |key: &crate::alloc_summary::FnKey,
+                          site: u32,
+                          subject: &str|
+          -> Option<u64> {
+        let display = key.display();
+        let fid = e
+            .functions
+            .iter()
+            .position(|f| f.display == display)
+            .map(|i| hale_model::FunctionId(i as u32))?;
+        // The site ordinal is the model's own publish-row key.
+        let publish = r
+            .publishes
+            .iter()
+            .find(|p| p.function == fid && p.site == site)?;
+        // Belt and braces: the row the engine is asking about must
+        // address the wire it named.
+        let names_it = e.subjects[publish.subject.index()].pattern
+            == subject
+            || e.topics.iter().any(|t| {
+                t.subject == publish.subject
+                    && (t.display == subject || t.name == subject)
+            });
+        if !names_it {
+            return None;
+        }
+        // An outbound route delivers to peers this application does
+        // not model — the fan-out beyond it is not ours to count.
+        if crate::model_query::endpoint_incomplete(
+            model,
+            publish.subject,
+            crate::model_query::Direction::Downstream,
+        ) {
+            return None;
+        }
+        if !population_exact {
+            return None;
+        }
+        let mut total: u64 = 0;
+        for sub in r.subscribes.iter() {
+            if !crate::model_query::may_deliver(e, publish, sub) {
+                continue;
+            }
+            // Expand the subscription through its owner's exact
+            // population: one declaration, one delivery PER
+            // INSTANCE.
+            let Some(owner) = r
+                .member_of
+                .iter()
+                .find(|m| m.function == sub.handler)
+                .map(|m| m.locus)
+            else {
+                // A handler owned by no locus is not an arranged
+                // registration the model can count.
+                return None;
+            };
+            let instances: Vec<&hale_model::LocusInstance> = e
+                .locus_instances
+                .iter()
+                .filter(|i| i.decl == owner)
+                .collect();
+            if instances.is_empty() {
+                return None;
+            }
+            // `where key == replica` narrows to the replica the key
+            // selects, when the publish key is statically exact.
+            let reached = if sub.key_predicate
+                == hale_model::keys::KeyPredicate::EqReplica
+            {
+                match &publish.key_domain {
+                    Some(hale_model::keys::KeyDomain::Exact(vals)) => {
+                        instances
+                            .iter()
+                            .filter(|i| {
+                                i.replica.is_some_and(|ix| {
+                                    vals.iter().any(|v| {
+                                        matches!(
+                                            v,
+                                            hale_model::keys::KeyValue::Int(k)
+                                                if *k == ix as i64
+                                        )
+                                    })
+                                })
+                            })
+                            .count()
+                    }
+                    // An unknown key may select any replica.
+                    _ => instances.len(),
+                }
+            } else {
+                instances.len()
+            };
+            total = total.saturating_add(reached as u64);
+        }
+        Some(total)
+    }
+}
+
 pub fn derive_certificate_evidence(
     bundle: &Bundle<'_>,
     table: &ClaimIrTable,
@@ -122,47 +249,7 @@ pub fn derive_certificate_evidence(
             (row, ds.into_iter().map(|d| (d, false)).collect())
         }),
     );
-    // Fan-out is a bus-graph question, and the model already
-    // answers it — one subject's subscriber count, joined the same
-    // way delivery is.
-    let fanout_of = |subject: &str| -> u64 {
-        // The engine hands over the AUTHOR'S text for the send: a
-        // topic name where the send named a topic, a wire subject
-        // where it was a literal. Both address one endpoint, so
-        // both must resolve — matching only the wire pattern
-        // silently counted 1 subscriber for every topic-named
-        // publish, which is a fail-open on a fan-out bound.
-        let by_pattern = model
-            .entities
-            .subjects
-            .iter()
-            .position(|s| s.pattern == subject);
-        let by_topic = || {
-            model
-                .entities
-                .topics
-                .iter()
-                .find(|t| t.display == subject || t.name == subject)
-                .map(|t| t.subject.index())
-        };
-        let Some(sid) = by_pattern.or_else(by_topic) else {
-            return 1;
-        };
-        let sid = hale_model::SubjectId(sid as u32);
-        let n = model
-            .relations
-            .subscribes
-            .iter()
-            .filter(|su| {
-                crate::model_query::subscription_covers(
-                    &model.entities,
-                    su,
-                    sid,
-                )
-            })
-            .count() as u64;
-        n.max(1)
-    };
+    let fanout_of = model_fanout(model);
     groups.extend(
         crate::quantitative::certificate_groups(
             &programs, &fanout_of,

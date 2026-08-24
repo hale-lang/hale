@@ -106,6 +106,7 @@ crates/hale-cli/tests/topology_graph_cli.rs#29 5cec85e61bf600ba
 crates/hale-cli/tests/topology_graph_cli.rs#30 174ce7e0a956f6bc
 crates/hale-cli/tests/topology_graph_cli.rs#31 7d5cf57defcf548e
 crates/hale-cli/tests/topology_graph_cli.rs#32 7f75bbe0c59b704e
+crates/hale-cli/tests/topology_graph_cli.rs#35 542f43255ecc42a5
 crates/hale-cli/tests/topology_graph_cli.rs#4 7d5cf57defcf548e
 crates/hale-cli/tests/topology_graph_cli.rs#5 c09878edd9f20206
 crates/hale-cli/tests/topology_graph_cli.rs#6 37b8850647e390ba
@@ -1326,6 +1327,10 @@ crates/hale-types/tests/model_builder.rs#3 13c7bdc059e6600b
 crates/hale-types/tests/model_builder.rs#5 052aed15dd1f7840
 crates/hale-types/tests/model_builder.rs#8 d3041c260f7ea233
 crates/hale-types/tests/model_builder.rs#9 14906199581c0c74
+crates/hale-types/tests/model_costs.rs#1 52c7a93a9fe2068d
+crates/hale-types/tests/model_costs.rs#2 5413e13f66d11c24
+crates/hale-types/tests/model_costs.rs#3 da29c9036022a0b2
+crates/hale-types/tests/model_fanout.rs#1 48fefaa10bc3abfc
 crates/hale-types/tests/model_provenance.rs#4 480eb793e2f9593b
 crates/hale-types/tests/ownership_graph.rs#0 7e11ffc20b038f18
 crates/hale-types/tests/ownership_graph.rs#1 16924f2abbf29e62

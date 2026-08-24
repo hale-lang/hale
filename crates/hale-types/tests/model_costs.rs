@@ -153,3 +153,76 @@ fn cost_sites_are_sorted_canonically() {
          out in canonical order, not summary-walk order"
     );
 }
+
+/// Review pin (round 2): `Block` was in the cost vocabulary and
+/// nothing emitted it, while `exact_costs` positively claimed the
+/// account was complete for every analyzed function.
+#[test]
+fn a_blocking_call_is_charged_a_block_site() {
+    let src = r#"
+fn waits() { std::time::sleep(1ms); }
+fn quiet(v: Int) -> Int { return v + 1; }
+main locus App {
+    params { n: Int = 0; }
+    run() { waits(); self.n = quiet(1); }
+}
+fn main() { App { }; }
+"#;
+    let m = model_of(src);
+    let blocks = sites(&m, "waits", CostDimension::Block);
+    assert_eq!(
+        blocks.len(),
+        1,
+        "one blocking call, one block site: {:?}",
+        blocks
+    );
+    assert!(!blocks[0].in_loop);
+    assert!(
+        sites(&m, "quiet", CostDimension::Block).is_empty(),
+        "a pure fn blocks nowhere"
+    );
+}
+
+#[test]
+fn a_loop_nested_blocking_call_keeps_its_loop_flag() {
+    let src = r#"
+fn pump() {
+    let mut n = 0;
+    while n < 4 { std::time::sleep(1ms); n = n + 1; }
+}
+main locus App {
+    params { n: Int = 0; }
+    run() { pump(); }
+}
+fn main() { App { }; }
+"#;
+    let m = model_of(src);
+    let blocks = sites(&m, "pump", CostDimension::Block);
+    assert_eq!(blocks.len(), 1);
+    assert!(
+        blocks[0].in_loop,
+        "a per-call bound cannot survive the loop: {:?}",
+        blocks
+    );
+}
+
+#[test]
+fn an_unfollowable_call_withdraws_the_cost_account() {
+    // The positive capability must not outlive the knowledge: an
+    // indirect call may reach an allocation or a blocking call, and
+    // the model cannot see past it.
+    let src = r#"
+fn apply(f: fn(Int) -> Int, v: Int) -> Int { return f(v); }
+main locus App {
+    params { n: Int = 0; }
+    fn dbl(v: Int) -> Int { return v * 2; }
+    run() { self.n = apply(self.dbl, 1); }
+}
+fn main() { App { }; }
+"#;
+    let m = model_of(src);
+    assert!(
+        !m.capabilities.exact_costs,
+        "an indirect call hides COSTS, so the account is degraded"
+    );
+}

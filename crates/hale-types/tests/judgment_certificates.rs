@@ -102,19 +102,13 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
             &programs_b,
             &[],
         );
-    let top_b = hale_types::resolve::build_top_scope(&bundle).0;
-    let graph_b =
-        hale_types::bus_graph::build_bus_graph(&bundle, &top_b);
-    let fanout_b = |subj: &str| -> u64 {
-        graph_b
-            .subjects
-            .get(subj)
-            .map(|si| si.subscribers.len().max(1) as u64)
-            .unwrap_or(1)
-    };
+        // Change 5h: fan-out is a publish-SITE question, answered by
+    // the model. Both arms take the SAME supplier — fan-out
+    // supply is not the thing under differential.
+    let fanout = hale_types::evidence::model_fanout(&model);
     budget_diags.extend(hale_types::quantitative::quantitative_diags(
         &programs_b,
-        &fanout_b,
+        &fanout,
     ));
     let old: Vec<(String, hale_syntax::Span)> = p1
         .iter()

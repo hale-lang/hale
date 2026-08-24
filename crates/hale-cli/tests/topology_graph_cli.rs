@@ -3194,3 +3194,82 @@ fn main() { App { }; }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+
+/// Review pin (#497 round 2): a migrated family ships with its
+/// adequacy account, and admission requires it.
+///
+/// Without this the artifact was internally contradictory: a row
+/// could declare `"family": "causes"`, the model defined a
+/// completeness contract for that family, and the document was
+/// structurally forbidden from stating whether the contract was
+/// met — the five-family table rejected any artifact that tried.
+#[test]
+fn a_migrated_family_carries_its_adequacy_entry() {
+    let dir = workdir("adequacy_causes");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+effect money;
+type T { n: Int = 0; }
+topic Settled { payload: T; subject: "settled"; }
+locus Ledger {
+    bus { subscribe Settled as on_settled; }
+    params { n: Int = 0; }
+    fn on_settled(t: T) { self.n = t.n; }
+}
+main locus App {
+    params { l: Ledger = Ledger { }; }
+    bus { publish Settled; }
+    @effects(causes: { publish })
+    fn fire() { Settled <- T { n: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(v["schema"], "1.16");
+    let adequacy =
+        v["adequacy"].as_object().expect("adequacy object");
+    assert!(
+        adequacy.contains_key("causes"),
+        "the family a row can declare must have an account: {:?}",
+        adequacy
+    );
+    assert_eq!(
+        adequacy.len(),
+        8,
+        "five older families plus causes, depends and budget: {:?}",
+        adequacy
+    );
+    assert!(adequacy.contains_key("depends"), "{:?}", adequacy);
+    assert!(adequacy.contains_key("budget"), "{:?}", adequacy);
+
+    // …and an artifact that omits it is refused, restamped or not.
+    let cut = raw.replacen(",\n    \"causes\": \"exact\"", "", 1);
+    let cut = if cut == raw {
+        raw.replacen(",\n    \"causes\": \"degraded\"", "", 1)
+    } else {
+        cut
+    };
+    assert_ne!(cut, raw, "test premise: the entry was removed");
+    let p2 = dir.join("thin.topology");
+    std::fs::write(&p2, restamp_digest(&strip_trailer(&cut))).unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p2)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("adequacy must carry exactly"),
+        "refused for the right reason: {}",
+        err
+    );
+}
