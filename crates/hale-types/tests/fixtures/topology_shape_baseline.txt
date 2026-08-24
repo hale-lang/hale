@@ -1337,6 +1337,10 @@ crates/hale-types/tests/model_fanout.rs#19 ed98275c99171609
 crates/hale-types/tests/model_fanout.rs#20 a863be2764a92b8e
 crates/hale-types/tests/model_fanout.rs#21 8cf4eb262fc5e20a
 crates/hale-types/tests/model_fanout.rs#22 58ca940324adecaf
+crates/hale-types/tests/model_fanout.rs#23 6e7aaf6917c175eb
+crates/hale-types/tests/model_fanout.rs#24 6e7aaf6917c175eb
+crates/hale-types/tests/model_fanout.rs#25 90cf07ed4e7abad7
+crates/hale-types/tests/model_fanout.rs#26 3b352514a837e8fb
 crates/hale-types/tests/model_fanout.rs#4 788a618eef9f9674
 crates/hale-types/tests/model_fanout.rs#5 ad342686fefba402
 crates/hale-types/tests/model_provenance.rs#4 480eb793e2f9593b
