@@ -1287,3 +1287,242 @@ fn main() { App { }; }
          fallback replicas, and that is the maximum"
     );
 }
+
+/// Review pin (round 9): unknown population is NOT no registration.
+///
+/// `population_of` has three outcomes — exactly none, exactly n,
+/// and not knowable. Collapsing the last two dropped the key from
+/// the active partition entirely, so a `key == 1` subscriber with
+/// one ARRANGED instance plus a runtime-birth hole produced no
+/// candidate at all and certified fan-out zero over a delivery that
+/// definitely happens. Unresolved knowledge is never absence.
+#[test]
+fn an_incomplete_subscriber_population_withdraws_the_bound() {
+    let src = r#"
+type Ev { k: Int = 0; }
+topic K { payload: Ev; subject: "k"; keyed_by k; }
+locus Sink {
+    bus { subscribe K as on_k where key == 1; }
+    params { n: Int = 0; }
+    fn on_k(e: Ev) { self.n = 1; }
+}
+main locus App {
+    params { s: Sink = Sink { }; }
+    bus { publish K; }
+    fn fire() { K <- Ev { k: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let (mut m, _b) = model_and_ids(src);
+    let sink = hale_model::LocusDeclId(
+        m.entities
+            .loci
+            .iter()
+            .position(|l| l.name == "Sink")
+            .expect("Sink") as u32,
+    );
+    // The arranged instance stays a known fact; the hole says more
+    // can be born outside the arrangement.
+    m.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::LocusDecl(sink),
+        kind: hale_model::HoleKind::RuntimeInheritedPlacement,
+        hides: hale_model::RelationSet::OWNS
+            .union(hale_model::RelationSet::PLACED),
+        reason: "born outside the arrangement".to_string(),
+        authored_site: None,
+        provenance: hale_model::ProvenanceId(0),
+    });
+    m.capabilities.exact_ownership = false;
+    m.capabilities.exact_placement = false;
+    for p in m.relations.publishes.iter_mut() {
+        p.key_domain =
+            Some(hale_model::keys::KeyDomain::AnyOfType(
+                "Int".to_string(),
+            ));
+    }
+    let f = hale_types::evidence::model_fanout(&m);
+    let n = f(
+        &hale_types::alloc_summary::FnKey::method("App", "fire"),
+        0,
+        "k",
+    );
+    assert_eq!(
+        n, None,
+        "one arranged Sink definitely receives key 1, and more may \
+         exist — that is not a bound of zero"
+    );
+}
+
+/// The same, for `where key == replica`: a concrete-row count is a
+/// LOWER bound when the population is incomplete, because a
+/// dynamically born ordinary instance registers under key 0 and is
+/// not listed.
+#[test]
+fn an_incomplete_replica_population_is_not_a_finite_count() {
+    let src = r#"
+type Ev { k: Int = 0; }
+topic K { payload: Ev; subject: "k"; keyed_by k; }
+locus Sink {
+    bus { subscribe K as on_k where key == replica; }
+    params { n: Int = 0; }
+    fn on_k(e: Ev) { self.n = 1; }
+}
+main locus App {
+    params { s: Sink = Sink { }; }
+    bus { publish K; }
+    fn fire() { K <- Ev { k: 0 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let (mut m, _b) = model_and_ids(src);
+    let sink = hale_model::LocusDeclId(
+        m.entities
+            .loci
+            .iter()
+            .position(|l| l.name == "Sink")
+            .expect("Sink") as u32,
+    );
+    m.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::LocusDecl(sink),
+        kind: hale_model::HoleKind::RuntimeInheritedPlacement,
+        hides: hale_model::RelationSet::OWNS
+            .union(hale_model::RelationSet::PLACED),
+        reason: "born outside the arrangement".to_string(),
+        authored_site: None,
+        provenance: hale_model::ProvenanceId(0),
+    });
+    m.capabilities.exact_ownership = false;
+    m.capabilities.exact_placement = false;
+    let f = hale_types::evidence::model_fanout(&m);
+    let n = f(
+        &hale_types::alloc_summary::FnKey::method("App", "fire"),
+        0,
+        "k",
+    );
+    assert_eq!(n, None, "the listed rows are not the whole population");
+}
+
+/// A subject whose SUBSCRIBER COUNT is unknown has no fan-out
+/// bound, even though `causes:` is right not to care: another
+/// instance of one locus runs the same handler, so it reaches the
+/// same classes but not the same number of cells.
+#[test]
+fn a_dynamic_endpoint_withdraws_the_fanout_bound() {
+    let src = r#"
+type T { n: Int = 0; }
+topic A { payload: T; subject: "a"; }
+locus Sink {
+    bus { subscribe A as on_a; }
+    params { n: Int = 0; }
+    fn on_a(t: T) { self.n = t.n; }
+}
+main locus App {
+    params { s: Sink = Sink { }; }
+    bus { publish A; }
+    fn fire() { A <- T { n: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let (mut m, _b) = model_and_ids(src);
+    let subject = hale_model::SubjectId(
+        m.entities
+            .subjects
+            .iter()
+            .position(|s| s.pattern == "a")
+            .expect("subject") as u32,
+    );
+    m.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(subject),
+        kind: hale_model::HoleKind::DynamicEndpoint,
+        hides: hale_model::RelationSet::CARDINALITY,
+        reason: "subscriber count not statically known".to_string(),
+        authored_site: None,
+        provenance: hale_model::ProvenanceId(0),
+    });
+    m.capabilities.exact_cardinality = false;
+    let f = hale_types::evidence::model_fanout(&m);
+    let n = f(
+        &hale_types::alloc_summary::FnKey::method("App", "fire"),
+        0,
+        "a",
+    );
+    assert_eq!(n, None, "an unknown subscriber count is no bound");
+}
+
+/// …and the anti-control: the SAME residue on an unrelated locus or
+/// subject changes nothing.
+#[test]
+fn unrelated_population_residue_stays_irrelevant() {
+    let src = r#"
+type T { n: Int = 0; }
+topic A { payload: T; subject: "a"; }
+topic Z { payload: T; subject: "z"; }
+locus Sink {
+    bus { subscribe A as on_a; }
+    params { n: Int = 0; }
+    fn on_a(t: T) { self.n = t.n; }
+}
+locus Elsewhere {
+    bus { subscribe Z as on_z; }
+    params { n: Int = 0; }
+    fn on_z(t: T) { self.n = t.n; }
+}
+main locus App {
+    params { s: Sink = Sink { }; e: Elsewhere = Elsewhere { }; }
+    bus { publish A; }
+    fn fire() { A <- T { n: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let (mut m, _b) = model_and_ids(src);
+    let other = hale_model::LocusDeclId(
+        m.entities
+            .loci
+            .iter()
+            .position(|l| l.name == "Elsewhere")
+            .expect("Elsewhere") as u32,
+    );
+    let z = hale_model::SubjectId(
+        m.entities
+            .subjects
+            .iter()
+            .position(|s| s.pattern == "z")
+            .expect("z") as u32,
+    );
+    m.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::LocusDecl(other),
+        kind: hale_model::HoleKind::RuntimeInheritedPlacement,
+        hides: hale_model::RelationSet::OWNS
+            .union(hale_model::RelationSet::PLACED),
+        reason: "born outside the arrangement".to_string(),
+        authored_site: None,
+        provenance: hale_model::ProvenanceId(0),
+    });
+    m.holes.push(hale_model::Hole {
+        at: hale_model::EntityRef::Subject(z),
+        kind: hale_model::HoleKind::DynamicEndpoint,
+        hides: hale_model::RelationSet::CARDINALITY,
+        reason: "subscriber count not statically known".to_string(),
+        authored_site: None,
+        provenance: hale_model::ProvenanceId(0),
+    });
+    m.capabilities.exact_ownership = false;
+    m.capabilities.exact_placement = false;
+    m.capabilities.exact_cardinality = false;
+    let f = hale_types::evidence::model_fanout(&m);
+    let n = f(
+        &hale_types::alloc_summary::FnKey::method("App", "fire"),
+        0,
+        "a",
+    );
+    assert_eq!(
+        n,
+        Some(1),
+        "residue on another locus and another subject says nothing \
+         about this closure"
+    );
+}

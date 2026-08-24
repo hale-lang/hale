@@ -132,7 +132,15 @@ rather than from declarations — a `Bool` domain is exhausted by its
 two declarations naming one value do not cover a two-value
 interval.
 
-**`ANALYSIS_SEMANTICS_VERSION` 3 → 5.** These results moved, and
+An unknown subscriber population is not an absent one: a keyed
+subscriber whose locus can also be born outside the arrangement
+withdraws the bound rather than dropping out of the routing
+partition, `where key == replica` will not count listed rows as
+exact over an incomplete population, and a subject whose subscriber
+count is unknown has no fan-out bound at all. Residue on an
+unrelated locus or subject still says nothing.
+
+**`ANALYSIS_SEMANTICS_VERSION` 3 → 6.** These results moved, and
 `EvidenceTable::validate` treats an equal `inputs_digest` as proof
 of current semantics rather than hashing the implementation — so a
 sidecar produced by an older toolchain could otherwise share every

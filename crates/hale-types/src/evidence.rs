@@ -69,7 +69,16 @@ use crate::symbol::Bundle;
 // omitted real ones (two declarations naming one value do not
 // cover a two-value interval). Results moved in both directions,
 // including a false PASS, so v4 evidence must not be replayed.
-pub const ANALYSIS_SEMANTICS_VERSION: u32 = 5;
+// 6 (review round 9): the fan-out supplier equated an UNKNOWN
+// subscriber population with no live registration, so a keyed
+// subscriber with one arranged instance plus a runtime-birth hole
+// dropped out of the routing partition entirely and certified
+// fan-out zero over a delivery that definitely happens. Unresolved
+// knowledge is never absence. `EqReplica` gained the same
+// completeness gate, and a subject-grained CARDINALITY hole now
+// withdraws the bound. This corrects a false `Holds`, so v5
+// evidence must not be replayed.
+pub const ANALYSIS_SEMANTICS_VERSION: u32 = 6;
 
 /// Digest of the certificate engines' inputs OUTSIDE the model:
 /// the analysis-semantics version above, the Hale-source stdlib
@@ -237,6 +246,41 @@ pub fn model_fanout<'a>(
         ) {
             return None;
         }
+        // …and CARDINALITY, which the shared completeness query
+        // deliberately does not consult: `causes:` asks WHICH
+        // classes a publish reaches, and another instance of the
+        // same locus runs the same handler. Fan-out asks HOW MANY
+        // cells receive, so a subject whose subscriber count is
+        // unknown has no bound. Scoped to this subject, so an
+        // unrelated dynamic endpoint stays irrelevant.
+        {
+            let wire =
+                e.subjects[publish.subject.index()].pattern.as_str();
+            let cardinality_unknown = model.holes.iter().any(|h| {
+                if !h.hides.intersects(
+                    hale_model::RelationSet::CARDINALITY,
+                ) {
+                    return false;
+                }
+                match h.at {
+                    hale_model::EntityRef::Subject(sid) => {
+                        let pat =
+                            e.subjects[sid.index()].pattern.as_str();
+                        sid == publish.subject
+                            || (pat.contains("**")
+                                && crate::wildcard_match(pat, wire))
+                    }
+                    hale_model::EntityRef::Topic(t) => e
+                        .topics
+                        .get(t.index())
+                        .is_some_and(|tp| tp.subject == publish.subject),
+                    _ => false,
+                }
+            });
+            if cardinality_unknown {
+                return None;
+            }
+        }
         let matching: Vec<&hale_model::Subscribe> = r
             .subscribes
             .iter()
@@ -281,18 +325,38 @@ pub fn model_fanout<'a>(
         // coverage, concluding a two-value interval was covered by
         // two same-valued filters and never costing the real
         // unmatched scenario — a false PASS.
+        //
+        // Round 9: `population_of` has THREE outcomes, and the
+        // first version of this collapsed two of them.
+        // `Some(0)` is "no registration"; `None` is "the population
+        // is not known" — a locus that can also be born outside the
+        // arrangement. Treating `None` like `Some(0)` dropped the
+        // key from the partition entirely, so a `key == 1`
+        // subscriber with one ARRANGED instance plus a
+        // runtime-birth hole produced no candidate at all and
+        // certified fan-out zero over a delivery that definitely
+        // happens. Unresolved knowledge is never absence.
         let mut active: Vec<KeyValue> = Vec::new();
         for sub in &keyed {
             match &sub.key_predicate {
                 KeyPredicate::EqLiteral(v) => {
-                    if population_of(model, owner_of(model, sub)?)
-                        .is_some_and(|n| n > 0)
-                    {
-                        active.push(v.clone());
+                    match population_of(model, owner_of(model, sub)?) {
+                        Some(0) => {}
+                        Some(_) => active.push(v.clone()),
+                        // This subscription may receive, and how
+                        // many cells it has is not knowable.
+                        None => return None,
                     }
                 }
                 KeyPredicate::EqReplica => {
                     let owner = owner_of(model, sub)?;
+                    // A concrete-row count is only a LOWER bound
+                    // when the population is incomplete: a
+                    // dynamically born ordinary instance registers
+                    // under effective key 0 and is not listed.
+                    if population_of(model, owner).is_none() {
+                        return None;
+                    }
                     for i in
                         e.locus_instances.iter().filter(|i| i.decl == owner)
                     {
@@ -396,6 +460,12 @@ pub fn model_fanout<'a>(
                             path.pop();
                             return None;
                         };
+                        // An incomplete population cannot be
+                        // counted from the listed rows.
+                        if population_of(model, owner).is_none() {
+                            path.pop();
+                            return None;
+                        }
                         // Replica indices are unique within a
                         // REPLICATED field, so at most one instance
                         // answers a key there — but an ordinary
