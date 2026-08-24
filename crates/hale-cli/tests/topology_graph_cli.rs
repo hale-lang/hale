@@ -42,6 +42,30 @@ fn workdir(tag: &str) -> PathBuf {
 }
 
 /// Dump the fixture's artifact into `dir` and return its path.
+/// Dump an artifact from a program whose only errors are CLAIM
+/// errors. A claim error still emits the artifact — the verdict is
+/// the thing being recorded — so a law the model refuses to certify
+/// is exactly the case this is for.
+fn dump_artifact_with_law_errors(
+    dir: &Path,
+    source: &Path,
+) -> (PathBuf, String) {
+    let artifact = dir.join("app.hale.topology");
+    let out = hale()
+        .arg("check")
+        .arg(source)
+        .arg(format!("--dump-topology={}", artifact.display()))
+        .output()
+        .expect("hale check --dump-topology");
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        artifact.exists(),
+        "a claim error still emits the artifact: {}",
+        err
+    );
+    (artifact, err)
+}
+
 fn dump_artifact(dir: &Path, source: &Path) -> PathBuf {
     let artifact = dir.join("app.hale.topology");
     let out = hale()
@@ -732,7 +756,17 @@ fn main() { App { }; }
 "#,
     )
     .unwrap();
-    let artifact = dump_artifact(&dir, &src);
+    // Round 3: a module-scoped subject is outside the
+    // analyzable universe, so `causes:` over it is UNCERTIFIED and
+    // says so — check is no longer silent about a law it could not
+    // certify. The artifact is still emitted and must still admit.
+    let (artifact, err) = dump_artifact_with_law_errors(&dir, &src);
+    assert!(
+        err.contains("outside the analyzable universe")
+            || err.contains("cannot be certified"),
+        "check explains the refusal: {}",
+        err
+    );
     let out = hale()
         .arg("topology")
         .arg("graph")
@@ -3195,17 +3229,6 @@ fn main() { App { }; }
 }
 
 
-/// Review pin (#497 round 2): a migrated family ships with its
-/// adequacy account, and admission requires it.
-///
-/// Without this the artifact was internally contradictory: a row
-/// could declare `"family": "causes"`, the model defined a
-/// completeness contract for that family, and the document was
-/// structurally forbidden from stating whether the contract was
-/// met — the five-family table rejected any artifact that tried.
-#[test]
-fn a_migrated_family_carries_its_adequacy_entry() {
-    let dir = workdir("adequacy_causes");
 /// Review pin (#496 round 2): the rendered form is REQUIRED, not
 /// checked-when-present.
 ///
@@ -3240,7 +3263,6 @@ locus Ledger {
 main locus App {
     params { l: Ledger = Ledger { }; }
     bus { publish Settled; }
-    @effects(causes: { publish })
     @effects(causes: { money })
     fn fire() { Settled <- T { n: 1 }; }
     run() { self.fire(); }
@@ -3251,31 +3273,6 @@ fn main() { App { }; }
     .unwrap();
     let artifact = dump_artifact(&dir, &src);
     let raw = std::fs::read_to_string(&artifact).unwrap();
-    let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
-    assert_eq!(v["schema"], "1.15");
-    let adequacy =
-        v["adequacy"].as_object().expect("adequacy object");
-    assert!(
-        adequacy.contains_key("causes"),
-        "the family a row can declare must have an account: {:?}",
-        adequacy
-    );
-    assert_eq!(
-        adequacy.len(),
-        6,
-        "five older families plus causes: {:?}",
-        adequacy
-    );
-
-    // …and an artifact that omits it is refused, restamped or not.
-    let cut = raw.replacen(",\n    \"causes\": \"exact\"", "", 1);
-    let cut = if cut == raw {
-        raw.replacen(",\n    \"causes\": \"degraded\"", "", 1)
-    } else {
-        cut
-    };
-    assert_ne!(cut, raw, "test premise: the entry was removed");
-    let p2 = dir.join("thin.topology");
     assert!(
         raw.contains("causes {money} from {App::fire}"),
         "test premise: the row states its rendered form:\n{}",
@@ -3311,11 +3308,6 @@ fn main() { App { }; }
         .arg(&p2)
         .output()
         .unwrap();
-    assert!(!out.status.success());
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        err.contains("adequacy must carry exactly"),
-        "refused for the right reason: {}",
     assert!(
         !out.status.success(),
         "a formless law row was admitted — the operand binding is \
@@ -3325,6 +3317,83 @@ fn main() { App { }; }
     assert!(
         err.contains("omits its rendered form"),
         "and it is refused for the RIGHT reason: {}",
+        err
+    );
+}
+
+/// Review pin (#497 round 2): a migrated family ships with its
+/// adequacy account, and admission requires it.
+///
+/// Without this the artifact was internally contradictory: a row
+/// could declare `"family": "causes"`, the model defined a
+/// completeness contract for that family, and the document was
+/// structurally forbidden from stating whether the contract was
+/// met — the five-family table rejected any artifact that tried.
+#[test]
+fn a_migrated_family_carries_its_adequacy_entry() {
+    let dir = workdir("adequacy_causes");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+effect money;
+type T { n: Int = 0; }
+topic Settled { payload: T; subject: "settled"; }
+locus Ledger {
+    bus { subscribe Settled as on_settled; }
+    params { n: Int = 0; }
+    fn on_settled(t: T) { self.n = t.n; }
+}
+main locus App {
+    params { l: Ledger = Ledger { }; }
+    bus { publish Settled; }
+    @effects(causes: { publish })
+    fn fire() { Settled <- T { n: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(v["schema"], "1.15");
+    let adequacy =
+        v["adequacy"].as_object().expect("adequacy object");
+    assert!(
+        adequacy.contains_key("causes"),
+        "the family a row can declare must have an account: {:?}",
+        adequacy
+    );
+    assert_eq!(
+        adequacy.len(),
+        6,
+        "five older families plus causes: {:?}",
+        adequacy
+    );
+
+    // …and an artifact that omits it is refused, restamped or not.
+    let cut = raw.replacen(",\n    \"causes\": \"exact\"", "", 1);
+    let cut = if cut == raw {
+        raw.replacen(",\n    \"causes\": \"degraded\"", "", 1)
+    } else {
+        cut
+    };
+    assert_ne!(cut, raw, "test premise: the entry was removed");
+    let p2 = dir.join("thin.topology");
+    std::fs::write(&p2, restamp_digest(&strip_trailer(&cut))).unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p2)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("adequacy must carry exactly"),
+        "refused for the right reason: {}",
         err
     );
 }
