@@ -37,8 +37,8 @@ crates/hale-cli/tests/fixtures/xseed-claims/lib/delta/d.hl b89b65ecd60971a3
 crates/hale-cli/tests/fixtures/xseed-claims/lib/gamma/g.hl 0e15724545744a1a
 crates/hale-cli/tests/fixtures/xseed-cqrs/app/main.hl 0dcc2f399e4e2cc9
 crates/hale-cli/tests/fixtures/xseed-cqrs/lib/mat/m.hl bf060e593f77f631
-crates/hale-cli/tests/fixtures/xseed-effects/app/main.hl 51b1ac0c41b1e1ab
-crates/hale-cli/tests/fixtures/xseed-effects/lib/probe/p.hl 73bd4e666ae6b193
+crates/hale-cli/tests/fixtures/xseed-effects/app/main.hl 77c3c862b94b949b
+crates/hale-cli/tests/fixtures/xseed-effects/lib/probe/p.hl 0cd333604ed09b6f
 crates/hale-cli/tests/fixtures/xseed-launderer/app/main.hl 1b4eb4af7454c528
 crates/hale-cli/tests/fixtures/xseed-launderer/lib/relay/main.hl 8b3b6f6f0290af0b
 crates/hale-cli/tests/fixtures/xseed-library-claims/app/main.hl 9ea4d58714c8458c
@@ -1285,6 +1285,7 @@ crates/hale-types/tests/judgment_certificates.rs#3 81c7c78c39f07b5d
 crates/hale-types/tests/judgment_certificates.rs#6 5b19cc4370a72a2f
 crates/hale-types/tests/judgment_certificates.rs#7 5b19cc4370a72a2f
 crates/hale-types/tests/judgment_certificates.rs#9 7d5cf57defcf548e
+crates/hale-types/tests/judgment_depends.rs#12 5e52e14006660555
 crates/hale-types/tests/judgment_depends.rs#2 4ebcead20c253595
 crates/hale-types/tests/judgment_depends.rs#4 57b3e718f9ba2b13
 crates/hale-types/tests/judgment_depends.rs#6 1e29a74a1331d44d

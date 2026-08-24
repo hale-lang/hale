@@ -5126,7 +5126,122 @@ pub fn judge_depends_witnessed(
         .collect();
     // Every locus that owns a function which can transitively reach
     // `f` — including `f`'s own owner.
-    // Functions whose publish set the model could not resolve.
+    // ---- what is REACHABLE, and therefore relevant ----
+    //
+    // Round 4: residue used to be a program-global boolean. An
+    // uncalled free function containing an indirect call, or a
+    // computed publish in a fn nothing executes, made every
+    // `depends:` row in the document uncertified. That inverts the
+    // model's hole rule: REACHABLE relevant residue withdraws a
+    // proof; residue anywhere in the document authorizes nothing.
+    //
+    // Executable roots are the locus members (a locus's methods and
+    // lifecycle hooks) and `main`. A free function is relevant only
+    // if something executable can reach it.
+    let reachable_fns: BTreeSet<u32> = {
+        let mut out: BTreeSet<u32> = BTreeSet::new();
+        let mut frontier: Vec<FunctionId> = e
+            .functions
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| {
+                f.owner.is_some() || f.name == "main"
+            })
+            .map(|(i, _)| FunctionId(i as u32))
+            .collect();
+        let mut callees: BTreeMap<u32, Vec<FunctionId>> =
+            BTreeMap::new();
+        for c in &r.calls {
+            callees.entry(c.from.0).or_default().push(c.to);
+        }
+        for a in &model.analyses.stdlib_absorption {
+            for node in &a.nodes {
+                for ev in &node.events {
+                    if let hale_model::AbsorbedEvent::Call {
+                        target: hale_model::AbsorbedTarget::User(u),
+                        ..
+                    } = ev
+                    {
+                        callees.entry(a.from.0).or_default().push(*u);
+                    }
+                }
+            }
+        }
+        while let Some(cur) = frontier.pop() {
+            if !out.insert(cur.0) {
+                continue;
+            }
+            for next in callees.get(&cur.0).into_iter().flatten() {
+                frontier.push(*next);
+            }
+        }
+        out
+    };
+
+    // ---- the ABSORBED publisher account (round 4) ----
+    //
+    // A stdlib interior is a first-class part of the model, and it
+    // can publish: `std::log::Logger.info` computes `log.<path>`
+    // and sends from inside its own body. Reading only
+    // `r.publishes` meant a subscriber to `log.**` saw no matching
+    // publisher, no call hole and no function-level publish hole —
+    // and could return `Holds` while a whole upstream sat behind
+    // the absorption boundary.
+    //
+    // Attributed to the USER fn the interior is reached from
+    // (`StdlibAbsorption::from`), which is where the reverse-caller
+    // walk can pick it up.
+    let mut interior_pubs: BTreeMap<u32, Vec<hale_model::SubjectId>> =
+        BTreeMap::new();
+    let mut interior_unknown: BTreeSet<u32> = BTreeSet::new();
+    for a in &model.analyses.stdlib_absorption {
+        for node in &a.nodes {
+            for ev in &node.events {
+                match ev {
+                    hale_model::AbsorbedEvent::Publish {
+                        subject,
+                        declared_topic,
+                        ..
+                    } => {
+                        let sid = declared_topic
+                            .map(|t| e.topics[t.index()].subject)
+                            .or_else(|| {
+                                e.subjects
+                                    .iter()
+                                    .position(|s| s.pattern == *subject)
+                                    .map(|i| {
+                                        hale_model::SubjectId(i as u32)
+                                    })
+                            });
+                        match sid {
+                            Some(sid) => interior_pubs
+                                .entry(a.from.0)
+                                .or_default()
+                                .push(sid),
+                            // A subject the model has no row for is
+                            // an address it cannot reason about.
+                            None => {
+                                interior_unknown.insert(a.from.0);
+                            }
+                        }
+                    }
+                    // A computed interior publish, an unexplored
+                    // frontier, or an unfollowable interior call:
+                    // the publisher set beyond it is incomplete.
+                    hale_model::AbsorbedEvent::PublishHole
+                    | hale_model::AbsorbedEvent::Truncated
+                    | hale_model::AbsorbedEvent::CallHole(_) => {
+                        interior_unknown.insert(a.from.0);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // Functions whose publish set the model could not resolve —
+    // function-grained PUBLISHES holes plus absorbed publisher
+    // residue — RESTRICTED to the ones something can execute.
     let computed_publishers: BTreeSet<u32> = model
         .holes
         .iter()
@@ -5135,25 +5250,37 @@ pub fn judge_depends_witnessed(
             EntityRef::Function(f) => Some(f.0),
             _ => None,
         })
+        .chain(interior_unknown.iter().copied())
+        .filter(|f| reachable_fns.contains(f))
         .collect();
     // Functions whose INBOUND call edges the model could not
     // enumerate: an indirect call or an untypeable receiver at some
     // call site means the reverse graph is missing edges, and a
     // truncated or hole-bearing stdlib interior means an absorbed
     // path could re-emerge anywhere.
-    let call_residue_anywhere = model.holes.iter().any(|h| {
-        h.hides.intersects(hale_model::RelationSet::CALLS)
-    }) || model.analyses.stdlib_absorption.iter().any(|a| {
-        a.nodes.iter().any(|n| {
-            n.events.iter().any(|ev| {
-                matches!(
-                    ev,
-                    hale_model::AbsorbedEvent::CallHole(_)
-                        | hale_model::AbsorbedEvent::Truncated
-                )
-            })
+    // Round 4: RESTRICTED to reachable functions. An unfollowable
+    // call in a fn nothing executes cannot invoke anything, so it
+    // cannot hide a caller of any publisher.
+    let call_residue_relevant = model
+        .holes
+        .iter()
+        .filter(|h| h.hides.intersects(hale_model::RelationSet::CALLS))
+        .any(|h| match h.at {
+            EntityRef::Function(f) => reachable_fns.contains(&f.0),
+            _ => false,
         })
-    });
+        || model.analyses.stdlib_absorption.iter().any(|a| {
+            reachable_fns.contains(&a.from.0)
+                && a.nodes.iter().any(|n| {
+                    n.events.iter().any(|ev| {
+                        matches!(
+                            ev,
+                            hale_model::AbsorbedEvent::CallHole(_)
+                                | hale_model::AbsorbedEvent::Truncated
+                        )
+                    })
+                })
+        });
     // Every locus that owns a function which can transitively reach
     // `f` — including `f`'s own owner — and whether that search was
     // COMPLETE.
@@ -5176,7 +5303,7 @@ pub fn judge_depends_witnessed(
         }
         (
             out.into_iter().map(hale_model::LocusDeclId).collect(),
-            call_residue_anywhere,
+            call_residue_relevant,
         )
     };
 
@@ -5231,22 +5358,6 @@ pub fn judge_depends_witnessed(
             ));
         }
 
-        // Author spelling for a wire subject: the topic that
-        // declares it, when exactly one does. Identity stays the
-        // `SubjectId` — this is only how it is SHOWN, the same
-        // raw/display duality the topics section carries.
-        let shown = |sid: u32| -> String {
-            let subject = &e.subjects[sid as usize];
-            let mut named = e
-                .topics
-                .iter()
-                .filter(|t| t.subject.0 == sid)
-                .map(|t| t.display.clone());
-            match (named.next(), named.next()) {
-                (Some(one), None) => one,
-                _ => subject.pattern.clone(),
-            }
-        };
         // Obligation 2: the backward closure, SUBSCRIPTION-grained
         // (round 3).
         //
@@ -5335,8 +5446,35 @@ pub fn judge_depends_witnessed(
                 uncertain = true;
                 witness.unknown_publishers = true;
             }
-            // Who can publish into THIS subscription?
-            for p in r.publishes.iter() {
+            // Who can publish into THIS subscription? Ordinary
+            // publish rows, plus the ABSORBED publishes a stdlib
+            // interior performs on behalf of the user fn that
+            // reached it — both are first-class publishers and both
+            // join the same delivery query.
+            let absorbed: Vec<hale_model::Publish> = interior_pubs
+                .iter()
+                .flat_map(|(from, subjects)| {
+                    subjects.iter().map(move |sid| {
+                        hale_model::Publish {
+                            function: FunctionId(*from),
+                            subject: *sid,
+                            // An interior publish carries no
+                            // declared-topic link and no key domain
+                            // the model records, so it widens like
+                            // any unknown one.
+                            declared_topic: None,
+                            payload: hale_model::PayloadContractId(0),
+                            site: 0,
+                            in_loop: false,
+                            key_domain: None,
+                            disposition:
+                                hale_model::keys::PublishDisposition::Default,
+                            provenance: hale_model::ProvenanceId(0),
+                        }
+                    })
+                })
+                .collect();
+            for p in r.publishes.iter().chain(absorbed.iter()) {
                 if !crate::model_query::may_deliver(e, p, &sub) {
                     continue;
                 }

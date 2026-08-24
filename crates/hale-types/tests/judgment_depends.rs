@@ -536,3 +536,128 @@ fn main() { App { }; }
         ds
     );
 }
+
+/// Review pin (round 4): a stdlib interior can PUBLISH, and the
+/// backward walk has to see it.
+///
+/// `std::log::Logger.info` computes `log.<path>` and sends from
+/// inside its own body. Reading only `relations.publishes` meant a
+/// subscriber to `log.**` found no matching publisher, no call hole
+/// and no function-level publish hole — and could return `Holds`
+/// while an entire upstream sat behind the absorption boundary.
+#[test]
+fn an_absorbed_computed_publish_is_not_invisible() {
+    let src = r#"
+type Msg { n: Int = 0; }
+topic Secret { payload: Msg; subject: "secret"; }
+
+locus Relay {
+    bus { subscribe Secret as on_secret; }
+    params { log: std::log::Logger = std::log::Logger { }; }
+    fn on_secret(m: Msg) { self.log.info("relayed"); }
+}
+@effects(depends: {"log.**"})
+locus Target {
+    bus { subscribe "log.**" as on_log of type std::log::LogEvent; }
+    params { n: Int = 0; }
+    fn on_log(ev: std::log::LogEvent) { self.n = 1; }
+}
+locus Src {
+    bus { publish Secret; }
+    fn go() { Secret <- Msg { n: 7 }; }
+}
+main locus App {
+    params {
+        r: Relay = Relay { }; t: Target = Target { };
+        s: Src = Src { };
+    }
+}
+fn main() { App { }; }
+"#;
+    let (v, ds) = judge(src);
+    assert_ne!(
+        v,
+        Verdict::Holds,
+        "the absorbed publish hides an upstream: {:?}",
+        ds
+    );
+}
+
+/// Review pin (round 4): residue must be REACHABLE to matter.
+///
+/// The model's hole rule is that reachable relevant residue
+/// withdraws a proof — not that residue anywhere in the document
+/// authorizes a refusal. A program-global flag made an uncalled
+/// helper's indirect call uncertify every `depends:` row.
+#[test]
+fn a_dead_indirect_call_does_not_uncertify_an_exact_law() {
+    let src = r#"
+type Msg { n: Int = 0; }
+topic Clean { payload: Msg; subject: "clean"; }
+
+// Never called by anything executable.
+fn dead_apply(f: fn(Int) -> Int, x: Int) -> Int { return f(x); }
+
+locus Source {
+    bus { publish Clean; }
+    fn go() { Clean <- Msg { n: 1 }; }
+}
+@effects(depends: {Clean})
+locus Target {
+    bus { subscribe Clean as on_clean; }
+    params { n: Int = 0; }
+    fn on_clean(m: Msg) { self.n = m.n; }
+}
+main locus App {
+    params { s: Source = Source { }; t: Target = Target { }; }
+    run() { self.s.go(); }
+}
+fn main() { App { }; }
+"#;
+    let (v, ds) = judge(src);
+    assert_eq!(
+        v,
+        Verdict::Holds,
+        "`dead_apply` is on no caller path to `Source::go`: {:?}",
+        ds
+    );
+}
+
+/// The publisher-side twin: a computed publish in a function nothing
+/// executes cannot address anything.
+#[test]
+fn a_dead_computed_publish_does_not_uncertify_an_exact_law() {
+    let src = r#"
+type Msg { n: Int = 0; }
+topic Clean { payload: Msg; subject: "clean"; }
+
+fn pick(n: Int) -> String { if n > 0 { return "x"; } return "y"; }
+// Never called.
+fn dead_shout(n: Int) { pick(n) <- Msg { n: n }; }
+
+locus Source {
+    bus { publish Clean; publish "z.**" of type Msg; }
+    fn go() { Clean <- Msg { n: 1 }; }
+}
+@effects(depends: {Clean})
+locus Target {
+    bus { subscribe Clean as on_clean; }
+    params { n: Int = 0; }
+    fn on_clean(m: Msg) { self.n = m.n; }
+}
+main locus App {
+    params { s: Source = Source { }; t: Target = Target { }; }
+    run() { self.s.go(); }
+}
+fn main() { App { }; }
+"#;
+    let (v, ds) = judge(src);
+    assert_eq!(
+        v,
+        Verdict::Holds,
+        "`dead_shout` is unreachable, so its computed subject \
+         addresses nothing: {:?}",
+        ds
+    );
+}
+

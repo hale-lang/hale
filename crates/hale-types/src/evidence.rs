@@ -185,15 +185,95 @@ pub fn model_fanout<'a>(
                 _ => Some(total),
             }
     }
+    // Every publish site reachable from a function — its own, plus
+    // everything it calls, plus what a stdlib interior publishes on
+    // its behalf. A handler's onward amplification is not limited to
+    // rows whose `function` IS the handler: a handler that calls a
+    // helper which publishes causes those deliveries too.
+    //
+    // `None` means the answer is not knowable from here (an
+    // unfollowable call, a computed publish, an unexplored
+    // interior); a loop-nested contributor is `in_loop` and
+    // saturates upstream.
+    fn onward_publishes(
+        model: &ApplicationModel,
+        from: hale_model::FunctionId,
+    ) -> Option<Vec<hale_model::Publish>> {
+        let r = &model.relations;
+        let mut seen: BTreeSet<u32> = BTreeSet::new();
+        let mut frontier = vec![from];
+        let mut out: Vec<hale_model::Publish> = Vec::new();
+        while let Some(cur) = frontier.pop() {
+            if !seen.insert(cur.0) {
+                continue;
+            }
+            // A call or publish account this function does not know
+            // makes its amplification unknowable.
+            if model.holes.iter().any(|h| {
+                matches!(h.at, hale_model::EntityRef::Function(f) if f == cur)
+                    && h.hides.intersects(
+                        hale_model::RelationSet::CALLS
+                            .union(hale_model::RelationSet::PUBLISHES),
+                    )
+            }) {
+                return None;
+            }
+            out.extend(
+                r.publishes.iter().filter(|p| p.function == cur).cloned(),
+            );
+            for a in model
+                .analyses
+                .stdlib_absorption
+                .iter()
+                .filter(|a| a.from == cur)
+            {
+                for node in &a.nodes {
+                    for ev in &node.events {
+                        match ev {
+                            hale_model::AbsorbedEvent::Call {
+                                target:
+                                    hale_model::AbsorbedTarget::User(u),
+                                ..
+                            } => frontier.push(*u),
+                            // An interior publish amplifies too, and
+                            // an interior the walk cannot finish
+                            // might.
+                            hale_model::AbsorbedEvent::Publish {
+                                ..
+                            }
+                            | hale_model::AbsorbedEvent::PublishHole
+                            | hale_model::AbsorbedEvent::Truncated
+                            | hale_model::AbsorbedEvent::CallHole(_) => {
+                                return None
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            for c in r.calls.iter().filter(|c| c.from == cur) {
+                // A call inside a loop repeats per invocation.
+                if c.in_loop {
+                    return None;
+                }
+                frontier.push(c.to);
+            }
+        }
+        Some(out)
+    }
     move |key: &crate::alloc_summary::FnKey,
           site: u32,
           subject: &str|
           -> Option<u64> {
-        let display = key.display();
+        // Join on the RAW canonical name: `FnKey::display` builds
+        // the raw `Locus::fn` spelling, while `Function::display` is
+        // the DEMANGLED author spelling — an imported publisher
+        // would miss (round 4).
+        let raw = key.display();
         let fid = e
             .functions
             .iter()
-            .position(|f| f.display == display)
+            .position(|f| f.name == raw)
             .map(|i| hale_model::FunctionId(i as u32))?;
         // The site ordinal is the model's own publish-row key.
         let root = r
@@ -211,15 +291,28 @@ pub fn model_fanout<'a>(
         if !names_it {
             return None;
         }
-        // The delivery closure: publishes to evaluate, handlers
-        // already counted (a cycle is settled, not re-counted).
+        // A WEIGHTED execution traversal, not a reachability
+        // closure (round 4). Three `Relay` instances each running
+        // `on_a`, each publishing `B` to one `Sink`, is three
+        // deliveries to Relay PLUS three executions of `on_a` — six
+        // in all. Deduplicating the delivery graph as a set counted
+        // four. Each work item therefore carries HOW MANY handler
+        // invocations reached it, and downstream contributions are
+        // multiplied by that count.
         let mut total: u64 = 0;
-        let mut frontier: Vec<hale_model::Publish> = vec![root.clone()];
-        let mut settled: BTreeSet<(u32, u32)> = BTreeSet::new();
-        let mut reached_fns: BTreeSet<u32> = BTreeSet::new();
-        while let Some(p) = frontier.pop() {
-            if !settled.insert((p.function.0, p.site)) {
-                continue;
+        let mut frontier: Vec<(hale_model::Publish, u64)> =
+            vec![(root.clone(), 1)];
+        // A productive bus cycle is unbounded, not settled: bound
+        // the work and saturate rather than terminate quietly.
+        let mut steps = 0u32;
+        while let Some((p, mult)) = frontier.pop() {
+            steps += 1;
+            if steps > 4096 {
+                return None;
+            }
+            // A publish inside a loop repeats per invocation.
+            if p.in_loop {
+                return None;
             }
             // An outbound route delivers to peers this application
             // does not model — scoped to THIS subject, so an
@@ -236,16 +329,15 @@ pub fn model_fanout<'a>(
                     continue;
                 }
                 let n = reached_by(model, &p, sub)?;
-                total = total.saturating_add(n);
-                // …and what that handler publishes onward is caused
-                // by the same invocation.
-                if !reached_fns.insert(sub.handler.0) {
+                let deliveries = mult.checked_mul(n)?;
+                total = total.checked_add(deliveries)?;
+                if deliveries == 0 {
                     continue;
                 }
-                for onward in
-                    r.publishes.iter().filter(|q| q.function == sub.handler)
-                {
-                    frontier.push(onward.clone());
+                // …and every publish those handler EXECUTIONS can
+                // reach amplifies by that same count.
+                for onward in onward_publishes(model, sub.handler)? {
+                    frontier.push((onward, deliveries));
                 }
             }
         }
@@ -287,7 +379,9 @@ pub fn derive_certificate_evidence(
     let fanout_of = model_fanout(model);
     groups.extend(
         crate::quantitative::certificate_groups(
-            &programs, &fanout_of,
+            &programs,
+            &bundle.import_renames,
+            &fanout_of,
         )
         .into_iter()
         .map(|(row, ds)| {
