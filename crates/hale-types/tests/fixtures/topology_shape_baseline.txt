@@ -89,7 +89,6 @@ crates/hale-cli/tests/source_map.rs#0 183856ff8794bd36
 crates/hale-cli/tests/source_map.rs#1 049ab7929fcc5890
 crates/hale-cli/tests/test_ffi_pickup.rs#1 865d341109268295
 crates/hale-cli/tests/topology_artifact_contract.rs#0 ceb97d5adb719c07
-crates/hale-cli/tests/topology_graph_cli.rs#1 7d5cf57defcf548e
 crates/hale-cli/tests/topology_graph_cli.rs#11 c363b8f518cad8e2
 crates/hale-cli/tests/topology_graph_cli.rs#12 be98556704930f2b
 crates/hale-cli/tests/topology_graph_cli.rs#15 5b19cc4370a72a2f
@@ -106,7 +105,8 @@ crates/hale-cli/tests/topology_graph_cli.rs#29 5cec85e61bf600ba
 crates/hale-cli/tests/topology_graph_cli.rs#30 174ce7e0a956f6bc
 crates/hale-cli/tests/topology_graph_cli.rs#31 7d5cf57defcf548e
 crates/hale-cli/tests/topology_graph_cli.rs#32 7f75bbe0c59b704e
-crates/hale-cli/tests/topology_graph_cli.rs#35 542f43255ecc42a5
+crates/hale-cli/tests/topology_graph_cli.rs#35 dea7f37538f67e6b
+crates/hale-cli/tests/topology_graph_cli.rs#36 542f43255ecc42a5
 crates/hale-cli/tests/topology_graph_cli.rs#4 7d5cf57defcf548e
 crates/hale-cli/tests/topology_graph_cli.rs#5 c09878edd9f20206
 crates/hale-cli/tests/topology_graph_cli.rs#6 37b8850647e390ba
@@ -1274,13 +1274,7 @@ crates/hale-types/tests/interface_dispatch.rs#2 970540114cfc4743
 crates/hale-types/tests/interface_dispatch.rs#3 3e8236394613d0b0
 crates/hale-types/tests/interface_dispatch.rs#6 6d6f6da0dc6377b2
 crates/hale-types/tests/interface_dispatch.rs#9 6f2cbe31a3a8633b
-crates/hale-types/tests/judgment_causes.rs#0 6f55e3d44813224c
-crates/hale-types/tests/judgment_causes.rs#10 037c4c80f9b07ef0
 crates/hale-types/tests/judgment_causes.rs#11 c81fa6ad060c49cb
-crates/hale-types/tests/judgment_causes.rs#14 cdd341d141c5f482
-crates/hale-types/tests/judgment_causes.rs#17 64c5fba72e9e8d81
-crates/hale-types/tests/judgment_causes.rs#19 cc291c164767f1cb
-crates/hale-types/tests/judgment_causes.rs#20 7a1742d24f862fac
 crates/hale-types/tests/judgment_causes.rs#3 e29c8ecbbd11aea2
 crates/hale-types/tests/judgment_causes.rs#8 0f41594939b4eca0
 crates/hale-types/tests/judgment_certificates.rs#0 48c907513b2f218b
@@ -1292,9 +1286,9 @@ crates/hale-types/tests/judgment_certificates.rs#6 5b19cc4370a72a2f
 crates/hale-types/tests/judgment_certificates.rs#7 5b19cc4370a72a2f
 crates/hale-types/tests/judgment_certificates.rs#9 7d5cf57defcf548e
 crates/hale-types/tests/judgment_depends.rs#2 4ebcead20c253595
-crates/hale-types/tests/judgment_depends.rs#3 6bd28037e4d97c71
 crates/hale-types/tests/judgment_depends.rs#4 57b3e718f9ba2b13
 crates/hale-types/tests/judgment_depends.rs#6 1e29a74a1331d44d
+crates/hale-types/tests/judgment_depends.rs#9 2a665aaeccc99a1e
 crates/hale-types/tests/judgment_reachability.rs#12 f7d9fb64200c3e4b
 crates/hale-types/tests/judgment_reachability.rs#14 1b7facc0d6b6d52b
 crates/hale-types/tests/judgment_reachability.rs#22 4362d16e6b2ccfdd

@@ -414,3 +414,125 @@ fn main() { App { }; }
         ds
     );
 }
+
+/// Review pin (round 3): the backward frontier is
+/// SUBSCRIPTION-grained.
+///
+/// With a queue of bare subjects, the walk scanned every
+/// subscription whose ADDRESS covered the subject — so an unrelated
+/// wildcard subscriber let a publish that never reaches this locus
+/// drag its publisher's inputs in as dependencies.
+#[test]
+fn an_unrelated_wildcard_subscriber_is_not_an_upstream() {
+    let src = r#"
+type Msg { n: Int = 0; }
+topic Secret   { payload: Msg; subject: "secret"; }
+topic Clean    { payload: Msg; subject: "clean"; }
+topic OtherWire { payload: Msg; subject: "other"; }
+
+locus Relay {
+    bus { subscribe Secret as on_secret; publish OtherWire; }
+    params { n: Int = 0; }
+    fn on_secret(m: Msg) { OtherWire <- Msg { n: m.n }; }
+}
+locus Nosy {
+    bus { subscribe "**" as on_any; }
+    params { n: Int = 0; }
+    fn on_any(m: Msg) { self.n = m.n; }
+}
+locus Feeder {
+    bus { publish Clean; }
+    fn go() { Clean <- Msg { n: 1 }; }
+}
+@effects(depends: {Clean})
+locus Target {
+    bus { subscribe Clean as on_clean; }
+    params { n: Int = 0; }
+    fn on_clean(m: Msg) { self.n = m.n; }
+}
+locus Src {
+    bus { publish Secret; }
+    fn go() { Secret <- Msg { n: 7 }; }
+}
+main locus App {
+    params {
+        r: Relay = Relay { }; y: Nosy = Nosy { };
+        f: Feeder = Feeder { }; t: Target = Target { };
+        s: Src = Src { };
+    }
+}
+fn main() { App { }; }
+"#;
+    let (v, ds) = judge(src);
+    assert_eq!(
+        v,
+        Verdict::Holds,
+        "`Nosy`'s `**` covers `clean`, but `Relay`'s `other` publish \
+         reaches Nosy, not Target: {:?}",
+        ds
+    );
+    assert!(
+        !ds.iter().any(|m| m.contains("Secret")),
+        "`Secret` is upstream of Nosy, not of Target: {:?}",
+        ds
+    );
+}
+
+// The KEYED version of the same defect — two disjoint filters on one
+// wire have different upstreams — is the same fix: the frontier
+// carries the subscription, so `may_deliver` sees its predicate.
+// It is not restated as a control here because it needs a
+// statically EXACT publish key domain to be provable, and
+// `may_deliver`'s exact-domain arm is pinned directly in
+// `judgment_causes::may_deliver_respects_exact_key_domains`. With an
+// unknown key domain the walk widens, which is the sound direction.
+
+/// Review pin (round 3): caller discovery that CANNOT be completed
+/// downgrades the verdict rather than passing unnoticed.
+#[test]
+fn an_unfollowable_caller_makes_the_law_uncertified() {
+    let src = r#"
+type Msg { n: Int = 0; }
+topic Secret { payload: Msg; subject: "secret"; }
+topic Clean  { payload: Msg; subject: "clean"; }
+
+fn emit_clean() { Clean <- Msg { n: 1 }; }
+fn apply(f: fn() -> Unit) { f(); }
+
+locus Relay {
+    bus { subscribe Secret as on_secret; publish Clean; }
+    params { n: Int = 0; }
+    fn on_secret(m: Msg) { apply(emit_clean); }
+}
+@effects(depends: {Clean})
+locus Target {
+    bus { subscribe Clean as on_clean; }
+    params { n: Int = 0; }
+    fn on_clean(m: Msg) { self.n = m.n; }
+}
+locus Src {
+    bus { publish Secret; }
+    fn go() { Secret <- Msg { n: 7 }; }
+}
+main locus App {
+    params {
+        r: Relay = Relay { }; t: Target = Target { };
+        s: Src = Src { };
+    }
+}
+fn main() { App { }; }
+"#;
+    let (v, ds) = judge(src);
+    assert_eq!(
+        v,
+        Verdict::Uncertified,
+        "the reverse graph has no edge from `Relay` to \
+         `emit_clean`, so `Secret` would silently vanish: {:?}",
+        ds
+    );
+    assert!(
+        ds.iter().any(|m| m.contains("cannot follow")),
+        "and it says which knowledge is missing: {:?}",
+        ds
+    );
+}

@@ -294,7 +294,7 @@ earlier in the same file as the family. Companion:
 class along any path, with the same loop/indirect unboundedness
 rules as every per-call dimension.
 
-**The topology artifact** (#382 phase 2; schema 1.13):
+**The topology artifact** (#382 phase 2; schema 1.17):
 `hale check <t> --dump-topology` emits the serialized model —
 sorts (loci, fns, topics), relations (calls with **weights**: loop
 nesting, unbounded-loop membership, interface-dispatch tags;
@@ -399,9 +399,13 @@ their evidence even in an annotation-only artifact — recomputes
 per-row and document verdicts from the evidence, checks the
 one-to-one claims-to-law projection in both directions, requires
 the `law.legacy` report (the old engines' verdicts for the rows
-that are still `unmigrated` — as of schema 1.16 there are NONE, so
+that are still `unmigrated` — as of schema 1.17 there are NONE, so
 the report is empty for every program; it survives so an artifact
 written by an older toolchain still decodes — keyed by ordinal and by a form FINGERPRINT re-rendered
+that are still `unmigrated` — as of schema 1.17 there are NONE, so
+the report is empty for every program; it survives so an artifact
+written by an older toolchain still decodes — keyed by ordinal and
+by a form FINGERPRINT re-rendered
 from the typed operands; an operand mutation orphans the entry.
 A migrated row imports no outside verdict, so it carries no
 legacy entry and states its own `form` instead, which admission

@@ -239,9 +239,15 @@ fn claim_diagnostics_match_the_evaluator_over_the_corpus() {
                 model.iter().filter(|l| !legacy.contains(l)).collect();
             if legacy_only.is_empty()
                 && !model_only.is_empty()
-                && model_only
-                    .iter()
-                    .all(|l| l.contains("uncertified:"))
+                && model_only.iter().all(|l| {
+                    l.contains("uncertified:")
+                        // Round 3: the migrated engines say
+                        // "cannot be certified" in prose. Same
+                        // class of divergence — the model refuses
+                        // where the evaluator, which never had a
+                        // completeness account, fell through.
+                        || l.contains("cannot be certified")
+                })
             {
                 documented_divergences += 1;
                 continue;
