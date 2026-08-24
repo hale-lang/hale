@@ -362,6 +362,10 @@ Claim [571..575] budget exceeded: `App::fire` declares `@budget(fanout = 1)` but
 Claim [528..532] budget exceeded: `App::fire` declares `@budget(fanout = 99)` but the compiler measures an unbounded number of subscriber delivery/deliveries. Fan-out counts transitive subscriber deliveries — a publish to a many-subscriber subject amplifies.
 --- crates/hale-types/tests/model_fanout.rs#9 ---
 Claim [481..485] budget exceeded: `App::fire` declares `@budget(fanout = 99)` but the compiler measures an unbounded number of subscriber delivery/deliveries. Fan-out counts transitive subscriber deliveries — a publish to a many-subscriber subject amplifies.
+--- crates/hale-types/tests/model_fanout.rs#10 ---
+Claim [524..528] budget exceeded: `App::fire` declares `@budget(fanout = 2)` but the compiler measures 3 subscriber delivery/deliveries. Fan-out counts transitive subscriber deliveries — a publish to a many-subscriber subject amplifies.
+--- crates/hale-types/tests/model_fanout.rs#11 ---
+Claim [560..564] budget exceeded: `App::fire` declares `@budget(fanout = 99)` but the compiler measures an unbounded number of subscriber delivery/deliveries. Fan-out counts transitive subscriber deliveries — a publish to a many-subscriber subject amplifies.
 --- crates/hale-types/tests/model_provenance.rs#1 ---
 Claim [480..483] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -(publishes "T")-> `B::on_m`
 Claim [137..153] claim `iso`: the crossing publish happens here
