@@ -64,7 +64,21 @@ Supporting facts, added in the same change:
   than a maximum followed by the union of every branch. Through-
   stdlib multiplicity comes from the per-entry absorption account
   rather than the contracted endpoint relation, which collapses
-  two entry sites into one.
+  two entry sites into one — and the interior is walked as the
+  GRAPH it is, with same-group interior alternatives taking the
+  max. One authored call site is one choice whether its
+  alternatives are user conformers, stdlib entries, or both. Key
+  domains constrain which scenarios exist (an `IntRange` publish is
+  never charged a `fallback` that its interval cannot trigger), an
+  ordinary instance registers under the effective replica key 0,
+  and a zero-population endpoint contributes zero however
+  complicated the declaration's body.
+
+**`ANALYSIS_SEMANTICS_VERSION` 3 → 4.** These results moved, and
+`EvidenceTable::validate` treats an equal `inputs_digest` as proof
+of current semantics rather than hashing the implementation — so a
+sidecar produced by an older toolchain could otherwise share every
+digest while carrying a fan-out verdict this one disagrees with.
 - **Quantitative budgets cross seed boundaries.** The migrated
   evidence path called the engine without the import-rename table,
   so `lib::expensive()` stayed an unresolved qualified free call
