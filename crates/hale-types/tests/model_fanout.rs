@@ -411,3 +411,154 @@ fn main() { App { }; }
         ds
     );
 }
+
+/// Review pin (round 5): the handler's CALL TREE carries execution
+/// counts, not reachability.
+///
+/// Model call rows are site-grained precisely because two calls are
+/// two executions. Collapsing the tree to a set counted a helper
+/// called twice as one publish, so one invocation causing three
+/// deliveries measured two.
+#[test]
+fn a_helper_called_twice_publishes_twice() {
+    let src = r#"
+type T { n: Int = 0; }
+topic A { payload: T; subject: "a"; }
+topic B { payload: T; subject: "b"; }
+locus Relay {
+    bus { subscribe A as on_a; publish B; }
+    params { n: Int = 0; }
+    fn shout(n: Int) { B <- T { n: n }; }
+    fn on_a(t: T) { self.shout(t.n); self.shout(t.n); }
+}
+locus Sink {
+    bus { subscribe B as on_b; }
+    params { n: Int = 0; }
+    fn on_b(t: T) { self.n = t.n; }
+}
+main locus App {
+    params { r: Relay = Relay { }; s: Sink = Sink { }; }
+    bus { publish A; }
+    @budget(fanout = 2)
+    fn fire() { A <- T { n: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let ds = diags(src);
+    assert!(
+        ds.iter().any(|m| m.contains("budget exceeded")
+            && m.contains("fanout")
+            && m.contains(" 3 ")),
+        "one delivery to Relay plus two helper publishes is three: \
+         {:?}",
+        ds
+    );
+}
+
+/// A recursive publishing helper has no per-call bound.
+#[test]
+fn a_recursive_publishing_helper_is_unbounded() {
+    let src = r#"
+type T { n: Int = 0; }
+topic A { payload: T; subject: "a"; }
+topic B { payload: T; subject: "b"; }
+locus Relay {
+    bus { subscribe A as on_a; publish B; }
+    params { n: Int = 0; }
+    fn shout(n: Int) {
+        B <- T { n: n };
+        if n > 0 { self.shout(n - 1); }
+    }
+    fn on_a(t: T) { self.shout(t.n); }
+}
+locus Sink {
+    bus { subscribe B as on_b; }
+    params { n: Int = 0; }
+    fn on_b(t: T) { self.n = t.n; }
+}
+main locus App {
+    params { r: Relay = Relay { }; s: Sink = Sink { }; }
+    bus { publish A; }
+    @budget(fanout = 99)
+    fn fire() { A <- T { n: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let ds = diags(src);
+    assert!(
+        ds.iter().any(|m| m.contains("budget exceeded")
+            && m.contains("unbounded")),
+        "recursion amplifies without a static bound: {:?}",
+        ds
+    );
+}
+
+/// Review pin (round 5): ONE message carries ONE key, so replica
+/// filters do not all receive it.
+///
+/// `where key == replica` is satisfied by the instance whose index
+/// EQUALS the message key. Summing every replica the key might
+/// select counted the union of possible recipients rather than the
+/// recipients of one message, so a three-replica sink read as
+/// fan-out 3 for a message that reaches exactly one cell.
+#[test]
+fn replica_keyed_delivery_reaches_one_cell_per_message() {
+    let src = r#"
+type T { shard: Int = 0; }
+topic Ticks { payload: T; subject: "ticks"; keyed_by shard; }
+locus Sink {
+    bus { subscribe Ticks as on_tick where key == replica; }
+    params { n: Int = 0; }
+    fn on_tick(t: T) { self.n = t.shard; }
+}
+main locus App {
+    params { sinks: Sink = Sink { }; }
+    placement { sinks: pinned(replicas = 3); }
+    bus { publish Ticks; }
+    @budget(fanout = 1)
+    fn fire() { Ticks <- T { shard: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let ds = diags(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("budget exceeded")
+            && m.contains("fanout")),
+        "a keyed message reaches the replica its key selects, not \
+         all three: {:?}",
+        ds
+    );
+}
+
+/// A declared but never instantiated subscriber receives nothing —
+/// an exact zero, not an unknown.
+#[test]
+fn an_uninstantiated_subscriber_contributes_no_deliveries() {
+    let src = r#"
+type T { n: Int = 0; }
+topic Ticks { payload: T; subject: "ticks"; }
+locus Unused {
+    bus { subscribe Ticks as on_tick; }
+    params { n: Int = 0; }
+    fn on_tick(t: T) { self.n = t.n; }
+}
+main locus App {
+    params { n: Int = 0; }
+    bus { publish Ticks; }
+    @budget(fanout = 0)
+    fn fire() { Ticks <- T { n: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let ds = diags(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("budget exceeded")
+            && m.contains("fanout")),
+        "no instance, no delivery: {:?}",
+        ds
+    );
+}
