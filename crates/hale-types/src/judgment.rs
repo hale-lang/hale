@@ -5017,6 +5017,14 @@ pub struct DependsWitness {
     /// Params typed as a `sync`-discipline form: input channels
     /// outside the message graph entirely.
     pub sync_form_params: Vec<String>,
+    /// A publish whose SUBJECT the model could not name — it might
+    /// name a wire this locus subscribes to.
+    pub unknown_publishers: bool,
+    /// A publishing function whose CALLERS the model could not
+    /// enumerate: an indirect call, an untypeable receiver, or an
+    /// absorbed stdlib interior. Their inputs are inputs of this
+    /// locus, and the reverse graph has no edge to find them by.
+    pub unknown_callers: bool,
 }
 
 /// GH #476 Change 5g — `@effects(depends: {A, B})` on a locus,
@@ -5105,7 +5113,28 @@ pub fn judge_depends_witnessed(
             _ => None,
         })
         .collect();
-    let owning_loci = |f: FunctionId| -> Vec<hale_model::LocusDeclId> {
+    // Functions whose INBOUND call edges the model could not
+    // enumerate: an indirect call or an untypeable receiver at some
+    // call site means the reverse graph is missing edges, and a
+    // truncated or hole-bearing stdlib interior means an absorbed
+    // path could re-emerge anywhere.
+    let call_residue_anywhere = model.holes.iter().any(|h| {
+        h.hides.intersects(hale_model::RelationSet::CALLS)
+    }) || model.analyses.stdlib_absorption.iter().any(|a| {
+        a.nodes.iter().any(|n| {
+            n.events.iter().any(|ev| {
+                matches!(
+                    ev,
+                    hale_model::AbsorbedEvent::CallHole(_)
+                        | hale_model::AbsorbedEvent::Truncated
+                )
+            })
+        })
+    });
+    // Every locus that owns a function which can transitively reach
+    // `f` — including `f`'s own owner — and whether that search was
+    // COMPLETE.
+    let owning_loci = |f: FunctionId| -> (Vec<hale_model::LocusDeclId>, bool) {
         let mut seen_fn: BTreeSet<u32> = BTreeSet::new();
         let mut out: BTreeSet<u32> = BTreeSet::new();
         let mut frontier = vec![f];
@@ -5122,7 +5151,10 @@ pub fn judge_depends_witnessed(
                 frontier.push(*up);
             }
         }
-        out.into_iter().map(hale_model::LocusDeclId).collect()
+        (
+            out.into_iter().map(hale_model::LocusDeclId).collect(),
+            call_residue_anywhere,
+        )
     };
 
     let mut out = Vec::new();
@@ -5192,18 +5224,40 @@ pub fn judge_depends_witnessed(
                 _ => subject.pattern.clone(),
             }
         };
-        // Obligation 2: the backward closure. BFS over LOCI,
-        // remembering how each subject was reached so the
-        // diagnostic can name the path and not only the verdict.
+        // Obligation 2: the backward closure, SUBSCRIPTION-grained
+        // (round 3).
+        //
+        // A frontier of bare `SubjectId`s loses the wildcard and the
+        // key predicate — the two things that decide delivery. The
+        // walk then scanned every subscription in the application
+        // whose ADDRESS covered the subject, so an unrelated `**`
+        // subscriber, or one filtering `key == 2` while the target
+        // filters `key == 1`, could manufacture an upstream edge for
+        // a locus those publishes never reach. The frontier holds
+        // the actual `Subscribe` rows, and a publisher must satisfy
+        // `may_deliver` against THAT row.
         let mut uncertain = false;
         // subject -> (via locus display, into subject display)
         let mut seen: BTreeMap<u32, Option<(String, String)>> =
             BTreeMap::new();
         let mut seen_locus: BTreeSet<u32> = BTreeSet::new();
         seen_locus.insert(lid.0);
-        // (subject reaching the frontier locus, how it got there)
-        let mut queue: Vec<(hale_model::SubjectId, Option<(String, String)>)> =
-            Vec::new();
+        // Author spelling for a wire subject: the topic that
+        // declares it, when exactly one does. Identity stays the
+        // `SubjectId` — this is only how it is SHOWN, the same
+        // raw/display duality the topics section carries.
+        let shown = |sid: u32| -> String {
+            let subject = &e.subjects[sid as usize];
+            let mut named = e
+                .topics
+                .iter()
+                .filter(|t| t.subject.0 == sid)
+                .map(|t| t.display.clone());
+            match (named.next(), named.next()) {
+                (Some(one), None) => one,
+                _ => subject.pattern.clone(),
+            }
+        };
         let subs_of = |l: u32| -> Vec<hale_model::Subscribe> {
             let owned = fns_of.get(&l).cloned().unwrap_or_default();
             r.subscribes
@@ -5212,21 +5266,35 @@ pub fn judge_depends_witnessed(
                 .cloned()
                 .collect()
         };
-        for su in subs_of(lid.0) {
-            queue.push((su.subject, None));
-        }
-        while let Some((subject, via)) = queue.pop() {
-            if seen.contains_key(&subject.0) {
+        let mut queue: Vec<(
+            hale_model::Subscribe,
+            Option<(String, String)>,
+        )> = subs_of(lid.0)
+            .into_iter()
+            .map(|su| (su, None))
+            .collect();
+        // Deduplicate by SUBSCRIPTION identity (handler + site), not
+        // by subject: one locus may hold two filters on one wire and
+        // they have different upstreams.
+        let mut seen_sub: BTreeSet<(u32, u32)> = BTreeSet::new();
+        while let Some((sub, via)) = queue.pop() {
+            if !seen_sub.insert((sub.handler.0, sub.site)) {
                 continue;
             }
-            seen.insert(subject.0, via);
-            witness.reached_subjects.push(subject);
-            // Is this endpoint's UPSTREAM fully modeled? Holes over
+            let subject = sub.subject;
+            // The subject-level dependency is recorded once a real
+            // subscription is on the frontier — that is what the
+            // declaration must name.
+            if !seen.contains_key(&subject.0) {
+                seen.insert(subject.0, via.clone());
+                witness.reached_subjects.push(subject);
+            }
+            // Is this endpoint's UPSTREAM fully modelled? Holes over
             // who publishes it, an opaque delivery boundary, and a
             // `listen` binding that accepts from a peer are all the
-            // same answer — and scoping the question to THIS
-            // subject is what keeps an unrelated adapter from
-            // poisoning a purely local claim.
+            // same answer — and scoping the question to THIS subject
+            // is what keeps an unrelated adapter from poisoning a
+            // purely local claim.
             if crate::model_query::endpoint_incomplete(
                 model,
                 subject,
@@ -5236,76 +5304,44 @@ pub fn judge_depends_witnessed(
                 witness.incomplete_endpoints.push(subject);
             }
             // Function-grained publisher residue (round 2). A
-            // COMPUTED publish is recorded as a PUBLISHES hole at
-            // its function, not as a `Publish` row and not anchored
-            // to any subject — so neither the endpoint query (which
-            // reads subject- and topic-anchored holes) nor the row
-            // walk below can see it. A publisher whose subject the
-            // model could not name might name THIS wire, and a
-            // backward completeness claim cannot be certified over
-            // it.
-            //
-            // Deliberately not scoped to this subject: the hole
-            // exists precisely because the subject is unknown, so
-            // there is nothing narrower to scope it to. It
-            // downgrades to `uncertified`, never to a violation.
+            // COMPUTED publish is a PUBLISHES hole at its function,
+            // anchored to no subject — invisible to both the
+            // endpoint query and the publish-row walk below. It
+            // might name this wire.
             if !computed_publishers.is_empty() {
                 uncertain = true;
+                witness.unknown_publishers = true;
             }
-            // Who can publish INTO a subscription on this subject?
-            // The join is delivery, not the syntactic topic link: a
-            // literal `"t" <- …` send reaches a `t` subscriber, and
-            // a keyed publish that cannot meet this predicate is
-            // not an upstream at all.
-            for su in r.subscribes.iter() {
-                if !crate::model_query::subscription_covers(
-                    e, su, subject,
-                ) {
+            // Who can publish into THIS subscription?
+            for p in r.publishes.iter() {
+                if !crate::model_query::may_deliver(e, p, &sub) {
                     continue;
                 }
-                for p in r.publishes.iter() {
-                    if !crate::model_query::may_deliver(e, p, su) {
+                // Every LOCUS this publish can be reached FROM (a
+                // free helper's publish belongs to its callers),
+                // plus whether that caller search was COMPLETE.
+                let (owners, caller_residue) = owning_loci(p.function);
+                // Round 3: if the publishing function is reached
+                // through an indirect call or an absorbed stdlib
+                // hole, the known reverse graph has no edge and the
+                // caller's inputs silently vanish. Monotone, like
+                // the publisher residue: it can only turn a
+                // would-be `holds` into `uncertified`, never a
+                // proven omission into a pass.
+                if caller_residue {
+                    uncertain = true;
+                    witness.unknown_callers = true;
+                }
+                for owner in owners {
+                    let plocus = &e.loci[owner.index()];
+                    if !seen_locus.insert(owner.0) {
                         continue;
                     }
-                    // Every LOCUS this publish can be reached FROM,
-                    // not just the one that owns the publishing
-                    // function.
-                    //
-                    // Round 2: the walk used to stop at a free
-                    // function, recording its subject and giving up
-                    // because there was no owner locus to inspect.
-                    // But a handler that calls a free helper which
-                    // publishes is a real path — `Secret ->
-                    // Relay::on_secret -> emit_clean() -> Clean ->
-                    // Target::on_clean` — and stopping there let a
-                    // locus certify `depends: {Clean}` while
-                    // `Secret` reached it. The publish site's
-                    // CALLERS are part of the backward walk.
-                    for owner in owning_loci(p.function) {
-                        let plocus = &e.loci[owner.index()];
-                        if !seen_locus.insert(owner.0) {
-                            continue;
-                        }
-                        for up in subs_of(owner.0) {
-                            queue.push((
-                                up.subject,
-                                Some((
-                                    plocus.display.clone(),
-                                    shown(subject.0),
-                                )),
-                            ));
-                        }
-                    }
-                    // A publish no locus can be reached from still
-                    // delivers here — record the subject even when
-                    // the walk cannot continue past it.
-                    if !seen.contains_key(&p.subject.0) {
+                    for up in subs_of(owner.0) {
                         queue.push((
-                            p.subject,
+                            up,
                             Some((
-                                e.functions[p.function.index()]
-                                    .display
-                                    .clone(),
+                                plocus.display.clone(),
                                 shown(subject.0),
                             )),
                         ));
@@ -5405,6 +5441,59 @@ pub fn judge_depends_witnessed(
         let verdict = if !diags.is_empty() {
             Verdict::Violated
         } else if uncertain {
+            // Round 3: never silent. `claim_law_diags` appends
+            // diagnostics, not verdicts, so an unexplained
+            // `Uncertified` compiled clean while the artifact
+            // marked the document `law_failed` — and left the row
+            // with no evidence for admission to find.
+            let mut why: Vec<String> = Vec::new();
+            if !witness.incomplete_endpoints.is_empty() {
+                let subs: Vec<String> = witness
+                    .incomplete_endpoints
+                    .iter()
+                    .map(|s| format!("`{}`", shown(s.0)))
+                    .collect();
+                why.push(format!(
+                    "{} can be published into from outside this \
+                     application (an inbound route or an opaque \
+                     boundary)",
+                    subs.join(", ")
+                ));
+            }
+            if witness.unknown_publishers {
+                why.push(
+                    "a publish whose subject the compiler could not \
+                     name may address a wire this locus subscribes \
+                     to"
+                        .to_string(),
+                );
+            }
+            if witness.unknown_callers {
+                why.push(
+                    "a publishing function is reachable through a \
+                     call the compiler cannot follow, so its \
+                     callers' own inputs cannot be enumerated"
+                        .to_string(),
+                );
+            }
+            if why.is_empty() {
+                why.push(
+                    "part of the backward closure is not modelled"
+                        .to_string(),
+                );
+            }
+            diags.push(Diag::ty(
+                claim_span(row.provenance),
+                format!(
+                    "declared dependency set cannot be certified: \
+                     `{}` is reached from a closure this model does \
+                     not fully know — {}. The law is neither kept \
+                     nor broken here; close the endpoint, resolve \
+                     the call, or name the subject.",
+                    decl.display,
+                    why.join("; ")
+                ),
+            ));
             Verdict::Uncertified
         } else {
             Verdict::Holds
