@@ -37,9 +37,15 @@ Supporting facts, added in the same change:
   population: three arranged replicas of one `Sink` are three
   deliveries where a declaration count said one, and two
   mutually-exclusive key filters are no longer both charged to a
-  publish whose key can reach only one. A dynamic population, an
-  unknown key, an external route, or a computed subject is
-  unboundedness — never one.
+  publish whose key can reach only one. It is also TRANSITIVE:
+  `A → Relay::on_a → B → three Sinks` is four deliveries caused by
+  one invocation, and the ordinary call graph never enters a
+  handler through the bus. Population completeness is scoped to the
+  loci on that delivery closure, so an unrelated dynamically-born
+  locus no longer makes every fan-out in the program unbounded. A
+  dynamic population of a REACHED subscriber, an unknown key, an
+  external route, or a computed subject is unboundedness — never
+  one.
 
 **Artifact schema 1.16 → 1.17.** `@budget` rows carry
 `"family": "budget"` with their own `certs` evidence and an

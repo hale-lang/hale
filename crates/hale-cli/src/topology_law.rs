@@ -3353,16 +3353,6 @@ pub fn validate_law_account(
         ("causes", JF::Causes),
         ("depends", JF::Depends),
     ];
-    const MIGRATED_116: &[(&str, JF)] = &[
-        ("reachability", JF::Reachability),
-        ("boundary", JF::Boundary),
-        ("endpoint", JF::Endpoint),
-        ("bound", JF::Bound),
-        ("certificate", JF::Certificate),
-        ("causes", JF::Causes),
-        ("depends", JF::Depends),
-        ("budget", JF::Budget),
-    ];
     const MIGRATED_117: &[(&str, JF)] = &[
         ("reachability", JF::Reachability),
         ("boundary", JF::Boundary),

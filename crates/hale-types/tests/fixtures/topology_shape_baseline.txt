@@ -1325,6 +1325,8 @@ crates/hale-types/tests/model_costs.rs#1 52c7a93a9fe2068d
 crates/hale-types/tests/model_costs.rs#2 5413e13f66d11c24
 crates/hale-types/tests/model_costs.rs#3 da29c9036022a0b2
 crates/hale-types/tests/model_fanout.rs#1 48fefaa10bc3abfc
+crates/hale-types/tests/model_fanout.rs#4 788a618eef9f9674
+crates/hale-types/tests/model_fanout.rs#5 ad342686fefba402
 crates/hale-types/tests/model_provenance.rs#4 480eb793e2f9593b
 crates/hale-types/tests/ownership_graph.rs#0 7e11ffc20b038f18
 crates/hale-types/tests/ownership_graph.rs#1 16924f2abbf29e62

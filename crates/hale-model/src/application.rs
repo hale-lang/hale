@@ -957,7 +957,19 @@ impl ApplicationModel {
                                 .union(crate::hole::RelationSet::CALLS)
                                 .union(
                                     crate::hole::RelationSet::EFFECTS,
-                                );
+                                )
+                                // Change 5h round 3: the CANONICAL
+                                // mask, which `validate` enforces
+                                // capability consistency against.
+                                // The builder's private account
+                                // already withdrew COSTS here; this
+                                // one did not, so a hand-built or
+                                // mutated model could set
+                                // `exact_costs = true` over an
+                                // absorbed call hole and validate
+                                // clean. Every consumer is entitled
+                                // to rely on `validate()`.
+                                .union(crate::hole::RelationSet::COSTS);
                         }
                         crate::AbsorbedEvent::PublishHole => {
                             m = m.union(
@@ -972,7 +984,8 @@ impl ApplicationModel {
                                 )
                                 .union(
                                     crate::hole::RelationSet::EFFECTS,
-                                );
+                                )
+                                .union(crate::hole::RelationSet::COSTS);
                         }
                         _ => {}
                     }

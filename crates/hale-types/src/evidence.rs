@@ -8,7 +8,7 @@
 //! judgment of itself), and carries the model's `TopologyShapeV1`
 //! so a judgment structurally refuses stale evidence.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use hale_model::{
     ApplicationModel, CertificateEvidence, ClaimIr, ClaimIrTable,
@@ -99,30 +99,95 @@ pub fn model_fanout<'a>(
     model: &'a ApplicationModel,
 ) -> impl Fn(&crate::alloc_summary::FnKey, u32, &str) -> Option<u64> + 'a
 {
-    // Fan-out is a DELIVERY question about one publish site, and
-    // the model already answers it — the same join `causes:` uses,
-    // plus the arrangement's instance population.
+    // Fan-out is TRANSITIVE AMPLIFICATION: how many subscriber
+    // deliveries one invocation can cause, following the bus as far
+    // as it goes. `A -> Relay::on_a -> B -> three Sinks` is four
+    // deliveries, not one — the ordinary call graph the engine walks
+    // never enters a handler through the bus, so this closure has to
+    // carry the whole delivery closure itself.
     //
-    // Round 2: counting covering `subscribes` rows was wrong twice
-    // over. A row is one DECLARATION, so three arranged replicas of
-    // a `Sink` counted as one delivery while dispatching three; and
-    // address coverage charged mutually-exclusive key filters that
-    // one exact publish key can never both reach.
+    // Round 2 counted covering `subscribes` rows: a declaration
+    // count, so three arranged replicas read as one. Round 3 fixes
+    // the two remaining errors — it stopped at the first hop, and it
+    // gated on a GLOBAL population account, so one unrelated
+    // dynamically-born locus turned every fan-out in the program
+    // unbounded.
     let e = &model.entities;
     let r = &model.relations;
-    // How many instances of a locus the arrangement contains, and
-    // whether that count is EXACT. A dynamic birth withdraws the
-    // ownership account, and an unknown population is unknown
-    // fan-out, not one.
-    let population_exact = !model.holes.iter().any(|h| {
-        h.hides.intersects(
-            hale_model::RelationSet::OWNS
-                .union(hale_model::RelationSet::CARDINALITY),
-        )
-    });
+    // Population of one locus decl, and whether it is EXACT.
+    // Scoped: a hole matters when it is anchored to a locus on THIS
+    // closure, never because some unrelated locus is born
+    // dynamically.
+    fn population_of(
+        model: &ApplicationModel,
+        decl: hale_model::LocusDeclId,
+    ) -> Option<u64> {
+        let e = &model.entities;
+        let holed = model.holes.iter().any(|h| {
+            h.hides.intersects(
+                hale_model::RelationSet::OWNS
+                    .union(hale_model::RelationSet::CARDINALITY),
+            ) && matches!(
+                h.at,
+                hale_model::EntityRef::LocusDecl(l) if l == decl
+            )
+        });
+        if holed {
+            return None;
+        }
+        let n = e
+            .locus_instances
+            .iter()
+            .filter(|i| i.decl == decl)
+            .count() as u64;
+        if n == 0 { None } else { Some(n) }
+    }
+    // How many instances of `sub`'s owner receive `publish`.
+    fn reached_by(
+        model: &ApplicationModel,
+        publish: &hale_model::Publish,
+        sub: &hale_model::Subscribe,
+    ) -> Option<u64> {
+            let e = &model.entities;
+            let r = &model.relations;
+            let owner = r
+                .member_of
+                .iter()
+                .find(|m| m.function == sub.handler)
+                .map(|m| m.locus)?;
+            let total = population_of(model, owner)?;
+            if sub.key_predicate
+                != hale_model::keys::KeyPredicate::EqReplica
+            {
+                return Some(total);
+            }
+            // `where key == replica` narrows to the replica the key
+            // selects, when the publish key is statically exact.
+            match &publish.key_domain {
+                Some(hale_model::keys::KeyDomain::Exact(vals)) => Some(
+                    e.locus_instances
+                        .iter()
+                        .filter(|i| i.decl == owner)
+                        .filter(|i| {
+                            i.replica.is_some_and(|ix| {
+                                vals.iter().any(|v| {
+                                    matches!(
+                                        v,
+                                        hale_model::keys::KeyValue::Int(k)
+                                            if *k == ix as i64
+                                    )
+                                })
+                            })
+                        })
+                        .count() as u64,
+                ),
+                // An unknown key may select any replica.
+                _ => Some(total),
+            }
+    }
     move |key: &crate::alloc_summary::FnKey,
-                          site: u32,
-                          subject: &str|
+          site: u32,
+          subject: &str|
           -> Option<u64> {
         let display = key.display();
         let fid = e
@@ -131,88 +196,58 @@ pub fn model_fanout<'a>(
             .position(|f| f.display == display)
             .map(|i| hale_model::FunctionId(i as u32))?;
         // The site ordinal is the model's own publish-row key.
-        let publish = r
+        let root = r
             .publishes
             .iter()
             .find(|p| p.function == fid && p.site == site)?;
         // Belt and braces: the row the engine is asking about must
         // address the wire it named.
-        let names_it = e.subjects[publish.subject.index()].pattern
+        let names_it = e.subjects[root.subject.index()].pattern
             == subject
             || e.topics.iter().any(|t| {
-                t.subject == publish.subject
+                t.subject == root.subject
                     && (t.display == subject || t.name == subject)
             });
         if !names_it {
             return None;
         }
-        // An outbound route delivers to peers this application does
-        // not model — the fan-out beyond it is not ours to count.
-        if crate::model_query::endpoint_incomplete(
-            model,
-            publish.subject,
-            crate::model_query::Direction::Downstream,
-        ) {
-            return None;
-        }
-        if !population_exact {
-            return None;
-        }
+        // The delivery closure: publishes to evaluate, handlers
+        // already counted (a cycle is settled, not re-counted).
         let mut total: u64 = 0;
-        for sub in r.subscribes.iter() {
-            if !crate::model_query::may_deliver(e, publish, sub) {
+        let mut frontier: Vec<hale_model::Publish> = vec![root.clone()];
+        let mut settled: BTreeSet<(u32, u32)> = BTreeSet::new();
+        let mut reached_fns: BTreeSet<u32> = BTreeSet::new();
+        while let Some(p) = frontier.pop() {
+            if !settled.insert((p.function.0, p.site)) {
                 continue;
             }
-            // Expand the subscription through its owner's exact
-            // population: one declaration, one delivery PER
-            // INSTANCE.
-            let Some(owner) = r
-                .member_of
-                .iter()
-                .find(|m| m.function == sub.handler)
-                .map(|m| m.locus)
-            else {
-                // A handler owned by no locus is not an arranged
-                // registration the model can count.
-                return None;
-            };
-            let instances: Vec<&hale_model::LocusInstance> = e
-                .locus_instances
-                .iter()
-                .filter(|i| i.decl == owner)
-                .collect();
-            if instances.is_empty() {
+            // An outbound route delivers to peers this application
+            // does not model — scoped to THIS subject, so an
+            // unrelated adapter cannot poison the count.
+            if crate::model_query::endpoint_incomplete(
+                model,
+                p.subject,
+                crate::model_query::Direction::Downstream,
+            ) {
                 return None;
             }
-            // `where key == replica` narrows to the replica the key
-            // selects, when the publish key is statically exact.
-            let reached = if sub.key_predicate
-                == hale_model::keys::KeyPredicate::EqReplica
-            {
-                match &publish.key_domain {
-                    Some(hale_model::keys::KeyDomain::Exact(vals)) => {
-                        instances
-                            .iter()
-                            .filter(|i| {
-                                i.replica.is_some_and(|ix| {
-                                    vals.iter().any(|v| {
-                                        matches!(
-                                            v,
-                                            hale_model::keys::KeyValue::Int(k)
-                                                if *k == ix as i64
-                                        )
-                                    })
-                                })
-                            })
-                            .count()
-                    }
-                    // An unknown key may select any replica.
-                    _ => instances.len(),
+            for sub in r.subscribes.iter() {
+                if !crate::model_query::may_deliver(e, &p, sub) {
+                    continue;
                 }
-            } else {
-                instances.len()
-            };
-            total = total.saturating_add(reached as u64);
+                let n = reached_by(model, &p, sub)?;
+                total = total.saturating_add(n);
+                // …and what that handler publishes onward is caused
+                // by the same invocation.
+                if !reached_fns.insert(sub.handler.0) {
+                    continue;
+                }
+                for onward in
+                    r.publishes.iter().filter(|q| q.function == sub.handler)
+                {
+                    frontier.push(onward.clone());
+                }
+            }
         }
         Some(total)
     }
