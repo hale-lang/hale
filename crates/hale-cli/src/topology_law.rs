@@ -3292,25 +3292,58 @@ pub fn validate_law_account(
         }
     }
     use hale_model::JudgmentFamily as JF;
-    const MIGRATED: &[(&str, JF)] = &[
+    // SCHEMA-SPECIFIC and exact (review round 2). Migrating a
+    // family without extending this table left the artifact
+    // internally contradictory: a row could declare
+    // `"family": "causes"`, the model could define a completeness
+    // contract for it, and the document was structurally forbidden
+    // from saying whether that contract was met. Each schema
+    // version names exactly the families it must account for, so a
+    // corrected artifact is admitted and an under-stated one is
+    // not.
+    const MIGRATED_113: &[(&str, JF)] = &[
         ("reachability", JF::Reachability),
         ("boundary", JF::Boundary),
         ("endpoint", JF::Endpoint),
         ("bound", JF::Bound),
         ("certificate", JF::Certificate),
     ];
+    const MIGRATED_114: &[(&str, JF)] = &[
+        ("reachability", JF::Reachability),
+        ("boundary", JF::Boundary),
+        ("endpoint", JF::Endpoint),
+        ("bound", JF::Bound),
+        ("certificate", JF::Certificate),
+        ("causes", JF::Causes),
+    ];
+    const MIGRATED_115: &[(&str, JF)] = &[
+        ("reachability", JF::Reachability),
+        ("boundary", JF::Boundary),
+        ("endpoint", JF::Endpoint),
+        ("bound", JF::Bound),
+        ("certificate", JF::Certificate),
+        ("causes", JF::Causes),
+        ("depends", JF::Depends),
+    ];
+    let schema = v["schema"].as_str().unwrap_or_default();
+    let migrated: &[(&str, JF)] = match schema {
+        "1.15" => MIGRATED_115,
+        "1.14" => MIGRATED_114,
+        _ => MIGRATED_113,
+    };
     let adequacy = v["adequacy"].as_object().ok_or_else(|| {
         format!("{}: adequacy must be an object", label)
     })?;
-    if adequacy.len() != MIGRATED.len() {
+    if adequacy.len() != migrated.len() {
         return Err(format!(
             "{}: malformed artifact — adequacy must carry exactly \
-             the {} migrated families",
+             the {} families schema {} accounts for",
             label,
-            MIGRATED.len()
+            migrated.len(),
+            schema
         ));
     }
-    for (name, fam) in MIGRATED {
+    for (name, fam) in migrated {
         let required = fam.required_relations().0;
         let expect = if vouched & required == required {
             "exact"

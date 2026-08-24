@@ -561,20 +561,46 @@ impl JudgmentFamily {
             JudgmentFamily::Certificate => R::CALLS
                 .union(R::EFFECTS)
                 .union(R::PUBLISHES),
-            // `causes` walks CALLS for publish sites, PUBLISHES and
-            // DELIVERY to reach handlers, EFFECTS to say what they do.
+            // `causes` walks CALLS for publish sites and PUBLISHES
+            // for the sends themselves, then asks the shared
+            // completeness query what lies downstream — which reads
+            // SUBSCRIBES (is the handler set complete), KEY_FILTERS
+            // (an unknown filter widens who receives), DELIVERY (an
+            // opaque boundary hides it) and ROUTES (a typed outbound
+            // binding leaves the application). EFFECTS says what the
+            // handlers do.
+            //
+            // Round 2: the first version named only CALLS, PUBLISHES,
+            // DELIVERY and EFFECTS, letting DELIVERY — the
+            // must-deliver GUARANTEE account — stand in for complete
+            // possible-delivery topology. The epic keeps those
+            // distinct, and this list must name what the queries
+            // actually read.
             JudgmentFamily::Causes => R::CALLS
                 .union(R::PUBLISHES)
+                .union(R::SUBSCRIBES)
+                .union(R::KEY_FILTERS)
                 .union(R::DELIVERY)
+                .union(R::ROUTES)
                 .union(R::EFFECTS),
             // `depends` walks the same graph BACKWARD, and owes
             // nothing to EFFECTS: the claim is reachability of a
             // subject, not what anything does with it. OWNS is how
             // a locus's handler set is found, and losing it means
             // the subscription set is not known to be complete.
-            JudgmentFamily::Depends => R::PUBLISHES
+            // Round 2: CALLS joins the list. The backward walk
+            // climbs reverse call edges from a publish site to
+            // every locus that can reach it — a publish inside a
+            // free helper belongs to its callers — so an incomplete
+            // call account is an incomplete dependency account.
+            // ROUTES for the same reason it appears under `causes`:
+            // an inbound binding is an upstream the model cannot
+            // see past.
+            JudgmentFamily::Depends => R::CALLS
+                .union(R::PUBLISHES)
                 .union(R::SUBSCRIBES)
                 .union(R::DELIVERY)
+                .union(R::ROUTES)
                 .union(R::OWNS),
             // `@budget` counts over per-call COSTS along CALLS;
             // `publish` and `fanout` add the bus dimensions, which

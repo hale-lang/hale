@@ -82,8 +82,8 @@ Diagnostics for the family are now `Claim`-kind, matching the other
 law families.
 
 **Artifact schema 1.14 → 1.15.** `depends:` rows carry
-`"family": "depends"` with their own rendered `form` and no
-`law.legacy` entry; that report now covers `@budget` alone.
+`"family": "depends"` with their own rendered `form`, an
+`adequacy.depends` entry, and no `law.legacy` entry; that report now covers `@budget` alone.
 
 ### `causes:` is judged over the canonical model (GH #476 Change 5f)
 
@@ -113,8 +113,9 @@ Diagnostics for the family are now `Claim`-kind, matching the
 other law families.
 
 **Artifact schema 1.13 → 1.14.** `causes:` rows carry
-`"family": "causes"` with their own rendered `form`, and no
-longer appear in `law.legacy`; admission re-renders the form from
+`"family": "causes"` with their own rendered `form`, an
+`adequacy.causes` entry stating whether the model is exact or
+degraded for the family, and no longer appear in `law.legacy`; admission re-renders the form from
 the typed payload rather than trusting an imported verdict.
 
 ### `LegacyProjection` is gone (GH #476 follow-up)
