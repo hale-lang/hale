@@ -131,3 +131,127 @@ fn main() { App { }; }
         ds
     );
 }
+
+/// Review pin (round 3): fan-out is TRANSITIVE amplification.
+///
+/// `App::fire` publishes A; `Relay::on_a` receives it and publishes
+/// B; three `Sink` instances receive B. That is four deliveries
+/// caused by one invocation. The engine's ordinary call graph never
+/// enters a handler through the bus, so the closure has to carry the
+/// whole delivery chain — asking only about the A site got 1 and let
+/// `@budget(fanout = 1)` hold falsely.
+#[test]
+fn fanout_follows_the_bus_to_the_second_hop() {
+    let src = r#"
+type T { n: Int = 0; }
+topic A { payload: T; subject: "a"; }
+topic B { payload: T; subject: "b"; }
+locus Relay {
+    bus { subscribe A as on_a; publish B; }
+    params { n: Int = 0; }
+    fn on_a(t: T) { B <- T { n: t.n }; }
+}
+locus Sink {
+    bus { subscribe B as on_b; }
+    params { n: Int = 0; }
+    fn on_b(t: T) { self.n = t.n; }
+}
+main locus App {
+    params {
+        r: Relay = Relay { };
+        s1: Sink = Sink { }; s2: Sink = Sink { }; s3: Sink = Sink { };
+    }
+    bus { publish A; }
+    @budget(fanout = 3)
+    fn fire() { A <- T { n: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let ds = diags(src);
+    assert!(
+        ds.iter().any(|m| m.contains("budget exceeded")
+            && m.contains("fanout")
+            && m.contains(" 4 ")),
+        "one delivery to Relay plus three to Sink is four: {:?}",
+        ds
+    );
+}
+
+/// …and the same program at the true bound certifies.
+#[test]
+fn the_transitive_bound_is_reachable() {
+    let src = r#"
+type T { n: Int = 0; }
+topic A { payload: T; subject: "a"; }
+topic B { payload: T; subject: "b"; }
+locus Relay {
+    bus { subscribe A as on_a; publish B; }
+    params { n: Int = 0; }
+    fn on_a(t: T) { B <- T { n: t.n }; }
+}
+locus Sink {
+    bus { subscribe B as on_b; }
+    params { n: Int = 0; }
+    fn on_b(t: T) { self.n = t.n; }
+}
+main locus App {
+    params {
+        r: Relay = Relay { };
+        s1: Sink = Sink { }; s2: Sink = Sink { }; s3: Sink = Sink { };
+    }
+    bus { publish A; }
+    @budget(fanout = 4)
+    fn fire() { A <- T { n: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let ds = diags(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("budget exceeded")),
+        "{:?}",
+        ds
+    );
+}
+
+/// Review pin (round 3): population completeness is scoped to the
+/// loci ON this delivery closure.
+///
+/// It used to be one global question — "is there an OWNS or
+/// CARDINALITY hole anywhere?" — so a single unrelated dynamically
+/// born locus made every fan-out in the program unbounded.
+#[test]
+fn an_unrelated_dynamic_birth_does_not_poison_a_local_fanout() {
+    let src = r#"
+type T { n: Int = 0; }
+topic Ticks { payload: T; subject: "ticks"; }
+locus Ephemeral {
+    params { n: Int = 0; }
+    fn work() -> Int { return self.n; }
+}
+locus Sink {
+    bus { subscribe Ticks as on_tick; }
+    params { n: Int = 0; }
+    fn on_tick(t: T) { self.n = t.n; }
+}
+main locus App {
+    params { s: Sink = Sink { }; }
+    bus { publish Ticks; }
+    @budget(fanout = 1)
+    fn beat() { Ticks <- T { n: 1 }; }
+    run() {
+        let e = Ephemeral { };
+        self.beat();
+    }
+}
+fn main() { App { }; }
+"#;
+    let ds = diags(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("budget exceeded")
+            && m.contains("fanout")),
+        "`Ephemeral` subscribes to nothing on this closure: {:?}",
+        ds
+    );
+}

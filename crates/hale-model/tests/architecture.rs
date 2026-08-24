@@ -1743,3 +1743,61 @@ fn effect_class_builtin_flag_must_agree_with_the_name() {
         Err(ClaimIrError::NameDisagreement { .. })
     ));
 }
+
+/// Review pin (Change 5h round 3): ABSORPTION residue is part of the
+/// canonical unresolved-relation mask, not only of the builder's
+/// private bookkeeping.
+///
+/// The builder was updated so an absorbed `CallHole` / `Truncated`
+/// withdraws COSTS; the canonical mask that `validate()` enforces
+/// against was not. A model could therefore carry an absorbed call
+/// hole, claim `exact_costs = true`, validate clean, and have
+/// `family_adequacy(Budget)` advertise an exact cost account. The
+/// builder being right today is not enough — every consumer is
+/// entitled to rely on `validate()`.
+#[test]
+fn absorbed_call_residue_contradicts_an_exact_cost_account() {
+    for ev in [
+        hale_model::AbsorbedEvent::CallHole(
+            hale_model::AbsorbedHoleKind::IndirectCall,
+        ),
+        hale_model::AbsorbedEvent::Truncated,
+    ] {
+        let mut m = tiny_model();
+        m.analyses.stdlib_absorption.push(
+            hale_model::StdlibAbsorption {
+                from: FunctionId(0),
+                site: 0,
+                entry_dispatch: None,
+                entry_in_loop: false,
+                entry_group: None,
+                entry_provenance: ProvenanceId(0),
+                nodes: vec![hale_model::AbsorbedNode {
+                    display: "interior".to_string(),
+                    carries: Vec::new(),
+                    direct_effects: Vec::new(),
+                    events: vec![ev.clone()],
+                }],
+            },
+        );
+        // Only the cost account is claimed, so the contradiction
+        // this pins cannot be satisfied by a sibling flag (a call
+        // hole hides CALLS and EFFECTS too).
+        m.capabilities = hale_model::Capabilities {
+            exact_costs: true,
+            ..Default::default()
+        };
+        assert!(
+            matches!(
+                m.validate(),
+                Err(ModelError::CapabilityContradiction {
+                    capability: "exact_costs"
+                })
+            ),
+            "an absorbed {:?} must refuse an exact cost account, \
+             got {:?}",
+            ev,
+            m.validate()
+        );
+    }
+}

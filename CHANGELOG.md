@@ -86,8 +86,17 @@ Supporting facts, added in the same change:
   reported a number. That is the honest answer — the population is
   genuinely not known — and the verdict is unchanged in every
   corpus program; only the diagnostic's wording moves.
+  publish whose key can reach only one. It is also TRANSITIVE:
+  `A → Relay::on_a → B → three Sinks` is four deliveries caused by
+  one invocation, and the ordinary call graph never enters a
+  handler through the bus. Population completeness is scoped to the
+  loci on that delivery closure, so an unrelated dynamically-born
+  locus no longer makes every fan-out in the program unbounded. A
+  dynamic population of a REACHED subscriber, an unknown key, an
+  external route, or a computed subject is unboundedness — never
+  one.
 
-**Artifact schema 1.15 → 1.16.** `@budget` rows carry
+**Artifact schema 1.16 → 1.17.** `@budget` rows carry
 `"family": "budget"` with their own `certs` evidence and an
 `adequacy.budget` entry. `law.legacy`
 is now empty for every program — no family is `unmigrated` any
@@ -132,7 +141,7 @@ message graph only.
 Diagnostics for the family are now `Claim`-kind, matching the other
 law families.
 
-**Artifact schema 1.14 → 1.15.** `depends:` rows carry
+**Artifact schema 1.15 → 1.16.** `depends:` rows carry
 `"family": "depends"` with their own rendered `form`, an
 `adequacy.depends` entry, and no `law.legacy` entry; that report now covers `@budget` alone.
 
@@ -163,11 +172,24 @@ Three user-visible consequences, all corrections:
 Diagnostics for the family are now `Claim`-kind, matching the
 other law families.
 
-**Artifact schema 1.13 → 1.14.** `causes:` rows carry
+**Artifact schema 1.14 → 1.15.** `causes:` rows carry
 `"family": "causes"` with their own rendered `form`, an
 `adequacy.causes` entry stating whether the model is exact or
 degraded for the family, and no longer appear in `law.legacy`; admission re-renders the form from
 the typed payload rather than trusting an imported verdict.
+### Every typed law row states its rendered form (schema 1.13 → 1.14)
+
+A row whose law renders a compatibility form now carries it, and
+admission REQUIRES it: the form re-renders from the typed payload,
+so substituting an operand orphans it. Previously the field was
+optional and the check was guarded on its presence — deleting it
+skipped the operand binding entirely.
+
+Requiring a field is a decoding-contract change, not an additive
+one: a schema-1.13 artifact carries rows without the key and would
+be refused by a reader built from this tree. So the schema number
+moves with it.
+
 
 ### `LegacyProjection` is gone (GH #476 follow-up)
 

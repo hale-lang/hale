@@ -42,6 +42,30 @@ fn workdir(tag: &str) -> PathBuf {
 }
 
 /// Dump the fixture's artifact into `dir` and return its path.
+/// Dump an artifact from a program whose only errors are CLAIM
+/// errors. A claim error still emits the artifact — the verdict is
+/// the thing being recorded — so a law the model refuses to certify
+/// is exactly the case this is for.
+fn dump_artifact_with_law_errors(
+    dir: &Path,
+    source: &Path,
+) -> (PathBuf, String) {
+    let artifact = dir.join("app.hale.topology");
+    let out = hale()
+        .arg("check")
+        .arg(source)
+        .arg(format!("--dump-topology={}", artifact.display()))
+        .output()
+        .expect("hale check --dump-topology");
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        artifact.exists(),
+        "a claim error still emits the artifact: {}",
+        err
+    );
+    (artifact, err)
+}
+
 fn dump_artifact(dir: &Path, source: &Path) -> PathBuf {
     let artifact = dir.join("app.hale.topology");
     let out = hale()
@@ -732,7 +756,17 @@ fn main() { App { }; }
 "#,
     )
     .unwrap();
-    let artifact = dump_artifact(&dir, &src);
+    // Round 3: a module-scoped subject is outside the
+    // analyzable universe, so `causes:` over it is UNCERTIFIED and
+    // says so — check is no longer silent about a law it could not
+    // certify. The artifact is still emitted and must still admit.
+    let (artifact, err) = dump_artifact_with_law_errors(&dir, &src);
+    assert!(
+        err.contains("outside the analyzable universe")
+            || err.contains("cannot be certified"),
+        "check explains the refusal: {}",
+        err
+    );
     let out = hale()
         .arg("topology")
         .arg("graph")
@@ -3195,6 +3229,98 @@ fn main() { App { }; }
 }
 
 
+/// Review pin (#496 round 2): the rendered form is REQUIRED, not
+/// checked-when-present.
+///
+/// The full forging attempt, with every contradiction the artifact
+/// could still raise removed by hand: delete the row's `form`,
+/// substitute a different valid declared operand into the typed
+/// payload, upgrade the verdict to `holds`, drop the row evidence
+/// that a non-holds verdict would have owed, then restamp
+/// `shape_hash`, `law_digest` and `artifact_digest` — all of which
+/// are recomputed FROM the mutated rows and therefore recover
+/// nothing.
+///
+/// If `form` were optional, this document would be admitted and a
+/// `causes:` law would read as holding over a class it never named.
+#[test]
+fn a_law_row_may_not_omit_its_rendered_form() {
+    let dir = workdir("formless");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+effect money;
+effect audit;
+type T { n: Int = 0; }
+topic Settled { payload: T; subject: "settled"; }
+locus Ledger {
+    bus { subscribe Settled as on_settled; }
+    params { n: Int = 0; }
+    @effects(is: { money })
+    fn on_settled(t: T) { self.n = t.n; }
+}
+main locus App {
+    params { l: Ledger = Ledger { }; }
+    bus { publish Settled; }
+    @effects(causes: { money })
+    fn fire() { Settled <- T { n: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    assert!(
+        raw.contains("causes {money} from {App::fire}"),
+        "test premise: the row states its rendered form:\n{}",
+        raw
+    );
+
+    // 1. delete the form, 2. swap the operand for another DECLARED
+    //    class, 3. claim `holds`, 4. drop any row evidence.
+    // Anchored on the following key so this removes the LAW ROW's
+    // form, not the identically-spelled fingerprint in the
+    // `law.legacy` report (which the cutover deletes anyway).
+    let mut cut = raw.replacen(
+        "\"form\": \"causes {money} from {App::fire}\", \"file\"",
+        "\"file\"",
+        1,
+    );
+    assert_ne!(cut, raw, "test premise: the form field was removed");
+    // …and the legacy report's own entry goes with it, so the
+    // refusal cannot be blamed on an orphaned compatibility row.
+    cut = cut.replacen(
+        "\"form\": \"causes {money} from {App::fire}\"",
+        "\"form\": \"causes {audit} from {App::fire}\"",
+        1,
+    );
+    cut = cut.replacen("\"class\": \"money\"", "\"class\": \"audit\"", 1);
+    cut = cut.replacen("\"verdict\": \"violated\"", "\"verdict\": \"holds\"", 1);
+
+    let p2 = dir.join("forged.topology");
+    std::fs::write(&p2, restamp_digest(&strip_trailer(&cut))).unwrap();
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&p2)
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "a formless law row was admitted — the operand binding is \
+         optional and therefore absent"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("omits its rendered form"),
+        "and it is refused for the RIGHT reason: {}",
+        err
+    );
+}
+
 /// Review pin (#497 round 2): a migrated family ships with its
 /// adequacy account, and admission requires it.
 ///
@@ -3232,7 +3358,7 @@ fn main() { App { }; }
     let artifact = dump_artifact(&dir, &src);
     let raw = std::fs::read_to_string(&artifact).unwrap();
     let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
-    assert_eq!(v["schema"], "1.16");
+    assert_eq!(v["schema"], "1.17");
     let adequacy =
         v["adequacy"].as_object().expect("adequacy object");
     assert!(
