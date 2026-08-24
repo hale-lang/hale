@@ -94,9 +94,26 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
         .flat_map(|(_, ds)| ds.into_iter().map(|(d, _foreign)| d))
         .collect();
     hale_types::stdlib_bodies::demangle_imports(&mut group_diags, &[]);
+    // Change 5h: `@budget` certifies through the same evidence
+    // pipeline, so the comparison arm is the counting engines too.
+    let programs_b: Vec<&hale_syntax::ast::Program> = vec![&program];
+    let mut budget_diags =
+        hale_types::budget_check::budget_diags_with_renames(
+            &programs_b,
+            &[],
+        );
+        // Change 5h: fan-out is a publish-SITE question, answered by
+    // the model. Both arms take the SAME supplier — fan-out
+    // supply is not the thing under differential.
+    let fanout = hale_types::evidence::model_fanout(&model);
+    budget_diags.extend(hale_types::quantitative::quantitative_diags(
+        &programs_b,
+        &fanout,
+    ));
     let old: Vec<(String, hale_syntax::Span)> = p1
         .iter()
         .chain(group_diags.iter())
+        .chain(budget_diags.iter())
         .map(|d| (d.message.clone(), d.span))
         .collect();
     // New: lowering issues (carries validation) + judgment output.
@@ -212,7 +229,10 @@ fn diff_one(src: &str, origin: &str) -> Result<usize, String> {
     let new: Vec<(String, hale_syntax::Span)> = table
         .issues
         .iter()
-        .filter(|i| i.message.contains("asserts about effect class"))
+        .filter(|i| {
+            i.message.contains("asserts about effect class")
+                || i.message.contains("budgets effect class")
+        })
         .map(|i| (i.message.clone(), issue_span(i.provenance)))
         .chain(
             judged
@@ -468,7 +488,11 @@ fn main() { App { }; }
 /// (causes / budgets) still produce exactly one Judged row each —
 /// at minimum Uncertified — instead of silently dropping out.
 #[test]
-fn unmigrated_families_judge_uncertified() {
+fn a_budget_contract_certifies_through_evidence() {
+    // Change 5h: `@budget` was the last family judged Uncertified
+    // for want of an engine. It certifies through the evidence
+    // sidecar now — the counting engine still measures, and the
+    // verdict is the judgment's.
     let src = r#"
 @budget(alloc_per_call = 4)
 fn hot(v: Int) -> Int { return v + 1; }
@@ -489,10 +513,42 @@ fn main() { App { }; }
         .expect("budget row is judged");
     assert_eq!(
         j.verdict,
-        Verdict::Uncertified,
-        "an unmigrated family judges Uncertified, not nothing"
+        Verdict::Holds,
+        "a fn that allocates nothing is inside a budget of 4"
     );
     assert!(j.diags.is_empty());
+}
+
+/// …and the violating direction, with the engine's own message.
+#[test]
+fn an_exceeded_budget_reports_the_engine_diagnostic() {
+    let src = r#"
+type T { n: Int = 0; }
+@budget(alloc_per_call = 0)
+fn hot(v: Int) -> Int { let t = T { n: v }; return t.n; }
+main locus App {
+    run() { println(hot(1)); }
+}
+fn main() { App { }; }
+"#;
+    let (_model, table, _evidence, judged) = derive_all(src);
+    let row = table
+        .rows
+        .iter()
+        .find(|r| matches!(r.law, ClaimIr::AllocBudget { .. }))
+        .expect("budget row lowers");
+    let j = judged
+        .iter()
+        .find(|j| j.ordinal == row.ordinal)
+        .expect("budget row is judged");
+    assert_eq!(j.verdict, Verdict::Violated);
+    assert!(
+        j.diags
+            .iter()
+            .any(|d| d.message.contains("hot-path budget exceeded")),
+        "the engine's diagnostic reaches the judgment verbatim: {:?}",
+        j.diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
 }
 
 /// The sidecar's own structural laws hold for a derived pair.
@@ -993,10 +1049,11 @@ fn main() { App { }; }
 }
 
 /// Review pin (round 6): an undeclared user-class `@budget`
-/// dimension judges Invalid (the quantitative evaluator refuses
-/// it; the row must not fall through to Uncertified), the
-/// evaluator's diagnostic is retained as a lowering issue, and a
-/// VALID but unmigrated budget still judges Uncertified.
+/// dimension judges Invalid — the row must not fall through to
+/// Uncertified — and its diagnostic is retained as a lowering
+/// issue. Change 5h: a VALID budget now certifies through the
+/// evidence sidecar instead of staying Uncertified for want of an
+/// engine.
 #[test]
 fn undeclared_budget_class_is_invalid_not_uncertified() {
     let src = r#"
@@ -1043,8 +1100,8 @@ fn main() { App { }; }
     );
     assert_eq!(
         verdict_of("charge"),
-        Verdict::Uncertified,
-        "a valid class with an unmigrated engine stays Uncertified"
+        Verdict::Holds,
+        "a declared class with a budget the fn respects certifies"
     );
     assert_eq!(
         table
@@ -1528,5 +1585,78 @@ fn moved_membership_is_refused_everywhere() {
         row.verdict,
         Verdict::Holds,
         "a moved membership cannot manufacture Holds"
+    );
+}
+
+
+/// Review pin (round 7): evidence produced under OLDER analysis
+/// semantics is refused, not replayed.
+///
+/// `EvidenceTable::validate` treats an equal `inputs_digest` as
+/// proof that the sidecar was produced under the current semantics
+/// — it does not hash the implementation. So when the producer's
+/// RESULTS move (rounds 4–7 changed `@budget` fan-out from a
+/// reachability set to a per-scenario execution count),
+/// `ANALYSIS_SEMANTICS_VERSION` is the only thing that gives the
+/// new answers a distinct identity. A sidecar can otherwise share
+/// the source, the model shape, the law digest and the coverage
+/// digest while carrying a verdict this compiler disagrees with.
+#[test]
+fn evidence_from_older_analysis_semantics_is_refused() {
+    let src = r#"
+type T { n: Int = 0; }
+topic A { payload: T; subject: "a"; }
+locus Sink {
+    bus { subscribe A as on_a; }
+    params { n: Int = 0; }
+    fn on_a(t: T) { self.n = t.n; }
+}
+main locus App {
+    params { s: Sink = Sink { }; }
+    bus { publish A; }
+    @budget(fanout = 1)
+    fn fire() { A <- T { n: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let (model, table, evidence, _judged) = derive_all(src);
+    // The freshly derived sidecar ties to this toolchain.
+    assert!(
+        evidence
+            .validate(
+                &model,
+                hale_types::topology_projection::project_shape_hash(
+                    &model
+                ),
+                &table,
+                hale_types::evidence::analysis_inputs_digest(),
+            )
+            .is_ok(),
+        "test premise: the derived pair validates"
+    );
+    // …and the SAME sidecar, judged by a toolchain whose analysis
+    // semantics differ, does not. Nothing else about it changed.
+    let older = {
+        let mut h = std::num::Wrapping(0u64);
+        h += std::num::Wrapping(
+            hale_types::evidence::analysis_inputs_digest(),
+        );
+        h += std::num::Wrapping(1);
+        h.0
+    };
+    assert!(
+        evidence
+            .validate(
+                &model,
+                hale_types::topology_projection::project_shape_hash(
+                    &model
+                ),
+                &table,
+                older,
+            )
+            .is_err(),
+        "a sidecar whose analysis identity disagrees must be \
+         refused, not replayed"
     );
 }

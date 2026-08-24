@@ -2216,8 +2216,7 @@ pub fn family_of(law: &Law) -> &'static str {
         | Law::PhaseEffects { .. } => "certificate",
         Law::EffectCauses { .. } => "causes",
         Law::DependsSet { .. } => "depends",
-        Law::AllocBudget { .. }
-        | Law::QuantBudget { .. } => "unmigrated",
+        Law::AllocBudget { .. } | Law::QuantBudget { .. } => "budget",
     }
 }
 
@@ -2377,6 +2376,12 @@ pub fn expected_cert_forms(law: &Law) -> Option<Vec<String>> {
                 )
             })
             .collect(),
+        // Change 5h: a budget contract generates exactly one
+        // certificate, and its form is the same string the budget
+        // binding already re-rendered — so the two cannot drift.
+        Law::AllocBudget { .. } | Law::QuantBudget { .. } => {
+            vec![expected_budget_form(law)?]
+        }
         _ => return None,
     })
 }
@@ -2474,6 +2479,7 @@ pub fn validate_law_account(
         "certificate",
         "causes",
         "depends",
+        "budget",
         "unmigrated",
     ];
     const VERDICTS: &[&str] =
@@ -2545,9 +2551,8 @@ pub fn validate_law_account(
             // `depends:` is an annotation on a LOCUS, `causes:` one
             // on a function; neither can arrive from a claims block
             // or a constitution.
-            "certificate" | "causes" | "depends" | "unmigrated" => {
-                origin == "annotation"
-            }
+            "certificate" | "causes" | "depends" | "budget"
+            | "unmigrated" => origin == "annotation",
             _ => {
                 origin == "main"
                     || origin == "library"
@@ -3291,6 +3296,7 @@ pub fn validate_law_account(
         ("exact_effects", 1 << 7),
         ("exact_cardinality", 1 << 10),
         ("exact_delivery_guarantees", 1 << 11),
+        ("exact_costs", 1 << 12),
     ];
     let caps = v["capabilities"].as_object().ok_or_else(|| {
         format!("{}: capabilities must be an object", label)
@@ -3347,8 +3353,19 @@ pub fn validate_law_account(
         ("causes", JF::Causes),
         ("depends", JF::Depends),
     ];
+    const MIGRATED_117: &[(&str, JF)] = &[
+        ("reachability", JF::Reachability),
+        ("boundary", JF::Boundary),
+        ("endpoint", JF::Endpoint),
+        ("bound", JF::Bound),
+        ("certificate", JF::Certificate),
+        ("causes", JF::Causes),
+        ("depends", JF::Depends),
+        ("budget", JF::Budget),
+    ];
     let schema = v["schema"].as_str().unwrap_or_default();
     let migrated: &[(&str, JF)] = match schema {
+        "1.17" => MIGRATED_117,
         "1.16" => MIGRATED_116,
         "1.15" => MIGRATED_115,
         _ => MIGRATED_114,

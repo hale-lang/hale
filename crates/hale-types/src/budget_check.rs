@@ -338,11 +338,19 @@ pub fn certificate_rows(
 fn budget_report_inner(
     programs: &[&Program],
     import_renames: &[(Vec<String>, String)],
-) -> (Vec<Diag>, Vec<crate::effects::LoweredCertificate>) {
+) -> (
+    Vec<Diag>,
+    Vec<crate::effects::LoweredCertificate>,
+    Vec<usize>,
+) {
     let summary =
         alloc_summary::summarize_programs_with_renames(programs, import_renames);
     let mut diags = Vec::new();
     let mut rows = Vec::new();
+    // Where each row's own diagnostics begin — how the grouped
+    // report below hands the engine's messages to the evidence
+    // sidecar without a second evaluation.
+    let mut starts: Vec<usize> = Vec::new();
 
     let one = |key: &FnKey,
                    budget: u32,
@@ -364,6 +372,7 @@ fn budget_report_inner(
                         Verdict::Holds
                     },
         });
+        before
     };
     for program in programs {
         for item in &program.items {
@@ -371,7 +380,9 @@ fn budget_report_inner(
                 TopDecl::Fn(fd) => {
                     if let Some(budget) = fd.budget {
                         let key = FnKey::free_fn(fd.name.name.clone());
-                        one(&key, budget, fd, &mut diags, &mut rows);
+                        let at =
+                            one(&key, budget, fd, &mut diags, &mut rows);
+                        starts.push(at);
                     }
                 }
                 TopDecl::Locus(l) => {
@@ -382,7 +393,11 @@ fn budget_report_inner(
                                     l.name.name.clone(),
                                     fd.name.name.clone(),
                                 );
-                                one(&key, budget, fd, &mut diags, &mut rows);
+                                let at = one(
+                                    &key, budget, fd, &mut diags,
+                                    &mut rows,
+                                );
+                                starts.push(at);
                             }
                         }
                     }
@@ -391,7 +406,37 @@ fn budget_report_inner(
             }
         }
     }
-    (diags, rows)
+    (diags, rows, starts)
+}
+
+/// #476 Change 5h: every `@budget(alloc_per_call)` contract as a
+/// lowered certificate WITH the engine's own diagnostics attached.
+///
+/// The evidence sidecar carries these verbatim, so the migrated
+/// judgment reports exactly what the engine found — it does not
+/// re-count. Counting stays this engine's question; the VERDICT is
+/// the judgment's, which is the duplicate authority #476 removes.
+pub fn certificate_groups(
+    programs: &[&Program],
+    import_renames: &[(Vec<String>, String)],
+) -> Vec<(crate::effects::LoweredCertificate, Vec<Diag>)> {
+    let (mut diags, rows, starts) =
+        budget_report_inner(programs, import_renames);
+    crate::stdlib_bodies::demangle_imports(&mut diags, import_renames);
+    // One row per annotated fn and its diagnostics emitted
+    // contiguously, so a row's group runs to the next row's start.
+    rows.into_iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let from = starts.get(i).copied().unwrap_or(diags.len());
+            let to = starts
+                .get(i + 1)
+                .copied()
+                .unwrap_or(diags.len())
+                .max(from);
+            (row, diags[from..to].to_vec())
+        })
+        .collect()
 }
 
 /// The cap on how many offender pinpoints one violation emits, so a

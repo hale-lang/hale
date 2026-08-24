@@ -19,7 +19,7 @@ use crate::claim_ir::{ClaimIrError, ClaimIrTable, ClaimRow};
 use crate::provenance::{Provenance, ProvenanceTable};
 use crate::relation::{
     AffinedTo, Call, DeadInterfaceCall, DeclaredIn, DeclaresPublish,
-    GroupMember, GroupSelector, MemberOf, Owns, PhaseOf, PlacedIn,
+    CostSite, GroupMember, GroupSelector, MemberOf, Owns, PhaseOf, PlacedIn,
     Publish, Realizes, SelectorForm, Subscribe, Supervises, TopicBinding,
 };
 
@@ -115,6 +115,9 @@ pub struct Relations {
     /// The AUTHORED selector lists (legacy-hash grain), alongside
     /// the resolved `group_members` (judgment grain).
     pub group_selectors: Vec<GroupSelector>,
+    /// Per-call cost sites (Change 5h), sorted by
+    /// (function, dimension, provenance).
+    pub costs: Vec<CostSite>,
 }
 
 /// The Change-3 bridge, quarantined in one named structure: the
@@ -657,7 +660,17 @@ impl EvidenceTable {
                     | crate::claim_ir::ClaimIr::EffectPublishSet {
                         at, ..
                     }
-                    | crate::claim_ir::ClaimIr::NoPanic { at },
+                    | crate::claim_ir::ClaimIr::NoPanic { at }
+                    // Change 5h: a budget contract is eligible on
+                    // exactly the same terms — its subject must be
+                    // a fn the engines actually analyzed and
+                    // summarized, or no report about it can exist.
+                    | crate::claim_ir::ClaimIr::AllocBudget {
+                        at, ..
+                    }
+                    | crate::claim_ir::ClaimIr::QuantBudget {
+                        at, ..
+                    },
                 ) => at.0.is_some_and(|f| {
                     // Round 14: eligibility requires the HASHED
                     // anchor too — a coverage bit upgraded on an
@@ -944,7 +957,19 @@ impl ApplicationModel {
                                 .union(crate::hole::RelationSet::CALLS)
                                 .union(
                                     crate::hole::RelationSet::EFFECTS,
-                                );
+                                )
+                                // Change 5h round 3: the CANONICAL
+                                // mask, which `validate` enforces
+                                // capability consistency against.
+                                // The builder's private account
+                                // already withdrew COSTS here; this
+                                // one did not, so a hand-built or
+                                // mutated model could set
+                                // `exact_costs = true` over an
+                                // absorbed call hole and validate
+                                // clean. Every consumer is entitled
+                                // to rely on `validate()`.
+                                .union(crate::hole::RelationSet::COSTS);
                         }
                         crate::AbsorbedEvent::PublishHole => {
                             m = m.union(
@@ -959,7 +984,8 @@ impl ApplicationModel {
                                 )
                                 .union(
                                     crate::hole::RelationSet::EFFECTS,
-                                );
+                                )
+                                .union(crate::hole::RelationSet::COSTS);
                         }
                         _ => {}
                     }

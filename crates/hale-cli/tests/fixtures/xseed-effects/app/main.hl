@@ -12,11 +12,18 @@ fn certified_zero_alloc() -> Int { return p::far_alloc(); }
 @deterministic
 fn certified_deterministic() -> Int { return p::far_time(); }
 
+@budget(block_points = 0)
+fn certified_no_block() -> Int { return p::far_block(); }
+
+@budget(stack_bytes = 40)
+fn certified_thin_stack() -> Int { return p::far_wide(); }
+
 // In-seed control: genuinely clean, must stay silent.
 @no_syscall
 fn control_clean() -> Int { return 7; }
 
 fn main() {
     println(certified_no_syscall() + certified_zero_alloc()
-            + certified_deterministic() + control_clean());
+            + certified_deterministic() + control_clean()
+            + certified_no_block() + certified_thin_stack());
 }

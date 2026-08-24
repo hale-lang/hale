@@ -8,6 +8,111 @@ behavior.
 
 ## Unreleased
 
+### `@budget` is judged over the canonical model (GH #476 Change 5h)
+
+The last law answered by an engine of its own. `@budget` now
+certifies through the **evidence sidecar**, the same path the
+`@effects` certificates take: the counting engines still measure —
+that is an analysis, not a law — and hand over their certificate
+and their own diagnostics. The VERDICT is the judgment's.
+
+That removes the duplicate authority without duplicating the
+analysis. `hale check` and the artifact previously read the
+engines' answer directly, each in its own way; both now read one
+judgment over one model.
+
+Supporting facts, added in the same change:
+
+- `relations.costs` — per-call cost sites (`alloc`, `block`,
+  `frame_bytes`), SITE-grained, because a per-call budget is a
+  statement about one invocation and the loop flag is what turns a
+  finite count into an unbounded one.
+- `RelationSet::COSTS` and the `exact_costs` capability. The three
+  call-hole kinds (indirect call, untyped receiver, open interface)
+  now REQUIRE the COSTS bit: a call whose target the caller chooses
+  is exactly where a quantitative law must not certify through.
+- **Fan-out counts subscriber DELIVERIES, not subscription
+  declarations.** It is a publish-SITE query now, answered against
+  the model's delivery join and the arrangement's instance
+  population: three arranged replicas of one `Sink` are three
+  deliveries where a declaration count said one, and two
+  mutually-exclusive key filters are no longer both charged to a
+  publish whose key can reach only one. It is also TRANSITIVE:
+  `A → Relay::on_a → B → three Sinks` is four deliveries caused by
+  one invocation, and the ordinary call graph never enters a
+  handler through the bus. Population completeness is scoped to the
+  loci on that delivery closure, so an unrelated dynamically-born
+  locus no longer makes every fan-out in the program unbounded. A
+  dynamic population of a REACHED subscriber, an unknown key, an
+  external route, or a computed subject is unboundedness — never
+  one. It is a WEIGHTED execution traversal: three `Relay`
+  instances each republishing to one `Sink` is six deliveries, not
+  four, because each work item carries how many handler invocations
+  reached it, and the handler's own CALL TREE contributes execution
+  counts: two calls to one publishing helper are two publishes,
+  alternatives of one interface dispatch take the max, and
+  recursion or a loop saturates. It also counts the recipients of
+  ONE MESSAGE rather than the union of possible recipients — a
+  message carries one key, so disjoint literal filters cannot both
+  receive it and `where key == replica` selects the single instance
+  whose index equals that key. A declared but never instantiated
+  subscriber receives exactly zero, not "unknown". The choice of
+  key and the choice of interface conformer are carried through the
+  WHOLE downstream calculation before any maximum is taken —
+  `max over keys of (immediate + downstream)`, and
+  `max over alternatives of (sum over that alternative)`, rather
+  than a maximum followed by the union of every branch. Through-
+  stdlib multiplicity comes from the per-entry absorption account
+  rather than the contracted endpoint relation, which collapses
+  two entry sites into one — and the interior is walked as the
+  GRAPH it is, with same-group interior alternatives taking the
+  max. One authored call site is one choice whether its
+  alternatives are user conformers, stdlib entries, or both. Key
+  domains constrain which scenarios exist (an `IntRange` publish is
+  never charged a `fallback` that its interval cannot trigger), an
+  ordinary instance registers under the effective replica key 0,
+  and a zero-population endpoint contributes zero however
+  complicated the declaration's body.
+
+Zero annihilates all the way down: a repeated publish or call that
+delivers nothing delivers nothing (`loop × 0 = 0`), and an unknown
+key filter on a locus with no instances routes nothing. Key
+scenarios are built from the distinct ACTIVE routing partition
+rather than from declarations — a `Bool` domain is exhausted by its
+`false`/`true` filters so the `_` fallback can never fire, while
+two declarations naming one value do not cover a two-value
+interval.
+
+An unknown subscriber population is not an absent one: a keyed
+subscriber whose locus can also be born outside the arrangement
+withdraws the bound rather than dropping out of the routing
+partition, `where key == replica` will not count listed rows as
+exact over an incomplete population, and a subject whose subscriber
+count is unknown has no fan-out bound at all. Residue on an
+unrelated locus or subject still says nothing.
+
+**`ANALYSIS_SEMANTICS_VERSION` 3 → 6.** These results moved, and
+`EvidenceTable::validate` treats an equal `inputs_digest` as proof
+of current semantics rather than hashing the implementation — so a
+sidecar produced by an older toolchain could otherwise share every
+digest while carrying a fan-out verdict this one disagrees with.
+- **Quantitative budgets cross seed boundaries.** The migrated
+  evidence path called the engine without the import-rename table,
+  so `lib::expensive()` stayed an unresolved qualified free call
+  and contributed zero — `@budget(publish = 0)` could certify over
+  an imported publisher. Every dimension was affected.
+
+**Artifact schema 1.16 → 1.17.** `@budget` rows carry
+`"family": "budget"` with their own `certs` evidence and an
+`adequacy.budget` entry. `law.legacy`
+is now empty for every program — no family is `unmigrated` any
+more — and the section survives only so artifacts written by older
+toolchains still decode.
+
+One behavior note: a `@budget` diagnostic is now `Claim`-kind and
+is reported only for programs that typecheck, like every other law.
+A fixture that never typechecked no longer gets a budget verdict.
+
 ### `depends:` is judged over the canonical model (GH #476 Change 5g)
 
 `@effects(depends: {…})` on a locus (RFC #330) is the backward dual

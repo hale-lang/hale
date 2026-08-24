@@ -316,3 +316,37 @@ fn non_effect_diagnostics_are_demangled_too() {
         text
     );
 }
+
+/// Review round 4 of GH #476 Change 5h: the QUANTITATIVE dimensions
+/// cross the seed boundary too.
+///
+/// The bundle carries the rename table precisely because analysis
+/// without it loses cross-seed calls, and the budgets are named as
+/// an affected analysis. The migrated evidence path called
+/// `quantitative::certificate_groups` without it, so
+/// `summarize_programs` left `p::far_block()` an unresolved
+/// qualified free call — and the quantity traversal, which treats
+/// only indirect and opaque-receiver calls as unbounded, counted it
+/// as ZERO. Every dimension had the defect.
+#[test]
+fn block_points_bites_across_a_seed_boundary() {
+    let out = check();
+    assert!(
+        out.contains("`certified_no_block` declares \
+                      `@budget(block_points = 0)`"),
+        "a blocking call one seed away must bust a zero \
+         block-point budget:\n{}",
+        out
+    );
+}
+
+#[test]
+fn stack_bytes_bites_across_a_seed_boundary() {
+    let out = check();
+    assert!(
+        out.contains("`certified_thin_stack` declares \
+                      `@budget(stack_bytes = 40)`"),
+        "an imported frame must count toward the stack bound:\n{}",
+        out
+    );
+}

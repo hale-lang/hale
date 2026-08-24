@@ -763,184 +763,14 @@ pub struct ProjectedLawRow {
     pub provenance: Option<(String, u32, u32)>,
 }
 
-/// The authoritative verdicts of the UNMIGRATED families (GH #476
-/// Change 6): from the OLD engines, bridged only where the old
-/// engine DEMONSTRABLY enumerated the row (round 2 — the old
-/// walks are NONRECURSIVE: a module-scoped annotation is lowered
-/// but never evaluated, and treating its missing diagnostic as a
-/// pass would manufacture `holds`). Missing report evidence stays
-/// `uncertified`.
-///
-/// - `@budget` rows align POSITIONALLY against the old
-///   certificate rows, but only over the old-visible subsequence
-///   (top-level fns and locus members, in the old engines'
-///   declaration order); module-scoped rows are skipped and stay
-///   uncertified.
-/// - `causes:` / `depends:` attribute the old passes' diagnostics
-///   by the exact anchor span — and only for old-visible subjects
-///   carrying exactly ONE assert of the kind: the old engine
-///   anchors every assert of a fn at the same span, so with two
-///   asserts a diagnostic cannot be attributed and that subject's
-///   rows stay uncertified (a lone no-diagnostic subject is a
-///   real evaluation: holds).
-pub fn legacy_unmigrated_verdicts(
-    bundle: &crate::symbol::Bundle<'_>,
-    graph: &crate::bus_graph::BusGraph,
-    table: &hale_model::ClaimIrTable,
-) -> std::collections::BTreeMap<u32, crate::verdict::Verdict> {
-    use hale_model::ClaimIr;
-    use hale_syntax::ast::{EffectAssert, LocusMember, TopDecl};
-    let programs: Vec<&hale_syntax::ast::Program> =
-        bundle.programs.values().copied().collect();
-    let mut out: std::collections::BTreeMap<
-        u32,
-        crate::verdict::Verdict,
-    > = std::collections::BTreeMap::new();
-
-    // ---- the old engines' NONRECURSIVE enumeration ----
-    // (top-level fns, then locus members, per program in order —
-    // exactly the walk frontier/budget_check/quantitative run; no
-    // TopDecl::Module recursion.)
-    let mut vis_alloc: Vec<String> = Vec::new();
-    let mut vis_quant: Vec<String> = Vec::new();
-    let mut vis_causes: std::collections::BTreeMap<String, usize> =
-        std::collections::BTreeMap::new();
-    let mut vis_depends: std::collections::BTreeSet<String> =
-        std::collections::BTreeSet::new();
-    {
-        let mut note_fn =
-            |raw: String, fd: &hale_syntax::ast::FnDecl| {
-                if fd.budget.is_some() {
-                    vis_alloc.push(raw.clone());
-                }
-                for _ in &fd.quantities {
-                    vis_quant.push(raw.clone());
-                }
-                let n = fd
-                    .effects
-                    .iter()
-                    .filter(|a| {
-                        matches!(a, EffectAssert::Causes(_))
-                    })
-                    .count();
-                if n > 0 {
-                    *vis_causes.entry(raw).or_insert(0) += n;
-                }
-            };
-        for p in &programs {
-            for item in &p.items {
-                match item {
-                    TopDecl::Fn(fd) => {
-                        note_fn(fd.name.name.clone(), fd)
-                    }
-                    TopDecl::Locus(l) => {
-                        if l.depends.is_some() {
-                            vis_depends
-                                .insert(l.name.name.clone());
-                        }
-                        for m in &l.members {
-                            if let LocusMember::Fn(fd) = m {
-                                note_fn(
-                                    format!(
-                                        "{}::{}",
-                                        l.name.name,
-                                        fd.name.name
-                                    ),
-                                    fd,
-                                );
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    // ---- budgets: positional alignment over the old-visible
-    // subsequence ----
-    let old_alloc = crate::budget_check::certificate_rows(
-        &programs,
-        &bundle.import_renames,
-    );
-    let visible_alloc: Vec<u32> = table
-        .rows
-        .iter()
-        .filter(|r| {
-            matches!(r.law, ClaimIr::AllocBudget { .. })
-                && vis_alloc.iter().any(|v| *v == r.name)
-        })
-        .map(|r| r.ordinal)
-        .collect();
-    if visible_alloc.len() == old_alloc.len() {
-        for (ord, r) in
-            visible_alloc.iter().zip(old_alloc.iter())
-        {
-            out.insert(*ord, r.result);
-        }
-    }
-    let fanout = |subj: &str| -> u64 {
-        graph
-            .subjects
-            .get(subj)
-            .map(|si| si.subscribers.len().max(1) as u64)
-            .unwrap_or(1)
-    };
-    let old_quant = crate::quantitative::certificate_rows(
-        &programs, &fanout,
-    );
-    let visible_quant: Vec<u32> = table
-        .rows
-        .iter()
-        .filter(|r| {
-            matches!(r.law, ClaimIr::QuantBudget { .. })
-                && vis_quant.iter().any(|v| *v == r.name)
-        })
-        .map(|r| r.ordinal)
-        .collect();
-    if visible_quant.len() == old_quant.len() {
-        for (ord, r) in
-            visible_quant.iter().zip(old_quant.iter())
-        {
-            out.insert(*ord, r.result);
-        }
-    }
-
-    // ---- span-attributed, single-assert subjects only ----
-    //
-    // `causes:` (Change 5f) and `depends:` (Change 5g) used to be
-    // imported here by matching the old engines' diagnostics back
-    // to a row by span. Both are judged families now: they state
-    // their own form and import no outside verdict, so this block
-    // covers `@budget` alone until 5h retires it entirely.
-    #[allow(unused)]
-    let span_of_row =
-        |row: &hale_model::ClaimRow| -> Option<(usize, usize)> {
-            match table
-                .provenance
-                .records
-                .get(row.provenance.index())
-            {
-                Some(hale_model::Provenance::Source {
-                    source,
-                    span,
-                }) => {
-                    let base = bundle
-                        .sources
-                        .iter()
-                        .find(|f| f.id == source.0)
-                        .map(|f| f.base)
-                        .unwrap_or(0);
-                    Some((
-                        (base + span.0) as usize,
-                        (base + span.1) as usize,
-                    ))
-                }
-                _ => None,
-            }
-        };
-    out
-}
+/// Change 5h: `legacy_unmigrated_verdicts` lived here. It imported
+/// the old engines' verdicts for the families whose engines had not
+/// migrated, matching a diagnostic back to a row by anchor span.
+/// Nothing is unmigrated now — `causes:` and `depends:` are judged
+/// families and `@budget` certifies through the evidence sidecar —
+/// so it returned an empty map for every program and is deleted.
+/// `law.legacy` is emitted empty, and stays in the schema so an
+/// artifact written by an older toolchain still decodes.
 
 /// GH #476 Change 9: run every migrated judgment family over one
 /// (table, model, evidence) and merge the rows by ordinal.
@@ -1365,6 +1195,12 @@ pub fn family_adequacy(
         F::Causes,
         // Change 5g, same contract.
         F::Depends,
+        // Change 5h. `budget` is where the DELIVERY-vs-topology
+        // distinction bites hardest: `fanout` counts subscriber
+        // deliveries, so it needs the subscription set, the key
+        // filters and the instance POPULATION to be exact, not just
+        // the must-deliver guarantee.
+        F::Budget,
     ]
     .into_iter()
     .map(|f| (f, vouched.contains(f.required_relations())))

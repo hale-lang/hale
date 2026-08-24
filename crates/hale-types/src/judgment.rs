@@ -4231,9 +4231,12 @@ pub fn judge_certificates(
                 (None, at.0, classes.as_slice())
             }
             ClaimIr::DependsSet { .. } => (None, None, &[]),
-            ClaimIr::AllocBudget { at, .. } => (None, at.0, &[]),
+            // Change 5h: the budget engines produce exactly one
+            // certificate per contract, carried by the evidence
+            // sidecar. Counting is theirs; the verdict is here.
+            ClaimIr::AllocBudget { at, .. } => (Some(1), at.0, &[]),
             ClaimIr::QuantBudget { at, dim, .. } => (
-                None,
+                Some(1),
                 at.0,
                 // A user-class budget dimension is a class
                 // reference like any other (review round 6): an
@@ -4274,8 +4277,11 @@ pub fn judge_certificates(
         };
         let invalid_class = any_undeclared(classes) || any_cyclic;
         let Some(expected) = expected else {
-            // Engine not migrated (causes / depends / budgets):
-            // still exactly one Judged row, at minimum Uncertified.
+            // Engine not migrated: still exactly one Judged row, at
+            // minimum Uncertified. As of Change 5h nothing reaches
+            // this arm from an application artifact — `causes:` and
+            // `depends:` have their own judgments, and `@budget`
+            // certifies through evidence above.
             out.push(Judged {
                 ordinal: row.ordinal,
                 verdict: if invalid_class {
@@ -4441,6 +4447,19 @@ pub fn claim_law_diags(bundle: &crate::symbol::Bundle<'_>) -> Vec<Diag> {
         &evidence,
         &source_bases,
     );
+    // Lowering issues whose only reporter is this path (Change
+    // 5h): a misspelt `@budget(<class>)` dimension. Certificate
+    // issues stay silent here — the effects engine reports them,
+    // and emitting both would duplicate.
+    for issue in &table.issues {
+        if issue.family != Some(hale_model::JudgmentFamily::Budget) {
+            continue;
+        }
+        out.push(Diag::ty(
+            span_of(&table.provenance, &source_bases, issue.provenance),
+            issue.message.clone(),
+        ));
+    }
     // Table-level pre-pass first (duplicate claim names), then each
     // row in AUTHORED order — the evaluator's order, which the
     // diagnostics differential holds byte-equal.
@@ -4454,6 +4473,7 @@ pub fn claim_law_diags(bundle: &crate::symbol::Bundle<'_>) -> Vec<Diag> {
                 | hale_model::JudgmentFamily::Bound
                 | hale_model::JudgmentFamily::Causes
                 | hale_model::JudgmentFamily::Depends
+                | hale_model::JudgmentFamily::Budget
         ) {
             continue;
         }
@@ -4478,27 +4498,30 @@ pub fn claim_law_diags(bundle: &crate::symbol::Bundle<'_>) -> Vec<Diag> {
 /// judge — a `claims { }` block (world tier or library tier) or a
 /// `constitution` to adopt one from?
 ///
-/// …plus `@effects(causes: …)` on a function and
-/// `@effects(depends: …)` on a locus, which are annotation-carried
-/// but judged here since Changes 5f and 5g. Other annotations are
+/// …plus `@effects(causes: …)` on a function,
+/// `@effects(depends: …)` on a locus, and `@budget(...)`, which are
+/// annotation-carried but judged here since Changes 5f–5h. Other annotations are
 /// deliberately NOT a claim surface: their rows are the certificate
 /// family, whose diagnostics belong to the effects engine.
 fn has_claim_surface(bundle: &crate::symbol::Bundle<'_>) -> bool {
     use hale_syntax::ast::{EffectAssert, FnDecl, LocusMember, TopDecl};
-    fn causes(fd: &FnDecl) -> bool {
+    fn judged_annotation(fd: &FnDecl) -> bool {
         fd.effects
             .iter()
             .any(|a| matches!(a, EffectAssert::Causes(_)))
+            // Change 5h: `@budget` is judged here now too.
+            || fd.budget.is_some()
+            || !fd.quantities.is_empty()
     }
     fn walk(items: &[TopDecl]) -> bool {
         items.iter().any(|item| match item {
             TopDecl::Claims(_) | TopDecl::Constitution(_) => true,
-            TopDecl::Fn(f) => causes(f),
+            TopDecl::Fn(f) => judged_annotation(f),
             TopDecl::Locus(l) => {
                 l.depends.is_some()
                     || l.members.iter().any(|m| match m {
                         LocusMember::Claims(_) => true,
-                        LocusMember::Fn(f) => causes(f),
+                        LocusMember::Fn(f) => judged_annotation(f),
                         _ => false,
                     })
             }

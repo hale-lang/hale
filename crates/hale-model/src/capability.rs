@@ -26,6 +26,10 @@ pub struct Capabilities {
     pub exact_effects: bool,
     pub exact_cardinality: bool,
     pub exact_delivery_guarantees: bool,
+    /// Per-call cost facts (allocation sites, frame sizes, blocking
+    /// points) are complete for every analyzed function — what the
+    /// quantitative `@budget` laws count over (Change 5h).
+    pub exact_costs: bool,
 }
 
 impl Capabilities {
@@ -66,6 +70,7 @@ impl Capabilities {
                 self.exact_delivery_guarantees,
                 RelationSet::DELIVERY,
             ),
+            ("exact_costs", self.exact_costs, RelationSet::COSTS),
         ]
     }
 }

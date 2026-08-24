@@ -69,9 +69,9 @@ fn legacy_arm(bundle: &Bundle<'_>) -> Vec<String> {
         bundle.programs.values().copied().collect();
     let (top, _) = hale_types::resolve::build_top_scope(bundle);
     let graph = hale_types::bus_graph::build_bus_graph(bundle, &top);
-    // Since Changes 5f and 5g the check path also judges `causes:`
-    // and `depends:`, whose evaluators live in `frontier` rather
-    // than in `claims.rs` — the legacy arm is all three engines.
+    // Since Changes 5f–5h the check path also judges `causes:`,
+    // `depends:` and `@budget`, whose evaluators live outside
+    // `claims.rs` — the legacy arm is every one of them.
     let mut d = hale_types::claims::claims_diags(
         &programs,
         &graph,
@@ -88,6 +88,19 @@ fn legacy_arm(bundle: &Bundle<'_>) -> Vec<String> {
     }
     let mut migrated = hale_types::frontier::causes_diags(&programs, &graph);
     migrated.extend(hale_types::frontier::depends_diags(&programs, &graph));
+    migrated.extend(hale_types::budget_check::budget_diags_with_renames(
+        &programs,
+        &bundle.import_renames,
+    ));
+        // Change 5h: fan-out is a publish-SITE question, answered by
+    // the model. Both arms take the SAME supplier — fan-out
+    // supply is not the thing under differential.
+    let model =
+        hale_types::model_builder::derive_application_model(bundle);
+    let fanout = hale_types::evidence::model_fanout(&model);
+    migrated.extend(hale_types::quantitative::quantitative_diags(
+        &programs, &fanout,
+    ));
     for diag in &mut migrated {
         diag.kind = hale_syntax::error::DiagKind::Claim;
     }

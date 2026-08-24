@@ -131,6 +131,12 @@ use crate::symbol::Bundle;
 // HASHED model half — an explicitly versioned shape transition.
 // Shape hashes change for every bus-carrying program; recorded
 // baselines and `.halerec` admissions must be re-recorded once.
+// 1.17: `@budget` is a judged family (Change 5h), certified through
+// the evidence sidecar. Its rows carry `"family": "budget"`, their
+// own `certs` evidence and an `adequacy.budget` entry, and
+// `law.legacy` is now EMPTY for every program — nothing is
+// unmigrated. The section stays so older artifacts still decode.
+//
 // 1.16: `depends:` joins it (Change 5g), on the same terms —
 // `"family": "depends"`, its own rendered form, an
 // `adequacy.depends` entry, no legacy entry. `law.legacy` now
@@ -169,7 +175,7 @@ use crate::symbol::Bundle;
 // stdlib re-emerges into user code only from inside its own loops,
 // which sets the bit either way — so this bumps the schema without
 // moving a single committed baseline hash.
-pub const TOPOLOGY_SCHEMA: &str = "1.16";
+pub const TOPOLOGY_SCHEMA: &str = "1.17";
 
 /// GH #408 Phase 0: what the rows MEAN, as distinct from their shape.
 ///
@@ -401,10 +407,11 @@ pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
     );
     let source_bases: Vec<u32> =
         bundle.sources.iter().map(|f| f.base).collect();
-    let legacy_unmigrated =
-        crate::topology_projection::legacy_unmigrated_verdicts(
-            bundle, &graph, &law_table,
-        );
+    // Change 5h: nothing is unmigrated, so nothing is imported.
+    let legacy_unmigrated: std::collections::BTreeMap<
+        u32,
+        crate::verdict::Verdict,
+    > = std::collections::BTreeMap::new();
     let (outcomes, projected_lowered, law_rows, law_issues) =
         crate::topology_projection::project_law_rows(
             bundle,
@@ -665,7 +672,7 @@ pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
     // Effects-family certificates come from the evidence sidecar
     // (Change 6); `@budget` rows keep their old producers until the
     // quantitative engines migrate (JudgmentFamily::Unmigrated).
-    let mut lowered: Vec<crate::effects::LoweredCertificate> =
+    let lowered: Vec<crate::effects::LoweredCertificate> =
         projected_lowered
             .iter()
             .map(|r| crate::effects::LoweredCertificate {
@@ -680,57 +687,17 @@ pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
     // quantitative producers are keyed by their form re-rendered
     // from the typed operands (`ClaimRow::budget_lowered_form`),
     // consumed in table order.
-    let mut lowered_keys: Vec<Option<(u32, Option<u32>)>> =
+    let lowered_keys: Vec<Option<(u32, Option<u32>)>> =
         projected_lowered
             .iter()
             .map(|r| Some((r.ordinal, r.cert)))
             .collect();
-    let mut budget_ordinals: std::collections::BTreeMap<
-        String,
-        std::collections::VecDeque<u32>,
-    > = std::collections::BTreeMap::new();
-    for row in &law_table.rows {
-        if let Some(form) = row.budget_lowered_form() {
-            budget_ordinals
-                .entry(form)
-                .or_default()
-                .push_back(row.ordinal);
-        }
-    }
-    let mut push_budget_rows =
-        |rows: Vec<crate::effects::LoweredCertificate>,
-         lowered: &mut Vec<crate::effects::LoweredCertificate>,
-         keys: &mut Vec<Option<(u32, Option<u32>)>>| {
-            for r in rows {
-                let form = demangle_str(&r.form);
-                let key = budget_ordinals
-                    .get_mut(&form)
-                    .and_then(|q| q.pop_front())
-                    .map(|o| (o, None));
-                keys.push(key);
-                lowered.push(r);
-            }
-        };
-    push_budget_rows(
-        crate::budget_check::certificate_rows(
-            &programs,
-            &bundle.import_renames,
-        ),
-        &mut lowered,
-        &mut lowered_keys,
-    );
-    let fanout = |subj: &str| -> u64 {
-        graph
-            .subjects
-            .get(subj)
-            .map(|si| si.subscribers.len().max(1) as u64)
-            .unwrap_or(1)
-    };
-    push_budget_rows(
-        crate::quantitative::certificate_rows(&programs, &fanout),
-        &mut lowered,
-        &mut lowered_keys,
-    );
+    // Change 5h: the budget engines' certificates used to be
+    // APPENDED here, keyed back to their law row by a re-rendered
+    // form. They now arrive from the projection like every other
+    // certificate — the law row carries them, because the evidence
+    // sidecar does. Appending them again would duplicate every
+    // budget row in `lowered`.
     // Close the `claims` array before opening `lowered` — omitting
     // this emitted a document no standards-compliant JSON parser
     // accepts, for every shape (no claims, one, many, with or

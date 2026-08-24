@@ -440,10 +440,10 @@ pub fn check_bundle(
         // artifact must not exist. Rendering is identical either way.
         let law_start = diags.len();
         let programs_vec: Vec<&Program> = bundle.programs.values().copied().collect();
-        diags.extend(crate::budget_check::budget_diags_with_renames(
-            &programs_vec,
-            &bundle.import_renames,
-        ));
+        // GH #476 Change 5h: `@budget` is judged over the model
+        // through the evidence sidecar — the counting engines
+        // measure, `judge_certificates` decides. See
+        // `check_bundle_opts`.
         // #265: categoric effect assertions (@no_recursion /
         // @no_ffi / @no_block) — same opt-in-contract discipline as
         // @budget, over the shared callgraph witness engine.
@@ -451,18 +451,8 @@ pub fn check_bundle(
             &programs_vec,
             &bundle.import_renames,
         ));
-        // #265 step 5: quantitative budgets (stack_bytes,
-        // block_points, publish, fanout). Fan-out reads subscriber
-        // counts off the bus graph.
         {
             let graph = crate::bus_graph::build_bus_graph(bundle, top);
-            let fanout = |subj: &str| -> u64 {
-                graph
-                    .subjects
-                    .get(subj)
-                    .map(|si| si.subscribers.len().max(1) as u64)
-                    .unwrap_or(1)
-            };
             // GH #265 frontier: cross-actor causality (needs the
             // bus graph), supervision coverage, and secret taint.
             // GH #476 Change 5f/5g: `causes:` and its backward dual
@@ -494,10 +484,6 @@ pub fn check_bundle(
             // meaningful even for a program that does not typecheck.
             diags.extend(crate::frontier::supervised_diags(&programs_vec));
             diags.extend(crate::frontier::secret_taint_diags(&programs_vec));
-            diags.extend(crate::quantitative::quantitative_diags(
-                &programs_vec,
-                &fanout,
-            ));
         }
         for d in &mut diags[law_start..] {
             if d.kind == hale_syntax::error::DiagKind::Type {

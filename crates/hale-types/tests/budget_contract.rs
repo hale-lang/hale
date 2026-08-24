@@ -156,14 +156,20 @@ fn main() { }
 fn allocating_recv_in_a_loop_is_rejected_under_zero_budget() {
     // The known-allocating `recv` family is counted like a visible
     // allocation; in a loop it's unbounded per call.
+    //
+    // The fixture must TYPECHECK: since Change 9 the law block is
+    // judged over the canonical model, and a model of an ill-typed
+    // program describes nothing. `recv` is value-bearing, so
+    // `or discard` is not a legal fallible handler for it.
     let src = r#"
 @budget(alloc_per_call = 0)
-fn pump(fd: Int) {
+fn pump(fd: Int) -> Int {
     let mut n = 0;
     while n < 10 {
-        let msg = std::io::udp::recv(fd, 2048) or discard;
+        let msg = std::io::udp::recv(fd, 2048) or raise;
         n = n + 1;
     }
+    return n;
 }
 
 fn main() { }
@@ -228,3 +234,4 @@ fn main() { }
         budget_errors(src)
     );
 }
+

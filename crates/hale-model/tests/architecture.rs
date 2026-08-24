@@ -301,8 +301,12 @@ fn a_capability_cannot_claim_exactness_over_a_hole() {
         kind: HoleKind::IndirectCall,
         // Site-shaped holes carry their authored ordinal (round
         // 8) and the kind's REQUIRED families (round 9): an
-        // unfollowable call hides its effects too, always.
-        hides: RelationSet::CALLS.union(RelationSet::EFFECTS),
+        // unfollowable call hides its effects too, always — and
+        // since Change 5h its per-call COSTS, which is where
+        // `@budget` has to saturate.
+        hides: RelationSet::CALLS
+            .union(RelationSet::EFFECTS)
+            .union(RelationSet::COSTS),
         reason: "call through fn param `f`".to_string(),
         authored_site: Some(0),
         provenance: ProvenanceId(0),
@@ -586,9 +590,10 @@ fn every_capability_flag_is_mapped_to_a_family() {
         exact_effects: true,
         exact_cardinality: true,
         exact_delivery_guarantees: true,
+        exact_costs: true,
     };
     let vouched = all.vouched_families();
-    assert_eq!(vouched.len(), 10, "every flag appears exactly once");
+    assert_eq!(vouched.len(), 11, "every flag appears exactly once");
     for (name, claimed, family) in vouched {
         assert!(claimed, "{} must carry its flag", name);
         assert!(!family.is_empty(), "{} must vouch a real family", name);
@@ -1737,4 +1742,62 @@ fn effect_class_builtin_flag_must_agree_with_the_name() {
         t.validate(&m),
         Err(ClaimIrError::NameDisagreement { .. })
     ));
+}
+
+/// Review pin (Change 5h round 3): ABSORPTION residue is part of the
+/// canonical unresolved-relation mask, not only of the builder's
+/// private bookkeeping.
+///
+/// The builder was updated so an absorbed `CallHole` / `Truncated`
+/// withdraws COSTS; the canonical mask that `validate()` enforces
+/// against was not. A model could therefore carry an absorbed call
+/// hole, claim `exact_costs = true`, validate clean, and have
+/// `family_adequacy(Budget)` advertise an exact cost account. The
+/// builder being right today is not enough — every consumer is
+/// entitled to rely on `validate()`.
+#[test]
+fn absorbed_call_residue_contradicts_an_exact_cost_account() {
+    for ev in [
+        hale_model::AbsorbedEvent::CallHole(
+            hale_model::AbsorbedHoleKind::IndirectCall,
+        ),
+        hale_model::AbsorbedEvent::Truncated,
+    ] {
+        let mut m = tiny_model();
+        m.analyses.stdlib_absorption.push(
+            hale_model::StdlibAbsorption {
+                from: FunctionId(0),
+                site: 0,
+                entry_dispatch: None,
+                entry_in_loop: false,
+                entry_group: None,
+                entry_provenance: ProvenanceId(0),
+                nodes: vec![hale_model::AbsorbedNode {
+                    display: "interior".to_string(),
+                    carries: Vec::new(),
+                    direct_effects: Vec::new(),
+                    events: vec![ev.clone()],
+                }],
+            },
+        );
+        // Only the cost account is claimed, so the contradiction
+        // this pins cannot be satisfied by a sibling flag (a call
+        // hole hides CALLS and EFFECTS too).
+        m.capabilities = hale_model::Capabilities {
+            exact_costs: true,
+            ..Default::default()
+        };
+        assert!(
+            matches!(
+                m.validate(),
+                Err(ModelError::CapabilityContradiction {
+                    capability: "exact_costs"
+                })
+            ),
+            "an absorbed {:?} must refuse an exact cost account, \
+             got {:?}",
+            ev,
+            m.validate()
+        );
+    }
 }
