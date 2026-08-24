@@ -8,7 +8,7 @@
 //! judgment of itself), and carries the model's `TopologyShapeV1`
 //! so a judgment structurally refuses stale evidence.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use hale_model::{
     ApplicationModel, CertificateEvidence, ClaimIr, ClaimIrTable,
@@ -149,49 +149,6 @@ pub fn model_fanout<'a>(
                 .count() as u64,
         )
     }
-    // How many instances of `sub`'s owner receive `publish`.
-    fn reached_by(
-        model: &ApplicationModel,
-        publish: &hale_model::Publish,
-        sub: &hale_model::Subscribe,
-    ) -> Option<u64> {
-            let e = &model.entities;
-            let r = &model.relations;
-            let owner = r
-                .member_of
-                .iter()
-                .find(|m| m.function == sub.handler)
-                .map(|m| m.locus)?;
-            let total = population_of(model, owner)?;
-            if sub.key_predicate
-                != hale_model::keys::KeyPredicate::EqReplica
-            {
-                return Some(total);
-            }
-            // `where key == replica` narrows to the replica the key
-            // selects, when the publish key is statically exact.
-            match &publish.key_domain {
-                Some(hale_model::keys::KeyDomain::Exact(vals)) => Some(
-                    e.locus_instances
-                        .iter()
-                        .filter(|i| i.decl == owner)
-                        .filter(|i| {
-                            i.replica.is_some_and(|ix| {
-                                vals.iter().any(|v| {
-                                    matches!(
-                                        v,
-                                        hale_model::keys::KeyValue::Int(k)
-                                            if *k == ix as i64
-                                    )
-                                })
-                            })
-                        })
-                        .count() as u64,
-                ),
-                // An unknown key may select any replica.
-                _ => Some(total),
-            }
-    }
     // Every publish site reachable from a function — its own, plus
     // everything it calls, plus what a stdlib interior publishes on
     // its behalf. A handler's onward amplification is not limited to
@@ -202,25 +159,232 @@ pub fn model_fanout<'a>(
     // unfollowable call, a computed publish, an unexplored
     // interior); a loop-nested contributor is `in_loop` and
     // saturates upstream.
-    /// How many times each publish site EXECUTES per invocation of
-    /// `from` — its own sites plus everything it calls.
+    /// The fan-out of ONE message from `publish`, and the fan-out of
+    /// one invocation of a function, as a mutually recursive pair.
     ///
-    /// Round 5: this was a reachability set, so a handler calling
-    /// one publishing helper TWICE counted the helper's site once.
-    /// Model call rows are site-grained precisely because two calls
-    /// are two executions. This is the call semiring the budget
-    /// engines already use: ordinary sites SUM, alternatives of one
-    /// interface dispatch (rows sharing a site ordinal) take the
-    /// MAX, and recursion or a loop saturates.
+    /// Round 6: the previous shape aggregated before it costed —
+    /// twice. It took the max over candidate KEYS of the immediate
+    /// recipients and then followed the union of every possible
+    /// downstream branch; and it took a POINTWISE max over
+    /// interface alternatives, keeping one entry per publish site
+    /// across alternatives, which is a union rather than a choice.
+    /// Neither is the runtime quantity:
     ///
-    /// `None` is unbounded-or-unknowable.
-    fn publish_executions(
+    /// ```text
+    ///   max over keys of (immediate(key) + downstream(key))
+    ///   max over alternatives of (sum over that alternative)
+    /// ```
+    ///
+    /// not `max(immediate) + union(downstream)` and not
+    /// `sum over sites of max over alternatives`. So a whole
+    /// SCENARIO — one key, one conformer — is costed end to end
+    /// before any max is taken.
+    ///
+    /// `None` is unbounded-or-unknowable. `path` carries the
+    /// publish sites and functions already on this scenario, so a
+    /// productive bus cycle or a recursive helper saturates.
+    fn message_fanout(
+        model: &ApplicationModel,
+        publish: &hale_model::Publish,
+        path: &mut Vec<(u8, u32, u32)>,
+    ) -> Option<u64> {
+        use hale_model::keys::{KeyDomain, KeyPredicate, KeyValue};
+        let e = &model.entities;
+        let r = &model.relations;
+        let tag = (0u8, publish.function.0, publish.site);
+        if path.contains(&tag) {
+            // A productive bus cycle amplifies without bound.
+            return None;
+        }
+        if publish.in_loop {
+            return None;
+        }
+        // An outbound route delivers to peers this application does
+        // not model — scoped to THIS subject, so an unrelated
+        // adapter cannot poison the count.
+        if crate::model_query::endpoint_incomplete(
+            model,
+            publish.subject,
+            crate::model_query::Direction::Downstream,
+        ) {
+            return None;
+        }
+        let matching: Vec<&hale_model::Subscribe> = r
+            .subscribes
+            .iter()
+            .filter(|sub| crate::model_query::may_deliver(e, publish, sub))
+            .collect();
+        // Unkeyed subscriptions receive regardless of the key.
+        let mut unkeyed: Vec<&hale_model::Subscribe> = Vec::new();
+        let mut keyed: Vec<&hale_model::Subscribe> = Vec::new();
+        for sub in &matching {
+            match &sub.key_predicate {
+                KeyPredicate::Any => unkeyed.push(sub),
+                // A filter whose value is unknown may or may not
+                // match; it can never support a bound.
+                KeyPredicate::Unknown => return None,
+                _ => keyed.push(sub),
+            }
+        }
+        // Candidate key values this site can produce. `None` stands
+        // for "some value no filter names", which only a `fallback`
+        // receives.
+        let mut candidates: Vec<Option<KeyValue>> = Vec::new();
+        if keyed.is_empty() {
+            candidates.push(None);
+        } else {
+            match &publish.key_domain {
+                Some(KeyDomain::Exact(vals)) => {
+                    candidates.extend(vals.iter().cloned().map(Some));
+                }
+                _ => {
+                    for sub in &keyed {
+                        if let KeyPredicate::EqLiteral(v) =
+                            &sub.key_predicate
+                        {
+                            candidates.push(Some(v.clone()));
+                        }
+                        if sub.key_predicate == KeyPredicate::EqReplica {
+                            let owner = owner_of(model, sub)?;
+                            for i in e
+                                .locus_instances
+                                .iter()
+                                .filter(|i| i.decl == owner)
+                            {
+                                if let Some(ix) = i.replica {
+                                    candidates.push(Some(
+                                        KeyValue::Int(ix as i64),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    candidates.push(None);
+                }
+            }
+        }
+        path.push(tag);
+        let mut best: u64 = 0;
+        for k in &candidates {
+            // The recipients of THIS key, as (handler, executions).
+            let mut recipients: Vec<(hale_model::FunctionId, u64)> =
+                Vec::new();
+            for sub in &unkeyed {
+                let n = population_of(model, owner_of(model, sub)?);
+                match n {
+                    Some(n) => recipients.push((sub.handler, n)),
+                    None => {
+                        path.pop();
+                        return None;
+                    }
+                }
+            }
+            let mut matched_any = false;
+            for sub in &keyed {
+                let n = match (&sub.key_predicate, k) {
+                    (KeyPredicate::EqLiteral(v), Some(kv)) if v == kv => {
+                        match population_of(model, owner_of(model, sub)?) {
+                            Some(n) => n,
+                            None => {
+                                path.pop();
+                                return None;
+                            }
+                        }
+                    }
+                    (KeyPredicate::EqReplica, Some(KeyValue::Int(kv))) => {
+                        let Some(owner) = owner_of(model, sub) else {
+                            path.pop();
+                            return None;
+                        };
+                        // Replica indices are unique within a field,
+                        // so at most ONE instance answers a key.
+                        e.locus_instances
+                            .iter()
+                            .filter(|i| i.decl == owner)
+                            .filter(|i| {
+                                i.replica.is_some_and(|ix| ix as i64 == *kv)
+                            })
+                            .count() as u64
+                    }
+                    // Settled after the others: a fallback receives
+                    // only what nothing else matched.
+                    _ => 0,
+                };
+                if n > 0 {
+                    matched_any = true;
+                    recipients.push((sub.handler, n));
+                }
+            }
+            if !matched_any {
+                for sub in &keyed {
+                    if sub.key_predicate == KeyPredicate::Fallback {
+                        match population_of(model, owner_of(model, sub)?) {
+                            Some(n) if n > 0 => {
+                                recipients.push((sub.handler, n))
+                            }
+                            Some(_) => {}
+                            None => {
+                                path.pop();
+                                return None;
+                            }
+                        }
+                    }
+                }
+            }
+            // Cost this whole scenario: the deliveries themselves,
+            // plus what exactly those handler executions cause.
+            let mut here: u64 = 0;
+            for (handler, runs) in recipients {
+                here = match here.checked_add(runs) {
+                    Some(v) => v,
+                    None => {
+                        path.pop();
+                        return None;
+                    }
+                };
+                let onward = match fn_fanout(model, handler, path) {
+                    Some(v) => v,
+                    None => {
+                        path.pop();
+                        return None;
+                    }
+                };
+                let add = match runs.checked_mul(onward) {
+                    Some(v) => v,
+                    None => {
+                        path.pop();
+                        return None;
+                    }
+                };
+                here = match here.checked_add(add) {
+                    Some(v) => v,
+                    None => {
+                        path.pop();
+                        return None;
+                    }
+                };
+            }
+            best = best.max(here);
+        }
+        path.pop();
+        Some(best)
+    }
+
+    /// The deliveries ONE invocation of `from` causes — its own
+    /// publish sites plus its call tree.
+    ///
+    /// Ordinary sites SUM. Alternatives of one dispatch (rows
+    /// sharing an authored site ordinal, or absorption entries
+    /// sharing an `entry_group`) take the MAX of their WHOLE
+    /// contribution, because one dispatch runs one conformer.
+    fn fn_fanout(
         model: &ApplicationModel,
         from: hale_model::FunctionId,
-        path: &mut Vec<u32>,
-    ) -> Option<BTreeMap<(u32, u32), u64>> {
-        // A recursive publishing helper has no per-call bound.
-        if path.contains(&from.0) {
+        path: &mut Vec<(u8, u32, u32)>,
+    ) -> Option<u64> {
+        let tag = (1u8, from.0, 0);
+        if path.contains(&tag) {
+            // A recursive publishing helper has no per-call bound.
             return None;
         }
         let r = &model.relations;
@@ -235,6 +399,53 @@ pub fn model_fanout<'a>(
         }) {
             return None;
         }
+        path.push(tag);
+        let mut total: u64 = 0;
+        macro_rules! bail {
+            ($e:expr) => {
+                match $e {
+                    Some(v) => v,
+                    None => {
+                        path.pop();
+                        return None;
+                    }
+                }
+            };
+        }
+        for p in r.publishes.iter().filter(|p| p.function == from) {
+            let n = bail!(message_fanout(model, p, path));
+            total = bail!(total.checked_add(n));
+        }
+        // Direct and interface call sites, grouped by authored
+        // ordinal: alternatives of one dispatch share it.
+        let mut by_site: BTreeMap<u32, Vec<&hale_model::Call>> =
+            BTreeMap::new();
+        for c in r.calls.iter().filter(|c| c.from == from) {
+            // Through-stdlib rows are the CONTRACTED endpoint pair;
+            // their execution multiplicity and dispatch grouping
+            // live in the per-entry absorption account below, and
+            // counting both would double.
+            if c.dispatch == hale_model::DispatchKind::ViaStdlib {
+                continue;
+            }
+            by_site.entry(c.site).or_default().push(c);
+        }
+        for (_, alts) in by_site {
+            let mut best: u64 = 0;
+            for c in alts {
+                if c.in_loop || c.unbounded {
+                    path.pop();
+                    return None;
+                }
+                best = best.max(bail!(fn_fanout(model, c.to, path)));
+            }
+            total = bail!(total.checked_add(best));
+        }
+        // Through-stdlib entries, at their AUTHORED site grain: one
+        // `StdlibAbsorption` row per entry site, alternatives of one
+        // dispatch sharing `entry_group`.
+        let mut by_group: BTreeMap<(u32, Option<u32>), Vec<u64>> =
+            BTreeMap::new();
         for a in model
             .analyses
             .stdlib_absorption
@@ -242,196 +453,67 @@ pub fn model_fanout<'a>(
             .filter(|a| a.from == from)
         {
             if a.entry_in_loop {
+                path.pop();
                 return None;
             }
+            let mut here: u64 = 0;
             for node in &a.nodes {
                 for ev in &node.events {
                     match ev {
                         // An interior that publishes, or that the
-                        // walk cannot finish, is not countable from
-                        // here.
+                        // walk cannot finish, is not countable.
                         hale_model::AbsorbedEvent::Publish { .. }
                         | hale_model::AbsorbedEvent::PublishHole
                         | hale_model::AbsorbedEvent::Truncated
                         | hale_model::AbsorbedEvent::CallHole(_) => {
-                            return None
+                            path.pop();
+                            return None;
                         }
                         hale_model::AbsorbedEvent::Call {
-                            in_loop, ..
-                        } if *in_loop => return None,
+                            target: hale_model::AbsorbedTarget::User(u),
+                            in_loop,
+                            ..
+                        } => {
+                            if *in_loop {
+                                path.pop();
+                                return None;
+                            }
+                            let n = bail!(fn_fanout(model, *u, path));
+                            here = bail!(here.checked_add(n));
+                        }
                         _ => {}
                     }
                 }
             }
+            // Group by (site, entry_group): a grouped alternative is
+            // a choice, a distinct site is another execution.
+            by_group
+                .entry((a.site, a.entry_group))
+                .or_default()
+                .push(here);
         }
-        let mut out: BTreeMap<(u32, u32), u64> = BTreeMap::new();
-        for p in r.publishes.iter().filter(|p| p.function == from) {
-            if p.in_loop {
-                return None;
-            }
-            *out.entry((from.0, p.site)).or_insert(0) += 1;
-        }
-        path.push(from.0);
-        // Group call rows by SITE: alternatives of one interface
-        // dispatch share an ordinal and one of them runs, while two
-        // calls to the same callee are two ordinals and both run.
-        let mut by_site: BTreeMap<u32, Vec<&hale_model::Call>> =
-            BTreeMap::new();
-        for c in r.calls.iter().filter(|c| c.from == from) {
-            by_site.entry(c.site).or_default().push(c);
-        }
-        for (_, alts) in by_site {
-            let mut best: BTreeMap<(u32, u32), u64> = BTreeMap::new();
-            for c in alts {
-                if c.in_loop || c.unbounded {
-                    path.pop();
-                    return None;
+        // Alternatives of one entry_group take the max; distinct
+        // groups and distinct sites sum.
+        let mut by_entry_group: BTreeMap<u32, u64> = BTreeMap::new();
+        let mut ungrouped: u64 = 0;
+        for ((_, group), costs) in by_group {
+            let here = costs.into_iter().max().unwrap_or(0);
+            match group {
+                Some(g) => {
+                    let slot = by_entry_group.entry(g).or_insert(0);
+                    *slot = (*slot).max(here);
                 }
-                let sub = match publish_executions(model, c.to, path) {
-                    Some(m) => m,
-                    None => {
-                        path.pop();
-                        return None;
-                    }
-                };
-                for (k, v) in sub {
-                    let slot = best.entry(k).or_insert(0);
-                    *slot = (*slot).max(v);
+                None => {
+                    ungrouped = bail!(ungrouped.checked_add(here))
                 }
             }
-            for (k, v) in best {
-                *out.entry(k).or_insert(0) += v;
-            }
+        }
+        total = bail!(total.checked_add(ungrouped));
+        for (_, v) in by_entry_group {
+            total = bail!(total.checked_add(v));
         }
         path.pop();
-        Some(out)
-    }
-
-    /// The maximum number of subscriber deliveries ONE message from
-    /// `publish` can cause.
-    ///
-    /// Round 5: summing every subscription `may_deliver` admits
-    /// counts the UNION of possible recipients, not the recipients
-    /// of one message. A message carries ONE key: two disjoint
-    /// literal filters cannot both receive it, `where key ==
-    /// replica` selects at most the one instance whose index equals
-    /// that key, and a `fallback` receives only what no other
-    /// filter matched. `may_deliver` is a may-REACH relation — the
-    /// right question for `causes:`, and not by itself an answer
-    /// about simultaneous cardinality.
-    ///
-    /// So: unkeyed subscriptions always receive, and over the
-    /// candidate key values this site can produce, take the MAX.
-    fn deliveries_of(
-        model: &ApplicationModel,
-        publish: &hale_model::Publish,
-    ) -> Option<u64> {
-        use hale_model::keys::{KeyDomain, KeyPredicate, KeyValue};
-        let e = &model.entities;
-        let r = &model.relations;
-        let matching: Vec<&hale_model::Subscribe> = r
-            .subscribes
-            .iter()
-            .filter(|sub| crate::model_query::may_deliver(e, publish, sub))
-            .collect();
-        // Everything that receives regardless of key.
-        let mut base: u64 = 0;
-        let mut keyed: Vec<&hale_model::Subscribe> = Vec::new();
-        for sub in &matching {
-            match &sub.key_predicate {
-                KeyPredicate::Any => {
-                    base = base
-                        .checked_add(population_of(model, owner_of(model, sub)?)?)?;
-                }
-                // A filter whose value is unknown may or may not
-                // match this message; it can never support a bound.
-                KeyPredicate::Unknown => return None,
-                _ => keyed.push(sub),
-            }
-        }
-        if keyed.is_empty() {
-            return Some(base);
-        }
-        // Candidate key values: what this site can produce, else
-        // every literal the filters name (plus one value none of
-        // them names, which only a `fallback` receives).
-        let mut candidates: Vec<Option<KeyValue>> = Vec::new();
-        match &publish.key_domain {
-            Some(KeyDomain::Exact(vals)) => {
-                candidates.extend(vals.iter().cloned().map(Some));
-            }
-            _ => {
-                for sub in &keyed {
-                    if let KeyPredicate::EqLiteral(v) = &sub.key_predicate {
-                        candidates.push(Some(v.clone()));
-                    }
-                }
-                // `where key == replica` is satisfied by an
-                // instance's own index, so each index is a
-                // candidate value.
-                for sub in &keyed {
-                    if sub.key_predicate == KeyPredicate::EqReplica {
-                        let owner = owner_of(model, sub)?;
-                        for i in e
-                            .locus_instances
-                            .iter()
-                            .filter(|i| i.decl == owner)
-                        {
-                            if let Some(ix) = i.replica {
-                                candidates
-                                    .push(Some(KeyValue::Int(ix as i64)));
-                            }
-                        }
-                    }
-                }
-                // …and "some value no filter names".
-                candidates.push(None);
-            }
-        }
-        let mut best: u64 = 0;
-        for k in &candidates {
-            let mut here: u64 = 0;
-            let mut matched_any = false;
-            for sub in &keyed {
-                let n = match (&sub.key_predicate, k) {
-                    (KeyPredicate::EqLiteral(v), Some(k)) if v == k => {
-                        population_of(model, owner_of(model, sub)?)?
-                    }
-                    (KeyPredicate::EqReplica, Some(KeyValue::Int(k))) => {
-                        let owner = owner_of(model, sub)?;
-                        // Replica indices are unique within a field,
-                        // so at most ONE instance answers a key.
-                        e.locus_instances
-                            .iter()
-                            .filter(|i| i.decl == owner)
-                            .filter(|i| {
-                                i.replica.is_some_and(|ix| ix as i64 == *k)
-                            })
-                            .count() as u64
-                    }
-                    // Evaluated after the others: a fallback
-                    // receives only what nothing else matched.
-                    (KeyPredicate::Fallback, _) => 0,
-                    _ => 0,
-                };
-                if n > 0 {
-                    matched_any = true;
-                }
-                here = here.checked_add(n)?;
-            }
-            if !matched_any {
-                for sub in &keyed {
-                    if sub.key_predicate == KeyPredicate::Fallback {
-                        here = here.checked_add(population_of(
-                            model,
-                            owner_of(model, sub)?,
-                        )?)?;
-                    }
-                }
-            }
-            best = best.max(here);
-        }
-        base.checked_add(best)
+        Some(total)
     }
 
     fn owner_of(
@@ -460,7 +542,6 @@ pub fn model_fanout<'a>(
             .iter()
             .position(|f| f.name == raw)
             .map(|i| hale_model::FunctionId(i as u32))?;
-        // The site ordinal is the model's own publish-row key.
         let root = r
             .publishes
             .iter()
@@ -476,68 +557,8 @@ pub fn model_fanout<'a>(
         if !names_it {
             return None;
         }
-        // A WEIGHTED execution traversal (rounds 4-5). Each work
-        // item carries how many handler invocations reached it;
-        // downstream contributions multiply by that count, and the
-        // handler's own call TREE contributes execution counts
-        // rather than a reachable set.
-        let mut total: u64 = 0;
-        let mut frontier: Vec<(hale_model::Publish, u64)> =
-            vec![(root.clone(), 1)];
-        // A productive bus cycle is unbounded, not settled: bound
-        // the work and saturate rather than terminate quietly.
-        let mut steps = 0u32;
-        while let Some((p, mult)) = frontier.pop() {
-            steps += 1;
-            if steps > 4096 {
-                return None;
-            }
-            // A publish inside a loop repeats per invocation.
-            if p.in_loop {
-                return None;
-            }
-            // An outbound route delivers to peers this application
-            // does not model — scoped to THIS subject, so an
-            // unrelated adapter cannot poison the count.
-            if crate::model_query::endpoint_incomplete(
-                model,
-                p.subject,
-                crate::model_query::Direction::Downstream,
-            ) {
-                return None;
-            }
-            // How many cells ONE message from this site reaches.
-            let per_message = deliveries_of(model, &p)?;
-            total = total.checked_add(mult.checked_mul(per_message)?)?;
-            // …and what those handler EXECUTIONS publish onward.
-            // Each reached handler runs once per delivery to it, so
-            // its own executions multiply by that count.
-            for sub in r.subscribes.iter() {
-                if !crate::model_query::may_deliver(e, &p, sub) {
-                    continue;
-                }
-                let reaching = reached_by(model, &p, sub)?;
-                let runs = mult.checked_mul(reaching)?;
-                if runs == 0 {
-                    continue;
-                }
-                let mut path: Vec<u32> = Vec::new();
-                let sites =
-                    publish_executions(model, sub.handler, &mut path)?;
-                for ((fnid, site), times) in sites {
-                    let onward = r
-                        .publishes
-                        .iter()
-                        .find(|q| {
-                            q.function.0 == fnid && q.site == site
-                        })?
-                        .clone();
-                    frontier
-                        .push((onward, runs.checked_mul(times)?));
-                }
-            }
-        }
-        Some(total)
+        let mut path: Vec<(u8, u32, u32)> = Vec::new();
+        message_fanout(model, root, &mut path)
     }
 }
 
