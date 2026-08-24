@@ -92,13 +92,12 @@ fn legacy_arm(bundle: &Bundle<'_>) -> Vec<String> {
         &programs,
         &bundle.import_renames,
     ));
-    let fanout = |subj: &str| -> u64 {
-        graph
-            .subjects
-            .get(subj)
-            .map(|si| si.subscribers.len().max(1) as u64)
-            .unwrap_or(1)
-    };
+        // Change 5h: fan-out is a publish-SITE question, answered by
+    // the model. Both arms take the SAME supplier — fan-out
+    // supply is not the thing under differential.
+    let model =
+        hale_types::model_builder::derive_application_model(bundle);
+    let fanout = hale_types::evidence::model_fanout(&model);
     migrated.extend(hale_types::quantitative::quantitative_diags(
         &programs, &fanout,
     ));

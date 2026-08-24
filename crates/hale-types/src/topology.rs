@@ -399,10 +399,11 @@ pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
     );
     let source_bases: Vec<u32> =
         bundle.sources.iter().map(|f| f.base).collect();
-    let legacy_unmigrated =
-        crate::topology_projection::legacy_unmigrated_verdicts(
-            bundle, &graph, &law_table,
-        );
+    // Change 5h: nothing is unmigrated, so nothing is imported.
+    let legacy_unmigrated: std::collections::BTreeMap<
+        u32,
+        crate::verdict::Verdict,
+    > = std::collections::BTreeMap::new();
     let (outcomes, projected_lowered, law_rows, law_issues) =
         crate::topology_projection::project_law_rows(
             bundle,

@@ -602,14 +602,21 @@ impl JudgmentFamily {
                 .union(R::DELIVERY)
                 .union(R::ROUTES)
                 .union(R::OWNS),
-            // `@budget` counts over per-call COSTS along CALLS;
-            // `publish` and `fanout` add the bus dimensions, which
-            // is why PUBLISHES and DELIVERY are here rather than a
-            // duplicated count.
+            // `@budget` counts over per-call COSTS along CALLS.
+            // `publish` and `fanout` add the bus dimensions — and
+            // fanout counts subscriber DELIVERIES, so it needs the
+            // subscription set, the key filters and the instance
+            // POPULATION (CARDINALITY/OWNS) to be exact. Round 2:
+            // naming only PUBLISHES and DELIVERY let the
+            // must-deliver guarantee stand in for all of that.
             JudgmentFamily::Budget => R::CALLS
                 .union(R::COSTS)
                 .union(R::PUBLISHES)
-                .union(R::DELIVERY),
+                .union(R::SUBSCRIBES)
+                .union(R::KEY_FILTERS)
+                .union(R::DELIVERY)
+                .union(R::CARDINALITY)
+                .union(R::OWNS),
             JudgmentFamily::Unmigrated | JudgmentFamily::Fleet => {
                 crate::hole::RelationSet(0)
             }
