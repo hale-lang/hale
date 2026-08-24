@@ -97,8 +97,15 @@ Supporting facts, added in the same change:
   one. It is a WEIGHTED execution traversal: three `Relay`
   instances each republishing to one `Sink` is six deliveries, not
   four, because each work item carries how many handler invocations
-  reached it. A handler's publishing helpers count, a loop-nested
-  contributor is unbounded, and a productive bus cycle saturates.
+  reached it, and the handler's own CALL TREE contributes execution
+  counts: two calls to one publishing helper are two publishes,
+  alternatives of one interface dispatch take the max, and
+  recursion or a loop saturates. It also counts the recipients of
+  ONE MESSAGE rather than the union of possible recipients — a
+  message carries one key, so disjoint literal filters cannot both
+  receive it and `where key == replica` selects the single instance
+  whose index equals that key. A declared but never instantiated
+  subscriber receives exactly zero, not "unknown".
 - **Quantitative budgets cross seed boundaries.** The migrated
   evidence path called the engine without the import-rename table,
   so `lib::expensive()` stayed an unresolved qualified free call
