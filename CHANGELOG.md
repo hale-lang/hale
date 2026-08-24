@@ -79,7 +79,13 @@ Supporting facts, added in the same change:
   mutually-exclusive key filters are no longer both charged to a
   publish whose key can reach only one. A dynamic population, an
   unknown key, an external route, or a computed subject is
-  unboundedness — never one.
+  unboundedness — never one. One consequence worth naming: a
+  subscriber born inside a function body rather than in the main
+  arrangement is not an instance the model enumerates, so a publish
+  reaching it now measures *unbounded* fan-out where the old count
+  reported a number. That is the honest answer — the population is
+  genuinely not known — and the verdict is unchanged in every
+  corpus program; only the diagnostic's wording moves.
 
 **Artifact schema 1.15 → 1.16.** `@budget` rows carry
 `"family": "budget"` with their own `certs` evidence and an

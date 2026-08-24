@@ -328,6 +328,10 @@ Claim [244..247] claim `cap` violated: heaviest path from `roots` carries 1 `mon
 Claim [96..173] a top-level `claims { }` block is the LIBRARY tier — a seed swearing about itself and its own boundary. This seed declares `main locus`, the closed-world gate: state world law inside it
 --- crates/hale-types/tests/library_claims.rs#1 ---
 Claim [434..440] claim `single` violated: counted 2 subscriber(s) (`A`, `B`) of `T`, claim requires <= 1
+--- crates/hale-types/tests/model_fanout.rs#0 ---
+Claim [369..373] budget exceeded: `App::beat` declares `@budget(fanout = 1)` but the compiler measures 3 subscriber delivery/deliveries. Fan-out counts transitive subscriber deliveries — a publish to a many-subscriber subject amplifies.
+--- crates/hale-types/tests/model_fanout.rs#2 ---
+Claim [402..406] budget exceeded: `App::beat` declares `@budget(fanout = 1)` but the compiler measures an unbounded number of subscriber delivery/deliveries. Fan-out counts transitive subscriber deliveries — a publish to a many-subscriber subject amplifies.
 --- crates/hale-types/tests/model_provenance.rs#1 ---
 Claim [480..483] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::go` -(publishes "T")-> `B::on_m`
 Claim [137..153] claim `iso`: the crossing publish happens here
@@ -347,6 +351,6 @@ Claim [274..285] budget exceeded: `H::reply_twice` declares `@budget(publish = 1
 --- crates/hale-types/tests/quantitative_budgets.rs#4 ---
 Claim [167..172] budget exceeded: `H::spray` declares `@budget(publish = 4)` but the compiler measures an unbounded number of publish(es). A contributor inside a loop is unbounded per call.
 --- crates/hale-types/tests/quantitative_budgets.rs#5 ---
-Claim [379..383] budget exceeded: `P::emit` declares `@budget(fanout = 2)` but the compiler measures 3 subscriber delivery/deliveries. Fan-out counts transitive subscriber deliveries — a publish to a many-subscriber subject amplifies.
+Claim [379..383] budget exceeded: `P::emit` declares `@budget(fanout = 2)` but the compiler measures an unbounded number of subscriber delivery/deliveries. Fan-out counts transitive subscriber deliveries — a publish to a many-subscriber subject amplifies.
 --- crates/hale-types/tests/quantitative_budgets.rs#6 ---
 Claim [152..160] budget exceeded: `too_many` declares `@budget(block_points = 1)` but the compiler measures 2 blocking operation(s). A contributor inside a loop is unbounded per call.
