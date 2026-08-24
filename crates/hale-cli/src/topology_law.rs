@@ -2649,7 +2649,7 @@ pub fn validate_law_account(
             "law row",
             &["ordinal", "name", "origin", "family", "verdict",
               "law"],
-            &["certs", "evidence", "file", "span"],
+            &["form", "certs", "evidence", "file", "span"],
         )
         .map_err(|e| format!("{}: law.rows[{}]: {}", label, i, e))?;
         // Fleet rows are refused BY NAME: the application
@@ -2969,6 +2969,48 @@ pub fn validate_law_account(
                 );
             }
         }
+        // The row's rendered form must re-render from the typed
+        // payload. This is the operand-substitution defense for
+        // every family: editing a class or a group in the payload
+        // orphans the form, whether or not the row also imports an
+        // outside verdict (GH #476 Change 5f).
+        //
+        // REQUIRED, not merely checked when present (review): an
+        // optional defense is no defense. A row whose law renders a
+        // form and simply omits the field would skip operand
+        // binding entirely — delete `form`, substitute another
+        // valid declared operand, restamp `law_digest` (which is
+        // recomputed FROM the rows) and the document digests, and
+        // nothing left in the artifact contradicts the edit. So the
+        // field is mandatory exactly when the law renders one, and
+        // forbidden when it does not.
+        match (expected_legacy_form(&decoded), row["form"].as_str()) {
+            (Some(expected), Some(stated)) if expected == stated => {}
+            (Some(expected), Some(stated)) => {
+                return Err(format!(
+                    "{}: malformed artifact — law.rows[{}] states \
+                     form `{}` but its typed payload renders `{}`",
+                    label, i, stated, expected
+                ));
+            }
+            (Some(expected), None) => {
+                return Err(format!(
+                    "{}: malformed artifact — law.rows[{}] omits \
+                     its rendered form; this law renders `{}`, and \
+                     the form is what binds the row to its typed \
+                     operands",
+                    label, i, expected
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(format!(
+                    "{}: malformed artifact — law.rows[{}] states a \
+                     form its family does not render",
+                    label, i
+                ));
+            }
+            (None, None) => {}
+        }
         // Unmigrated non-budget rows (`causes:` / `depends:`):
         // their imported old-engine verdict must be keyed to the
         // exact law by a `law.legacy` report entry whose
@@ -3000,9 +3042,20 @@ pub fn validate_law_account(
                 })?,
             None => 0,
         };
+        // Every MIGRATED family, not just the first four (review):
+        // `causes` and `depends` rows carry no certificate
+        // evidence, no compatibility `claims` row, and — after
+        // their cutover — no `law.legacy` entry. If a non-holds
+        // verdict there also kept no row evidence, the artifact
+        // would be asserting a violation with nothing behind it.
         if matches!(
             fam,
-            "reachability" | "boundary" | "endpoint" | "bound"
+            "reachability"
+                | "boundary"
+                | "endpoint"
+                | "bound"
+                | "causes"
+                | "depends"
         ) && matches!(verdict, "violated" | "uncertified")
             && row_ev == 0
         {
