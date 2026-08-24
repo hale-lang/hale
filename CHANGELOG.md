@@ -8,6 +8,38 @@ behavior.
 
 ## Unreleased
 
+### `causes:` is judged over the canonical model (GH #476 Change 5f)
+
+`@effects(causes: …)` was the last effect law still answered by a
+second engine. It is now judged by `judge_causes` over the
+canonical model, on both the check path and in the artifact, and
+the old walk in `frontier` survives only as a test oracle.
+
+Three user-visible consequences, all corrections:
+
+- **An unclassified walk is `uncertified`, not a violation.** The
+  old engine saturated: one call it could not name turned into
+  every class at once, and the diagnostic listed classes it had
+  never proven. Not knowing is now reported as not knowing.
+- **A known effect is never erased by uncertainty.** The lower
+  bound is carried separately from the unknown flag, so a law
+  that a proven effect already violates reads as `violated` even
+  when the rest of the walk is opaque.
+- **Delivery joins on wire identity.** A publish reaches a
+  handler when their subjects meet, not when they were spelled
+  with the same topic name — a literal `"t" <- …` send is judged
+  exactly like the declared spelling it lowers to, and a binding
+  that leaves the application makes the walk `uncertified`
+  instead of silently ending.
+
+Diagnostics for the family are now `Claim`-kind, matching the
+other law families.
+
+**Artifact schema 1.14 → 1.15.** `causes:` rows carry
+`"family": "causes"` with their own rendered `form`, an
+`adequacy.causes` entry stating whether the model is exact or
+degraded for the family, and no longer appear in `law.legacy`; admission re-renders the form from
+the typed payload rather than trusting an imported verdict.
 ### Every typed law row states its rendered form (schema 1.13 → 1.14)
 
 A row whose law renders a compatibility form now carries it, and

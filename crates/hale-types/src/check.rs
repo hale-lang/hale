@@ -465,7 +465,9 @@ pub fn check_bundle(
             };
             // GH #265 frontier: cross-actor causality (needs the
             // bus graph), supervision coverage, and secret taint.
-            diags.extend(crate::frontier::causes_diags(&programs_vec, &graph));
+            // GH #476 Change 5f: `causes:` is judged over the model
+            // with the other migrated families — see
+            // `check_bundle_opts`.
             // RFC #330: the backward dual.
             diags.extend(crate::frontier::depends_diags(&programs_vec, &graph));
             // GH #382 phase 1: bundle-level claims — group

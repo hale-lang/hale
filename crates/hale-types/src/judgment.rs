@@ -4452,6 +4452,7 @@ pub fn claim_law_diags(bundle: &crate::symbol::Bundle<'_>) -> Vec<Diag> {
                 | hale_model::JudgmentFamily::Boundary
                 | hale_model::JudgmentFamily::Endpoint
                 | hale_model::JudgmentFamily::Bound
+                | hale_model::JudgmentFamily::Causes
         ) {
             continue;
         }
@@ -4476,18 +4477,26 @@ pub fn claim_law_diags(bundle: &crate::symbol::Bundle<'_>) -> Vec<Diag> {
 /// judge — a `claims { }` block (world tier or library tier) or a
 /// `constitution` to adopt one from?
 ///
-/// Annotations are deliberately not a claim surface here: their
-/// rows are the certificate family, whose diagnostics belong to the
-/// effects engine (see [`claim_law_diags`]).
+/// …plus `@effects(causes: …)`, which is annotation-carried but
+/// judged here since Change 5f. Other annotations are deliberately
+/// NOT a claim surface: their rows are the certificate family,
+/// whose diagnostics belong to the effects engine.
 fn has_claim_surface(bundle: &crate::symbol::Bundle<'_>) -> bool {
-    use hale_syntax::ast::{LocusMember, TopDecl};
+    use hale_syntax::ast::{EffectAssert, FnDecl, LocusMember, TopDecl};
+    fn causes(fd: &FnDecl) -> bool {
+        fd.effects
+            .iter()
+            .any(|a| matches!(a, EffectAssert::Causes(_)))
+    }
     fn walk(items: &[TopDecl]) -> bool {
         items.iter().any(|item| match item {
             TopDecl::Claims(_) | TopDecl::Constitution(_) => true,
-            TopDecl::Locus(l) => l
-                .members
-                .iter()
-                .any(|m| matches!(m, LocusMember::Claims(_))),
+            TopDecl::Fn(f) => causes(f),
+            TopDecl::Locus(l) => l.members.iter().any(|m| match m {
+                LocusMember::Claims(_) => true,
+                LocusMember::Fn(f) => causes(f),
+                _ => false,
+            }),
             TopDecl::Module(m) => walk(&m.items),
             _ => false,
         })
@@ -4662,8 +4671,36 @@ pub fn judge_causes_witnessed(
         let ClaimIr::EffectCauses { at, classes } = &row.law else {
             continue;
         };
-        let Some(fid) = at.0 else { continue };
         let mut diags: Vec<Diag> = Vec::new();
+        // An UNRESOLVED subject (round 3): a module-scoped body is
+        // outside the analyzable universe, so this walk has nothing
+        // to start from. Skipping the row left `judge_certificates`
+        // to answer with a bare `uncertified` and no explanation —
+        // silent on the check path, and evidence-less in the
+        // artifact, which admission then refused.
+        let Some(fid) = at.0 else {
+            diags.push(Diag::ty(
+                claim_span(row.provenance),
+                format!(
+                    "declared causal set cannot be certified: `{}` \
+                     is outside the analyzable universe (a \
+                     module-scoped body), so this walk has no \
+                     starting point. Move the subject to the top \
+                     level to have its causal closure checked.",
+                    at.1.display
+                ),
+            ));
+            out.push((
+                Judged {
+                    ordinal: row.ordinal,
+                    verdict: Verdict::Uncertified,
+                    diags,
+                    foreign: Vec::new(),
+                },
+                CausesWitness::default(),
+            ));
+            continue;
+        };
         // A class that resolves to nothing makes the contract
         // vacuous: invalid before evaluation, as in the certificate
         // family. The declaration owns the diagnostic.
@@ -4867,6 +4904,77 @@ pub fn judge_causes_witnessed(
             ));
             Verdict::Violated
         } else if uncertain {
+            // Round 3: an uncertified row without an explanation was
+            // SILENT on the check path — `claim_law_diags` appends
+            // diagnostics, never verdicts — so a law that could not
+            // be certified compiled clean while the artifact marked
+            // the document `law_failed`. That is exactly the
+            // check/artifact disagreement this epic removes. It also
+            // left the row with no evidence, which admission (which
+            // requires a non-holds migrated row to retain its
+            // judgment's evidence) then refused.
+            //
+            // The witness already knows WHY; say it.
+            let mut why: Vec<String> = Vec::new();
+            if !witness.unknown_handlers.is_empty() {
+                let names: Vec<&str> = witness
+                    .unknown_handlers
+                    .iter()
+                    .map(|h| e.functions[h.index()].display.as_str())
+                    .collect();
+                why.push(format!(
+                    "the effects of {} are not fully classified",
+                    names
+                        .iter()
+                        .map(|n| format!("`{}`", n))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            if !witness.incomplete_endpoints.is_empty() {
+                let subs: Vec<String> = witness
+                    .incomplete_endpoints
+                    .iter()
+                    .map(|s| {
+                        format!(
+                            "`{}`",
+                            e.subjects[s.index()].pattern
+                        )
+                    })
+                    .collect();
+                why.push(format!(
+                    "the set of subscribers to {} is not fully \
+                     modelled (an unknown filter, an opaque \
+                     boundary, or a route that leaves this \
+                     application)",
+                    subs.join(", ")
+                ));
+            }
+            if !witness.incomplete_discovery.is_empty() {
+                why.push(
+                    "a call this walk could not follow may publish \
+                     further"
+                        .to_string(),
+                );
+            }
+            if why.is_empty() {
+                why.push(
+                    "part of the causal closure is not modelled"
+                        .to_string(),
+                );
+            }
+            diags.push(Diag::ty(
+                claim_span(row.provenance),
+                format!(
+                    "declared causal set cannot be certified: `{}` \
+                     publishes into a closure this model does not \
+                     fully know — {}. The law is neither kept nor \
+                     broken here; classify the effects, close the \
+                     endpoint, or narrow the publish.",
+                    e.functions[fid.index()].display,
+                    why.join("; ")
+                ),
+            ));
             Verdict::Uncertified
         } else {
             Verdict::Holds

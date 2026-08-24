@@ -1223,3 +1223,64 @@ fn main() { App { }; }
          publish names the wire; they are one address"
     );
 }
+
+/// Review pin (round 3): an `Uncertified` verdict is never SILENT.
+///
+/// `claim_law_diags` appends diagnostics, never verdicts. A row that
+/// could not be certified and carried no diagnostic therefore
+/// compiled clean while the artifact marked the document
+/// `law_failed` — the exact check/artifact disagreement this epic
+/// removes — and left the row with no evidence, which admission
+/// then refused.
+#[test]
+fn an_uncertified_causes_row_explains_itself() {
+    let src = r#"
+type T { n: Int = 0; }
+topic Settled { payload: T; subject: "settled"; }
+locus Ledger {
+    bus { subscribe Settled as on_settled; }
+    params { n: Int = 0; }
+    fn on_settled(t: T) { self.n = apply(bump, t.n); }
+}
+fn bump(v: Int) -> Int { return v + 1; }
+// An INDIRECT call: its target is chosen by the caller, so what the
+// handler does is not knowable here.
+fn apply(f: fn(Int) -> Int, v: Int) -> Int { return f(v); }
+main locus App {
+    params { l: Ledger = Ledger { }; }
+    bus { publish Settled; }
+    @effects(causes: { publish })
+    fn fire() { Settled <- T { n: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let model = derive_application_model(&bundle);
+    let table = hale_types::claim_lowering::lower_claims(&bundle, &model);
+    let judged =
+        hale_types::judgment::judge_causes(&table, &model, &[0]);
+    let row = judged
+        .iter()
+        .find(|j| j.verdict != Verdict::Holds)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a non-holds causes row, got {:?}",
+                judged.iter().map(|j| j.verdict).collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        !row.diags.is_empty(),
+        "a non-holds row must say why — silence is what let check \
+         and the artifact disagree"
+    );
+
+    // …and the check path carries it, so the program is not clean.
+    let check = hale_types::check_bundle_opts(&bundle, false);
+    assert!(
+        check.iter().any(|d| d.message.contains("causal set")),
+        "check reports the law: {:?}",
+        check.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}

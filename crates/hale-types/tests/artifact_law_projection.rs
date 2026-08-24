@@ -544,12 +544,15 @@ fn main() { App { }; }
             .find(|r| r["law"]["kind"] == kind)
             .unwrap_or_else(|| panic!("row of kind {}", kind))
     };
+    // `causes:` migrated at Change 5f: it is judged over the model
+    // now, so it is no longer an unmigrated row importing an
+    // outside verdict. It states its own form instead, which
+    // admission re-renders from the typed payload.
     let causes = by_kind("effect_causes");
-    assert_eq!(causes["family"], "unmigrated");
-    assert_eq!(
-        causes["verdict"], "holds",
-        "the old causes engine certifies the publish->handler \
-         path: {}",
+    assert_eq!(causes["family"], "causes");
+    assert!(
+        causes["form"].as_str().is_some_and(|f| f.starts_with("causes ")),
+        "a migrated row states its rendered form: {}",
         causes
     );
     let budget = by_kind("alloc_budget");

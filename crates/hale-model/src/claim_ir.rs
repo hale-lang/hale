@@ -500,8 +500,11 @@ pub enum JudgmentFamily {
     /// The pointwise `@effects` / `@no_panic` / `@phase_effects`
     /// certificates (Change 5e).
     Certificate,
-    /// Lowered but its engine has not migrated (`causes:`,
-    /// `depends:`, `@budget`) — judged at minimum `uncertified`.
+    /// `@effects(causes: …)` — the cross-actor causal surface
+    /// (Change 5f).
+    Causes,
+    /// Lowered but its engine has not migrated (`depends:`,
+    /// `@budget`) — judged at minimum `uncertified`.
     Unmigrated,
     /// Fleet plan rows — Change 7's `FleetModel`.
     Fleet,
@@ -515,6 +518,7 @@ impl JudgmentFamily {
             JudgmentFamily::Endpoint => "endpoint",
             JudgmentFamily::Bound => "bound",
             JudgmentFamily::Certificate => "certificate",
+            JudgmentFamily::Causes => "causes",
             JudgmentFamily::Unmigrated => "unmigrated",
             JudgmentFamily::Fleet => "fleet",
         }
@@ -546,6 +550,28 @@ impl JudgmentFamily {
             JudgmentFamily::Certificate => R::CALLS
                 .union(R::EFFECTS)
                 .union(R::PUBLISHES),
+            // `causes` walks CALLS for publish sites and PUBLISHES
+            // for the sends themselves, then asks the shared
+            // completeness query what lies downstream — which reads
+            // SUBSCRIBES (is the handler set complete), KEY_FILTERS
+            // (an unknown filter widens who receives), DELIVERY (an
+            // opaque boundary hides it) and ROUTES (a typed outbound
+            // binding leaves the application). EFFECTS says what the
+            // handlers do.
+            //
+            // Round 2: the first version named only CALLS, PUBLISHES,
+            // DELIVERY and EFFECTS, letting DELIVERY — the
+            // must-deliver GUARANTEE account — stand in for complete
+            // possible-delivery topology. The epic keeps those
+            // distinct, and this list must name what the queries
+            // actually read.
+            JudgmentFamily::Causes => R::CALLS
+                .union(R::PUBLISHES)
+                .union(R::SUBSCRIBES)
+                .union(R::KEY_FILTERS)
+                .union(R::DELIVERY)
+                .union(R::ROUTES)
+                .union(R::EFFECTS),
             JudgmentFamily::Unmigrated | JudgmentFamily::Fleet => {
                 crate::hole::RelationSet(0)
             }
@@ -1035,8 +1061,8 @@ impl ClaimRow {
             | ClaimIr::PhaseEffects { .. } => {
                 JudgmentFamily::Certificate
             }
-            ClaimIr::EffectCauses { .. }
-            | ClaimIr::DependsSet { .. }
+            ClaimIr::EffectCauses { .. } => JudgmentFamily::Causes,
+            ClaimIr::DependsSet { .. }
             | ClaimIr::AllocBudget { .. }
             | ClaimIr::QuantBudget { .. } => {
                 JudgmentFamily::Unmigrated

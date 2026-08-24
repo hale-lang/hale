@@ -2214,8 +2214,8 @@ pub fn family_of(law: &Law) -> &'static str {
         | Law::EffectPublishSet { .. }
         | Law::NoPanic { .. }
         | Law::PhaseEffects { .. } => "certificate",
-        Law::EffectCauses { .. }
-        | Law::DependsSet { .. }
+        Law::EffectCauses { .. } => "causes",
+        Law::DependsSet { .. }
         | Law::AllocBudget { .. }
         | Law::QuantBudget { .. } => "unmigrated",
     }
@@ -2472,6 +2472,7 @@ pub fn validate_law_account(
         "endpoint",
         "bound",
         "certificate",
+        "causes",
         "unmigrated",
     ];
     const VERDICTS: &[&str] =
@@ -2540,7 +2541,9 @@ pub fn validate_law_account(
         .map_err(|e| format!("{}: {}", label, e))?;
     let origin_ok = |origin: &str, family: &str| -> bool {
         match family {
-            "certificate" | "unmigrated" => origin == "annotation",
+            "certificate" | "causes" | "unmigrated" => {
+                origin == "annotation"
+            }
             _ => {
                 origin == "main"
                     || origin == "library"
@@ -3015,7 +3018,9 @@ pub fn validate_law_account(
         // their imported old-engine verdict must be keyed to the
         // exact law by a `law.legacy` report entry whose
         // fingerprint re-renders from the typed operands.
-        if let Some(form) = expected_legacy_form(&decoded) {
+        if let Some(form) = expected_legacy_form(&decoded)
+            .filter(|_| row["family"] == "unmigrated")
+        {
             // (Class validity is enforced above: static_invalid
             // forces the verdict to exactly `invalid`.)
             if verdict == "holds" || verdict == "violated" {
@@ -3305,25 +3310,48 @@ pub fn validate_law_account(
         }
     }
     use hale_model::JudgmentFamily as JF;
-    const MIGRATED: &[(&str, JF)] = &[
+    // SCHEMA-SPECIFIC and exact (review round 2). Migrating a
+    // family without extending this table left the artifact
+    // internally contradictory: a row could declare
+    // `"family": "causes"`, the model could define a completeness
+    // contract for it, and the document was structurally forbidden
+    // from saying whether that contract was met. Each schema
+    // version names exactly the families it must account for, so a
+    // corrected artifact is admitted and an under-stated one is
+    // not.
+    const MIGRATED_114: &[(&str, JF)] = &[
         ("reachability", JF::Reachability),
         ("boundary", JF::Boundary),
         ("endpoint", JF::Endpoint),
         ("bound", JF::Bound),
         ("certificate", JF::Certificate),
     ];
+    const MIGRATED_115: &[(&str, JF)] = &[
+        ("reachability", JF::Reachability),
+        ("boundary", JF::Boundary),
+        ("endpoint", JF::Endpoint),
+        ("bound", JF::Bound),
+        ("certificate", JF::Certificate),
+        ("causes", JF::Causes),
+    ];
+    let schema = v["schema"].as_str().unwrap_or_default();
+    let migrated: &[(&str, JF)] = match schema {
+        "1.15" => MIGRATED_115,
+        _ => MIGRATED_114,
+    };
     let adequacy = v["adequacy"].as_object().ok_or_else(|| {
         format!("{}: adequacy must be an object", label)
     })?;
-    if adequacy.len() != MIGRATED.len() {
+    if adequacy.len() != migrated.len() {
         return Err(format!(
             "{}: malformed artifact — adequacy must carry exactly \
-             the {} migrated families",
+             the {} families schema {} accounts for",
             label,
-            MIGRATED.len()
+            migrated.len(),
+            schema
         ));
     }
-    for (name, fam) in MIGRATED {
+    for (name, fam) in migrated {
         let required = fam.required_relations().0;
         let expect = if vouched & required == required {
             "exact"
