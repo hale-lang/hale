@@ -2215,8 +2215,8 @@ pub fn family_of(law: &Law) -> &'static str {
         | Law::NoPanic { .. }
         | Law::PhaseEffects { .. } => "certificate",
         Law::EffectCauses { .. } => "causes",
-        Law::DependsSet { .. }
-        | Law::AllocBudget { .. }
+        Law::DependsSet { .. } => "depends",
+        Law::AllocBudget { .. }
         | Law::QuantBudget { .. } => "unmigrated",
     }
 }
@@ -2473,6 +2473,7 @@ pub fn validate_law_account(
         "bound",
         "certificate",
         "causes",
+        "depends",
         "unmigrated",
     ];
     const VERDICTS: &[&str] =
@@ -2541,7 +2542,10 @@ pub fn validate_law_account(
         .map_err(|e| format!("{}: {}", label, e))?;
     let origin_ok = |origin: &str, family: &str| -> bool {
         match family {
-            "certificate" | "causes" | "unmigrated" => {
+            // `depends:` is an annotation on a LOCUS, `causes:` one
+            // on a function; neither can arrive from a claims block
+            // or a constitution.
+            "certificate" | "causes" | "depends" | "unmigrated" => {
                 origin == "annotation"
             }
             _ => {
@@ -3334,8 +3338,18 @@ pub fn validate_law_account(
         ("certificate", JF::Certificate),
         ("causes", JF::Causes),
     ];
+    const MIGRATED_116: &[(&str, JF)] = &[
+        ("reachability", JF::Reachability),
+        ("boundary", JF::Boundary),
+        ("endpoint", JF::Endpoint),
+        ("bound", JF::Bound),
+        ("certificate", JF::Certificate),
+        ("causes", JF::Causes),
+        ("depends", JF::Depends),
+    ];
     let schema = v["schema"].as_str().unwrap_or_default();
     let migrated: &[(&str, JF)] = match schema {
+        "1.16" => MIGRATED_116,
         "1.15" => MIGRATED_115,
         _ => MIGRATED_114,
     };

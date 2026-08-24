@@ -1,0 +1,663 @@
+//! GH #476 Change 5g — `@effects(depends: {…})` over the canonical
+//! model (RFC #330).
+//!
+//! The backward dual of `causes:`, and these controls are mostly
+//! about the places the two must AGREE. `causes:` asks what a
+//! publish reaches; `depends:` asks what can reach a subscription.
+//! If those two walks disagree about whether a publish and a
+//! subscription meet, one of them is wrong — so both call the same
+//! `model_query` joins, and the cases below are the ones where the
+//! evaluator's name comparison and the model's typed identity gave
+//! different answers.
+
+use std::collections::BTreeMap;
+
+use hale_types::model_builder::derive_application_model;
+use hale_types::symbol::SourceFile;
+use hale_types::verdict::Verdict;
+use hale_types::Bundle;
+
+fn bundle_of<'a>(
+    src: &str,
+    program: &'a hale_syntax::ast::Program,
+) -> Bundle<'a> {
+    let mut programs = BTreeMap::new();
+    programs.insert("app.hl".to_string(), program);
+    let mut b = Bundle::new(programs);
+    b.sources = vec![SourceFile {
+        id: 0,
+        path: "app.hl".to_string(),
+        digest: "0".to_string(),
+        base: 0,
+        len: src.len() as u32,
+    }];
+    b
+}
+
+/// The row verdict plus its diagnostics, which is what every
+/// control below asserts on.
+fn judge(src: &str) -> (Verdict, Vec<String>) {
+    let program = hale_syntax::parse_source(src).expect("parse");
+    let bundle = bundle_of(src, &program);
+    let model = derive_application_model(&bundle);
+    let table = hale_types::claim_lowering::lower_claims(&bundle, &model);
+    let bases: Vec<u32> = bundle.sources.iter().map(|f| f.base).collect();
+    let judged =
+        hale_types::judgment::judge_depends(&table, &model, &bases);
+    assert_eq!(
+        judged.len(),
+        1,
+        "expected exactly one depends row, got {}",
+        judged.len()
+    );
+    let j = &judged[0];
+    (
+        j.verdict,
+        j.diags.iter().map(|d| d.message.clone()).collect(),
+    )
+}
+
+const BASE: &str = r#"
+type Act { mag: Float; pos: Int; }
+topic SumLookup { payload: Act; subject: "sum.lookup"; }
+topic Recalled  { payload: Act; subject: "recalled"; }
+
+locus Relay {
+    bus { subscribe SumLookup as on_sum; publish Recalled; }
+    fn on_sum(a: Act) { Recalled <- Act { mag: a.mag, pos: a.pos }; }
+}
+@effects(depends: {DECLARED})
+locus Carry {
+    bus { subscribe Recalled as on_recalled; }
+    params { recalled: Float = 0.0; }
+    fn on_recalled(a: Act) { self.recalled = a.mag; }
+}
+locus Compute {
+    bus { publish SumLookup; }
+    fn go() { SumLookup <- Act { mag: 7.0, pos: 1 }; }
+}
+main locus App {
+    params {
+        r: Relay = Relay { }; c: Carry = Carry { };
+        k: Compute = Compute { };
+    }
+}
+fn main() { App { }; }
+"#;
+
+fn with(declared: &str) -> String {
+    BASE.replace("DECLARED", declared)
+}
+
+#[test]
+fn the_full_backward_closure_holds() {
+    let (v, ds) = judge(&with("Recalled, SumLookup"));
+    assert_eq!(v, Verdict::Holds, "{:?}", ds);
+}
+
+#[test]
+fn a_laundered_second_hop_is_a_violation() {
+    // `Carry` names only what it directly subscribes. The whole
+    // point of the law: `SumLookup` reaches it through `Relay`.
+    let (v, ds) = judge(&with("Recalled"));
+    assert_eq!(v, Verdict::Violated);
+    assert!(
+        ds.iter().any(|m| m.contains("SumLookup")
+            && m.contains("-> `Relay` ->")),
+        "the diagnostic must name the laundering path: {:?}",
+        ds
+    );
+}
+
+#[test]
+fn the_declaration_may_name_the_wire_subject() {
+    // `"recalled"` IS topic `Recalled` — one endpoint, two
+    // spellings. The evaluator compared names and called this an
+    // omission; the model joins on `SubjectId`.
+    let (v, ds) = judge(&with("\"recalled\", \"sum.lookup\""));
+    assert_eq!(
+        v,
+        Verdict::Holds,
+        "wire subject and topic name address the same endpoint: {:?}",
+        ds
+    );
+}
+
+#[test]
+fn an_operand_naming_nothing_is_invalid_not_violated() {
+    // The evaluator matched by NAME, so a typo covered nothing and
+    // every reached subject came back as an omission — a violation
+    // report about the subjects, when the defect is the typo.
+    let (v, ds) = judge(&with("Recaled, SumLookup"));
+    assert_eq!(v, Verdict::Invalid);
+    assert!(
+        ds.iter().any(|m| m.contains("is invalid")
+            && m.contains("Recaled")),
+        "the diagnostic must name the unresolved entry: {:?}",
+        ds
+    );
+    assert!(
+        !ds.iter().any(|m| m.contains("violated")),
+        "an invalid law is not a violated one: {:?}",
+        ds
+    );
+}
+
+#[test]
+fn a_sync_form_param_refuses_the_whole_claim() {
+    // #340. Another pool writes the form, this locus reads it, and
+    // NO bus edge records the transfer — so the message graph, all
+    // this walk can see, cannot support a completeness claim.
+    let src = r#"
+type Act { mag: Float; pos: Int; }
+topic Recalled { payload: Act; subject: "recalled"; }
+@form(hashmap, sync = lockfree)
+locus Shared {
+    params { n: Int = 0; }
+    fn get() -> Int { return self.n; }
+}
+@effects(depends: {Recalled})
+locus Carry {
+    bus { subscribe Recalled as on_recalled; }
+    params { shared: Shared = Shared { }; recalled: Float = 0.0; }
+    fn on_recalled(a: Act) { self.recalled = a.mag; }
+}
+main locus App {
+    params { c: Carry = Carry { }; }
+}
+fn main() { App { }; }
+"#;
+    let (v, ds) = judge(src);
+    assert_eq!(v, Verdict::Violated);
+    assert!(
+        ds.iter().any(|m| m.contains("sync") && m.contains("shared")),
+        "the diagnostic must name the param and the discipline: {:?}",
+        ds
+    );
+}
+
+#[test]
+fn an_ordinary_child_locus_is_not_a_sync_form() {
+    // The premise of the control above: it is the FORM's `sync`
+    // argument that matters, not merely holding another locus.
+    let src = r#"
+type Act { mag: Float; pos: Int; }
+topic Recalled { payload: Act; subject: "recalled"; }
+locus Plain {
+    params { n: Int = 0; }
+    fn get() -> Int { return self.n; }
+}
+@effects(depends: {Recalled})
+locus Carry {
+    bus { subscribe Recalled as on_recalled; }
+    params { plain: Plain = Plain { }; recalled: Float = 0.0; }
+    fn on_recalled(a: Act) { self.recalled = a.mag; }
+}
+main locus App {
+    params { c: Carry = Carry { }; }
+}
+fn main() { App { }; }
+"#;
+    let (v, ds) = judge(src);
+    assert_eq!(v, Verdict::Holds, "{:?}", ds);
+}
+
+#[test]
+fn an_inbound_route_makes_the_upstream_uncertified() {
+    // A `listen` binding accepts from a peer this application does
+    // not model. Nothing local publishes `Recalled`, so a walk
+    // reading only local publishes would report a clean `holds` —
+    // the fail-open the direction-aware endpoint query exists to
+    // close.
+    let src = r#"
+type Act { mag: Float; pos: Int; }
+topic Recalled { payload: Act; subject: "recalled"; }
+@effects(depends: {Recalled})
+locus Carry {
+    bus { subscribe Recalled as on_recalled; }
+    params { recalled: Float = 0.0; }
+    fn on_recalled(a: Act) { self.recalled = a.mag; }
+}
+main locus App {
+    params { c: Carry = Carry { }; }
+    bindings { Recalled: unix("/tmp/hale-depends-in.sock", role: listen); }
+}
+fn main() { App { }; }
+"#;
+    let (v, ds) = judge(src);
+    assert_eq!(
+        v,
+        Verdict::Uncertified,
+        "a peer can publish into this subject: {:?}",
+        ds
+    );
+}
+
+#[test]
+fn an_outbound_route_does_not_taint_the_backward_walk() {
+    // The dual of the control above, and the reason the query takes
+    // a DIRECTION: a `connect` route is where messages LEAVE. It
+    // says nothing about what can reach this locus.
+    let src = r#"
+type Act { mag: Float; pos: Int; }
+topic Recalled { payload: Act; subject: "recalled"; }
+topic Outbound { payload: Act; subject: "outbound"; }
+locus Src {
+    bus { publish Recalled; }
+    fn go() { Recalled <- Act { mag: 1.0, pos: 1 }; }
+}
+@effects(depends: {Recalled})
+locus Carry {
+    bus { subscribe Recalled as on_recalled; publish Outbound; }
+    params { recalled: Float = 0.0; }
+    fn on_recalled(a: Act) {
+        self.recalled = a.mag;
+        Outbound <- Act { mag: a.mag, pos: a.pos };
+    }
+}
+main locus App {
+    params { s: Src = Src { }; c: Carry = Carry { }; }
+    bindings { Outbound: unix("/tmp/hale-depends-out.sock", role: connect); }
+}
+fn main() { App { }; }
+"#;
+    let (v, ds) = judge(src);
+    assert_eq!(v, Verdict::Holds, "{:?}", ds);
+}
+
+#[test]
+fn a_free_function_publisher_still_counts_as_an_upstream() {
+    // Ownership is how the walk hops from a subject to a locus's
+    // own inputs; a publisher owned by no locus has no inputs to
+    // walk on to, but its subject reaches here all the same.
+    let src = r#"
+type Act { mag: Float; pos: Int; }
+topic Recalled { payload: Act; subject: "recalled"; }
+fn shout() { Recalled <- Act { mag: 1.0, pos: 1 }; }
+@effects(depends: {})
+locus Carry {
+    bus { subscribe Recalled as on_recalled; }
+    params { recalled: Float = 0.0; }
+    fn on_recalled(a: Act) { self.recalled = a.mag; }
+}
+main locus App {
+    params { c: Carry = Carry { }; }
+    run() { shout(); }
+}
+fn main() { App { }; }
+"#;
+    let (v, ds) = judge(src);
+    assert_eq!(v, Verdict::Violated);
+    assert!(
+        ds.iter().any(|m| m.contains("Recalled")
+            || m.contains("recalled")),
+        "{:?}",
+        ds
+    );
+}
+
+#[test]
+fn a_pure_publisher_depends_on_nothing() {
+    let src = r#"
+type Act { mag: Float; pos: Int; }
+topic Recalled { payload: Act; subject: "recalled"; }
+@effects(depends: {})
+locus Src {
+    bus { publish Recalled; }
+    fn go() { Recalled <- Act { mag: 1.0, pos: 1 }; }
+}
+main locus App {
+    params { s: Src = Src { }; }
+    run() { self.s.go(); }
+}
+fn main() { App { }; }
+"#;
+    let (v, ds) = judge(src);
+    assert_eq!(v, Verdict::Holds, "{:?}", ds);
+}
+
+/// Review pin (round 2): the backward walk climbs reverse CALLS.
+///
+/// The walk used to stop at a free-function publisher, recording
+/// its subject and giving up because there was no owner locus to
+/// inspect. But a handler that calls a free helper which publishes
+/// is a real path, and stopping there let a locus certify a
+/// dependency set that omitted the subject driving it.
+const LAUNDERED_VIA_HELPER: &str = r#"
+type Msg { n: Int = 0; }
+topic Secret { payload: Msg; subject: "secret"; }
+topic Clean  { payload: Msg; subject: "clean"; }
+
+fn emit_clean() { Clean <- Msg { n: 1 }; }
+
+locus Relay {
+    bus { subscribe Secret as on_secret; publish Clean; }
+    params { n: Int = 0; }
+    fn on_secret(m: Msg) { emit_clean(); }
+}
+@effects(depends: {DECLARED})
+locus Target {
+    bus { subscribe Clean as on_clean; }
+    params { n: Int = 0; }
+    fn on_clean(m: Msg) { self.n = m.n; }
+}
+locus Source {
+    bus { publish Secret; }
+    fn go() { Secret <- Msg { n: 7 }; }
+}
+main locus App {
+    params {
+        r: Relay = Relay { };
+        t: Target = Target { };
+        s: Source = Source { };
+    }
+}
+fn main() { App { }; }
+"#;
+
+#[test]
+fn a_free_helper_publish_carries_its_callers_inputs() {
+    // `Secret -> Relay::on_secret -> emit_clean() -> Clean ->
+    //  Target::on_clean`. Declaring only `Clean` is incomplete.
+    let (v, ds) =
+        judge(&LAUNDERED_VIA_HELPER.replace("DECLARED", "Clean"));
+    assert_eq!(
+        v,
+        Verdict::Violated,
+        "the helper's publish belongs to the loci that can reach \
+         it: {:?}",
+        ds
+    );
+    assert!(
+        ds.iter().any(|m| m.contains("Secret")),
+        "and the omitted subject is named: {:?}",
+        ds
+    );
+}
+
+#[test]
+fn declaring_the_helper_mediated_closure_holds() {
+    let (v, ds) = judge(
+        &LAUNDERED_VIA_HELPER.replace("DECLARED", "Clean, Secret"),
+    );
+    assert_eq!(v, Verdict::Holds, "{:?}", ds);
+}
+
+#[test]
+fn a_computed_publisher_upstream_is_uncertified() {
+    // A publish whose subject the model could not name is a
+    // function-grained PUBLISHES hole, anchored to no subject at
+    // all — so neither the endpoint query nor the publish-row walk
+    // can see it. It might name this wire.
+    let src = r#"
+type Msg { n: Int = 0; }
+topic Clean { payload: Msg; subject: "clean"; }
+fn pick(n: Int) -> String { if n > 0 { return "clean"; } return "other"; }
+fn shout(n: Int) { pick(n) <- Msg { n: n }; }
+@effects(depends: {Clean})
+locus Target {
+    bus { subscribe Clean as on_clean; }
+    params { n: Int = 0; }
+    fn on_clean(m: Msg) { self.n = m.n; }
+}
+main locus App {
+    params { t: Target = Target { }; }
+    run() { shout(1); }
+}
+fn main() { App { }; }
+"#;
+    let (v, ds) = judge(src);
+    assert_eq!(
+        v,
+        Verdict::Uncertified,
+        "an unnameable publisher cannot be certified around: {:?}",
+        ds
+    );
+}
+
+/// Review pin (round 3): the backward frontier is
+/// SUBSCRIPTION-grained.
+///
+/// With a queue of bare subjects, the walk scanned every
+/// subscription whose ADDRESS covered the subject — so an unrelated
+/// wildcard subscriber let a publish that never reaches this locus
+/// drag its publisher's inputs in as dependencies.
+#[test]
+fn an_unrelated_wildcard_subscriber_is_not_an_upstream() {
+    let src = r#"
+type Msg { n: Int = 0; }
+topic Secret   { payload: Msg; subject: "secret"; }
+topic Clean    { payload: Msg; subject: "clean"; }
+topic OtherWire { payload: Msg; subject: "other"; }
+
+locus Relay {
+    bus { subscribe Secret as on_secret; publish OtherWire; }
+    params { n: Int = 0; }
+    fn on_secret(m: Msg) { OtherWire <- Msg { n: m.n }; }
+}
+locus Nosy {
+    bus { subscribe "**" as on_any; }
+    params { n: Int = 0; }
+    fn on_any(m: Msg) { self.n = m.n; }
+}
+locus Feeder {
+    bus { publish Clean; }
+    fn go() { Clean <- Msg { n: 1 }; }
+}
+@effects(depends: {Clean})
+locus Target {
+    bus { subscribe Clean as on_clean; }
+    params { n: Int = 0; }
+    fn on_clean(m: Msg) { self.n = m.n; }
+}
+locus Src {
+    bus { publish Secret; }
+    fn go() { Secret <- Msg { n: 7 }; }
+}
+main locus App {
+    params {
+        r: Relay = Relay { }; y: Nosy = Nosy { };
+        f: Feeder = Feeder { }; t: Target = Target { };
+        s: Src = Src { };
+    }
+}
+fn main() { App { }; }
+"#;
+    let (v, ds) = judge(src);
+    assert_eq!(
+        v,
+        Verdict::Holds,
+        "`Nosy`'s `**` covers `clean`, but `Relay`'s `other` publish \
+         reaches Nosy, not Target: {:?}",
+        ds
+    );
+    assert!(
+        !ds.iter().any(|m| m.contains("Secret")),
+        "`Secret` is upstream of Nosy, not of Target: {:?}",
+        ds
+    );
+}
+
+// The KEYED version of the same defect — two disjoint filters on one
+// wire have different upstreams — is the same fix: the frontier
+// carries the subscription, so `may_deliver` sees its predicate.
+// It is not restated as a control here because it needs a
+// statically EXACT publish key domain to be provable, and
+// `may_deliver`'s exact-domain arm is pinned directly in
+// `judgment_causes::may_deliver_respects_exact_key_domains`. With an
+// unknown key domain the walk widens, which is the sound direction.
+
+/// Review pin (round 3): caller discovery that CANNOT be completed
+/// downgrades the verdict rather than passing unnoticed.
+#[test]
+fn an_unfollowable_caller_makes_the_law_uncertified() {
+    let src = r#"
+type Msg { n: Int = 0; }
+topic Secret { payload: Msg; subject: "secret"; }
+topic Clean  { payload: Msg; subject: "clean"; }
+
+fn emit_clean() { Clean <- Msg { n: 1 }; }
+fn apply(f: fn() -> Unit) { f(); }
+
+locus Relay {
+    bus { subscribe Secret as on_secret; publish Clean; }
+    params { n: Int = 0; }
+    fn on_secret(m: Msg) { apply(emit_clean); }
+}
+@effects(depends: {Clean})
+locus Target {
+    bus { subscribe Clean as on_clean; }
+    params { n: Int = 0; }
+    fn on_clean(m: Msg) { self.n = m.n; }
+}
+locus Src {
+    bus { publish Secret; }
+    fn go() { Secret <- Msg { n: 7 }; }
+}
+main locus App {
+    params {
+        r: Relay = Relay { }; t: Target = Target { };
+        s: Src = Src { };
+    }
+}
+fn main() { App { }; }
+"#;
+    let (v, ds) = judge(src);
+    assert_eq!(
+        v,
+        Verdict::Uncertified,
+        "the reverse graph has no edge from `Relay` to \
+         `emit_clean`, so `Secret` would silently vanish: {:?}",
+        ds
+    );
+    assert!(
+        ds.iter().any(|m| m.contains("cannot follow")),
+        "and it says which knowledge is missing: {:?}",
+        ds
+    );
+}
+
+/// Review pin (round 4): a stdlib interior can PUBLISH, and the
+/// backward walk has to see it.
+///
+/// `std::log::Logger.info` computes `log.<path>` and sends from
+/// inside its own body. Reading only `relations.publishes` meant a
+/// subscriber to `log.**` found no matching publisher, no call hole
+/// and no function-level publish hole — and could return `Holds`
+/// while an entire upstream sat behind the absorption boundary.
+#[test]
+fn an_absorbed_computed_publish_is_not_invisible() {
+    let src = r#"
+type Msg { n: Int = 0; }
+topic Secret { payload: Msg; subject: "secret"; }
+
+locus Relay {
+    bus { subscribe Secret as on_secret; }
+    params { log: std::log::Logger = std::log::Logger { }; }
+    fn on_secret(m: Msg) { self.log.info("relayed"); }
+}
+@effects(depends: {"log.**"})
+locus Target {
+    bus { subscribe "log.**" as on_log of type std::log::LogEvent; }
+    params { n: Int = 0; }
+    fn on_log(ev: std::log::LogEvent) { self.n = 1; }
+}
+locus Src {
+    bus { publish Secret; }
+    fn go() { Secret <- Msg { n: 7 }; }
+}
+main locus App {
+    params {
+        r: Relay = Relay { }; t: Target = Target { };
+        s: Src = Src { };
+    }
+}
+fn main() { App { }; }
+"#;
+    let (v, ds) = judge(src);
+    assert_ne!(
+        v,
+        Verdict::Holds,
+        "the absorbed publish hides an upstream: {:?}",
+        ds
+    );
+}
+
+/// Review pin (round 4): residue must be REACHABLE to matter.
+///
+/// The model's hole rule is that reachable relevant residue
+/// withdraws a proof — not that residue anywhere in the document
+/// authorizes a refusal. A program-global flag made an uncalled
+/// helper's indirect call uncertify every `depends:` row.
+#[test]
+fn a_dead_indirect_call_does_not_uncertify_an_exact_law() {
+    let src = r#"
+type Msg { n: Int = 0; }
+topic Clean { payload: Msg; subject: "clean"; }
+
+// Never called by anything executable.
+fn dead_apply(f: fn(Int) -> Int, x: Int) -> Int { return f(x); }
+
+locus Source {
+    bus { publish Clean; }
+    fn go() { Clean <- Msg { n: 1 }; }
+}
+@effects(depends: {Clean})
+locus Target {
+    bus { subscribe Clean as on_clean; }
+    params { n: Int = 0; }
+    fn on_clean(m: Msg) { self.n = m.n; }
+}
+main locus App {
+    params { s: Source = Source { }; t: Target = Target { }; }
+    run() { self.s.go(); }
+}
+fn main() { App { }; }
+"#;
+    let (v, ds) = judge(src);
+    assert_eq!(
+        v,
+        Verdict::Holds,
+        "`dead_apply` is on no caller path to `Source::go`: {:?}",
+        ds
+    );
+}
+
+/// The publisher-side twin: a computed publish in a function nothing
+/// executes cannot address anything.
+#[test]
+fn a_dead_computed_publish_does_not_uncertify_an_exact_law() {
+    let src = r#"
+type Msg { n: Int = 0; }
+topic Clean { payload: Msg; subject: "clean"; }
+
+fn pick(n: Int) -> String { if n > 0 { return "x"; } return "y"; }
+// Never called.
+fn dead_shout(n: Int) { pick(n) <- Msg { n: n }; }
+
+locus Source {
+    bus { publish Clean; publish "z.**" of type Msg; }
+    fn go() { Clean <- Msg { n: 1 }; }
+}
+@effects(depends: {Clean})
+locus Target {
+    bus { subscribe Clean as on_clean; }
+    params { n: Int = 0; }
+    fn on_clean(m: Msg) { self.n = m.n; }
+}
+main locus App {
+    params { s: Source = Source { }; t: Target = Target { }; }
+    run() { self.s.go(); }
+}
+fn main() { App { }; }
+"#;
+    let (v, ds) = judge(src);
+    assert_eq!(
+        v,
+        Verdict::Holds,
+        "`dead_shout` is unreachable, so its computed subject \
+         addresses nothing: {:?}",
+        ds
+    );
+}
+

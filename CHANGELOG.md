@@ -8,6 +8,44 @@ behavior.
 
 ## Unreleased
 
+### `depends:` is judged over the canonical model (GH #476 Change 5g)
+
+`@effects(depends: {…})` on a locus (RFC #330) is the backward dual
+of `causes:` — the COMPLETE set of subjects that can transitively
+reach any handler the locus owns. It is now judged over the
+canonical model, by the same shared queries the forward walk uses.
+That is the point: if the two walks disagreed about whether a
+publish and a subscription meet, one of them was wrong.
+
+Three corrections fall out of the shared join:
+
+- **A declaration may name the wire subject.**
+  `@effects(depends: { "evt" })` and `{ Evt }` address one
+  endpoint. The old engine compared names and reported the wire
+  spelling as an omission.
+- **An operand naming nothing is `invalid`, not `violated`.** The
+  old engine matched declared entries by name, so a typo covered
+  nothing and every subject that reached the locus came back as an
+  omission — a violation report about the subjects, when the defect
+  is the typo. The diagnostic now names the unresolved entry.
+- **An inbound route is uncertainty, not silence.** A `listen`
+  binding on a reached subject means a peer this application does
+  not model can publish into it, so the closure cannot be certified.
+  An outbound `connect` route on the same locus does not taint it —
+  the completeness query takes a direction.
+
+The `sync`-discipline refusal (#340) is unchanged: a locus holding
+a `@form(…, sync = …)` param is reachable by another pool's writes
+with no bus edge recording it, and `depends:` closes over the
+message graph only.
+
+Diagnostics for the family are now `Claim`-kind, matching the other
+law families.
+
+**Artifact schema 1.15 → 1.16.** `depends:` rows carry
+`"family": "depends"` with their own rendered `form`, an
+`adequacy.depends` entry, and no `law.legacy` entry; that report now covers `@budget` alone.
+
 ### `causes:` is judged over the canonical model (GH #476 Change 5f)
 
 `@effects(causes: …)` was the last effect law still answered by a

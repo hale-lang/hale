@@ -906,8 +906,14 @@ pub fn legacy_unmigrated_verdicts(
         }
     }
 
-    // ---- causes / depends: span-attributed, single-assert
-    // subjects only ----
+    // ---- span-attributed, single-assert subjects only ----
+    //
+    // `causes:` (Change 5f) and `depends:` (Change 5g) used to be
+    // imported here by matching the old engines' diagnostics back
+    // to a row by span. Both are judged families now: they state
+    // their own form and import no outside verdict, so this block
+    // covers `@budget` alone until 5h retires it entirely.
+    #[allow(unused)]
     let span_of_row =
         |row: &hale_model::ClaimRow| -> Option<(usize, usize)> {
             match table
@@ -933,48 +939,6 @@ pub fn legacy_unmigrated_verdicts(
                 _ => None,
             }
         };
-    let causes_diags =
-        crate::frontier::causes_diags(&programs, graph);
-    let depends_diags =
-        crate::frontier::depends_diags(&programs, graph);
-    for row in &table.rows {
-        let (diags, enumerated, unambiguous) = match &row.law {
-            ClaimIr::EffectCauses { .. } => (
-                &causes_diags,
-                vis_causes.contains_key(&row.name),
-                vis_causes.get(&row.name) == Some(&1),
-            ),
-            ClaimIr::DependsSet { .. } => (
-                &depends_diags,
-                vis_depends.contains(&row.name),
-                true,
-            ),
-            _ => continue,
-        };
-        if !enumerated {
-            continue; // never evaluated — stays uncertified
-        }
-        let Some((a, b)) = span_of_row(row) else {
-            continue;
-        };
-        let hit = diags.iter().any(|d| {
-            d.span.start.as_usize() == a
-                && d.span.end.as_usize() == b
-        });
-        if hit && !unambiguous {
-            // Two asserts share one anchor — the diagnostic
-            // cannot be attributed to a row.
-            continue;
-        }
-        out.insert(
-            row.ordinal,
-            if hit {
-                crate::verdict::Verdict::Violated
-            } else {
-                crate::verdict::Verdict::Holds
-            },
-        );
-    }
     out
 }
 
@@ -1024,6 +988,9 @@ pub fn judge_all(
         judged.insert(j.ordinal, j);
     }
     for j in crate::judgment::judge_causes(table, model, source_bases) {
+        judged.insert(j.ordinal, j);
+    }
+    for j in crate::judgment::judge_depends(table, model, source_bases) {
         judged.insert(j.ordinal, j);
     }
     (pre, judged)
@@ -1396,6 +1363,8 @@ pub fn family_adequacy(
         // artifact that could not state whether the model is exact
         // or degraded there would be internally contradictory.
         F::Causes,
+        // Change 5g, same contract.
+        F::Depends,
     ]
     .into_iter()
     .map(|f| (f, vouched.contains(f.required_relations())))

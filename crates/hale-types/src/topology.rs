@@ -131,6 +131,11 @@ use crate::symbol::Bundle;
 // HASHED model half — an explicitly versioned shape transition.
 // Shape hashes change for every bus-carrying program; recorded
 // baselines and `.halerec` admissions must be re-recorded once.
+// 1.16: `depends:` joins it (Change 5g), on the same terms —
+// `"family": "depends"`, its own rendered form, an
+// `adequacy.depends` entry, no legacy entry. `law.legacy` now
+// covers `@budget` alone.
+//
 // 1.15: `causes:` is a judged family (GH #476 Change 5f), not an
 // unmigrated row importing an outside verdict. Its rows now carry
 // `"family": "causes"` and an `adequacy.causes` entry, and they no
@@ -164,7 +169,7 @@ use crate::symbol::Bundle;
 // stdlib re-emerges into user code only from inside its own loops,
 // which sets the bit either way — so this bumps the schema without
 // moving a single committed baseline hash.
-pub const TOPOLOGY_SCHEMA: &str = "1.15";
+pub const TOPOLOGY_SCHEMA: &str = "1.16";
 
 /// GH #408 Phase 0: what the rows MEAN, as distinct from their shape.
 ///

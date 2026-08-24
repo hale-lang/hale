@@ -4453,6 +4453,7 @@ pub fn claim_law_diags(bundle: &crate::symbol::Bundle<'_>) -> Vec<Diag> {
                 | hale_model::JudgmentFamily::Endpoint
                 | hale_model::JudgmentFamily::Bound
                 | hale_model::JudgmentFamily::Causes
+                | hale_model::JudgmentFamily::Depends
         ) {
             continue;
         }
@@ -4477,10 +4478,11 @@ pub fn claim_law_diags(bundle: &crate::symbol::Bundle<'_>) -> Vec<Diag> {
 /// judge — a `claims { }` block (world tier or library tier) or a
 /// `constitution` to adopt one from?
 ///
-/// …plus `@effects(causes: …)`, which is annotation-carried but
-/// judged here since Change 5f. Other annotations are deliberately
-/// NOT a claim surface: their rows are the certificate family,
-/// whose diagnostics belong to the effects engine.
+/// …plus `@effects(causes: …)` on a function and
+/// `@effects(depends: …)` on a locus, which are annotation-carried
+/// but judged here since Changes 5f and 5g. Other annotations are
+/// deliberately NOT a claim surface: their rows are the certificate
+/// family, whose diagnostics belong to the effects engine.
 fn has_claim_surface(bundle: &crate::symbol::Bundle<'_>) -> bool {
     use hale_syntax::ast::{EffectAssert, FnDecl, LocusMember, TopDecl};
     fn causes(fd: &FnDecl) -> bool {
@@ -4492,11 +4494,14 @@ fn has_claim_surface(bundle: &crate::symbol::Bundle<'_>) -> bool {
         items.iter().any(|item| match item {
             TopDecl::Claims(_) | TopDecl::Constitution(_) => true,
             TopDecl::Fn(f) => causes(f),
-            TopDecl::Locus(l) => l.members.iter().any(|m| match m {
-                LocusMember::Claims(_) => true,
-                LocusMember::Fn(f) => causes(f),
-                _ => false,
-            }),
+            TopDecl::Locus(l) => {
+                l.depends.is_some()
+                    || l.members.iter().any(|m| match m {
+                        LocusMember::Claims(_) => true,
+                        LocusMember::Fn(f) => causes(f),
+                        _ => false,
+                    })
+            }
             TopDecl::Module(m) => walk(&m.items),
             _ => false,
         })
@@ -4987,6 +4992,652 @@ pub fn judge_causes_witnessed(
         witness.incomplete_endpoints.dedup();
         witness.incomplete_discovery.sort();
         witness.incomplete_discovery.dedup();
+        out.push((
+            Judged {
+                ordinal: row.ordinal,
+                verdict,
+                diags,
+                foreign: Vec::new(),
+            },
+            witness,
+        ));
+    }
+    out
+}
+
+/// The traversal witness a `depends:` row leaves behind — what the
+/// backward walk reached, and everywhere it could not see.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub struct DependsWitness {
+    /// Every subject that can reach this locus, in the order the
+    /// walk settled them.
+    pub reached_subjects: Vec<hale_model::SubjectId>,
+    /// Reached subjects whose upstream is not fully modeled.
+    pub incomplete_endpoints: Vec<hale_model::SubjectId>,
+    /// Params typed as a `sync`-discipline form: input channels
+    /// outside the message graph entirely.
+    pub sync_form_params: Vec<String>,
+    /// A publish whose SUBJECT the model could not name — it might
+    /// name a wire this locus subscribes to.
+    pub unknown_publishers: bool,
+    /// A publishing function whose CALLERS the model could not
+    /// enumerate: an indirect call, an untypeable receiver, or an
+    /// absorbed stdlib interior. Their inputs are inputs of this
+    /// locus, and the reverse graph has no edge to find them by.
+    pub unknown_callers: bool,
+}
+
+/// GH #476 Change 5g — `@effects(depends: {A, B})` on a locus,
+/// judged over the canonical model.
+///
+/// The backward dual of [`judge_causes`], and deliberately built
+/// from the same shared queries: `causes:` asks what a publish can
+/// REACH, `depends:` asks what can reach a subscription. Running
+/// them on different joins is exactly the defect
+/// [`crate::model_query`] exists to prevent — a dependence routed
+/// through one republishing intermediary is invisible in the
+/// depending locus's own `bus {}` block, so the walk has to be
+/// transitive and it has to agree with delivery.
+///
+/// It is a COMPLETE declaration: every subject that can transitively
+/// reach any handler this locus owns must be named. Reachability,
+/// not dataflow — a locus subscribing to a laundered republish of S
+/// depends on S whether or not it reads the field.
+pub fn judge_depends(
+    table: &ClaimIrTable,
+    model: &ApplicationModel,
+    source_bases: &[u32],
+) -> Vec<Judged> {
+    judge_depends_witnessed(table, model, source_bases)
+        .into_iter()
+        .map(|(j, _)| j)
+        .collect()
+}
+
+/// [`judge_depends`], with each row's traversal witness.
+pub fn judge_depends_witnessed(
+    table: &ClaimIrTable,
+    model: &ApplicationModel,
+    source_bases: &[u32],
+) -> Vec<(Judged, DependsWitness)> {
+    let e = &model.entities;
+    let r = &model.relations;
+    let claim_span = |pid: ProvenanceId| -> Span {
+        span_of(&table.provenance, source_bases, pid)
+    };
+    // locus -> the functions it owns. `depends:` is a claim about a
+    // LOCUS, but subscription is a fact about a FUNCTION, and
+    // `member_of` is the only bridge.
+    let mut fns_of: BTreeMap<u32, Vec<FunctionId>> = BTreeMap::new();
+    for m in &r.member_of {
+        fns_of.entry(m.locus.0).or_default().push(m.function);
+    }
+    // Reverse CALLS. A publish inside a free helper belongs to
+    // every locus that can reach that helper, so the backward walk
+    // has to climb the call graph before it can ask "whose inputs
+    // are these?".
+    let mut callers_of: BTreeMap<u32, Vec<FunctionId>> =
+        BTreeMap::new();
+    for c in &r.calls {
+        callers_of.entry(c.to.0).or_default().push(c.from);
+    }
+    // …and through the stdlib: a user fn that reaches a user fn
+    // through a stdlib interior is still a caller.
+    for a in &model.analyses.stdlib_absorption {
+        for node in &a.nodes {
+            for ev in &node.events {
+                if let hale_model::AbsorbedEvent::Call {
+                    target: hale_model::AbsorbedTarget::User(u),
+                    ..
+                } = ev
+                {
+                    callers_of.entry(u.0).or_default().push(a.from);
+                }
+            }
+        }
+    }
+    let owner_of: BTreeMap<u32, hale_model::LocusDeclId> = r
+        .member_of
+        .iter()
+        .map(|m| (m.function.0, m.locus))
+        .collect();
+    // Every locus that owns a function which can transitively reach
+    // `f` — including `f`'s own owner.
+    // ---- what is REACHABLE, and therefore relevant ----
+    //
+    // Round 4: residue used to be a program-global boolean. An
+    // uncalled free function containing an indirect call, or a
+    // computed publish in a fn nothing executes, made every
+    // `depends:` row in the document uncertified. That inverts the
+    // model's hole rule: REACHABLE relevant residue withdraws a
+    // proof; residue anywhere in the document authorizes nothing.
+    //
+    // Executable roots are the locus members (a locus's methods and
+    // lifecycle hooks) and `main`. A free function is relevant only
+    // if something executable can reach it.
+    let reachable_fns: BTreeSet<u32> = {
+        let mut out: BTreeSet<u32> = BTreeSet::new();
+        let mut frontier: Vec<FunctionId> = e
+            .functions
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| {
+                f.owner.is_some() || f.name == "main"
+            })
+            .map(|(i, _)| FunctionId(i as u32))
+            .collect();
+        let mut callees: BTreeMap<u32, Vec<FunctionId>> =
+            BTreeMap::new();
+        for c in &r.calls {
+            callees.entry(c.from.0).or_default().push(c.to);
+        }
+        for a in &model.analyses.stdlib_absorption {
+            for node in &a.nodes {
+                for ev in &node.events {
+                    if let hale_model::AbsorbedEvent::Call {
+                        target: hale_model::AbsorbedTarget::User(u),
+                        ..
+                    } = ev
+                    {
+                        callees.entry(a.from.0).or_default().push(*u);
+                    }
+                }
+            }
+        }
+        while let Some(cur) = frontier.pop() {
+            if !out.insert(cur.0) {
+                continue;
+            }
+            for next in callees.get(&cur.0).into_iter().flatten() {
+                frontier.push(*next);
+            }
+        }
+        out
+    };
+
+    // ---- the ABSORBED publisher account (round 4) ----
+    //
+    // A stdlib interior is a first-class part of the model, and it
+    // can publish: `std::log::Logger.info` computes `log.<path>`
+    // and sends from inside its own body. Reading only
+    // `r.publishes` meant a subscriber to `log.**` saw no matching
+    // publisher, no call hole and no function-level publish hole —
+    // and could return `Holds` while a whole upstream sat behind
+    // the absorption boundary.
+    //
+    // Attributed to the USER fn the interior is reached from
+    // (`StdlibAbsorption::from`), which is where the reverse-caller
+    // walk can pick it up.
+    let mut interior_pubs: BTreeMap<u32, Vec<hale_model::SubjectId>> =
+        BTreeMap::new();
+    let mut interior_unknown: BTreeSet<u32> = BTreeSet::new();
+    for a in &model.analyses.stdlib_absorption {
+        for node in &a.nodes {
+            for ev in &node.events {
+                match ev {
+                    hale_model::AbsorbedEvent::Publish {
+                        subject,
+                        declared_topic,
+                        ..
+                    } => {
+                        let sid = declared_topic
+                            .map(|t| e.topics[t.index()].subject)
+                            .or_else(|| {
+                                e.subjects
+                                    .iter()
+                                    .position(|s| s.pattern == *subject)
+                                    .map(|i| {
+                                        hale_model::SubjectId(i as u32)
+                                    })
+                            });
+                        match sid {
+                            Some(sid) => interior_pubs
+                                .entry(a.from.0)
+                                .or_default()
+                                .push(sid),
+                            // A subject the model has no row for is
+                            // an address it cannot reason about.
+                            None => {
+                                interior_unknown.insert(a.from.0);
+                            }
+                        }
+                    }
+                    // A computed interior publish, an unexplored
+                    // frontier, or an unfollowable interior call:
+                    // the publisher set beyond it is incomplete.
+                    hale_model::AbsorbedEvent::PublishHole
+                    | hale_model::AbsorbedEvent::Truncated
+                    | hale_model::AbsorbedEvent::CallHole(_) => {
+                        interior_unknown.insert(a.from.0);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // Functions whose publish set the model could not resolve —
+    // function-grained PUBLISHES holes plus absorbed publisher
+    // residue — RESTRICTED to the ones something can execute.
+    let computed_publishers: BTreeSet<u32> = model
+        .holes
+        .iter()
+        .filter(|h| h.hides.intersects(hale_model::RelationSet::PUBLISHES))
+        .filter_map(|h| match h.at {
+            EntityRef::Function(f) => Some(f.0),
+            _ => None,
+        })
+        .chain(interior_unknown.iter().copied())
+        .filter(|f| reachable_fns.contains(f))
+        .collect();
+    // Functions whose INBOUND call edges the model could not
+    // enumerate: an indirect call or an untypeable receiver at some
+    // call site means the reverse graph is missing edges, and a
+    // truncated or hole-bearing stdlib interior means an absorbed
+    // path could re-emerge anywhere.
+    // Round 4: RESTRICTED to reachable functions. An unfollowable
+    // call in a fn nothing executes cannot invoke anything, so it
+    // cannot hide a caller of any publisher.
+    let call_residue_relevant = model
+        .holes
+        .iter()
+        .filter(|h| h.hides.intersects(hale_model::RelationSet::CALLS))
+        .any(|h| match h.at {
+            EntityRef::Function(f) => reachable_fns.contains(&f.0),
+            _ => false,
+        })
+        || model.analyses.stdlib_absorption.iter().any(|a| {
+            reachable_fns.contains(&a.from.0)
+                && a.nodes.iter().any(|n| {
+                    n.events.iter().any(|ev| {
+                        matches!(
+                            ev,
+                            hale_model::AbsorbedEvent::CallHole(_)
+                                | hale_model::AbsorbedEvent::Truncated
+                        )
+                    })
+                })
+        });
+    // Every locus that owns a function which can transitively reach
+    // `f` — including `f`'s own owner — and whether that search was
+    // COMPLETE.
+    let owning_loci = |f: FunctionId| -> (Vec<hale_model::LocusDeclId>, bool) {
+        let mut seen_fn: BTreeSet<u32> = BTreeSet::new();
+        let mut out: BTreeSet<u32> = BTreeSet::new();
+        let mut frontier = vec![f];
+        while let Some(cur) = frontier.pop() {
+            if !seen_fn.insert(cur.0) {
+                continue;
+            }
+            if let Some(l) = owner_of.get(&cur.0) {
+                out.insert(l.0);
+                // A method's own locus is an answer; its callers
+                // still matter (another locus may call into it).
+            }
+            for up in callers_of.get(&cur.0).into_iter().flatten() {
+                frontier.push(*up);
+            }
+        }
+        (
+            out.into_iter().map(hale_model::LocusDeclId).collect(),
+            call_residue_relevant,
+        )
+    };
+
+    let mut out = Vec::new();
+    for row in table.rows.iter() {
+        let ClaimIr::DependsSet { locus, entries } = &row.law else {
+            continue;
+        };
+        let mut witness = DependsWitness::default();
+        let mut diags: Vec<Diag> = Vec::new();
+
+        // Static invalidity DOMINATES: an operand that names
+        // nothing cannot be certified against, and a replayed
+        // engine result is never an alternative.
+        let Some(lid) = locus.0 else {
+            out.push((
+                Judged {
+                    ordinal: row.ordinal,
+                    verdict: Verdict::Invalid,
+                    diags,
+                    foreign: Vec::new(),
+                },
+                witness,
+            ));
+            continue;
+        };
+        let decl = &e.loci[lid.index()];
+
+        // Obligation 1 (#340): a param typed as a form carrying a
+        // `sync` discipline. Another pool writes it, this locus
+        // reads it, and NO bus edge records the transfer — so the
+        // message graph, which is all this walk can see, cannot
+        // support a completeness claim at all.
+        for prm in &decl.params {
+            let holds_sync = prm
+                .decl
+                .is_some_and(|d| e.loci[d.index()].sync_form);
+            if !holds_sync {
+                continue;
+            }
+            witness.sync_form_params.push(prm.name.clone());
+            diags.push(Diag::ty(
+                claim_span(row.provenance),
+                format!(
+                    "declared dependency set is incomplete: `{}` holds \
+                     `{}` as `{}`, a form carrying a `sync` discipline \
+                     — shared state another pool can write. That is an \
+                     input channel outside the bus graph, and \
+                     `depends:` closes over the message graph only.",
+                    decl.display, prm.type_name, prm.name
+                ),
+            ));
+        }
+
+        // Obligation 2: the backward closure, SUBSCRIPTION-grained
+        // (round 3).
+        //
+        // A frontier of bare `SubjectId`s loses the wildcard and the
+        // key predicate — the two things that decide delivery. The
+        // walk then scanned every subscription in the application
+        // whose ADDRESS covered the subject, so an unrelated `**`
+        // subscriber, or one filtering `key == 2` while the target
+        // filters `key == 1`, could manufacture an upstream edge for
+        // a locus those publishes never reach. The frontier holds
+        // the actual `Subscribe` rows, and a publisher must satisfy
+        // `may_deliver` against THAT row.
+        let mut uncertain = false;
+        // subject -> (via locus display, into subject display)
+        let mut seen: BTreeMap<u32, Option<(String, String)>> =
+            BTreeMap::new();
+        let mut seen_locus: BTreeSet<u32> = BTreeSet::new();
+        seen_locus.insert(lid.0);
+        // Author spelling for a wire subject: the topic that
+        // declares it, when exactly one does. Identity stays the
+        // `SubjectId` — this is only how it is SHOWN, the same
+        // raw/display duality the topics section carries.
+        let shown = |sid: u32| -> String {
+            let subject = &e.subjects[sid as usize];
+            let mut named = e
+                .topics
+                .iter()
+                .filter(|t| t.subject.0 == sid)
+                .map(|t| t.display.clone());
+            match (named.next(), named.next()) {
+                (Some(one), None) => one,
+                _ => subject.pattern.clone(),
+            }
+        };
+        let subs_of = |l: u32| -> Vec<hale_model::Subscribe> {
+            let owned = fns_of.get(&l).cloned().unwrap_or_default();
+            r.subscribes
+                .iter()
+                .filter(|su| owned.contains(&su.handler))
+                .cloned()
+                .collect()
+        };
+        let mut queue: Vec<(
+            hale_model::Subscribe,
+            Option<(String, String)>,
+        )> = subs_of(lid.0)
+            .into_iter()
+            .map(|su| (su, None))
+            .collect();
+        // Deduplicate by SUBSCRIPTION identity (handler + site), not
+        // by subject: one locus may hold two filters on one wire and
+        // they have different upstreams.
+        let mut seen_sub: BTreeSet<(u32, u32)> = BTreeSet::new();
+        while let Some((sub, via)) = queue.pop() {
+            if !seen_sub.insert((sub.handler.0, sub.site)) {
+                continue;
+            }
+            let subject = sub.subject;
+            // The subject-level dependency is recorded once a real
+            // subscription is on the frontier — that is what the
+            // declaration must name.
+            if !seen.contains_key(&subject.0) {
+                seen.insert(subject.0, via.clone());
+                witness.reached_subjects.push(subject);
+            }
+            // Is this endpoint's UPSTREAM fully modelled? Holes over
+            // who publishes it, an opaque delivery boundary, and a
+            // `listen` binding that accepts from a peer are all the
+            // same answer — and scoping the question to THIS subject
+            // is what keeps an unrelated adapter from poisoning a
+            // purely local claim.
+            if crate::model_query::endpoint_incomplete(
+                model,
+                subject,
+                crate::model_query::Direction::Upstream,
+            ) {
+                uncertain = true;
+                witness.incomplete_endpoints.push(subject);
+            }
+            // Function-grained publisher residue (round 2). A
+            // COMPUTED publish is a PUBLISHES hole at its function,
+            // anchored to no subject — invisible to both the
+            // endpoint query and the publish-row walk below. It
+            // might name this wire.
+            if !computed_publishers.is_empty() {
+                uncertain = true;
+                witness.unknown_publishers = true;
+            }
+            // Who can publish into THIS subscription? Ordinary
+            // publish rows, plus the ABSORBED publishes a stdlib
+            // interior performs on behalf of the user fn that
+            // reached it — both are first-class publishers and both
+            // join the same delivery query.
+            let absorbed: Vec<hale_model::Publish> = interior_pubs
+                .iter()
+                .flat_map(|(from, subjects)| {
+                    subjects.iter().map(move |sid| {
+                        hale_model::Publish {
+                            function: FunctionId(*from),
+                            subject: *sid,
+                            // An interior publish carries no
+                            // declared-topic link and no key domain
+                            // the model records, so it widens like
+                            // any unknown one.
+                            declared_topic: None,
+                            payload: hale_model::PayloadContractId(0),
+                            site: 0,
+                            in_loop: false,
+                            key_domain: None,
+                            disposition:
+                                hale_model::keys::PublishDisposition::Default,
+                            provenance: hale_model::ProvenanceId(0),
+                        }
+                    })
+                })
+                .collect();
+            for p in r.publishes.iter().chain(absorbed.iter()) {
+                if !crate::model_query::may_deliver(e, p, &sub) {
+                    continue;
+                }
+                // Every LOCUS this publish can be reached FROM (a
+                // free helper's publish belongs to its callers),
+                // plus whether that caller search was COMPLETE.
+                let (owners, caller_residue) = owning_loci(p.function);
+                // Round 3: if the publishing function is reached
+                // through an indirect call or an absorbed stdlib
+                // hole, the known reverse graph has no edge and the
+                // caller's inputs silently vanish. Monotone, like
+                // the publisher residue: it can only turn a
+                // would-be `holds` into `uncertified`, never a
+                // proven omission into a pass.
+                if caller_residue {
+                    uncertain = true;
+                    witness.unknown_callers = true;
+                }
+                for owner in owners {
+                    let plocus = &e.loci[owner.index()];
+                    if !seen_locus.insert(owner.0) {
+                        continue;
+                    }
+                    for up in subs_of(owner.0) {
+                        queue.push((
+                            up,
+                            Some((
+                                plocus.display.clone(),
+                                shown(subject.0),
+                            )),
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Which reached subjects the declaration does NOT name. A
+        // selector resolves to typed ids at lowering, so this is an
+        // id comparison — no name matching, and no second answer to
+        // "what does this selector mean".
+        let declared: BTreeSet<u32> = entries
+            .iter()
+            .flat_map(|sel| {
+                sel.subjects
+                    .iter()
+                    .map(|s| s.0)
+                    .chain(sel.topics.iter().map(|t| {
+                        e.topics[t.index()].subject.0
+                    }))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        // An entry that resolved to nothing names no subject in
+        // this application. Static invalidity DOMINATES: the old
+        // engine matched declared entries by NAME, so an unresolved
+        // one silently covered nothing and every reached subject
+        // came back as an omission — a violation report about the
+        // subjects, when the actual defect is the typo. A law whose
+        // operands do not resolve cannot be certified against, and
+        // it cannot be violated either.
+        let unresolved: Vec<&hale_model::BusSelector> = entries
+            .iter()
+            .filter(|sel| sel.subjects.is_empty() && sel.topics.is_empty())
+            .collect();
+        if !unresolved.is_empty() {
+            let names: Vec<String> =
+                unresolved.iter().map(|s| s.name.clone()).collect();
+            diags.push(Diag::ty(
+                claim_span(row.provenance),
+                format!(
+                    "declared dependency set is invalid: `{}` names `{}`, which is not a topic or subject in this application — so the set constrains nothing and cannot be judged. Name a declared topic, or remove the entry.",
+                    decl.display,
+                    names.join("`, `")
+                ),
+            ));
+            out.push((
+                Judged {
+                    ordinal: row.ordinal,
+                    verdict: Verdict::Invalid,
+                    diags,
+                    foreign: Vec::new(),
+                },
+                witness,
+            ));
+            continue;
+        }
+
+        let mut undeclared: Vec<(u32, Option<(String, String)>)> = seen
+            .iter()
+            .filter(|(sid, _)| !declared.contains(sid))
+            .map(|(sid, via)| (*sid, via.clone()))
+            .collect();
+        undeclared.sort_by_key(|(sid, _)| *sid);
+        for (sid, via) in &undeclared {
+            let path = match via {
+                Some((locus, into)) => format!(
+                    " Path: subject `{}` -> `{}` -> subject `{}` -> `{}`.",
+                    shown(*sid),
+                    locus,
+                    into,
+                    decl.display
+                ),
+                None => format!(
+                    " It is subscribed directly by `{}`.",
+                    decl.display
+                ),
+            };
+            diags.push(Diag::ty(
+                claim_span(row.provenance),
+                format!(
+                    "declared dependency set violated: `{}` can \
+                     transitively depend on `{}` through the bus, which \
+                     its `@effects(depends: …)` does not declare.{} Add \
+                     the subject to the set, or route the input through \
+                     a subject this locus doesn't reach.",
+                    decl.display,
+                    shown(*sid),
+                    path
+                ),
+            ));
+        }
+
+        // A KNOWN excess is an answer, whatever else is unknown —
+        // the same precedence `causes:` settled on in round 2.
+        let verdict = if !diags.is_empty() {
+            Verdict::Violated
+        } else if uncertain {
+            // Round 3: never silent. `claim_law_diags` appends
+            // diagnostics, not verdicts, so an unexplained
+            // `Uncertified` compiled clean while the artifact
+            // marked the document `law_failed` — and left the row
+            // with no evidence for admission to find.
+            let mut why: Vec<String> = Vec::new();
+            if !witness.incomplete_endpoints.is_empty() {
+                let subs: Vec<String> = witness
+                    .incomplete_endpoints
+                    .iter()
+                    .map(|s| format!("`{}`", shown(s.0)))
+                    .collect();
+                why.push(format!(
+                    "{} can be published into from outside this \
+                     application (an inbound route or an opaque \
+                     boundary)",
+                    subs.join(", ")
+                ));
+            }
+            if witness.unknown_publishers {
+                why.push(
+                    "a publish whose subject the compiler could not \
+                     name may address a wire this locus subscribes \
+                     to"
+                        .to_string(),
+                );
+            }
+            if witness.unknown_callers {
+                why.push(
+                    "a publishing function is reachable through a \
+                     call the compiler cannot follow, so its \
+                     callers' own inputs cannot be enumerated"
+                        .to_string(),
+                );
+            }
+            if why.is_empty() {
+                why.push(
+                    "part of the backward closure is not modelled"
+                        .to_string(),
+                );
+            }
+            diags.push(Diag::ty(
+                claim_span(row.provenance),
+                format!(
+                    "declared dependency set cannot be certified: \
+                     `{}` is reached from a closure this model does \
+                     not fully know — {}. The law is neither kept \
+                     nor broken here; close the endpoint, resolve \
+                     the call, or name the subject.",
+                    decl.display,
+                    why.join("; ")
+                ),
+            ));
+            Verdict::Uncertified
+        } else {
+            Verdict::Holds
+        };
+        witness.incomplete_endpoints.sort();
+        witness.incomplete_endpoints.dedup();
         out.push((
             Judged {
                 ordinal: row.ordinal,

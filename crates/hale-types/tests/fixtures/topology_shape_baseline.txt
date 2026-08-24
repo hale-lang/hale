@@ -1285,6 +1285,11 @@ crates/hale-types/tests/judgment_certificates.rs#5 5b19cc4370a72a2f
 crates/hale-types/tests/judgment_certificates.rs#6 5b19cc4370a72a2f
 crates/hale-types/tests/judgment_certificates.rs#8 7d5cf57defcf548e
 crates/hale-types/tests/judgment_certificates.rs#9 5b19cc4370a72a2f
+crates/hale-types/tests/judgment_depends.rs#12 5e52e14006660555
+crates/hale-types/tests/judgment_depends.rs#2 4ebcead20c253595
+crates/hale-types/tests/judgment_depends.rs#4 57b3e718f9ba2b13
+crates/hale-types/tests/judgment_depends.rs#6 1e29a74a1331d44d
+crates/hale-types/tests/judgment_depends.rs#9 2a665aaeccc99a1e
 crates/hale-types/tests/judgment_reachability.rs#12 f7d9fb64200c3e4b
 crates/hale-types/tests/judgment_reachability.rs#14 1b7facc0d6b6d52b
 crates/hale-types/tests/judgment_reachability.rs#22 4362d16e6b2ccfdd
