@@ -1390,6 +1390,12 @@ pub fn family_adequacy(
         F::Endpoint,
         F::Bound,
         F::Certificate,
+        // Change 5f: a migrated family ships with its adequacy
+        // account. A row may declare `"family": "causes"` while the
+        // model defines a completeness contract for it — an
+        // artifact that could not state whether the model is exact
+        // or degraded there would be internally contradictory.
+        F::Causes,
     ]
     .into_iter()
     .map(|f| (f, vouched.contains(f.required_relations())))
