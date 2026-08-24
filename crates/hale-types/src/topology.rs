@@ -131,12 +131,20 @@ use crate::symbol::Bundle;
 // HASHED model half — an explicitly versioned shape transition.
 // Shape hashes change for every bus-carrying program; recorded
 // baselines and `.halerec` admissions must be re-recorded once.
-// 1.14: `causes:` is a judged family (GH #476 Change 5f), not an
+// 1.15: `causes:` is a judged family (GH #476 Change 5f), not an
 // unmigrated row importing an outside verdict. Its rows now carry
-// `"family": "causes"` and their own rendered `form`, and they no
+// `"family": "causes"` and an `adequacy.causes` entry, and they no
 // longer appear in `law.legacy` — which is why this is a version
-// transition and not an additive field: a 1.13 consumer looking
+// transition and not an additive field: a 1.14 consumer looking
 // for a legacy entry to justify a causes row finds none.
+//
+// 1.14: every typed law row that renders a compatibility form now
+// STATES it, and admission REQUIRES it — a row whose law renders a
+// form and omits the field is refused. That is a decoding-contract
+// change, not an additive field: a schema-1.13 artifact carries
+// rows without the key and would be refused under a 1.13 reader
+// built from this tree. Requiring a field is a version transition
+// (review round 2 of #496), so the number moves with it.
 //
 // 1.13: `relations.calls_via_stdlib` is INTERPRETED by the model's
 // contraction, not by the pre-model walk it used to reproduce.
@@ -156,7 +164,7 @@ use crate::symbol::Bundle;
 // stdlib re-emerges into user code only from inside its own loops,
 // which sets the bit either way — so this bumps the schema without
 // moving a single committed baseline hash.
-pub const TOPOLOGY_SCHEMA: &str = "1.14";
+pub const TOPOLOGY_SCHEMA: &str = "1.15";
 
 /// GH #408 Phase 0: what the rows MEAN, as distinct from their shape.
 ///
