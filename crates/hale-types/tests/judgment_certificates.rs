@@ -1588,3 +1588,75 @@ fn moved_membership_is_refused_everywhere() {
     );
 }
 
+
+/// Review pin (round 7): evidence produced under OLDER analysis
+/// semantics is refused, not replayed.
+///
+/// `EvidenceTable::validate` treats an equal `inputs_digest` as
+/// proof that the sidecar was produced under the current semantics
+/// — it does not hash the implementation. So when the producer's
+/// RESULTS move (rounds 4–7 changed `@budget` fan-out from a
+/// reachability set to a per-scenario execution count),
+/// `ANALYSIS_SEMANTICS_VERSION` is the only thing that gives the
+/// new answers a distinct identity. A sidecar can otherwise share
+/// the source, the model shape, the law digest and the coverage
+/// digest while carrying a verdict this compiler disagrees with.
+#[test]
+fn evidence_from_older_analysis_semantics_is_refused() {
+    let src = r#"
+type T { n: Int = 0; }
+topic A { payload: T; subject: "a"; }
+locus Sink {
+    bus { subscribe A as on_a; }
+    params { n: Int = 0; }
+    fn on_a(t: T) { self.n = t.n; }
+}
+main locus App {
+    params { s: Sink = Sink { }; }
+    bus { publish A; }
+    @budget(fanout = 1)
+    fn fire() { A <- T { n: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let (model, table, evidence, _judged) = derive_all(src);
+    // The freshly derived sidecar ties to this toolchain.
+    assert!(
+        evidence
+            .validate(
+                &model,
+                hale_types::topology_projection::project_shape_hash(
+                    &model
+                ),
+                &table,
+                hale_types::evidence::analysis_inputs_digest(),
+            )
+            .is_ok(),
+        "test premise: the derived pair validates"
+    );
+    // …and the SAME sidecar, judged by a toolchain whose analysis
+    // semantics differ, does not. Nothing else about it changed.
+    let older = {
+        let mut h = std::num::Wrapping(0u64);
+        h += std::num::Wrapping(
+            hale_types::evidence::analysis_inputs_digest(),
+        );
+        h += std::num::Wrapping(1);
+        h.0
+    };
+    assert!(
+        evidence
+            .validate(
+                &model,
+                hale_types::topology_projection::project_shape_hash(
+                    &model
+                ),
+                &table,
+                older,
+            )
+            .is_err(),
+        "a sidecar whose analysis identity disagrees must be \
+         refused, not replayed"
+    );
+}

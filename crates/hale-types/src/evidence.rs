@@ -44,7 +44,21 @@ use crate::symbol::Bundle;
 // completeness rule for certificate streams changed — evidence
 // from the pre-round-8 engine must not share an inputs_digest
 // with this one.
-pub const ANALYSIS_SEMANTICS_VERSION: u32 = 3;
+// 4 (GH #476 Change 5h, review rounds 4-7): `@budget` joined the
+// evidence pipeline, and its quantitative results MOVED. Fan-out
+// went from a reachability set to a weighted execution traversal,
+// then from `max(immediate) + union(downstream)` to
+// `max over keys of (immediate + downstream)`; interface and
+// stdlib alternatives are costed whole and chosen, not merged;
+// key domains constrain which scenarios exist; an exact zero
+// population annihilates; and the engines resolve cross-seed
+// calls. A sidecar produced under v3 can share every other digest
+// with this compiler — same source, same model shape, same law and
+// coverage digests — while carrying a fan-out verdict this one
+// disagrees with, and `validate` treats an equal `inputs_digest`
+// as proof of current semantics. It does not hash the
+// implementation, so this constant is the identity.
+pub const ANALYSIS_SEMANTICS_VERSION: u32 = 4;
 
 /// Digest of the certificate engines' inputs OUTSIDE the model:
 /// the analysis-semantics version above, the Hale-source stdlib
@@ -230,12 +244,69 @@ pub fn model_fanout<'a>(
         // for "some value no filter names", which only a `fallback`
         // receives.
         let mut candidates: Vec<Option<KeyValue>> = Vec::new();
+        // Round 7: the domain CONSTRAINS the scenarios. `IntRange`
+        // is not uncertainty — it is an exact interval, and the
+        // shared delivery query already rules out literals outside
+        // it. Enumerating every filter literal plus an unmatched
+        // scenario regardless of domain costed executions the site
+        // cannot produce: a `min: 1, max: 1` publish would be
+        // charged a 20-instance `fallback` that can never fire.
+        let admits = |v: &KeyValue| -> bool {
+            match (&publish.key_domain, v) {
+                (Some(KeyDomain::Exact(vals)), v) => vals.contains(v),
+                (
+                    Some(KeyDomain::IntRange { min, max }),
+                    KeyValue::Int(k),
+                ) => k >= min && k <= max,
+                // A non-integer literal cannot come from an integer
+                // interval.
+                (Some(KeyDomain::IntRange { .. }), _) => false,
+                _ => true,
+            }
+        };
+        // Is there a value the site can produce that NO filter
+        // names? Only then can a `fallback` fire.
+        let has_uncovered = |named: &[KeyValue]| -> bool {
+            match &publish.key_domain {
+                Some(KeyDomain::Exact(vals)) => {
+                    vals.iter().any(|v| !named.contains(v))
+                }
+                Some(KeyDomain::IntRange { min, max }) => {
+                    let span = max.saturating_sub(*min).saturating_add(1);
+                    let covered = named
+                        .iter()
+                        .filter(|v| match v {
+                            KeyValue::Int(k) => k >= min && k <= max,
+                            _ => false,
+                        })
+                        .count() as i64;
+                    span > covered
+                }
+                // An unknown or type-wide domain can always produce
+                // something no filter names.
+                _ => true,
+            }
+        };
         if keyed.is_empty() {
             candidates.push(None);
         } else {
             match &publish.key_domain {
                 Some(KeyDomain::Exact(vals)) => {
                     candidates.extend(vals.iter().cloned().map(Some));
+                    // …and, if the site can produce a value no
+                    // filter names, the unmatched scenario.
+                    let named: Vec<KeyValue> = keyed
+                        .iter()
+                        .filter_map(|s| match &s.key_predicate {
+                            KeyPredicate::EqLiteral(v) => {
+                                Some(v.clone())
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    if has_uncovered(&named) {
+                        candidates.push(None);
+                    }
                 }
                 _ => {
                     for sub in &keyed {
@@ -251,16 +322,32 @@ pub fn model_fanout<'a>(
                                 .iter()
                                 .filter(|i| i.decl == owner)
                             {
-                                if let Some(ix) = i.replica {
-                                    candidates.push(Some(
-                                        KeyValue::Int(ix as i64),
-                                    ));
-                                }
+                                candidates.push(Some(KeyValue::Int(
+                                    effective_replica(i),
+                                )));
                             }
                         }
                     }
-                    candidates.push(None);
+                    // …and "some value no filter names", only
+                    // when the domain can actually produce one.
+                    let named: Vec<KeyValue> = candidates
+                        .iter()
+                        .filter_map(|c| c.clone())
+                        .collect();
+                    if has_uncovered(&named) {
+                        candidates.push(None);
+                    }
                 }
+            }
+            // Drop scenarios the domain forbids.
+            candidates.retain(|c| match c {
+                Some(v) => admits(v),
+                None => true,
+            });
+            if candidates.is_empty() {
+                // Every filter is outside the domain: no keyed
+                // subscription can receive.
+                candidates.push(None);
             }
         }
         path.push(tag);
@@ -272,6 +359,12 @@ pub fn model_fanout<'a>(
             for sub in &unkeyed {
                 let n = population_of(model, owner_of(model, sub)?);
                 match n {
+                    // Round 7: an EXACT zero annihilates. A
+                    // declaration with no instance has no runtime
+                    // registration, so its body — however recursive
+                    // or unfollowable — causes nothing and must not
+                    // withdraw the bound.
+                    Some(0) => {}
                     Some(n) => recipients.push((sub.handler, n)),
                     None => {
                         path.pop();
@@ -296,14 +389,16 @@ pub fn model_fanout<'a>(
                             path.pop();
                             return None;
                         };
-                        // Replica indices are unique within a field,
-                        // so at most ONE instance answers a key.
+                        // Replica indices are unique within a
+                        // REPLICATED field, so at most one instance
+                        // answers a key there — but an ordinary
+                        // instance registers under the effective
+                        // key 0, and several ordinary instances of
+                        // one declaration all do.
                         e.locus_instances
                             .iter()
                             .filter(|i| i.decl == owner)
-                            .filter(|i| {
-                                i.replica.is_some_and(|ix| ix as i64 == *kv)
-                            })
+                            .filter(|i| effective_replica(i) == *kv)
                             .count() as u64
                     }
                     // Settled after the others: a fallback receives
@@ -335,6 +430,9 @@ pub fn model_fanout<'a>(
             // plus what exactly those handler executions cause.
             let mut here: u64 = 0;
             for (handler, runs) in recipients {
+                if runs == 0 {
+                    continue;
+                }
                 here = match here.checked_add(runs) {
                     Some(v) => v,
                     None => {
@@ -416,36 +514,31 @@ pub fn model_fanout<'a>(
             let n = bail!(message_fanout(model, p, path));
             total = bail!(total.checked_add(n));
         }
-        // Direct and interface call sites, grouped by authored
-        // ordinal: alternatives of one dispatch share it.
-        let mut by_site: BTreeMap<u32, Vec<&hale_model::Call>> =
-            BTreeMap::new();
+        // ---- one dispatch-site class across BOTH accounts ----
+        //
+        // Round 7: ordinary rows were summed and absorption entries
+        // added afterwards, so an authored site with a user
+        // conformer and a stdlib conformer counted BOTH. The model
+        // validator defines one authored dispatch-site class across
+        // `relations.calls` and `StdlibAbsorption`; one site is one
+        // choice, whichever account its alternatives come from.
+        //
+        // Contribution of one alternative, keyed by authored site.
+        let mut by_site: BTreeMap<u32, Vec<u64>> = BTreeMap::new();
         for c in r.calls.iter().filter(|c| c.from == from) {
             // Through-stdlib rows are the CONTRACTED endpoint pair;
-            // their execution multiplicity and dispatch grouping
-            // live in the per-entry absorption account below, and
-            // counting both would double.
+            // their multiplicity and grouping live in the per-entry
+            // absorption account, and counting both would double.
             if c.dispatch == hale_model::DispatchKind::ViaStdlib {
                 continue;
             }
-            by_site.entry(c.site).or_default().push(c);
-        }
-        for (_, alts) in by_site {
-            let mut best: u64 = 0;
-            for c in alts {
-                if c.in_loop || c.unbounded {
-                    path.pop();
-                    return None;
-                }
-                best = best.max(bail!(fn_fanout(model, c.to, path)));
+            if c.in_loop || c.unbounded {
+                path.pop();
+                return None;
             }
-            total = bail!(total.checked_add(best));
+            let n = bail!(fn_fanout(model, c.to, path));
+            by_site.entry(c.site).or_default().push(n);
         }
-        // Through-stdlib entries, at their AUTHORED site grain: one
-        // `StdlibAbsorption` row per entry site, alternatives of one
-        // dispatch sharing `entry_group`.
-        let mut by_group: BTreeMap<(u32, Option<u32>), Vec<u64>> =
-            BTreeMap::new();
         for a in model
             .analyses
             .stdlib_absorption
@@ -456,64 +549,138 @@ pub fn model_fanout<'a>(
                 path.pop();
                 return None;
             }
-            let mut here: u64 = 0;
-            for node in &a.nodes {
-                for ev in &node.events {
-                    match ev {
-                        // An interior that publishes, or that the
-                        // walk cannot finish, is not countable.
-                        hale_model::AbsorbedEvent::Publish { .. }
-                        | hale_model::AbsorbedEvent::PublishHole
-                        | hale_model::AbsorbedEvent::Truncated
-                        | hale_model::AbsorbedEvent::CallHole(_) => {
-                            path.pop();
-                            return None;
-                        }
-                        hale_model::AbsorbedEvent::Call {
-                            target: hale_model::AbsorbedTarget::User(u),
-                            in_loop,
-                            ..
-                        } => {
-                            if *in_loop {
-                                path.pop();
-                                return None;
-                            }
-                            let n = bail!(fn_fanout(model, *u, path));
-                            here = bail!(here.checked_add(n));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            // Group by (site, entry_group): a grouped alternative is
-            // a choice, a distinct site is another execution.
-            by_group
-                .entry((a.site, a.entry_group))
-                .or_default()
-                .push(here);
+            let n = bail!(absorption_fanout(model, a, path));
+            by_site.entry(a.site).or_default().push(n);
         }
-        // Alternatives of one entry_group take the max; distinct
-        // groups and distinct sites sum.
-        let mut by_entry_group: BTreeMap<u32, u64> = BTreeMap::new();
-        let mut ungrouped: u64 = 0;
-        for ((_, group), costs) in by_group {
-            let here = costs.into_iter().max().unwrap_or(0);
-            match group {
-                Some(g) => {
-                    let slot = by_entry_group.entry(g).or_insert(0);
-                    *slot = (*slot).max(here);
-                }
-                None => {
-                    ungrouped = bail!(ungrouped.checked_add(here))
-                }
-            }
-        }
-        total = bail!(total.checked_add(ungrouped));
-        for (_, v) in by_entry_group {
-            total = bail!(total.checked_add(v));
+        for (_, alts) in by_site {
+            // One dispatch runs ONE alternative.
+            let best = alts.into_iter().max().unwrap_or(0);
+            total = bail!(total.checked_add(best));
         }
         path.pop();
         Some(total)
+    }
+
+    /// The deliveries one execution of a stdlib ENTRY causes.
+    ///
+    /// Round 7: the interior was flattened into a bag — every node
+    /// scanned once, `Interior` edges ignored, per-event dispatch
+    /// groups ignored, every user re-emergence summed. But
+    /// `StdlibAbsorption` deliberately preserves an interior GRAPH,
+    /// and its call events carry their own group: the validator
+    /// enforces that same-group interior alternatives are one
+    /// interface dispatch. `std::http::Router.dispatch` fanning to
+    /// two conformers is a CHOICE, and summing both reported three
+    /// deliveries where two happen.
+    ///
+    /// Same semiring as the user call graph: ordinary events sum,
+    /// same-group events take the max of whole contributions,
+    /// interior cycles saturate.
+    fn absorption_fanout(
+        model: &ApplicationModel,
+        a: &hale_model::StdlibAbsorption,
+        path: &mut Vec<(u8, u32, u32)>,
+    ) -> Option<u64> {
+        fn node_cost(
+            model: &ApplicationModel,
+            a: &hale_model::StdlibAbsorption,
+            idx: u32,
+            seen: &mut Vec<u32>,
+            path: &mut Vec<(u8, u32, u32)>,
+        ) -> Option<u64> {
+            // An interior cycle amplifies without bound.
+            if seen.contains(&idx) {
+                return None;
+            }
+            let node = a.nodes.get(idx as usize)?;
+            seen.push(idx);
+            let mut ungrouped: u64 = 0;
+            let mut groups: BTreeMap<u32, u64> = BTreeMap::new();
+            for ev in &node.events {
+                let (cost, group) = match ev {
+                    // An interior that publishes, or that the walk
+                    // cannot finish, is not countable from here.
+                    hale_model::AbsorbedEvent::Publish { .. }
+                    | hale_model::AbsorbedEvent::PublishHole
+                    | hale_model::AbsorbedEvent::Truncated
+                    | hale_model::AbsorbedEvent::CallHole(_) => {
+                        seen.pop();
+                        return None;
+                    }
+                    hale_model::AbsorbedEvent::Call {
+                        target,
+                        in_loop,
+                        group,
+                        ..
+                    } => {
+                        if *in_loop {
+                            seen.pop();
+                            return None;
+                        }
+                        let c = match target {
+                            hale_model::AbsorbedTarget::Interior(n) => {
+                                match node_cost(model, a, *n, seen, path)
+                                {
+                                    Some(v) => v,
+                                    None => {
+                                        seen.pop();
+                                        return None;
+                                    }
+                                }
+                            }
+                            hale_model::AbsorbedTarget::User(u) => {
+                                match fn_fanout(model, *u, path) {
+                                    Some(v) => v,
+                                    None => {
+                                        seen.pop();
+                                        return None;
+                                    }
+                                }
+                            }
+                        };
+                        (c, *group)
+                    }
+                };
+                match group {
+                    Some(g) => {
+                        let slot = groups.entry(g).or_insert(0);
+                        *slot = (*slot).max(cost);
+                    }
+                    None => {
+                        ungrouped = match ungrouped.checked_add(cost) {
+                            Some(v) => v,
+                            None => {
+                                seen.pop();
+                                return None;
+                            }
+                        }
+                    }
+                }
+            }
+            seen.pop();
+            let mut total = ungrouped;
+            for (_, v) in groups {
+                total = total.checked_add(v)?;
+            }
+            Some(total)
+        }
+        if a.nodes.is_empty() {
+            return Some(0);
+        }
+        let mut seen: Vec<u32> = Vec::new();
+        node_cost(model, a, 0, &mut seen, path)
+    }
+
+    /// The replica key an instance REGISTERS under.
+    ///
+    /// The model reserves `Some(i)` for an actual `replicas = K`
+    /// fan-out and leaves an ordinary instance `None`. At runtime
+    /// an ordinary instance still registers under key 0, so a
+    /// `where key == replica` subscription on a non-replicated
+    /// locus receives key-0 messages — and reading only `Some(ix)`
+    /// made that recipient invisible to fan-out (round 7).
+    fn effective_replica(i: &hale_model::LocusInstance) -> i64 {
+        i.replica.unwrap_or(0) as i64
     }
 
     fn owner_of(

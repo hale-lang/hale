@@ -840,14 +840,17 @@ fn stdlib_conformer_alternatives_take_the_max() {
     let handler = fn_id(&m, "Handler::on_a");
     let emitter = fn_id(&m, "Emitter::emit");
     m.relations.calls.retain(|c| c.from != handler);
-    for site in 0..2u32 {
+    for _ in 0..2u32 {
         m.analyses.stdlib_absorption.push(
             hale_model::StdlibAbsorption {
                 from: handler,
-                site,
+                // One AUTHORED site, two conformers: alternatives
+                // of one dispatch share the site ordinal, which is
+                // the dispatch-site class the validator defines
+                // across both call accounts.
+                site: 0,
                 entry_dispatch: None,
                 entry_in_loop: false,
-                // One dispatch, two conformers.
                 entry_group: Some(7),
                 entry_provenance: hale_model::ProvenanceId(0),
                 nodes: vec![hale_model::AbsorbedNode {
@@ -877,5 +880,180 @@ fn stdlib_conformer_alternatives_take_the_max() {
         Some(2),
         "one dispatch runs one conformer: one delivery to Handler \
          plus one callback publish"
+    );
+}
+
+/// Review pin (round 7): the absorption INTERIOR is a graph, and
+/// its events carry their own dispatch group.
+///
+/// `std::http::Router.dispatch` fanning to two conformers is a
+/// CHOICE. Flattening the interior into a bag summed both
+/// re-emergences and reported three deliveries where two happen.
+#[test]
+fn interior_dispatch_alternatives_take_the_max() {
+    let (mut m, _b) = model_and_ids(HOP);
+    let handler = fn_id(&m, "Handler::on_a");
+    let emitter = fn_id(&m, "Emitter::emit");
+    m.relations.calls.retain(|c| c.from != handler);
+    // One entry whose INTERIOR dispatches to two conformers, both
+    // re-emerging at the publishing callback.
+    m.analyses.stdlib_absorption.push(
+        hale_model::StdlibAbsorption {
+            from: handler,
+            site: 0,
+            entry_dispatch: None,
+            entry_in_loop: false,
+            entry_group: None,
+            entry_provenance: hale_model::ProvenanceId(0),
+            nodes: vec![hale_model::AbsorbedNode {
+                display: "std::http::Router::dispatch".to_string(),
+                carries: Vec::new(),
+                direct_effects: Vec::new(),
+                events: vec![
+                    hale_model::AbsorbedEvent::Call {
+                        target: hale_model::AbsorbedTarget::User(
+                            emitter,
+                        ),
+                        dispatch: Some((
+                            "Handler".to_string(),
+                            "handle".to_string(),
+                        )),
+                        in_loop: false,
+                        group: Some(1),
+                    },
+                    hale_model::AbsorbedEvent::Call {
+                        target: hale_model::AbsorbedTarget::User(
+                            emitter,
+                        ),
+                        dispatch: Some((
+                            "Handler".to_string(),
+                            "handle".to_string(),
+                        )),
+                        in_loop: false,
+                        group: Some(1),
+                    },
+                ],
+            }],
+        },
+    );
+    let f = hale_types::evidence::model_fanout(&m);
+    let n = f(
+        &hale_types::alloc_summary::FnKey::method("App", "fire"),
+        0,
+        "a",
+    );
+    assert_eq!(
+        n,
+        Some(2),
+        "one interior dispatch runs one conformer"
+    );
+}
+
+/// An INTERIOR edge is followed, not ignored: a nested interior
+/// node's re-emergence still counts.
+#[test]
+fn an_interior_edge_is_followed() {
+    let (mut m, _b) = model_and_ids(HOP);
+    let handler = fn_id(&m, "Handler::on_a");
+    let emitter = fn_id(&m, "Emitter::emit");
+    m.relations.calls.retain(|c| c.from != handler);
+    m.analyses.stdlib_absorption.push(
+        hale_model::StdlibAbsorption {
+            from: handler,
+            site: 0,
+            entry_dispatch: None,
+            entry_in_loop: false,
+            entry_group: None,
+            entry_provenance: hale_model::ProvenanceId(0),
+            nodes: vec![
+                // node 0 calls node 1…
+                hale_model::AbsorbedNode {
+                    display: "std::x::outer".to_string(),
+                    carries: Vec::new(),
+                    direct_effects: Vec::new(),
+                    events: vec![hale_model::AbsorbedEvent::Call {
+                        target: hale_model::AbsorbedTarget::Interior(1),
+                        dispatch: None,
+                        in_loop: false,
+                        group: None,
+                    }],
+                },
+                // …which re-emerges at the publishing callback.
+                hale_model::AbsorbedNode {
+                    display: "std::x::inner".to_string(),
+                    carries: Vec::new(),
+                    direct_effects: Vec::new(),
+                    events: vec![hale_model::AbsorbedEvent::Call {
+                        target: hale_model::AbsorbedTarget::User(
+                            emitter,
+                        ),
+                        dispatch: None,
+                        in_loop: false,
+                        group: None,
+                    }],
+                },
+            ],
+        },
+    );
+    let f = hale_types::evidence::model_fanout(&m);
+    let n = f(
+        &hale_types::alloc_summary::FnKey::method("App", "fire"),
+        0,
+        "a",
+    );
+    assert_eq!(
+        n,
+        Some(2),
+        "the nested interior's re-emergence publishes"
+    );
+}
+
+/// Review pin (round 7): one authored site with a USER conformer
+/// and a STDLIB conformer is one choice, not two executions.
+#[test]
+fn a_site_mixing_both_call_accounts_is_one_dispatch() {
+    let (mut m, _b) = model_and_ids(HOP);
+    let handler = fn_id(&m, "Handler::on_a");
+    let emitter = fn_id(&m, "Emitter::emit");
+    // The direct call already sits at some authored site; put the
+    // absorption entry at the SAME one.
+    let site = m
+        .relations
+        .calls
+        .iter()
+        .find(|c| c.from == handler)
+        .map(|c| c.site)
+        .expect("the handler calls its emitter");
+    m.analyses.stdlib_absorption.push(
+        hale_model::StdlibAbsorption {
+            from: handler,
+            site,
+            entry_dispatch: None,
+            entry_in_loop: false,
+            entry_group: None,
+            entry_provenance: hale_model::ProvenanceId(0),
+            nodes: vec![hale_model::AbsorbedNode {
+                display: "std::x::apply".to_string(),
+                carries: Vec::new(),
+                direct_effects: Vec::new(),
+                events: vec![hale_model::AbsorbedEvent::Call {
+                    target: hale_model::AbsorbedTarget::User(emitter),
+                    dispatch: None,
+                    in_loop: false,
+                    group: None,
+                }],
+            }],
+        },
+    );
+    let f = hale_types::evidence::model_fanout(&m);
+    let n = f(
+        &hale_types::alloc_summary::FnKey::method("App", "fire"),
+        0,
+        "a",
+    );
+    assert_eq!(
+        n,
+        Some(2),
+        "one authored site is one choice across both accounts"
     );
 }
