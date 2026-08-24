@@ -255,3 +255,159 @@ fn main() { App { }; }
         ds
     );
 }
+
+/// Review pin (round 4): fan-out counts EXECUTIONS, not a set.
+///
+/// Three `Relay` instances each receive A and each publish B to one
+/// `Sink`: three deliveries to Relay plus three executions of
+/// `on_a`, one delivery each — six. Deduplicating the delivery graph
+/// as a set followed `on_a` once and counted four, so
+/// `@budget(fanout = 4)` held for an invocation causing six.
+#[test]
+fn handler_multiplicity_multiplies_downstream_deliveries() {
+    let src = r#"
+type T { n: Int = 0; }
+topic A { payload: T; subject: "a"; }
+topic B { payload: T; subject: "b"; }
+locus Relay {
+    bus { subscribe A as on_a; publish B; }
+    params { n: Int = 0; }
+    fn on_a(t: T) { B <- T { n: t.n }; }
+}
+locus Sink {
+    bus { subscribe B as on_b; }
+    params { n: Int = 0; }
+    fn on_b(t: T) { self.n = t.n; }
+}
+main locus App {
+    params {
+        r1: Relay = Relay { }; r2: Relay = Relay { };
+        r3: Relay = Relay { }; s: Sink = Sink { };
+    }
+    bus { publish A; }
+    @budget(fanout = 5)
+    fn fire() { A <- T { n: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let ds = diags(src);
+    assert!(
+        ds.iter().any(|m| m.contains("budget exceeded")
+            && m.contains("fanout")
+            && m.contains(" 6 ")),
+        "three relays each publishing once is six deliveries: {:?}",
+        ds
+    );
+}
+
+/// A handler that calls a publishing HELPER amplifies too — onward
+/// publishes are not limited to rows whose function is the handler.
+#[test]
+fn a_publishing_helper_counts_toward_the_handlers_fanout() {
+    let src = r#"
+type T { n: Int = 0; }
+topic A { payload: T; subject: "a"; }
+topic B { payload: T; subject: "b"; }
+locus Relay {
+    bus { subscribe A as on_a; publish B; }
+    params { n: Int = 0; }
+    // The publish sits in a HELPER method, not in the handler.
+    fn shout(n: Int) { B <- T { n: n }; }
+    fn on_a(t: T) { self.shout(t.n); }
+}
+locus Sink {
+    bus { subscribe B as on_b; }
+    params { n: Int = 0; }
+    fn on_b(t: T) { self.n = t.n; }
+}
+main locus App {
+    params { r: Relay = Relay { }; s: Sink = Sink { }; }
+    bus { publish A; }
+    @budget(fanout = 1)
+    fn fire() { A <- T { n: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let ds = diags(src);
+    assert!(
+        ds.iter().any(|m| m.contains("budget exceeded")
+            && m.contains("fanout")),
+        "the helper's publish is caused by the same invocation: {:?}",
+        ds
+    );
+}
+
+/// A loop-nested onward publish repeats per invocation.
+#[test]
+fn a_looped_onward_publish_is_unbounded() {
+    let src = r#"
+type T { n: Int = 0; }
+topic A { payload: T; subject: "a"; }
+topic B { payload: T; subject: "b"; }
+locus Relay {
+    bus { subscribe A as on_a; publish B; }
+    params { n: Int = 0; }
+    fn on_a(t: T) {
+        let mut i = 0;
+        while i < 4 { B <- T { n: i }; i = i + 1; }
+    }
+}
+locus Sink {
+    bus { subscribe B as on_b; }
+    params { n: Int = 0; }
+    fn on_b(t: T) { self.n = t.n; }
+}
+main locus App {
+    params { r: Relay = Relay { }; s: Sink = Sink { }; }
+    bus { publish A; }
+    @budget(fanout = 99)
+    fn fire() { A <- T { n: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let ds = diags(src);
+    assert!(
+        ds.iter().any(|m| m.contains("budget exceeded")
+            && m.contains("unbounded")),
+        "a loop-nested contributor has no per-call bound: {:?}",
+        ds
+    );
+}
+
+/// A productive bus CYCLE is unbounded, not settled.
+#[test]
+fn a_republish_cycle_is_unbounded() {
+    let src = r#"
+type T { n: Int = 0; }
+topic A { payload: T; subject: "a"; }
+topic B { payload: T; subject: "b"; }
+locus Ping {
+    bus { subscribe A as on_a; publish B; }
+    params { n: Int = 0; }
+    fn on_a(t: T) { B <- T { n: t.n }; }
+}
+locus Pong {
+    bus { subscribe B as on_b; publish A; }
+    params { n: Int = 0; }
+    fn on_b(t: T) { A <- T { n: t.n }; }
+}
+main locus App {
+    params { p: Ping = Ping { }; q: Pong = Pong { }; }
+    bus { publish A; }
+    @budget(fanout = 99)
+    fn fire() { A <- T { n: 1 }; }
+    run() { self.fire(); }
+}
+fn main() { App { }; }
+"#;
+    let ds = diags(src);
+    assert!(
+        ds.iter().any(|m| m.contains("budget exceeded")
+            && m.contains("unbounded")),
+        "a cycle amplifies without bound: {:?}",
+        ds
+    );
+}

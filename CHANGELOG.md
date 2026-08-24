@@ -45,7 +45,16 @@ Supporting facts, added in the same change:
   locus no longer makes every fan-out in the program unbounded. A
   dynamic population of a REACHED subscriber, an unknown key, an
   external route, or a computed subject is unboundedness — never
-  one.
+  one. It is a WEIGHTED execution traversal: three `Relay`
+  instances each republishing to one `Sink` is six deliveries, not
+  four, because each work item carries how many handler invocations
+  reached it. A handler's publishing helpers count, a loop-nested
+  contributor is unbounded, and a productive bus cycle saturates.
+- **Quantitative budgets cross seed boundaries.** The migrated
+  evidence path called the engine without the import-rename table,
+  so `lib::expensive()` stayed an unresolved qualified free call
+  and contributed zero — `@budget(publish = 0)` could certify over
+  an imported publisher. Every dimension was affected.
 
 **Artifact schema 1.16 → 1.17.** `@budget` rows carry
 `"family": "budget"` with their own `certs` evidence and an

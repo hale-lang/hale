@@ -392,7 +392,7 @@ pub fn quantitative_diags(
     programs: &[&Program],
     fanout_of: &FanoutOf<'_>,
 ) -> Vec<Diag> {
-    quantitative_report(programs, fanout_of).0
+    quantitative_report(programs, &[], fanout_of).0
 }
 
 /// #392 §8: every quantitative `@budget(<dim> = N)` contract as a
@@ -402,11 +402,12 @@ pub fn certificate_rows(
     programs: &[&Program],
     fanout_of: &FanoutOf<'_>,
 ) -> Vec<crate::effects::LoweredCertificate> {
-    quantitative_report(programs, fanout_of).1
+    quantitative_report(programs, &[], fanout_of).1
 }
 
 fn quantitative_report(
     programs: &[&Program],
+    import_renames: &[(Vec<String>, String)],
     fanout_of: &FanoutOf<'_>,
 ) -> (
     Vec<Diag>,
@@ -445,7 +446,12 @@ fn quantitative_report(
     if roots.is_empty() {
         return (Vec::new(), Vec::new(), Vec::new());
     }
-    let summary = alloc_summary::summarize_programs(programs);
+    // With the rename table: a cross-seed call must RESOLVE, or its
+    // costs vanish behind the seed boundary.
+    let summary = alloc_summary::summarize_programs_with_renames(
+        programs,
+        import_renames,
+    );
     let frames = frame_map(programs);
     let names = crate::effects::effect_names_of(programs);
     let declared = crate::effects::declared_of(programs);
@@ -593,11 +599,19 @@ fn quantitative_report(
 /// Measuring stays this engine's question; the evidence sidecar
 /// carries what it measured, and the VERDICT becomes the
 /// judgment's — the duplicate authority #476 removes.
+/// Round 4: the RENAME TABLE is threaded through. Without it a
+/// cross-seed call written `lib::expensive()` stays an unresolved
+/// qualified free call, and the quantity traversal — which treats
+/// only indirect and opaque-receiver calls as unbounded — counts it
+/// as ZERO. `@budget(publish = 0)` could then certify over an
+/// imported publisher. Every dimension had the defect.
 pub fn certificate_groups(
     programs: &[&Program],
+    import_renames: &[(Vec<String>, String)],
     fanout_of: &FanoutOf<'_>,
 ) -> Vec<(crate::effects::LoweredCertificate, Vec<Diag>)> {
-    let (diags, rows, ranges) = quantitative_report(programs, fanout_of);
+    let (diags, rows, ranges) =
+        quantitative_report(programs, import_renames, fanout_of);
     rows.into_iter()
         .enumerate()
         .map(|(i, row)| {

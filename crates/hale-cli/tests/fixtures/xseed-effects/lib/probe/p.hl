@@ -32,3 +32,21 @@ locus Grow {
         }
     }
 }
+
+// Round 4 of the #499 review: the QUANTITATIVE dimensions must cross
+// the seed boundary too. Before the rename table reached
+// `quantitative`, a call written `p::far_block()` stayed an
+// unresolved qualified free call and contributed ZERO to every
+// dimension — so an app-side `@budget(block_points = 0)` certified
+// over a blocking call one seed away.
+fn far_block() -> Int {
+    std::time::sleep(1ms);
+    return 1;
+}
+
+// Deliberately frame-heavy: `stack_bytes` must see it.
+fn far_wide() -> Int {
+    let a = 1; let b = 2; let c = 3; let d = 4;
+    let e = 5; let f = 6; let g = 7; let h = 8;
+    return a + b + c + d + e + f + g + h;
+}
