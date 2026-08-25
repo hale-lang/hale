@@ -12,18 +12,20 @@ publish reaches, which locus owns which instance — has exactly one
 right answer. So it gets derived in exactly one place, and every
 consumer projects or queries that value.
 
-That is the whole principle. What follows from it is a compiler
-where the checker, the artifact, the fleet tier and the lowering
-plan cannot disagree about a program, because there is nothing for
-them to disagree *with*. They read the same value.
-
-Concretely, `hale check`'s verdict on a law and the verdict
-recorded in the topology artifact are the same computation, not two
-computations held in agreement by a test. The fleet tier reasoning
-across binaries uses the same reachability engine as the
-single-binary checker. `DispatchPlan`, which decides how a call
-lowers, is derived from the same model that answered the
+That is the whole principle. In-process, it means `hale check`'s
+verdict on a law and the verdict recorded in the topology artifact
+are the same computation — not two computations held in agreement
+by a test. `DispatchPlan`, which decides how a bus subject
+dispatches, is derived from the same model that answered the
 verification questions.
+
+Out of process it is necessarily weaker, and worth being precise
+about. The fleet tier, reasoning across binaries, cannot hold an
+`ApplicationModel` — it decodes a deliberately smaller
+`ComponentModel` from admitted artifact JSON. What it shares with
+the single-binary checker is the *reachability engine* and the
+*admitted contract*, not the value. That's the boundary, and it's
+where the wire form would earn its keep.
 
 Eight concepts stay distinct: source, plan, model, lowered law,
 evidence, artifact, lowering plan, execution evidence. Keeping them

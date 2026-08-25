@@ -15,15 +15,29 @@ AST, the checker, or codegen.
 ## The architectural law
 
 ```text
-Source --check/derive--> Model --judge(ClaimIr)--> Evidence
-                           |
-                           +--project--> Artifact
-                           +--derive---> DispatchPlan
+checked Bundle                      -->  ApplicationModel
+Bundle + Model                      -->  ClaimIrTable
+Bundle + Model + ClaimIrTable       -->  EvidenceTable
+Model + ClaimIrTable [+ Evidence]   -->  Judged verdicts
+ApplicationModel                    -->  model-half projection (artifact)
+ApplicationModel                    -->  DispatchPlan
+admitted Artifact                   -->  ComponentModel --> fleet ModelGraph
 ```
 
 **Derive a modeled semantic fact once.** Downstream consumers
 project or query it; they do not walk the AST, the artifact JSON,
 or codegen state to rediscover it.
+
+Note what that does *not* say. `ClaimIrTable` is not a projection
+of the model alone — `lower_claims` takes the bundle too, because
+clause enumeration, constitution adoption and annotation surfaces
+are read from source. `EvidenceTable` is likewise derived from all
+three, and for the certificate and budget families it is an INPUT
+to judgment rather than its result: those engines measure, and the
+judgment decides over what they measured. And the fleet tier shares
+selected ALGORITHMS and admitted contracts, not the value: it
+decodes a `ComponentModel` from artifact JSON and composes its own
+`ModelGraph`.
 
 Eight concepts stay distinct and un-conflated: source, plan,
 **model**, `ClaimIr`, evidence, artifact, lowering plan, and
@@ -100,9 +114,19 @@ denotes.
 
 ## Sorts — the entity tables
 
-`Entities` holds fifteen tables. Each row has an id (a newtype
-index into its own table), a raw canonical `name`, an author-facing
-`display`, and provenance.
+`Entities` holds fifteen tables. A row's **id is its index** in its
+own table, wrapped in a newtype (`FunctionId`, `SubjectId`, …) —
+not a field stored on the row.
+
+Identity is **per table**, and deliberately not uniform. Many rows
+carry a raw canonical `name` plus an author-facing `display`
+(`functions`, `loci`, `topics`, `groups`); several do not.
+`LocusInstance` is identified by `path` (`App.workers[3]`) with a
+`decl` and a `replica` index; `Subject` by its wire `pattern`;
+`PayloadContract` by its shape and hash; `Binding` by its typed
+subject, transport and role; `Phase`, `Seed` and `ThreadDomain`
+carry a name with no separate display. Consumers should read the
+table's own definition rather than assume a common shape.
 
 | table | what a row is |
 |---|---|
@@ -140,12 +164,16 @@ Two distinctions in that table are load-bearing:
 `Relations` holds seventeen tables. The invariant that matters is
 **grain**.
 
-Call and publish rows are **site-grained**: two calls to one callee
-are two rows, because the callee executes twice. Alternatives of
-one interface dispatch share an authored `site` ordinal, because
-one dispatch runs one conformer. A consumer that collapses either
-into a set is computing reachability where the language means
-executions.
+Call and publish rows are **site-grained**: they carry an authored
+`site` ordinal, two calls to one callee are two rows because the
+callee executes twice, and alternatives of one interface dispatch
+share that ordinal because one dispatch runs one conformer. A
+consumer that collapses either into a set is computing reachability
+where the language means executions.
+
+`costs` is **mixed-grain** and carries no `site` ordinal at all;
+its rows are distinguished by `(function, dimension, provenance)`.
+See below.
 
 | table | grain / notes |
 |---|---|
@@ -160,12 +188,24 @@ executions.
 | `binds` | topic ↔ transport, with `role` |
 | `supervises` | supervision edges |
 | `group_members`, `group_selectors` | resolved vs authored |
-| `costs` | **site**; per-call `alloc` / `block` / `frame_bytes` |
+| `costs` | **mixed**; per-call `alloc` / `block` / `frame_bytes` |
 
-`costs` is site-grained for the same reason as publishes: a
-per-call budget is a statement about *one invocation*, so whether
-a site sits inside a loop is the difference between a finite count
-and an unbounded one.
+`costs` needs care, because its two grains have different
+semirings:
+
+- **`Alloc` and `Block` are OCCURRENCE rows.** One row per
+  allocation site or blocking call, distinguished by provenance,
+  carrying `in_loop`. A per-call budget is a statement about *one
+  invocation*, so whether an occurrence sits inside a loop is the
+  difference between a finite count and an unbounded one.
+- **`FrameBytes` is a FUNCTION-level row.** Exactly one per
+  analysed function, `in_loop` always false, consumed by a
+  longest-stack-path computation rather than summed over
+  executions. A frame is reused across iterations; multiplying it
+  as if it were an occurrence is a category error.
+
+Neither carries an authored site ordinal — `CostSite` is
+`(function, dimension, amount, in_loop, provenance)`.
 
 ## Holes
 
@@ -199,13 +239,30 @@ whole program.
 
 Relevance has two grains, and consumers need both:
 
-- **Endpoint-scoped** — is what lies beyond *this* endpoint, in
-  *this* direction, fully modeled? Answered once, in
-  `model_query::endpoint_incomplete`, which reads both the holes
-  and the typed routes that leave the application. A `connect`
-  binding is a downstream boundary; a `listen` binding is an
-  upstream one; neither emits a hole, so a consumer reading only
-  `holes` fails open on both.
+- **Endpoint-scoped** — is the possible-delivery STRUCTURE beyond
+  *this* endpoint, in *this* direction, fully modeled?
+  `model_query::endpoint_incomplete` answers exactly that and no
+  more: downstream it reads `SUBSCRIBES | KEY_FILTERS | DELIVERY`
+  holes, upstream `PUBLISHES | DELIVERY`, plus the typed routes
+  that leave the application (a `connect` binding is a downstream
+  boundary, a `listen` binding an upstream one; neither emits a
+  hole, so a consumer reading only `holes` fails open on both).
+
+  **It is not the whole completeness question**, and a consumer
+  must not treat it as such. It deliberately says nothing about
+  subscriber CARDINALITY or locus population, because those do not
+  affect which effect classes a publish reaches — another instance
+  of one locus runs the same handler. A judgment that counts
+  *deliveries* rather than reachability needs its own account, and
+  `@budget(fanout)` has one: subject/topic-grained `CARDINALITY`
+  residue, and locus-grained `OWNS | CARDINALITY` residue through
+  `population_of`, whose three outcomes (exactly zero, exactly n,
+  not knowable) must stay distinct.
+
+  The rule generalises: **scope every family in your
+  `required_relations`, not just the ones this shared query
+  covers.** `endpoint_incomplete` is one question asked once; it is
+  not every question.
 - **Reachability-scoped** — residue in a function nothing can
   execute withdraws nothing. An unfollowable call in dead code
   cannot invoke anything.
@@ -251,15 +308,28 @@ extends the declaration in the same change.
 
 ## Provenance
 
-Every row carries a `ProvenanceId` into a table of either a
-`Source { source, span }` or a named `Synthetic { origin }`. Two
-rules:
+Entity, relation, hole, label and weight rows carry a
+`ProvenanceId` into a table with **three** variants:
+
+- `Source { source, span }` — a `SourceId` and a byte range in the
+  bundle's offset space;
+- `Synthetic { origin }` — a named origin for a fact no source line
+  produced;
+- `ForeignSpan { span }` — a span in a FOREIGN offset space
+  (stdlib parse space, another seed). It is the discriminator that
+  keeps stdlib evidence from being resolved against application
+  files, where numeric overlap would misfile it.
+
+Two rules:
 
 - The model never sees the AST. Spans are bytes and `SourceId`s.
-- Foreign offset spaces stay foreign. A diagnostic whose span lives
-  in stdlib parse space or another seed carries a discriminator, so
-  numeric overlap with a bundle file cannot misfile stdlib evidence
-  as application code.
+- Foreign offset spaces stay foreign, by construction rather than
+  by convention — hence the third variant.
+
+The guarantee is scoped to those row families. Analysis products
+are coarser: a `StdlibAbsorption` carries `entry_provenance` for
+its authored entry site, and its interior nodes and events do not
+each carry their own.
 
 ## Analyses
 
@@ -313,52 +383,64 @@ corrupted cannot certify anything, digests notwithstanding.
 
 ## Derived products
 
-Three values are derived *from* a model and are not part of it:
+Three values sit beside a model without being part of it. Only one
+is derived from the model ALONE — see the layering above:
 
-- **`ClaimIrTable`** — the lowered law: one typed row per clause,
+- **`ClaimIrTable`** — the lowered law, from `(bundle, model)`:
+  one typed row per clause,
   with its ordinal, origin, judgment family, typed operands
   (each reference carrying raw identity, author spelling and
   resolution state), and the `GroupSelection` status carried from
   selection rather than re-inferred.
-- **`EvidenceTable`** — the certificate sidecar, deliberately
-  *outside* the model, because a model must not carry a cached
-  prior judgment of itself. It ties to the model by
+- **`EvidenceTable`** — the certificate sidecar, from
+  `(bundle, table, model)`. Deliberately *outside* the model,
+  because a model must not carry a cached prior judgment of
+  itself. For the certificate and budget families it is an INPUT
+  to judgment rather than its output: those engines measure, and
+  the judgment decides over what they measured. It ties to the model by
   `model_shape`, `law_digest`, `inputs_digest` and
   `coverage_digest`; a judgment refuses evidence whose ties
   disagree rather than replaying it.
-- **`DispatchPlan`** — the typed lowering plan (GH #476 Change 8),
-  combining dispatch gates with the arrangement. Which lowering
-  flavour a call gets is a plan *conclusion*, not a model row.
+- **`DispatchPlan`** — from the model alone (GH #476 Change 8),
+  combining dispatch gates with the arrangement. It decides how a
+  BUS SUBJECT dispatches — dynamic, static bucket, or static
+  direct — not how calls in general lower. Which flavour a subject
+  gets is a plan *conclusion*, never a model row.
 
 ## Identity and versioning
 
-Six identities, each answering a different question. Conflating any
-two of them is a trap.
+**Eight identities and two version constants.** They answer
+different questions and cover different data; conflating any two is
+a trap, and the coverage below is what the digest functions
+actually hash — not what their names suggest.
 
 | identity | covers | moves when |
 |---|---|---|
-| `shape_hash` | the model half only | the topology changes; **not** when law or comments do |
+| `shape_hash` | the model HALF of the artifact (`TopologyShapeV1`) — sorts, relations, weights, the through-stdlib contraction, endpoint identity. Claim RESULTS excluded | the topology changes; **not** when law, comments or provenance do |
 | `artifact_digest` | the whole serialised document | any byte changes |
-| `law_digest` | the lowered law table | a law row changes |
-| `inputs_digest` | analysis inputs *outside* the model | stdlib source, path renames, or `ANALYSIS_SEMANTICS_VERSION` change |
-| `coverage_digest` | the `analyzed` / `analyzable` bits | coverage changes |
-| `model_hash` | model identity for the obs stream | the model does |
+| `law_digest` | every law row (ordinal, name, origin, typed law, provenance id) **and the law provenance STORE** — its source units and every record | an operand changes, *or* a law's span moves, *or* the source snapshot does |
+| `inputs_digest` | analysis inputs OUTSIDE the model: `ANALYSIS_SEMANTICS_VERSION`, the Hale stdlib source, **the compiler package version**, the import-rename table, and **the stdlib surface-classification registry** (namespaces, fn names, effect masks, open prefixes) | any of those drift — most do not rely on anyone remembering |
+| `coverage_digest` | per locus: name + `analyzable`. Per function: name, `analyzed`, `summarized`, `kind`, and **canonical owner** | coverage changes, *or* a member moves between owners |
+| `model_shape` (in `EvidenceTable`) | the `shape_hash` the sidecar was derived beside | the model half does |
+| obs `model_hash` | **the emitted `shape_hash`** — `model_shape_hash` renders the artifact and reads that field out | the model half does. It is the runtime exposure of `TopologyShapeV1`, **not** a full-model identity |
+| obs `entity_id_digest` | the exact stamped id table (kind, name, id) | the numbering does. It exists because `model_hash` does *not* cover every table the ids index — arrangement bindings are not in the artifact at all, and an unused topic's wire subject rides an unhashed section, so two builds could share a `model_hash` while numbering entities differently |
 | `TOPOLOGY_SCHEMA` | the artifact's decoding contract | a field becomes required, a section changes meaning, or a family moves |
-| `ANALYSIS_SEMANTICS_VERSION` | the evidence producer's *semantics* | its **results** move |
+| `ANALYSIS_SEMANTICS_VERSION` | the evidence producer's SEMANTICS | its **results** move |
 
-The last one has a rule that is easy to get wrong.
-`EvidenceTable::validate` compares digests; it does not hash the
-implementation. So a sidecar produced by an older toolchain can
+Two rules that are easy to get wrong.
+
+`EvidenceTable::validate` compares digests; **it does not hash the
+implementation.** A sidecar produced by an older toolchain can
 share the source, the model shape, the law digest and the coverage
 digest while carrying a verdict the current compiler disagrees
-with. **Whenever a producer change alters results — including
-correcting a bug — the version moves in the same change.** It went
-3 → 6 across GH #476 Change 5h alone.
+with. So whenever a producer change alters results — *including
+correcting a bug* — `ANALYSIS_SEMANTICS_VERSION` moves in the same
+change. It went 3 → 6 across GH #476 Change 5h alone.
 
-Similarly for the schema: making a field *required* is a
-decoding-contract change, not an additive one. An artifact written
-before the change passes the schema gate and is then refused for
-omitting something its schema never demanded.
+And making an artifact field **required** is a decoding-contract
+change, not an additive one: an artifact written before the change
+passes the schema gate and is then refused for omitting something
+its schema never demanded. That is a `TOPOLOGY_SCHEMA` transition.
 
 ## Adding a judgment family
 
@@ -393,9 +475,17 @@ property a consumer of this model is entitled to rely on.
    conformer — end to end *before* taking any maximum.
    `max(a) + union(b)` is not `max(a + b)`, and `Σ max` is not
    `max Σ`.
-8. **Join on identity, never spelling.** `SubjectId`, not
-   `declared_topic`; `Function::name` (raw canonical), not
-   `Function::display` (demangled author spelling).
+8. **Join on the right identity for the question.** For DELIVERY,
+   the identity is `SubjectId`: `declared_topic` is a syntactic
+   link and a literal send carries `None` there. But
+   `declared_topic` is not vestigial — it decides
+   declaration-sensitive questions (typed endpoint identity,
+   `require publishes` / `subscribes`), which is why the schema
+   keeps both. Use the wire identity for what the runtime does,
+   the declaration link for what the author wrote. Separately:
+   `Function::name` is the raw canonical identity and
+   `Function::display` the demangled author spelling; joins take
+   the former.
 9. **Move the semantics version when results move.**
 
 ## Known boundaries
