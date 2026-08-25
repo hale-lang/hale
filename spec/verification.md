@@ -294,8 +294,16 @@ earlier in the same file as the family. Companion:
 class along any path, with the same loop/indirect unboundedness
 rules as every per-call dimension.
 
+The value all of this is derived FROM — the typed, provenance-bearing
+`ApplicationModel`, its holes and capabilities, the laws it must
+satisfy, and the discipline a new judgment family follows — is
+specified in [`spec/model.md`](./model.md). This document specifies
+what is CHECKED and what is SERIALISED; that one specifies the IR
+sitting between them.
+
 **The topology artifact** (#382 phase 2; schema 1.17):
-`hale check <t> --dump-topology` emits the serialized model —
+`hale check <t> --dump-topology` emits a PROJECTION of the model
+(lossy by construction; see [`spec/model.md`](./model.md)) —
 sorts (loci, fns, topics), relations (calls with **weights**: loop
 nesting, unbounded-loop membership, interface-dispatch tags;
 publishes; subscribes), the through-stdlib **contracted** edges
