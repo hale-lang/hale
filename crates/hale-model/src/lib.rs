@@ -12,11 +12,19 @@
 //! ## The architectural law
 //!
 //! ```text
-//! Source --check/derive--> Model --judge(ClaimIr)--> Evidence
-//!                              |
-//!                              +--project--> Artifact
-//!                              +--derive---> DispatchPlan
+//! checked Bundle                     -->  ApplicationModel
+//! Bundle + Model                     -->  ClaimIrTable
+//! Bundle + Model + ClaimIrTable      -->  EvidenceTable
+//! Model + ClaimIrTable [+ Evidence]  -->  Judged verdicts
+//! ApplicationModel                   -->  artifact model half
+//! ApplicationModel                   -->  DispatchPlan
+//! admitted Artifact                  -->  ComponentModel (fleet)
 //! ```
+//!
+//! Read the middle lines carefully. `EvidenceTable` is BUILT before
+//! judgment and, for the certificate and budget families, CONSUMED
+//! by it — those engines measure, and the judgment decides over what
+//! they measured. There is no `Model --judge--> Evidence` arrow.
 //!
 //! One direction only: the model is derived from checked source and
 //! nothing reconstructs one from an artifact or a plan. The fleet
@@ -45,7 +53,8 @@
 //! - positive **capabilities** ([`Capabilities`]) — what is exact,
 //!   stated, so a judgment can ask "is this model adequate?" without
 //!   reverse-engineering the absence of strings;
-//! - **provenance on every row** ([`Provenance`]) — source-neutral
+//! - **provenance on the fact-bearing rows** ([`Provenance`]) —
+//!   entities, relations, holes, labels, weights; source-neutral
 //!   (`SourceId` + byte span, or a named synthetic origin); this
 //!   crate never sees the AST.
 //!

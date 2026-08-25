@@ -59,8 +59,9 @@ not know**, closed at a horizon:
 - positive **capabilities** — what is exact, *stated*, so a
   consumer can ask "is this model adequate for my question?"
   without reverse-engineering the absence of strings;
-- **provenance on every row** — source-neutral: a `SourceId` and a
-  byte span, or a named synthetic origin.
+- **provenance on the fact-bearing rows** — entities, relations,
+  holes, labels and weights; source-neutral, and scoped precisely
+  below.
 
 The last two are the load-bearing ones. A graph that records only
 what it found cannot distinguish "there is no such edge" from "I
@@ -142,7 +143,7 @@ table's own definition rather than assume a common shape.
 | `bindings` | transport bindings, with a `role` |
 | `groups` | resolved claim groups |
 | `types`, `interfaces` | type and interface declarations |
-| `effect_classes` | built-in and user-declared effect classes |
+| `effect_classes` | declared **or merely referenced** user effect classes — `declared: false` is "referenced, never declared". Built-ins are a separate fixed vocabulary (`BUILTIN_EFFECT_CLASSES`) and have no row |
 | `declarations` | the declaration universe, for coverage laws |
 
 Two distinctions in that table are load-bearing:
@@ -271,8 +272,24 @@ Relevance has two grains, and consumers need both:
 
 The rule the language runs on, stated once:
 
-> A concrete path beats a hole. A hole beats a false proof of
-> absence.
+> A reachable relevant hole always defeats a proof of absence.
+
+Note what that does *not* say. Whether a concrete counterexample
+found *later* in a walk outranks a hole found earlier is a
+**per-tier policy**, not a universal rule, and the shared
+reachability engine exposes both:
+
+- `HolePolicy::Halt` — stop at the first reachable hole. The
+  application checker takes this: the repair is to make that edge
+  resolvable, and the diagnostic names the edge.
+- `HolePolicy::PathWins` — keep walking known edges, so a concrete
+  counterexample outranks the refusal and the hole decides only if
+  no path is found. The fleet checker takes this: a cross-binary
+  path is worth more than "cannot tell".
+
+Both are sound; they differ in what is more useful to report. A new
+judgment picks one deliberately — inheriting the wrong one silently
+changes what an application law means.
 
 Its most common violation is subtle. Where a query returns three
 states — *exactly none*, *exactly n*, *not knowable* — collapsing
@@ -311,8 +328,10 @@ extends the declaration in the same change.
 Entity, relation, hole, label and weight rows carry a
 `ProvenanceId` into a table with **three** variants:
 
-- `Source { source, span }` — a `SourceId` and a byte range in the
-  bundle's offset space;
+- `Source { source, span }` — a `SourceId` and a byte range
+  **relative to that source unit's own content**, not to any
+  bundle-global space. A consumer renders a global span by adding
+  the unit's base;
 - `Synthetic { origin }` — a named origin for a fact no source line
   produced;
 - `ForeignSpan { span }` — a span in a FOREIGN offset space
@@ -397,7 +416,15 @@ is derived from the model ALONE — see the layering above:
   because a model must not carry a cached prior judgment of
   itself. For the certificate and budget families it is an INPUT
   to judgment rather than its output: those engines measure, and
-  the judgment decides over what they measured. It ties to the model by
+  the judgment decides over what they measured.
+
+  It is tied to what it answers by **five** independent checks, not
+  four: `model_shape`, `law_digest`, `inputs_digest`,
+  `coverage_digest`, and **exact equality of the source-unit list**
+  — path plus content digest — across the evidence, the model and
+  the law table. The fifth is not implied by the others: without
+  it, locally valid offsets could be rendered against a different
+  source snapshot. It ties to the model by
   `model_shape`, `law_digest`, `inputs_digest` and
   `coverage_digest`; a judgment refuses evidence whose ties
   disagree rather than replaying it.
@@ -420,7 +447,7 @@ actually hash — not what their names suggest.
 | `artifact_digest` | the whole serialised document | any byte changes |
 | `law_digest` | every law row (ordinal, name, origin, typed law, provenance id) **and the law provenance STORE** — its source units and every record | an operand changes, *or* a law's span moves, *or* the source snapshot does |
 | `inputs_digest` | analysis inputs OUTSIDE the model: `ANALYSIS_SEMANTICS_VERSION`, the Hale stdlib source, **the compiler package version**, the import-rename table, and **the stdlib surface-classification registry** (namespaces, fn names, effect masks, open prefixes) | any of those drift — most do not rely on anyone remembering |
-| `coverage_digest` | per locus: name + `analyzable`. Per function: name, `analyzed`, `summarized`, `kind`, and **canonical owner** | coverage changes, *or* a member moves between owners |
+| `coverage_digest` | per locus: name + `analyzable`. Per function: name, `analyzed`, `summarized`, a **failure-handler discriminator** — not the full `FunctionKind`, so a move among `Free`/`Method`/`Hook`/`Mode` is not in that byte — and **canonical owner** | coverage changes, *or* a member moves between owners |
 | `model_shape` (in `EvidenceTable`) | the `shape_hash` the sidecar was derived beside | the model half does |
 | obs `model_hash` | **the emitted `shape_hash`** — `model_shape_hash` renders the artifact and reads that field out | the model half does. It is the runtime exposure of `TopologyShapeV1`, **not** a full-model identity |
 | obs `entity_id_digest` | the exact stamped id table (kind, name, id) | the numbering does. It exists because `model_hash` does *not* cover every table the ids index — arrangement bindings are not in the artifact at all, and an unused topic's wire subject rides an unhashed section, so two builds could share a `model_hash` while numbering entities differently |
