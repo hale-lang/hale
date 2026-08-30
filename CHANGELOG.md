@@ -6,7 +6,7 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.18.0 — the canonical model (2026-08-30)
 
 ### A computed publish subject is confined to its declaration
 
