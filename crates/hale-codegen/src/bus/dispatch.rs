@@ -41,6 +41,13 @@ pub(crate) trait BusDispatch<'ctx> {
         value: &Expr,
         scope: &Scope<'ctx>,
     ) -> Result<(), CodegenError>;
+    /// Guard a computed-subject publish against the enclosing locus's
+    /// declared publish patterns. Emitted only on the non-literal
+    /// subject path.
+    fn emit_publish_authorization_guard(
+        &mut self,
+        subj_val: BasicValueEnum<'ctx>,
+    ) -> Result<(), CodegenError>;
 }
 
 impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
@@ -163,6 +170,149 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
     /// runtime walks its (heap-grown) entries vec and routes each
     /// match either to the cooperative queue or to a pinned
     /// subscriber's mailbox, by mailbox-null-or-not at registration.
+    fn emit_publish_authorization_guard(
+        &mut self,
+        subj_val: BasicValueEnum<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i64_t = self.context.i64_type();
+        // The declared patterns of the locus this send sits in. A send
+        // outside a locus body cannot reach here — the checker rejects
+        // `<-` outside a locus, and a computed subject additionally
+        // requires a locus-level wildcard declaration.
+        let patterns: Vec<String> = self
+            .current_self
+            .as_ref()
+            .and_then(|cs| self.user_loci.get(&cs.locus_name))
+            .map(|info| info.publish_patterns.clone())
+            .unwrap_or_default();
+        if patterns.is_empty() {
+            // No declaration to check against. The checker refuses a
+            // computed subject in this state, so reaching it means the
+            // program was not checked — refuse to emit an unguarded
+            // publish rather than silently allowing anything.
+            return Err(CodegenError::Unsupported(
+                "computed-subject publish in a locus with no `publish` \
+                 declaration — the wildcard declaration is what \
+                 authorizes the subject"
+                    .to_string(),
+            ));
+        }
+        let locus_name = self
+            .current_self
+            .as_ref()
+            .map(|cs| cs.locus_name.clone())
+            .unwrap_or_default();
+        // Pattern table: a private global array of string pointers.
+        let pat_ptrs: Vec<inkwell::values::BasicValueEnum<'ctx>> = patterns
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                self.builder
+                    .build_global_string_ptr(
+                        p,
+                        &format!("lotus.pub.pat.{}.{}", locus_name, i),
+                    )
+                    .map(|g| g.as_pointer_value().into())
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))
+            })
+            .collect::<Result<_, _>>()?;
+        let arr_ty = ptr_t.array_type(pat_ptrs.len() as u32);
+        let arr_global = self.module.add_global(
+            arr_ty,
+            None,
+            &format!("lotus.pub.pats.{}", locus_name),
+        );
+        arr_global.set_initializer(&ptr_t.const_array(
+            &pat_ptrs
+                .iter()
+                .map(|v| v.into_pointer_value())
+                .collect::<Vec<_>>(),
+        ));
+        arr_global.set_constant(true);
+        arr_global
+            .set_linkage(inkwell::module::Linkage::Internal);
+        let auth_fn = self
+            .module
+            .get_function("lotus_bus_subject_authorized")
+            .expect("lotus_bus_subject_authorized declared");
+        let ok = self
+            .builder
+            .build_call(
+                auth_fn,
+                &[
+                    subj_val.into(),
+                    arr_global.as_pointer_value().into(),
+                    i64_t
+                        .const_int(patterns.len() as u64, false)
+                        .into(),
+                ],
+                "bus.pub.auth",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64")
+            .into_int_value();
+        let denied = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                ok,
+                i64_t.const_zero(),
+                "bus.pub.denied",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let current_fn = self
+            .builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_parent())
+            .expect("inside a function");
+        let panic_bb = self
+            .context
+            .append_basic_block(current_fn, "bus.pub.auth.raise");
+        let cont_bb = self
+            .context
+            .append_basic_block(current_fn, "bus.pub.auth.cont");
+        self.builder
+            .build_conditional_branch(denied, panic_bb, cont_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(panic_bb);
+        let panic_fn = self
+            .module
+            .get_function("lotus_root_panic")
+            .expect("lotus_root_panic declared");
+        let msg = self.global_string(&format!(
+            "BusPublishUnauthorized (locus `{}` published a computed \
+             subject outside its declared publish pattern(s): {} — a \
+             subject the locus does not declare would be delivered to \
+             whichever subscriber matches it, and the payload \
+             reinterpreted as that subscriber's type)",
+            locus_name,
+            patterns
+                .iter()
+                .map(|p| format!("`{}`", p))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        self.builder
+            .build_call(
+                panic_fn,
+                &[
+                    ptr_t.const_null().into(),
+                    i64_t.const_zero().into(),
+                    msg.into(),
+                ],
+                "bus.pub.auth.raise.call",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unreachable()
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(cont_bb);
+        Ok(())
+    }
+
     fn lower_send(
         &mut self,
         subject: &Expr,
@@ -208,6 +358,24 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
             )));
         }
         let subj_val = self.unpack_view_if_needed(subj_val, &subj_ty)?;
+        // Computed-subject publish authorization.
+        //
+        // The checker admits `subj <- v` only when the enclosing locus
+        // declares a wildcard publish whose payload matches, then
+        // takes the declaration on trust ("static subject-pattern
+        // verification is impossible by definition"). Nothing enforced
+        // it, so the computed string reached dispatch verbatim: a
+        // subject OUTSIDE the declared pattern was delivered to
+        // whatever subscribed to it, and the payload was reinterpreted
+        // as that subscriber's type. `LogEv { a, b }` published on
+        // `"app.order"` arrived at an `Order` handler as `id=a qty=b`.
+        //
+        // Enforced here rather than at delivery so the cost lands on
+        // the computed path alone — a literal subject is bound to its
+        // declaration at compile time and emits none of this.
+        if !matches!(subject, Expr::Literal(Literal::String(_), _)) {
+            self.emit_publish_authorization_guard(subj_val)?;
+        }
         // iris handoff-2 P10: note the publishing locus in the obs
         // TLS so BUS_PUBLISH records carry locus attribution (the
         // C dispatch doesn't know self; petals don't pulse
@@ -587,6 +755,86 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
         };
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let i64_t = self.context.i64_type();
+        // Computed-subject payload agreement. The pattern guard above
+        // confines the subject to what the locus declared; this
+        // catches the complement — a subject INSIDE the pattern whose
+        // subscriber expects a different payload, which would deliver
+        // this cell to a handler that reinterprets it. The checker
+        // only relates ends naming the same concrete subject, so it
+        // never sees this pair; here the subject is known.
+        if !matches!(subject, Expr::Literal(Literal::String(_), _)) {
+            let payload_id =
+                crate::bus::runtime::bus_payload_id(&payload_type_name);
+            let conflicts_fn = self
+                .module
+                .get_function("lotus_bus_subject_payload_conflicts")
+                .expect("lotus_bus_subject_payload_conflicts declared");
+            let c = self
+                .builder
+                .build_call(
+                    conflicts_fn,
+                    &[
+                        subj_val.into(),
+                        i64_t.const_int(payload_id, false).into(),
+                    ],
+                    "bus.pub.payload.check",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("returns i64")
+                .into_int_value();
+            let bad = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::NE,
+                    c,
+                    i64_t.const_zero(),
+                    "bus.pub.payload.bad",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let current_fn = self
+                .builder
+                .get_insert_block()
+                .and_then(|bb| bb.get_parent())
+                .expect("inside a function");
+            let panic_bb = self
+                .context
+                .append_basic_block(current_fn, "bus.pub.payload.raise");
+            let cont_bb = self
+                .context
+                .append_basic_block(current_fn, "bus.pub.payload.cont");
+            self.builder
+                .build_conditional_branch(bad, panic_bb, cont_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(panic_bb);
+            let panic_fn = self
+                .module
+                .get_function("lotus_root_panic")
+                .expect("lotus_root_panic declared");
+            let msg = self.global_string(&format!(
+                "BusPayloadMismatch (computed-subject publish of `{}` \
+                 reached a subscriber declared for a different payload \
+                 type — delivering it would reinterpret the cell as \
+                 that subscriber's type)",
+                payload_type_name
+            ));
+            self.builder
+                .build_call(
+                    panic_fn,
+                    &[
+                        ptr_t.const_null().into(),
+                        i64_t.const_zero().into(),
+                        msg.into(),
+                    ],
+                    "bus.pub.payload.raise.call",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_unreachable()
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(cont_bb);
+        }
         let payload_size_iv = payload_struct_ty
             .size_of()
             .expect("payload struct has known size");

@@ -165,3 +165,97 @@ fn empty_declaration_is_satisfiable_by_a_pure_publisher() {
         ds
     );
 }
+
+/// A stdlib I/O call must not withdraw a `depends:` certificate for
+/// an application subject it provably cannot address.
+///
+/// `std::io::tcp::Stream` publishes per-op log events to a
+/// RUNTIME-CHOSEN subject (`self.log_subject <- ...`), which is a
+/// genuine unresolved publish — so any program calling `recv_bytes`
+/// carried a publish hole. That hole was consulted program-globally:
+/// "a publish whose subject the compiler could not name may address
+/// a wire this locus subscribes to", for every subject in the
+/// program. One socket read left every `depends:` declaration
+/// uncertified, including on loci that touch no I/O (downstream
+/// handoff).
+///
+/// But a computed publish is admitted only under a wildcard
+/// declaration — `Stream` declares `publish "io.tcp.**"` — and the
+/// publish site enforces it, so the hole cannot name `app.order`.
+#[test]
+fn a_stdlib_publish_hole_does_not_withdraw_an_unrelated_subject() {
+    let src = r#"
+        type Order { id: Int = 0; }
+        topic OrderT { payload: Order; subject: "app.order"; }
+
+        locus Gw {
+            params { n: Int = 0; s: std::io::tcp::Stream = std::io::tcp::Stream { }; }
+            bus { publish OrderT; }
+            run() {
+                let b = self.s.recv_bytes(16) or std::bytes::from_string("");
+                self.n = len(b);
+                OrderT <- Order { id: self.n };
+            }
+        }
+
+        @effects(depends: { OrderT })
+        locus Ledger {
+            params { seen: Int = 0; }
+            bus { subscribe OrderT as on_order; }
+            fn on_order(o: Order) { self.seen = o.id; }
+        }
+
+        main locus App {
+            params { g: Gw = Gw { }; l: Ledger = Ledger { }; }
+        }
+        fn main() { let a = App { }; }
+    "#;
+    let ds = diags(src);
+    assert!(
+        !ds.iter().any(|d| d.contains("dependency set cannot be certified")),
+        "`app.order` is outside `io.tcp.**`, so the stdlib's publish \
+         hole cannot name it: {:?}",
+        ds
+    );
+}
+
+/// The soundness half, and the reason the scoping is by PATTERN
+/// rather than by "is it the stdlib": a subscription that really
+/// does sit under the declared pattern must still refuse. Without
+/// this, the fix above would be a fail-open.
+#[test]
+fn a_stdlib_publish_hole_still_withdraws_a_subject_it_can_address() {
+    let src = r#"
+        type Order { id: Int = 0; }
+        topic OrderT { payload: Order; subject: "io.tcp.orders"; }
+
+        locus Gw {
+            params { n: Int = 0; s: std::io::tcp::Stream = std::io::tcp::Stream { }; }
+            bus { publish OrderT; }
+            run() {
+                let b = self.s.recv_bytes(16) or std::bytes::from_string("");
+                self.n = len(b);
+                OrderT <- Order { id: self.n };
+            }
+        }
+
+        @effects(depends: { OrderT })
+        locus Ledger {
+            params { seen: Int = 0; }
+            bus { subscribe OrderT as on_order; }
+            fn on_order(o: Order) { self.seen = o.id; }
+        }
+
+        main locus App {
+            params { g: Gw = Gw { }; l: Ledger = Ledger { }; }
+        }
+        fn main() { let a = App { }; }
+    "#;
+    let ds = diags(src);
+    assert!(
+        ds.iter().any(|d| d.contains("dependency set cannot be certified")),
+        "`io.tcp.orders` IS under `io.tcp.**` — the hole can name it, \
+         so the declaration must stay uncertified: {:?}",
+        ds
+    );
+}

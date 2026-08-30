@@ -5836,6 +5836,17 @@ pub(crate) struct LocusInfo<'ctx> {
     /// codegen evaluates EXPR at locus birth (where `self` is in
     /// scope) and threads the value into `lotus_bus_register_keyed`.
     pub(crate) subscriptions: Vec<(String, String, String, Option<KeyFilter>)>,
+    /// Each `bus { publish ... }` declaration's subject, in authored
+    /// order — patterns included (`"io.tcp.**"`).
+    ///
+    /// A computed-subject send (`subj <- v`) is admitted by the
+    /// checker only when the locus declares a matching wildcard
+    /// publish, but that authorization went unenforced: the computed
+    /// string reached dispatch verbatim, so a subject outside the
+    /// declared pattern was delivered to whoever subscribed to it and
+    /// the payload was reinterpreted as their type. `lower_send`
+    /// checks the subject against these at runtime.
+    pub(crate) publish_patterns: Vec<String>,
     /// shm_ring batch consumers (2026-06-26): the set of handler
     /// method names whose single param is `Drain<T>` rather than the
     /// topic payload `T`. A subscribe whose handler is in this set

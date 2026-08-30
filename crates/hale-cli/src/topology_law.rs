@@ -2946,41 +2946,21 @@ pub fn validate_law_account(
                 }
             }
         }
-        // Budget rows: bound to their compatibility `lowered`
-        // evidence — an operand mutation (per_call 4 → 0) cannot
-        // keep the old passing row. The entry joins the exact
-        // bijection below, so it must exist with the re-rendered
-        // form AND nothing else may claim this ordinal.
-        if let Some(form) = expected_budget_form(&decoded) {
-            if verdict == "holds" || verdict == "violated" {
-                expected_lowered.insert(
-                    (row["ordinal"].as_u64().unwrap_or(0), None),
-                    (
-                        form,
-                        verdict.to_string(),
-                        expected_subject(&decoded)
-                            .unwrap_or_default(),
-                        true,
-                    ),
-                );
-            } else if verdict == "invalid" {
-                // The old engine may still have produced a report
-                // (a cycle-resolved-empty class counts zero and
-                // holds) — preserved as OPTIONAL evidence, bound
-                // by fingerprint, never overriding the machine
-                // verdict.
-                expected_lowered.insert(
-                    (row["ordinal"].as_u64().unwrap_or(0), None),
-                    (
-                        form,
-                        String::new(),
-                        expected_subject(&decoded)
-                            .unwrap_or_default(),
-                        false,
-                    ),
-                );
-            }
-        }
+        // Budget rows carry NO separate expectation here. Before
+        // Change 5h the budget engines appended their certificates
+        // to `lowered` directly, keyed by law ordinal alone, so
+        // admission expected a cert-less `(ordinal, None)` row.
+        // They now reach `lowered` through the evidence projection
+        // like every other certificate — `expected_cert_forms`
+        // renders the budget form, so the certificate loop above
+        // already registered `(ordinal, cert)` for each one.
+        // Registering a second, cert-less expectation made the
+        // exact bijection below unsatisfiable: every artifact with
+        // a `@budget` contract passed `hale check` and was then
+        // refused at admission ("law ordinal N has no lowered
+        // evidence row matching ..."), because nothing emits the
+        // row that expectation described (downstream handoff).
+        //
         // The row's rendered form must re-render from the typed
         // payload. This is the operand-substitution defense for
         // every family: editing a class or a group in the payload

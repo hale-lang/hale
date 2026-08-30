@@ -61,25 +61,11 @@ pub mod working_set;
 /// dot-separated segments — `log.app.**` matches the root
 /// `log.app` AND any descendant. Both implementations
 /// must agree.
-pub fn wildcard_match(pattern: &str, subject: &str) -> bool {
-    if let Some(prefix) = pattern.strip_suffix("**") {
-        if prefix.is_empty() {
-            return true;
-        }
-        if !prefix.ends_with('.') {
-            return false;
-        }
-        let root = &prefix[..prefix.len() - 1];
-        if subject == root {
-            return true;
-        }
-        subject.starts_with(prefix) && subject.len() > prefix.len()
-    } else if pattern.contains("**") {
-        false
-    } else {
-        pattern == subject
-    }
-}
+/// Re-exported from `hale-model`, which owns the canonical
+/// definition — the model needs it to decide which subjects an
+/// unresolved publish can address, and cannot depend on this crate.
+/// One Rust implementation, not two.
+pub use hale_model::wildcard_match;
 
 use std::collections::BTreeMap;
 

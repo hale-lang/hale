@@ -58,6 +58,52 @@ Subscribing is declarative — there's no `subscribe()` call at
 runtime. Registration happens when the locus is constructed, and
 unsubscribe happens automatically at dissolve.
 
+### Choosing the subject at runtime
+
+Usually the subject is fixed. When it isn't — a logger that sends
+to `log.<component>`, a socket that reports on whatever subject
+you configured — you declare a **wildcard** publish and send to a
+computed string:
+
+```hale
+locus Wire {
+    params { log_subject: String = ""; }
+    bus { publish "io.tcp.**" of type LogEvent; }
+
+    fn read() {
+        if len(self.log_subject) > 0 {
+            self.log_subject <- LogEvent { phase: "recv" };
+        }
+    }
+}
+```
+
+The `publish "io.tcp.**"` declaration isn't paperwork. It's the
+promise that bounds what this locus can do, and it is enforced:
+
+- The computed subject **must lie under one of the patterns you
+  declared.** `Wire` can send to `io.tcp.venue` or to `io.tcp`
+  itself, but not to `app.order` — that raises
+  `BusPublishUnauthorized`.
+- It **must not reach a subscriber expecting a different payload**,
+  which raises `BusPayloadMismatch`.
+
+Both checks run only on the computed path. A literal `TOPIC <- v`
+is bound to its declaration when you compile, so it costs nothing.
+
+Keep the pattern as narrow as the locus really needs. A wide
+pattern doesn't just permit more sends — it tells the compiler
+less. Because a computed publish can't escape its declaration, the
+compiler knows a locus declaring `io.tcp.**` can never become a
+publisher of `app.order`, so questions like "how many publishers
+does this topic have?" stay answerable even in a program doing
+socket I/O. Declare `"**"` and you've given that up everywhere.
+
+If you subscribe to a subject that sits under *another* locus's
+wildcard pattern while expecting a different payload, you'll get a
+warning — that's the arrangement where the two rules above would
+fire at runtime.
+
 ## What sending actually means
 
 Notice that `OrderShipped <- o;` has no error handling — no `or`

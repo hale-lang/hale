@@ -4869,6 +4869,122 @@ fn check_bus_graph(
             ));
         }
     }
+
+    check_wildcard_publish_payloads(top, diags);
+}
+
+/// A wildcard publish declaration authorizes its locus to publish any
+/// subject under the pattern, with the declared payload type. So every
+/// subscription whose subject falls under that pattern must expect
+/// that same payload — otherwise a computed publish inside the
+/// pattern lands on a handler that reinterprets the bytes as its own
+/// type.
+///
+/// The runtime guard on computed subjects (`lower_send`) confines a
+/// publish to its declared patterns, which closes the case of a
+/// foreign subject. This closes the complement: a subject INSIDE the
+/// pattern whose subscriber disagrees about the payload. Both are the
+/// same defect — a cell delivered to a handler typed for something
+/// else — and neither is caught by the per-subject payload agreement
+/// check, which only compares publishers and subscribers that name
+/// the same concrete subject.
+///
+/// Checked statically because the closed world makes it decidable:
+/// the subscription subjects are all declared. A cross-process
+/// subscriber is the fleet tier's job (artifact composition already
+/// compares payload shapes per subject).
+fn check_wildcard_publish_payloads(
+    top: &TopScope,
+    diags: &mut Vec<Diag>,
+) {
+    // Wildcard publish declarations: (pattern, payload, locus, span).
+    let mut patterns: Vec<(&str, &Ty, &str, Span)> = Vec::new();
+    for (lname, sym) in &top.symbols {
+        let TopSymbol::Locus(l) = sym else { continue };
+        for p in &l.bus_publishes {
+            if p.subject.contains("**") {
+                patterns.push((
+                    p.subject.as_str(),
+                    &p.payload,
+                    lname.as_str(),
+                    p.span,
+                ));
+            }
+        }
+    }
+    if patterns.is_empty() {
+        return;
+    }
+    // Every subscription's concrete wire subject, with the payload its
+    // handler expects. A topic-form subscribe resolves through the
+    // topic's wire subject; a literal-form one is already concrete.
+    let mut subs: Vec<(String, &Ty, &str, Span)> = Vec::new();
+    for (lname, sym) in &top.symbols {
+        let TopSymbol::Locus(l) = sym else { continue };
+        for s in &l.bus_subscribes {
+            if s.subject.contains("**") {
+                // Wildcard-vs-wildcard overlap is not a delivery
+                // fact on its own; skip.
+                continue;
+            }
+            let wire = match top.symbols.get(&s.subject) {
+                Some(TopSymbol::Topic(t))
+                    if !t.wire_subject.is_empty() =>
+                {
+                    t.wire_subject.clone()
+                }
+                _ => s.subject.clone(),
+            };
+            subs.push((wire, &s.payload, lname.as_str(), s.span));
+        }
+    }
+    for (pat, ppay, plocus, pspan) in &patterns {
+        for (wire, spay, slocus, sspan) in &subs {
+            if !crate::wildcard_match(pat, wire) {
+                continue;
+            }
+            if ppay.assignable_from(spay) || spay.assignable_from(ppay)
+            {
+                continue;
+            }
+            // Report on the subscription — that is the end whose
+            // handler would receive the wrong shape — and name the
+            // declaration that can reach it.
+            //
+            // A WARNING, not an error, because the hazard is
+            // conditional: the pattern's owner may never publish a
+            // subject that reaches here (the stdlib's TCP logging is
+            // declared on every `Stream` but stays off until
+            // `log_subject` is set). Making it fatal would refuse
+            // programs in which the publish cannot happen. The
+            // publish site enforces it for real — a computed send
+            // whose payload disagrees with a matching subscriber is
+            // refused there, where the subject is finally known.
+            diags.push(Diag::warn(
+                *sspan,
+                format!(
+                    "bus subject `\"{}\"` is subscribed by locus `{}` \
+                     expecting payload `{}`, but locus `{}` declares \
+                     `publish \"{}\"`, whose payload is `{}`. If that \
+                     locus publishes a computed subject reaching \
+                     `\"{}\"`, the send is refused at runtime rather \
+                     than delivered as `{}`. Give the pattern a \
+                     payload this subscriber accepts, narrow the \
+                     pattern, or move the subscription out from under \
+                     it.",
+                    wire,
+                    slocus,
+                    spay.display(),
+                    plocus,
+                    pat,
+                    ppay.display(),
+                    wire,
+                    spay.display()
+                ),
+            ));
+            let _ = pspan;
+        }
+    }
 }
 
 // === Bus-graph cycles (GH #18 #4, PR B) ============================

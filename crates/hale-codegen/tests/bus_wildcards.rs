@@ -203,3 +203,134 @@ fn exact_subscribers_unaffected_by_wildcard_path() {
     assert!(stdout.contains("EXACT hi"), "got: {:?}", stdout);
     assert!(stdout.contains("WILD hi"), "got: {:?}", stdout);
 }
+
+/// A computed publish subject must lie under one of the locus's
+/// declared publish patterns.
+///
+/// The checker admits `subj <- v` only when the locus declares a
+/// wildcard publish whose payload matches, then takes the
+/// declaration on trust — "static subject-pattern verification is
+/// impossible by definition". Nothing enforced it, so the computed
+/// string reached dispatch verbatim and a subject OUTSIDE the
+/// declared pattern was delivered to whichever subscriber matched
+/// it, with the payload reinterpreted as that subscriber's type.
+///
+/// Before the guard, this program printed `id=111111 qty=222222`:
+/// a two-field `LogEv` handed to an `Order` handler, field for
+/// field, with `hale check` reporting `ok`.
+#[test]
+fn computed_subject_outside_the_declared_pattern_is_refused() {
+    let src = r#"
+        type Order { id: Int = 0; qty: Int = 0; }
+        type LogEv { a: Int = 0; b: Int = 0; }
+        topic OrderT { payload: Order; subject: "app.order"; }
+
+        locus Wire {
+            params { target: String = ""; }
+            bus { publish "io.tcp.**" of type LogEv; }
+            fn read() {
+                if len(self.target) > 0 {
+                    self.target <- LogEv { a: 111111, b: 222222 };
+                }
+            }
+        }
+        locus Sink {
+            params { seen: Int = 0; }
+            bus { subscribe OrderT as on_order; }
+            fn on_order(o: Order) {
+                self.seen = o.id;
+                println("id=", o.id, " qty=", o.qty);
+            }
+        }
+        main locus App {
+            params { w: Wire = Wire { target: "app.order" }; s: Sink = Sink { }; }
+            run() { self.w.read(); }
+        }
+        fn main() { let a = App { }; }
+    "#;
+    let bin = build_hale("pub_unauthorized", src);
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stdout.contains("id=111111"),
+        "the payload was delivered to a foreign handler and \
+         reinterpreted: {:?}",
+        stdout
+    );
+    assert!(
+        !out.status.success(),
+        "an unauthorized computed publish must not succeed \
+         quietly: {:?} / {:?}",
+        stdout,
+        stderr
+    );
+    assert!(
+        stderr.contains("BusPublishUnauthorized"),
+        "expected the authorization panic, got: {:?}",
+        stderr
+    );
+}
+
+/// The positive control: a computed subject INSIDE the declared
+/// pattern still dispatches, including the pattern root itself
+/// (`io.tcp` is under `io.tcp.**`) — the edge where a hand-ported
+/// matcher is most likely to diverge from the Rust one.
+#[test]
+fn computed_subject_inside_the_declared_pattern_still_delivers() {
+    let body = |target: &str| {
+        format!(
+            r#"
+        type LogEv {{ a: Int = 0; b: Int = 0; }}
+
+        locus Wire {{
+            params {{ target: String = ""; }}
+            bus {{ publish "io.tcp.**" of type LogEv; }}
+            fn read() {{
+                if len(self.target) > 0 {{
+                    self.target <- LogEv {{ a: 7, b: 9 }};
+                }}
+            }}
+        }}
+        locus Sink {{
+            params {{ seen: Int = 0; }}
+            bus {{ subscribe "{t}" as on_log of type LogEv; }}
+            fn on_log(e: LogEv) {{
+                self.seen = e.a;
+                println("log a=", e.a, " b=", e.b);
+            }}
+        }}
+        main locus App {{
+            params {{ w: Wire = Wire {{ target: "{t}" }}; s: Sink = Sink {{ }}; }}
+            run() {{ self.w.read(); }}
+        }}
+        fn main() {{ let a = App {{ }}; }}
+    "#,
+            t = target
+        )
+    };
+    for (tag, target) in
+        [("descendant", "io.tcp.venue"), ("root", "io.tcp")]
+    {
+        let bin = build_hale(
+            &format!("pub_authorized_{}", tag),
+            &body(target),
+        );
+        let out = Command::new(&bin).output().expect("run");
+        let _ = std::fs::remove_file(&bin);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success(),
+            "`{}` is under `io.tcp.**` and must publish: {}",
+            target,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            stdout.contains("log a=7 b=9"),
+            "`{}` must still deliver, got: {:?}",
+            target,
+            stdout
+        );
+    }
+}
