@@ -1138,6 +1138,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 release_param: None,
                 user_methods: BTreeMap::new(),
                 subscriptions: Vec::new(),
+                publish_patterns: Vec::new(),
                 batch_handlers: std::collections::BTreeSet::new(),
                 closures: Vec::new(),
                 accumulators_per_closure,
@@ -1216,6 +1217,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
             BTreeMap::new();
         let mut subscriptions: Vec<(String, String, String, Option<KeyFilter>)> =
             Vec::new();
+        let mut publish_patterns: Vec<String> = Vec::new();
         // shm_ring batch consumers (2026-06-26): handler names whose
         // single param is `Drain<T>` → register through the batch path.
         let mut batch_handlers: std::collections::BTreeSet<String> =
@@ -1438,9 +1440,15 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                     key_filter.clone(),
                                 ));
                             }
-                            BusMember::Publish { .. } => {
-                                // No-op at codegen; type info
-                                // already enforced by typechecker.
+                            BusMember::Publish { subject, .. } => {
+                                // The declared publish patterns are
+                                // the authorization a computed-subject
+                                // send is checked against at runtime
+                                // (see `lower_send`). Literal sends
+                                // are bound to their declaration at
+                                // compile time and never consult this.
+                                publish_patterns
+                                    .push(subject.canonical().to_string());
                             }
                         }
                     }
@@ -1987,6 +1995,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         info.release_param = release_param;
         info.user_methods = user_methods;
         info.subscriptions = subscriptions;
+        info.publish_patterns = publish_patterns;
         info.batch_handlers = batch_handlers;
         info.closures = closures;
         info.birth_closures_fn = birth_closures_fn;

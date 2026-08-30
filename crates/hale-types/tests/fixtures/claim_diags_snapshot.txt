@@ -45,13 +45,13 @@ Claim [75..80] hot-path budget exceeded: `boxed` declares `@budget(alloc_per_cal
 Claim [103..113] counts against `boxed`'s alloc budget: a `P` instantiation
 --- crates/hale-cli/tests/topology_graph_cli.rs#1 ---
 Claim [71..75] declared causal set cannot be certified: `poke` publishes into a closure this model does not fully know — a call this walk could not follow may publish further. The law is neither kept nor broken here; classify the effects, close the endpoint, or narrow the publish.
---- crates/hale-cli/tests/topology_graph_cli.rs#18 ---
+--- crates/hale-cli/tests/topology_graph_cli.rs#19 ---
 Claim [192..195] claim `iso` violated: `a_side` reaches `b_side` — witness: `touchy` -> `leak`
 Claim [72..79] claim `iso`: the boundary into `b_side` is crossed by this call
 Claim [4..8] claim `iso`: the forbidden destination `leak` is declared here
---- crates/hale-cli/tests/topology_graph_cli.rs#20 ---
+--- crates/hale-cli/tests/topology_graph_cli.rs#21 ---
 Claim [102..109] claim `bad`: `require attributed` takes a built-in class with countable DIRECT sites — `syscall`, `block`, `publish`, `time`, `entropy`, `env`, `alloc`, `secret_use`. `purpose` is not one of those: a user class would be trivially true, and `ffi` / `spawn` / `recursion` are structural properties with no site to attribute.
---- crates/hale-cli/tests/topology_graph_cli.rs#22 ---
+--- crates/hale-cli/tests/topology_graph_cli.rs#23 ---
 Claim [235..238] claim `iso` is declared more than once — the name is the contract-of-record and must be unique
 --- crates/hale-cli/tests/topology_v2.rs#0 ---
 Claim [425..428] claim `iso` violated: `a_side` reaches `b_side` — witness: `A::birth` -> `B::work`
@@ -236,6 +236,8 @@ Claim [26..33] unknown constitution `Missing` — nothing declares it
 Claim [62..69] claim `d` names topic `Settled`, which is never declared.
 --- crates/hale-types/tests/depends_set.rs#0 ---
 Claim [376..383] declared dependency set is invalid: `Carry` names `DECLARED`, which is not a topic or subject in this application — so the set constrains nothing and cannot be judged. Name a declared topic, or remove the entry.
+--- crates/hale-types/tests/depends_set.rs#3 ---
+Claim [468..475] declared dependency set cannot be certified: `Ledger` is reached from a closure this model does not fully know — a publish whose subject the compiler could not name may address a wire this locus subscribes to. The law is neither kept nor broken here; close the endpoint, resolve the call, or name the subject.
 --- crates/hale-types/tests/frontier_items.rs#0 ---
 Claim [394..400] declared causal set violated: `Api::handle` can transitively cause syscall through the bus, which its `@effects(causes: …)` does not declare. Path: `Api::handle` -> subject `Orders` -> `Audit::on_order`. Add the class to the declaration, or route the publish to a subject whose subscribers don't perform it.
 --- crates/hale-types/tests/interface_dispatch.rs#4 ---

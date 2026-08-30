@@ -960,6 +960,51 @@ when you need a wildcard subscription or a runtime-computed
 publish subject — those are the cases the topic system doesn't
 cover at v1.
 
+#### Computed publish subjects are confined to their declaration
+
+A send whose subject is not a literal (`subj <- v`) requires the
+enclosing locus to declare a wildcard `publish` whose payload
+accepts `v`. That declaration is an **authorization**, and it is
+enforced — not merely required at the declaration site:
+
+1. **Pattern.** At the send, the computed subject must lie under one
+   of the locus's declared publish patterns. A locus declaring
+   `publish "io.tcp.**"` cannot publish `"app.order"`. Violating
+   this raises `BusPublishUnauthorized`.
+2. **Payload.** The computed subject must not reach a subscription
+   declared for a different payload type. Violating this raises
+   `BusPayloadMismatch`.
+
+Both are runtime checks on the computed path only; a literal
+subject is bound to its declaration at compile time and pays
+nothing for either.
+
+They are not stylistic. Without them the computed string reached
+dispatch verbatim, so a subject outside the declared pattern was
+delivered to whatever subscribed to it and the payload was
+reinterpreted as that subscriber's type — a two-field
+`LogEv { a, b }` published on `"app.order"` arrived at an `Order`
+handler as `id=a qty=b`, with `hale check` reporting `ok`.
+
+Statically, a subscription that sits under another locus's declared
+wildcard pattern while expecting a different payload is a
+**warning**: whether the hazard is live depends on whether that
+locus ever publishes a subject reaching it (the stdlib's TCP
+logging is declared on every `Stream` but stays off until
+`log_subject` is set), so it names the risk without refusing the
+program.
+
+**The pattern also bounds analysis.** Because a computed publish
+cannot escape its declaration, an unresolved publish inside a locus
+declaring `"io.tcp.**"` provably cannot produce a publisher of an
+application topic. Subject-specific questions — how many publishers
+a topic has, whether `@effects(depends:)` names the complete
+inbound surface — are answered against the patterns rather than
+against one program-global "some publish is unknown" bit. Residue
+that carries no pattern (an unfollowable call, a truncated
+frontier, a publish whose subject expression resolves to nothing)
+stays unbounded and still withdraws every subject.
+
 ### Phase 2: hierarchy, subjects, bindings, closed-world optimization
 
 Phase 2 extends topic declarations with three orthogonal pieces:

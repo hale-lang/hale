@@ -391,6 +391,40 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
                 .as_global_value()
                 .as_pointer_value(),
         };
+        // Record what payload this subscription expects, so a
+        // computed-subject publish that would reach it can be checked
+        // against it. Emitted before the registration branches below
+        // (static / keyed-str / keyed) so every path records it.
+        //
+        // Confining a computed publish to its declared pattern stops
+        // it addressing a foreign subject; it does not stop a subject
+        // INSIDE the pattern whose subscriber expects another type.
+        // The checker's per-subject payload agreement only relates
+        // ends that name the same concrete subject, so it never sees
+        // that pair.
+        {
+            let payload_id = bus_payload_id(payload_type);
+            let declare_fn = self
+                .module
+                .get_function("lotus_bus_declare_subject_payload")
+                .expect(
+                    "lotus_bus_declare_subject_payload declared in \
+                     declare_builtins",
+                );
+            self.builder
+                .build_call(
+                    declare_fn,
+                    &[
+                        subj_str.into(),
+                        self.context
+                            .i64_type()
+                            .const_int(payload_id, false)
+                            .into(),
+                    ],
+                    "bus.declare_subject_payload.call",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
         // Compute the optional coop_pool ptr (F.31 Phase 4) and
         // the Phase 3 key-filter triple (kind, lo, hi) up front,
         // then funnel through lotus_bus_register_keyed which
@@ -841,4 +875,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
     }
+}
+
+/// Stable identity for a bus payload type: FNV-1a 64 over the type
+/// name. Publish and subscribe sites derive it from the same string,
+/// so a computed publish can be compared against what a matching
+/// subscription expects without either side carrying the name.
+pub(crate) fn bus_payload_id(payload_type: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in payload_type.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
 }

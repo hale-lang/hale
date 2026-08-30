@@ -8,6 +8,87 @@ behavior.
 
 ## Unreleased
 
+### A computed publish subject is confined to its declaration
+
+A send whose subject is not a literal requires the locus to declare
+a wildcard `publish` whose payload matches. That declaration was an
+authorization nothing enforced — the type checker recorded it and
+noted that "static subject-pattern verification is impossible by
+definition", then let the computed string reach dispatch verbatim.
+
+So a subject *outside* the declared pattern was delivered to
+whatever subscribed to it, and the payload reinterpreted as that
+subscriber's type. A two-field `LogEv { a, b }` published under a
+`publish "io.tcp.**"` declaration onto `"app.order"` arrived at an
+`Order` handler as `id=a qty=b`, field for field, deterministically,
+with `hale check` reporting `ok`. Found while investigating a
+downstream handoff.
+
+Two checks now run at the publish site, on the computed path only —
+a literal subject is bound to its declaration at compile time and
+pays nothing:
+
+- the subject must lie under one of the locus's declared patterns
+  (`BusPublishUnauthorized`);
+- it must not reach a subscription declared for a different payload
+  (`BusPayloadMismatch`), which closes the complement the first
+  check cannot: a subject *inside* the pattern whose subscriber
+  disagrees about the type.
+
+Statically, a subscription sitting under another locus's wildcard
+pattern with a different payload is a warning rather than an error:
+whether the hazard is live depends on whether that locus ever
+publishes a subject reaching it, and the stdlib's TCP logging is
+declared on every `Stream` but stays off until `log_subject` is set.
+
+The runtime matcher and the model's must not drift — a publish the
+model proved impossible must not be permitted at runtime — so
+`wildcard_match` moved down to `hale-model` as the single Rust
+definition (`hale-types` re-exports it), and a parity test runs it
+and the C implementation over one shared case table.
+
+### An unresolved publish is scoped by the pattern that bounds it
+
+Because a computed publish can no longer escape its declaration,
+the patterns bound which subjects an unresolved publish can address:
+`AbsorbedEvent::PublishHole` now carries them.
+
+`exact_publishes` is one bit for the whole program, so consulting it
+for a subject-specific question meant a single `recv_bytes` call —
+`std::io::tcp` publishes per-op log events to a runtime-chosen
+subject, a genuine unresolved publish — withdrew the publisher
+account for every topic and degraded every judgment family. It
+blocked `@effects(depends:)` adoption on loci doing no I/O at all
+(downstream handoff).
+
+`depends:` now asks whether residue can reach *that* subject.
+A declaration on an application topic certifies through unrelated
+stdlib I/O; one on a subject genuinely under the stdlib's pattern
+still refuses. Unbounded residue — an unfollowable interior call, a
+truncated frontier, an interior publish whose subject expression
+resolves to no subject row — still withdraws every subject.
+`exact_publishes` itself is unchanged: the program-wide account
+really is incomplete.
+
+### `@budget` artifacts are admissible to a fleet plan again
+
+`hale check` passed a `@budget` contract and `hale fleet check` then
+refused the same artifact — "law ordinal N has no lowered evidence
+row matching `bound alloc <= 0 ...`". GH #476 Change 5h routed
+budget certificates through the evidence projection keyed
+`(law ordinal, cert ordinal)` like every other family, but admission
+kept also registering the pre-5h cert-less expectation. Nothing
+emits that row, so the exact lowered↔law bijection was
+unsatisfiable and every binary carrying a `@budget` contract was
+inadmissible (downstream handoff).
+
+Removing the stale expectation is strictly tighter — its `invalid`
+branch also admitted an unclaimed cert-less `lowered` row. The
+existing operand-mutation anti-control had been passing vacuously,
+accepting the very message every budget artifact produced; it now
+pins the exact error, and a fleet fixture finally carries a
+`@budget` binary.
+
 ### The legacy claim evaluator is deleted (GH #476 Change 10)
 
 `claims.rs` answered every claim family from a second walk over the

@@ -1069,6 +1069,36 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i64_t2.fn_type(&[ptr_t.into(), ptr_t.into()], false),
             None,
         );
+        // Computed-subject publish authorization:
+        // declare i64 @lotus_bus_subject_authorized(ptr subject,
+        //     ptr patterns, i64 n)
+        // Emitted only on the non-literal subject path — a literal
+        // subject is bound to its declaration at compile time, so the
+        // hot publish path is untouched.
+        self.module.add_function(
+            "lotus_bus_subject_authorized",
+            i64_t2.fn_type(
+                &[ptr_t.into(), ptr_t.into(), i64_t2.into()],
+                false,
+            ),
+            None,
+        );
+        // declare void @lotus_bus_declare_subject_payload(ptr subject,
+        //     i64 payload_id)   — one call per subscribe registration
+        // declare i64 @lotus_bus_subject_payload_conflicts(ptr subject,
+        //     i64 payload_id)   — computed-publish path only
+        self.module.add_function(
+            "lotus_bus_declare_subject_payload",
+            self.context
+                .void_type()
+                .fn_type(&[ptr_t.into(), i64_t2.into()], false),
+            None,
+        );
+        self.module.add_function(
+            "lotus_bus_subject_payload_conflicts",
+            i64_t2.fn_type(&[ptr_t.into(), i64_t2.into()], false),
+            None,
+        );
         // iris handoff P1 — form pointer-storage replace retire:
         // declare void @lotus_form_retire_replaced(ptr arena, ptr old,
         //     ptr new, i64 size, ptr str_offs, i64 n_offs)

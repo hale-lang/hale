@@ -137,6 +137,86 @@
 //! - tables are canonically sorted and deduplicated — deterministic
 //!   iteration is a law, not a convention.
 
+/// Does `subject` lie under bus subject `pattern`?
+///
+/// A trailing `**` matches the dot-terminated root itself and every
+/// descendant (`io.tcp.**` covers `io.tcp` and `io.tcp.venue`, but
+/// not `io.tcpX`). `**` anywhere else is not a pattern. No `**` is
+/// an exact compare.
+///
+/// THE canonical definition. It used to live in `hale-types`, but
+/// this crate cannot depend on that one and the model needs it to
+/// decide which subjects an unresolved publish can address — so it
+/// moved down here and `hale-types` re-exports it, rather than
+/// growing a second Rust copy that could drift.
+///
+/// The runtime has the only other implementation
+/// (`lotus_wildcard_match`), because a computed publish is enforced
+/// against its declared patterns at the publish site.
+/// `wildcard_match_parity` runs both over one shared case table: if
+/// they disagreed, a publish the model proved impossible would be
+/// permitted at runtime.
+pub fn wildcard_match(pattern: &str, subject: &str) -> bool {
+    if let Some(prefix) = pattern.strip_suffix("**") {
+        if prefix.is_empty() {
+            return true;
+        }
+        if !prefix.ends_with('.') {
+            return false;
+        }
+        let root = &prefix[..prefix.len() - 1];
+        if subject == root {
+            return true;
+        }
+        subject.starts_with(prefix) && subject.len() > prefix.len()
+    } else if pattern.contains("**") {
+        false
+    } else {
+        pattern == subject
+    }
+}
+
+/// Could any single subject be matched by BOTH `a` and `b`?
+///
+/// Distinct from [`wildcard_match`], which asks whether one concrete
+/// subject lies under one pattern. Here either side may itself be a
+/// pattern — a subscription can be declared on `log.**` — and
+/// treating that pattern as a literal subject gives the wrong
+/// answer: `io.**` and `io.tcp.**` share every subject under
+/// `io.tcp`, yet neither string matches the other as a subject.
+///
+/// Two `**` patterns overlap when one root is a prefix of the other
+/// on a segment boundary, since the shorter's subject set then
+/// contains the longer's.
+pub fn subjects_can_overlap(a: &str, b: &str) -> bool {
+    let root = |p: &str| -> Option<String> {
+        p.strip_suffix("**").and_then(|pre| {
+            if pre.is_empty() {
+                Some(String::new())
+            } else if pre.ends_with('.') {
+                Some(pre[..pre.len() - 1].to_string())
+            } else {
+                None
+            }
+        })
+    };
+    match (root(a), root(b)) {
+        (Some(ra), Some(rb)) => {
+            // `**` (empty root) covers everything.
+            ra.is_empty()
+                || rb.is_empty()
+                || ra == rb
+                || rb.starts_with(&format!("{}.", ra))
+                || ra.starts_with(&format!("{}.", rb))
+        }
+        // One pattern, one concrete subject (or a malformed pattern,
+        // which `wildcard_match` rejects).
+        (Some(_), None) => wildcard_match(a, b),
+        (None, Some(_)) => wildcard_match(b, a),
+        (None, None) => a == b,
+    }
+}
+
 pub mod application;
 pub mod capability;
 pub mod claim_ir;

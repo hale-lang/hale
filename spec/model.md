@@ -375,6 +375,32 @@ The contracted `ViaStdlib` rows in `relations.calls` are the
 sites into one, so a consumer counting executions reads the
 absorption account and skips them; counting both double-counts.
 
+An interior publish to a computed subject is a **`PublishHole`,
+and it carries the wildcard publish patterns its locus declared.**
+The language admits a computed subject only under such a
+declaration and the publish site enforces it, so those patterns
+*bound* the hole: one declared `io.tcp.**` cannot explain a
+publisher of `app.order`.
+
+This is what keeps `exact_publishes` from being the only answer
+available. That capability is one bit for the whole program, so
+reading it alone means a single stdlib I/O call — `std::io::tcp`
+logs to a runtime-chosen subject — withdraws the publisher account
+for every topic, degrading every family. A subject-specific
+question instead asks whether any residue can reach *that*
+subject. Three kinds cannot be bounded and still answer yes
+everywhere: an unfollowable interior call, a truncated frontier,
+and an interior publish whose subject expression resolves to no
+subject row (the absorption records the send's subject
+*expression*, so a computed one appears as the variable's name —
+comparing that as though it were a wire subject would certify
+straight through the publish it stands for).
+
+Overlap between two patterns is not the same question as whether a
+subject matches a pattern: a subscription may itself be declared on
+`log.**`. Two `**` patterns overlap when one root is a prefix of
+the other on a segment boundary.
+
 ## The laws
 
 `ApplicationModel::validate()` enforces eighteen error kinds. They

@@ -11,7 +11,7 @@ crates/hale-cli/tests/fixtures/xseed-claims-verbs/app/main.hl	wired	require subs
 crates/hale-cli/tests/fixtures/xseed-claims/app/main.hl	iso_dg	forbid reaches(delta_wing, gamma_wing)	Invalid	None
 crates/hale-cli/tests/fixtures/xseed-library-claims/lib/pay/p.hl	single_settle	count subscribers(topic Charges) <= 1	Holds	None
 crates/hale-cli/tests/fixtures/xseed-library-claims/lib/pay/p.hl	wired	require subscribes(some settlers, topic Charges)	Holds	None
-crates/hale-cli/tests/fleet_compose.rs#22	iso	forbid reaches(a_side, b_side)	Holds	None
+crates/hale-cli/tests/fleet_compose.rs#23	iso	forbid reaches(a_side, b_side)	Holds	None
 crates/hale-cli/tests/fleet_cross_tier.rs#4	no_llm	forbid reaches(billing, effects(llm))	Invalid	Some("Core")
 crates/hale-cli/tests/fleet_cross_tier.rs#5	no_llm	forbid reaches(billing, effects(llm))	Holds	Some("Core")
 crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#0	isolation	forbid reaches(probes, workers)	Invalid	None
@@ -25,13 +25,13 @@ crates/hale-cli/tests/model_cli.rs#0	wired	require subscribes(some subs, topic E
 crates/hale-cli/tests/topology_artifact_contract.rs#0	wired	require subscribes(some subs, topic Tk)	Holds	None
 crates/hale-cli/tests/topology_artifact_contract.rs#1	wired	require subscribes(some subs, topic Tk)	Violated	None
 crates/hale-cli/tests/topology_artifact_contract.rs#2	wired	require subscribes(some subs, topic Tk)	Holds	None
-crates/hale-cli/tests/topology_graph_cli.rs#18	iso	forbid reaches(a_side, b_side)	Violated	None
-crates/hale-cli/tests/topology_graph_cli.rs#19	iso	forbid reaches(a_side, b_side)	Holds	None
-crates/hale-cli/tests/topology_graph_cli.rs#20	bad	require attributed(all purpose)	Invalid	None
-crates/hale-cli/tests/topology_graph_cli.rs#22	iso	forbid reaches(a_side, b_side)	Holds	None
-crates/hale-cli/tests/topology_graph_cli.rs#22	iso	forbid reaches(b_side, a_side)	Holds	None
-crates/hale-cli/tests/topology_graph_cli.rs#9	iso	forbid reaches(a_side, b_side)	Holds	None
-crates/hale-cli/tests/topology_graph_cli.rs#9	iso2	forbid reaches(b_side, a_side)	Holds	None
+crates/hale-cli/tests/topology_graph_cli.rs#10	iso	forbid reaches(a_side, b_side)	Holds	None
+crates/hale-cli/tests/topology_graph_cli.rs#10	iso2	forbid reaches(b_side, a_side)	Holds	None
+crates/hale-cli/tests/topology_graph_cli.rs#19	iso	forbid reaches(a_side, b_side)	Violated	None
+crates/hale-cli/tests/topology_graph_cli.rs#20	iso	forbid reaches(a_side, b_side)	Holds	None
+crates/hale-cli/tests/topology_graph_cli.rs#21	bad	require attributed(all purpose)	Invalid	None
+crates/hale-cli/tests/topology_graph_cli.rs#23	iso	forbid reaches(a_side, b_side)	Holds	None
+crates/hale-cli/tests/topology_graph_cli.rs#23	iso	forbid reaches(b_side, a_side)	Holds	None
 crates/hale-cli/tests/topology_v2.rs#0	iso	forbid reaches(a_side, b_side)	Violated	None
 crates/hale-codegen/tests/fixtures/examples/claim-forms.hl	boundary	only edges planners -> workers { publish Plan }	Holds	None
 crates/hale-codegen/tests/fixtures/examples/claim-forms.hl	isolated	forbid reaches(workers, audit) via { calls }	Holds	None

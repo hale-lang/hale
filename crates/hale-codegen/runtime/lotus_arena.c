@@ -9649,6 +9649,131 @@ void lotus_bus_register_keyed(const char *subject,
     lotus_bus_early_flush_for_subject(subject);
 }
 
+/* Computed-subject publish authorization.
+ *
+ * `subj <- payload` with a non-literal subject is admitted by the
+ * type checker only when the locus declares a wildcard publish whose
+ * payload matches (`publish "io.tcp.**" of type LogEvent;`). That
+ * declaration was previously an authorization the checker took on
+ * trust and nothing ever enforced: the computed string reached
+ * dispatch verbatim, so a subject OUTSIDE the declared pattern was
+ * delivered to whatever subscribed to it — and the payload was
+ * reinterpreted as that subscriber's type. Publishing a two-field
+ * `LogEv { a, b }` on `"app.order"` handed an `Order` handler
+ * `id=a qty=b`, field for field, with `hale check` reporting `ok`.
+ *
+ * So the pattern is enforced here, at the publish site, against the
+ * patterns the locus actually declared.
+ *
+ * MUST stay semantically identical to `hale_types::wildcard_match`
+ * (crates/hale-types/src/lib.rs) — the model reasons about who can
+ * publish what using that function, and a runtime that disagreed
+ * would let the two accounts drift apart, which is the same class of
+ * defect this closes. `wildcard_match_parity` pins them together
+ * over one shared case table. */
+int64_t lotus_wildcard_match(const char *pattern, const char *subject) {
+    if (!pattern || !subject) return 0;
+    size_t plen = strlen(pattern);
+    /* Trailing "**": prefix match on the dot-terminated root. */
+    if (plen >= 2 && pattern[plen - 1] == '*' && pattern[plen - 2] == '*') {
+        size_t pre = plen - 2;                  /* pattern minus "**" */
+        if (pre == 0) return 1;                 /* "**" matches all */
+        if (pattern[pre - 1] != '.') return 0;  /* "a**" is not a pattern */
+        /* The root without its trailing dot matches exactly ("io.tcp"
+         * is under "io.tcp.**"), and anything strictly longer than the
+         * dotted prefix matches too. */
+        if (strlen(subject) == pre - 1 &&
+            strncmp(subject, pattern, pre - 1) == 0) {
+            return 1;
+        }
+        return (strncmp(subject, pattern, pre) == 0 &&
+                strlen(subject) > pre) ? 1 : 0;
+    }
+    /* "**" anywhere but the tail is not a supported pattern. */
+    if (strstr(pattern, "**")) return 0;
+    return strcmp(pattern, subject) == 0 ? 1 : 0;
+}
+
+/* 1 when `subject` lies under any of the locus's `n` declared publish
+ * patterns. Called only on the computed-subject path; a literal
+ * subject is bound to its declaration at compile time and pays
+ * nothing. */
+int64_t lotus_bus_subject_authorized(const char *subject,
+                                     const char **patterns,
+                                     int64_t n) {
+    if (!subject || !patterns) return 0;
+    for (int64_t i = 0; i < n; i++) {
+        if (lotus_wildcard_match(patterns[i], subject)) return 1;
+    }
+    return 0;
+}
+
+/* Subject -> expected payload identity, one row per subscribe
+ * registration.
+ *
+ * Confining a computed publish to its declared pattern (above) stops
+ * it addressing a FOREIGN subject. It does not stop the complement: a
+ * subject INSIDE the pattern whose subscriber expects a different
+ * payload. `publish "io.tcp.**" of type LogEvent` reaching a
+ * subscriber on `io.tcp.orders` typed `Order` is still a cell
+ * delivered to a handler that reinterprets it.
+ *
+ * The per-subject payload agreement the checker enforces only relates
+ * publishers and subscribers that name the SAME concrete subject, so
+ * it never sees this pair. Recorded here at registration and checked
+ * at the computed publish site, where the subject is finally known.
+ * Literal publishes never consult it — the checker already bound
+ * them. */
+typedef struct {
+    const char *subject;        /* borrowed: codegen global string */
+    uint64_t    payload_id;
+} lotus_subject_payload_t;
+
+static lotus_subject_payload_t *g_subj_pay = NULL;
+static size_t g_subj_pay_count = 0;
+static size_t g_subj_pay_cap = 0;
+
+void lotus_bus_declare_subject_payload(const char *subject,
+                                       uint64_t payload_id) {
+    if (!subject) return;
+    for (size_t i = 0; i < g_subj_pay_count; i++) {
+        if (g_subj_pay[i].payload_id == payload_id &&
+            strcmp(g_subj_pay[i].subject, subject) == 0) {
+            return;                     /* already recorded */
+        }
+    }
+    if (g_subj_pay_count == g_subj_pay_cap) {
+        size_t new_cap = g_subj_pay_cap ? g_subj_pay_cap * 2 : 8;
+        lotus_subject_payload_t *grown = (lotus_subject_payload_t *)
+            realloc(g_subj_pay, new_cap * sizeof(*grown));
+        if (!grown) return;             /* graceful degrade */
+        g_subj_pay = grown;
+        g_subj_pay_cap = new_cap;
+    }
+    g_subj_pay[g_subj_pay_count].subject = subject;
+    g_subj_pay[g_subj_pay_count].payload_id = payload_id;
+    g_subj_pay_count++;
+}
+
+/* 1 when some registered subscription that would RECEIVE `subject`
+ * expects a payload other than `payload_id`. A subscription matches
+ * either exactly or through its own wildcard pattern, mirroring
+ * dispatch. */
+int64_t lotus_bus_subject_payload_conflicts(const char *subject,
+                                            uint64_t payload_id) {
+    if (!subject) return 0;
+    for (size_t i = 0; i < g_subj_pay_count; i++) {
+        const char *s = g_subj_pay[i].subject;
+        int reaches = strstr(s, "**")
+            ? (lotus_wildcard_match(s, subject) != 0)
+            : (strcmp(s, subject) == 0);
+        if (reaches && g_subj_pay[i].payload_id != payload_id) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* Gap B (2026-07-17): routing-key hash for String-keyed topics.
  * FNV-1a 64. NULL hashes like "" (String fields default to the empty
  * literal). Exported — the publish site calls it on the payload's

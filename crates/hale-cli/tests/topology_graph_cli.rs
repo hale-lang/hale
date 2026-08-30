@@ -1243,11 +1243,71 @@ fn main() { App { }; }
         .unwrap();
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
+    // The EXACT error, not a disjunction. While budget rows carried
+    // a stale cert-less `(ordinal, None)` expectation, *every*
+    // budget artifact failed admission with "has no lowered
+    // evidence row" — so accepting that message here let the
+    // anti-control pass for a reason unrelated to the mutation.
     assert!(
         err.contains("does not match its typed law")
-            || err.contains("has no lowered evidence row"),
+            || err.contains("certs[0] does not match its typed law"),
         "the budget↔evidence binding refuses the mutation: {}",
         err
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The positive control for the test above, and the regression lock
+/// for a downstream handoff: an UNMUTATED `@budget` artifact must
+/// pass admission.
+///
+/// `@budget` certificates used to be appended to `lowered` by the
+/// budget engines, keyed by law ordinal alone. Change 5h routed
+/// them through the evidence projection like every other
+/// certificate — keyed `(ordinal, cert)` — but admission kept
+/// registering the old cert-less expectation as well. Nothing emits
+/// that row, so the exact lowered↔law bijection could never be
+/// satisfied: `hale check` was green and `hale fleet check` refused
+/// the very same artifact ("law ordinal N has no lowered evidence
+/// row matching `bound alloc <= 0 ...`"). Any binary with a
+/// `@budget` contract was inadmissible to a fleet plan.
+#[test]
+fn budget_artifact_passes_admission_unmutated() {
+    let dir = workdir("budgetadmit");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+@budget(alloc_per_call = 4)
+fn tight(v: Int) -> Int { return v + 1; }
+main locus App {
+    params { n: Int = 0; }
+    run() { println(tight(1)); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let raw = std::fs::read_to_string(&artifact).unwrap();
+    assert!(
+        raw.contains("bound alloc <= 4 on paths from {tight}"),
+        "test premise: the budget law lowered an evidence row"
+    );
+    assert!(
+        raw.contains("\"family\": \"budget\""),
+        "test premise: the artifact carries a budget law row"
+    );
+    let out = hale()
+        .arg("topology")
+        .arg("graph")
+        .arg(&artifact)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "a well-formed @budget artifact must be admissible: {}",
+        String::from_utf8_lossy(&out.stderr)
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -2536,7 +2596,10 @@ fn main() { App { }; }
 /// wire-subject disagreement.
 #[test]
 fn literal_topic_collision_admits_and_binds() {
-    let dir = workdir("collide");
+    // Tag must be unique per test: `workdir` clears the directory on
+    // entry and each test removes it on exit, so two tests sharing a
+    // tag race on one path under a parallel runner.
+    let dir = workdir("litcollide");
     let src = dir.join("app.hl");
     std::fs::write(
         &src,

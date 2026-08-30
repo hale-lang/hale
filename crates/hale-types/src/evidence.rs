@@ -685,7 +685,7 @@ pub fn model_fanout<'a>(
                     // An interior that publishes, or that the walk
                     // cannot finish, is not countable from here.
                     hale_model::AbsorbedEvent::Publish { .. }
-                    | hale_model::AbsorbedEvent::PublishHole
+                    | hale_model::AbsorbedEvent::PublishHole { .. }
                     | hale_model::AbsorbedEvent::Truncated
                     | hale_model::AbsorbedEvent::CallHole(_) => {
                         seen.pop();

@@ -358,6 +358,73 @@ fn an_unverifiable_component_is_refused() {
     assert!(out.contains("artifact_digest"), "{}", out);
 }
 
+/// A downstream handoff, and the cross-tier lock this suite lacked:
+/// a component carrying a `@budget` contract must be ADMISSIBLE.
+///
+/// The two tiers disagreed about the artifact contract. The
+/// application tier judges budget law through the evidence sidecar
+/// (GH #476 Change 5h), which routes its certificates into `lowered`
+/// keyed `(law ordinal, cert ordinal)` like every other family — but
+/// admission still also expected the pre-5h cert-less row keyed by
+/// law ordinal alone. Nothing emits that row, so the exact
+/// lowered↔law bijection was unsatisfiable and `hale fleet check`
+/// refused every artifact that `hale check` had just passed:
+///
+/// ```text
+/// malformed artifact — law ordinal 16 has no lowered evidence row
+/// matching `bound alloc <= 0 on paths from {...}`
+/// ```
+///
+/// Every fleet fixture here was budget-free, so no test could see it.
+#[test]
+fn a_component_with_a_budget_contract_is_admissible() {
+    let r = fleet("budget");
+    // Re-dump the gateway with a budget contract on a helper its
+    // handler calls. Only this component changes; the plan and the
+    // other two artifacts stay as `fleet()` built them.
+    write(
+        &r,
+        "gw/main.hl",
+        r#"
+import "../lib" as t;
+locus Gateway {
+    params { n: Int = 0; }
+    bus { subscribe t::OrderRequest as on_order; }
+    @budget(alloc_per_call = 0)
+    fn score(o: t::Order) -> Int { return o.id + 1; }
+    fn on_order(o: t::Order) { self.n = self.score(o); }
+}
+main locus GwApp { params { g: Gateway = Gateway { }; } }
+fn main() { GwApp { }; }
+"#,
+    );
+    let dst = r.join("artifacts/gw.json");
+    let (out, code) = hale(&[
+        "check",
+        r.join("gw").to_str().expect("utf8"),
+        &format!("--dump-topology={}", dst.display()),
+    ]);
+    assert_eq!(code, 0, "the application tier passes it: {}", out);
+    let art = std::fs::read_to_string(&dst).expect("read");
+    assert!(
+        art.contains("\"family\": \"budget\""),
+        "test premise: the artifact carries a budget law row"
+    );
+    assert!(
+        art.contains("bound alloc <= 0 on paths from {Gateway::score}"),
+        "test premise: the budget law lowered an evidence row"
+    );
+    // ...and so must the deployment tier, on the very same bytes.
+    let (out, code) = hale(&["fleet", "check", &plan_of(&r)]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_eq!(
+        code, 0,
+        "the deployment tier must admit the artifact the \
+         application tier passed: {}",
+        out
+    );
+}
+
 /// A component whose own law fails is not admissible: local claims
 /// are a precondition of fleet admission.
 #[test]

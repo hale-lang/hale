@@ -2669,6 +2669,62 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
     // judgment can interleave absorbed edges at the evaluator's
     // position. Per-entry BFS over the merged summary; holes and
     // re-emergences recorded in walk order.
+    // Locus -> its declared WILDCARD publish patterns. A computed
+    // publish is admitted only under such a declaration and enforced
+    // against it at the publish site, so these bound which subjects
+    // an unresolved publish inside the locus can address. Without the
+    // bound, one stdlib I/O call (std::io::tcp logs to a
+    // runtime-chosen subject) withdrew publish-completeness from
+    // every topic in the program.
+    // Spans the STDLIB's loci as well as the user's: the absorption
+    // walk names its nodes with the stdlib's own (already mangled)
+    // locus names — `__StdIoTcpStream` — and those declarations are
+    // exactly the ones that bound the holes this is here to scope.
+    // `ast.loci` covers only the user seeds, so a map built from it
+    // alone comes back empty and every hole stays unconstrained.
+    let wildcard_publish_patterns: BTreeMap<String, Vec<String>> = {
+        let mut m: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut take = |l: &hale_syntax::ast::LocusDecl| {
+            for mem in &l.members {
+                // `continue`, not `return`: this is a closure, and a
+                // locus almost always declares `params` before its
+                // `bus` block — returning on the first non-bus member
+                // skipped every declaration.
+                let LocusMember::Bus(bus) = mem else { continue };
+                for bm in &bus.members {
+                    let BusMember::Publish { subject, .. } = bm
+                    else {
+                        continue;
+                    };
+                    let raw = subject.canonical().to_string();
+                    if raw.contains("**") {
+                        m.entry(l.name.name.clone())
+                            .or_default()
+                            .push(raw);
+                    }
+                }
+            }
+        };
+        for l in &ast.loci {
+            take(l);
+        }
+        if let Some(sp) = crate::stdlib_bodies::program() {
+            fn walk(
+                items: &[TopDecl],
+                f: &mut impl FnMut(&hale_syntax::ast::LocusDecl),
+            ) {
+                for item in items {
+                    match item {
+                        TopDecl::Locus(l) => f(l),
+                        TopDecl::Module(md) => walk(&md.items, f),
+                        _ => {}
+                    }
+                }
+            }
+            walk(&sp.items, &mut take);
+        }
+        m
+    };
     let mut stdlib_absorption: Vec<hale_model::StdlibAbsorption> =
         Vec::new();
     // MERGED summary: the evaluator's Cx.summary — stdlib conformer
@@ -2840,7 +2896,30 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                             alloc_summary::EffectSiteKind::Publish(
                                 None,
                             ) => {
-                                events.push(hale_model::AbsorbedEvent::PublishHole);
+                                // Bounded by the declaring locus's
+                                // wildcard patterns: the language
+                                // requires one for a computed
+                                // subject and the publish site
+                                // enforces it, so a hole under
+                                // `io.tcp.**` cannot explain a
+                                // publisher of an application topic.
+                                // No locus (a free fn) or no
+                                // declaration recovered ⇒ empty ⇒
+                                // unconstrained, as before.
+                                let patterns = n
+                                    .locus
+                                    .as_ref()
+                                    .and_then(|l| {
+                                        wildcard_publish_patterns
+                                            .get(l)
+                                    })
+                                    .cloned()
+                                    .unwrap_or_default();
+                                events.push(
+                                    hale_model::AbsorbedEvent::PublishHole {
+                                        patterns,
+                                    },
+                                );
                             }
                             alloc_summary::EffectSiteKind::Publish(
                                 Some(subj),
@@ -3522,7 +3601,7 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
                                 // complete either.
                                 .union(hale_model::RelationSet::COSTS);
                         }
-                        hale_model::AbsorbedEvent::PublishHole => {
+                        hale_model::AbsorbedEvent::PublishHole { .. } => {
                             m = m.union(
                                 hale_model::RelationSet::PUBLISHES,
                             );

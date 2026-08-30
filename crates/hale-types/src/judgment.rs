@@ -1271,7 +1271,7 @@ pub fn judge_forbid_reaches(
                                         }
                                     }
                                 }
-                                AbsorbedEvent::PublishHole => {
+                                AbsorbedEvent::PublishHole { .. } => {
                                     if !*via_bus {
                                         continue;
                                     }
@@ -3744,7 +3744,7 @@ pub fn judge_bound(
                                     subject,
                                 ),
                             }),
-                            AbsorbedEvent::PublishHole => {
+                            AbsorbedEvent::PublishHole { .. } => {
                                 evs.push(Ev::Computed(None))
                             }
                             AbsorbedEvent::Truncated => {
@@ -4678,7 +4678,7 @@ pub fn judge_causes_witnessed(
                             }
                         }
                     }
-                    hale_model::AbsorbedEvent::PublishHole
+                    hale_model::AbsorbedEvent::PublishHole { .. }
                     | hale_model::AbsorbedEvent::Truncated
                     | hale_model::AbsorbedEvent::CallHole(_) => {
                         interior_unknown.insert(a.from.0);
@@ -5227,7 +5227,7 @@ pub fn judge_depends_witnessed(
                     // A computed interior publish, an unexplored
                     // frontier, or an unfollowable interior call:
                     // the publisher set beyond it is incomplete.
-                    hale_model::AbsorbedEvent::PublishHole
+                    hale_model::AbsorbedEvent::PublishHole { .. }
                     | hale_model::AbsorbedEvent::Truncated
                     | hale_model::AbsorbedEvent::CallHole(_) => {
                         interior_unknown.insert(a.from.0);
@@ -5441,7 +5441,24 @@ pub fn judge_depends_witnessed(
             // anchored to no subject — invisible to both the
             // endpoint query and the publish-row walk below. It
             // might name this wire.
-            if !computed_publishers.is_empty() {
+            //
+            // "Might" is now decided per subject rather than
+            // program-globally. A computed publish is admitted only
+            // under a wildcard declaration and enforced against it
+            // at the publish site, so a hole declared `io.tcp.**`
+            // cannot name an application wire. Asking globally meant
+            // one stdlib I/O call — `std::io::tcp` logs to a
+            // runtime-chosen subject — left every `depends:`
+            // declaration uncertified, including on loci that touch
+            // no I/O at all (downstream handoff). Unbounded residue
+            // (an unfollowable interior call, a truncated frontier,
+            // a fn-grain PUBLISHES hole) still answers yes for every
+            // subject.
+            if !computed_publishers.is_empty()
+                && model.publish_hole_can_address(
+                    &e.subjects[subject.index()].pattern,
+                )
+            {
                 uncertain = true;
                 witness.unknown_publishers = true;
             }
