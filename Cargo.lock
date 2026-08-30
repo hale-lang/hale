@@ -74,7 +74,7 @@ checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 
 [[package]]
 name = "hale-cli"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "hale-codegen",
  "hale-lsp",
@@ -90,7 +90,7 @@ dependencies = [
 
 [[package]]
 name = "hale-codegen"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "hale-corpus",
  "hale-model",
@@ -103,11 +103,11 @@ dependencies = [
 
 [[package]]
 name = "hale-corpus"
-version = "0.17.0"
+version = "0.18.0"
 
 [[package]]
 name = "hale-lsp"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "hale-stdlib",
  "hale-syntax",
@@ -117,22 +117,22 @@ dependencies = [
 
 [[package]]
 name = "hale-model"
-version = "0.17.0"
+version = "0.18.0"
 
 [[package]]
 name = "hale-stdlib"
-version = "0.17.0"
+version = "0.18.0"
 
 [[package]]
 name = "hale-syntax"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "hale-corpus",
 ]
 
 [[package]]
 name = "hale-ts-shim"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "tree-sitter",
  "tree-sitter-go",
@@ -140,7 +140,7 @@ dependencies = [
 
 [[package]]
 name = "hale-types"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "hale-corpus",
  "hale-model",
