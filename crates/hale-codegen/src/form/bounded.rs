@@ -205,6 +205,136 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// push(f, x) / at(f, i) — the fallible pair, dispatched from
     /// `lower_fallible_call`'s Ident arm. Returns None when args[0]
     /// isn't bounded (the caller falls through to user fns).
+    /// `src.get(i)` on a type-level collection — the accessor the
+    /// element-chain desugar rides.
+    ///
+    /// Chains desugar before typecheck into a loop that fetches
+    /// through the source's `get`, so a source must answer that name
+    /// to be chainable at all. A `@form(vec)` is a locus and has the
+    /// method; a `bounded[T; N]` and a fixed array are types whose
+    /// operations are free intrinsics, so chains could not anchor on
+    /// them (downstream handoff).
+    ///
+    /// `bounded` routes straight into its own `at`, which already
+    /// has exactly this signature and semantics — one bounds check,
+    /// not a second copy that could disagree with it. A fixed array
+    /// has no length field (every one of its N slots is live and N is
+    /// static), so it gets the check here.
+    pub(crate) fn try_lower_collection_get(
+        &mut self,
+        receiver: &Expr,
+        method_name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<Option<FallibleCallResult<'ctx>>, CodegenError> {
+        if method_name != "get" || args.len() != 1 {
+            return Ok(None);
+        }
+        let recv_ty = match self.static_expr_codegen_ty(receiver, scope) {
+            Some(t) => t,
+            None => return Ok(None),
+        };
+        let (elem, len) = match recv_ty {
+            CodegenTy::Bounded(..) => {
+                // Rebuild the free-call shape `at(recv, i)`.
+                let mut at_args = Vec::with_capacity(2);
+                at_args.push(receiver.clone());
+                at_args.push(args[0].clone());
+                return self.try_lower_bounded_fallible_intrinsic(
+                    "at", &at_args, scope,
+                );
+            }
+            CodegenTy::Array(elem, n) => (*elem, n),
+            _ => return Ok(None),
+        };
+        let i64_t = self.context.i64_type();
+        let func = self.current_fn.expect("array get in fn body");
+        let (recv_val, _) = self.lower_expr(receiver, scope)?;
+        let data_ptr = recv_val.into_pointer_value();
+        let (iv, ity) = self.lower_expr(&args[0], scope)?;
+        if ity != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "get(i) on an array: index must be Int, got {:?}",
+                ity
+            )));
+        }
+        let idx = iv.into_int_value();
+        let neg = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                idx,
+                i64_t.const_zero(),
+                "array.get.neg",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let past = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SGE,
+                idx,
+                i64_t.const_int(len, false),
+                "array.get.past",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let oob = self
+            .builder
+            .build_or(neg, past, "array.get.oob")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let ok_bb = self.context.append_basic_block(func, "array.get.ok");
+        let err_bb = self.context.append_basic_block(func, "array.get.err");
+        let join_bb =
+            self.context.append_basic_block(func, "array.get.join");
+        let out_val_slot = self.alloca_for(&elem, "array.get.val.slot")?;
+        let out_err_slot = self.alloca_for(
+            &CodegenTy::TypeRef("IndexError".into()),
+            "array.get.err.slot",
+        )?;
+        self.builder
+            .build_conditional_branch(oob, err_bb, ok_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(ok_bb);
+        let elem_llvm = self.llvm_basic_type(&elem);
+        let slot_ptr = unsafe {
+            self.builder
+                .build_gep(elem_llvm, data_ptr, &[idx], "array.get.slot")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+        };
+        let v = self
+            .builder
+            .build_load(elem_llvm, slot_ptr, "array.get.val")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(out_val_slot, v)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(join_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(err_bb);
+        let err_ptr = self.emit_index_error_alloc(
+            "out_of_bounds",
+            idx,
+            i64_t.const_int(len, false),
+        )?;
+        self.builder
+            .build_store(out_err_slot, err_ptr)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unconditional_branch(join_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.builder.position_at_end(join_bb);
+        Ok(Some(FallibleCallResult {
+            i1_path: oob,
+            out_val_slot: Some(out_val_slot),
+            out_err_slot,
+            success_ty: Some(elem),
+            payload_ty: CodegenTy::TypeRef("IndexError".into()),
+        }))
+    }
+
     pub(crate) fn try_lower_bounded_fallible_intrinsic(
         &mut self,
         name: &str,

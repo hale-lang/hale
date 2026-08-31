@@ -10829,6 +10829,37 @@ impl<'a> Checker<'a> {
                 _ => None,
             }
             }
+            // `get(i) -> T fallible(IndexError)` on the two
+            // type-level collections.
+            //
+            // Element chains desugar — before typecheck, so with no
+            // type to dispatch on — into a loop that fetches through
+            // the source's `get`. A `@form(vec)` is a locus and has
+            // that method; a fixed array and a `bounded[T; N]` are
+            // types, whose operations are grammar intrinsics
+            // (`at(f, i)`, `count(f)`), so the desugared loop hit
+            // "no field `get`" and chains simply could not anchor on
+            // them (downstream handoff: ~11 would-be sites in one
+            // fleet, ~44 hand-rolled walks across it).
+            //
+            // This is the one method-position operation on these
+            // types, and it exists so the chain source protocol is
+            // uniform across locus-form and type-level collections.
+            // Same signature and semantics as `at`, which stays the
+            // idiomatic spelling for a direct index.
+            Ty::Array(elem, _) | Ty::Bounded(elem, _)
+                if name == "get" =>
+            {
+                Some(Ty::Function {
+                    params: vec![Ty::Prim(PrimType::Int)],
+                    ret: Box::new(Ty::Fallible {
+                        success: elem.clone(),
+                        payload: Box::new(Ty::Named(
+                            "IndexError".into(),
+                        )),
+                    }),
+                })
+            }
             Ty::Unknown => Some(Ty::Unknown),
             _ => None,
         }
@@ -11957,39 +11988,18 @@ impl<'a> Checker<'a> {
                                     _ => {}
                                 }
                             }
-                            // Element chains desugar (pre-typecheck) to a
-                            // loop that fetches each element through the
-                            // source's `get` / `entry_at`. On a source form
-                            // that has neither — a fixed array or a
-                            // `bounded[T; N]` — the failure surfaces here as
-                            // a bare "no field `get`", with no hint that a
-                            // chain was even involved or which forms a chain
-                            // supports. Name it, so the reader doesn't have
-                            // to bisect the desugar (downstream handoff).
-                            let is_chain_accessor =
-                                name.name == "get" || name.name == "entry_at";
-                            let unsupported_chain_source = is_chain_accessor
-                                && matches!(
-                                    rt,
-                                    Ty::Array(..) | Ty::Bounded(..)
-                                );
-                            let hint = if unsupported_chain_source {
-                                format!(
-                                    " — if this is an element chain \
-                                     (`.filter(…).count()` and the like), \
-                                     `{}` is not a supported source form yet; \
-                                     chains anchor on a `@form(vec)` directly \
-                                     or a `@form(hashmap)` via `.entries`",
-                                    rt.display()
-                                )
-                            } else {
-                                crate::stdlib_surface::nearest_name(
-                                    &name.name,
-                                    candidates.iter().map(|s| s.as_str()),
-                                )
-                                .map(|s| format!(" — did you mean `{}`?", s))
-                                .unwrap_or_default()
-                            };
+                            // (An element-chain source that cannot
+                            // answer `get` used to be hinted here.
+                            // Both type-level collections answer it
+                            // now, so the hint was unreachable —
+                            // dead advice about a limitation that no
+                            // longer exists is worse than none.)
+                            let hint = crate::stdlib_surface::nearest_name(
+                                &name.name,
+                                candidates.iter().map(|s| s.as_str()),
+                            )
+                            .map(|s| format!(" — did you mean `{}`?", s))
+                            .unwrap_or_default();
                             self.diags.push(Diag::ty(
                                 *span,
                                 format!(

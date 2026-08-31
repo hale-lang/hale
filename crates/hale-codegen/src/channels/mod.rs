@@ -2119,6 +2119,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        // `src.get(i)` where src is a type-level collection (a fixed
+        // array or a `bounded[T; N]`) rather than a form locus. This
+        // is what the element-chain desugar emits, and it is checked
+        // before the locus resolution below because these receivers
+        // have no locus to resolve to — they used to fall straight
+        // into "fallible method call on non-locus value".
+        if let Some(result) =
+            self.try_lower_collection_get(receiver, method_name, args, scope)?
+        {
+            return Ok(result);
+        }
         let (info, self_ptr, locus_name) =
             if matches!(receiver, Expr::KwSelf(_)) {
                 let cs = self.current_self.as_ref().cloned().ok_or_else(

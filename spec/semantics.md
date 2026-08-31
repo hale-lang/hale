@@ -2422,6 +2422,28 @@ silently wrong comparison).
 | `reverse_into(target)` | push survivors, then swap ends inward on the caller's vec (2026-08-11) |
 | `group_count_into(target, key?)` | one hashmap `bump(key)` per survivor — increment-or-init tallying into the caller's `@form(hashmap)`; the bare form keys on the element itself (2026-08-11) |
 
+**Chain sources.** A chain rewrites to a loop that fetches each
+element through the source's `get(Int) -> T fallible(IndexError)`,
+so answering that name is exactly what makes a form chainable:
+
+| source | accessor |
+|---|---|
+| `@form(vec)` | its synthesized `get` |
+| `@form(hashmap)` via `.entries` | `entry_at`, same shape |
+| `[T; N]` | `get`, over all `N` slots |
+| `bounded[T; N]` | `get`, over the **live** slots (not capacity) |
+
+The two type-level collections are a deliberate exception to the
+types-have-no-methods axiom, and the only one: their operations are
+otherwise grammar intrinsics (`at(f, i)`, `count(f)`), and `at`
+remains the idiomatic spelling for a direct index. `get` exists so
+the chain source protocol is uniform, and is identical to `at` in
+signature and semantics — on `bounded` it *is* `at`.
+
+The rewrite happens post-parse, before typecheck, so it cannot
+dispatch on the source's type; a form that does not answer `get`
+fails with an ordinary no-method diagnostic at the chain's site.
+
 **Fallible terminals ride the source's own `get`.** `first` / `find`
 / `min` / `max` lower to an index search whose value is
 `src.get(idx)` — an empty result is the ordinary `IndexError`, so

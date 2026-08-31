@@ -435,7 +435,17 @@ count(f)         -> Int
 clear(f)                                          // len = 0
 truncate(f, n)   -> Int                           // len = clamp; returns it
 for x in f { }                                    // iterate live slots
+f.get(i)         -> T   fallible(IndexError)      // = at(f, i); see below
 ```
+
+`get` is the one operation in method position, and the same is true
+of `[T; N]`. Element chains rewrite to a loop that fetches through
+the source's `get`, so answering that name is what makes a form
+chainable at all — without it, `f.filter(…).count()` failed with
+"no field `get`" and the type-level collections could not anchor a
+chain. It is identical to `at` in signature and semantics (on
+`bounded` it *is* `at`, bounded by the live count rather than the
+capacity); `at` remains the idiomatic spelling for a direct index.
 
 Semantics:
 - Fields auto-initialize EMPTY. Literal init and whole-field
