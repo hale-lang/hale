@@ -57,7 +57,7 @@ locus Bank {
 
     on_failure(a: Account, err: Error) {
         match err {
-            Error::ClosureViolation(v) -> { quarantine(a) for 60s; },
+            Error::ClosureViolation(v) -> { quarantine(a); },
             _                          -> { bubble(err); },
         }
     }
@@ -69,10 +69,39 @@ The recovery primitives:
 - **absorb** — just return; the failure is noted and contained.
 - **`restart(child)`** — dissolve and re-create it fresh.
 - **`restart_in_place(child)`** — reset it, keeping its region.
-- **`quarantine(child) for d`** — pause it, preserving state for
-  inspection, optionally auto-restarting after `d`.
+- **`quarantine(child)`** — pause it, preserving state for
+  inspection.
 - **`bubble(err)`** — pass it up to *this* locus's parent.
 - **`dissolve(child)`** — force it down.
+
+### Saying how many times: `restart(child) for N`
+
+Restarting forever is rarely what you want. A child that fails
+for a structural reason will keep failing, and a supervisor that
+keeps retrying just turns a broken child into a busy loop.
+
+```hale,fragment
+on_failure(c: Book, err: ClosureViolation) {
+    restart(c) for 3;
+}
+```
+
+That gives this child three restarts. The fourth failure
+**quarantines** it instead: you said when to stop trying, so
+stopping means the child no longer runs. The count is per child
+and cumulative over its life, so a child that recovers keeps
+whatever budget it had left. `for 0` is a legitimate policy — do
+not restart this one at all.
+
+Write the bound here rather than counting failures by hand in the
+handler. Both do the same thing at runtime, but the declared form
+is the one the topology artifact records (`retry_bound`), so the
+policy you wrote and the restarts actually observed can be
+compared. A counter in a param is invisible to everything outside
+the handler.
+
+Without the modifier, `restart(child)` stops re-running after a
+default of two attempts and leaves the child live.
 
 If a failure bubbles past the root with no one absorbing it, the
 process exits non-zero with a structured report. That's the only

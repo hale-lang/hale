@@ -457,6 +457,24 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         let restart_count_field_idx = idx;
         llvm_field_tys.push(i64_t_struct.into());
         idx += 1;
+        // Synthetic `__restart_bound: i64` — how many restarts this
+        // child gets before the supervisor gives up on it.
+        //
+        // Initialized to the default cap (2) at instantiation, so a
+        // plain `restart(c)` behaves exactly as before. A
+        // `restart(c) for N` writes N here before restarting, which
+        // is what lets the declared bound govern the post-handler
+        // rerun check — that check was a hardcoded `count <= 2`, so
+        // without this a declared `for 5` would silently stop
+        // restarting after 2.
+        //
+        // A field rather than a baked constant because the bound is
+        // an expression, not necessarily a literal, and because the
+        // rerun check runs in `__birth_closures` — a different
+        // function from the handler that declared it.
+        let restart_bound_field_idx = idx;
+        llvm_field_tys.push(i64_t_struct.into());
+        idx += 1;
         // m41: synthetic `__quarantined: i64` flag, always
         // appended to every locus struct. Zero-initialized at
         // instantiation; set to 1 by the `quarantine(child)`
@@ -1158,6 +1176,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 child_cap_field_idx,
                 arena_field_idx,
                 restart_count_field_idx,
+                restart_bound_field_idx,
                 quarantined_field_idx,
                 restart_in_place_pending_field_idx,
                 drain_requested_field_idx,

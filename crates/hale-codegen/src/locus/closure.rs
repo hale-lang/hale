@@ -398,7 +398,27 @@ impl<'ctx, 'p> LocusClosure<'ctx> for Cx<'ctx, 'p> {
                     "restart.bumped",
                 )
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let cap = i64_t.const_int(2, false);
+            // The cap is the child's `__restart_bound`, not a baked
+            // constant: it seeds to DEFAULT_RESTART_BOUND and
+            // `restart(c) for N` overwrites it. Reading the field is
+            // what lets a declared bound above the default actually
+            // rerun that many times — as a literal `2` this silently
+            // stopped restarting after two, whatever the handler
+            // declared.
+            let cap_ptr = self
+                .builder
+                .build_struct_gep(
+                    cs_struct_ty,
+                    child_self,
+                    info.restart_bound_field_idx,
+                    "restart.bound.ptr",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let cap = self
+                .builder
+                .build_load(i64_t, cap_ptr, "restart.bound")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_int_value();
             let under_cap = self
                 .builder
                 .build_int_compare(

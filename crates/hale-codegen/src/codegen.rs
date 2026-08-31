@@ -5951,6 +5951,9 @@ pub(crate) struct LocusInfo<'ctx> {
     /// birth() + birth-epoch closures. Cap is 2 attempts per
     /// locus lifetime (v0 default).
     pub(crate) restart_count_field_idx: u32,
+    /// `__restart_bound`: restarts allowed before the supervisor
+    /// quarantines the child. Default 2; set by `restart(c) for N`.
+    pub(crate) restart_bound_field_idx: u32,
     /// m41: index of the synthetic `__quarantined: i64` flag.
     /// Always present (zero-init at instantiation). The
     /// `quarantine(child)` recovery primitive sets it to 1; the
@@ -17236,16 +17239,57 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Stmt::Block(b) => self.lower_block(b, scope),
             Stmt::Return(expr_opt, _) => self.lower_return(expr_opt.as_ref(), scope),
             Stmt::Recovery { op, args, modifier, .. } => {
-                if modifier.is_some() {
-                    return Err(CodegenError::Unsupported(
-                        "recovery modifier (for/until) not lowered".into(),
-                    ));
-                }
+                // `for N` bounds how many times this child is
+                // restarted; on the failure that exhausts it the
+                // supervisor quarantines instead. It is only
+                // meaningful on the restart ops — there is nothing to
+                // repeat about quarantining or bubbling.
+                let bound = match modifier {
+                    None => None,
+                    Some(RecoveryModifier::For(e)) => match op {
+                        RecoveryOp::Restart
+                        | RecoveryOp::RestartInPlace => Some(e),
+                        // `quarantine(c) for d` is a DIFFERENT
+                        // modifier — a duration after which the child
+                        // is automatically restarted (spec/semantics
+                        // § quarantine). Specified, never lowered;
+                        // say that rather than implying `for` belongs
+                        // only to restart.
+                        RecoveryOp::Quarantine => {
+                            return Err(CodegenError::Unsupported(
+                                "`quarantine(c) for d` (auto-restart \
+                                 after a duration) is specified but not \
+                                 lowered; `restart(c) for N` — a retry \
+                                 bound — is"
+                                    .into(),
+                            ))
+                        }
+                        other => {
+                            return Err(CodegenError::Unsupported(
+                                format!(
+                                    "`for` bounds how many times a child \
+                                     is restarted, so it does not apply \
+                                     to `{:?}`",
+                                    other
+                                ),
+                            ))
+                        }
+                    },
+                    Some(RecoveryModifier::Until(_)) => {
+                        return Err(CodegenError::Unsupported(
+                            "`until` (restart while a condition holds) is \
+                             not lowered; `for N` is"
+                                .into(),
+                        ))
+                    }
+                };
                 match op {
                     RecoveryOp::Bubble => self.lower_bubble_call(args, scope),
-                    RecoveryOp::Restart => self.lower_restart_call(args, scope),
+                    RecoveryOp::Restart => {
+                        self.lower_restart_call(args, bound, scope)
+                    }
                     RecoveryOp::RestartInPlace => {
-                        self.lower_restart_in_place_call(args, scope)
+                        self.lower_restart_in_place_call(args, bound, scope)
                     }
                     RecoveryOp::Quarantine => {
                         self.lower_quarantine_call(args, scope)
@@ -28614,9 +28658,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn lower_restart_call(
         &mut self,
         args: &[Expr],
+        bound: Option<&Expr>,
         scope: &Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
-        self.lower_restart_call_kind(args, scope, false)
+        self.lower_restart_call_kind(args, bound, scope, false)
     }
 
     /// m45: lower `restart_in_place(c);`. Same shape as
@@ -28629,14 +28674,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn lower_restart_in_place_call(
         &mut self,
         args: &[Expr],
+        bound: Option<&Expr>,
         scope: &Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
-        self.lower_restart_call_kind(args, scope, true)
+        self.lower_restart_call_kind(args, bound, scope, true)
     }
 
     fn lower_restart_call_kind(
         &mut self,
         args: &[Expr],
+        bound: Option<&Expr>,
         scope: &Scope<'ctx>,
         in_place: bool,
     ) -> Result<BlockEnd, CodegenError> {
@@ -28665,6 +28712,93 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .expect("LocusRef points to a declared locus");
         let child_ptr = val.into_pointer_value();
         let i64_t = self.context.i64_type();
+        // `restart(c) for N`: this child gets N restarts, and the
+        // failure that exhausts them quarantines it instead.
+        //
+        // The bound is recorded on the child before the branch,
+        // because the post-handler rerun check in `__birth_closures`
+        // reads it — the handler decides whether to restart, but a
+        // different function decides whether to re-run birth, and the
+        // two must agree on the same N.
+        //
+        // Compared BEFORE the bump: `__restart_count` is how many
+        // restarts have already happened, so `count < N` admits
+        // exactly N of them, and the (N+1)th failure quarantines.
+        let cont_bb = match bound {
+            None => None,
+            Some(expr) => {
+                let (nval, nty) = self.lower_expr(expr, scope)?;
+                if !matches!(nty, CodegenTy::Int) {
+                    return Err(CodegenError::Unsupported(format!(
+                        "`{} for N`: the bound must be an Int; got {:?}",
+                        kind, nty
+                    )));
+                }
+                let n = nval.into_int_value();
+                let rb_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        info.struct_ty,
+                        child_ptr,
+                        info.restart_bound_field_idx,
+                        "restart.bound.ptr",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder
+                    .build_store(rb_ptr, n)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let cnt_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        info.struct_ty,
+                        child_ptr,
+                        info.restart_count_field_idx,
+                        "restart.bound.count.ptr",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let cnt = self
+                    .builder
+                    .build_load(i64_t, cnt_ptr, "restart.bound.count")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_int_value();
+                let may_restart = self
+                    .builder
+                    .build_int_compare(
+                        inkwell::IntPredicate::SLT,
+                        cnt,
+                        n,
+                        "restart.bound.may",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let func = self
+                    .builder
+                    .get_insert_block()
+                    .and_then(|bb| bb.get_parent())
+                    .expect("inside a function");
+                let do_bb = self
+                    .context
+                    .append_basic_block(func, "restart.bound.restart");
+                let spent_bb = self
+                    .context
+                    .append_basic_block(func, "restart.bound.spent");
+                let join_bb = self
+                    .context
+                    .append_basic_block(func, "restart.bound.cont");
+                self.builder
+                    .build_conditional_branch(may_restart, do_bb, spent_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                // Bound spent: quarantine, exactly as `quarantine(c)`
+                // would — including the bus deregistration and the
+                // accumulator reset for the quarantine event.
+                self.builder.position_at_end(spent_bb);
+                self.emit_quarantine(&info, child_ptr, &locus_name)?;
+                self.builder
+                    .build_unconditional_branch(join_bb)
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.builder.position_at_end(do_bb);
+                Some(join_bb)
+            }
+        };
         let rc_ptr = self
             .builder
             .build_struct_gep(
@@ -28710,6 +28844,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.emit_accumulator_reset_for_event(
             &info, child_ptr, kind, &locus_name,
         )?;
+        // Rejoin the quarantine branch when a bound was declared, so
+        // whatever follows the recovery statement sees one successor.
+        if let Some(join_bb) = cont_bb {
+            self.builder
+                .build_unconditional_branch(join_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(join_bb);
+        }
         Ok(BlockEnd::Open)
     }
 
@@ -28750,6 +28892,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .cloned()
             .expect("LocusRef points to a declared locus");
         let child_ptr = val.into_pointer_value();
+        self.emit_quarantine(&info, child_ptr, &locus_name)?;
+        Ok(BlockEnd::Open)
+    }
+
+    /// The quarantine effect on an already-resolved child. Split out
+    /// of `lower_quarantine_call` so `restart(c) for N` can reach it
+    /// on the branch where the bound is spent — exhausting a declared
+    /// retry bound quarantines the child, and that must be the SAME
+    /// effect an explicit `quarantine(c)` has, not a near-copy.
+    fn emit_quarantine(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        child_ptr: inkwell::values::PointerValue<'ctx>,
+        locus_name: &str,
+    ) -> Result<(), CodegenError> {
         let i64_t = self.context.i64_type();
         let q_ptr = self
             .builder
@@ -28786,9 +28943,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // m46: zero each closure's accumulators unless its
         // `persists_through(...)` clause names "quarantine".
         self.emit_accumulator_reset_for_event(
-            &info, child_ptr, "quarantine", &locus_name,
+            info, child_ptr, "quarantine", locus_name,
         )?;
-        Ok(BlockEnd::Open)
+        Ok(())
     }
 
     /// m44: lower a `check_closures();` builtin call. Fires

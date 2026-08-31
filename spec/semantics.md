@@ -2841,12 +2841,34 @@ torn read possible.
 
 ## Recovery primitives
 
-### `restart(child)`
+### `restart(child)` / `restart(child) for N`
 
 1. Schedule child for dissolution.
 2. Once dissolved, instantiate a new child with the same
    declared params.
 3. New child's birth runs; old child's state is gone.
+
+**The retry bound.** `restart(c) for N` gives this child at most
+`N` restarts. The count is per child instance and cumulative over
+its lifetime, and it is compared *before* the restart, so `for N`
+admits exactly `N` restarts and the failure that follows the last
+one **quarantines** the child instead — the supervisor tried `N`
+times and is done with it. `for 0` is meaningful and quarantines
+on the first failure without restarting.
+
+Exhaustion quarantines rather than falling through: a bounded
+supervisor has stated when to stop, and stopping means the child
+does not run. This is the difference from an unbounded
+`restart(c)`, which stops re-running at the default cap of 2 but
+leaves the child live.
+
+`N` is an expression, evaluated at the recovery site. Without the
+modifier the bound is the default 2, so an unbounded `restart(c)`
+is unchanged.
+
+The bound is recorded in the topology artifact as `retry_bound`
+on the supervision row (schema 1.10), so the declared policy and
+the observed restarts are comparable.
 
 ### `restart_in_place(child)`
 
@@ -2868,6 +2890,14 @@ fine; just had a bad message).
 2. Preserve arena and state.
 3. If `for d` clause given, automatically restart after `d`.
 4. Otherwise wait until parent explicitly resolves.
+
+**Not lowered:** the `for d` duration clause. `quarantine(c)`
+itself ships; `quarantine(c) for d` is refused by codegen. Note
+that this `for` is a *duration* before an automatic restart — a
+different modifier from `restart(c) for N`, which is a retry
+count.
+
+Also not lowered: the `until` modifier on any recovery op.
 
 ### `reorganize(child, ...)`
 

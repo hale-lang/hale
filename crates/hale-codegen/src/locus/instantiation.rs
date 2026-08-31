@@ -2480,6 +2480,27 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
         self.builder
             .build_store(rc_ptr, zero)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // Init `__restart_bound` to the DEFAULT cap, so a locus
+        // supervised by a plain `restart(c)` keeps exactly its
+        // previous behaviour. `restart(c) for N` overwrites this
+        // before restarting.
+        let rb_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                self_ptr,
+                info.restart_bound_field_idx,
+                &format!("{}.__restart_bound.ptr", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(
+                rb_ptr,
+                self.context
+                    .i64_type()
+                    .const_int(crate::DEFAULT_RESTART_BOUND, false),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         // m41: zero-init the synthetic __quarantined flag.
         let q_ptr = self
             .builder
