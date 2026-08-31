@@ -906,6 +906,7 @@ crates/hale-codegen/tests/replay_recording.rs#1 1f253806d6a36078
 crates/hale-codegen/tests/replay_truncated.rs#0 c2a81f93ab151f59
 crates/hale-codegen/tests/replica_keys.rs#0 3339627819e66a48
 crates/hale-codegen/tests/replica_keys.rs#1 27ea505efcac4821
+crates/hale-codegen/tests/restart_bound.rs#1 d4dabe7a57f79bfa
 crates/hale-codegen/tests/self_field_alias.rs#0 cc87392098879459
 crates/hale-codegen/tests/self_field_alias.rs#1 cc87392098879459
 crates/hale-codegen/tests/self_field_alias.rs#2 00a0c7a19f9e4446

@@ -6,6 +6,42 @@ behavior.
 
 ---
 
+## Unreleased
+
+### `restart(c) for N` lowers, and exhausting it quarantines
+
+The retry-bound modifier checked and modelled — the topology
+artifact has carried `retry_bound` on the supervision row since
+schema 1.10 — but codegen refused it: "unsupported in codegen v0:
+recovery modifier (for/until) not lowered". So the policy a consumer
+was told it could read, "declared cap 3, observed 3 in 40s", was
+unshippable, because no program stating the bound could be built
+(downstream handoff). The workaround was to count failures in the
+handler by hand, which states the same policy somewhere nothing can
+read it.
+
+`restart(c) for N` and `restart_in_place(c) for N` now lower. The
+bound is per child instance and cumulative over its lifetime, and it
+is compared before the restart, so `for N` admits exactly N restarts
+and the next failure **quarantines** the child — a bounded
+supervisor said when to stop, and stopping means the child does not
+run. `for 0` is meaningful: do not restart this one. `N` is an
+expression, not just a literal.
+
+The bound had to become visible to the post-handler rerun check in
+`__birth_closures`, which was a hardcoded `count <= 2`: a declared
+`for 5` would otherwise have silently stopped restarting after two.
+Every locus now carries a `__restart_bound` field seeded to that
+default, so an unbounded `restart(c)` keeps exactly its previous
+behaviour — including that it does NOT quarantine.
+
+Two neighbouring modifiers stay unlowered and now say so precisely
+rather than sharing one generic refusal: `quarantine(c) for d` (a
+duration before an automatic restart — a different `for` from the
+retry count) and `until` on any op. `spec/semantics.md` and the
+failure chapter marked both, and the docs stopped advertising
+`quarantine(child) for d` as if it worked.
+
 ## v0.18.0 — the canonical model (2026-08-30)
 
 ### A computed publish subject is confined to its declaration

@@ -119,7 +119,8 @@ precedence table. They appear in the form:
 
 ```
 restart(child);
-quarantine(child) for 30s;
+restart(child) for 3;
+quarantine(child);
 bubble(err);
 violate fatal_io;             // F.27, v1.x-VIOLATE
 violate fatal_io with detail; // optional payload

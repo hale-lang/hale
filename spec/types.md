@@ -916,7 +916,8 @@ or error value as argument:
 
 ```
 restart(child);
-quarantine(child) for 30s;
+restart(child) for 3;
+quarantine(child);
 bubble(err);
 ```
 

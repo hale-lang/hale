@@ -30,6 +30,15 @@
 //! lowered.
 
 pub(crate) mod bus;
+/// Restarts a supervised child gets before its supervisor gives up,
+/// when the `on_failure` handler does not say. `restart(c) for N`
+/// overrides it per child.
+///
+/// Was a bare `2` inline in the post-handler rerun check; named here
+/// because two places have to agree — the instantiation that seeds
+/// `__restart_bound` and the check that reads it.
+pub const DEFAULT_RESTART_BOUND: u64 = 2;
+
 pub mod deployment;
 pub(crate) mod channels;
 pub mod codegen;
