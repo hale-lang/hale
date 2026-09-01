@@ -8,6 +8,34 @@ behavior.
 
 ## Unreleased
 
+### HTTP route matching is ~4x cheaper
+
+`__http_match_pattern_into` counted segments in both strings and then
+walked them pairwise — and `__http_seg_at` re-scans from the start and
+allocates a substring, twice per segment. On a route table nearly
+every candidate is a miss, so the whole walk was paid to discover
+that.
+
+Every segment before a pattern's first `:` is literal, so a match
+requires that text to prefix the path. Testing it first — before the
+two segment counts, which scan both strings end to end — rejects a
+miss in one comparison.
+
+Measured over 200k requests, worst case (the request matches the last
+route): 390 -> 91 ns per candidate route; 39.1 -> 9.8 us per request
+at 100 routes; 2.1 -> 1.1 us at five. Both the `Router` and the
+`is_route` ladder go through this matcher, so both benefit.
+
+Behaviour is unchanged, and now pinned: trailing-slash tolerance on
+both sides, a literal head that prefixes without matching segments,
+count mismatches, captures, and the capture-clearing an `if`-ladder
+depends on. The first version of the prefilter broke trailing-slash
+tolerance on the pattern side and nothing in the suite noticed, which
+is why those cases exist.
+
+The remaining cost is that matching is still linear in the route
+count — see GH #509.
+
 ### Element chains take fixed arrays and `bounded[T; N]`
 
 `self.probes.filter(it.live).count()` over a `[Probe; 16]` failed with
