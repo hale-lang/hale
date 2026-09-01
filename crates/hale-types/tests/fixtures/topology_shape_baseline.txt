@@ -808,7 +808,6 @@ crates/hale-codegen/tests/nested_long_lived_child.rs#1 a79d0bb96c962178
 crates/hale-codegen/tests/nested_long_lived_child.rs#2 e700cea2b0470259
 crates/hale-codegen/tests/nested_long_running_child.rs#2 1e551372d2bca719
 crates/hale-codegen/tests/nested_long_running_child.rs#3 97f5fab961ae8fb0
-crates/hale-codegen/tests/nested_long_running_child.rs#4 4e57685954b4782b
 crates/hale-codegen/tests/nested_struct_bus_payload.rs#0 03313d72623aa0d5
 crates/hale-codegen/tests/nested_struct_bus_payload.rs#1 9829a98896fec443
 crates/hale-codegen/tests/noalias_self.rs#0 c48db3a4a7ec3bdf
@@ -1211,16 +1210,13 @@ crates/hale-types/tests/call_arity.rs#4 a7b8a9fb4144cb0b
 crates/hale-types/tests/callgraph_witness.rs#0 2c8a176eca798985
 crates/hale-types/tests/claim_judgment_gating.rs#10 a251233ff9ad4297
 crates/hale-types/tests/claim_lowering.rs#10 24f90bce01bf8af1
-crates/hale-types/tests/claim_lowering.rs#11 8d95b6ed57982b91
 crates/hale-types/tests/claim_lowering.rs#12 a464286d577685cc
 crates/hale-types/tests/claim_lowering.rs#13 602bfcf3f23c2d7e
-crates/hale-types/tests/claim_lowering.rs#14 7d5cf57defcf548e
 crates/hale-types/tests/claim_lowering.rs#15 2993cd9ff818eaf7
 crates/hale-types/tests/claim_lowering.rs#3 5b19cc4370a72a2f
 crates/hale-types/tests/claim_lowering.rs#5 5b19cc4370a72a2f
 crates/hale-types/tests/claim_lowering.rs#6 682fe3e4b4732f10
 crates/hale-types/tests/claim_lowering.rs#7 9987dee9f11ab32a
-crates/hale-types/tests/claim_lowering.rs#8 7d5cf57defcf548e
 crates/hale-types/tests/claims.rs#3 f4ba76eddb2d96a0
 crates/hale-types/tests/claims.rs#7 4a1a06feb78b1e1b
 crates/hale-types/tests/claims_edges.rs#0 590768d388f3558f
@@ -1236,6 +1232,11 @@ crates/hale-types/tests/contract_expose_check.rs#3 5406bf60d39ac690
 crates/hale-types/tests/contract_expose_check.rs#5 68571438548b5b78
 crates/hale-types/tests/depends_set.rs#1 e6d019967d07bc80
 crates/hale-types/tests/depends_set.rs#2 7eb747ab2594f71d
+crates/hale-types/tests/diag_quality.rs#10 b6f5c37a20862edb
+crates/hale-types/tests/diag_quality.rs#11 b6f5c37a20862edb
+crates/hale-types/tests/diag_quality.rs#12 b6f5c37a20862edb
+crates/hale-types/tests/diag_quality.rs#13 b6f5c37a20862edb
+crates/hale-types/tests/diag_quality.rs#14 46c1063d3d86a7e2
 crates/hale-types/tests/diag_quality.rs#2 865d341109268295
 crates/hale-types/tests/diag_quality.rs#5 d6325a0b5e9d93db
 crates/hale-types/tests/diag_quality.rs#6 9340303665f67845
@@ -1298,7 +1299,6 @@ crates/hale-types/tests/judgment_certificates.rs#19 90cf07ed4e7abad7
 crates/hale-types/tests/judgment_certificates.rs#3 81c7c78c39f07b5d
 crates/hale-types/tests/judgment_certificates.rs#6 5b19cc4370a72a2f
 crates/hale-types/tests/judgment_certificates.rs#7 5b19cc4370a72a2f
-crates/hale-types/tests/judgment_certificates.rs#9 7d5cf57defcf548e
 crates/hale-types/tests/judgment_depends.rs#12 5e52e14006660555
 crates/hale-types/tests/judgment_depends.rs#2 4ebcead20c253595
 crates/hale-types/tests/judgment_depends.rs#4 57b3e718f9ba2b13
@@ -1326,7 +1326,6 @@ crates/hale-types/tests/model_builder.rs#10 93de17504f35f3b9
 crates/hale-types/tests/model_builder.rs#11 199146dcdfc4cd48
 crates/hale-types/tests/model_builder.rs#12 14a24ece9d3c61e7
 crates/hale-types/tests/model_builder.rs#13 2327a382bb6673fa
-crates/hale-types/tests/model_builder.rs#14 7d5cf57defcf548e
 crates/hale-types/tests/model_builder.rs#15 37db42879cb43bd9
 crates/hale-types/tests/model_builder.rs#18 f7bc90fa5e60e4b6
 crates/hale-types/tests/model_builder.rs#22 37db42879cb43bd9
@@ -1428,7 +1427,6 @@ crates/hale-types/tests/topology_projection.rs#0 c648d9a25650dde3
 crates/hale-types/tests/topology_projection.rs#1 8e795754137e723b
 crates/hale-types/tests/topology_projection.rs#10 c2f0895d9c4fdb8c
 crates/hale-types/tests/topology_projection.rs#11 ea2784cedf7fb3c4
-crates/hale-types/tests/topology_projection.rs#12 7d5cf57defcf548e
 crates/hale-types/tests/topology_projection.rs#13 098d8448db3393fd
 crates/hale-types/tests/topology_projection.rs#14 4df27a79ef60a7b9
 crates/hale-types/tests/topology_projection.rs#3 86ad0bb6f3d1fcae

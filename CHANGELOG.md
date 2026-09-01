@@ -8,6 +8,45 @@ behavior.
 
 ## Unreleased
 
+### Locus param defaults are typechecked
+
+They were not. `check_locus_member` skipped the `params` block with a
+comment claiming defaults "are checked against declared types
+implicitly when the param is referenced" — they were not, so this
+passed `hale check`:
+
+    locus L { params { n: Int = "nope"; } }
+
+and failed in codegen, which the checker was better placed to
+report. Same for a default naming something that does not exist, and
+for a locus literal omitting a required param.
+
+Found writing an HTTP example: `handler: u` referencing a sibling
+param checked clean and then failed to build with "unknown
+identifier `u`" and no source location.
+
+A bare name in a default resolves to top-level CONST scope, not to
+sibling params — with a `const n` and a param `n`, a default written
+`n` takes the const. So an unresolved bare name is a genuine unknown
+identifier, and the diagnostic now says the spelling that reaches a
+sibling:
+
+    param `b`: unknown identifier `a` in its default — `a` is another
+    param of this locus; a default reaches one through `self.a`
+
+The coercions a default may rely on are preserved: Int literal into
+a Float param, String into StringView, Bytes into BytesView, a locus
+into a param typed as the perspective it serves, and a template
+literal into a param typed as its generic monomorph (`b: Box<Int> =
+Box { value: 0 }`). Each of those is a corpus program that a naive
+check rejects; each has a test.
+
+Seven harvested corpus fragments stop being check-clean. All are
+single-seed slices of multi-seed tests, referencing types their
+sibling seed declares, so they were never buildable standalone —
+they were admitted only because defaults went unchecked. The tests
+themselves are unaffected.
+
 ### HTTP route matching is ~4x cheaper
 
 `__http_match_pattern_into` counted segments in both strings and then
