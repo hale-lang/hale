@@ -1,5 +1,47 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1196" height="422" viewBox="0 0 1196 422" font-family="monospace" font-size="13">
-<rect x="0" y="0" width="1196" height="422" fill="#ffffff"/>
+<svg xmlns="http://www.w3.org/2000/svg" class="hale-topo" width="1196" height="422" viewBox="0 0 1196 422" font-family="monospace" font-size="13">
+<style>
+@media (prefers-color-scheme: dark){
+.hale-topo [fill="#ffffff"]{fill:#0d1117}
+.hale-topo [stroke="#ffffff"]{stroke:#0d1117}
+.hale-topo [fill="#f7fafc"]{fill:#161b22}
+.hale-topo [stroke="#f7fafc"]{stroke:#161b22}
+.hale-topo [fill="#ebf8ff"]{fill:#12243a}
+.hale-topo [stroke="#ebf8ff"]{stroke:#12243a}
+.hale-topo [fill="#f0fff4"]{fill:#0f2417}
+.hale-topo [stroke="#f0fff4"]{stroke:#0f2417}
+.hale-topo [fill="#fff5f5"]{fill:#2a1215}
+.hale-topo [stroke="#fff5f5"]{stroke:#2a1215}
+.hale-topo [fill="#fffff0"]{fill:#241f0d}
+.hale-topo [stroke="#fffff0"]{stroke:#241f0d}
+.hale-topo [fill="#1a202c"]{fill:#e6edf3}
+.hale-topo [stroke="#1a202c"]{stroke:#e6edf3}
+.hale-topo [fill="#2d3748"]{fill:#c9d1d9}
+.hale-topo [stroke="#2d3748"]{stroke:#c9d1d9}
+.hale-topo [fill="#4a5568"]{fill:#8b949e}
+.hale-topo [stroke="#4a5568"]{stroke:#8b949e}
+.hale-topo [fill="#718096"]{fill:#6e7681}
+.hale-topo [stroke="#718096"]{stroke:#6e7681}
+.hale-topo [fill="#2f855a"]{fill:#3fb950}
+.hale-topo [stroke="#2f855a"]{stroke:#3fb950}
+.hale-topo [fill="#6b46c1"]{fill:#bc8cff}
+.hale-topo [stroke="#6b46c1"]{stroke:#bc8cff}
+.hale-topo [fill="#c53030"]{fill:#f85149}
+.hale-topo [stroke="#c53030"]{stroke:#f85149}
+.hale-topo [fill="#d69e2e"]{fill:#d29922}
+.hale-topo [stroke="#d69e2e"]{stroke:#d29922}
+.hale-topo [fill="#2b6cb0"]{fill:#58a6ff}
+.hale-topo [stroke="#2b6cb0"]{stroke:#58a6ff}
+.hale-topo [fill="#b7791f"]{fill:#e3b341}
+.hale-topo [stroke="#b7791f"]{stroke:#e3b341}
+.hale-topo [fill="#22543d"]{fill:#7ee787}
+.hale-topo [stroke="#22543d"]{stroke:#7ee787}
+.hale-topo [fill="#742a2a"]{fill:#ffa198}
+.hale-topo [stroke="#742a2a"]{stroke:#ffa198}
+.hale-topo [fill="#744210"]{fill:#f2cc60}
+.hale-topo [stroke="#744210"]{stroke:#f2cc60}
+}
+</style>
+<rect class="bg" x="0" y="0" width="1196" height="422" fill="#ffffff"/>
 <text x="90" y="18" font-size="15" font-weight="bold" fill="#1a202c">topology · system view</text>
 <text x="90" y="36" fill="#718096">schema 1.17 · shape e7e11084cc75bf03 · verdict clean</text>
 <path d="M 344 97 C 414 97, 414 163, 484 163" fill="none" stroke="#2f855a" stroke-width="1.5"/>
