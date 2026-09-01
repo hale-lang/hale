@@ -48,7 +48,9 @@ pub enum KeyValue {
 /// catch-unmatched subscriber).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct TopicKey {
+    /// The payload field carrying the routing key.
     pub field: String,
+    /// What happens to a cell whose key matches no subscription.
     pub on_unmatched: KeyOnUnmatched,
 }
 
@@ -130,6 +132,7 @@ pub enum Capacity {
 pub struct TopicBound {
     /// Must be > 0; validate rejects `0`.
     pub capacity: u64,
+    /// What happens when the bound is reached.
     pub on_full: TopicOnFull,
 }
 

@@ -6,11 +6,13 @@ on:
     paths:
       - "docs/**"
       - "play/**"
+      - "crates/hale-model/**"
       - ".github/workflows/docs.yml"
   pull_request:
     paths:
       - "docs/**"
       - "play/**"
+      - "crates/hale-model/**"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
@@ -64,6 +66,27 @@ jobs:
 
       - name: Build docs
         run: mdbook build docs
+
+      # The model's API reference. `spec/model.md` is the contract and
+      # the book chapter is the explanation; neither says what a given
+      # field holds, and that answer lived only in the source — so a
+      # consumer reading artifacts had to clone the compiler to look
+      # up a row.
+      #
+      # Runs on PRs too, unlike the playground below: hale-model is
+      # deliberately dependency-free, so this is a sub-second build
+      # with no LLVM and no toolchain install. `-D warnings` makes a
+      # broken intra-doc link fail here rather than ship as a dead
+      # link on the site.
+      - name: Build the model API reference
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps -p hale-model
+
+      - name: Stage the API reference under the docs site (/api)
+        run: |
+          mkdir -p docs/book/api
+          cp -r target/doc/. docs/book/api/
 
       # --- playground: compile the examples + the Hale UI to wasm ---
       # Heavy (LLVM 18 + a compiler build), so skip it on PRs — it runs

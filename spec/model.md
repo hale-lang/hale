@@ -363,9 +363,12 @@ that no other table holds:
 Absorption is kept as a **graph**, not a flattened summary, and its
 grain matters twice over. One `StdlibAbsorption` row is one
 authored entry site (with `entry_group` marking alternatives of one
-dispatch); its `nodes` form an interior graph whose call events
-carry their own dispatch groups and can target either another
-interior node or a user re-emergence. An interior can publish —
+dispatch); its `nodes` are `AbsorbedNode`s forming an interior
+graph, each carrying `AbsorbedEvent`s in walk order — a `Call`
+(with its own dispatch group, targeting an `AbsorbedTarget`: another
+interior node or a user re-emergence), a `Publish`, or one of the
+three residues: `CallHole`, `PublishHole`, `Truncated`. An interior
+can publish —
 `std::log::Logger.info` computes `log.<path>` and sends from inside
 its own body — so a consumer reading only `relations.publishes`
 misses real publishers.
@@ -540,6 +543,81 @@ property a consumer of this model is entitled to rely on.
    `Function::display` the demangled author spelling; joins take
    the former.
 9. **Move the semantics version when results move.**
+
+## The type inventory
+
+Everything above describes how the model *behaves*. This is what it
+*contains*: every public type, so nothing in the crate is
+reachable-but-undescribed.
+
+Field-level documentation is the rustdoc — every public field
+carries a doc comment, and a test fails if one lands without. It is
+published with the book at **`/api/hale_model`**, so reading a row
+does not require cloning the compiler.
+
+**`application`** — the model itself and its sidecars.
+`ApplicationModel`, `ModelHeader`, `ModelHashKind`, `Entities`,
+`Relations`, `Analyses`, `LabelRow`, `WeightRow`, `ModelError`.
+Absorption: `StdlibAbsorption`, `AbsorbedNode`, `AbsorbedEvent`,
+`AbsorbedTarget`, `AbsorbedHoleKind`. Evidence: `EvidenceTable`,
+`EvidenceRow`, `CertificateEvidence`, `VerdictIr`. Plus
+`DispatchGate`.
+
+**`entity`** — the fifteen sorts. `Function`, `FunctionKind`,
+`LocusDecl`, `LocusParam`, `LocusInstance`, `Topic`, `Subject`,
+`PayloadContract`, `Phase`, `Seed`, `ThreadDomain`, `Binding`,
+`BindingRole`, `TransportKind`, `Group`, `TypeDecl`,
+`InterfaceDecl`, `EffectClassDecl`, `EffectClassDefinition`,
+`Declaration`, `DeclKind`.
+
+**`relation`** — the seventeen relation row types. Structure:
+`MemberOf`, `PhaseOf`, `DeclaredIn`, `Realizes`, `Owns`. Behaviour:
+`Call`, `DispatchKind`, `DeadInterfaceCall`, `Publish`,
+`Subscribe`, `DeclaresPublish`. Placement: `PlacedIn`, `AffinedTo`,
+`CoreSet`. Wiring: `TopicBinding`. Supervision: `Supervises`,
+`SupervisedRef`, `SupervisionPolicy`. Groups: `GroupMember`,
+`GroupSelector`, `SelectorForm`. Cost: `CostSite`,
+`CostDimension`.
+
+**`keys`** — delivery's typed vocabulary. `KeyDomain`, `KeyValue`,
+`KeyPredicate`, `TopicKey`, `KeyOnUnmatched`, `PublishDisposition`,
+`Capacity`, `ShedPolicy`, `TopicBound`, `TopicOnFull`,
+`BindingLossBehavior`.
+
+**`claim_ir`** — lowered law. `ClaimIrTable`, `ClaimRow`,
+`ClaimIr`, `ClaimOrigin`, `ClaimIrError`, `LoweringIssue`.
+Operands: `NameRef`, `GroupRef`, `TopicIrRef`, `PhaseIrRef`,
+`SeedIrRef`, `EffectClassRef`, `BusSelector`, `GrantIr`, `SetIr`,
+`CountCmpIr`, `QuantDimIr`.
+
+**`hole`** — `Hole`, `HoleKind`, `RelationSet`.
+
+**`capability`** — `Capabilities`.
+
+**`provenance`** — `Provenance`, `ProvenanceTable`, `SourceUnit`.
+
+**`ids`** — the newtype ids and `EntityRef`. A row's id is its
+index in its own table.
+
+**`dispatch_plan`** — `DispatchPlan`, `SubjectPlan`,
+`DispatchFlavor`. Conclusions derived from the model, never
+authored facts.
+
+**`obs_ids`** — `ObsEntityId`, `ObsEntityKind`, the join back from
+an observed record to a model row.
+
+Three of these are easy to mistake for each other, and the
+difference is load-bearing:
+
+- `GroupMember` is resolved membership; `GroupSelector` is the
+  authored selector list. `{ lib::* }` and `{ lib::A, lib::B }` can
+  resolve identically and must still hash differently.
+- `Publish` is a send expression; `DeclaresPublish` is the declared
+  endpoint. A locus that declares an end and never sends still
+  publishes in the endpoint sense.
+- `Call`'s `DispatchKind` is the *fact* of the mechanism;
+  `DispatchFlavor` in the lowering plan is the *conclusion* drawn
+  from it.
 
 ## Known boundaries
 

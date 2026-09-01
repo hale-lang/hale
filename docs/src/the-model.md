@@ -168,3 +168,6 @@ The contract — sorts, relations, the hole and capability laws, the
 identity rules, and the discipline a new judgment family follows —
 is in
 [`spec/model.md`](https://github.com/hale-lang/hale/blob/main/spec/model.md).
+
+For what an individual row holds, field by field, the API reference
+is at [`/api/hale_model`](api/hale_model/index.html).
