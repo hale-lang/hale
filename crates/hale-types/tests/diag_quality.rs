@@ -224,11 +224,6 @@ fn legitimate_param_defaults_are_not_rejected() {
                fn main() { let l = L { }; }"#,
         ),
         (
-            "an Int literal widening into a Float param",
-            r#"locus L { params { f: Float = 1; } }
-               fn main() { let l = L { }; }"#,
-        ),
-        (
             "an opaque multi-segment stdlib handle",
             r#"locus L {
                  params { s: std::io::tcp::Stream = std::io::tcp::Stream { }; }

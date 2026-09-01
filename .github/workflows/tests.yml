@@ -330,6 +330,26 @@ jobs:
       - name: cargo build --release --workspace
         run: cargo build --release --workspace
 
+      - name: check/build agreement over the embedded corpus
+        # `hale check` accepting what `hale build` refuses is the
+        # worst failure mode the toolchain has: the error arrives
+        # late, from another layer, usually without a span, and it
+        # tells the author their working program is broken. Three
+        # were found by accident in one afternoon; all three lived in
+        # the ~1300 programs embedded in Rust test strings, which
+        # were typechecked but never compiled (the 92 file fixtures
+        # ARE compiled, by corpus_oracle below).
+        #
+        # A ratchet against a recorded baseline: a NEW divergence
+        # fails, and so does a FIXED one, so the list cannot rot.
+        # #[ignore]'d like the sweeps below since it compiles ~1300
+        # programs (~80s); --ignored opts in. Folded into this job to
+        # reuse the release build above.
+        run: |
+          cargo test --release -p hale-codegen \
+            --test corpus_check_build_agreement \
+            -- --ignored --nocapture
+
       - name: LOTUS_ASAN=1 cargo test (corpus_oracle under ASAN)
         # #[ignore]'d like the tsan suite; --ignored opts in.
         # LOTUS_ASAN=1 tells build_executable to pass
