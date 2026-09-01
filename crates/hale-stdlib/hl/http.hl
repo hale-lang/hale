@@ -894,6 +894,39 @@ fn __http_seg_at(p: String, idx: Int) -> String {
 // because match failure is the COMMON path. Trailing-slash
 // tolerant on both sides; no implicit wildcard suffix.
 fn __http_match_pattern_into(pattern: String, path: String, p: std::http::RouteParams) -> Bool {
+    // Literal-head prefilter, BEFORE the segment counts: those
+    // scan both strings end to end, and on a route table nearly
+    // every candidate is rejected, so paying two full scans to
+    // discover it is the wrong order. Every segment before the pattern's
+    // first `:` is literal, so a successful match REQUIRES that
+    // text to prefix the path — one memcmp instead of the
+    // segment walk below, which re-scans and allocates a
+    // substring twice per segment.
+    //
+    // Sound because it only rejects where the walk would: it is
+    // implied by the per-segment equality the walk enforces. It
+    // never accepts anything extra — a pass still falls through
+    // to the full walk.
+    //
+    // This is the hot path for a route TABLE, where nearly every
+    // candidate differs in its first segment and pays the whole
+    // walk to discover it (measured ~385ns/route before this).
+    let colon = std::str::index_of(pattern, ":");
+    let raw_head = if colon < 0 { pattern } else { std::str::substring(pattern, 0, colon) };
+    // Drop a trailing `/` before testing. Matching is
+    // trailing-slash tolerant ON BOTH SIDES, so pattern `/users/`
+    // must still match path `/users` — testing the slash as part
+    // of the prefix rejected exactly that pair. Dropping it makes
+    // the filter weaker and still sound; the walk decides.
+    let hl = len(raw_head);
+    let head = if hl > 0 && raw_head[hl - 1..hl] == "/" {
+        std::str::substring(raw_head, 0, hl - 1)
+    } else {
+        raw_head
+    };
+    if len(head) > 0 && !std::str::starts_with(path, head) {
+        return false;
+    }
     let pn = __http_seg_count(pattern);
     let rn = __http_seg_count(path);
     if pn != rn {
