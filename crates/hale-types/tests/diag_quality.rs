@@ -157,3 +157,102 @@ fn a_real_field_typo_still_gets_did_you_mean_not_the_chain_hint() {
         ds
     );
 }
+
+/// Locus param defaults are typechecked.
+///
+/// They were not. `check_locus_member` skipped the `Params` block
+/// with a comment claiming defaults "are checked against declared
+/// types implicitly when the param is referenced" — they weren't, so
+/// a mistyped or unresolvable default passed `hale check` and failed
+/// in codegen, which is a check/build divergence on one of the most
+/// common things in a Hale program.
+///
+/// Found while writing an HTTP example: `handler: u` referencing a
+/// sibling param checked clean and then failed to build with
+/// "unknown identifier `u`" and no location.
+#[test]
+fn a_param_default_is_typechecked() {
+    // A bare name resolves to top-level CONST scope, not to sibling
+    // params — verified by giving a const and a param the same name
+    // and observing the const win. So this is a genuine unknown
+    // identifier, and the diagnostic should say the spelling that
+    // works rather than leaving the reader to guess.
+    let ds = diags(
+        r#"
+        locus I { params { n: Int = 0; } }
+        locus L { params { a: I = I { }; b: I = a; } }
+        fn main() { let l = L { }; }
+    "#,
+    );
+    assert!(
+        ds.iter().any(|d| d.contains("unknown identifier `a`")
+            && d.contains("self.a")),
+        "should name the sibling and the working spelling: {:?}",
+        ds
+    );
+
+    // Declared-vs-default type mismatch.
+    let ds = diags(
+        r#"
+        locus L { params { n: Int = "nope"; } }
+        fn main() { let l = L { }; }
+    "#,
+    );
+    assert!(
+        ds.iter()
+            .any(|d| d.contains("declared `Int`") && d.contains("`String`")),
+        "{:?}",
+        ds
+    );
+}
+
+/// The shapes that must keep working — each of these is a way a
+/// default legitimately reaches a value, and a naive check rejects
+/// at least one of them.
+#[test]
+fn legitimate_param_defaults_are_not_rejected() {
+    for (what, src) in [
+        (
+            "self.<sibling>",
+            r#"locus L { params { n: Int = 1; m: Int = self.n; } }
+               fn main() { let l = L { }; }"#,
+        ),
+        (
+            "a top-level const",
+            r#"const B: Int = 7;
+               locus L { params { n: Int = B; } }
+               fn main() { let l = L { }; }"#,
+        ),
+        (
+            "an Int literal widening into a Float param",
+            r#"locus L { params { f: Float = 1; } }
+               fn main() { let l = L { }; }"#,
+        ),
+        (
+            "an opaque multi-segment stdlib handle",
+            r#"locus L {
+                 params { s: std::io::tcp::Stream = std::io::tcp::Stream { }; }
+               }
+               fn main() { let l = L { }; }"#,
+        ),
+        (
+            // The corpus's perspective fixtures do exactly this, and
+            // plain assignability does not know about `serves`.
+            "a locus serving the perspective the param is typed as",
+            r#"perspective P { fn go(); }
+               locus V1 : serves P { fn go() { } }
+               locus L { params { p: P = V1 { }; } }
+               fn main() { let l = L { }; }"#,
+        ),
+    ] {
+        let ds = diags(src);
+        let param_errs: Vec<&String> =
+            ds.iter().filter(|d| d.contains("param `")).collect();
+        assert!(
+            param_errs.is_empty(),
+            "{} must be accepted: {:?}",
+            what,
+            param_errs
+        );
+    }
+}

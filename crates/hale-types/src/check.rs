@@ -8650,11 +8650,140 @@ impl<'a> Checker<'a> {
 
     fn check_locus_member(&mut self, member: &'a LocusMember) {
         match member {
-            LocusMember::Params(_) | LocusMember::Contract(_) | LocusMember::Bus(_) => {
-                // Already lowered by resolver; param defaults are
-                // checked against declared types implicitly when
-                // the param is referenced. (Milestone-2 cut: no
-                // default-vs-declared-type re-check here.)
+            LocusMember::Params(pb) => {
+                // Param defaults ARE typechecked. The Milestone-2
+                // cut here claimed they were "checked implicitly
+                // when the param is referenced" — they were not, so
+                // `params { n: Int = "nope"; }` and a default naming
+                // something that does not exist both passed `hale
+                // check` and failed in codegen with a message the
+                // checker was better placed to give.
+                //
+                // Scope is the same one codegen resolves against:
+                // top-level consts and `self.<param>`. A bare
+                // sibling name is NOT in scope — with a `const n`
+                // and a param `n`, a default written `n` takes the
+                // const — so an unresolved bare name is a genuine
+                // unknown identifier, and `check_expr` reports it.
+                for p in &pb.params {
+                    let ParamInit::Value(init) = &p.init else {
+                        continue;
+                    };
+                    // A bare name resolves to top-level const
+                    // scope only. Unresolved means unknown — and
+                    // the most likely intent is a sibling param, so
+                    // say the spelling that works.
+                    if let Expr::Ident(id) = init {
+                        if self.top.lookup(&id.name).is_none() {
+                            let sibling = pb
+                                .params
+                                .iter()
+                                .any(|q| q.name.name == id.name);
+                            let hint = if sibling {
+                                format!(
+                                    " — `{}` is another param of this locus; a default reaches one through `self.{}`",
+                                    id.name, id.name
+                                )
+                            } else {
+                                String::new()
+                            };
+                            self.diags.push(Diag::ty(
+                                id.span,
+                                format!(
+                                    "param `{}`: unknown identifier `{}` in its default{}",
+                                    p.name.name, id.name, hint
+                                ),
+                            ));
+                            continue;
+                        }
+                    }
+                    let got = self.check_expr(init);
+                    let Some(te) = &p.ty else { continue };
+                    let want = resolve_type_expr(te, self.known);
+                    // `Unknown` on either side is an unresolved
+                    // type, already diagnosed (or deliberately
+                    // opaque, as multi-segment stdlib handles are).
+                    // Re-reporting it here would be noise on top of
+                    // a real error.
+                    if matches!(want, Ty::Unknown)
+                        || matches!(got, Ty::Unknown)
+                    {
+                        continue;
+                    }
+                    // Int literals widen into Float params, the same
+                    // rule field initialization uses.
+                    // The coercions a default may rely on:
+                    //   Int literal -> Float param (field-init rule)
+                    //   String      -> StringView  (a view borrows;
+                    //                               `view_storage_e2`
+                    //                               initializes a
+                    //                               StringView param
+                    //                               from a literal)
+                    //   Bytes       -> BytesView   (same shape)
+                    let widen_ok = matches!(
+                        (&want, &got),
+                        (
+                            Ty::Prim(PrimType::Float),
+                            Ty::Prim(PrimType::Int)
+                        ) | (
+                            Ty::Prim(PrimType::StringView),
+                            Ty::Prim(PrimType::String)
+                        ) | (
+                            Ty::Prim(PrimType::BytesView),
+                            Ty::Prim(PrimType::Bytes)
+                        )
+                    );
+                    // A param typed as a PERSPECTIVE (or an
+                    // interface) is legitimately initialized with a
+                    // locus that serves/conforms to it — the
+                    // perspective fixtures do exactly this. Plain
+                    // assignability does not know about conformance,
+                    // so ask separately before reporting.
+                    let conforms = match (&want, &got) {
+                        (Ty::Named(w), Ty::Named(g)) => {
+                            let serves_or_iface =
+                                match self.top.symbols.get(g) {
+                                    Some(TopSymbol::Locus(li)) => li
+                                        .serves
+                                        .iter()
+                                        .any(|sv| sv == w)
+                                        || matches!(
+                                            self.top.symbols.get(w),
+                                            Some(TopSymbol::Interface(_))
+                                        ),
+                                    _ => false,
+                                };
+                            // `b: Box<Int> = Box { value: 0 }` — the
+                            // annotation resolves to the mangled
+                            // monomorph `Box_Int` while the literal
+                            // types as the template `Box`. The
+                            // monomorph's own field validation
+                            // already checked the arguments; this is
+                            // the same value under two spellings.
+                            let monomorph_of_template = self
+                                .resolve_generic_monomorph(w)
+                                .is_some_and(|(t, _)| {
+                                    t.name.name == *g
+                                });
+                            serves_or_iface || monomorph_of_template
+                        }
+                        _ => false,
+                    };
+                    if !widen_ok && !conforms && !want.assignable_from(&got) {
+                        self.diags.push(Diag::ty(
+                            init.span(),
+                            format!(
+                                "param `{}`: declared `{}`, default is `{}`",
+                                p.name.name,
+                                want.display(),
+                                got.display()
+                            ),
+                        ));
+                    }
+                }
+            }
+            LocusMember::Contract(_) | LocusMember::Bus(_) => {
+                // Already lowered by the resolver.
             }
             LocusMember::Bindings(_) => {
                 // Bindings are checked by a separate top-level pass
