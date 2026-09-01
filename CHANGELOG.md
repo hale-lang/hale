@@ -8,6 +8,35 @@ behavior.
 
 ## Unreleased
 
+### Element chains take fixed arrays and `bounded[T; N]`
+
+`self.probes.filter(it.live).count()` over a `[Probe; 16]` failed with
+`no field `get` on `[Probe; 16]``. Chains rewrite — post-parse, before
+typecheck, so with no type to dispatch on — into a loop that fetches
+each element through the source's `get`. A `@form(vec)` is a locus and
+has that method; the two type-level collections are types, whose
+operations are grammar intrinsics (`at(f, i)`), so neither could
+anchor a chain at all. One downstream fleet counted ~11 would-be sites
+in a single component and ~44 hand-rolled index walks across it
+(downstream handoff).
+
+Both now answer `get(Int) -> T fallible(IndexError)` — the accessor
+the rewrite was already built around. `bounded` routes into its own
+`at`, so a chain walks the LIVE slots rather than the capacity and
+shares one bounds check with the intrinsic instead of a second copy
+that could disagree with it. A fixed array's length is static and
+every slot is live, so it gets its own check.
+
+This is a deliberate exception to the types-have-no-methods axiom,
+and the only one: `get` exists so the chain source protocol is
+uniform across locus-form and type-level collections, and `at`
+remains the idiomatic spelling for a direct index.
+
+The diagnostic added earlier for this case — "`[T; N]` is not a
+supported source form yet" — is gone along with the limitation;
+it had become unreachable, and dead advice about a limitation that
+no longer exists is worse than none.
+
 ### `restart(c) for N` lowers, and exhausting it quarantines
 
 The retry-bound modifier checked and modelled — the topology

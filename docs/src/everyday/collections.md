@@ -192,6 +192,19 @@ let n = users.filter(it.active).count();
 users.filter(it.active).into(actives);
 ```
 
+This works on any of the collections in this chapter — a
+`@form(vec)`, a `@form(hashmap)` (via `.entries`), a `bounded[T; N]`,
+and a plain fixed array:
+
+```hale,fragment
+let live = self.probes.filter(it.live).count();   // probes: [Probe; 16]
+let hot  = self.recent.filter(it > 90).count();   // recent: bounded[Int; 8]
+```
+
+A `bounded` chain walks the elements you actually pushed, not its
+capacity — an empty one answers zero rather than reading unused
+slots.
+
 `it` is the current element. Chain as many stages as you like; they
 run in a single pass:
 

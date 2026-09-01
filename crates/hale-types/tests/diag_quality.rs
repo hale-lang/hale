@@ -102,12 +102,16 @@ fn field_typo_gets_did_you_mean() {
 }
 
 #[test]
-fn chain_over_unsupported_source_names_the_chain() {
-    // An element chain desugars to a loop fetching each element through
-    // the source's `get`. A fixed array / `bounded[T; N]` has no such
-    // accessor, so it failed with a bare "no field `get`" that never
-    // mentioned chains or the supported source forms (downstream
-    // handoff). Both the array and the bounded case now say so.
+fn a_fixed_array_and_a_bounded_are_chain_sources() {
+    // These two used to fail with "no field `get`": chains desugar
+    // to a loop fetching each element through the source's `get`,
+    // and the type-level collections had no such accessor, so they
+    // could not anchor a chain at all. They answer `get` now, so the
+    // programs below are ordinary (downstream handoff).
+    //
+    // Kept as a DIAGNOSTIC test rather than only a codegen one: the
+    // failure mode was a confusing message on a reasonable program,
+    // and the fix is that there is no message.
     for src in [
         r#"
             locus L {
@@ -125,13 +129,9 @@ fn chain_over_unsupported_source_names_the_chain() {
     ] {
         let ds = diags(src);
         assert!(
-            ds.iter().any(|m| {
-                m.contains("element chain")
-                    && m.contains("@form(vec)")
-                    && m.contains("`.entries`")
-            }),
-            "expected a chain-source diagnostic naming the supported \
-             forms; got: {:?}",
+            ds.is_empty(),
+            "a chain over a type-level collection should check clean; \
+             got: {:?}",
             ds
         );
     }

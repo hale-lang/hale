@@ -310,6 +310,10 @@ crates/hale-codegen/tests/case_fold_and_nested_fstring.rs#2 865d341109268295
 crates/hale-codegen/tests/case_fold_and_nested_fstring.rs#3 865d341109268295
 crates/hale-codegen/tests/case_fold_and_nested_fstring.rs#4 f2c1228edb650960
 crates/hale-codegen/tests/case_fold_and_nested_fstring.rs#5 f2c1228edb650960
+crates/hale-codegen/tests/chain_array_sources.rs#0 5b8eccc1b3947077
+crates/hale-codegen/tests/chain_array_sources.rs#1 c70a96d9e23bc5e6
+crates/hale-codegen/tests/chain_array_sources.rs#2 5b8eccc1b3947077
+crates/hale-codegen/tests/chain_array_sources.rs#3 c70a96d9e23bc5e6
 crates/hale-codegen/tests/children_count_sugar.rs#0 4d984294b3fc41b3
 crates/hale-codegen/tests/children_growable.rs#0 2d4c43412163d81b
 crates/hale-codegen/tests/children_growable.rs#1 2d4c43412163d81b
@@ -1230,6 +1234,8 @@ crates/hale-types/tests/contract_expose_check.rs#5 68571438548b5b78
 crates/hale-types/tests/depends_set.rs#1 e6d019967d07bc80
 crates/hale-types/tests/depends_set.rs#2 7eb747ab2594f71d
 crates/hale-types/tests/diag_quality.rs#2 865d341109268295
+crates/hale-types/tests/diag_quality.rs#5 d6325a0b5e9d93db
+crates/hale-types/tests/diag_quality.rs#6 9340303665f67845
 crates/hale-types/tests/dispatch_plan.rs#0 fe4628dffcd0e1c9
 crates/hale-types/tests/dispatch_plan.rs#1 f9df46108bfdfb03
 crates/hale-types/tests/dispatch_plan.rs#10 8831f70364306fc6
