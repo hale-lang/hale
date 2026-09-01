@@ -108,7 +108,9 @@ pub fn is_builtin_effect_class(name: &str) -> bool {
 /// display. Two spellings, same doctrine as every entity table.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct NameRef {
+    /// The canonical name — the machine join key.
     pub raw: String,
+    /// The author's spelling, for witnesses.
     pub display: String,
 }
 
@@ -119,32 +121,60 @@ pub struct NameRef {
 /// must preserve those primary spans without reopening the AST.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct GroupRef {
+    /// `None` when the operand names nothing in this program. An
+    /// unresolved operand makes its law `Invalid` — never vacuously
+    /// true, which is the whole reason the reference is optional rather
+    /// than dropped.
     pub group: Option<GroupId>,
+    /// The group as written.
     pub name: NameRef,
+    /// The operand's position in the claim, so a diagnostic points at
+    /// the word the author wrote.
     pub provenance: ProvenanceId,
 }
 
 /// A topic reference (`T` / `alias::T`, canonicalized at mangle).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct TopicIrRef {
+    /// `None` when the operand names nothing in this program. An
+    /// unresolved operand makes its law `Invalid` — never vacuously
+    /// true, which is the whole reason the reference is optional rather
+    /// than dropped.
     pub topic: Option<TopicId>,
+    /// The topic as written.
     pub name: NameRef,
+    /// The operand's position in the claim, so a diagnostic points at
+    /// the word the author wrote.
     pub provenance: ProvenanceId,
 }
 
 /// A phase reference (`during P`).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct PhaseIrRef {
+    /// `None` when the operand names nothing in this program. An
+    /// unresolved operand makes its law `Invalid` — never vacuously
+    /// true, which is the whole reason the reference is optional rather
+    /// than dropped.
     pub phase: Option<PhaseId>,
+    /// The phase as written.
     pub name: String,
+    /// The operand's position in the claim, so a diagnostic points at
+    /// the word the author wrote.
     pub provenance: ProvenanceId,
 }
 
 /// A seed reference (`in seed(a)`).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct SeedIrRef {
+    /// `None` when the operand names nothing in this program. An
+    /// unresolved operand makes its law `Invalid` — never vacuously
+    /// true, which is the whole reason the reference is optional rather
+    /// than dropped.
     pub seed: Option<SeedId>,
+    /// The seed as written.
     pub name: String,
+    /// The operand's position in the claim, so a diagnostic points at
+    /// the word the author wrote.
     pub provenance: ProvenanceId,
 }
 
@@ -165,9 +195,16 @@ pub struct SeedIrRef {
 /// resolves to nothing (Change 5's residue).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct BusSelector {
+    /// The selector as written.
     pub name: String,
+    /// Declared topics it resolves to.
     pub topics: Vec<TopicId>,
+    /// Wire subjects it resolves to. Kept apart from `topics` because
+    /// delivery joins on subjects and declaredness is a separate
+    /// question.
     pub subjects: Vec<SubjectId>,
+    /// The operand's position in the claim, so a diagnostic points at
+    /// the word the author wrote.
     pub provenance: ProvenanceId,
 }
 
@@ -184,7 +221,11 @@ pub struct EffectClassRef {
     pub class: Option<EffectClassId>,
     /// `true` iff the name is a language built-in (`syscall`, …).
     pub builtin: bool,
+    /// The class as written. Resolution is deliberately deferred to the
+    /// class catalog, which knows whether it was ever declared.
     pub name: String,
+    /// The operand's position in the claim, so a diagnostic points at
+    /// the word the author wrote.
     pub provenance: ProvenanceId,
 }
 
@@ -202,6 +243,7 @@ pub struct GrantIr {
     /// `publish T` when true, `subscribe T` when false — both admit
     /// the same edge; the verb names the reviewable declaration.
     pub publish: bool,
+    /// The topic the grant is about.
     pub topic: TopicIrRef,
 }
 
@@ -383,8 +425,12 @@ pub struct ClaimRow {
     /// evaluator attributes them). Annotations and plan rows carry
     /// the annotated declaration's / plan row's name.
     pub name: String,
+    /// Where the law came from — a claims block, a constitution, or an
+    /// annotation. Decides which origins are admissible for the family.
     pub origin: ClaimOrigin,
+    /// The lowered law itself, with every operand typed.
     pub law: ClaimIr,
+    /// The claim's declaration site.
     pub provenance: ProvenanceId,
 }
 
@@ -397,7 +443,9 @@ pub struct ClaimRow {
 /// source.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct LoweringIssue {
+    /// What could not be lowered, in the author's terms.
     pub message: String,
+    /// The claim that could not be lowered.
     pub provenance: ProvenanceId,
     /// Which family's row this issue prevented, when one owns it —
     /// `None` for table-level LAW SELECTION (an unknown or cyclic
@@ -468,6 +516,8 @@ impl GroupSelection {
 /// The lowered law table for one application (or one plan).
 #[derive(Clone, Debug, Default)]
 pub struct ClaimIrTable {
+    /// Every lowered law, in a stable order. A row's index is its
+    /// ordinal, and evidence is keyed by it.
     pub rows: Vec<ClaimRow>,
     /// Law-selection invalidity (see [`LoweringIssue`]).
     pub issues: Vec<LoweringIssue>,

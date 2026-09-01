@@ -42,7 +42,10 @@ pub enum ObsEntityKind {
 /// `name` is entity `id`".
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ObsEntityId {
+    /// Which entity sort the id refers to.
     pub kind: ObsEntityKind,
+    /// The canonical name, so an observed record joins back to a model
+    /// row.
     pub name: String,
     /// `index + 1` — see the module note on the zero value.
     pub id: u64,

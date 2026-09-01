@@ -41,6 +41,9 @@ pub struct Function {
     /// Author-facing spelling when it differs (stdlib publics render
     /// their `std::…` path, never the mangled name).
     pub display: String,
+    /// Which executable shape this is. Free fns, methods, hooks, modes
+    /// and failure handlers are one sort because they are all things a
+    /// walk can enter.
     pub kind: FunctionKind,
     /// DERIVED effect classes in declaration order (the stdlib-merged
     /// transitive walk; order is semantic in the existing artifact
@@ -109,12 +112,17 @@ pub struct Function {
     /// coverage and group projection both hang off ownership, so
     /// it is a closed account, never inferable-by-absence.
     pub owner: Option<LocusDeclId>,
+    /// The function's declaration site.
     pub provenance: ProvenanceId,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct LocusDecl {
+    /// The canonical name — the machine join key. Not the author's
+    /// spelling; see `display`.
     pub name: String,
+    /// The author's spelling, for witnesses and diagnostics. Never a
+    /// join key.
     pub display: String,
     /// `@sealed` confinement (GH #436).
     pub sealed: bool,
@@ -135,12 +143,14 @@ pub struct LocusDecl {
     /// only for a statically exact birth, while a param with no
     /// default still declares what this locus may hold.
     pub params: Vec<LocusParam>,
+    /// The `locus` declaration.
     pub provenance: ProvenanceId,
 }
 
 /// One entry of a locus's `params { … }` block.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct LocusParam {
+    /// The param's declared name, as written.
     pub name: String,
     /// Last path segment of the declared type, in author spelling.
     pub type_name: String,
@@ -155,6 +165,7 @@ pub struct LocusParam {
 pub struct LocusInstance {
     /// Canonical instance path, e.g. `App.w` or `App.workers[3]`.
     pub path: String,
+    /// The declaration this instance realizes.
     pub decl: LocusDeclId,
     /// This instance's REPLICA INDEX (0-based) when it came from a
     /// `pinned(..., replicas = K)` field, `None` otherwise. It is
@@ -165,6 +176,7 @@ pub struct LocusInstance {
     /// same `i` codegen bakes. `validate` enforces that the
     /// replicas of one field form a contiguous 0-based set.
     pub replica: Option<u32>,
+    /// The param or literal that gives it birth.
     pub provenance: ProvenanceId,
 }
 
@@ -174,9 +186,13 @@ pub struct LocusInstance {
 /// that fusion; it does not make it the schema).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Subject {
+    /// The wire subject or wildcard pattern, verbatim — this string IS
+    /// the identity. Two spellings that produce the same wire text are
+    /// one subject.
     pub pattern: String,
     /// False when the pattern contains wildcards.
     pub exact: bool,
+    /// First site naming this subject.
     pub provenance: ProvenanceId,
 }
 
@@ -194,7 +210,11 @@ pub struct PayloadContract {
     /// structural shape `opaque:i` that must not be mistaken for
     /// the sentinel.
     pub opaque: bool,
+    /// Shape digest. Paired with the shape itself so two contracts
+    /// agreeing on one and not the other is a detectable disagreement
+    /// rather than a silent match.
     pub hash: u64,
+    /// The payload type's declaration.
     pub provenance: ProvenanceId,
 }
 
@@ -205,13 +225,18 @@ pub struct Topic {
     /// Author-facing spelling (the alias-qualified form for
     /// imports) — what the artifact's topic sort renders.
     pub display: String,
+    /// The wire subject this topic materializes to. Delivery joins on
+    /// this, never on the topic.
     pub subject: SubjectId,
+    /// The payload contract every endpoint on this topic must agree
+    /// with.
     pub payload: PayloadContractId,
     /// `Some` for `keyed_by` topics.
     pub key: Option<TopicKey>,
     /// `Some` for `bounded(N)` topics — the publisher-facing
     /// capacity + refusal contract (GH #255's topic-level knob).
     pub bound: Option<crate::keys::TopicBound>,
+    /// The `topic` declaration.
     pub provenance: ProvenanceId,
 }
 
@@ -232,6 +257,7 @@ pub struct Group {
     /// checker error (vacuity fail-closed), so the declared intent
     /// is a semantic fact selectors need.
     pub may_be_empty: bool,
+    /// The `group` declaration.
     pub provenance: ProvenanceId,
 }
 
@@ -242,16 +268,26 @@ pub struct Group {
 /// because payload contracts and key types name them.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct TypeDecl {
+    /// The canonical name — the machine join key. Not the author's
+    /// spelling; see `display`.
     pub name: String,
+    /// The author's spelling, for witnesses and diagnostics. Never a
+    /// join key.
     pub display: String,
+    /// The `type` declaration.
     pub provenance: ProvenanceId,
 }
 
 /// A declared interface (the F.20 structural contract).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct InterfaceDecl {
+    /// The canonical name — the machine join key. Not the author's
+    /// spelling; see `display`.
     pub name: String,
+    /// The author's spelling, for witnesses and diagnostics. Never a
+    /// join key.
     pub display: String,
+    /// The `interface` declaration.
     pub provenance: ProvenanceId,
 }
 
@@ -279,15 +315,24 @@ pub enum DeclKind {
 /// An opaque seed-membership-only declaration (see [`DeclKind`]).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Declaration {
+    /// Which declaration sort this is, so coverage laws can range over
+    /// the declaration universe without joining every table.
     pub kind: DeclKind,
+    /// The canonical name — the machine join key. Not the author's
+    /// spelling; see `display`.
     pub name: String,
+    /// The author's spelling, for witnesses and diagnostics. Never a
+    /// join key.
     pub display: String,
+    /// The declaration site.
     pub provenance: ProvenanceId,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Phase {
+    /// The phase name (`birth`, `run`, `drain`, ...).
     pub name: String,
+    /// Synthetic: phases are a fixed vocabulary, not authored.
     pub provenance: ProvenanceId,
 }
 
@@ -301,6 +346,8 @@ pub struct Phase {
 /// never declared".
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct EffectClassDecl {
+    /// The class name as referenced. Present whether or not the class
+    /// is ever declared — see `definition`.
     pub name: String,
     /// The class's position in the seed's declaration order.
     ///
@@ -314,7 +361,11 @@ pub struct EffectClassDecl {
     pub declaration_index: u32,
     /// `effect NAME;` exists (false = bare reference only).
     pub declared: bool,
+    /// What the class is made of, or that it was only ever referenced.
+    /// A referenced-never-declared class makes a law naming it
+    /// `Invalid`, not vacuously true.
     pub definition: EffectClassDefinition,
+    /// The declaration, or the first reference when there is none.
     pub provenance: ProvenanceId,
 }
 
@@ -340,7 +391,9 @@ pub enum EffectClassDefinition {
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Seed {
+    /// The seed's import path.
     pub name: String,
+    /// The `import` that brought it in.
     pub provenance: ProvenanceId,
 }
 
@@ -350,7 +403,9 @@ pub struct Seed {
 /// that enqueues cross-thread.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ThreadDomain {
+    /// The pool name.
     pub name: String,
+    /// The pool declaration.
     pub provenance: ProvenanceId,
 }
 
@@ -371,9 +426,17 @@ pub enum BindingRole {
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Binding {
+    /// The wire subject crossing the boundary.
     pub subject: SubjectId,
+    /// Which transport carries it.
     pub transport: TransportKind,
+    /// Which side this binding is. Part of the identity: one subject
+    /// bound in both directions is two bindings, and collapsing them
+    /// loses the direction delivery depends on.
     pub role: BindingRole,
+    /// What the binding declares should happen when the transport
+    /// drops.
     pub loss: crate::keys::BindingLossBehavior,
+    /// The binding declaration.
     pub provenance: ProvenanceId,
 }

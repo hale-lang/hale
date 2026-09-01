@@ -46,6 +46,9 @@ pub enum ModelHashKind {
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ModelHeader {
+    /// `ANALYSIS_SEMANTICS_VERSION` at derivation. Bumped when a
+    /// judgment's MEANING changes, so evidence produced under older
+    /// semantics is refused rather than silently reinterpreted.
     pub semantics: u32,
     /// The application entrypoint (main locus name, or `main`).
     pub entrypoint: String,
@@ -54,8 +57,12 @@ pub struct ModelHeader {
 /// A free-form label on an entity (`labels` in the artifact).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct LabelRow {
+    /// What carries the label.
     pub at: EntityRef,
+    /// The label text — a declared effect class, a marker the frontier
+    /// assigns.
     pub label: String,
+    /// Where the label was attached.
     pub provenance: ProvenanceId,
 }
 
@@ -64,26 +71,46 @@ pub struct LabelRow {
 /// quantitative-judgment migration (Change 5d) closes it.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct WeightRow {
+    /// What the measurement is attributed to.
     pub at: EntityRef,
+    /// Which measurement this is.
     pub metric: String,
+    /// The measurement, in the metric's own unit.
     pub value: u64,
+    /// The site the measurement came from.
     pub provenance: ProvenanceId,
 }
 
 #[derive(Clone, Default, Debug)]
 pub struct Entities {
+    /// Free fns, methods, lifecycle hooks, modes, failure handlers.
     pub functions: Vec<Function>,
+    /// Locus DECLARATIONS — what may exist, not what does.
     pub loci: Vec<LocusDecl>,
+    /// Statically exact instances in the main arrangement (`App.w`,
+    /// `App.workers[3]`).
     pub locus_instances: Vec<LocusInstance>,
+    /// Declared topics.
     pub topics: Vec<Topic>,
+    /// Wire subjects and patterns — delivery identity. A query that
+    /// decides delivery joins here.
     pub subjects: Vec<Subject>,
+    /// Payload contracts. Deliberately a different sort from the
+    /// subject that carries them.
     pub payloads: Vec<PayloadContract>,
+    /// Lifecycle phases.
     pub phases: Vec<Phase>,
+    /// Imported seeds.
     pub seeds: Vec<Seed>,
+    /// Pools and their placement.
     pub thread_domains: Vec<ThreadDomain>,
+    /// Transport bindings, each with a role.
     pub bindings: Vec<Binding>,
+    /// Resolved claim groups.
     pub groups: Vec<Group>,
+    /// Type declarations.
     pub types: Vec<TypeDecl>,
+    /// Interface declarations.
     pub interfaces: Vec<InterfaceDecl>,
     /// Declared/referenced USER effect classes (GH #476 Change 4).
     pub effect_classes: Vec<EffectClassDecl>,
@@ -94,23 +121,41 @@ pub struct Entities {
 
 #[derive(Clone, Default, Debug)]
 pub struct Relations {
+    /// Function → its declaring locus.
     pub member_of: Vec<MemberOf>,
+    /// Function → the lifecycle phase it runs in.
     pub phase_of: Vec<PhaseOf>,
+    /// Entity → the seed declaring it.
     pub declared_in: Vec<DeclaredIn>,
+    /// Instance → the declaration it realizes.
     pub realizes: Vec<Realizes>,
+    /// The lifecycle tree, parent instance → child.
     pub owns: Vec<Owns>,
+    /// SITE-grained call edges. Collapsing these to a set computes
+    /// reachability where the language means executions.
     pub calls: Vec<Call>,
+    /// Dispatches through an interface nothing conforms to — not holes,
+    /// and not edges.
     pub dead_interface_calls: Vec<DeadInterfaceCall>,
+    /// SITE-grained sends, with key domain and loss disposition.
     pub publishes: Vec<Publish>,
     /// Declared publisher ends (`bus { publish T; }`) — the
     /// endpoint grain `require publishes(...)` quantifies over,
     /// distinct from the site-grained sends above.
     pub declares_publish: Vec<DeclaresPublish>,
+    /// Subscriptions with their key predicate and bounds — the filter
+    /// half of delivery.
     pub subscribes: Vec<Subscribe>,
+    /// Instance → thread domain.
     pub placed_in: Vec<PlacedIn>,
+    /// Thread domain → its pinned cores.
     pub affined_to: Vec<AffinedTo>,
+    /// Topic → the transport it crosses a process boundary through.
     pub binds: Vec<TopicBinding>,
+    /// Supervision edges, one row per `on_failure` handler.
     pub supervises: Vec<Supervises>,
+    /// Resolved group membership, globs enumerated. The authored
+    /// spelling lives in `group_selectors`.
     pub group_members: Vec<GroupMember>,
     /// The AUTHORED selector lists (legacy-hash grain), alongside
     /// the resolved `group_members` (judgment grain).
@@ -167,6 +212,8 @@ pub struct Analyses {
 /// must replay the evaluator's order exactly.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StdlibAbsorption {
+    /// The user function whose call site enters the stdlib interior
+    /// this row describes.
     pub from: FunctionId,
     /// The authored site ordinal within `from` (stdlib calls consume
     /// ordinals like every authored site), so the judgment can
@@ -208,6 +255,8 @@ pub struct AbsorbedNode {
     /// an `effects(C)` destination can be satisfied INSIDE a
     /// stdlib body; review: stdlib effect sinks).
     pub direct_effects: Vec<String>,
+    /// What the walk saw in this interior body, in walk order — calls,
+    /// publishes, and the residue where it could not follow.
     pub events: Vec<AbsorbedEvent>,
 }
 
@@ -305,6 +354,7 @@ pub struct CertificateEvidence {
     /// The lowered claim form, display voice — the artifact's
     /// `lowered` row spelling.
     pub form: String,
+    /// This certificate's verdict.
     pub result: VerdictIr,
     /// The engine's diagnostics for this certificate, in emission
     /// order: (message, span provenance).
@@ -346,7 +396,11 @@ pub struct EvidenceTable {
     /// synthetic `Holds` sidecar from validating against a model
     /// for which derivation would have produced no report.
     pub coverage_digest: u64,
+    /// One row per law that generates certificates, keyed by its
+    /// ordinal in the claim table.
     pub rows: Vec<EvidenceRow>,
+    /// Spans for the diagnostics the rows carry. Separate from the
+    /// model's own table because evidence outlives a single derivation.
     pub provenance: ProvenanceTable,
 }
 
@@ -824,18 +878,36 @@ pub struct EvidenceRow {
     pub ordinal: u32,
     /// The annotated fn, as the ClaimIr row resolves it.
     pub subject: Option<FunctionId>,
+    /// The certificates this law generates, in the order its
+    /// `certificate_forms` renders them — the position IS the
+    /// certificate ordinal.
     pub certs: Vec<CertificateEvidence>,
 }
 
 #[derive(Clone, Debug)]
 pub struct ApplicationModel {
+    /// Identity and versioning: what produced this model and under
+    /// which semantics.
     pub header: ModelHeader,
+    /// The fifteen entity tables. A row's id is its index here.
     pub entities: Entities,
+    /// The seventeen relation tables. Read each one's grain before
+    /// counting.
     pub relations: Relations,
+    /// Labels attached to entities — declared effect classes and
+    /// frontier markers.
     pub labels: Vec<LabelRow>,
+    /// Numeric measurements attributed to entities.
     pub weights: Vec<WeightRow>,
+    /// Everything the derivation could not determine, as typed residue.
+    /// Absence of a hole is a positive claim, which is why
+    /// `capabilities` is stated rather than inferred.
     pub holes: Vec<Hole>,
+    /// Which relation families are COMPLETE. The dual of `holes`, and
+    /// stated positively on purpose: a model that never noticed a gap
+    /// does not get to claim exactness by default.
     pub capabilities: Capabilities,
+    /// Source spans every row points into.
     pub provenance: ProvenanceTable,
     /// Analysis products the model carries but does not derive
     /// itself — the bus graph's dispatch gates and the stdlib

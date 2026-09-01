@@ -40,7 +40,10 @@ pub enum Provenance {
 /// section unprojectable from the model).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct SourceUnit {
+    /// The file's path as the bundle saw it.
     pub path: String,
+    /// Content digest, so a span can be shown to belong to the text it
+    /// was taken from.
     pub digest: String,
 }
 
@@ -48,6 +51,10 @@ pub struct SourceUnit {
 /// dense IDs from every row in the model.
 #[derive(Clone, Default, Debug)]
 pub struct ProvenanceTable {
+    /// Every source file spans may point into. A `SourceId` is an index
+    /// here.
     pub sources: Vec<SourceUnit>,
+    /// Every span. A `ProvenanceId` is an index here, which is why rows
+    /// carry an id rather than a span.
     pub records: Vec<Provenance>,
 }

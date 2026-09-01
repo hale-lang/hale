@@ -72,6 +72,8 @@ pub struct SubjectPlan {
     /// The subject key the gates were computed over (the BusGraph's
     /// site spelling).
     pub subject: String,
+    /// The lowering this subject gets. A CONCLUSION derived from the
+    /// model, never an authored fact.
     pub flavor: DispatchFlavor,
     /// The gate's reason when the flavor is `Dynamic`.
     pub ineligible_reason: Option<String>,
@@ -97,6 +99,7 @@ pub struct SubjectPlan {
 /// The whole-program dispatch plan.
 #[derive(Clone, Debug, Default)]
 pub struct DispatchPlan {
+    /// One plan per subject, in subject order.
     pub subjects: Vec<SubjectPlan>,
 }
 

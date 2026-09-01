@@ -13,18 +13,28 @@ use crate::hole::RelationSet;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Capabilities {
+    /// The call graph is complete: no unresolved callee anywhere
+    /// reachable.
     pub exact_calls: bool,
     /// Publish and subscribe completeness are INDEPENDENT facts
     /// (round 3): a set-level hole can hide one without the other,
     /// and per-family adequacy must not couple them.
     pub exact_publishes: bool,
+    /// Every subscription is known.
     pub exact_subscribes: bool,
+    /// Every key predicate's coverage is decidable.
     pub exact_key_filters: bool,
+    /// The ownership tree is complete.
     pub exact_ownership: bool,
+    /// Every instance's thread domain is known statically.
     pub exact_placement: bool,
+    /// Every transport route is known.
     pub exact_routes: bool,
+    /// Every effect is classified.
     pub exact_effects: bool,
+    /// Instance counts are statically exact.
     pub exact_cardinality: bool,
+    /// Delivery semantics are known for every binding.
     pub exact_delivery_guarantees: bool,
     /// Per-call cost facts (allocation sites, frame sizes, blocking
     /// points) are complete for every analyzed function — what the

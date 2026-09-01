@@ -106,7 +106,10 @@ pub enum HoleKind {
 /// it hides from judgments.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Hole {
+    /// What the hole sits on. The anchor grain decides which kinds are
+    /// legal — see the closed matrix below.
     pub at: EntityRef,
+    /// Why the model does not know.
     pub kind: HoleKind,
     /// Never empty — a hole that hides nothing is not a hole
     /// (validated; see [`ApplicationModel::validate`]).
@@ -123,6 +126,7 @@ pub struct Hole {
     /// Human-readable reason for witnesses ("call through fn param
     /// `f`").
     pub reason: String,
+    /// The site that could not be resolved.
     pub provenance: ProvenanceId,
 }
 
