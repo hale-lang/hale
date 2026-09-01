@@ -548,9 +548,12 @@ property a consumer of this model is entitled to rely on.
 
 Everything above describes how the model *behaves*. This is what it
 *contains*: every public type, so nothing in the crate is
-reachable-but-undescribed. Field-level documentation is the rustdoc
-— each public field carries a doc comment, and a test fails if one
-lands without.
+reachable-but-undescribed.
+
+Field-level documentation is the rustdoc — every public field
+carries a doc comment, and a test fails if one lands without. It is
+published with the book at **`/api/hale_model`**, so reading a row
+does not require cloning the compiler.
 
 **`application`** — the model itself and its sidecars.
 `ApplicationModel`, `ModelHeader`, `ModelHashKind`, `Entities`,
