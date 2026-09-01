@@ -32,6 +32,7 @@ crates/hale-cli/tests/topology_graph_cli.rs#20	iso	forbid reaches(a_side, b_side
 crates/hale-cli/tests/topology_graph_cli.rs#21	bad	require attributed(all purpose)	Invalid	None
 crates/hale-cli/tests/topology_graph_cli.rs#23	iso	forbid reaches(a_side, b_side)	Holds	None
 crates/hale-cli/tests/topology_graph_cli.rs#23	iso	forbid reaches(b_side, a_side)	Holds	None
+crates/hale-cli/tests/topology_graph_cli.rs#38	one	count publishers(topic T) == 1	Holds	None
 crates/hale-cli/tests/topology_v2.rs#0	iso	forbid reaches(a_side, b_side)	Violated	None
 crates/hale-codegen/tests/fixtures/examples/claim-forms.hl	boundary	only edges planners -> workers { publish Plan }	Holds	None
 crates/hale-codegen/tests/fixtures/examples/claim-forms.hl	isolated	forbid reaches(workers, audit) via { calls }	Holds	None
