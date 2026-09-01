@@ -8712,20 +8712,21 @@ impl<'a> Checker<'a> {
                     }
                     // Int literals widen into Float params, the same
                     // rule field initialization uses.
-                    // The coercions a default may rely on:
-                    //   Int literal -> Float param (field-init rule)
-                    //   String      -> StringView  (a view borrows;
-                    //                               `view_storage_e2`
-                    //                               initializes a
-                    //                               StringView param
-                    //                               from a literal)
-                    //   Bytes       -> BytesView   (same shape)
+                    // Exactly the coercions CODEGEN accepts on a
+                    // param default (`locus/decl.rs`, the
+                    // `literal_to_view` rule): a String or Bytes
+                    // literal into a view param.
+                    //
+                    // NOT Int -> Float. Field initialization widens
+                    // there, and it would be reasonable here, but
+                    // codegen refuses it — so accepting it in the
+                    // checker would trade one divergence for
+                    // another. Widening param defaults is a
+                    // deliberate change to make on BOTH sides, not a
+                    // leniency to add on one.
                     let widen_ok = matches!(
                         (&want, &got),
                         (
-                            Ty::Prim(PrimType::Float),
-                            Ty::Prim(PrimType::Int)
-                        ) | (
                             Ty::Prim(PrimType::StringView),
                             Ty::Prim(PrimType::String)
                         ) | (
