@@ -43,6 +43,7 @@ pub fn run_topology(rest: &[String]) -> ExitCode {
     let mut artifact_path: Option<PathBuf> = None;
     let mut view = "system".to_string();
     let mut format = "svg".to_string();
+    let mut theme = SvgTheme::Auto;
     let mut out_path: Option<PathBuf> = None;
     let mut claim: Option<String> = None;
     let mut config_path: Option<PathBuf> = None;
@@ -57,6 +58,22 @@ pub fn run_topology(rest: &[String]) -> ExitCode {
             "--format" => match it.next() {
                 Some(v) => format = v.clone(),
                 None => return flag_err("--format needs a value"),
+            },
+            // SVG only: the other formats carry no colour of their
+            // own (mermaid and dot are themed by whatever renders
+            // them), so a theme there would be a promise this
+            // command cannot keep.
+            "--theme" => match it.next().map(|v| v.as_str()) {
+                Some("auto") => theme = SvgTheme::Auto,
+                Some("light") => theme = SvgTheme::Light,
+                Some("dark") => theme = SvgTheme::Dark,
+                Some(other) => {
+                    return flag_err(&format!(
+                        "--theme takes auto | light | dark, got `{}`",
+                        other
+                    ))
+                }
+                None => return flag_err("--theme needs a value"),
             },
             "-o" | "--output" => match it.next() {
                 Some(v) => out_path = Some(PathBuf::from(v)),
@@ -147,7 +164,7 @@ pub fn run_topology(rest: &[String]) -> ExitCode {
     let output = match format.as_str() {
         "mermaid" => render_mermaid(&graph),
         "dot" => render_dot(&graph),
-        _ => render_svg(&graph),
+        _ => render_svg(&graph, theme),
     };
     match out_path {
         None => {
@@ -1723,7 +1740,97 @@ struct Placed {
     h: i64,
 }
 
-fn render_svg(g: &RenderGraph) -> String {
+/// The SVG palette, as (light, dark) pairs.
+///
+/// The renderer emits the LIGHT value as an ordinary `fill=` /
+/// `stroke=` attribute, and generates a scoped stylesheet from this
+/// same table that remaps those literals under
+/// `prefers-color-scheme: dark`. Because both sides come from one
+/// array, the attributes and the dark theme cannot drift apart.
+///
+/// That drift is the actual defect this closes: the renderer emitted
+/// a hardcoded light theme, so hale-lang.org re-themed the diagrams
+/// with its own `[fill="#ffffff"] { fill: … }` rules — a copy of this
+/// palette living in a DIFFERENT REPOSITORY, silently wrong the
+/// moment a colour here changed.
+///
+/// Ordered light-to-dark within each role so the mapping reads as an
+/// inversion rather than a lookup table.
+const SVG_PALETTE: &[(&str, &str)] = &[
+    // surfaces
+    ("#ffffff", "#0d1117"), // page
+    ("#f7fafc", "#161b22"), // locus card / info tint
+    ("#ebf8ff", "#12243a"), // topic card
+    ("#f0fff4", "#0f2417"), // ok tint
+    ("#fff5f5", "#2a1215"), // bad tint
+    ("#fffff0", "#241f0d"), // warn tint
+    // ink
+    ("#1a202c", "#e6edf3"), // primary
+    ("#2d3748", "#c9d1d9"), // secondary
+    ("#4a5568", "#8b949e"), // tertiary / call edges
+    ("#718096", "#6e7681"), // muted / dead edges
+    // roles
+    ("#2f855a", "#3fb950"), // publish / ok
+    ("#6b46c1", "#bc8cff"), // subscribe
+    ("#c53030", "#f85149"), // hole / bad
+    ("#d69e2e", "#d29922"), // highlight
+    ("#2b6cb0", "#58a6ff"), // topic
+    ("#b7791f", "#e3b341"), // warn
+    // dark-on-tint card text, which inverts to light-on-dark
+    ("#22543d", "#7ee787"),
+    ("#742a2a", "#ffa198"),
+    ("#744210", "#f2cc60"),
+];
+
+/// How the SVG carries its palette.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum SvgTheme {
+    /// Light attributes plus a `prefers-color-scheme: dark` override
+    /// — one artifact that reads correctly in either. The default,
+    /// because a diagram is usually looked at by a person whose
+    /// theme the renderer cannot know.
+    Auto,
+    /// Light only, with no stylesheet — the pre-theming output, for
+    /// embedding somewhere already known to be light.
+    Light,
+    /// Dark unconditionally.
+    Dark,
+}
+
+/// The scoped stylesheet, generated from `SVG_PALETTE`.
+///
+/// Every selector is prefixed with the root's own class, because an
+/// SVG is frequently INLINED into an HTML document — an unscoped
+/// `<style>` here would become page-wide CSS and restyle its host.
+fn svg_theme_style(theme: SvgTheme) -> String {
+    if theme == SvgTheme::Light {
+        return String::new();
+    }
+    let rules = |out: &mut String, indent: &str| {
+        for (light, dark) in SVG_PALETTE {
+            out.push_str(&format!(
+                "{i}.hale-topo [fill=\"{l}\"]{{fill:{d}}}\n\
+                 {i}.hale-topo [stroke=\"{l}\"]{{stroke:{d}}}\n",
+                i = indent,
+                l = light,
+                d = dark
+            ));
+        }
+    };
+    let mut css = String::new();
+    match theme {
+        SvgTheme::Dark => rules(&mut css, ""),
+        SvgTheme::Auto => {
+            css.push_str("@media (prefers-color-scheme: dark){\n");
+            rules(&mut css, "");
+            css.push_str("}\n");
+        }
+        SvgTheme::Light => unreachable!("returned above"),
+    }
+    format!("<style>\n{}</style>\n", css)
+}
+
+fn render_svg(g: &RenderGraph, theme: SvgTheme) -> String {
     // ---- layout: left column of locus boxes, right column of
     // topics, further-right column of unknown nodes, cards top-right.
     let title_h = 2 * LINE_H + PAD;
@@ -1865,14 +1972,20 @@ fn render_svg(g: &RenderGraph) -> String {
     // ---- emit
     let mut s = String::new();
     s.push_str(&format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{w}\" \
-         height=\"{h}\" viewBox=\"0 0 {w} {h}\" font-family=\"monospace\" \
-         font-size=\"13\">\n",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" class=\"hale-topo\" \
+         width=\"{w}\" height=\"{h}\" viewBox=\"0 0 {w} {h}\" \
+         font-family=\"monospace\" font-size=\"13\">\n",
         w = width,
         h = height
     ));
+    s.push_str(&svg_theme_style(theme));
     s.push_str(&format!(
-        "<rect x=\"0\" y=\"0\" width=\"{}\" height=\"{}\" fill=\"#ffffff\"/>\n",
+        // Classed so a host can drop the page behind the diagram
+        // (`.hale-topo .bg { fill: transparent }`) without matching
+        // on a colour literal — the one element an embedder almost
+        // always wants to control.
+        "<rect class=\"bg\" x=\"0\" y=\"0\" width=\"{}\" \
+         height=\"{}\" fill=\"#ffffff\"/>\n",
         width, height
     ));
     s.push_str(&format!(

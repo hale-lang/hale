@@ -3462,3 +3462,148 @@ fn main() { App { }; }
         err
     );
 }
+
+/// Every colour the SVG puts in the document is remapped by its own
+/// dark theme.
+///
+/// The renderer emitted a hardcoded light palette, so hale-lang.org
+/// re-themed the diagrams with its own `[fill="#ffffff"] { … }`
+/// rules — a copy of this palette in a DIFFERENT REPOSITORY, wrong
+/// the moment a colour changed here. The stylesheet now ships inside
+/// the SVG, generated from the same table the attributes come from.
+///
+/// This checks the property that matters and that a new colour would
+/// quietly break: a hex used in the body but absent from the palette
+/// stays light on a dark background, and nothing else would say so.
+#[test]
+fn every_svg_colour_is_remapped_by_the_dark_theme() {
+    let dir = workdir("svgtheme");
+    let src = dir.join("app.hl");
+    // Exercise the tinted/holed paths too, not just the happy graph:
+    // an unresolved call gives the residue view its hole colours.
+    std::fs::write(
+        &src,
+        r#"
+type R { v: Int = 0; }
+topic T { payload: R; subject: "t"; }
+fn apply(f: fn(Int) -> Int, v: Int) -> Int { return f(v); }
+fn scale(v: Int) -> Int { return v * 2; }
+locus Pub {
+    bus { publish T; }
+    params { n: Int = 0; }
+    fn go() { T <- R { v: apply(scale, self.n) }; }
+}
+locus Sub {
+    bus { subscribe T as on_t; }
+    params { seen: Int = 0; }
+    fn on_t(r: R) { self.seen = r.v; }
+}
+main locus App {
+    params { p: Pub = Pub { }; s: Sub = Sub { }; }
+    claims { one: count publishers(topic T) == 1; }
+    run() { self.p.go(); }
+}
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    for view in ["system", "code", "bus", "claim", "residue"] {
+        let mut argv: Vec<&str> =
+            vec!["--view", view, "--format", "svg", "--theme", "dark"];
+        if view == "claim" {
+            argv.extend(["--claim", "one"]);
+        }
+        let svg = render(&artifact, &argv);
+        let (style, body) = svg
+            .split_once("</style>")
+            .expect("a themed svg carries its stylesheet");
+        let mut unthemed: Vec<String> = Vec::new();
+        for (attr, _) in [("fill", 0), ("stroke", 0)] {
+            let needle = format!("{}=\"#", attr);
+            let mut rest = body;
+            while let Some(i) = rest.find(&needle) {
+                rest = &rest[i + needle.len() - 1..];
+                let hex: String =
+                    rest.chars().take_while(|c| *c != '"').collect();
+                let rule = format!("[{}=\"{}\"]{{", attr, hex);
+                if !style.contains(&rule) {
+                    unthemed.push(format!("{} {}", attr, hex));
+                }
+                rest = &rest[1..];
+            }
+        }
+        unthemed.sort();
+        unthemed.dedup();
+        assert!(
+            unthemed.is_empty(),
+            "view `{}` uses colours the dark theme does not remap \
+             (add them to SVG_PALETTE): {:?}",
+            view,
+            unthemed
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The stylesheet is scoped to the SVG's own class.
+///
+/// An SVG is routinely INLINED into an HTML page — hale-lang.org
+/// does exactly that with `set:html`. An unscoped `<style>` here
+/// would stop being the diagram's theme and become the host page's
+/// CSS.
+#[test]
+fn the_svg_stylesheet_cannot_escape_into_a_host_page() {
+    let dir = workdir("svgscope");
+    let src = dir.join("app.hl");
+    std::fs::write(
+        &src,
+        r#"
+topic T { payload: R; subject: "t"; }
+type R { v: Int = 0; }
+locus Pub { bus { publish T; } fn go() { T <- R { v: 1 }; } }
+locus Sub { bus { subscribe T as on_t; } params { n: Int = 0; }
+    fn on_t(r: R) { self.n = r.v; } }
+main locus App { params { p: Pub = Pub { }; s: Sub = Sub { }; }
+    run() { self.p.go(); } }
+fn main() { App { }; }
+"#,
+    )
+    .unwrap();
+    let artifact = dump_artifact(&dir, &src);
+    let svg = render(
+        &artifact,
+        &["--view", "bus", "--format", "svg", "--theme", "dark"],
+    );
+    let style = svg
+        .split_once("</style>")
+        .expect("themed")
+        .0
+        .split_once("<style>")
+        .expect("open tag")
+        .1;
+    for line in style.lines().filter(|l| l.contains('{')) {
+        assert!(
+            line.trim_start().starts_with(".hale-topo "),
+            "every selector must be scoped to the diagram's root; \
+             found `{}`",
+            line
+        );
+    }
+    assert!(
+        svg.contains("class=\"hale-topo\""),
+        "the root carries the class its own stylesheet selects on"
+    );
+
+    // `light` is the pre-theming output: attributes only.
+    let light = render(
+        &artifact,
+        &["--view", "bus", "--format", "svg", "--theme", "light"],
+    );
+    assert!(
+        !light.contains("<style>"),
+        "`--theme light` ships no stylesheet: {:?}",
+        &light[..light.len().min(200)]
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
