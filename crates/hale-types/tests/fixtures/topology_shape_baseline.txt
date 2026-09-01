@@ -109,6 +109,8 @@ crates/hale-cli/tests/topology_graph_cli.rs#32 7d5cf57defcf548e
 crates/hale-cli/tests/topology_graph_cli.rs#33 7f75bbe0c59b704e
 crates/hale-cli/tests/topology_graph_cli.rs#36 dea7f37538f67e6b
 crates/hale-cli/tests/topology_graph_cli.rs#37 542f43255ecc42a5
+crates/hale-cli/tests/topology_graph_cli.rs#38 66901456f5bcc125
+crates/hale-cli/tests/topology_graph_cli.rs#39 725494b4ad44f749
 crates/hale-cli/tests/topology_graph_cli.rs#4 7d5cf57defcf548e
 crates/hale-cli/tests/topology_graph_cli.rs#5 c09878edd9f20206
 crates/hale-cli/tests/topology_graph_cli.rs#6 37b8850647e390ba
