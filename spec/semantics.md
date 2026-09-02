@@ -126,6 +126,35 @@ Phase 2b entry in `spec/stdlib.md`.
   `false` / empty for pointer-shaped types), mirroring the
   statement form's silent-no-op fallthrough.
 
+**Scrutinee-less form.** `match { cond -> body, else -> body }`
+omits the scrutinee and tests guards directly:
+
+```hale
+let tier = match {
+    n < 10   -> "small",
+    n < 100  -> "medium",
+    else     -> "large",
+};
+```
+
+Arms are tried in written order and the first whose condition is
+true wins. `else` is the catch-all and carries no condition.
+
+This is **sugar**, desugared at parse into the guarded form it
+replaces — `match { c -> b, else -> d }` is
+`match true { _ if c -> b, _ -> d }`. Everything downstream sees an
+ordinary match, so both positions, block arm bodies, the trailing
+comma rule, and the all-guards-false fallthrough above behave
+identically.
+
+The form exists because first-match-wins over conditions is common
+where dispatch is a ladder of tests rather than a shape match, and
+the scrutinee in that case is a value the author invents only to
+ignore.
+
+`match {` is not ambiguous with matching on a block expression:
+that shape is written `match (…) { … }`.
+
 ## Binary data — Bytes and conversion
 
 `Bytes` is the binary-safe sibling of `String`. Same
