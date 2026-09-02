@@ -6,6 +6,37 @@ behavior.
 
 ---
 
+## Unreleased
+
+### `match { cond -> … }` — first-match-wins without a scrutinee
+
+First-match-wins over guards was always expressible: a match arm
+carries a guard, so `match true { _ if cond -> … }` worked. You just
+had to invent a scrutinee you then ignored and write `_ if` on every
+arm.
+
+That shape is a `cond`, and it appears wherever dispatch is a ladder
+of tests rather than a shape match — HTTP routing, protocol
+dispatch, tiered fallbacks:
+
+    return match {
+        std::http::is_route(ctx, "GET", "/users")     -> self.list(),
+        std::http::is_route(ctx, "GET", "/users/:id") -> self.show(id),
+        else                                          -> not_found(),
+    };
+
+`else` is the catch-all. Arms are tried in order and the first true
+one wins.
+
+Parser-only sugar: it desugars into exactly the ignored-scrutinee
+form, so typecheck, codegen, the model and every judgment see the
+match they already saw, and nothing downstream learns a new shape. A
+test pins that the two spellings produce identical programs.
+
+Notably it needs no method references — the arms are ordinary calls
+with `self` in scope, which is why this and not a `routes` block was
+the answer for one-locus-many-endpoints (GH #509 §2).
+
 ## v0.19.0 — check earlier, run faster (2026-09-02)
 
 ### `on_failure` and literal `subscribe` are checked, not just built

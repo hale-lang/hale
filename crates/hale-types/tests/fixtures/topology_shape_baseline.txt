@@ -326,6 +326,11 @@ crates/hale-codegen/tests/closed_world_nested_struct.rs#3 012bd26069e335fa
 crates/hale-codegen/tests/closure_resets_per_epoch.rs#0 1d2bb052909625d0
 crates/hale-codegen/tests/closure_resets_per_epoch.rs#1 ec797c2dbfde2c86
 crates/hale-codegen/tests/compress_tar.rs#0 8069b95a32004c3a
+crates/hale-codegen/tests/cond_match.rs#0 865d341109268295
+crates/hale-codegen/tests/cond_match.rs#1 865d341109268295
+crates/hale-codegen/tests/cond_match.rs#2 d858656cfb6fb882
+crates/hale-codegen/tests/cond_match.rs#3 865d341109268295
+crates/hale-codegen/tests/cond_match.rs#4 865d341109268295
 crates/hale-codegen/tests/coop_pool_basic.rs#0 485e9ef86187f369
 crates/hale-codegen/tests/coop_pool_multi_locus.rs#0 643c2f0569b1b7e7
 crates/hale-codegen/tests/coop_pool_run_dispatch.rs#0 b5d1b9d8b1cac991

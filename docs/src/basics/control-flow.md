@@ -107,6 +107,38 @@ shapes), which you'll meet in
 [Records & data](../everyday/records.md). The arms can bind the
 data carried by each variant.
 
+### Matching on conditions instead of a value
+
+Sometimes there's no single value to match on — you just want the
+first true condition out of several. Leave the scrutinee out:
+
+```hale,fragment
+let tier = match {
+    n < 10  -> "small",
+    n < 100 -> "medium",
+    else    -> "large",
+};
+```
+
+Arms are tried top to bottom and the first true one wins, so order
+matters. `else` is the catch-all.
+
+This is the same `match` — it's shorthand for
+`match true { _ if n < 10 -> ..., _ -> ... }` — so everything above
+still applies: it works as a statement or an expression, arms can be
+blocks, and a block-bodied arm still needs its trailing comma.
+
+Reach for it when you're writing a ladder of `if`/`else if` that all
+produce the same kind of answer:
+
+```hale,fragment
+return match {
+    std::http::is_route(ctx, "GET", "/users")     -> self.list(),
+    std::http::is_route(ctx, "GET", "/users/:id") -> self.show(id),
+    else                                          -> not_found(),
+};
+```
+
 ## Blocks have values
 
 A `{ ... }` block's last expression — written without a trailing
