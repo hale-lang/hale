@@ -8783,7 +8783,37 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            LocusMember::Contract(_) | LocusMember::Bus(_) => {
+            LocusMember::Bus(bb) => {
+                // A subscribe on a LITERAL or wildcard subject must
+                // say `of type T`: there is no declaration to take
+                // the payload from, and codegen needs one to pick a
+                // deserializer. Without this the omission passed
+                // `hale check` and failed the build with no span —
+                // the divergence class `corpus_check_build_agreement`
+                // gates. A declared-topic subscribe is exempt: the
+                // topic carries the payload.
+                for bm in &bb.members {
+                    let BusMember::Subscribe { subject, ty, span, .. } = bm
+                    else {
+                        continue;
+                    };
+                    if ty.is_some() {
+                        continue;
+                    }
+                    if !matches!(subject, BusSubject::Literal { .. }) {
+                        continue;
+                    }
+                    self.diags.push(Diag::ty(
+                        *span,
+                        format!(
+                            "subscribe `{}`: a literal subject carries no payload declaration, so the subscription must name one — `subscribe \"{}\" as <handler> of type <T>;`",
+                            subject.canonical(),
+                            subject.canonical()
+                        ),
+                    ));
+                }
+            }
+            LocusMember::Contract(_) => {
                 // Already lowered by the resolver.
             }
             LocusMember::Bindings(_) => {
@@ -8832,6 +8862,47 @@ impl<'a> Checker<'a> {
                 self.in_lifecycle = false;
             }
             LocusMember::Failure(fd) => {
+                // The handler's SIGNATURE, checked here rather than
+                // only in codegen. `on_failure` is the supervision
+                // surface a reader meets early, and getting its shape
+                // wrong used to pass `hale check` and fail the build
+                // with no source location — the divergence class
+                // `corpus_check_build_agreement` gates.
+                //
+                // Same two rules codegen enforces (locus/decl.rs):
+                // exactly (child, err), and the error is
+                // `ClosureViolation`.
+                let locus_name = self
+                    .current_locus
+                    .map(|l| l.name.clone())
+                    .unwrap_or_default();
+                if fd.params.len() != 2 {
+                    self.diags.push(Diag::ty(
+                        fd.span,
+                        format!(
+                            "locus `{}`: `on_failure` takes exactly two params — the failing child and the error — got {}",
+                            locus_name,
+                            fd.params.len()
+                        ),
+                    ));
+                } else {
+                    let err_ty =
+                        resolve_type_expr(&fd.params[1].ty, self.known);
+                    let is_violation = matches!(
+                        &err_ty,
+                        Ty::Named(n) if n == "ClosureViolation"
+                    );
+                    if !is_violation && !matches!(err_ty, Ty::Unknown) {
+                        self.diags.push(Diag::ty(
+                            fd.params[1].name.span,
+                            format!(
+                                "locus `{}`: `on_failure`'s second param is the error and must be `ClosureViolation`, got `{}`",
+                                locus_name,
+                                err_ty.display()
+                            ),
+                        ));
+                    }
+                }
                 self.in_lifecycle = true;
                 self.in_on_failure = true;
                 self.locals.push();
