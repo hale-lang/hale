@@ -1229,6 +1229,8 @@ crates/hale-types/tests/constitutions.rs#0 2a2f5fd182496fe2
 crates/hale-types/tests/contract_expose_check.rs#2 c9f68cd1c70737ed
 crates/hale-types/tests/contract_expose_check.rs#3 5406bf60d39ac690
 crates/hale-types/tests/contract_expose_check.rs#5 68571438548b5b78
+crates/hale-types/tests/demand_gate.rs#0 a476bae0f7b173fe
+crates/hale-types/tests/demand_gate.rs#1 a476bae0f7b173fe
 crates/hale-types/tests/depends_set.rs#1 e6d019967d07bc80
 crates/hale-types/tests/depends_set.rs#2 7eb747ab2594f71d
 crates/hale-types/tests/diag_quality.rs#10 b6f5c37a20862edb

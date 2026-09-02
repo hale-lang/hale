@@ -115,6 +115,7 @@ crates/hale-types/tests/constitutions.rs#5	shared	count publishers(topic Settled
 crates/hale-types/tests/constitutions.rs#6	one	count publishers(topic Settled) == 1	Invalid	Some("A")
 crates/hale-types/tests/constitutions.rs#6	two	count subscribers(topic Settled) == 0	Invalid	Some("B")
 crates/hale-types/tests/constitutions.rs#8	two	count subscribers(topic Settled) == 0	Invalid	Some("Core")
+crates/hale-types/tests/demand_gate.rs#1	one_writer	count publishers(topic Placed) == 1	Holds	None
 crates/hale-types/tests/interface_dispatch.rs#10	one_call	bound llm <= 1 on paths from planners	Violated	None
 crates/hale-types/tests/interface_dispatch.rs#4	iso	forbid reaches(a_side, sinks)	Violated	None
 crates/hale-types/tests/interface_dispatch.rs#5	iso	forbid reaches(a_side, sinks)	Uncertified	None
