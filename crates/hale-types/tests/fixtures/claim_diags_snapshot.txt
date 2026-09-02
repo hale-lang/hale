@@ -294,8 +294,6 @@ Claim [409..412] claim `iso` violated: `a_side` reaches `b_side` — witness: `A
 Claim [156..171] claim `iso`: the crossing publish happens here
 Claim [223..247] claim `iso`: delivered at this subscription
 Claim [182..183] claim `iso`: the forbidden destination `B` is declared here
---- crates/hale-types/tests/judgment_reachability.rs#38 ---
-Claim [172..178] claim `tagged` uncertified: a fn makes an indirect or opaque call whose target this check cannot resolve, and names no purpose of its own — so whether a `syscall` boundary is crossed there is unknown. Classify the caller (`@effects(is: {...})`) or bind the callee so it resolves: Sup::on_failure(Violation)
 --- crates/hale-types/tests/judgment_reachability.rs#39 ---
 Claim [358..365] claim `someone` violated: no member of `pubs` subscribes `T`
 --- crates/hale-types/tests/judgment_reachability.rs#41 ---

@@ -2682,10 +2682,11 @@ fn on_failure_only_locus_admits() {
     std::fs::write(
         &src,
         r#"
+locus Ward { params { k: Int = 0; } }
 @phase_effects(birth: {})
 locus Guard {
     params { n: Int = 0; }
-    on_failure(e: FailureInfo) { self.n = 1; }
+    on_failure(c: Ward, err: ClosureViolation) { self.n = 1; }
 }
 main locus App {
     params { g: Guard = Guard { }; }
@@ -2924,10 +2925,11 @@ fn module_failure_only_locus_admits() {
         &src,
         r#"
 module inner {
+    locus Ward { params { k: Int = 0; } }
     @phase_effects(birth: {})
     locus Guard {
         params { n: Int = 0; }
-        on_failure(e: FailureInfo) {
+        on_failure(c: Ward, err: ClosureViolation) {
             self.n = 1;
         }
     }

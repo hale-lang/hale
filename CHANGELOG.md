@@ -8,6 +8,27 @@ behavior.
 
 ## Unreleased
 
+### `on_failure` and literal `subscribe` are checked, not just built
+
+Two shapes in the language's core vocabulary passed `hale check` and
+failed `hale build`, with no source location:
+
+- `on_failure` with the wrong arity, or a second param that is not
+  `ClosureViolation`. Codegen enforced both; the checker looked at
+  neither.
+- `subscribe "some.subject" as h;` with no `of type T`. A declared
+  topic supplies the payload, but a literal subject has no
+  declaration to take one from, so codegen needs the clause and said
+  so far too late.
+
+Both now report at check time, with a span, and the subscribe
+diagnostic shows the spelling that works. Two test fixtures turned
+out to be invalid Hale that only ever passed because those tests
+check and dump an artifact without building.
+
+This is the first pass against the check/build divergence baseline:
+47 down to 42.
+
 ### Locus param defaults are typechecked
 
 They were not. `check_locus_member` skipped the `params` block with a
