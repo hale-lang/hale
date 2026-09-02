@@ -6185,16 +6185,38 @@ impl Parser {
 
     fn parse_match_stmt(&mut self) -> Result<MatchStmt, Diag> {
         let kw = self.expect(TokenKind::Match, "match")?;
-        let scrutinee = self.parse_expr()?;
+        // Scrutinee-less form: `match { cond -> a, else -> b }`.
+        //
+        // First-match-wins over guards, which the AST has always been
+        // able to express (`MatchArm::guard`) — you just had to
+        // supply a scrutinee you then ignored and write `_ if` on
+        // every arm. That is a `cond`, and it comes up wherever
+        // dispatch is a ladder of tests rather than a shape match:
+        // HTTP routing, protocol dispatch, tiered fallbacks.
+        //
+        // Pure sugar. It desugars HERE into exactly what the ignored
+        // scrutinee spelling produced, so typecheck, codegen, the
+        // model and every judgment see the match they already saw,
+        // and nothing downstream learns a new form.
+        //
+        // `match {` is unambiguous in practice: matching ON a block
+        // expression is pathological, nothing in the corpus does it,
+        // and it stays writable as `match (…) { … }`.
+        let cond_form = self.at(&TokenKind::LBrace);
+        let scrutinee = if cond_form {
+            Expr::Literal(Literal::Bool(true), kw.span)
+        } else {
+            self.parse_expr()?
+        };
         self.expect(TokenKind::LBrace, "{")?;
         let mut arms = Vec::new();
         if !self.at(&TokenKind::RBrace) {
-            arms.push(self.parse_match_arm()?);
+            arms.push(self.parse_arm(cond_form)?);
             while self.eat(&TokenKind::Comma) {
                 if self.at(&TokenKind::RBrace) {
                     break;
                 }
-                arms.push(self.parse_match_arm()?);
+                arms.push(self.parse_arm(cond_form)?);
             }
         }
         let close = self.expect(TokenKind::RBrace, "}")?;
@@ -6202,6 +6224,46 @@ impl Parser {
             scrutinee,
             arms,
             span: kw.span.merge(close.span),
+        })
+    }
+
+    fn parse_arm(&mut self, cond_form: bool) -> Result<MatchArm, Diag> {
+        if cond_form {
+            self.parse_cond_match_arm()
+        } else {
+            self.parse_match_arm()
+        }
+    }
+
+    /// One arm of the scrutinee-less form: `<cond> -> body` or
+    /// `else -> body`. Lowered to the guarded arm it is sugar for,
+    /// so everything downstream sees an ordinary match.
+    fn parse_cond_match_arm(&mut self) -> Result<MatchArm, Diag> {
+        let start = self.peek_token().span;
+        let guard = if self.eat(&TokenKind::Else) {
+            // The catch-all. `_` with no guard is exactly what an
+            // ignored-scrutinee `_ ->` arm was.
+            None
+        } else {
+            Some(self.parse_expr()?)
+        };
+        self.expect(TokenKind::Arrow, "->")?;
+        let body = if self.at(&TokenKind::LBrace) {
+            MatchArmBody::Block(self.parse_block()?)
+        } else {
+            let e = self.parse_expr()?;
+            self.eat(&TokenKind::Semi);
+            MatchArmBody::Expr(e)
+        };
+        let span = match &body {
+            MatchArmBody::Expr(e) => e.span(),
+            MatchArmBody::Block(b) => b.span,
+        };
+        Ok(MatchArm {
+            pattern: Pattern::Wildcard(start),
+            guard,
+            body,
+            span,
         })
     }
 
