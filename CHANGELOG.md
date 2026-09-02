@@ -6,7 +6,7 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.19.0 — check earlier, run faster (2026-09-02)
 
 ### `on_failure` and literal `subscribe` are checked, not just built
 
