@@ -23734,11 +23734,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             let (val, ty) = self.lower_expr(a, scope)?;
             match &ty {
+                // GH #469: a `bounded` of scalars prints as `[1, 2]`
+                // via the shared renderer (see the composite arm
+                // below); one of anything else still cannot. This
+                // arm used to refuse ALL of them, and being FIRST in
+                // the match it shadowed the composite arm entirely —
+                // `println(w.samples)` typechecked and then failed to
+                // build. The corpus agreement gate did not catch it
+                // because no embedded program prints a bounded; the
+                // compiler's own unreachable-pattern warning did.
                 CodegenTy::Bounded(_, _) => {
-                    return Err(CodegenError::Unsupported(
-                        "cannot print a bounded[T; N] value directly — \
-                         print count(f) or iterate its elements"
-                            .into(),
+                    if !Self::value_to_string_supports(&ty) {
+                        return Err(CodegenError::Unsupported(
+                            "cannot print a bounded[T; N] value \
+                             directly unless its elements are scalars \
+                             — print count(f) or iterate its elements"
+                                .into(),
+                        ));
+                    }
+                    let rendered = self.value_to_string(val, &ty)?;
+                    format.push_str("%s");
+                    printf_args.push(BasicMetadataValueEnum::PointerValue(
+                        rendered.into_pointer_value(),
                     ));
                 }
                 CodegenTy::Int => {
@@ -23857,7 +23874,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 CodegenTy::TypeRef(_)
                 | CodegenTy::Tuple(_)
                 | CodegenTy::Array(_, _)
-                | CodegenTy::Bounded(_, _)
                     if Self::value_to_string_supports(&ty) =>
                 {
                     let rendered = self.value_to_string(val, &ty)?;

@@ -539,6 +539,21 @@ annotations are not in v1.
   grammatical but does not apply to the value's type (hex of a
   `String`, a precision on an `Int`) is a **type** error.
 
+  **Lint — a plain string that looks interpolated.** Because a
+  plain `"..."` keeps `{` and `}` as ordinary characters, writing
+  `println("x={x}")` compiles, runs, and prints the braces. The
+  checker emits a **warning** naming the f-string form when a
+  plain string literal passed to `print` / `println` contains
+  `{name}` **and** `name` resolves to a binding in scope.
+
+  The in-scope condition is what makes it a lint rather than a
+  heuristic: `println("{}")`, `println("{\"a\": 1}")` and prose
+  about a template placeholder name nothing and stay quiet. It is
+  a warning, never an error — printing braces around a word that
+  happens to also be a local is unusual, not illegal. `{{`
+  anywhere in the literal suppresses it, since that spelling
+  signals the author knows the syntax.
+
 ### Boolean literals
 
 - `true`, `false`.

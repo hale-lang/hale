@@ -11357,20 +11357,15 @@ impl<'a> Checker<'a> {
                                         self.diags.push(Diag::ty(
                                             a.span(),
                                             format!(
-                                                "`{}` cannot render a value of \
-                                                 type `{}` — printable types \
-                                                 are the scalar primitives, \
-                                                 String, enums, and structs / \
-                                                 tuples / arrays built from \
-                                                 those. Loci are not \
-                                                 printable (a locus is flow, \
-                                                 not shape, and rendering one \
-                                                 would expose `@sealed` \
-                                                 params); `Bytes` is not \
-                                                 printable (choose a \
-                                                 rendering explicitly)",
+                                                "`{}` cannot render a value \
+                                                 of type `{}` — {}",
                                                 id.name,
-                                                at.display()
+                                                at.display(),
+                                                self.why_unprintable(&at, 0)
+                                                    .unwrap_or_else(|| {
+                                                        "it is not printable"
+                                                            .to_string()
+                                                    })
                                             ),
                                         ));
                                     }
@@ -12834,10 +12829,11 @@ impl<'a> Checker<'a> {
             self.diags.push(Diag::ty(
                 args[0].span(),
                 format!(
-                    "cannot render a value of type `{}` — printable \
-                     types are the scalar primitives, String, enums, \
-                     and structs / tuples / arrays built from those",
-                    vt.display()
+                    "cannot render a value of type `{}` — {}",
+                    vt.display(),
+                    self.why_unprintable(&vt, 0).unwrap_or_else(|| {
+                        "it is not printable".to_string()
+                    })
                 ),
             ));
             return;
@@ -12949,6 +12945,70 @@ impl<'a> Checker<'a> {
                 _ => self.ty_is_printable_scalar(t),
             },
             _ => self.ty_is_printable_scalar(t),
+        }
+    }
+
+    /// Name the *reason* a type is not printable, as a trailing
+    /// clause for the diagnostic.
+    ///
+    /// Without this the message enumerates the printable set and
+    /// leaves the author to diff it against their declaration —
+    /// which is hard precisely in the cases that matter. `type
+    /// Message { id: String; tags: bounded[String; 32] }` reads as
+    /// though it qualifies: both field types appear in the list of
+    /// printable things, and the rule that actually excludes it (a
+    /// sequence renders only with scalar elements) is two levels
+    /// down. So report the offending component by name.
+    ///
+    /// Returns `None` when the type IS printable, so a caller can
+    /// use it as the whole explanation.
+    fn why_unprintable(&self, t: &Ty, depth: u32) -> Option<String> {
+        if self.ty_is_printable_at(t, depth) {
+            return None;
+        }
+        match t {
+            Ty::Named(n) => match self.top.symbols.get(n) {
+                Some(TopSymbol::Type(ti)) => match &ti.kind {
+                    TypeKind::Struct(fs) => fs.iter().find_map(|f| {
+                        self.why_unprintable(&f.ty, depth + 1).map(|why| {
+                            format!("`{}`: {}", f.name, why)
+                        })
+                    }),
+                    _ => Some(format!("`{}` does not render", n)),
+                },
+                Some(TopSymbol::Locus(_)) => Some(format!(
+                    "`{}` is a locus — a locus is flow, not shape, and \
+                     rendering one would expose the `params` a \
+                     `@sealed` locus confines. Render a field",
+                    n
+                )),
+                Some(TopSymbol::Perspective(_) | TopSymbol::Interface(_)) => {
+                    Some(format!("`{}` has no text form", n))
+                }
+                _ => Some(format!("`{}` does not render", n)),
+            },
+            Ty::Tuple(ts) => ts.iter().enumerate().find_map(|(i, x)| {
+                self.why_unprintable(x, depth + 1)
+                    .map(|why| format!("component {}: {}", i, why))
+            }),
+            Ty::Array(elem, Some(_)) | Ty::Bounded(elem, _) => Some(format!(
+                "`{}` renders only with scalar elements (Int, Float, \
+                 Bool, Decimal, Duration), and its element type is \
+                 `{}`",
+                t.display(),
+                elem.display()
+            )),
+            Ty::Array(_, None) => Some(
+                "an unsized array has no length to walk at the render \
+                 site"
+                    .to_string(),
+            ),
+            Ty::Prim(PrimType::Bytes) => Some(
+                "`Bytes` is binary — choose a rendering (hex, length, \
+                 or a text decode)"
+                    .to_string(),
+            ),
+            other => Some(format!("`{}` does not render", other.display())),
         }
     }
 

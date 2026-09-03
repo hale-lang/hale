@@ -312,3 +312,74 @@ fn the_lint_is_a_warning_not_an_error() {
     let src = r#"fn main() { let x = 3; println("x={x}"); }"#;
     assert!(errors(src).is_empty(), "{:?}", errors(src));
 }
+
+#[test]
+fn println_accepts_exactly_what_interpolation_does() {
+    // `println` builds a printf format string on a path of its own,
+    // so it kept a SECOND copy of the printable rule. Two divergences
+    // came out of that during #469 — a struct, and then a `bounded`
+    // whose refusal sat FIRST in the match and shadowed the composite
+    // arm entirely. Both typechecked and then failed to build.
+    //
+    // The corpus agreement gate catches this class only for shapes
+    // some embedded program happens to contain, and none printed a
+    // bounded. So state the invariant directly: if the checker
+    // accepts it for interpolation, `println` takes it too.
+    let src = r#"
+type P { x: Int; y: String; }
+type W { id: String; s: bounded[Int; 4]; }
+fn main() {
+    let p = P { x: 1, y: "a" };
+    println(p);
+    println(f"{p}");
+    println((1, 2), [3, 4], p);
+    let mut w = W { id: "w" };
+    push(w.s, 7) or raise;
+    println(w.s);
+    println(w);
+}
+"#;
+    assert!(errors(src).is_empty(), "{:?}", errors(src));
+}
+
+#[test]
+fn an_unprintable_component_is_named_not_just_implied() {
+    // `type Message { id: String; tags: bounded[String; 32] }` reads
+    // as though it qualifies — both field types appear in any list of
+    // printable things, and the rule that excludes it (sequences
+    // render only with scalar elements) is a level down. Enumerating
+    // the printable set and leaving the author to diff it against
+    // their declaration is exactly the wrong help here.
+    let src = r#"
+type Message { id: String; tags: bounded[String; 4]; }
+fn main() {
+    let m = Message { id: "m" };
+    println(f"{m}");
+}
+"#;
+    let es = errors(src);
+    assert!(
+        es.iter().any(|m| m.contains("`tags`")
+            && m.contains("scalar elements")),
+        "the diagnostic must name the offending field: {:?}",
+        es
+    );
+}
+
+#[test]
+fn a_nested_unprintable_field_is_named_by_path() {
+    let src = r#"
+type Inner { blob: Bytes; }
+type Outer { name: String; inner: Inner; }
+fn main() {
+    let o = Outer { name: "x", inner: Inner { blob: b"y" } };
+    println(f"{o}");
+}
+"#;
+    let es = errors(src);
+    assert!(
+        es.iter().any(|m| m.contains("`inner`") && m.contains("`blob`")),
+        "the path to the offending field should be walkable: {:?}",
+        es
+    );
+}

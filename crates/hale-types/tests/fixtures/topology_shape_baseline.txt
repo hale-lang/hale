@@ -1283,6 +1283,7 @@ crates/hale-types/tests/fstring_diagnostics.rs#18 865d341109268295
 crates/hale-types/tests/fstring_diagnostics.rs#19 865d341109268295
 crates/hale-types/tests/fstring_diagnostics.rs#20 f2c1228edb650960
 crates/hale-types/tests/fstring_diagnostics.rs#21 865d341109268295
+crates/hale-types/tests/fstring_diagnostics.rs#23 f2c1228edb650960
 crates/hale-types/tests/fstring_diagnostics.rs#3 f2c1228edb650960
 crates/hale-types/tests/fstring_diagnostics.rs#7 f2c1228edb650960
 crates/hale-types/tests/fstring_diagnostics.rs#9 f2c1228edb650960

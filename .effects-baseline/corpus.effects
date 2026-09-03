@@ -336,6 +336,8 @@ scale  none={entropy,env,time}  alloc_per_call=0
 App::run  does={syscall,block,time}
 Counter::on_beat  does={syscall}
 main  does={alloc}
+### 86-formatting
+main  does={syscall,alloc}
 ### docs-server
 __docs_dir  does={env}
 __render_doc  does={syscall,env,alloc}

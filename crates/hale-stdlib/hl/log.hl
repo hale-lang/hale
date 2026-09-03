@@ -105,11 +105,11 @@ fn __std_log_kv(key: String, value: String) -> String {
 // comparison used for filtering goes through this map instead:
 // TRACE < DEBUG < INFO < WARN < ERROR.
 fn __log_severity(level: Int) -> Int {
-    if level == 5 { return 0; }   // TRACE
-    if level == 4 { return 1; }   // DEBUG
-    if level == 1 { return 2; }   // INFO
-    if level == 2 { return 3; }   // WARN
-    if level == 3 { return 4; }   // ERROR
+    if level == 5 { return 0; } // TRACE
+    if level == 4 { return 1; } // DEBUG
+    if level == 1 { return 2; } // INFO
+    if level == 2 { return 3; } // WARN
+    if level == 3 { return 4; } // ERROR
     return 2;
 }
 
@@ -166,7 +166,7 @@ locus __StdLogLogger {
         //
         // Set it explicitly to ignore the environment:
         //   std::log::Logger { name: "app", min_severity: 3 }
-        min_severity: Int = 0 - 1;   // -1 = "ask the environment"
+        min_severity: Int = 0 - 1; // -1 = "ask the environment"
     }
     bus {
         publish "log.**" of type __StdLogEvent;
@@ -202,8 +202,8 @@ locus __StdLogLogger {
     //   log.info_kv("saved", std::log::kv("user", id));
     //   log.warn_kv("retrying", std::log::kv("attempt", to_string(n))
     //                           + " " + std::log::kv("after", "2s"));
-    fn info_kv(msg: String, fields: String)  { self.emit(1, msg, fields); }
-    fn warn_kv(msg: String, fields: String)  { self.emit(2, msg, fields); }
+    fn info_kv(msg: String, fields: String) { self.emit(1, msg, fields); }
+    fn warn_kv(msg: String, fields: String) { self.emit(2, msg, fields); }
     fn error_kv(msg: String, fields: String) { self.emit(3, msg, fields); }
     fn debug_kv(msg: String, fields: String) { self.emit(4, msg, fields); }
     fn trace_kv(msg: String, fields: String) { self.emit(5, msg, fields); }
@@ -354,7 +354,7 @@ locus __StdLogFileSink {
         }
         let name = __log_level_name(e.level);
         self.__append("[" + name + " " + e.path + "] " + e.msg
-            + __log_fields_suffix(e.fields) + "\n");
+                + __log_fields_suffix(e.fields) + "\n");
     }
 
     fn last_error_kind() -> String { return self.last_kind; }

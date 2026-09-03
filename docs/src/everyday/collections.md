@@ -156,6 +156,14 @@ like `len(s)`):
 - `truncate(f, n)` — shrink the count (never grows); with `set`,
   this is the drop-front idiom for FIFO windows.
 
+A `bounded` of **scalars** (`Int`, `Float`, `Bool`, `Decimal`,
+`Duration`) prints directly, showing the *live* count rather than
+the capacity — an eight-slot buffer holding two elements reads as
+`[7, 8]`. A `bounded[String; N]` like `tags` above does not print;
+neither does a struct containing one. Iterate it, or print
+`count`. (The compiler names the field when it refuses, so you
+won't have to work out which one it meant.)
+
 Use `bounded` when the maximum is known and the list is a *field of
 a value* — per-message tags, route parameters, a chat window. The
 old workaround (a tab-separated string you re-parse on every read)

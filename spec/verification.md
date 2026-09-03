@@ -1964,6 +1964,29 @@ assume the others in a build:
   than opening a laundering route. Branch taint is shared rather than
   merged per-branch — imprecise in the over-tainting direction.
 
+  **Composite rendering does not open a route** (GH #469). Making
+  structs, tuples and arrays printable widens exactly the surface
+  this lint guards, so the interaction is stated rather than left to
+  be rediscovered: the walk keys on the *mention* of a tainted name
+  and recurses through calls and binary operators, and an f-string
+  desugars into a concatenation of `to_string` calls over the very
+  expressions the author wrote. So `println(f"{creds}")` is flagged
+  on the same grounds as `println(creds.token)` — the argument
+  mentions `creds` either way. Whole-value rendering is not a new
+  hole; it is the same hole at a coarser grain.
+
+  The exclusions in the printable set (see
+  `spec/semantics.md` § "Rendering values as text") carry the rest:
+  a **locus never renders**, so there is no printable path to the
+  `params` of a `@sealed` locus, which is the containment this
+  section's guarantee half depends on.
+
+  What is genuinely new and genuinely unguarded: a secret held in an
+  ordinary `type` field with no `@secret` marker anywhere renders
+  when its record does. That was already true of
+  `println(creds.token)` — there is no taint to key on either way —
+  so it is a limit of the marker, not a regression.
+
   For a guarantee rather than a lint, see § Secrets below.
 - **Inferred effect sets + symbolic cost** (GH #265, 2026-07-29).
   `frontier::infer_effects` computes the transitive effect set of ANY
