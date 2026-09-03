@@ -19,11 +19,57 @@ fn diags(src: &str) -> Vec<String> {
 }
 
 #[test]
-fn printing_a_struct_is_a_check_error() {
+fn printing_a_struct_renders_it() {
+    // GH #241 made this an error with a span, replacing a spanless
+    // codegen crash. GH #469 made it legal instead: the reason it
+    // was an error was that nothing rendered records, and now
+    // something does. What #241 was actually protecting — that the
+    // failure arrives at check phase with a span rather than as a
+    // backend internal error — is preserved by the LOCUS case
+    // below, which is refused permanently rather than pending an
+    // implementation.
     let src = r#"
         type P { x: Int = 0; }
         fn main() {
             let p = P { x: 1 };
+            println("p=", p);
+        }
+    "#;
+    let ds = diags(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("cannot render")),
+        "a struct of printable fields renders; got: {:?}",
+        ds
+    );
+}
+
+#[test]
+fn printing_a_locus_is_a_check_error() {
+    // The exclusion that stays. A locus is flow, not shape, and
+    // rendering one would read back the `params` a `@sealed` locus
+    // exists to confine (GH #436).
+    let src = r#"
+        locus Svc { params { n: Int = 1; } }
+        main locus App { params { s: Svc = Svc { }; } }
+        fn main() { let a = App { }; println("s=", a.s); }
+    "#;
+    let ds = diags(src);
+    assert!(
+        ds.iter().any(|m| m.contains("cannot render") && m.contains("`Svc`")),
+        "expected printable diag; got: {:?}",
+        ds
+    );
+}
+
+#[test]
+fn printing_a_struct_with_an_unprintable_field_is_a_check_error() {
+    // Recursion means one bad field anywhere makes the whole
+    // record unprintable — the check still has a span and still
+    // names the type the author wrote.
+    let src = r#"
+        type P { blob: Bytes; }
+        fn main() {
+            let p = P { blob: b"x" };
             println("p=", p);
         }
     "#;
@@ -36,7 +82,9 @@ fn printing_a_struct_is_a_check_error() {
 }
 
 #[test]
-fn string_plus_struct_is_a_check_error() {
+fn string_plus_struct_renders_it() {
+    // The `String + printable` coercion and the printable set are
+    // one rule, so this moved with GH #469 for the same reason.
     let src = r#"
         type P { x: Int = 0; }
         fn main() {
@@ -46,9 +94,20 @@ fn string_plus_struct_is_a_check_error() {
         }
     "#;
     let ds = diags(src);
+    assert!(ds.is_empty(), "String + struct now renders; got: {:?}", ds);
+}
+
+#[test]
+fn string_plus_locus_is_still_a_check_error() {
+    let src = r#"
+        locus Svc { params { n: Int = 1; } }
+        main locus App { params { s: Svc = Svc { }; } }
+        fn main() { let a = App { }; println("v: " + a.s); }
+    "#;
+    let ds = diags(src);
     assert!(
         !ds.is_empty(),
-        "expected a diag for String + struct; got none"
+        "expected a diag for String + locus; got none"
     );
 }
 

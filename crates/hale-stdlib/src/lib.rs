@@ -316,6 +316,11 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "log", "LogEvent"], "__StdLogEvent"),
     (&["std", "log", "Logger"], "__StdLogLogger"),
     (&["std", "log", "StdoutSink"], "__StdLogStdoutSink"),
+    // GH #469 B: structured fields. `kv` is the only new PUBLIC
+    // name; the severity/level helpers stay private because their
+    // numbering is an implementation detail sinks decode, not a
+    // surface callers should be pinning.
+    (&["std", "log", "kv"], "__std_log_kv"),
     // std::secret (GH #436).
     (&["std", "secret", "Credential"], "__StdSecretCredential"),
     (&["std", "secret", "Signer"], "__StdSecretSigner"),

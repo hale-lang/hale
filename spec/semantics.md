@@ -195,6 +195,66 @@ anchored in the lazy global payload arena, so callers can
 stash the pointer past the call site without m49 deep-copy
 plumbing.
 
+## Rendering values as text
+
+`println`, `print`, `to_string`, `String + x`, and f-string
+interpolation all render through **one** rule. The set of types
+that rule accepts is called the *printable* set.
+
+A type is printable when it is:
+
+- a scalar primitive — `Int`, `Float`, `Bool`, `Decimal`,
+  `Duration`, `Time` — or `String` / `StringView`;
+- an enum (rendered `Enum::Variant`, or `Enum::Variant(a, b)`
+  when the variant carries a payload);
+- a `type` record whose fields are **all** printable, rendered
+  `Name { field: v, other: w }` in declaration order;
+- a tuple of printable elements, rendered `(a, b)`;
+- a `[T; N]` or `bounded[T; N]` whose element type is `Int`,
+  `Float`, `Bool`, `Decimal` or `Duration`, rendered `[a, b, c]`.
+
+Three exclusions are load-bearing rather than incidental:
+
+- **A locus is never printable.** A locus is flow, not shape; and
+  since a `@sealed` locus confines its `params` (see GH #436),
+  a printable locus would be a way to read the confined state
+  back out. There is no printable path to a sealed value.
+- **`Bytes` is not printable.** The useful rendering — hex, a
+  length, a UTF-8 attempt — is a choice the author must make.
+- **An unsized `[T]` is not printable.** There is no length to
+  walk at the render site.
+
+Rendering is defined recursively, with two rules about the nesting:
+
+- A `String` **inside** a composite is quoted with `"`; a `String`
+  rendered on its own is not. `to_string(s)` is identity, and it
+  stays identity — but `User { name: a, b }` is ambiguous about
+  its arity in a way `User { name: "a, b" }` is not.
+- A composite longer than **32** elements is truncated with a
+  trailing `…` inside the brackets. For `bounded`, the marker
+  depends on the live count, not the declared capacity.
+
+Rendering has no user-visible ordering or allocation guarantees
+beyond producing the text above; results are owned by the caller's
+arena like any other constructed String.
+
+### Format specs
+
+`f"{expr:spec}"` renders `expr` under `spec` instead of under the
+default rule. The grammar is in `spec/tokens.md`. Ordering is
+fixed: the value is **rendered first** (honouring `precision` or
+a hexadecimal `kind`, both of which need the value) and the text is
+**padded second** (`width`, `fill`, `align`).
+
+An absent alignment resolves from the value's type — numeric values
+pad on the left, everything else pads on the right — so a column of
+figures lines up on the ones place and a column of names lines up
+on the first letter without either being asked for.
+
+Grammatical errors in a spec are reported by the parser;
+spec/value mismatches (hexadecimal of a `String`, a precision on
+an `Int`) are reported by the typechecker. Neither reaches codegen.
+
 ## Locus instantiation
 
 `LocusName { params }`:

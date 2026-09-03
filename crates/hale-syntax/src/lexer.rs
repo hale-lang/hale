@@ -29,7 +29,26 @@ pub enum FStringPart {
     Lit(String),
     /// Raw text between `{` and `}`. Parsed as an Hale expression
     /// at parse time; an empty Interp is a lex error.
-    Interp(String),
+    ///
+    /// `start`/`end` are the body's byte offsets in the ORIGINAL
+    /// source, so the parser can shift the sub-parse's spans back
+    /// into the enclosing file. Without them every diagnostic about
+    /// an interpolation pointed at offset 0 of a string that only
+    /// exists inside the lexer — GH #469's A4: `f"{point}"` reported
+    /// its type error at `1:1`, on whatever happened to be the first
+    /// declaration in the file.
+    ///
+    /// The mapping is exact when the body has no escapes and
+    /// approximate when it does (`\"` is two source bytes and one
+    /// body byte). `end` bounds that drift: a shifted span is
+    /// clamped into `start..=end`, so the worst case is a caret
+    /// somewhere inside the right `{...}` rather than a caret in the
+    /// wrong construct.
+    Interp {
+        body: String,
+        start: usize,
+        end: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1269,6 +1288,12 @@ impl<'a> Lexer<'a> {
                                 }
                             }
                         }
+                        // The body is trimmed, so the first
+                        // *significant* byte is past any leading
+                        // whitespace — count it so `f"{ x }"` still
+                        // points at `x` and not at the space.
+                        let lead =
+                            body.len() - body.trim_start().len();
                         let body = body.trim().to_string();
                         if body.is_empty() {
                             return Err(Diag::lex(
@@ -1276,7 +1301,13 @@ impl<'a> Lexer<'a> {
                                 "empty interpolation `{}` in f-string",
                             ));
                         }
-                        parts.push(FStringPart::Interp(body));
+                        parts.push(FStringPart::Interp {
+                            body,
+                            // +1 skips the `{`; self.pos is sitting
+                            // on the closing `}`.
+                            start: interp_open_pos + 1 + lead,
+                            end: self.pos,
+                        });
                         self.pos += 1; // consume `}`
                     }
                 }

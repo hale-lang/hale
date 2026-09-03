@@ -501,6 +501,44 @@ annotations are not in v1.
   for back-compat (no breaking change). Interpolation accepts
   any expression; types are converted with `to_string`.
 
+  Whitespace immediately inside the braces is trimmed, so
+  `f"{ x }"` and `f"{x}"` are the same. An empty interpolation
+  (`f"{}"`) is a lex error: there is no positional-argument form
+  for it to refer to.
+
+  A string literal may appear inside an interpolation
+  (`f"{lower("ADA")}"`) — the lexer tracks quote state while
+  scanning for the closing brace, so braces inside that string do
+  not close the interpolation.
+
+  **Format specs** (GH #469): an interpolation may end with
+  `:spec`, giving
+
+  ```text
+  spec := [[fill]align] [width] ["." precision] [kind]
+  align := "<" | "^" | ">"
+  kind  := "x" | "X"
+  ```
+
+  The `:` that opens a spec is the **last top-level one** that is
+  not part of a `::` path separator and not inside brackets or a
+  string — so `f"{std::str::lower(s):>8}"` splits once, correctly.
+
+  - `width` pads to at least that many **bytes** and never
+    truncates. Absent an explicit alignment, numbers pad on the
+    left and everything else pads on the right.
+  - `fill` is only recognised when an alignment follows it, which
+    is what keeps `{x:8}` a width rather than a fill of `8`.
+  - `precision` applies to `Float` and `Decimal` only; `Decimal`
+    is rendered through the exact fixed-point path, not via
+    `f64`. Maximum 17.
+  - `kind` renders an `Int` in hexadecimal, from the unsigned bit
+    pattern (so `-1` is `ffffffffffffffff`).
+
+  A spec that is ungrammatical is a **parse** error; a spec that is
+  grammatical but does not apply to the value's type (hex of a
+  `String`, a precision on an `Int`) is a **type** error.
+
 ### Boolean literals
 
 - `true`, `false`.

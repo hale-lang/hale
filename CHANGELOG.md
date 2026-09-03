@@ -8,6 +8,100 @@ behavior.
 
 ## Unreleased
 
+### Logging ergonomics (GH #469)
+
+f-strings, composite rendering, format specs, and `std::log`'s
+structured half. The discovery that framed the issue: f-strings
+shipped in v1.x-10 and were documented nowhere, so in practice
+everyone wrote `println("x=", x)` and the ones who guessed
+`"x={x}"` got the braces printed back at them.
+
+**Interpolation renders composites.** `f"{point}"` was a type
+error advising you to "render struct/locus fields individually" —
+which is a fair description of the workaround and not of anything
+anyone wants to do mid-debugging. Structs, tuples, fixed arrays
+and `bounded` now render recursively:
+
+    Reading { sensor: "t-1", at: Point { x: 3, y: 4 } }
+
+A String **inside** a rendered value is quoted, so a value
+containing a comma still reads as one value; a String on its own is
+not (`to_string(s)` stays identity). `bounded` renders its live
+count, not its capacity. Three exclusions are deliberate: a
+**locus** never renders (it is flow, not shape — and rendering one
+would read back the `params` that `@sealed` exists to confine),
+`Bytes` never renders (the useful form is a choice), and neither
+does an unsized `[T]`.
+
+`println` had a *second* copy of the printable rule, on its own
+printf-building path. It moved too — the corpus check/build
+agreement gate (#512) caught the half-landed version, which is
+what it is for.
+
+**Format specs.** `f"{x:>8.2}"`, with
+`[[fill]align][width][.precision][kind]`:
+
+    println(f"[{n:6}]");      // [    42]  numbers pad left
+    println(f"[{name:6}]");   // [ada   ]  text pads right
+    println(f"[{n:0>6}]");    // [000042]
+    println(f"{ratio:.2}");   // 3.14
+    println(f"{n:x}");        // 2a
+
+An absent alignment resolves from the value's type, so a column of
+figures lines up on the ones place without being asked. Width never
+truncates: a silently shortened number in a log is worse than a
+ragged table. `Decimal` precision goes through the exact
+fixed-point formatter rather than an `f64`, so rendering a money
+value does not reintroduce the rounding `Decimal` exists to avoid.
+Ungrammatical specs are parse errors; specs that do not apply to
+the value's type are type errors. Neither reaches codegen.
+
+**Diagnostics inside an interpolation have spans.** They used to
+report at `1:1`: the sub-parse ran on a private string whose
+offsets began at zero, so the caret landed on whatever declaration
+was at the top of the file, and the author was told their type
+declaration was wrong. Token spans are now shifted into the
+enclosing source before parsing, which fixes every consumer at
+once. Making them real also exposed that some errors were reported
+twice; byte-identical diagnostics are now deduplicated.
+
+**A lint for the silent case.** A plain string containing `{x}`
+passed to `print`/`println`, where `x` names something in scope,
+warns and suggests the f-string. It fires only when the braces
+name a real binding, so `println("{}")`, `println("{\"a\": 1}")`
+and prose about a template stay quiet.
+
+**`std::log` gains its structured half.** The module already was
+the "logs as a topic" design — typed events on hierarchical
+`log.<path>` subjects, sinks as ordinary bus subscribers. What it
+lacked:
+
+- **fields** — `LogEvent.fields` carries logfmt text, built with
+  `std::log::kv(k, v)` (which quotes values containing a space, a
+  quote or an `=`). Every level gains a `_kv` variant. Text rather
+  than a map because a map in Hale is a *locus* and a locus cannot
+  be a payload; the flat record keeps crossing every transport the
+  bus supports and keeps the field order you wrote.
+- **`ts`** — unix seconds stamped at the **publish** site. The
+  console sink previously printed its own clock, which is a
+  different time under a queued or bridged sink and an unrelated
+  one under `hale replay`.
+- **level filtering** — `HALE_LOG=error|warn|info|debug`, or
+  `min_severity` in code. Filtering is at the *publisher*, so a
+  suppressed `log.trace(...)` in a hot loop costs one integer
+  compare and publishes nothing at all. Sinks accept the same knob,
+  for when two sinks want different levels.
+
+Locus attribution — stamping `locus=…` on every record from the
+observability publisher TLS — is **not** in this change, and the
+issue's "near-free" estimate for it does not survive contact: the
+instance table holds `{self, id, type_id, parent}` with no name
+(names resolve consumer-side from the model), the table only fills
+when observability is on, and the publish happens inside
+`Logger.info` so the attributed locus would be the *logger*, not
+its caller. The cascading `parent_path` is the attribution that
+works today.
+
 ### `match { cond -> … }` — first-match-wins without a scrutinee
 
 First-match-wins over guards was always expressible: a match arm

@@ -18149,18 +18149,45 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// inline. Used by the `String + <printable>` auto-coercion
     /// in lower_expr's BinOp::Add branch — types not in this set
     /// fall back to the existing mixed-type error.
+    /// Which types [`Self::value_to_string`] can render.
+    ///
+    /// Must stay in lockstep with `ty_is_printable` in the
+    /// typechecker. A type the checker accepts and this refuses is a
+    /// check/build divergence — `hale check` tells the author their
+    /// program is fine and `hale build` then rejects it from another
+    /// layer, usually without a span. That class is gated by
+    /// `corpus_check_build_agreement`, so widening one side alone
+    /// fails CI by design.
     fn value_to_string_supports(ty: &CodegenTy) -> bool {
-        matches!(
-            ty,
+        match ty {
             CodegenTy::String
-                | CodegenTy::Int
-                | CodegenTy::Bool
-                | CodegenTy::Float
-                | CodegenTy::Decimal
-                | CodegenTy::Duration
-                | CodegenTy::Time
-                | CodegenTy::Enum(_)
-        )
+            | CodegenTy::Int
+            | CodegenTy::Bool
+            | CodegenTy::Float
+            | CodegenTy::Decimal
+            | CodegenTy::Duration
+            | CodegenTy::Time
+            | CodegenTy::Enum(_)
+            | CodegenTy::TypeRef(_) => true,
+            // GH #469 A2. Element types are restricted to the
+            // scalars because those are the shapes whose SSA value
+            // is reliably a pointer to inline storage; a
+            // `[String; 3]` has no settled value repr to walk.
+            CodegenTy::Array(elem, _) | CodegenTy::Bounded(elem, _) => {
+                matches!(
+                    elem.as_ref(),
+                    CodegenTy::Int
+                        | CodegenTy::Float
+                        | CodegenTy::Bool
+                        | CodegenTy::Decimal
+                        | CodegenTy::Duration
+                )
+            }
+            CodegenTy::Tuple(elems) => {
+                elems.iter().all(Self::value_to_string_supports)
+            }
+            _ => false,
+        }
     }
 
     fn lower_to_string_builtin(
@@ -18351,13 +18378,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 self.lower_enum_with_payload_to_string(&info, &enum_name, v)
             }
-            CodegenTy::TypeRef(name) => Err(CodegenError::Unsupported(format!(
-                "to_string on `{}` (a user `type` record) isn't supported \
-                 — Hale has no auto-derived debug shape at v1. Either \
-                 access a primitive field (e.g. `to_string(x.id)`) or \
-                 render it explicitly via `std::json::Builder`",
-                name
-            ))),
+            // GH #469 A2: composite debug rendering. Structs,
+            // tuples, fixed arrays and `bounded` render
+            // recursively, so `f"{point}"` prints
+            // `Point { x: 3, y: 4 }` instead of failing to compile.
+            CodegenTy::TypeRef(name) => self.lower_struct_to_string(&name, v),
+            CodegenTy::Tuple(elems) => self.lower_tuple_to_string(&elems, v),
+            CodegenTy::Array(ref elem, n) => {
+                self.lower_array_to_string(elem, n, v)
+            }
+            CodegenTy::Bounded(ref elem, cap) => {
+                self.lower_bounded_to_string(elem, cap, v)
+            }
             CodegenTy::LocusRef(name) => Err(CodegenError::Unsupported(format!(
                 "to_string on `{}` (a locus value) isn't supported — \
                  locus state has no canonical text form. Access a specific \
@@ -18439,7 +18471,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             .str_concat(acc.into(), comma.into())?
                             .into_pointer_value();
                     }
-                    let rendered = self.value_to_string(*fv, fty)?;
+                    let rendered = self.value_to_string_nested(*fv, fty)?;
                     acc = self.str_concat(acc.into(), rendered)?.into_pointer_value();
                 }
                 let close = self.global_string(")");
@@ -18495,6 +18527,526 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         incoming.push((&default_acc, default_bb));
         phi.add_incoming(&incoming);
         Ok(phi.as_basic_value())
+    }
+
+    /// GH #469 A3: lower `__fmt(value, "spec")`, the desugaring of
+    /// `f"{value:spec}"`.
+    ///
+    /// Order matters and is fixed here: RENDER first (honouring
+    /// precision or hex, which need the value), then PAD (which
+    /// needs the text). Doing it the other way would pad a number
+    /// and then reformat the padding.
+    ///
+    /// The spec is re-parsed from the literal rather than threaded
+    /// through the AST as a struct. It is parsed by the same
+    /// `hale_syntax::fstring` code the parser and the checker use,
+    /// so there is one grammar with one set of failure modes rather
+    /// than three that can drift.
+    fn lower_fmt_builtin(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        use hale_syntax::fstring::{Align, FormatSpec, SpecKind};
+        if args.len() != 2 {
+            return Err(CodegenError::Unsupported(format!(
+                "format desugaring expects 2 arguments, got {}",
+                args.len()
+            )));
+        }
+        let Expr::Literal(Literal::String(spec_text), _) = &args[1] else {
+            return Err(CodegenError::Unsupported(
+                "format spec must be a literal".to_string(),
+            ));
+        };
+        let spec = FormatSpec::parse(spec_text).map_err(|m| {
+            CodegenError::Unsupported(format!("format spec: {}", m))
+        })?;
+        let (v, ty) = self.lower_expr(&args[0], scope)?;
+        let arena_ptr = self.current_arena_ptr()?;
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+
+        // --- render ---
+        let mut rendered: BasicValueEnum<'ctx> = match spec.kind {
+            SpecKind::HexLower | SpecKind::HexUpper => {
+                let upper =
+                    i32_t.const_int((spec.kind == SpecKind::HexUpper) as u64, false);
+                let f = self
+                    .module
+                    .get_function("lotus_fmt_int_hex")
+                    .expect("lotus_fmt_int_hex declared");
+                self.builder
+                    .build_call(
+                        f,
+                        &[
+                            arena_ptr.into(),
+                            v.into_int_value().into(),
+                            upper.into(),
+                        ],
+                        "fmt.hex",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_fmt_int_hex returns ptr")
+            }
+            SpecKind::Display => match spec.precision {
+                Some(p) if ty == CodegenTy::Float => {
+                    let f = self
+                        .module
+                        .get_function("lotus_fmt_float_prec")
+                        .expect("lotus_fmt_float_prec declared");
+                    self.builder
+                        .build_call(
+                            f,
+                            &[
+                                arena_ptr.into(),
+                                v.into_float_value().into(),
+                                i32_t.const_int(p as u64, false).into(),
+                            ],
+                            "fmt.prec",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .try_as_basic_value()
+                        .left()
+                        .expect("lotus_fmt_float_prec returns ptr")
+                }
+                // Decimal is an i128 mantissa at fixed scale 9, NOT
+                // an f64 — so it goes through the exact fixed-point
+                // formatter `std::decimal::format` already uses.
+                // Routing it via a double would reintroduce, in the
+                // rendering of a money value, precisely the rounding
+                // the Decimal type exists to avoid. (Places clamp at
+                // 9: there is no tenth digit to print.)
+                Some(p) if ty == CodegenTy::Decimal => {
+                    let i128_v = v.into_int_value();
+                    let lo = self
+                        .builder
+                        .build_int_truncate(i128_v, i64_t, "fmt.dec.lo")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let shift =
+                        self.context.i128_type().const_int(64, false);
+                    let hi_wide = self
+                        .builder
+                        .build_right_shift(
+                            i128_v, shift, true, "fmt.dec.hi_w",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let hi = self
+                        .builder
+                        .build_int_truncate(hi_wide, i64_t, "fmt.dec.hi")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let f = self
+                        .module
+                        .get_function("lotus_decimal_format")
+                        .expect("lotus_decimal_format declared");
+                    self.builder
+                        .build_call(
+                            f,
+                            &[
+                                hi.into(),
+                                lo.into(),
+                                i64_t.const_int(p as u64, false).into(),
+                            ],
+                            "fmt.dec.prec",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .try_as_basic_value()
+                        .left()
+                        .expect("lotus_decimal_format returns ptr")
+                }
+                _ => self.value_to_string(v, &ty)?,
+            },
+        };
+
+        // --- pad ---
+        if let Some(w) = spec.width {
+            // An unaligned spec picks its side from the VALUE: digits
+            // pad on the left so a column of figures lines up on the
+            // ones place, text pads on the right so a column of names
+            // lines up on the first letter. Both are what a reader
+            // means by `{x:8}` without having thought about it.
+            let numeric = matches!(
+                ty,
+                CodegenTy::Int
+                    | CodegenTy::Float
+                    | CodegenTy::Decimal
+                    | CodegenTy::Duration
+            ) || spec.kind != SpecKind::Display;
+            let align = spec.align.unwrap_or(if numeric {
+                Align::Right
+            } else {
+                Align::Left
+            });
+            let f = self
+                .module
+                .get_function("lotus_fmt_pad")
+                .expect("lotus_fmt_pad declared");
+            rendered = self
+                .builder
+                .build_call(
+                    f,
+                    &[
+                        arena_ptr.into(),
+                        rendered.into(),
+                        i64_t.const_int(w as u64, false).into(),
+                        i32_t
+                            .const_int(spec.fill as u32 as u64, false)
+                            .into(),
+                        i32_t.const_int(align.code() as u64, false).into(),
+                    ],
+                    "fmt.pad",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("lotus_fmt_pad returns ptr");
+        }
+        Ok((rendered, CodegenTy::String))
+    }
+
+    /// Render a value that sits INSIDE a composite.
+    ///
+    /// The only difference from [`Self::value_to_string`] is that a
+    /// String is quoted. At the top level `to_string(s)` must stay
+    /// identity — `println(name)` printing `"riley"` with the quotes
+    /// would be absurd — but inside a record the quotes are what
+    /// make the rendering readable: `User { name: a, b }` is
+    /// genuinely ambiguous about whether there are two fields or one
+    /// field holding `a, b`, and `User { name: "a, b" }` is not.
+    fn value_to_string_nested(
+        &mut self,
+        v: BasicValueEnum<'ctx>,
+        ty: &CodegenTy,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let inner = self.value_to_string(v, ty)?;
+        if !matches!(ty, CodegenTy::String | CodegenTy::StringView) {
+            return Ok(inner);
+        }
+        let q = self.global_string("\"");
+        let opened = self.str_concat(q.into(), inner)?;
+        let q2 = self.global_string("\"");
+        self.str_concat(opened, q2.into())
+    }
+
+    /// GH #469 A2: render a user `type` record as
+    /// `Name { field: v, other: w }`.
+    ///
+    /// Fields are walked in DECLARATION order, not the map's sort
+    /// order, so the rendering matches the source you are reading
+    /// while debugging. Each field recurses through
+    /// [`Self::value_to_string`], which is what makes nesting work
+    /// without a second implementation.
+    ///
+    /// The printable set is fixed by the typechecker
+    /// (`ty_is_printable`); the errors below are for values that
+    /// reach codegen some other way (a synthesized type, a stdlib
+    /// path typed `Unknown`), and they name a field rather than the
+    /// whole record so the author knows which one to fix.
+    fn lower_struct_to_string(
+        &mut self,
+        name: &str,
+        v: BasicValueEnum<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let info = self.user_types.get(name).cloned().ok_or_else(|| {
+            CodegenError::Unsupported(format!(
+                "to_string: unknown type `{}`",
+                name
+            ))
+        })?;
+        let recv = v.into_pointer_value();
+        let mut acc = self.global_string(&format!("{} {{", name)).into();
+        for (i, fname) in info.field_order.iter().enumerate() {
+            let (idx, fty) =
+                info.fields.get(fname).cloned().ok_or_else(|| {
+                    CodegenError::Unsupported(format!(
+                        "to_string: type `{}` has no field `{}`",
+                        name, fname
+                    ))
+                })?;
+            let sep =
+                self.global_string(if i == 0 { " " } else { ", " });
+            acc = self.str_concat(acc, sep.into())?;
+            let label = self.global_string(&format!("{}: ", fname));
+            acc = self.str_concat(acc, label.into())?;
+            let fv = self.load_member_for_render(
+                info.struct_ty,
+                recv,
+                idx,
+                &fty,
+                fname,
+            )?;
+            let rendered = self.value_to_string_nested(fv, &fty)?;
+            acc = self.str_concat(acc, rendered)?;
+        }
+        let close = self.global_string(if info.field_order.is_empty() {
+            "}"
+        } else {
+            " }"
+        });
+        self.str_concat(acc, close.into())
+    }
+
+    /// Load one field/element for rendering.
+    ///
+    /// Inline fixed arrays and `bounded` are storage laid out IN the
+    /// containing struct, so their SSA value is the slot's ADDRESS —
+    /// loading through it would read the first element and hand back
+    /// a number where a sequence belongs. Same rule as the general
+    /// field-access path; kept in one place because getting it wrong
+    /// is silent (a well-typed load of the wrong thing).
+    fn load_member_for_render(
+        &mut self,
+        struct_ty: inkwell::types::StructType<'ctx>,
+        base: PointerValue<'ctx>,
+        idx: u32,
+        ty: &CodegenTy,
+        label: &str,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let slot = self
+            .builder
+            .build_struct_gep(
+                struct_ty,
+                base,
+                idx,
+                &format!("ts.{}.ptr", label),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        if Self::array_inline_spec(ty).is_some()
+            || matches!(ty, CodegenTy::Bounded(_, _))
+        {
+            return Ok(slot.into());
+        }
+        let llvm_ty = self.llvm_basic_type(ty);
+        self.builder
+            .build_load(llvm_ty, slot, &format!("ts.{}", label))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))
+    }
+
+    /// GH #469 A2: render a tuple as `(a, b)`.
+    fn lower_tuple_to_string(
+        &mut self,
+        elems: &[CodegenTy],
+        v: BasicValueEnum<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let storage = self.llvm_tuple_storage_type(elems);
+        let recv = v.into_pointer_value();
+        let mut acc = self.global_string("(").into();
+        for (i, ety) in elems.iter().enumerate() {
+            if i > 0 {
+                let comma = self.global_string(", ");
+                acc = self.str_concat(acc, comma.into())?;
+            }
+            let ev = self.load_member_for_render(
+                storage,
+                recv,
+                i as u32,
+                ety,
+                &format!("{}", i),
+            )?;
+            let rendered = self.value_to_string_nested(ev, ety)?;
+            acc = self.str_concat(acc, rendered)?;
+        }
+        let close = self.global_string(")");
+        self.str_concat(acc, close.into())
+    }
+
+    /// GH #469 A2: render a fixed array as `[1, 2, 3]`.
+    ///
+    /// The length is a compile-time constant, so this unrolls
+    /// rather than emitting a loop — no induction variable, no
+    /// accumulator slot, and constant folding collapses most of it.
+    /// Above [`Self::RENDER_UNROLL_MAX`] elements the unrolled
+    /// concat chain would be more IR than the program it is
+    /// debugging, so it truncates and says so in the output
+    /// (`, …` — visible in the rendering, never silent).
+    fn lower_array_to_string(
+        &mut self,
+        elem: &CodegenTy,
+        n: u64,
+        v: BasicValueEnum<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let storage = self.llvm_array_storage_type(elem, n);
+        let recv = v.into_pointer_value();
+        let i32_t = self.context.i32_type();
+        let shown = n.min(Self::RENDER_UNROLL_MAX);
+        let mut acc = self.global_string("[").into();
+        for i in 0..shown {
+            if i > 0 {
+                let comma = self.global_string(", ");
+                acc = self.str_concat(acc, comma.into())?;
+            }
+            let slot = unsafe {
+                self.builder
+                    .build_gep(
+                        storage,
+                        recv,
+                        &[
+                            i32_t.const_int(0, false),
+                            i32_t.const_int(i, false),
+                        ],
+                        "ts.arr.ptr",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            };
+            let llvm_ty = self.llvm_basic_type(elem);
+            let ev = self
+                .builder
+                .build_load(llvm_ty, slot, "ts.arr.elem")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let rendered = self.value_to_string_nested(ev, elem)?;
+            acc = self.str_concat(acc, rendered)?;
+        }
+        if shown < n {
+            let more = self.global_string(", …");
+            acc = self.str_concat(acc, more.into())?;
+        }
+        let close = self.global_string("]");
+        self.str_concat(acc, close.into())
+    }
+
+    /// Cap on unrolled element renderings. Chosen so a
+    /// `bounded[Int; 1024]` in a debug print does not emit a
+    /// thousand `lotus_str_concat` calls.
+    const RENDER_UNROLL_MAX: u64 = 32;
+
+    /// GH #469 A2: render a `bounded[T; N]` as `[1, 2, 3]`.
+    ///
+    /// Unlike a fixed array the live length is a RUNTIME value (the
+    /// `i64 len` prefix), so each potential slot is emitted guarded
+    /// by `i < len`. Still unrolled rather than looped: the trip
+    /// count is bounded by the capacity, which is in the type, and
+    /// an unrolled chain keeps the accumulator in SSA instead of
+    /// needing a stack slot that the arena-aware concat would then
+    /// have to reload across a back edge.
+    fn lower_bounded_to_string(
+        &mut self,
+        elem: &CodegenTy,
+        cap: u64,
+        v: BasicValueEnum<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let func = self
+            .current_fn
+            .expect("value_to_string inside a function body");
+        let storage = self.llvm_bounded_storage_type(elem, cap);
+        let recv = v.into_pointer_value();
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+
+        let len_ptr = self
+            .builder
+            .build_struct_gep(storage, recv, 0, "ts.bnd.len.ptr")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let len = self
+            .builder
+            .build_load(i64_t, len_ptr, "ts.bnd.len")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+
+        // An accumulator that survives the per-element branches.
+        // `build_alloca` at the current position is fine: this is a
+        // straight-line region, so the slot dominates every use.
+        let acc_slot = self
+            .builder
+            .build_alloca(ptr_t, "ts.bnd.acc")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let open = self.global_string("[");
+        self.builder
+            .build_store(acc_slot, open)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let shown = cap.min(Self::RENDER_UNROLL_MAX);
+        for i in 0..shown {
+            let live_bb = self
+                .context
+                .append_basic_block(func, &format!("ts.bnd.e{}", i));
+            let next_bb = self
+                .context
+                .append_basic_block(func, &format!("ts.bnd.n{}", i));
+            let in_range = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::SLT,
+                    i64_t.const_int(i, false),
+                    len,
+                    "ts.bnd.live",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_conditional_branch(in_range, live_bb, next_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+            self.builder.position_at_end(live_bb);
+            let mut acc = self
+                .builder
+                .build_load(ptr_t, acc_slot, "ts.bnd.acc.in")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            if i > 0 {
+                let comma = self.global_string(", ");
+                acc = self.str_concat(acc, comma.into())?;
+            }
+            let slot = unsafe {
+                self.builder
+                    .build_gep(
+                        storage,
+                        recv,
+                        &[
+                            i32_t.const_int(0, false),
+                            i32_t.const_int(1, false),
+                            i32_t.const_int(i, false),
+                        ],
+                        "ts.bnd.ptr",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            };
+            let llvm_ty = self.llvm_basic_type(elem);
+            let ev = self
+                .builder
+                .build_load(llvm_ty, slot, "ts.bnd.elem")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let rendered = self.value_to_string_nested(ev, elem)?;
+            acc = self.str_concat(acc, rendered)?;
+            self.builder
+                .build_store(acc_slot, acc)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_unconditional_branch(next_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+            self.builder.position_at_end(next_bb);
+        }
+
+        let mut acc = self
+            .builder
+            .build_load(ptr_t, acc_slot, "ts.bnd.acc.out")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        if shown < cap {
+            // The truncation marker is conditional on the LIVE
+            // length, not the capacity: a `bounded[Int; 1024]`
+            // holding three elements renders `[1, 2, 3]`, not
+            // `[1, 2, 3, …]`. A select over two constants, so the
+            // cost is one compare and no branch.
+            let more = self.global_string(", …");
+            let empty = self.global_string("");
+            let truncated = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::SGT,
+                    len,
+                    i64_t.const_int(shown, false),
+                    "ts.bnd.trunc",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let tail = self
+                .builder
+                .build_select(truncated, more, empty, "ts.bnd.tail")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            acc = self.str_concat(acc, tail)?;
+        }
+        let close = self.global_string("]");
+        self.str_concat(acc, close.into())
     }
 
     /// Inline lotus_str_concat call. Caller's arena owns the
@@ -21859,6 +22411,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Expr::Ident(i) if i.name == "to_string" => {
                     self.lower_to_string_builtin(args, scope)
                 }
+                Expr::Ident(i)
+                    if i.name == hale_syntax::parser::FMT_BUILTIN =>
+                {
+                    self.lower_fmt_builtin(args, scope)
+                }
                 Expr::Ident(i) if i.name == "Int" => {
                     // v1.x-11: explicit Float → Int narrowing.
                     self.lower_int_cast_builtin(args, scope)
@@ -23285,23 +23842,50 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         name
                     )));
                 }
+                // GH #469 A2: composites print through the SAME
+                // renderer as `to_string` and f-string interpolation.
+                //
+                // `println` has its own lowering — it builds a printf
+                // format string rather than concatenating — so it
+                // had its own copy of the printable rule and its own
+                // refusals. Leaving them would have made
+                // `println(p)` a check/build divergence the moment
+                // the checker accepted it: `hale check` clean,
+                // `hale build` refusing from the backend without a
+                // span. The corpus agreement gate caught exactly
+                // that, which is what it is for.
+                CodegenTy::TypeRef(_)
+                | CodegenTy::Tuple(_)
+                | CodegenTy::Array(_, _)
+                | CodegenTy::Bounded(_, _)
+                    if Self::value_to_string_supports(&ty) =>
+                {
+                    let rendered = self.value_to_string(val, &ty)?;
+                    format.push_str("%s");
+                    printf_args.push(BasicMetadataValueEnum::PointerValue(
+                        rendered.into_pointer_value(),
+                    ));
+                }
                 CodegenTy::TypeRef(name) => {
                     return Err(CodegenError::Unsupported(format!(
-                        "println of a type value (TypeRef `{}`) — \
-                         print individual fields instead",
+                        "println of a type value (TypeRef `{}`) — one \
+                         of its fields is not printable; print the \
+                         printable fields individually",
                         name
                     )));
                 }
                 CodegenTy::Array(_, _) => {
                     return Err(CodegenError::Unsupported(
-                        "println of an array — print individual \
-                         elements via indexing or iteration".into(),
+                        "println of an array — only arrays of scalar \
+                         elements render; print individual elements \
+                         via indexing or iteration".into(),
                     ));
                 }
                 CodegenTy::Tuple(_) => {
                     return Err(CodegenError::Unsupported(
-                        "println of a tuple — print individual \
-                         components via .0 / .1 / let-destructure".into(),
+                        "println of a tuple — one of its components is \
+                         not printable; print them via .0 / .1 / \
+                         let-destructure".into(),
                     ));
                 }
                 CodegenTy::FnPtr { .. } => {

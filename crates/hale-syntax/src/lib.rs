@@ -13,6 +13,7 @@ pub mod chains;
 pub mod desugar;
 pub mod error;
 pub mod fmt;
+pub mod fstring;
 pub mod json_gen;
 pub mod keywords;
 pub mod lexer;

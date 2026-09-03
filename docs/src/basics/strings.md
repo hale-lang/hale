@@ -24,6 +24,77 @@ let n = 42;
 let label = "n=" + to_string(n);
 ```
 
+## f-strings
+
+An `f` before the quote turns `{...}` into interpolation. What
+goes inside is a whole expression, not just a name:
+
+```hale,fragment
+let name = "Ada";
+let n    = 3;
+
+println(f"hello, {name}");
+println(f"{n} items, {n * 2} halves");
+println(f"upper: {std::str::upper(name)}");
+```
+
+A plain `"..."` string leaves braces alone, so `"x={x}"` prints
+the braces. That is the one mistake worth knowing about, and the
+compiler warns when the braces name something in scope. Write
+`{{` and `}}` for literal braces inside an f-string:
+
+```hale,fragment
+let x = 1;
+println(f"literal {{x}}, interpolated {x}");   // literal {x}, interpolated 1
+```
+
+### Printing whole values
+
+Interpolation renders structs, tuples and arrays, recursively —
+which is usually what you want mid-debugging:
+
+```hale
+type Point   { x: Int; y: Int; }
+type Reading { sensor: String; at: Point; }
+
+fn main() {
+    let r = Reading { sensor: "t-1", at: Point { x: 3, y: 4 } };
+    println(f"{r}");
+    // Reading { sensor: "t-1", at: Point { x: 3, y: 4 } }
+}
+```
+
+Strings *inside* a rendered value are quoted, so a value
+containing a comma still reads as one value. A string on its own
+is not quoted — `f"{name}"` is just `Ada`.
+
+Two things deliberately do not render: a **locus** (it is flow,
+not shape — and rendering one would leak the state a `@sealed`
+locus exists to confine) and **`Bytes`** (pick a rendering:
+hex, length, or a text decode). Reach for a field instead.
+
+### Format specs
+
+An interpolation can say *how* to render, after a `:`:
+
+```hale,fragment
+let n     = 42;
+let name  = "ada";
+let ratio = 3.14159;
+
+println(f"[{n:6}]");        // [    42]   numbers pad left
+println(f"[{name:6}]");     // [ada   ]   text pads right
+println(f"[{n:<6}]");       // [42    ]   `<` `^` `>` override
+println(f"[{n:0>6}]");      // [000042]   a fill character
+println(f"{ratio:.2}");     // 3.14       precision (Float/Decimal)
+println(f"{n:x}");          // 2a         hexadecimal
+```
+
+The full form is `[[fill]align][width][.precision][kind]`. Width
+counts bytes and never truncates — a value too wide for its
+column keeps all of its digits and pushes the column, because a
+silently shortened number in a log is worse than a ragged table.
+
 ## Length and inspection
 
 `len(s)` is a builtin — the byte length of the string:

@@ -39,6 +39,57 @@ log.debug(f"cache size = {n}");
 log.error(f"request {id} failed: {reason}");
 ```
 
+### Turning the volume down
+
+`HALE_LOG` sets a threshold — `error`, `warn`, `info`, or
+`debug` — and anything below it is dropped:
+
+```sh
+HALE_LOG=warn ./myapp      # warn and error only
+```
+
+The filtering happens at the **logger**, not at the sink, so a
+`log.trace(...)` below the threshold publishes nothing at all: no
+payload, no fanout, one integer compare. Pin a level in code with
+`std::log::Logger { name: "app", min_severity: 3 }` to ignore the
+environment (0 = trace, 1 = debug, 2 = info, 3 = warn, 4 = error).
+
+Sinks accept the same `min_severity`, which is what you want when
+two sinks should see different amounts — a file at `debug` and a
+console at `warn`.
+
+## Structured fields
+
+A message is for a human; **fields** are for whatever reads the
+logs afterwards. The `_kv` variant of each level takes them:
+
+```hale,fragment
+log.info_kv("order settled", std::log::kv("order", id));
+
+log.warn_kv(
+    "retrying",
+    std::log::kv("attempt", to_string(n)) + " "
+        + std::log::kv("after", "2s")
+);
+// → [WARN app] retrying attempt=2 after=2s
+```
+
+`std::log::kv(key, value)` renders one `key=value` pair in
+[logfmt](https://brandur.org/logfmt), quoting the value when it
+contains a space, a quote or an `=`. Join pairs with a space.
+
+Fields ride on the event as text rather than as a map, because a
+map in Hale is a *locus* and a locus cannot be a payload. The
+practical consequence is a good one: the record stays flat, so it
+crosses every transport the bus supports, and the fields keep the
+order you wrote them in.
+
+Every event also carries `ts` — unix seconds, stamped where the
+event was **published**, not where it was rendered. Under a
+queued sink, a sink bridged to another process, or `hale replay`,
+those are different times, and the one worth printing is the
+event's.
+
 ## Per-component loggers, one sink
 
 Each `Logger` has a `name`, which becomes the event's topic

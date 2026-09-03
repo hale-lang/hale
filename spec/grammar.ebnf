@@ -1316,6 +1316,24 @@ literal           = INT_LIT
 FSTRING_LIT       = "f" , STRING_LIT (* with `{expr}` interpolation
                                         and `{{` / `}}` escapes *) ;
 
+(* GH #469 A3: an interpolation may carry a format spec after a
+   `:`. The split is on the LAST top-level `:` that is not part of
+   a `::` path separator and is not inside brackets or a string, so
+   `{std::str::lower(s):>8}` splits exactly once, in the right
+   place. A spec'd interpolation lowers to `__fmt(expr, "spec")`
+   rather than `to_string(expr)`, because hex and precision are
+   decisions about how to produce the text and cannot be applied to
+   it afterwards. *)
+fstring_interp    = "{" , expression , [ ":" , format_spec ] , "}" ;
+
+format_spec       = [ [ fill ] , align ] , [ width ] ,
+                    [ "." , precision ] , [ spec_kind ] ;
+fill              = ? any character ? ;
+align             = "<" | "^" | ">" ;
+width             = DIGIT , { DIGIT } ;
+precision         = DIGIT , { DIGIT } ;   (* max 17 *)
+spec_kind         = "x" | "X" ;           (* hexadecimal *)
+
 tuple_expr        = "(" , expression , "," , expression ,
                     { "," , expression } , ")" ;
 

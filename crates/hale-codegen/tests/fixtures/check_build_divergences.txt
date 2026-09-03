@@ -25,7 +25,7 @@ crates/hale-codegen/tests/string_escapes.rs#5
 crates/hale-codegen/tests/wasm_target.rs#0
 crates/hale-codegen/tests/wasm_target.rs#1
 crates/hale-codegen/tests/wasm_target.rs#4
-crates/hale-types/tests/diag_quality.rs#13
+crates/hale-types/tests/diag_quality.rs#16
 crates/hale-types/tests/generic_call_check.rs#1
 crates/hale-types/tests/generic_call_check.rs#2
 crates/hale-types/tests/generic_call_check.rs#3
