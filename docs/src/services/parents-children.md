@@ -38,6 +38,11 @@ parent's `self.children` holds its accepted children (with
 `self.children.count` and `self.children.is_empty` for quick
 summaries).
 
+A locus accepts **one** child type. Writing a second `accept` is a
+compile error that points at both clauses; if a parent needs to own
+two kinds of children, one of them belongs under a different owner
+(or the same owner one level down).
+
 ## Bubbling: the nearest accepting ancestor collects the child
 
 `accept` isn't limited to *direct* children. If you instantiate a

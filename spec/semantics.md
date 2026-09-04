@@ -829,6 +829,13 @@ Receives c's declared params (not its running state). Can:
 After accept returns normally, child registers in
 `self.children` (per F.11).
 
+A locus declares **at most one** `accept` (single-accept-type per
+parent, `types.md` F.11). A second `accept` clause is a typecheck
+error naming both clauses; the first clause remains the locus's
+accept type. A parent that must own two child types gives one of
+them a different owner. (2026-09-04, GH #525: a second clause used
+to overwrite the first silently.)
+
 ### `run()`
 
 Runs continuously until drain is requested or run returns
