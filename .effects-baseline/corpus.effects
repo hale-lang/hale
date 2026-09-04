@@ -279,6 +279,9 @@ main  does={alloc}
 HashmapAnchorChurn::run  does={syscall,alloc}
 HashmapAnchorChurn::step  does={alloc}
 main  does={alloc}
+### 65-perspective-ctor-override
+App::run  does={syscall}
+main  does={alloc}
 ### 66-self-field-retire
 SelfFieldRetire::alias_literal  does={alloc}
 SelfFieldRetire::alias_struct  does={alloc}
