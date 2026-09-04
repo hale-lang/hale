@@ -304,6 +304,9 @@ crates/hale-codegen/tests/bytes_view_type.rs#4 f2c1228edb650960
 crates/hale-codegen/tests/bytes_view_type.rs#5 f2c1228edb650960
 crates/hale-codegen/tests/bytes_xor_find.rs#0 865d341109268295
 crates/hale-codegen/tests/bytes_xor_find.rs#1 f2c1228edb650960
+crates/hale-codegen/tests/caller_arena_publish_gate.rs#0 68a191211a49ee93
+crates/hale-codegen/tests/caller_arena_publish_gate.rs#1 526ddc41dc4e454f
+crates/hale-codegen/tests/caller_arena_publish_gate.rs#2 d21b3a0acc1a8bb5
 crates/hale-codegen/tests/caller_arena_tls_unwind.rs#0 9405c60aa89dc0cf
 crates/hale-codegen/tests/caller_arena_tls_unwind.rs#1 82a19fbf91dc0d88
 crates/hale-codegen/tests/case_fold_and_nested_fstring.rs#0 865d341109268295
