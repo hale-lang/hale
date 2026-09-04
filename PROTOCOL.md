@@ -247,44 +247,46 @@ doc order packed to 30 B with misaligned u64s.)*
 ```
 ManifestEntry (32 B):
   shape_hash   u64     // payload-shape content hash (topics); 0 otherwise
-  aux_b        u64     // CONTESTED — see the note below
+  aux_b        u64     // canonical model entity id (hale >= 0.3); 0 = none.
+                       //   0.4: the ONLY meaning, for every emitter
   id           u32     // per-kind id space (§7)
   name_off     u32     // into string pool
   name_len     u16
   aux_a        u16     // binding: transport enum (unix/udp/tcp/...);
                        //   2 = adapter (Hale-owned-wire ingest,
                        //   registered lazily on first use)
+                       // scheduler: cpu index (0.4; was aux_b)
   kind         u8      // 0=topic, 1=locus_type, 2=binding, 3=scheduler
   flags        u8      // bit 0: networked (topics); bit 1: from .hale.topo
   _pad         u16     // zero
 ```
 
-- **`aux_b` is contested — do not read it without knowing your
-  emitter.** *(Recorded 2026-08-24; unresolved.)* This document
-  and iris's reference emitters (`emitter/synth.c`, `observe/`)
-  have used `aux_b` since v0 as **binding → owning topic_id,
-  scheduler → cpu index**. hale's native emitter, from proto 0.3,
-  instead writes the **canonical model entity id** there for every
-  kind, guarded by `entity_id_digest` (§3.2), with `0` meaning "no
-  canonical id".
+- **`aux_b` is the canonical model entity id — resolved 2026-09-04
+  at proto 0.4** (hale#525, handoff-14 P31). Since v0 this document
+  and iris's reference emitters (`emitter/synth.c`, `observe/`) had
+  used the field as *binding → owning topic_id, scheduler → cpu
+  index*; hale's native emitter, from proto 0.3, wrote the canonical
+  model entity id there for every kind, guarded by
+  `entity_id_digest` (§3.2), with `0` meaning "no canonical id".
+  The two were not distinguishable from the value alone.
 
-  Both are live, and the two meanings are **not distinguishable
-  from the value alone** — a binding row reading `aux_b == 1` is
-  either topic 1 or entity 1 depending on who wrote it. Nothing
-  is broken today only because no consumer in this repo reads the
-  field; the moment one does, it must first decide which emitter
-  produced the segment.
+  Resolution: v0's meaning is **retired**. Every emitter writes the
+  entity id or 0; the scheduler cpu index moves to `aux_a`; the
+  binding → topic pairing is dropped (the counter line and the
+  binding name carry it). No layout change — which is exactly why
+  it still needed a minor: the *meaning* moved, and a consumer
+  depends on the meaning, not the offset.
 
-  Worth being precise about how this happened, because the
-  mechanism matters more than the collision: upstream's rationale
-  records that `aux_b` "has been in the ABI since v0 and written
-  as 0 by every path, so no consumer's layout moves." That is
-  true of hale's own emitter and false of this document's — the
-  field was already spoken for here. Two implementations, one
-  spec, and the spec was not consulted. Resolution belongs in the
-  protocol freeze (§13): either the entity id gets its own field,
-  or v0's meaning is retired and `synth.c`/`observe/` are
-  migrated. Until then, treat the field as unreadable.
+  Consumer rule: use the ids only when `entity_id_digest != 0`
+  matches the model you hold (§3.2). At `proto_minor >= 4` a
+  nonzero `aux_b` was never anything else; a 0.3 segment from an
+  iris emitter carries the old meaning and a zero digest, so the
+  digest gate alone is correct for it too.
+
+  How it happened is worth keeping: two implementations, one spec,
+  and the spec was not consulted before claiming a v0 field.
+  Upstream's rationale recorded the field as "written as 0 by every
+  path", true of its own emitter and false of this document's.
 
 - **Topic identity across binaries** (fusion join key):
   `shape_hash` = content hash of the wire subject + payload
@@ -689,11 +691,9 @@ library emitter's abort hook (ours, M3) produces them.
   `std::ring::__spsc_*` from pure Hale; the three
   verification-found corrections are folded into §9/§10.
 
-- **`aux_b` collision (§4)** — two live meanings for one field,
-  recorded 2026-08-24. Must be settled by the freeze: give the
-  canonical entity id its own header-tail field, or retire v0's
-  meaning and migrate `synth.c` / `observe/`. Cannot ship a
-  frozen v0 with a field whose meaning depends on who wrote it.
+- ~~**`aux_b` collision (§4)**~~ — **closed 2026-09-04 at proto
+  0.4** (hale#525): v0's meaning retired, every emitter writes the
+  entity id or 0, scheduler cpu index → `aux_a`.
 
 ## 14. Turning it on (native emitter)
 

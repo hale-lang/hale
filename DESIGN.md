@@ -365,9 +365,12 @@ Open on that board as of 2026-08-12:
   count `CT_PUBLISHED` = 0 on remote-only planes, while their
   messages demonstrably deliver. Filed handoff-9 (2026-07-29)
   with the discriminating table; still unanswered.
-- **P22** — the per-binding backpressure cells (`queue_depth`,
-  `send_block_ns`, `retries`) are written by no release, which
-  is what blocks M2's second half. Filed handoff-10.
+- ~~**P22**~~ — the per-binding backpressure cells (`queue_depth`,
+  `send_block_ns`, `retries`) were written by no release. Filed
+  handoff-10; **shipped upstream 2026-08-12 (hale PR #461)** —
+  `lotus_obs_binding_cell_add` / `_gauge` in `lotus_obs.c` populate
+  all three (counters-tier, no observer gate). Reading them into
+  the snapshot is iris-side work now (INSPECTOR §8 item 5).
 
 **P23** (an intra-subtree publish left no trace — no probes, no
 counters, no manifest row) was filed handoff-11 and fixed
@@ -417,9 +420,15 @@ renders it in the browser over fuse-hl's HTTP/SSE surface
 (§11's decided target). The observation plane iris was built
 to need now exists and is CI-gated upstream.
 
-**M2's backpressure half is not done, and it is blocked
-upstream — newly identified 2026-08-11.** Loss is rendered;
-depth is not, and it can't be. PROTOCOL §6 has reserved
+**M2's backpressure half is not done — and as of 2026-08-12
+it is no longer blocked upstream.** *(Correction 2026-09-04: the
+paragraph below was written on 2026-08-11 and was true that day;
+the cells shipped the next day in hale PR #461, per
+`UPSTREAM-NOTE-2026-09-01.md`. What remains is the demand side:
+fuse-hl fuses topic lines only and surfaces no binding line. Kept
+as written because the mechanism it describes — supply and demand
+missing in the same place — is the lesson.)* Loss is rendered;
+depth is not, and it couldn't be. PROTOCOL §6 has reserved
 `queue_depth`, `send_block_ns` and `retries` per binding
 since v0, and §7 builds the whole "edges are instruments"
 claim on them — but the native emitter writes only cells

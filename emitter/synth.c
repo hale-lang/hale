@@ -461,11 +461,14 @@ int main(int argc, char **argv) {
   manifest_add(LT_PRODUCER, OBS_MK_LOCUS_TYPE, 0, "Producer", 0, 0, 0);
   manifest_add(LT_ROUTER, OBS_MK_LOCUS_TYPE, 0, "Router", 0, 0, 0);
   manifest_add(LT_WORKER, OBS_MK_LOCUS_TYPE, 0, "Worker", 0, 0, 0);
+  /* proto 0.4: aux_b is the canonical entity id or 0 — synth has
+   * no model, so 0. The binding->topic pairing is dropped; the
+   * scheduler's cpu index now rides in aux_a. */
   manifest_add(B_ORDERS_UNIX, OBS_MK_BINDING, OBS_MF_NETWORKED, "unix:/tmp/orders.sock",
-               OBS_TRANSPORT_UNIX, 0, T_ORDERS_NEW);
+               OBS_TRANSPORT_UNIX, 0, 0);
   for (uint32_t i = 0; i < cfg.rings; i++) {
     char nm[16]; snprintf(nm, sizeof nm, "sched%u", i);
-    manifest_add(i, OBS_MK_SCHEDULER, 0, nm, 0, 0, i);
+    manifest_add(i, OBS_MK_SCHEDULER, 0, nm, (uint16_t)i, 0, 0);
   }
 
   /* counter line indices: [0] global, then topic/binding entries

@@ -20,10 +20,15 @@
  * check proto_minor before reading a field it does know.
  *   0.2 (2026-08-12) + model_hash        @ 0x80
  *   0.3 (2026-08-24) + entity_id_digest  @ 0x88
- * For both, "absent" and "0" are DIFFERENT answers: absent means
+ *   0.4 (2026-09-04)   manifest aux_b has ONE meaning for every
+ *                      emitter: canonical entity id, or 0. v0's
+ *                      binding->topic / scheduler->cpu reading is
+ *                      retired; scheduler cpu index moves to aux_a.
+ *                      No layout change (hale#525, handoff-14 P31).
+ * For 0.2/0.3, "absent" and "0" are DIFFERENT answers: absent means
  * the emitter predates the field, 0 means the emitter has the
  * field and positively has nothing to report (a harness build). */
-#define OBS_PROTO_MINOR 3
+#define OBS_PROTO_MINOR 4
 
 /* "HALEISBO" little-endian; doubles as endianness check. */
 #define OBS_MAGIC 0x4F42534948414C45ULL
@@ -144,20 +149,20 @@ enum {
  * PROTOCOL.md §4 amended to match. */
 typedef struct {
   uint64_t shape_hash; /* topics; 0 otherwise */
-  /* aux_b is CONTESTED as of 2026-08-24 — see PROTOCOL.md §4.
-   * v0 meaning (this header, synth.c, the observe library):
-   *   binding -> owning topic_id; scheduler -> cpu index.
-   * hale >= proto 0.3 instead writes the canonical model ENTITY ID
-   * here for every kind, guarded by entity_id_digest, and treats
-   * 0 as "no canonical id".
-   * A consumer MUST NOT read aux_b without first deciding which
-   * emitter it is talking to; the two meanings are not
-   * distinguishable from the value alone. */
+  /* Canonical model ENTITY ID for this row (hale >= proto 0.3),
+   * guarded by the header's entity_id_digest; 0 = no canonical id.
+   * Resolved 2026-09-04 (proto 0.4, hale#525 / handoff-14 P31): the
+   * v0 meaning — binding -> owning topic_id, scheduler -> cpu index
+   * — is RETIRED for every emitter. A consumer gates on
+   * entity_id_digest != 0; at proto_minor >= 4 it may additionally
+   * trust that a nonzero value was never anything else. Segments
+   * at 0.3 from iris's own emitters carry the old meaning and a
+   * zero digest, so the digest gate alone is correct for them. */
   uint64_t aux_b;
   uint32_t id;
   uint32_t name_off;   /* into string pool */
   uint16_t name_len;
-  uint16_t aux_a;      /* binding: transport enum */
+  uint16_t aux_a;      /* binding: transport enum; scheduler: cpu index (0.4) */
   uint8_t  kind;
   uint8_t  flags;
   uint16_t _pad;
