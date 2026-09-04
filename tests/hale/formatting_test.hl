@@ -1,0 +1,143 @@
+// GH #469 — f-strings, composite rendering, and format specs, as
+// assertions about the exact bytes produced.
+//
+// The corpus fixture `86-formatting` proves these COMPILE AND RUN.
+// This proves they produce the right text, which is the part a
+// fixture cannot state: the oracle checks exit status, not stdout.
+//
+// Written in Hale on purpose (CLAUDE.md): the assertion sits beside
+// the code instead of being transcribed into a Rust substring match,
+// and it gets typechecked, which `build_executable` does not do.
+
+type Point { x: Int; y: Int; }
+type Reading { sensor: String; point: Point; ok: Bool; }
+type Window { id: String; samples: bounded[Int; 8]; }
+type Corners { at: [Int; 4]; }
+type Empty { }
+type Money { amount: Decimal; }
+
+fn main() {
+    // ---- interpolation ----
+    let name = "ada";
+    let n = 42;
+    std::test::assert_eq_str(f"hi {name}", "hi ada", "plain interpolation");
+    std::test::assert_eq_str(
+        f"{n} + 1 = {n + 1}", "42 + 1 = 43",
+        "an interpolation holds an expression, not just a name"
+    );
+    std::test::assert_eq_str(
+        f"{{n}} vs {n}", "{n} vs 42",
+        "doubled braces are literal braces"
+    );
+    std::test::assert_eq_str(f"", "", "an empty f-string is the empty string");
+    std::test::assert_eq_str(
+        f"{ n }", "42",
+        "whitespace inside the braces is trimmed"
+    );
+
+    // ---- A2: composite rendering ----
+    let p = Point { x: 3, y: 4 };
+    std::test::assert_eq_str(
+        f"{p}", "Point { x: 3, y: 4 }",
+        "a struct renders with its type name and field names"
+    );
+    std::test::assert_eq_str(
+        to_string(p), "Point { x: 3, y: 4 }",
+        "to_string and interpolation agree"
+    );
+    std::test::assert_eq_str(
+        "p=" + p, "p=Point { x: 3, y: 4 }",
+        "String + composite coerces the same way"
+    );
+
+    let r = Reading { sensor: "t-1", point: p, ok: true };
+    std::test::assert_eq_str(
+        f"{r}",
+        "Reading { sensor: \"t-1\", point: Point { x: 3, y: 4 }, ok: true }",
+        "rendering recurses, and NESTED strings are quoted"
+    );
+    // The reason nested strings are quoted, stated as a test: without
+    // the quotes this rendering is ambiguous about its arity.
+    let tricky = Reading { sensor: "a, b", point: p, ok: false };
+    std::test::assert(
+        std::str::contains(f"{tricky}", "\"a, b\""),
+        "a value containing a comma stays visibly one value"
+    );
+    std::test::assert_eq_str(
+        f"{name}", "ada",
+        "a TOP-LEVEL string is not quoted — only nested ones are"
+    );
+
+    std::test::assert_eq_str(
+        f"{(1, "two", 3.5)}", "(1, \"two\", 3.5)", "tuples render"
+    );
+    std::test::assert_eq_str(
+        f"{Empty { }}", "Empty {}", "a fieldless struct has no inner space"
+    );
+
+    let c = Corners { at: [10, 20, 30, 40] };
+    std::test::assert_eq_str(
+        f"{c}", "Corners { at: [10, 20, 30, 40] }", "fixed arrays render"
+    );
+
+    // `bounded` renders the LIVE count, not the capacity — the
+    // property that separates it from a fixed array.
+    let mut w = Window { id: "w1" };
+    std::test::assert_eq_str(
+        f"{w.samples}", "[]", "an empty bounded renders as []"
+    );
+    push(w.samples, 7) or raise;
+    push(w.samples, 8) or raise;
+    std::test::assert_eq_str(
+        f"{w.samples}", "[7, 8]", "two of eight slots live"
+    );
+    std::test::assert_eq_str(
+        f"{w}", "Window { id: \"w1\", samples: [7, 8] }",
+        "a bounded field renders inside its struct"
+    );
+
+    // ---- A3: format specs ----
+    std::test::assert_eq_str(f"[{n:6}]", "[    42]", "numbers pad left");
+    std::test::assert_eq_str(f"[{name:6}]", "[ada   ]", "text pads right");
+    std::test::assert_eq_str(f"[{n:<6}]", "[42    ]", "`<` overrides");
+    std::test::assert_eq_str(f"[{name:>6}]", "[   ada]", "`>` overrides");
+    std::test::assert_eq_str(f"[{n:^6}]", "[  42  ]", "`^` centres");
+    std::test::assert_eq_str(f"[{n:^7}]", "[  42   ]", "odd slack goes right");
+    std::test::assert_eq_str(f"[{n:0>6}]", "[000042]", "a fill char");
+    std::test::assert_eq_str(f"[{n:2}]", "[42]", "width at the exact length");
+    std::test::assert_eq_str(
+        f"[{n:1}]", "[42]",
+        "a value wider than its column is never truncated"
+    );
+
+    let ratio = 3.14159;
+    std::test::assert_eq_str(f"{ratio:.2}", "3.14", "precision rounds");
+    std::test::assert_eq_str(f"{ratio:.0}", "3", "precision 0 drops the point");
+    std::test::assert_eq_str(
+        f"[{ratio:>9.3}]", "[    3.142]", "precision then padding"
+    );
+    let m = Money { amount: 2.5d };
+    std::test::assert_eq_str(
+        f"{m.amount:.2}", "2.50", "Decimal takes the precision path"
+    );
+
+    std::test::assert_eq_str(f"{255:x}", "ff", "lower hex");
+    std::test::assert_eq_str(f"{255:X}", "FF", "upper hex");
+    std::test::assert_eq_str(
+        f"{0 - 1:x}", "ffffffffffffffff",
+        "hex renders the bit pattern, not a signed magnitude"
+    );
+    std::test::assert_eq_str(f"[{255:>6x}]", "[    ff]", "hex then padding");
+
+    // A `::` inside an interpolation is a path separator, never the
+    // start of a format spec — the split rule that makes qualified
+    // calls usable inside f-strings.
+    std::test::assert_eq_str(
+        f"{std::str::lower("ADA")}", "ada",
+        "a qualified call survives spec splitting"
+    );
+    std::test::assert_eq_str(
+        f"[{std::str::lower("ADA"):>5}]", "[  ada]",
+        "...and can still carry a spec"
+    );
+}

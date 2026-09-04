@@ -7103,6 +7103,10 @@ impl Parser {
     /// v1.x-10: lower a pre-split f-string into a chain of
     /// `Lit + to_string(expr) + Lit + ...` concatenations.
     ///
+    /// Spans inside an interpolation are shifted into the enclosing
+    /// file by [`shift_span`] before parsing, so a type error on
+    /// `f"{point}"` underlines `point`.
+    ///
     /// Each `Interp(body)` substring is re-lexed + re-parsed as an
     /// Hale expression via a fresh inner parser. That lets `f"{a + b * 2}"`
     /// and `f"{user.name}"` work without growing this routine.
@@ -7121,23 +7125,64 @@ impl Parser {
                         pieces.push(Expr::Literal(Literal::String(s), span));
                     }
                 }
-                FStringPart::Interp(body) => {
-                    // Sub-parse the interpolation body as an expression.
-                    let tokens = crate::lexer::lex(&body).map_err(|diags| {
-                        let msg = diags
-                            .iter()
-                            .map(|d| d.message.clone())
-                            .collect::<Vec<_>>()
-                            .join("; ");
-                        Diag::parse(
-                            span,
-                            format!("f-string interpolation `{{{}}}`: {}", body, msg),
-                        )
-                    })?;
+                FStringPart::Interp { body, start, end } => {
+                    // GH #469 A4: the sub-parse works on a private
+                    // string, so its spans are offsets into THAT
+                    // string — 0-based, i.e. the top of the file.
+                    // Shifting the token spans before parsing fixes
+                    // every span downstream at once (AST nodes, the
+                    // typechecker's errors, the formatter) instead of
+                    // just the parse errors raised right here.
+                    let isp = Span::new(start, end.max(start));
+                    // GH #469 A3: `{expr:spec}`. The spec is
+                    // validated HERE, at parse time, so a typo in a
+                    // format spec is a parse error with a caret on
+                    // the interpolation rather than something the
+                    // backend discovers later.
+                    let (expr_src, spec_text) =
+                        crate::fstring::split_spec(&body);
+                    if let Some(sp) = spec_text {
+                        crate::fstring::FormatSpec::parse(sp).map_err(
+                            |m| {
+                                Diag::parse(
+                                    isp,
+                                    format!(
+                                        "f-string interpolation \
+                                         `{{{}}}`: {}",
+                                        body, m
+                                    ),
+                                )
+                            },
+                        )?;
+                    }
+                    let spec_text = spec_text.map(|s| s.to_string());
+                    let body = expr_src.to_string();
+                    let mut tokens =
+                        crate::lexer::lex(&body).map_err(|diags| {
+                            let msg = diags
+                                .iter()
+                                .map(|d| d.message.clone())
+                                .collect::<Vec<_>>()
+                                .join("; ");
+                            Diag::parse(
+                                isp,
+                                format!(
+                                    "f-string interpolation `{{{}}}`: {}",
+                                    body, msg
+                                ),
+                            )
+                        })?;
+                    for t in &mut tokens {
+                        t.span = shift_span(t.span, start, end);
+                    }
                     let mut sub = Parser::new(tokens);
                     let expr = sub.parse_expr().map_err(|d| {
                         Diag::parse(
-                            span,
+                            // The inner diag's span is already
+                            // shifted; keep it, so the caret lands on
+                            // the offending token rather than on the
+                            // whole interpolation.
+                            d.span,
                             format!(
                                 "f-string interpolation `{{{}}}`: {}",
                                 body, d.message
@@ -7147,7 +7192,7 @@ impl Parser {
                     // Reject trailing tokens — interpolation must be one expr.
                     if !sub.at_eof() {
                         return Err(Diag::parse(
-                            span,
+                            isp,
                             format!(
                                 "f-string interpolation `{{{}}}`: unexpected trailing tokens",
                                 body
@@ -7155,16 +7200,38 @@ impl Parser {
                         ));
                     }
                     // Wrap in `to_string(expr)` so any printable
-                    // type renders the same way println would render it.
-                    let to_str_callee = Expr::Ident(Ident {
-                        name: "to_string".to_string(),
-                        span,
-                    });
-                    pieces.push(Expr::Call {
-                        callee: Box::new(to_str_callee),
-                        args: vec![expr],
-                        span,
-                    });
+                    // type renders the same way println would render
+                    // it — or in `__fmt(expr, "spec")` when the
+                    // author asked for a specific rendering. `__fmt`
+                    // subsumes `to_string`: it needs the value, not
+                    // its text, because `{n:x}` and `{r:.2}` are
+                    // decisions about how to turn the value INTO
+                    // text and are unrecoverable afterwards.
+                    let call = match &spec_text {
+                        Some(sp) => Expr::Call {
+                            callee: Box::new(Expr::Ident(Ident {
+                                name: FMT_BUILTIN.to_string(),
+                                span: isp,
+                            })),
+                            args: vec![
+                                expr,
+                                Expr::Literal(
+                                    Literal::String(sp.clone()),
+                                    isp,
+                                ),
+                            ],
+                            span: isp,
+                        },
+                        None => Expr::Call {
+                            callee: Box::new(Expr::Ident(Ident {
+                                name: "to_string".to_string(),
+                                span: isp,
+                            })),
+                            args: vec![expr],
+                            span: isp,
+                        },
+                    };
+                    pieces.push(call);
                 }
             }
         }
@@ -7383,6 +7450,35 @@ fn primitive_from_name(name: &str) -> Option<PrimType> {
         "StringView" => PrimType::StringView,
         _ => return None,
     })
+}
+
+/// The desugaring target for `f"{x:spec}"` (GH #469 A3).
+///
+/// Not spellable in source — the leading underscores keep it out of
+/// the identifier space an author would reach for, and nothing
+/// resolves it except the checker and codegen arms that recognise
+/// this exact name. It takes the VALUE plus the spec as a string
+/// literal, rather than a pre-rendered string, because hex and
+/// precision are choices about how to render and cannot be applied
+/// after the fact.
+pub const FMT_BUILTIN: &str = "__fmt";
+
+/// Map a span produced by an f-string interpolation's sub-parse
+/// (offsets into the isolated body string) onto the enclosing
+/// source, where the body occupies `base..limit`.
+///
+/// Clamped to `limit` because escape processing shrinks the body:
+/// `\"` is two source bytes and one body byte, so a naive `base + n`
+/// can run past the closing `}` and, in a long interpolation, into
+/// the next construct entirely. Clamping keeps the caret inside the
+/// interpolation that actually produced the diagnostic, which is the
+/// property that matters — a caret one column off is a nuisance, a
+/// caret in an unrelated declaration is what A4 set out to fix.
+fn shift_span(s: Span, base: usize, limit: usize) -> Span {
+    let limit = limit.max(base);
+    let lo = (base + s.start.as_usize()).min(limit);
+    let hi = (base + s.end.as_usize()).clamp(lo, limit);
+    Span::new(lo, hi)
 }
 
 #[cfg(test)]

@@ -11083,6 +11083,86 @@ char *lotus_str_from_float(lotus_arena_t *a, double f) {
 }
 
 /*
+ * GH #469 A3: f-string format specs — `f"{x:>8.2}"`.
+ *
+ * Three primitives, all allocating from the CALLER's arena (unlike
+ * lotus_str_pad_left/right, which serve std::str and allocate from
+ * the bus payload arena). An interpolation can appear in any
+ * function body, so its result must live exactly as long as every
+ * other string that body builds.
+ *
+ * Codegen decides which of these to call from the spec and the
+ * value's static type; none of them re-parses the spec.
+ */
+
+/* Fixed-point rendering: `%.*f`, with `prec` already bounded to 17
+ * by the spec parser (past that an f64 invents digits). 32 bytes is
+ * not enough for `%.17f` of DBL_MAX, so this sizes for the worst
+ * case: sign + 309 integer digits + '.' + 17 + NUL. */
+char *lotus_fmt_float_prec(lotus_arena_t *a, double f, int32_t prec) {
+    size_t cap = 384;
+    char *out = (char *)lotus_arena_alloc(a, cap, 1);
+    if (!out) return NULL;
+    if (prec < 0) prec = 0;
+    if (prec > 17) prec = 17;
+    snprintf(out, cap, "%.*f", (int)prec, f);
+    return out;
+}
+
+/* Hexadecimal of a 64-bit integer. Rendered from the UNSIGNED
+ * reinterpretation, so -1 prints ffffffffffffffff rather than a
+ * sign followed by a magnitude: hex is asked for when the bit
+ * pattern is the point (a mask, an address, a flag word), and a
+ * signed hex rendering hides exactly the bits being inspected. */
+char *lotus_fmt_int_hex(lotus_arena_t *a, int64_t n, int32_t upper) {
+    size_t cap = 24;
+    char *out = (char *)lotus_arena_alloc(a, cap, 1);
+    if (!out) return NULL;
+    snprintf(out, cap, upper ? "%llX" : "%llx",
+             (unsigned long long)(uint64_t)n);
+    return out;
+}
+
+/*
+ * Pad `s` to `width` with `fill`. `align` is 1 = left, 2 = right,
+ * 3 = centre; centre puts the odd byte on the right.
+ *
+ * Width counts BYTES, not codepoints. That is a real limitation for
+ * non-ASCII text and it is the honest one to ship: counting
+ * codepoints would still be wrong for combining marks and wide CJK
+ * cells, so a column that must line up under arbitrary Unicode
+ * needs a width-aware library, not a smarter memset here.
+ *
+ * Never truncates — a value wider than its column keeps all of its
+ * digits and pushes the column, because silently dropping digits
+ * from a logged number is worse than a ragged table.
+ */
+char *lotus_fmt_pad(lotus_arena_t *a, const char *s, int64_t width,
+                    int32_t fill, int32_t align) {
+    if (!s) s = "";
+    size_t sl = strlen(s);
+    if (width < 0) width = 0;
+    if ((int64_t)sl >= width) {
+        char *out = (char *)lotus_arena_alloc(a, sl + 1, 1);
+        if (!out) return NULL;
+        memcpy(out, s, sl);
+        out[sl] = '\0';
+        return out;
+    }
+    size_t total = (size_t)width;
+    char *out = (char *)lotus_arena_alloc(a, total + 1, 1);
+    if (!out) return NULL;
+    char ch = (char)(fill ? fill : ' ');
+    size_t slack = total - sl;
+    size_t lead = (align == 2) ? slack : (align == 3 ? slack / 2 : 0);
+    memset(out, ch, lead);
+    memcpy(out + lead, s, sl);
+    memset(out + lead + sl, ch, slack - lead);
+    out[total] = '\0';
+    return out;
+}
+
+/*
  * #353: ISO-8601 formatting and parsing, UTC only.
  *
  * A long-running service needs to emit a log timestamp, an HTTP date,

@@ -78,7 +78,13 @@ let hi    = f"hello {name}";           // f-string interpolation
 ```
 
 An f-string evaluates the expressions inside `{...}` and renders
-them into the text. Use `{{` and `}}` for literal braces.
+them into the text. Use `{{` and `}}` for literal braces. A plain
+`"..."` string is *not* interpolated — `"x={x}"` prints the
+braces — and the compiler warns if you write that by accident.
+
+f-strings also take a format spec (`f"{n:>8}"`, `f"{r:.2}"`) and
+render whole structs. Both are in
+[Strings & text](./strings.md).
 
 ## Printing values
 
@@ -99,5 +105,12 @@ fn main() {
 called as plain functions, not methods. You write `len(s)`, not
 `s.len()`. (Methods with `.` come later, on loci and your own
 types.)
+
+Printing isn't limited to single values: a struct, tuple or array
+of printable things prints as a whole, recursively — which is
+what you want when you're mid-debug and don't yet know which
+field is wrong. Two things deliberately don't print: a **locus**
+and **`Bytes`**. See
+[Strings & text](./strings.md#printing-whole-values).
 
 Next: [Math, money & time](./math.md).

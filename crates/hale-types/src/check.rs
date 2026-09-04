@@ -11351,18 +11351,35 @@ impl<'a> Checker<'a> {
                         match id.name.as_str() {
                             "println" | "print" | "to_string" => {
                                 for a in args {
+                                    self.warn_if_meant_an_fstring(a);
                                     let at = self.check_expr_addressed(a);
                                     if !self.ty_is_printable(&at) {
                                         self.diags.push(Diag::ty(
                                             a.span(),
                                             format!(
-                                                "`{}` cannot render a value of                                                  type `{}` — printable types are                                                  the scalar primitives, String,                                                  and enums (render struct/locus                                                  fields individually)",
+                                                "`{}` cannot render a value \
+                                                 of type `{}` — {}",
                                                 id.name,
-                                                at.display()
+                                                at.display(),
+                                                self.why_unprintable(&at, 0)
+                                                    .unwrap_or_else(|| {
+                                                        "it is not printable"
+                                                            .to_string()
+                                                    })
                                             ),
                                         ));
                                     }
                                 }
+                            }
+                            // GH #469 A3: `f"{x:spec}"` desugars to
+                            // `__fmt(x, "spec")`. The spec grammar
+                            // was already validated by the parser;
+                            // what is checked here is the pairing of
+                            // spec and VALUE, which the parser could
+                            // not know.
+                            hale_syntax::parser::FMT_BUILTIN => {
+                                self.check_fmt_builtin(args, callee);
+                                return Ty::Prim(PrimType::String);
                             }
                             "abs" | "min" | "max" => {
                                 for a in args {
@@ -12705,6 +12722,297 @@ impl<'a> Checker<'a> {
     /// `to_string(...)` accepts, plus enums (which render as their
     /// variant name).
     fn ty_is_printable(&self, t: &Ty) -> bool {
+        self.ty_is_printable_at(t, 0)
+    }
+
+    /// GH #469 bonus lint: `println("x={x}")` prints the braces.
+    ///
+    /// A plain string literal is not interpolated — only `f"…"` is —
+    /// so writing the `{x}` form without the `f` silently produces
+    /// `x={x}` instead of `x=3`. Silently is the problem: the
+    /// program compiles, runs, and prints something that looks like
+    /// a template engine failed. Once f-strings exist this becomes
+    /// the single most likely thing for a reader coming from Python,
+    /// JavaScript, Rust or C# to get wrong.
+    ///
+    /// The lint fires only when the braces name something that is
+    /// ACTUALLY IN SCOPE. That is what separates it from a
+    /// heuristic: `println("{}")`, `println("{\"a\": 1}")` and
+    /// `println("use {name} for the placeholder")` in prose about a
+    /// template stay quiet, because there is no binding called
+    /// `name`. Warning, never an error — a program that means to
+    /// print braces around a word that happens to be a local is
+    /// unusual but legal.
+    fn warn_if_meant_an_fstring(&mut self, a: &Expr) {
+        let Expr::Literal(Literal::String(s), span) = a else {
+            return;
+        };
+        let b = s.as_bytes();
+        let mut i = 0usize;
+        let mut found: Vec<String> = Vec::new();
+        while i < b.len() {
+            if b[i] != b'{' {
+                i += 1;
+                continue;
+            }
+            // `{{` is how a literal brace is written in an f-string;
+            // seeing it here signals the author knows the syntax and
+            // is deliberately not using it.
+            if b.get(i + 1) == Some(&b'{') {
+                return;
+            }
+            let Some(close) = b[i + 1..].iter().position(|c| *c == b'}')
+            else {
+                break;
+            };
+            let inner = &s[i + 1..i + 1 + close];
+            i += close + 2;
+            // Only the head of a dotted path can be looked up;
+            // `{p.x}` is just as much a mistake as `{p}`.
+            let head = inner.split('.').next().unwrap_or("");
+            let is_ident = !head.is_empty()
+                && head
+                    .chars()
+                    .next()
+                    .map(|c| c.is_ascii_alphabetic() || c == '_')
+                    .unwrap_or(false)
+                && head
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_');
+            if !is_ident {
+                continue;
+            }
+            if self.locals.lookup(head).is_some() {
+                found.push(inner.to_string());
+            }
+        }
+        if found.is_empty() {
+            return;
+        }
+        self.diags.push(Diag::warn(
+            *span,
+            format!(
+                "lint: this is a plain string, so `{{{}}}` prints \
+                 literally — {} names a binding that is in scope. Did \
+                 you mean an f-string (`f\"…\"`)? Write `{{{{` for a \
+                 literal brace.",
+                found[0],
+                found[0]
+            ),
+        ));
+    }
+
+    /// GH #469 A3: check `__fmt(value, "spec")`, the desugaring of
+    /// `f"{value:spec}"`.
+    ///
+    /// The parser already rejected specs that are not *grammatical*.
+    /// The pairings it could not judge are the ones where the spec
+    /// only makes sense for certain values — hexadecimal of a
+    /// String, a decimal precision on an Int — and getting those
+    /// wrong should read as a type error on the interpolation, not
+    /// as a surprise at the far end of the pipeline.
+    fn check_fmt_builtin(&mut self, args: &[Expr], callee: &Expr) {
+        use hale_syntax::fstring::{FormatSpec, SpecKind};
+        if args.len() != 2 {
+            self.diags.push(Diag::ty(
+                callee.span(),
+                format!(
+                    "internal: format desugaring expects 2 arguments, \
+                     got {}",
+                    args.len()
+                ),
+            ));
+            return;
+        }
+        let vt = self.check_expr_addressed(&args[0]);
+        if !self.ty_is_printable(&vt) {
+            self.diags.push(Diag::ty(
+                args[0].span(),
+                format!(
+                    "cannot render a value of type `{}` — {}",
+                    vt.display(),
+                    self.why_unprintable(&vt, 0).unwrap_or_else(|| {
+                        "it is not printable".to_string()
+                    })
+                ),
+            ));
+            return;
+        }
+        let Expr::Literal(Literal::String(spec_text), _) = &args[1] else {
+            // Only the parser constructs this call, and it always
+            // passes a literal.
+            return;
+        };
+        let Ok(spec) = FormatSpec::parse(spec_text) else {
+            return;
+        };
+        // Precision applies to the FRACTIONAL types only. Int and
+        // Duration are excluded even though they are numbers:
+        // `{n:.2}` on an integer has no meaning, and accepting it
+        // silently — codegen has no fractional part to round —
+        // would print `42` and leave the author believing the spec
+        // did something.
+        let fractional = matches!(
+            vt,
+            Ty::Prim(PrimType::Float | PrimType::Decimal) | Ty::Unknown
+        );
+        if spec.kind != SpecKind::Display
+            && !matches!(vt, Ty::Prim(PrimType::Int) | Ty::Unknown)
+        {
+            self.diags.push(Diag::ty(
+                args[0].span(),
+                format!(
+                    "hexadecimal formatting applies to `Int`, not \
+                     `{}` — drop the `x`, or convert first",
+                    vt.display()
+                ),
+            ));
+        }
+        if spec.precision.is_some() && !fractional {
+            self.diags.push(Diag::ty(
+                args[0].span(),
+                format!(
+                    "a decimal precision applies to `Float` or \
+                     `Decimal`, not `{}` — there is no fractional \
+                     part to round. For a column WIDTH, use a width \
+                     (`{{x:8}}`)",
+                    vt.display()
+                ),
+            ));
+        }
+    }
+
+    /// GH #469 A2: composite debug rendering.
+    ///
+    /// `println` / `to_string` / f-string interpolation used to
+    /// accept only scalars, String and enums, so `f"{point}"` — the
+    /// single most natural thing to write while debugging — was a
+    /// type error advising you to "render struct/locus fields
+    /// individually". Structs, tuples, fixed arrays and `bounded`
+    /// now render recursively.
+    ///
+    /// Three deliberate exclusions:
+    ///
+    ///   * **loci, perspectives and interfaces stay unprintable.**
+    ///     A locus is flow, not shape; rendering one would also
+    ///     hand out the `params` of a `@sealed` locus, which GH #436
+    ///     exists to confine. This is the reason the seal is not
+    ///     re-litigated below: there is no printable path to it.
+    ///   * **`Bytes` stays unprintable** — it is a binary blob, and
+    ///     the useful rendering (hex? length? UTF-8 attempt?) is a
+    ///     choice the author should make explicitly.
+    ///   * **unsized arrays** (`[T]` with no length) have no length
+    ///     to walk at the render site.
+    ///
+    /// `depth` guards mutually-recursive type declarations. Codegen
+    /// rejects those at layout time (an inline cycle has no finite
+    /// size), but the checker runs first and must not hang on a
+    /// program it is about to reject for another reason.
+    fn ty_is_printable_at(&self, t: &Ty, depth: u32) -> bool {
+        if depth > 16 {
+            return false;
+        }
+        match t {
+            Ty::Tuple(ts) => {
+                ts.iter().all(|x| self.ty_is_printable_at(x, depth + 1))
+            }
+            // Element types are restricted to the scalars, matching
+            // `value_to_string_supports` in codegen: those are the
+            // shapes whose runtime value is reliably a pointer to
+            // inline storage the renderer can walk. Widening this
+            // without widening codegen is a check/build divergence,
+            // which `corpus_check_build_agreement` fails on.
+            Ty::Array(elem, Some(_)) | Ty::Bounded(elem, _) => matches!(
+                elem.as_ref(),
+                Ty::Prim(
+                    PrimType::Int
+                        | PrimType::Float
+                        | PrimType::Bool
+                        | PrimType::Decimal
+                        | PrimType::Duration
+                )
+            ),
+            Ty::Named(n) => match self.top.symbols.get(n) {
+                Some(TopSymbol::Type(ti)) => match &ti.kind {
+                    TypeKind::Enum(_) => true,
+                    TypeKind::Struct(fs) => fs.iter().all(|f| {
+                        self.ty_is_printable_at(&f.ty, depth + 1)
+                    }),
+                    TypeKind::Alias(inner) => {
+                        self.ty_is_printable_at(inner, depth + 1)
+                    }
+                },
+                _ => self.ty_is_printable_scalar(t),
+            },
+            _ => self.ty_is_printable_scalar(t),
+        }
+    }
+
+    /// Name the *reason* a type is not printable, as a trailing
+    /// clause for the diagnostic.
+    ///
+    /// Without this the message enumerates the printable set and
+    /// leaves the author to diff it against their declaration —
+    /// which is hard precisely in the cases that matter. `type
+    /// Message { id: String; tags: bounded[String; 32] }` reads as
+    /// though it qualifies: both field types appear in the list of
+    /// printable things, and the rule that actually excludes it (a
+    /// sequence renders only with scalar elements) is two levels
+    /// down. So report the offending component by name.
+    ///
+    /// Returns `None` when the type IS printable, so a caller can
+    /// use it as the whole explanation.
+    fn why_unprintable(&self, t: &Ty, depth: u32) -> Option<String> {
+        if self.ty_is_printable_at(t, depth) {
+            return None;
+        }
+        match t {
+            Ty::Named(n) => match self.top.symbols.get(n) {
+                Some(TopSymbol::Type(ti)) => match &ti.kind {
+                    TypeKind::Struct(fs) => fs.iter().find_map(|f| {
+                        self.why_unprintable(&f.ty, depth + 1).map(|why| {
+                            format!("`{}`: {}", f.name, why)
+                        })
+                    }),
+                    _ => Some(format!("`{}` does not render", n)),
+                },
+                Some(TopSymbol::Locus(_)) => Some(format!(
+                    "`{}` is a locus — a locus is flow, not shape, and \
+                     rendering one would expose the `params` a \
+                     `@sealed` locus confines. Render a field",
+                    n
+                )),
+                Some(TopSymbol::Perspective(_) | TopSymbol::Interface(_)) => {
+                    Some(format!("`{}` has no text form", n))
+                }
+                _ => Some(format!("`{}` does not render", n)),
+            },
+            Ty::Tuple(ts) => ts.iter().enumerate().find_map(|(i, x)| {
+                self.why_unprintable(x, depth + 1)
+                    .map(|why| format!("component {}: {}", i, why))
+            }),
+            Ty::Array(elem, Some(_)) | Ty::Bounded(elem, _) => Some(format!(
+                "`{}` renders only with scalar elements (Int, Float, \
+                 Bool, Decimal, Duration), and its element type is \
+                 `{}`",
+                t.display(),
+                elem.display()
+            )),
+            Ty::Array(_, None) => Some(
+                "an unsized array has no length to walk at the render \
+                 site"
+                    .to_string(),
+            ),
+            Ty::Prim(PrimType::Bytes) => Some(
+                "`Bytes` is binary — choose a rendering (hex, length, \
+                 or a text decode)"
+                    .to_string(),
+            ),
+            other => Some(format!("`{}` does not render", other.display())),
+        }
+    }
+
+    fn ty_is_printable_scalar(&self, t: &Ty) -> bool {
         match t {
             Ty::Prim(p) => matches!(
                 p,

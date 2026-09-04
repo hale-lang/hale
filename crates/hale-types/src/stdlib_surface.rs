@@ -605,6 +605,14 @@ pub const SURFACES: &[NsSurface] = &[
         ],
         open_prefixes: &[],
     },
+    // GH #469 B: `std::log::kv(k, v)` renders one structured field.
+    // Pure — it is string formatting; the I/O happens in the sink,
+    // which is an ordinary bus subscriber.
+    NsSurface {
+        ns: &["log"],
+        fns: &[e("kv", EffectSet::PURE)],
+        open_prefixes: &[],
+    },
     NsSurface {
         ns: &["metrics"],
         fns: &[
@@ -867,6 +875,7 @@ const NS_TLS: &[&str] = &["io", "tls"];
 const NS_UDP: &[&str] = &["io", "udp"];
 const NS_TEXT: &[&str] = &["text"];
 const NS_TERM: &[&str] = &["term"];
+const NS_LOG: &[&str] = &["log"];
 const NS_DIAG: &[&str] = &["diag"];
 const NS_OS: &[&str] = &["os"];
 
@@ -952,6 +961,8 @@ pub const SIGS: &[FnSig] = &[
     sig!(NS_STR, "starts_with", [Str, Str], Bool),
     sig!(NS_STR, "ends_with", [Str, Str], Bool),
     sig!(NS_STR, "lower", [Str], Str),
+    // GH #469 B: one structured log field, logfmt-quoted.
+    sig!(NS_LOG, "kv", [Str, Str], Str),
     sig!(NS_STR, "upper", [Str], Str),
     sig!(NS_STR, "trim", [Str], Str),
     sig!(NS_STR, "substring", [Str, Int, Int], Str),

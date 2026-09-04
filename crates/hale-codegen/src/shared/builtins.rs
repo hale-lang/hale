@@ -767,6 +767,37 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module
             .add_function("lotus_str_from_duration", str_from_dur_ty, None);
 
+        // GH #469 A3: f-string format specs.
+        // declare ptr @lotus_fmt_float_prec(ptr arena, double f, i32 p)
+        // declare ptr @lotus_fmt_int_hex(ptr arena, i64 n, i32 upper)
+        // declare ptr @lotus_fmt_pad(ptr arena, ptr s, i64 w,
+        //                            i32 fill, i32 align)
+        let i32_t = self.context.i32_type();
+        let fmt_prec_ty = ptr_t.fn_type(
+            &[ptr_t.into(), f64_t.into(), i32_t.into()],
+            false,
+        );
+        self.module
+            .add_function("lotus_fmt_float_prec", fmt_prec_ty, None);
+        let fmt_hex_ty = ptr_t.fn_type(
+            &[ptr_t.into(), i64_t.into(), i32_t.into()],
+            false,
+        );
+        self.module
+            .add_function("lotus_fmt_int_hex", fmt_hex_ty, None);
+        let fmt_pad_ty = ptr_t.fn_type(
+            &[
+                ptr_t.into(),
+                ptr_t.into(),
+                i64_t.into(),
+                i32_t.into(),
+                i32_t.into(),
+            ],
+            false,
+        );
+        self.module
+            .add_function("lotus_fmt_pad", fmt_pad_ty, None);
+
         // #353: ISO-8601, UTC only.
         // declare ptr @lotus_time_format_iso8601(ptr arena, i64 secs)
         // declare i64 @lotus_time_parse_iso8601(ptr s)

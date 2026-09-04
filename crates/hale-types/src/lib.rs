@@ -177,6 +177,29 @@ pub fn check_bundle_opts(
     // import renames, which only it knows; re-rewriting an
     // already-public stdlib name there is a no-op.)
     stdlib_bodies::demangle_imports(&mut diags, &[]);
+    // GH #469 A4: drop exact duplicates — same kind, same span,
+    // same message.
+    //
+    // Several expressions get visited twice (an argument once by
+    // the generic call path and again by the bare-builtin argument
+    // check, for instance), so a single mistake could be reported
+    // twice. That was invisible while interpolation spans all
+    // collapsed to `1:1`; fixing the spans made it visible, which
+    // is the usual way this kind of thing surfaces.
+    //
+    // Deduplicating on the whole diagnostic — not on the span — is
+    // deliberate: two DIFFERENT problems at one span are both worth
+    // saying, and only a byte-identical repeat is noise. Order is
+    // preserved so the first report keeps its position.
+    let mut seen = std::collections::HashSet::new();
+    diags.retain(|d| {
+        seen.insert((
+            format!("{:?}", d.kind),
+            d.span.start.as_usize(),
+            d.span.end.as_usize(),
+            d.message.clone(),
+        ))
+    });
     diags
 }
 

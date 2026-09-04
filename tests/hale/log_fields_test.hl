@@ -1,0 +1,128 @@
+// GH #469 track B — std::log's structured fields, event timestamp,
+// and level filtering.
+//
+// The sinks print, so their output is awkward to assert on from
+// inside the program. What IS assertable is everything upstream of
+// the printing, and that is where the new behaviour lives: the
+// quoting rule for `kv`, the fact that filtering happens at the
+// PUBLISHER (so a filtered call produces no event at all rather than
+// an event nobody renders), and that each record carries its own
+// timestamp.
+//
+// The counting sink below is also the documentation for "sinks are
+// ordinary bus subscribers" — it is nine lines and needs nothing
+// from the stdlib to participate.
+
+locus Counting {
+    params {
+        seen: Int = 0;
+        last_msg: String = "";
+        last_fields: String = "";
+        last_ts: Int = 0;
+        last_level: Int = 0;
+    }
+    bus {
+        subscribe "log.**" as on_event of type std::log::LogEvent;
+    }
+    fn on_event(e: std::log::LogEvent) {
+        self.seen = self.seen + 1;
+        self.last_msg = e.msg;
+        self.last_fields = e.fields;
+        self.last_ts = e.ts;
+        self.last_level = e.level;
+    }
+}
+
+main locus App {
+    params {
+        counter: Counting = Counting { };
+        // Pinned explicitly rather than left to `HALE_LOG`, so the
+        // test states its own threshold instead of inheriting the
+        // one the developer running it happens to have exported.
+        // 2 == INFO in severity order (TRACE 0 < DEBUG 1 < INFO 2
+        // < WARN 3 < ERROR 4).
+        log: std::log::Logger =
+            std::log::Logger { name: "app", min_severity: 2 };
+    }
+
+    fn exercise() {
+        // ---- kv quoting ----
+        std::test::assert_eq_str(
+            std::log::kv("user", "ada"), "user=ada",
+            "a plain value stays bare"
+        );
+        std::test::assert_eq_str(
+            std::log::kv("note", "two words"), "note=\"two words\"",
+            "a space forces quoting"
+        );
+        std::test::assert_eq_str(
+            std::log::kv("expr", "a=b"), "expr=\"a=b\"",
+            "an `=` in the value forces quoting, or the pair reparses wrong"
+        );
+        std::test::assert_eq_str(
+            std::log::kv("q", "say \"hi\""), "q=\"say \\\"hi\\\"\"",
+            "embedded quotes are escaped"
+        );
+        std::test::assert_eq_str(
+            std::log::kv("empty", ""), "empty=",
+            "an empty value is bare, not \"\""
+        );
+
+        // ---- filtering happens at the publisher ----
+        self.log.debug("below the threshold");
+        std::test::assert_eq_int(
+            self.counter.seen, 0,
+            "a filtered call publishes NOTHING — the sink never runs"
+        );
+        self.log.trace("also below");
+        std::test::assert_eq_int(self.counter.seen, 0, "trace filtered too");
+
+        self.log.info("at the threshold");
+        std::test::assert_eq_int(self.counter.seen, 1, "info passes");
+        std::test::assert_eq_str(
+            self.counter.last_msg, "at the threshold", "message carried"
+        );
+        std::test::assert_eq_str(
+            self.counter.last_fields, "", "no fields is the empty string"
+        );
+        std::test::assert(
+            self.counter.last_ts > 0,
+            "every record is stamped at the publish site"
+        );
+
+        self.log.error("above");
+        std::test::assert_eq_int(self.counter.seen, 2, "error passes");
+        std::test::assert_eq_int(
+            self.counter.last_level, 3,
+            "ERROR is wire level 3 — the numbering sinks decode"
+        );
+
+        // ---- the _kv family ----
+        self.log.warn_kv(
+            "retrying",
+            std::log::kv("attempt", "2") + " " + std::log::kv("after", "2s")
+        );
+        std::test::assert_eq_int(self.counter.seen, 3, "warn_kv publishes");
+        std::test::assert_eq_str(
+            self.counter.last_fields, "attempt=2 after=2s",
+            "fields arrive in the order written"
+        );
+        std::test::assert_eq_str(
+            self.counter.last_msg, "retrying",
+            "the message stays separate from the fields"
+        );
+
+        // The cascade: a child logger's path is parent + segment,
+        // which is the attribution that actually works today.
+        let db = std::log::Logger {
+            name: "db", parent_path: "app", min_severity: 2
+        };
+        db.info("connected");
+        std::test::assert_eq_int(self.counter.seen, 4, "child logger publishes");
+    }
+}
+
+fn main() {
+    let app = App { };
+    app.exercise();
+}

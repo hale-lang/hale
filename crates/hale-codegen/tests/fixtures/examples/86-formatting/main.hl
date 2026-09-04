@@ -1,0 +1,56 @@
+// 86-formatting — f-strings, composite rendering, format specs.
+//
+// GH #469. All three of these shipped and then went unexercised by
+// the corpus, which is a specific kind of invisible: `hale check`
+// covers the ~1400 programs embedded in Rust test strings, but only
+// the fixtures here are COMPILED AND RUN. An f-string appeared in
+// none of them, so nothing in the suite would have noticed if
+// interpolation had stopped producing the right bytes.
+//
+// So this is deliberately an output test as much as a compile test:
+// every line below has a value someone could read and check.
+
+type Point { x: Int; y: Int; }
+type Reading { sensor: String; point: Point; ok: Bool; }
+type Window { id: String; samples: bounded[Int; 8]; }
+type Corners { at: [Int; 4]; }
+
+fn main() {
+    let name = "ada";
+    let n = 42;
+    let ratio = 3.14159;
+
+    // The basic form: any expression, not just a variable.
+    println(f"hello, {name}");
+    println(f"n = {n}, doubled = {n * 2}");
+
+    // A2: composites render recursively. Strings nested inside a
+    // composite are quoted (so a value containing a comma cannot be
+    // mistaken for two fields); a String on its own is not.
+    let p = Point { x: 3, y: 4 };
+    println(f"point = {p}");
+    let r = Reading { sensor: "t-1", point: p, ok: true };
+    println(f"reading = {r}");
+    println(f"tuple = {(1, "two", 3.5)}");
+
+    // Fixed arrays render by unrolling; `bounded` respects the
+    // LIVE count, not the capacity.
+    let c = Corners { at: [10, 20, 30, 40] };
+    println(f"corners = {c}");
+    let mut w = Window { id: "w1" };
+    push(w.samples, 7) or raise;
+    push(w.samples, 8) or raise;
+    println(f"window = {w}");
+
+    // A3: format specs. Width alignment defaults by type — numbers
+    // pad left, text pads right — and `<`/`^`/`>` override it.
+    println(f"[{n:6}][{name:6}]");
+    println(f"[{n:<6}][{name:>6}]");
+    println(f"[{n:0>6}][{n:^7}]");
+    println(f"[{ratio:.3}]");
+    println(f"[{n:x}][{n:X}]");
+
+    // Escapes: `{{` and `}}` are literal braces, so a program can
+    // print the very syntax it is using.
+    println(f"literal {{n}} stays put, {n} does not");
+}

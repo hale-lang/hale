@@ -35,12 +35,100 @@
 // computed full_path (e.g. "app.db") so a sink subscribing on
 // a single subject can still show context.
 /// One log event on the bus: numeric level (1=INFO 2=WARN
-/// 3=ERROR 4=DEBUG 5=TRACE), cascaded logger path, message.
-/// Subscribe to `log.**` to build your own sink.
+/// 3=ERROR 4=DEBUG 5=TRACE), cascaded logger path, message,
+/// structured `fields` in logfmt, and `ts` (unix seconds at the
+/// PUBLISH site). Subscribe to `log.**` to build your own sink.
 type __StdLogEvent {
     level: Int;
     msg: String;
     path: String;
+
+    // GH #469 B: structured fields, carried as logfmt text
+    // (`k=v k2="two words"`).
+    //
+    // Not a map, because Hale has no first-class map VALUE — a
+    // `@form(hashmap)` is a locus, and a locus cannot be a payload.
+    // The alternatives were an inline `bounded[Pair; N]` (a fixed
+    // arity baked into the record, and a shape the zero-copy bus
+    // path does not carry for struct elements) or this. Rendering
+    // at the call site keeps the record flat, keeps it crossing
+    // every transport the bus already supports, and keeps the
+    // ordering the author wrote.
+    //
+    // Build entries with `std::log::kv(k, v)`, which does the
+    // quoting; joining with a space is the whole composition rule.
+    // Empty when the call carried no fields.
+    fields: String;
+
+    // Wall-clock unix SECONDS, stamped by the publisher.
+    //
+    // Stamped at the publish site, not at the sink, so the time is
+    // the event's rather than the renderer's — the two differ under
+    // a queued or bridged sink, and differ arbitrarily under
+    // `hale replay`, where the sink runs at a wall-clock time that
+    // has nothing to do with the run being replayed.
+    //
+    // Seconds is the resolution `std::time::now()` offers. For
+    // sub-second ordering, use the recording: bus publishes carry
+    // their own sequence.
+    ts: Int;
+}
+
+// std::log::kv — render one structured field.
+//
+// Quoting rule, kept small enough to hold in your head: a value
+// is bare unless it contains a space, a quote or an `=`, in
+// which case it is double-quoted with `\` escapes. That is the
+// logfmt convention every parser in that family already
+// implements.
+/// Render one `key=value` pair for a log event's `fields`, quoting
+/// the value when it contains a space, a quote or an `=`. Join
+/// several with a space.
+fn __std_log_kv(key: String, value: String) -> String {
+    let mut needs_quote = false;
+    if std::str::contains(value, " ") { needs_quote = true; }
+    if std::str::contains(value, "\"") { needs_quote = true; }
+    if std::str::contains(value, "=") { needs_quote = true; }
+    if !needs_quote {
+        return key + "=" + value;
+    }
+    let escaped = std::str::replace(
+        std::str::replace(value, "\\", "\\\\"), "\"", "\\\"");
+    return key + "=\"" + escaped + "\"";
+}
+
+// Severity ORDER, which the level constants deliberately are not.
+//
+// The wire values are historical (1=INFO 2=WARN 3=ERROR 4=DEBUG
+// 5=TRACE) and cannot be renumbered without breaking every sink
+// already decoding them, including ones outside this repo. So the
+// comparison used for filtering goes through this map instead:
+// TRACE < DEBUG < INFO < WARN < ERROR.
+fn __log_severity(level: Int) -> Int {
+    if level == 5 { return 0; } // TRACE
+    if level == 4 { return 1; } // DEBUG
+    if level == 1 { return 2; } // INFO
+    if level == 2 { return 3; } // WARN
+    if level == 3 { return 4; } // ERROR
+    return 2;
+}
+
+// The `HALE_LOG` threshold, as a severity (see __log_severity).
+//
+// Accepts the level names case-insensitively; anything
+// unrecognised — including an unset variable — means TRACE, i.e.
+// no filtering, because a logging config typo must not silently
+// discard the logs you set it to see.
+fn __log_env_severity() -> Int {
+    if !std::env::var_exists("HALE_LOG") {
+        return 0;
+    }
+    let want = std::str::lower(std::env::var("HALE_LOG"));
+    if want == "error" { return 4; }
+    if want == "warn" { return 3; }
+    if want == "info" { return 2; }
+    if want == "debug" { return 1; }
+    return 0;
 }
 
 // std::log::Logger — a publishing locus with cascading
@@ -65,6 +153,20 @@ locus __StdLogLogger {
         name: String = "root";
         parent_path: String = "";
         full_path: String = ""; // computed in birth()
+
+        // GH #469 B: the level threshold, as a SEVERITY (see
+        // __log_severity), resolved from `HALE_LOG` in birth().
+        //
+        // Filtering here rather than at the sink is deliberate:
+        // below the threshold there is no publish at all, so a
+        // disabled `trace` in a hot loop costs one integer compare
+        // instead of a payload plus a fanout. Sinks filter too, for
+        // the case where two sinks want different levels — that one
+        // has to be paid on the sink side by construction.
+        //
+        // Set it explicitly to ignore the environment:
+        //   std::log::Logger { name: "app", min_severity: 3 }
+        min_severity: Int = 0 - 1; // -1 = "ask the environment"
     }
     bus {
         publish "log.**" of type __StdLogEvent;
@@ -75,26 +177,49 @@ locus __StdLogLogger {
         } else {
             self.full_path = self.parent_path + "." + self.name;
         }
+        if self.min_severity < 0 {
+            self.min_severity = __log_env_severity();
+        }
     }
     fn info(msg: String) {
-        let subj = "log." + self.full_path;
-        subj <- __StdLogEvent { level: 1, msg: msg, path: self.full_path };
+        self.emit(1, msg, "");
     }
     fn warn(msg: String) {
-        let subj = "log." + self.full_path;
-        subj <- __StdLogEvent { level: 2, msg: msg, path: self.full_path };
+        self.emit(2, msg, "");
     }
     fn error(msg: String) {
-        let subj = "log." + self.full_path;
-        subj <- __StdLogEvent { level: 3, msg: msg, path: self.full_path };
+        self.emit(3, msg, "");
     }
     fn debug(msg: String) {
-        let subj = "log." + self.full_path;
-        subj <- __StdLogEvent { level: 4, msg: msg, path: self.full_path };
+        self.emit(4, msg, "");
     }
     fn trace(msg: String) {
+        self.emit(5, msg, "");
+    }
+
+    // The `_kv` family: same levels, plus structured fields.
+    //
+    //   log.info_kv("saved", std::log::kv("user", id));
+    //   log.warn_kv("retrying", std::log::kv("attempt", to_string(n))
+    //                           + " " + std::log::kv("after", "2s"));
+    fn info_kv(msg: String, fields: String) { self.emit(1, msg, fields); }
+    fn warn_kv(msg: String, fields: String) { self.emit(2, msg, fields); }
+    fn error_kv(msg: String, fields: String) { self.emit(3, msg, fields); }
+    fn debug_kv(msg: String, fields: String) { self.emit(4, msg, fields); }
+    fn trace_kv(msg: String, fields: String) { self.emit(5, msg, fields); }
+
+    fn emit(level: Int, msg: String, fields: String) {
+        if __log_severity(level) < self.min_severity {
+            return;
+        }
         let subj = "log." + self.full_path;
-        subj <- __StdLogEvent { level: 5, msg: msg, path: self.full_path };
+        subj <- __StdLogEvent {
+            level: level,
+            msg: msg,
+            path: self.full_path,
+            fields: fields,
+            ts: std::time::now(),
+        };
     }
 }
 
@@ -112,22 +237,52 @@ locus __StdLogLogger {
 /// The minimal sink: subscribes `log.**`, prints every event —
 /// INFO/DEBUG/TRACE to stdout, WARN/ERROR to stderr.
 locus __StdLogStdoutSink {
+    params {
+        // Same contract as the Logger's: -1 asks `HALE_LOG`.
+        min_severity: Int = 0 - 1;
+    }
     bus {
         subscribe "log.**" as on_event of type __StdLogEvent;
     }
-    fn on_event(e: __StdLogEvent) {
-        let mut name: String = "?";
-        if e.level == 1 { name = "INFO"; }
-        if e.level == 2 { name = "WARN"; }
-        if e.level == 3 { name = "ERROR"; }
-        if e.level == 4 { name = "DEBUG"; }
-        if e.level == 5 { name = "TRACE"; }
-        if e.level == 2 || e.level == 3 {
-            eprintln("[", name, " ", e.path, "] ", e.msg);
-        } else {
-            println("[", name, " ", e.path, "] ", e.msg);
+    birth() {
+        if self.min_severity < 0 {
+            self.min_severity = __log_env_severity();
         }
     }
+    fn on_event(e: __StdLogEvent) {
+        if __log_severity(e.level) < self.min_severity {
+            return;
+        }
+        let name = __log_level_name(e.level);
+        let line = "[" + name + " " + e.path + "] " + e.msg
+            + __log_fields_suffix(e.fields);
+        if e.level == 2 || e.level == 3 {
+            eprintln(line);
+        } else {
+            println(line);
+        }
+    }
+}
+
+// Shared level spelling — one table, so a renumbering or a new
+// level cannot half-land across three sinks.
+fn __log_level_name(level: Int) -> String {
+    if level == 1 { return "INFO"; }
+    if level == 2 { return "WARN"; }
+    if level == 3 { return "ERROR"; }
+    if level == 4 { return "DEBUG"; }
+    if level == 5 { return "TRACE"; }
+    return "?";
+}
+
+// Fields render AFTER the message, space-separated, and vanish
+// entirely when empty — so adding fields to one call site does not
+// change the shape of every other line in the file.
+fn __log_fields_suffix(fields: String) -> String {
+    if len(fields) == 0 {
+        return "";
+    }
+    return " " + fields;
 }
 
 // =====================================================================
@@ -171,9 +326,15 @@ locus __StdLogFileSink {
         last_kind: String = "";
         last_errno: Int = 0;
         last_path: String = "";
+        min_severity: Int = 0 - 1;
     }
     bus {
         subscribe "log.**" as on_event of type __StdLogEvent;
+    }
+    birth() {
+        if self.min_severity < 0 {
+            self.min_severity = __log_env_severity();
+        }
     }
 
     // std::text::Sink shape — raw text with the same rotation.
@@ -188,13 +349,12 @@ locus __StdLogFileSink {
     }
 
     fn on_event(e: __StdLogEvent) {
-        let mut name = "?";
-        if e.level == 1 { name = "INFO"; }
-        if e.level == 2 { name = "WARN"; }
-        if e.level == 3 { name = "ERROR"; }
-        if e.level == 4 { name = "DEBUG"; }
-        if e.level == 5 { name = "TRACE"; }
-        self.__append("[" + name + " " + e.path + "] " + e.msg + "\n");
+        if __log_severity(e.level) < self.min_severity {
+            return;
+        }
+        let name = __log_level_name(e.level);
+        self.__append("[" + name + " " + e.path + "] " + e.msg
+                + __log_fields_suffix(e.fields) + "\n");
     }
 
     fn last_error_kind() -> String { return self.last_kind; }
@@ -260,6 +420,7 @@ locus __StdLogConsoleSink {
     params {
         color: Bool = true;
         show_time: Bool = true;
+        min_severity: Int = 0 - 1;
     }
     bus {
         subscribe "log.**" as on_event of type __StdLogEvent;
@@ -271,6 +432,9 @@ locus __StdLogConsoleSink {
             if !std::term::is_tty(2) && !__log_force_color() {
                 self.color = false;
             }
+        }
+        if self.min_severity < 0 {
+            self.min_severity = __log_env_severity();
         }
     }
 
@@ -285,6 +449,9 @@ locus __StdLogConsoleSink {
     }
 
     fn on_event(e: __StdLogEvent) {
+        if __log_severity(e.level) < self.min_severity {
+            return;
+        }
         let rendered = self.render(e);
         if e.level == 2 || e.level == 3 {
             eprintln(rendered);
@@ -296,13 +463,22 @@ locus __StdLogConsoleSink {
     fn render(e: __StdLogEvent) -> String {
         let mut out = "";
         if self.show_time {
-            out = out + self.paint("\x1b[2m", __log_clock()) + " ";
+            // The EVENT's clock, not the sink's. These are the same
+            // number for a same-thread sink and diverge for a
+            // queued, bridged or replayed one — and in every case
+            // the time a reader wants is the one the event happened
+            // at.
+            out = out + self.paint("\x1b[2m", __log_clock(e.ts)) + " ";
         }
         out = out + self.badge(e.level) + " ";
         if len(e.path) > 0 {
             out = out + self.paint("\x1b[2m", e.path) + " ";
         }
-        return out + e.msg;
+        out = out + e.msg;
+        if len(e.fields) > 0 {
+            out = out + " " + self.paint("\x1b[2m", e.fields);
+        }
+        return out;
     }
     fn badge(level: Int) -> String {
         if level == 1 { return self.paint("\x1b[36m", "INFO "); }
@@ -328,9 +504,8 @@ fn __log_force_color() -> Bool {
     return false;
 }
 
-fn __log_clock() -> String {
-    let now = std::time::now();
-    let secs_today = now % 86400;
+fn __log_clock(at: Int) -> String {
+    let secs_today = at % 86400;
     let h = secs_today / 3600;
     let m = (secs_today % 3600) / 60;
     let s = secs_today % 60;
