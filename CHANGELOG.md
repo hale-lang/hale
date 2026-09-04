@@ -6,7 +6,7 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.19.2 — helpers get their speed back (2026-09-04)
 
 ### The caller-arena publish is gated on allocation, not on syntax (GH #522)
 
