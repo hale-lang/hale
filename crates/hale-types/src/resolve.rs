@@ -777,6 +777,13 @@ fn register_locus(
     let mut bus_publishes: Vec<BusPublishInfo> = Vec::new();
     let mut bus_subscribes: Vec<BusSubscribeInfo> = Vec::new();
     let mut accept_param: Option<(String, Ty)> = None;
+    // GH #525 item 1: a locus accepts exactly one child type
+    // (`spec/types.md`, single-accept-type per parent). The
+    // singular `accept_param` used to be overwritten by a second
+    // `accept` clause with no diagnostic, so the first clause
+    // silently stopped existing. Remember where the first one was
+    // so the second can name it.
+    let mut accept_span: Option<Span> = None;
     let mut mode_returns: BTreeMap<ModeKind, Ty> = BTreeMap::new();
     let mut annotations = Annotations::default();
     let mut contract_expose: Vec<ContractEntry> = Vec::new();
@@ -877,9 +884,28 @@ fn register_locus(
                 }
             }
             LocusMember::Lifecycle(lc) if matches!(lc.kind, LifecycleKind::Accept) => {
-                if let Some(p) = lc.params.first() {
-                    let ty = resolve_type_expr(&p.ty, known);
-                    accept_param = Some((p.name.name.clone(), ty));
+                if let Some(first) = accept_span {
+                    // The first clause stays the locus's accept type;
+                    // the second is an error, not a replacement.
+                    diags.push(
+                        Diag::ty(
+                            lc.span,
+                            format!(
+                                "locus `{}` declares `accept` twice: a locus \
+                                 accepts exactly one child type. Keep one \
+                                 `accept(c: T)` here and give the other child \
+                                 type a different owner.",
+                                decl.name.name
+                            ),
+                        )
+                        .with_related(first, "first `accept` declared here"),
+                    );
+                } else {
+                    accept_span = Some(lc.span);
+                    if let Some(p) = lc.params.first() {
+                        let ty = resolve_type_expr(&p.ty, known);
+                        accept_param = Some((p.name.name.clone(), ty));
+                    }
                 }
             }
             LocusMember::Mode(md) => {

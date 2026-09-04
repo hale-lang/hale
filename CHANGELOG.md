@@ -6,6 +6,20 @@ behavior.
 
 ---
 
+## Unreleased
+
+### A second `accept` clause is an error, not a silent overwrite (GH #525)
+
+A locus accepts exactly one child type (`spec/types.md` F.11,
+single-accept-type per parent). The checker stored that type in a
+singular slot and a second `accept(c: U)` clause simply replaced
+the first — no diagnostic, and the parent written to own two child
+types quietly owned one. It is now a typecheck error naming both
+clauses (the second carries the first as a related span), and the
+first clause stays the locus's accept type. Surfaced by the DNA
+Phase 0 design (#521), whose first fixture needs a Step to own
+both Work and delegated Tasks and must fail loudly there.
+
 ## v0.19.2 — helpers get their speed back (2026-09-04)
 
 ### The caller-arena publish is gated on allocation, not on syntax (GH #522)
