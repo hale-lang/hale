@@ -13668,7 +13668,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // the publish, which otherwise measured +86% on that
         // bench. Same fail-safe direction as the drain-elision
         // gate: over-matching only costs one call.
-        let body_can_read_tls = {
+        //
+        // GH #522: over-matching costs one call PER CALL, not one
+        // call. The syntactic half below is a substring search over
+        // `{:?}` of the body, so ANY call at all arms it — including
+        // a call through a function pointer in a two-deep helper
+        // chain, where the publish lands in a 10M-iteration loop and
+        // measured +29% on `fn_modular` from v0.14.0 onward.
+        //
+        // The TLS exists for allocation sites to read. A body that
+        // provably never allocates therefore has no reader to heal,
+        // and `non_allocating` is exactly that proof — the same
+        // fixed-point classifier that already lets this fn skip its
+        // m49 subregion, and one that reasons about function-pointer
+        // params rather than giving up on them. Consulting it here
+        // keeps the publish wherever an allocation could observe the
+        // TLS and drops it where nothing can.
+        //
+        // This does NOT weaken #375. That was a use-after-free in
+        // `lotus_arena_alloc` — reached only from an allocation.
+        // `caller_arena_tls_unwind.rs` is the standing reproducer
+        // and stays green.
+        let body_can_read_tls = !sig.non_allocating && {
             let dbg = format!("{:?}", f.body);
             dbg.contains("Call {") || dbg.contains("Struct {")
         };

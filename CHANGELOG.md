@@ -6,6 +6,50 @@ behavior.
 
 ---
 
+## Unreleased
+
+### The caller-arena publish is gated on allocation, not on syntax (GH #522)
+
+`fn_modular` — two-deep calls through opaque function pointers —
+has been **29% slower since v0.14.0**, and the bench suite never
+said so: its tolerance band is 30%, so a 29% regression passed
+with a point to spare, at 1% measurement noise.
+
+Bisected across released binaries on one machine, one session:
+
+| build | fn_modular |
+|---|---|
+| v0.11.3 – v0.13.0 | ~18 ms (flat) |
+| **v0.14.0** | **23.25 ms** |
+| v0.18.0 – v0.19.1 | 23.24 ms (flat) |
+
+Disassembling `outer()` from identical source built by each
+compiler showed 5 instructions becoming 15, the difference being
+`call <lotus_set_caller_arena>` — #375's caller-arena publish,
+landing inside a 10M-iteration loop.
+
+#375 fixed a real use-after-free and that trade was right. The
+problem was its gate, which asked whether the body *could* read
+the TLS by substring-searching `{:?}` of the AST for `Call {` or
+`Struct {`. Any call at all armed it, including a call through a
+function pointer that allocates nothing.
+
+The gate now also consults `non_allocating` — the same fixed-point
+classifier that already lets such a fn skip its m49 subregion, and
+one that reasons about function-pointer params instead of giving
+up on them. The TLS exists for allocation sites to read, so a body
+that provably never allocates has no reader to heal. `fn_modular`
+returns to **17.3 ms**, at or below every measurement since
+v0.11.3; no other bench moves.
+
+The safety direction is pinned in both places it can break:
+`caller_arena_tls_unwind.rs` (the #375 reproducer, green under
+`LOTUS_ASAN=1`) and a new `caller_arena_publish_gate.rs` that
+asserts an allocating body still publishes **on entry** — which
+required getting the test right twice, since the first version
+asked about functions LLVM had inlined away and the second counted
+call-site publishes that happen regardless of the prologue.
+
 ## v0.19.1 — print what you meant (2026-09-04)
 
 ### Logging ergonomics (GH #469)

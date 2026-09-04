@@ -1040,6 +1040,38 @@ vec without the wrapping locus owning it would still
 dangle — same boundary the cross-seed-segv fix originally
 documented; the fix here doesn't widen or narrow it.
 
+**Free-fn prologue publish (GH #375, gated per GH #522).** The
+caller-arena TLS is a set-and-forget channel, so a callee chain
+that exited down an error edge could leave it pointing at a
+destroyed method scratch; the next TLS reader without its own
+preceding publish then allocated out of freed memory. Free-fn
+prologues therefore publish their `__caller_arena` param to the
+TLS, re-healing it on entry and giving TLS readers the lifetime an
+inlined body would have used.
+
+The publish is emitted only when the body could actually observe
+the TLS. Two conditions must BOTH hold:
+
+  1. the body syntactically contains a call or a struct/locus
+     instantiation — every direct TLS-reading lowering lives under
+     one of those, and a scalar-only leaf fn skips the publish
+     (emitting it measured +86% on the `fn_call` microbench);
+  2. the fn is not classified `non_allocating`. The TLS is read by
+     allocation sites, so a body that provably never allocates has
+     no reader to heal.
+
+Condition 2 exists because condition 1 alone is a syntactic test
+that cannot see through a function pointer: a two-deep helper
+chain calling through an opaque `fn` value armed the publish
+inside the caller's loop and cost 29% on the `fn_modular`
+microbench from v0.14.0 until it was gated.
+
+Neither condition weakens the #375 guarantee, which concerns a
+use-after-free reachable only FROM an allocation. The other two
+layers of that fix — `lotus_arena_destroy` clearing the TLS when
+it points at the dying arena, and method epilogues restoring their
+entry-time snapshot — are unconditional.
+
 **Phase-4 perf follow-ons.** Three substrate
 tunings that fell out of profiling the per-method scratch
 reclaim on a real-world long-running workload:
