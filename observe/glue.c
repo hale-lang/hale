@@ -182,11 +182,16 @@ int64_t obs_topic(const char *name, const char *shape, int64_t networked) {
   return manifest_add(0, networked ? 1 : 0, name, 0, fnv(name, shape), 0);
 }
 int64_t obs_locus_type(const char *name) { return manifest_add(1, 0, name, 0, 0, 0); }
+/* proto 0.4 (hale#525 / handoff-14 P31): aux_b is the canonical
+ * entity id or 0, for every emitter. This library has no model, so
+ * 0. The `topic` argument is kept for source compatibility and no
+ * longer stored; the scheduler's cpu index rides in aux_a. */
 int64_t obs_binding(const char *name, int64_t transport, int64_t topic) {
-  return manifest_add(2, 1, name, (uint16_t)transport, 0, (uint64_t)topic);
+  (void)topic;
+  return manifest_add(2, 1, name, (uint16_t)transport, 0, 0);
 }
 int64_t obs_scheduler(const char *name, int64_t cpu) {
-  return manifest_add(3, 0, name, 0, 0, (uint64_t)cpu);
+  return manifest_add(3, 0, name, (uint16_t)cpu, 0, 0);
 }
 
 int64_t obs_ring_desc_ptr(int64_t ring) {

@@ -1,0 +1,38 @@
+// claims-demo/rogue — the second writer the compiler cannot see.
+//
+// A SEPARATE seed declaring the same subject + payload shape as
+// the app's Metrics and publishing on it. hale evaluates
+// `single_writer` per seed and refuses on principle to invent
+// deployment edges ("nothing about a deployment is visible from
+// source"), so both binaries check green — and the fused fleet
+// has two publishers. iris joins on (subject, payload shape), so
+// the fused topic's witnessed publisher set becomes
+// {DeltaTriage, RogueMetrics}: static holds, witnessed
+// contradicted. That row of the table is the demo.
+//
+//   LOTUS_OBS=1 ./rogue
+
+type Metric { n: Int = 0; }
+topic Metrics { payload: Metric; subject: "metrics"; }
+
+locus RogueSink {
+    bus { subscribe Metrics as on_m; }
+    fn on_m(m: Metric) { }
+}
+
+locus RogueMetrics {
+    bus { publish Metrics; }
+    run() {
+        let mut i = 0;
+        while i < 1500 {
+            Metrics <- Metric { n: 1000000 + i };
+            std::time::sleep(200ms);
+            i = i + 1;
+        }
+    }
+}
+
+main locus RogueApp {
+    params { s: RogueSink = RogueSink { }; p: RogueMetrics = RogueMetrics { }; }
+}
+fn main() { RogueApp { }; }

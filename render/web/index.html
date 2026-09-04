@@ -14,16 +14,41 @@
   #hud { top: 12px; left: 14px; }
   #hud b { color: #e6edf3; font-weight: 600; }
   #topics { top: 12px; right: 14px; text-align: right; }
+  #law { top: 86px; left: 14px; max-width: 34em; display: none; }
+  #law .hdr { color: #e6edf3; margin-bottom: 6px; }
+  #law .claim { cursor: pointer; padding: 3px 4px; border-radius: 5px; }
+  #law .claim:hover { background: rgba(255,255,255,.05); }
+  #law .claim.sel { background: rgba(120,140,170,.12); }
+  #law .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+              margin-right: 6px; vertical-align: baseline; }
+  #law .dot.hollow { background: transparent !important; border: 1.5px solid; }
+  #law .st { color: #8b949e; }
+  #law .detail { color: #8b949e; margin: 2px 0 4px 18px; white-space: normal; }
+  #law .warn { color: #d29922; }
   #events { bottom: 12px; left: 14px; max-width: 46em; color: var(--dim); }
   #events div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .live { color: #7ee787; } .dead { color: #f85149; }
+  #topics { max-height: 60vh; overflow-y: auto; }
+  #topics .trow { cursor: default; padding: 0 2px; border-radius: 3px; }
+  #topics .trow:hover { background: rgba(120,140,170,.12); }
+  #topics .trow.pinned { background: rgba(120,180,255,.16); }
+  #topics .z { color: #3a4250; }
+  #tip { position: fixed; display: none; pointer-events: none; z-index: 10;
+         background: rgba(13,17,23,.94); border: 1px solid #263041;
+         border-radius: 8px; padding: 8px 11px; font-size: 11px;
+         line-height: 1.5; color: #c9d4e3; box-shadow: 0 6px 24px rgba(0,0,0,.5); }
+  #tip b { color: #e6edf3; }
+  #hint { position: fixed; bottom: 12px; right: 14px; color: #3a4250; font-size: 10px; }
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
 <div id="hud" class="panel">iris · <span id="conn" class="dead">connecting…</span><br><span id="stats"></span></div>
 <div id="topics" class="panel"></div>
+<div id="law" class="panel"></div>
 <div id="events" class="panel"></div>
+<div id="tip"></div>
+<div id="hint">drag pan · wheel zoom · dblclick reset · click flower to pin · h plumbing · c color: topic/latency</div>
 <script src="app.js"></script>
 </body>
 </html>

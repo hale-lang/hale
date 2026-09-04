@@ -28,6 +28,12 @@ void obs_detach(obs_seg *s);
 
 int obs_alive(const obs_seg *s);
 uint32_t obs_pid(const obs_seg *s);
+/* Model identity (proto >= 0.2). Returns 1 and writes *out when the
+ * segment carries the field; returns 0 when it does not — a 0.1
+ * emitter. Not folded into a plain getter on purpose: *out == 0 is
+ * a real answer ("built without a model"), so absent and zero must
+ * stay distinguishable at the call site. */
+int obs_model_hash(const obs_seg *s, uint64_t *out);
 const char *obs_exe(const obs_seg *s); /* registration exe path; "" if absent */
 uint64_t obs_started_mono(const obs_seg *s);
 uint64_t obs_overruns(const obs_seg *s);

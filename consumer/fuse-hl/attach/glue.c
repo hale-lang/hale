@@ -134,6 +134,19 @@ const char *fz_entry_shape_hex(int64_t h, int64_t i) {
   snprintf(b, sizeof b, "%016llx", (unsigned long long)e->shape_hash);
   return astr(b);
 }
+/* Model identity as hex, so it compares directly against the
+ * topology artifact's `shape_hash` string with no Int width games
+ * on the Hale side. "" means the emitter predates proto 0.2 and
+ * said nothing — distinct from "0000000000000000", which is an
+ * emitter that positively has no model (a synthetic harness). */
+const char *fz_model_hash_hex(int64_t h) {
+  obs_seg *s = seg(h);
+  uint64_t m = 0;
+  char b[24];
+  if (!s || !obs_model_hash(s, &m)) return astr("");
+  snprintf(b, sizeof b, "%016llx", (unsigned long long)m);
+  return astr(b);
+}
 const char *fz_exe(int64_t h) {
   obs_seg *s = seg(h);
   return astr(s ? obs_exe(s) : "");

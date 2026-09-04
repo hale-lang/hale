@@ -338,6 +338,50 @@ Native-probe asks are made from a working iris, against a
 frozen protocol, with the library emitter as the reference
 implementation — a much easier yes.
 
+**Status 2026-08-11 — all three asks shipped.** The bet in
+that last paragraph paid: asking from a working iris against
+a written protocol, with a reference emitter to diff against,
+converted every ask. Native probes landed and then went
+through nine rounds of field hardening (handoffs 1–9, 21
+findings filed, 19 resolved); transport seq + per-binding
+counters shipped with them; the wire header became an opt-in
+(`LOTUS_OBS_WIRE=1`) after iris found that observation alone
+was silently partitioning fleets. The two-way channel is the
+durable asset here — upstream now carries iris's acceptance
+check as a gating CI test
+(`crates/hale-codegen/tests/obs_fleet_contract.rs`: three
+processes over a real multicast group, asserting the
+consumer-visible contract), and the contract tests decode
+with `protocol.h`'s own shifts, so emitter and consumer
+cannot silently disagree about a layout again. That last
+change came from handoff-7, where upstream computed the right
+locus for four releases and shipped it in the wrong bits
+while its own tests stayed green by decoding with the
+emitter's layout.
+
+Open on that board as of 2026-08-12:
+
+- **P20** — dynamically spawned (`accept()`-spawned) publishers
+  count `CT_PUBLISHED` = 0 on remote-only planes, while their
+  messages demonstrably deliver. Filed handoff-9 (2026-07-29)
+  with the discriminating table; still unanswered.
+- ~~**P22**~~ — the per-binding backpressure cells (`queue_depth`,
+  `send_block_ns`, `retries`) were written by no release. Filed
+  handoff-10; **shipped upstream 2026-08-12 (hale PR #461)** —
+  `lotus_obs_binding_cell_add` / `_gauge` in `lotus_obs.c` populate
+  all three (counters-tier, no observer gate). Reading them into
+  the snapshot is iris-side work now (INSPECTOR §8 item 5).
+
+**P23** (an intra-subtree publish left no trace — no probes, no
+counters, no manifest row) was filed handoff-11 and fixed
+upstream the next day. Worth recording how it was found, since
+it is a new capability rather than a lucky catch: it came out of
+joining a topology artifact cut from source against the live
+manifest, which is the first time "what did I declare that the
+system has never mentioned?" was an answerable question. Nine
+rounds of fleet field-testing had not surfaced it. See
+[`INSPECTOR.md`](./INSPECTOR.md).
+
 ## 14. Milestones
 
 M0 is not "visualize the codebase." Every milestone is a
@@ -363,6 +407,61 @@ Gate on all of it: **hale F.10**
 (`codegen-unknown-cross-seed-type-in-signature`, Rect-vs-
 Color registration asymmetry) still blocks `hale build` of
 the spike code; anything pulled from `main` hits it.
+
+**Where this stands, 2026-08-11.** M1 is done against the
+native runtime rather than the library emitter, and M2's
+first half with it: the milestone round read 19 seq-matched
+cross-process edges with single-digit-µs means, `lost = 0`,
+and a one-send five-listener multicast fan-out matched
+exactly per listener — the N-process, mixed-transport,
+loss-visible shape. Per-locus attribution and the
+supervision/lifecycle overlay are live, and the flower
+renders it in the browser over fuse-hl's HTTP/SSE surface
+(§11's decided target). The observation plane iris was built
+to need now exists and is CI-gated upstream.
+
+**M2's backpressure half is not done — and as of 2026-08-12
+it is no longer blocked upstream.** *(Correction 2026-09-04: the
+paragraph below was written on 2026-08-11 and was true that day;
+the cells shipped the next day in hale PR #461, per
+`UPSTREAM-NOTE-2026-09-01.md`. What remains is the demand side:
+fuse-hl fuses topic lines only and surfaces no binding line. Kept
+as written because the mechanism it describes — supply and demand
+missing in the same place — is the lesson.)* Loss is rendered;
+depth is not, and it couldn't be. PROTOCOL §6 has reserved
+`queue_depth`, `send_block_ns` and `retries` per binding
+since v0, and §7 builds the whole "edges are instruments"
+claim on them — but the native emitter writes only cells
+0/1/2 (sent, delivered, bytes) on a binding line and
+0/1/2 (published, delivered, bytes) on a topic line. Cells
+3–5 have never been populated by any release. Nothing caught
+it because iris never read them either: the demand side and
+the supply side were missing in the same place, so the gap
+stayed invisible through nine handoff rounds of field
+testing.
+
+So "deliberately overload a consumer, watch depth climb and
+the supervisor react" is an upstream ask (handoff-10), not
+iris plumbing — and the three cells are exactly the numbers
+that distinguish *lossy* from *saturated*, which is the
+distinction M2 exists to render. Loss we can already show;
+the queue filling up ahead of it we cannot. Consumer side is
+cheap once the cells are live: they are counter reads on a
+line fuse-hl already fuses.
+
+Then **M3.** Its two halves have
+different weights: post-mortem dumps are nearly built —
+PROTOCOL §12 defines the format, `synth` writes one on
+SIGUSR1, and "live attach and forensics are one decode path"
+is already true by construction, so what is missing is the
+runtime's crash handler upstream and a consumer entry point,
+not a design. Scrubbing is the real work: the rings are
+history, but nothing retains them consumer-side yet — fuse-hl
+drains to fused *totals* and keeps only an 8-entry event
+tail, which is the right shape for a live view and the wrong
+one for a recorder. A retention buffer and a
+scrub-to-timestamp path through the same tables is the M3
+build.
 
 ## 15. Open questions
 

@@ -4,6 +4,7 @@
 @ffi("c") fn fz_alive(h: Int) -> Int;
 @ffi("c") fn fz_pid(h: Int) -> Int;
 @ffi("c") fn fz_exe(h: Int) -> String;
+@ffi("c") fn fz_model_hash_hex(h: Int) -> String;
 @ffi("c") fn fz_overruns(h: Int) -> Int;
 @ffi("c") fn fz_next(h: Int) -> Int;
 @ffi("c") fn fz_ev_ts() -> Int;

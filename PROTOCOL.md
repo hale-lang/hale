@@ -26,6 +26,19 @@ Design invariants the protocol must never violate:
   carries is decodable with no external files. `.hale.topo`
   (when it exists upstream) *populates* the manifest; it is
   not required to *read* one.
+- **No payload bytes, ever.** Records carry ids, sequence
+  numbers, timestamps and *size classes* — never message
+  contents. The one rich form (SAMPLE_RICH, §8) carries a
+  latency and an exact byte count, still not the bytes. This
+  was always a rate-class decision; since hale shipped its
+  secrets surface (`@sealed`, `std::secret`) it is also a
+  confidentiality property worth stating outright: **enabling
+  observation cannot exfiltrate a payload, sealed or
+  otherwise**, because the plane has nowhere to put one.
+  Sealing and observation are orthogonal upstream — the
+  runtime's probes are unaware of it — and this invariant is
+  why that is safe. Adding a payload-bearing record kind is
+  therefore a protocol break, not a minor version.
 
 ---
 
@@ -58,6 +71,31 @@ An emitter with observation enabled:
 
 When `$XDG_RUNTIME_DIR` is unset, the fallback directory is
 `/tmp/hale-obs`. *(Amended.)*
+
+**Liveness is the consumer's job, and it is pid liveness —
+not the header flag.** `flags` bit 0 (§3) is set at segment
+creation and cleared by the emitter's clean-shutdown path, so
+a SIGKILLed, panicking or `docker stop`ped emitter leaves it
+set forever. A consumer reading the flag alone renders dead
+processes as live indefinitely (measured: 14 phantom
+processes in one iris snapshot, all leftovers of an upstream
+test run). The rule is the AND of both facts — flag set
+**and** `kill(pid, 0)` not `ESRCH` — which also gives the
+right answer for a post-mortem dump, whose pid has by
+definition exited. Residual: pid reuse reads live until the
+next attach cycle; discriminating it needs a process
+start-time comparison against a clock the header does not
+carry, and a wrong answer there would blind a *live* process,
+so it is left open deliberately. *(Amended 2026-08-11;
+reference implementation `consumer/obs_attach.c::obs_alive`.)*
+
+Upstream complements this from the emitter side: since
+v0.11.24 the next observed process to start **sweeps segments
+and registrations belonging to dead pids** (it skips anything
+alive — blinding a running observer would be worse than
+leaving a file behind). That bounds the leak; it does not
+remove the consumer's obligation, because a consumer may
+attach long before any new emitter starts.
 
 Consumers watch the directory (inotify) and may also attach
 manually by pid. Multiple consumers may attach to one
@@ -123,10 +161,64 @@ endianness check.
 | 0x68 | rings_off | u64 | |
 | 0x70 | flags | u64 | bit 0: emitter alive; bit 1: post-mortem dump |
 | 0x78 | manifest_gen | u64 | seqlock-style generation (§4) |
+| 0x80 | model_hash | u64 | **proto ≥ 0.2.** Model identity (§3.1) |
+| 0x88 | entity_id_digest | u64 | **proto ≥ 0.3.** Canonical entity-id table identity (§3.2) |
+
+### 3.1 Model identity — `model_hash` *(added 0.2, 2026-08-12)*
+
+The topology artifact's `shape_hash` — the identity of the model
+this binary was **compiled from** — stamped at segment creation.
+It settles the one question a consumer joining a live manifest to
+a source-derived artifact cannot otherwise answer: *was the
+running process built from the model I am comparing it against?*
+A comment-only rebuild keeps the value; a model change moves it.
+
+**Complementary to the manifest's per-topic `shape_hash`, not a
+substitute.** Model identity deliberately excludes payload field
+shape, so the two move independently and both are needed:
+
+| edit | model_hash | topic shape_hash |
+|---|---|---|
+| add a field to a payload | unchanged | **moves** |
+| add a locus, rewire, change supervision | **moves** | unchanged |
+
+"In sync" means both agree. A consumer checking only one of them
+is blind to half the drift — which is why iris's inspector
+reports them as two axes rather than one verdict.
+
+**Absent is not zero.** `0` is a real value meaning *this emitter
+has no model* — a synthetic or non-Hale emitter, and the state
+this repo's `synth.c` reports. A proto 0.1 segment carries no
+field at all, which means *unknown*. Consumers MUST keep the two
+distinct: check `proto_minor >= 2` **and** that `header_len`
+covers the field before reading it, since `header_len` is what
+the emitter actually wrote. (`consumer/obs_attach.c::obs_model_hash`
+returns a presence flag rather than a value for exactly this
+reason.)
+
+Minor-version discipline, since this is the first exercise of it:
+the field is purely additive, so a 0.1 consumer reads a 0.2
+segment correctly by ignoring it, and every existing region
+offset is unchanged. That is the bar for a minor bump; anything
+that moves or reinterprets an existing field is a major.
 
 Header is written once before registration (except `flags`
 and `manifest_gen`); consumers treat it as immutable after
 attach apart from those two fields.
+
+### 3.2 Entity-id table identity — `entity_id_digest` *(added 0.3, 2026-08-24)*
+
+The identity of the canonical **entity id table** whose ids a
+segment's manifest rows may carry in `aux_b` (§4). `model_hash`
+is *structural* model identity and does not cover every table
+those ids index, so two builds can share a `model_hash` while
+numbering entities differently. A consumer recomputes this digest
+from the model it holds and uses the ids **only on a match**;
+otherwise it falls back to matching on names. `0` = unstamped.
+
+Same absent-is-not-zero rule as §3.1: a proto 0.2 segment carries
+no field (unknown); a 0.3 segment carrying `0` is saying it has
+no canonical ids to offer.
 
 ## 4. Manifest
 
@@ -155,15 +247,46 @@ doc order packed to 30 B with misaligned u64s.)*
 ```
 ManifestEntry (32 B):
   shape_hash   u64     // payload-shape content hash (topics); 0 otherwise
-  aux_b        u64     // binding: owning topic_id; scheduler: cpu index
+  aux_b        u64     // canonical model entity id (hale >= 0.3); 0 = none.
+                       //   0.4: the ONLY meaning, for every emitter
   id           u32     // per-kind id space (§7)
   name_off     u32     // into string pool
   name_len     u16
-  aux_a        u16     // binding: transport enum (unix/udp/tcp/...)
+  aux_a        u16     // binding: transport enum (unix/udp/tcp/...);
+                       //   2 = adapter (Hale-owned-wire ingest,
+                       //   registered lazily on first use)
+                       // scheduler: cpu index (0.4; was aux_b)
   kind         u8      // 0=topic, 1=locus_type, 2=binding, 3=scheduler
   flags        u8      // bit 0: networked (topics); bit 1: from .hale.topo
   _pad         u16     // zero
 ```
+
+- **`aux_b` is the canonical model entity id — resolved 2026-09-04
+  at proto 0.4** (hale#525, handoff-14 P31). Since v0 this document
+  and iris's reference emitters (`emitter/synth.c`, `observe/`) had
+  used the field as *binding → owning topic_id, scheduler → cpu
+  index*; hale's native emitter, from proto 0.3, wrote the canonical
+  model entity id there for every kind, guarded by
+  `entity_id_digest` (§3.2), with `0` meaning "no canonical id".
+  The two were not distinguishable from the value alone.
+
+  Resolution: v0's meaning is **retired**. Every emitter writes the
+  entity id or 0; the scheduler cpu index moves to `aux_a`; the
+  binding → topic pairing is dropped (the counter line and the
+  binding name carry it). No layout change — which is exactly why
+  it still needed a minor: the *meaning* moved, and a consumer
+  depends on the meaning, not the offset.
+
+  Consumer rule: use the ids only when `entity_id_digest != 0`
+  matches the model you hold (§3.2). At `proto_minor >= 4` a
+  nonzero `aux_b` was never anything else; a 0.3 segment from an
+  iris emitter carries the old meaning and a zero digest, so the
+  digest gate alone is correct for it too.
+
+  How it happened is worth keeping: two implementations, one spec,
+  and the spec was not consulted before claiming a v0 field.
+  Upstream's rationale recorded the field as "written as 0 by every
+  path", true of its own emitter and false of this document's.
 
 - **Topic identity across binaries** (fusion join key):
   `shape_hash` = content hash of the wire subject + payload
@@ -224,21 +347,62 @@ ManifestEntry (32 B):
   unjoined declared subject, so a parented topic's manifest
   row hashed the empty shape; fixed with the pinning.)*
 
-  The compiler-side topology artifact (schema 1.2) exports
-  each topic's `(subject, shape, payload_hash)` in an
-  unhashed `topics` section — the join document: a
-  recording/WAL segment carrying `(name, shape_hash)`
-  matches a row and names the exact checked topology it ran
-  under. The two identities stay separate namespaces by
-  ruling (payload shape does not affect claim evaluation,
-  so it is not part of the model `shape_hash`); the
-  artifact references, never fuses.
+  The compiler-side topology artifact exports each topic's
+  `(name, subject, shape, payload_hash)` in an unhashed
+  `topics` section — the join document: a recording/WAL
+  segment carrying `(name, shape_hash)` matches a row and
+  names the exact checked topology it ran under. The two
+  identities stay separate namespaces by ruling (payload
+  shape does not affect claim evaluation, so it is not part
+  of the model `shape_hash`); the artifact references, never
+  fuses.
+
+  The `topics` section arrived at schema 1.2; the artifact is
+  at **1.9** as of hale v0.16.0+ (1.3 integrity digest, 1.4
+  verdict vocabulary, 1.6 evaluation, 1.8 source maps, 1.9
+  sealing in the hashed model). Consumers should read the
+  `schema` key rather than pin a version — the section is
+  additive and 1.2's rows still parse.
+
+  **Verify `artifact_digest` before joining on `topics`.**
+  Schema 1.3 added it precisely because this join was
+  unverified: `shape_hash` covers the *model half only*, so
+  the `topics` rows iris joins on sit outside it, and an
+  artifact could be edited to agree with a forged shape hash.
+  `artifact_digest` is FNV-1a/64 over the entire body,
+  emitted as the final key so verification is a prefix hash —
+  no re-serialization, no canonicalization step. iris trusts
+  artifacts it did not produce, so it owes that check.
+  *(Amended 2026-08-11.)*
 - **Dynamic registration.** The native emitter writes the
   manifest once at startup (from `.hale.topo`). The library
   emitter learns topics at runtime and appends. Append
   protocol: write the entry and strings, then increment
   `manifest_gen` (release). Consumers re-scan on generation
   change (acquire). Entries are never mutated or removed.
+
+  *(Amended 2026-08-12.)* In the absence of `.hale.topo` the
+  native emitter also registers on first use — a topic's row is
+  created by its first probe. Two consequences consumers may
+  rely on, and emitters must preserve:
+
+  **Absence is meaningful.** A topic that never carries a
+  message has no row, so "declared in the source topology but
+  absent from the manifest" is a sound reading of *never
+  mentioned at runtime*. iris's inspector builds a verdict on
+  exactly this (`inspect/`).
+
+  **Registration must be flavor-uniform.** That reading holds
+  only if every dispatch flavor registers alike. It did not: an
+  intra-subtree publish was rewritten to a direct handler call
+  before lowering and registered nothing, making "compiled away"
+  and "never published" the same observation (iris handoff-11
+  P23, fixed upstream in `5567bf2` — the desugared site now
+  probes like every other flavor). Recorded here because it is a
+  contract, not an implementation detail: **a new dispatch
+  flavor that skips registration silently converts live topics
+  into apparently-dead ones**, and nothing in the segment can
+  reveal the difference.
 - Pool exhaustion: if the manifest region fills, further
   registrations set a `manifest_overflow` counter (§6);
   records with unknown ids render as `unknown:<id>`.
@@ -492,11 +656,28 @@ library emitter's abort hook (ours, M3) produces them.
 - ~~Exact shape_hash definition~~ — **closed** (hale#399):
   pinned in §4 with test vectors; reference implementation
   `hale_types::topic_identity`, exported by the topology
-  artifact (schema 1.2) as the recording↔topology join.
+  artifact (schema 1.2, current 1.9) as the recording↔topology
+  join. Both pinned vectors re-verified against hale v0.16.0+
+  on 2026-08-11 (`0xf7d174542aa33437`; parented `org.metrics`).
+- ~~Late attach loses structure~~ — **closed upstream**
+  (hale v0.11.18): the birth replay on `observer_count` 0→1
+  was probe-driven, so a quiet process (long read loop, pinned
+  readers) never noticed the transition. A detached heartbeat
+  thread now drives the gate check every 250 ms under
+  `LOTUS_OBS=1`, bounding post-attach replay latency at ~250 ms
+  with zero probe traffic. Consumer-visible cost: the heartbeat
+  claims one SPSC ring slot, so a `rings=N` segment leaves N-1
+  for app threads (§14).
 - Whether `sample_n` is global (current) or per-topic
   (another mode-mask-sized table).
 - macOS: POSIX shm name limits and `memfd`-equivalent —
   parked until the platform work upstream settles (#231).
+  Movement to watch: hale#445 replaced "native = whatever host
+  compiled the compiler" with a real `TargetSpec` (canonical
+  triples, per-target linker/runtime facts, `hale
+  --list-targets` with support tiers). That is the seam a
+  second shm implementation would hang off; nothing for iris
+  to do until a non-Linux target reaches a tier that matters.
 - Symbol demangling scheme for native-stack attribution
   (`__lib_..._Type` pattern) — needs the mangling rules
   documented by the hale team; consumer-side otherwise.
@@ -509,3 +690,38 @@ library emitter's abort hook (ours, M3) produces them.
   tag_b generalization); §9 adopts it verbatim. Emitters use
   `std::ring::__spsc_*` from pure Hale; the three
   verification-found corrections are folded into §9/§10.
+
+- ~~**`aux_b` collision (§4)**~~ — **closed 2026-09-04 at proto
+  0.4** (hale#525): v0's meaning retired, every emitter writes the
+  entity id or 0, scheduler cpu index → `aux_a`.
+
+## 14. Turning it on (native emitter)
+
+The protocol says nothing about how an emitter is enabled —
+that is upstream's surface — but iris ships the acceptance
+loop, so the prerequisites belong here. For the native hale
+runtime (v0.11.15+):
+
+| Env | Default | What it buys |
+|---|---|---|
+| `LOTUS_OBS=1` | off | The whole plane: segment, registration, manifest, counters, local records (BUS_*, lifecycle, supervision). **Never alters the wire.** |
+| `LOTUS_OBS_WIRE=1` | off | The 16-byte `[magic][origin\|seq]` wire header. **Required fleet-wide for cross-process edges** — without it NET records carry `(0, local-seq)`: countable, not pairable. |
+| `LOTUS_OBS_RINGS` | 8 | Rings per segment. |
+| `LOTUS_OBS_SLOTS` | 4096 | Slots per ring (power of two). |
+
+Two prerequisites that cost real field time when missed:
+
+- **Edges need `LOTUS_OBS_WIRE=1` on every node, all ≥
+  v0.11.15.** This is deliberate (hale#277, iris handoff-4
+  P16): before the opt-in, an observed sender's header made a
+  stale peer's deserialize fail on every datagram, *silently*
+  — enabling observation partitioned a fleet with one old
+  binary. With the opt-in, `LOTUS_OBS=1` alone is byte-for-byte
+  identical to an unobserved run. The cost is that observation
+  and pairing are now two switches, and a fleet with only the
+  first reads origin 0 everywhere and forms no edges. That is
+  correct behavior, not a bug — check the env before filing
+  one.
+- **The replay heartbeat claims a ring.** A fleet pinning
+  `LOTUS_OBS_RINGS` to exactly its thread count should add
+  one, or an app thread shares a ring and overruns earlier.

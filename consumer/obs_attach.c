@@ -1,7 +1,9 @@
 #define _GNU_SOURCE
 #include "obs_attach.h"
 
+#include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -128,10 +130,53 @@ void obs_detach(obs_seg *s) {
   free(s);
 }
 
+/* Liveness is the AND of two facts, and it has to be, because
+ * each one alone is wrong in a different direction:
+ *
+ *   - the header's ALIVE flag is cleared by the emitter's clean
+ *     shutdown, so a SIGKILLed (or panicking, or docker-stopped)
+ *     emitter leaves it set forever. Reading it alone renders
+ *     dead processes as live indefinitely — measured in the
+ *     field as 14 phantom processes in one snapshot, all of them
+ *     leftovers from an upstream test run;
+ *   - pid liveness alone would call a post-mortem dump live,
+ *     and would be fooled by any pid the emitter never owned.
+ *
+ * PROTOCOL §1 already made pid liveness the consumer's rule for
+ * stale registrations; this is the same rule applied to the
+ * segment. `kill(pid, 0)` is the check: 0 means it exists,
+ * EPERM means it exists under another uid, ESRCH means it is
+ * gone. Note that a post-mortem dump (flags bit 1) carries a pid
+ * that has by definition exited, so dumps report not-alive —
+ * which is exactly what they are.
+ *
+ * Residual: pid reuse. A recycled pid whose segment we still
+ * hold reads alive until the next attach cycle. Discriminating
+ * it needs a process start-time comparison, and the only clock
+ * the header carries (CLOCK_MONOTONIC, suspend-blind) can drift
+ * against /proc's boot-relative one — which would blind a live
+ * process, a far worse failure than briefly believing a dead
+ * one. Left as a known residual rather than fixed unsoundly.
+ */
 int obs_alive(const obs_seg *s) {
-  return (atomic_load((_Atomic uint64_t *)&s->H->flags) & OBS_FLAG_ALIVE) != 0;
+  if ((atomic_load((_Atomic uint64_t *)&s->H->flags) & OBS_FLAG_ALIVE) == 0)
+    return 0;
+  pid_t pid = (pid_t)s->H->pid;
+  if (pid <= 0) return 0;
+  return kill(pid, 0) == 0 || errno == EPERM;
 }
 uint32_t obs_pid(const obs_seg *s) { return s->H->pid; }
+
+int obs_model_hash(const obs_seg *s, uint64_t *out) {
+  /* Guard on both the version AND the emitter's own header_len: a
+   * 0.2 emitter is the only thing that promises the field, and
+   * header_len is what it actually wrote. Reading past that is
+   * reading whatever the page happened to hold. */
+  if (s->H->proto_minor < 2) return 0;
+  if (s->H->header_len < offsetof(obs_header, model_hash) + 8) return 0;
+  *out = s->H->model_hash;
+  return 1;
+}
 uint64_t obs_started_mono(const obs_seg *s) { return s->H->started_mono_ns; }
 uint64_t obs_overruns(const obs_seg *s) {
   uint64_t o = 0;

@@ -80,6 +80,15 @@ static const char *inst_nm(uint32_t id) {
   return buf;
 }
 
+/* BUS_PUBLISH/BUS_DELIVER attribution: the w1 locus field names the
+ * publishing/consuming instance, and 0 means genuinely unattributed
+ * (a library emitter with no locus context) rather than instance 0 —
+ * so it renders as a word, not a number. */
+static const char *bus_nm(uint64_t w1) {
+  uint32_t locus = obs_bus_locus(w1);
+  return locus ? inst_nm(locus) : "(unattributed)";
+}
+
 /* ---- per-ring consumer state ------------------------------- */
 
 typedef struct {
@@ -161,17 +170,25 @@ static void print_event(uint64_t ts, uint64_t w0, uint64_t w1) {
   uint32_t sc = obs_w0_size_class(w0);
   double t = (double)(ts - H->started_mono_ns) / 1e9;
   switch (ek) {
+  /* BUS w1 = locus:20 | seq:44 — the publishing/consuming instance,
+   * 0 when unattributed. Printing it is what caught the upstream
+   * bit-packing inversion (handoff-7), so it stays visible. */
   case OBS_EK_BUS_PUBLISH:
-    printf("%10.6f  pub   %-14s ~%uB\n", t, nm(OBS_MK_TOPIC, id), 1u << sc); break;
+    printf("%10.6f  pub   %-14s %-12s ~%uB\n", t, nm(OBS_MK_TOPIC, id),
+           bus_nm(w1), 1u << sc); break;
   case OBS_EK_BUS_DELIVER:
-    printf("%10.6f  dlv   %-14s\n", t, nm(OBS_MK_TOPIC, id)); break;
+    printf("%10.6f  dlv   %-14s %s\n", t, nm(OBS_MK_TOPIC, id),
+           bus_nm(w1)); break;
+  /* origin_id is the SENDER's stream id, not a local binding —
+   * resolving it against this segment's manifest is what rendered
+   * `unknown:<origin>`. Print it as the opaque join key it is. */
   case OBS_EK_NET_SEND:
-    printf("%10.6f  net>  %-14s %s seq=%" PRIu64 "\n", t, nm(OBS_MK_TOPIC, id),
-           nm(OBS_MK_BINDING, obs_net_binding(w1)), obs_net_seq(w1)); break;
+    printf("%10.6f  net>  %-14s origin=%-5u seq=%" PRIu64 "\n", t,
+           nm(OBS_MK_TOPIC, id), obs_net_origin(w1), obs_net_seq(w1)); break;
   case OBS_EK_NET_DELIVER:
-    track_deliver_seq(obs_net_binding(w1), obs_net_seq(w1));
-    printf("%10.6f  net<  %-14s %s seq=%" PRIu64 "\n", t, nm(OBS_MK_TOPIC, id),
-           nm(OBS_MK_BINDING, obs_net_binding(w1)), obs_net_seq(w1)); break;
+    track_deliver_seq(obs_net_origin(w1), obs_net_seq(w1));
+    printf("%10.6f  net<  %-14s origin=%-5u seq=%" PRIu64 "\n", t,
+           nm(OBS_MK_TOPIC, id), obs_net_origin(w1), obs_net_seq(w1)); break;
   case OBS_EK_LOCUS_BIRTH:
     if (id < NAME_MAX_ID) inst_type[id] = obs_birth_type(w1);
     printf("%10.6f  birth %s parent=%s\n", t, inst_nm(id),
