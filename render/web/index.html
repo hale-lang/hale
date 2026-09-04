@@ -28,6 +28,17 @@
   #events { bottom: 12px; left: 14px; max-width: 46em; color: var(--dim); }
   #events div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .live { color: #7ee787; } .dead { color: #f85149; }
+  #topics { max-height: 60vh; overflow-y: auto; }
+  #topics .trow { cursor: default; padding: 0 2px; border-radius: 3px; }
+  #topics .trow:hover { background: rgba(120,140,170,.12); }
+  #topics .trow.pinned { background: rgba(120,180,255,.16); }
+  #topics .z { color: #3a4250; }
+  #tip { position: fixed; display: none; pointer-events: none; z-index: 10;
+         background: rgba(13,17,23,.94); border: 1px solid #263041;
+         border-radius: 8px; padding: 8px 11px; font-size: 11px;
+         line-height: 1.5; color: #c9d4e3; box-shadow: 0 6px 24px rgba(0,0,0,.5); }
+  #tip b { color: #e6edf3; }
+  #hint { position: fixed; bottom: 12px; right: 14px; color: #3a4250; font-size: 10px; }
 </style>
 </head>
 <body>
@@ -36,6 +47,8 @@
 <div id="topics" class="panel"></div>
 <div id="law" class="panel"></div>
 <div id="events" class="panel"></div>
+<div id="tip"></div>
+<div id="hint">drag pan · wheel zoom · dblclick reset · click flower to pin · h plumbing · c color: topic/latency</div>
 <script src="app.js"></script>
 </body>
 </html>
