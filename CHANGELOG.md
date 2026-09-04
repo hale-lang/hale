@@ -6,7 +6,7 @@ behavior.
 
 ---
 
-## Unreleased
+## v0.19.1 — print what you meant (2026-09-04)
 
 ### Logging ergonomics (GH #469)
 
