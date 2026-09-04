@@ -48,6 +48,7 @@ fn a_harness_build_leaves_manifest_entity_ids_zero() {
     let shm = format!("/dev/shm/hale-obs-{}", pid);
     let mut seen = 0usize;
     let mut nonzero = Vec::new();
+    let mut proto_minor = 0u16;
     for _ in 0..80 {
         std::thread::sleep(Duration::from_millis(25));
         let Ok(b) = std::fs::read(&shm) else { continue };
@@ -58,6 +59,7 @@ fn a_harness_build_leaves_manifest_entity_ids_zero() {
             |o: usize| u64::from_le_bytes(b[o..o + 8].try_into().unwrap());
         let u32at =
             |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+        proto_minor = u16::from_le_bytes(b[0x0A..0x0C].try_into().unwrap());
         let manifest_off = u64at(0x40) as usize;
         if manifest_off == 0 || manifest_off + 16 > b.len() {
             continue;
@@ -84,6 +86,15 @@ fn a_harness_build_leaves_manifest_entity_ids_zero() {
     let _ = std::fs::remove_file(&bin);
 
     assert!(seen > 0, "no manifest rows observed — test proves nothing");
+    // proto 0.4 (GH #525 / iris handoff-14 P31): the minor at which
+    // `aux_b` has exactly one meaning for every emitter — entity id
+    // or 0. A consumer that sees >= 4 may trust a nonzero aux_b was
+    // never a topic id or a cpu index. Bumping this constant is a
+    // protocol decision, not a test fix.
+    assert_eq!(
+        proto_minor, 4,
+        "segment header proto_minor: aux_b's single meaning is pinned at 0.4"
+    );
     assert!(
         nonzero.is_empty(),
         "an unstamped build published canonical entity ids: {:?}",

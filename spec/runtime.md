@@ -1469,6 +1469,19 @@ and publishes NO ids and NO digest rather than a partial table —
 partial canonicalization is indistinguishable from "unstamped" and
 would put a consumer back on name matching without telling it.
 
+**proto 0.4 (2026-09-04, GH #525 / iris handoff-14 P31).** No
+layout change. Iris's PROTOCOL §4 and its reference emitters had
+used `aux_b` since v0 as *binding → owning topic id, scheduler →
+cpu index*, so from 0.3 a nonzero `aux_b` meant two things
+depending on which emitter wrote the segment. 0.4 retires the v0
+meaning: every emitter writes the canonical entity id or 0, the
+scheduler cpu index moves to `aux_a`, and the binding → topic
+pairing is dropped (the counter table and the binding name carry
+it). A consumer still gates on `entity_id_digest != 0`; at minor
+≥ 4 it may additionally trust that a nonzero `aux_b` was never
+anything else. This was the last open item before the protocol
+freezes at v0.
+
 **Identity is stamped before anything can register.** The prelude
 publishes `model_hash`, `exec_digest`, and the entity ids ahead of
 the bindings prelude and the config loader, because registering a

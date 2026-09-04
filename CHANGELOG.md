@@ -8,6 +8,28 @@ behavior.
 
 ## Unreleased
 
+### Observation proto 0.4: `aux_b` means one thing (GH #525, iris handoff-14 P31)
+
+Iris's PROTOCOL §4 and its reference emitters had used a manifest
+row's `aux_b` since v0 as *binding → owning topic id, scheduler →
+cpu index*. hale's native emitter, from proto 0.3, wrote the
+canonical model entity id there for every kind — and this file's
+rationale said the field had "been written as 0 by every path",
+which was true of hale's emitter and false of the protocol's. The
+two meanings are not distinguishable from the value; nothing was
+broken only because no consumer read the field yet.
+
+Resolved by retiring the v0 meaning rather than moving the entity
+id: `proto_minor` is now 4, every emitter writes the entity id or
+0, the scheduler cpu index moves to `aux_a`, and the binding →
+topic pairing is dropped (the counter table and the binding name
+carry it). No layout change. A consumer still gates on
+`entity_id_digest != 0`; at minor ≥ 4 it may additionally trust
+that a nonzero `aux_b` was never anything else. The paired iris
+change (protocol.h, synth.c, observe/glue.c, PROTOCOL §4/§13) is
+handed over as `UPSTREAM-NOTE-2026-09-04-aux-b.md` in the iris
+tree. Last open item before the protocol freezes at v0.
+
 ### A second `accept` clause is an error, not a silent overwrite (GH #525)
 
 A locus accepts exactly one child type (`spec/types.md` F.11,

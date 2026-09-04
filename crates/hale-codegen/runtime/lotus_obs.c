@@ -187,11 +187,22 @@ void lotus_obs_model_hash_set(uint64_t h) { g_obs_model_hash = h; }
  * against the source-derived model had to match on strings and hope
  * the two spellings agreed. These rows give the compiler's answer
  * instead: for each (kind, name) the canonical `ApplicationModel`
- * entity id, published in the manifest entry's `aux_b` — a field
- * that has been in the ABI since v0 and written as 0 by every path,
- * so no consumer's layout moves. `aux_b == 0` still means "no
- * canonical id" (harness builds, or an entity the model doesn't
- * name, e.g. a stdlib subject).
+ * entity id, published in the manifest entry's `aux_b`. `aux_b == 0`
+ * means "no canonical id" (harness builds, or an entity the model
+ * doesn't name, e.g. a stdlib subject).
+ *
+ * Correction to the original rationale (iris handoff-14 P31,
+ * 2026-08-24): this file claimed `aux_b` had "been written as 0 by
+ * every path". True of THIS emitter, false of the protocol's — iris
+ * PROTOCOL.md §4 and its reference emitters had used the field
+ * since v0 as binding->owning topic id / scheduler->cpu index, so
+ * from 0.3 the same bytes meant two things depending on who wrote
+ * the segment. Resolved at proto 0.4 (GH #525) by retiring the v0
+ * meaning: every emitter writes the entity id or 0, the scheduler
+ * cpu index moves to `aux_a`, and the binding->topic pairing is
+ * dropped (the counter table and the binding name already carry
+ * it). The layout never moved; the meaning did, and a consumer
+ * depends on the meaning.
  *
  * Entity ids are only meaningful WITH the header's `model_hash`:
  * they are indices into that model's tables, not stable names. */
@@ -1875,7 +1886,14 @@ static int obs_create(int64_t rings, int64_t slots) {
   memset(MODE, 2 /* PACKED */, OBS_ENTRY_CAP);
   memset(g_cnt_line_for, -1, sizeof g_cnt_line_for);
 
-  *H = (obs_hdr_t){ .magic = OBS_MAGIC, .proto_major = 0, .proto_minor = 3,
+  /* proto 0.4 (2026-09-04, GH #525 / iris handoff-14 P31): no
+   * layout change. The bump records that `aux_b` now has ONE
+   * meaning across every emitter — canonical entity id, or 0 —
+   * and that v0's binding->topic / scheduler->cpu reading is
+   * retired. A consumer gates on entity_id_digest != 0 as before;
+   * at minor >= 4 it may additionally trust that a nonzero aux_b
+   * was never anything else. */
+  *H = (obs_hdr_t){ .magic = OBS_MAGIC, .proto_major = 0, .proto_minor = 4,
     .header_len = sizeof(obs_hdr_t), .total_len = g_seg_len,
     .pid = (uint32_t)getpid(), .ring_count = (uint32_t)rings,
     .ring_slots = (uint32_t)slots, .ts_shift = 4,
