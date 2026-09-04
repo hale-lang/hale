@@ -20,6 +20,22 @@ first clause stays the locus's accept type. Surfaced by the DNA
 Phase 0 design (#521), whose first fixture needs a Step to own
 both Work and delegated Tasks and must fail loudly there.
 
+### A constructor can designate a perspective slot (GH #525)
+
+`App { gw: Gateway { router: RouterV2 { } } }` — where `router` is
+`perspective(Router)` — now typechecks and designates the slot with
+`RouterV2`, overriding the holder's declaration-site default. The
+param-default path already consulted `serves`; the literal-override
+path only knew about interfaces, so a `perspective(P)` field fell
+through to plain assignability and `Router != RouterV2`. Codegen
+had handled the override all along. An override that names a locus
+not serving the perspective is refused with the `serves` clause it
+needs. The slot stays program-global and 1-1: an override picks the
+program's impl, exactly as a default does. Fixture
+`65-perspective-ctor-override`. Asked for by the DNA assembly shape
+in #521 (test assembles a fake, deployment assembles the real one,
+the holder's source never changes).
+
 ## v0.19.2 — helpers get their speed back (2026-09-04)
 
 ### The caller-arena publish is gated on allocation, not on syntax (GH #522)

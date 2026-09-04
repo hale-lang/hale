@@ -46,8 +46,9 @@ tier 2` is fine.
 ## Holding and calling through a perspective
 
 A holder programs against `perspective(Router)` — never a concrete
-implementation. It designates the slot with a conforming impl, then
-calls through it:
+implementation. It designates the slot with a conforming impl
+(by default at its own declaration, or from whoever constructs it —
+see below), then calls through it:
 
 ```hale
 locus Gateway {
@@ -59,6 +60,26 @@ locus Gateway {
     }
 }
 ```
+
+The locus that *assembles* a `Gateway` can pick the impl instead of
+taking the declaration's default, the same way it can fill any
+interface-typed field:
+
+```hale
+main locus App {
+    params {
+        gw: Gateway = Gateway { router: RouterV2 { } };  // not RouterV1
+    }
+}
+```
+
+`RouterV2` must `serves Router`; a locus that doesn't is refused
+right there with the `serves` clause it needs. One thing to keep in
+mind: the slot is program-global, so this chooses the *program's*
+router, not this Gateway's — if two holders are constructed with
+different impls, the last designation wins, just as it would with
+two different defaults. Tests assemble a fake, deployments assemble
+the real one, and the holder's source never changes.
 
 `self.router.route(...)` doesn't call `RouterV1` directly — it goes
 through the perspective's **slot**. That indirection is the whole

@@ -357,3 +357,89 @@ fn main() { App { }; }
         msgs
     );
 }
+
+// GH #525 item 2 (2026-09-04): designation at a CONSTRUCTION site.
+// The param-default path consulted `serves`; the literal-override
+// path only knew interfaces, so a containing constructor could not
+// pick the impl. Codegen already handled the override; the checker
+// was the only refusal.
+
+const CTOR_OVERRIDE: &str = r#"
+perspective Router {
+    fn route(code: Int) -> Int;
+}
+locus RouterV1 : serves Router {
+    fn route(code: Int) -> Int { return code + 1; }
+}
+locus RouterV2 : serves Router {
+    fn route(code: Int) -> Int { return code + 2; }
+}
+locus Plain {
+    fn route(code: Int) -> Int { return code + 3; }
+}
+locus Gateway {
+    params { router: perspective(Router) = RouterV1 { }; }
+}
+main locus App {
+    params { gw: Gateway = Gateway { router: IMPL { } }; }
+    run() { }
+}
+fn main() { App { }; }
+"#;
+
+#[test]
+fn ctor_override_with_serving_locus_clean() {
+    let msgs = check(&CTOR_OVERRIDE.replace("IMPL", "RouterV2"));
+    assert!(
+        msgs.iter().all(|m| !m.contains("expects `Router`")
+            && !m.contains("does not serve")),
+        "expected the override to typecheck clean, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn ctor_override_with_non_serving_locus_names_the_missing_serves() {
+    let msgs = check(&CTOR_OVERRIDE.replace("IMPL", "Plain"));
+    assert!(
+        msgs.iter().any(|m| m.contains("field `router` is `perspective(Router)`")
+            && m.contains("`Plain` does not serve it")
+            && m.contains("locus Plain : serves Router")),
+        "expected a serves-naming diagnostic, got: {:?}",
+        msgs
+    );
+    // And only that one — not the generic mismatch on top of it.
+    assert!(
+        msgs.iter().all(|m| !m.contains("expects `Router`, got `Plain`")),
+        "generic mismatch should be suppressed, got: {:?}",
+        msgs
+    );
+}
+
+#[test]
+fn ctor_override_on_a_data_type_field_is_still_rejected() {
+    // PR #531 review: `check_literal_fields` is shared with data-type
+    // literals, and codegen has no designation path for a `type`
+    // field, so the checker must keep refusing this exactly as the
+    // base did — otherwise `hale check` passes and `hale build` fails.
+    let src = r#"
+perspective Router {
+    fn route(code: Int) -> Int;
+}
+locus RouterV2 : serves Router {
+    fn route(code: Int) -> Int { return code + 2; }
+}
+type Holder { router: perspective(Router); }
+fn main() {
+    let holder = Holder { router: RouterV2 { } };
+    println(holder.router.route(1));
+}
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("type `Holder`")
+            && m.contains("field `router` expects `Router`, got `RouterV2`")),
+        "expected the data-type literal to keep its mismatch, got: {:?}",
+        msgs
+    );
+}

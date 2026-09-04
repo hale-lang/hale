@@ -2884,6 +2884,18 @@ P) }` into the global slot. The field itself stores the impl's
 self-pointer for ownership; the slot holds the same pointer plus
 the vtable for dispatch.
 
+A containing constructor may designate instead (2026-09-04, GH
+#525): `App { gw: Gateway { router: RouterV2 { } } }` overrides the
+holder's default with `RouterV2`, which is instantiated as the
+holder's owned child and stored into the slot exactly as the
+default would have been. The override must name a locus that
+`serves P`; one that does not is a typecheck error naming the
+missing `serves` clause. Because the slot is program-global and
+1-1, an override designates the *program's* impl, not a
+per-instance one — two holders constructed with different impls
+race on one slot, last designation wins, the same as two holders
+with different defaults.
+
 **Cost.** Steady state is one load + one predicted indirect call
 per call into a perspective — near-direct. The mechanism is
 Linux/native-agnostic (no new runtime dependency); a program that
