@@ -9,6 +9,15 @@
 //       supervision tree (parent chains -> stems + depth rings)
 //   [2] flow: topics are the bases; processes orbit the topics
 //       they publish/consume, edges route through their topic
+//   [3] law: the same flowers with the model's LAW overlaid —
+//       group hulls, each claim's static verdict beside its
+//       witnessed state, contradicted routes in alarm. The
+//       ledger panel is DOM (crisp text, clickable lens);
+//       hulls/highlights are canvas. Epistemic honesty is a
+//       render property here: "consistent" always names its
+//       basis, degraded proof families draw hatched, and
+//       witness evidence from processes built from a DIFFERENT
+//       model is flagged, not blended.
 
 const canvas = document.getElementById("c");
 const ctx = canvas.getContext("2d");
@@ -16,15 +25,20 @@ const connEl = document.getElementById("conn");
 const statsEl = document.getElementById("stats");
 const topicsEl = document.getElementById("topics");
 const eventsEl = document.getElementById("events");
+const lawEl = document.getElementById("law");
 
 let snap = null, prev = null, rates = { edges: new Map(), procs: new Map(), loci: new Map() };
 let lastDraw = 0, lastFrameT = 0;
 let view = 1;
+let selClaim = null;              // law lens: selected claim name
+let petalPos = new Map();         // `${pid}|${type}` -> [{x,y}] (this frame)
 const FRAME_MS = 1000 / 30;
 
 addEventListener("keydown", (e) => {
   if (e.key === "1") view = 1;
   if (e.key === "2") view = 2;
+  if (e.key === "3") view = 3;
+  if (e.key === "Escape") { selClaim = null; renderLawPanel(); }
 });
 
 const hue = (s) => { let h = 0; for (const ch of s) h = (h * 31 + ch.charCodeAt(0)) % 360; return h; };
@@ -69,11 +83,64 @@ function ingest(s) {
   }
 }
 
+// ---- the law ledger (DOM: crisp text, clickable lens) --------
+
+const WCOLOR = { consistent: "#7ee787", contradicted: "#f85149",
+                 unwitnessed: "#d29922", not_exercised: "#8b949e",
+                 unsupported: "#6e7681" };
+const WGLYPH = { consistent: "witnessed consistent", contradicted: "CONTRADICTED",
+                 unwitnessed: "unwitnessed", not_exercised: "not exercised",
+                 unsupported: "unsupported" };
+
+function claimFamilyAdequacy(law, c) {
+  // reachability/endpoint/... -> exact | degraded, from the
+  // artifact's own adequacy account. The compiler grades its own
+  // proof; we only carry the grade to the pixels.
+  return (law.adequacy || {})[c.family] || "?";
+}
+
+function renderLawPanel() {
+  const law = snap && snap.law;
+  if (!law) { lawEl.style.display = "none"; return; }
+  lawEl.style.display = "block";
+  const ev = law.evidence || {};
+  let h = `<div class="hdr">law · model ${(law.model || "").slice(0, 8)} · digest ${law.digest}` +
+          ` · static verdict: ${law.verdict}</div>`;
+  if (ev.other_model > 0)
+    h += `<div class="warn">⚠ ${ev.other_model} live process(es) built from a DIFFERENT model — their evidence is about other law</div>`;
+  if (law.digest !== "verified")
+    h += `<div class="warn">⚠ artifact digest ${law.digest} — claims table ${law.digest === "mismatch" ? "cleared" : "unverified"}</div>`;
+  for (const c of law.claims || []) {
+    const col = WCOLOR[c.witnessed] || "#6e7681";
+    const adq = claimFamilyAdequacy(law, c);
+    const hollow = adq === "degraded" ? " hollow" : "";
+    const sel = selClaim === c.name ? " sel" : "";
+    h += `<div class="claim${sel}" data-claim="${c.name}">` +
+         `<span class="dot${hollow}" style="background:${col};border-color:${col}"></span>` +
+         `<b>${c.name}</b> <span class="st">${c.form}</span><br>` +
+         `<span style="margin-left:14px" class="st">static <b style="color:#a8b3c4">${c.static}</b>` +
+         ` · <b style="color:${col}">${WGLYPH[c.witnessed] || c.witnessed}</b>` +
+         ` · proof ${adq}</span>` +
+         (sel ? `<div class="detail">${c.detail}</div>` : "") +
+         `</div>`;
+  }
+  h += `<div class="st" style="margin-top:6px">click a claim to focus · [3] law view · esc clears</div>`;
+  lawEl.innerHTML = h;
+}
+
+lawEl.addEventListener("click", (e) => {
+  const row = e.target.closest("[data-claim]");
+  if (!row) return;
+  selClaim = selClaim === row.dataset.claim ? null : row.dataset.claim;
+  view = 3;
+  renderLawPanel();
+});
+
 function connect() {
   const es = new EventSource("/events");
   es.onopen = () => { connEl.textContent = "live"; connEl.className = "live"; };
   es.onerror = () => { connEl.textContent = "reconnecting…"; connEl.className = "dead"; };
-  es.onmessage = (m) => { try { ingest(JSON.parse(m.data)); } catch (e) {} };
+  es.onmessage = (m) => { try { ingest(JSON.parse(m.data)); renderLawPanel(); } catch (e) {} };
 }
 connect();
 
@@ -248,6 +315,10 @@ function drawFlower(p, cx, cy, t) {
     const q = pos.get(l.id);
     if (!q) continue;
     maxDepth = Math.max(maxDepth, q.depth);
+    // law overlay looks petals up by (pid, type)
+    const pk = p.pid + "|" + l.type;
+    if (!petalPos.has(pk)) petalPos.set(pk, []);
+    petalPos.get(pk).push({ x: q.x, y: q.y });
     const h = hue(l.type);
     const bloom = dead ? 0.15 : 0.55 + 0.35 * Math.sin(t * 1.8 + l.id * 1.7);
     if (q.depth === 0) continue; // root rendered as the core below
@@ -391,6 +462,112 @@ function drawFlowView(t, dt, w, h) {
   procs.forEach((p, i) => drawFlower(p, pcenters[i][0], pcenters[i][1], t));
 }
 
+// ---- law view ----------------------------------------------
+// The process view's flowers, with the model's law drawn ON the
+// running system: hulls around each group's live members, claim
+// states at their participants, contradicted routes in alarm.
+
+function groupPoints(law, gname) {
+  const pts = [];
+  const members = (law.groups || {})[gname] || [];
+  for (const [k, list] of petalPos) {
+    const type = k.split("|")[1];
+    if (members.includes(type)) pts.push(...list);
+  }
+  return pts;
+}
+
+function drawHull(pts, hueDeg, label, bright, dashed) {
+  if (!pts.length) return null;
+  let cx = 0, cy = 0;
+  for (const p of pts) { cx += p.x; cy += p.y; }
+  cx /= pts.length; cy /= pts.length;
+  let r = 30;
+  for (const p of pts) r = Math.max(r, Math.hypot(p.x - cx, p.y - cy) + 30);
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.setLineDash(dashed ? [6, 5] : []);
+  ctx.fillStyle = `hsla(${hueDeg}, 60%, 55%, ${bright ? 0.10 : 0.05})`;
+  ctx.fill();
+  ctx.lineWidth = bright ? 2 : 1;
+  ctx.strokeStyle = `hsla(${hueDeg}, 65%, 62%, ${bright ? 0.85 : 0.35})`;
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.textAlign = "center";
+  ctx.font = "11px ui-monospace, monospace";
+  ctx.fillStyle = `hsla(${hueDeg}, 55%, 72%, ${bright ? 0.95 : 0.55})`;
+  ctx.fillText(label, cx, cy - r - 6);
+  return { x: cx, y: cy, r };
+}
+
+function ringPetals(types, color) {
+  for (const [k, list] of petalPos) {
+    const type = k.split("|")[1];
+    if (!types.includes(type)) continue;
+    for (const q of list) {
+      ctx.beginPath();
+      ctx.arc(q.x, q.y, 15, 0, Math.PI * 2);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = color;
+      ctx.stroke();
+    }
+  }
+}
+
+function drawLawView(t, dt, w, h) {
+  drawProcessView(t, dt, w, h); // the ground truth, always under the law
+  const law = snap.law;
+  if (!law) {
+    ctx.fillStyle = "#8b949e";
+    ctx.textAlign = "center";
+    ctx.fillText("no topology artifact — start fuse-hl with one to see law", w / 2, 30);
+    return;
+  }
+  const sel = (law.claims || []).find(c => c.name === selClaim) || null;
+  const parts = new Set(); // groups the selected claim touches
+  if (sel) for (const g of [sel.group, sel.src, sel.dst]) if (g) parts.add(g);
+
+  // group hulls: bright when selected-or-no-selection, dim otherwise
+  const hulls = new Map();
+  for (const gname of Object.keys(law.groups || {})) {
+    const bright = !sel || parts.has(gname);
+    const adqDegraded = sel && parts.has(gname) &&
+      claimFamilyAdequacy(law, sel) === "degraded";
+    hulls.set(gname, drawHull(groupPoints(law, gname), hue(gname), gname, bright, adqDegraded));
+  }
+
+  // claim annotations on the canvas
+  for (const c of law.claims || []) {
+    if (sel && c.name !== sel.name) continue;
+    if (c.witnessed === "contradicted") {
+      if (c.route) {
+        // forbid: the observed one-hop route, in alarm
+        const a = hulls.get(c.src), b = hulls.get(c.dst);
+        if (a && b) {
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.setLineDash([9, 6]);
+          const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2 - 40;
+          ctx.quadraticCurveTo(mx, my, b.x, b.y);
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = "rgba(248,81,73,.9)";
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = "#f85149";
+          ctx.textAlign = "center";
+          ctx.font = "11px ui-monospace, monospace";
+          ctx.fillText(`⚠ ${c.route.pub} → ${c.route.topic} → ${c.route.dlv}`, mx, my + 14);
+        }
+      } else if (c.witnesses) {
+        // count: ring every observed writer red; the set IS the finding
+        ringPetals(c.witnesses, "rgba(248,81,73,.9)");
+      }
+    }
+    if (sel && c.witnessed === "consistent" && c.witnesses)
+      ringPetals(c.witnesses, "rgba(126,231,135,.7)");
+  }
+}
+
 // ---- frame loop (capped) -----------------------------------
 
 function frame(now) {
@@ -404,14 +581,19 @@ function frame(now) {
   ctx.clearRect(0, 0, w, h);
   if (!snap) return;
 
+  petalPos = new Map();
   if (view === 1) drawProcessView(t, dt, w, h);
-  else drawFlowView(t, dt, w, h);
+  else if (view === 2) drawFlowView(t, dt, w, h);
+  else drawLawView(t, dt, w, h);
 
   const procs = snap.processes || [];
   const totRec = procs.reduce((a, p) => a + (rates.procs.get(p.pid) || 0), 0);
   statsEl.textContent =
     `${procs.filter(p => p.state === "live").length}/${procs.length} processes · ${fmt(totRec)} records/s` +
-    ` · view [${view === 1 ? "1" : "2"}] ${view === 1 ? "process" : "flow"} (keys 1/2)`;
+    ` · view [${view}] ${view === 1 ? "process" : view === 2 ? "flow" : "law"} (keys 1/2/3)` +
+    (snap.law ? ` · law: ${(snap.law.claims || []).filter(c => c.witnessed === "consistent").length}✓` +
+      ` ${(snap.law.claims || []).filter(c => c.witnessed === "contradicted").length}✗` +
+      ` ${(snap.law.claims || []).filter(c => c.witnessed === "not_exercised" || c.witnessed === "unwitnessed").length}·` : "");
   topicsEl.innerHTML = (snap.topics || [])
     .map(tp => `${tp.name} <span style="color:#5c6773">pub ${fmt(tp.pub)} · dlv ${fmt(tp.dlv)}</span>`)
     .join("<br>");

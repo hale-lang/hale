@@ -14,6 +14,17 @@
   #hud { top: 12px; left: 14px; }
   #hud b { color: #e6edf3; font-weight: 600; }
   #topics { top: 12px; right: 14px; text-align: right; }
+  #law { top: 86px; left: 14px; max-width: 34em; display: none; }
+  #law .hdr { color: #e6edf3; margin-bottom: 6px; }
+  #law .claim { cursor: pointer; padding: 3px 4px; border-radius: 5px; }
+  #law .claim:hover { background: rgba(255,255,255,.05); }
+  #law .claim.sel { background: rgba(120,140,170,.12); }
+  #law .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+              margin-right: 6px; vertical-align: baseline; }
+  #law .dot.hollow { background: transparent !important; border: 1.5px solid; }
+  #law .st { color: #8b949e; }
+  #law .detail { color: #8b949e; margin: 2px 0 4px 18px; white-space: normal; }
+  #law .warn { color: #d29922; }
   #events { bottom: 12px; left: 14px; max-width: 46em; color: var(--dim); }
   #events div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .live { color: #7ee787; } .dead { color: #f85149; }
@@ -23,6 +34,7 @@
 <canvas id="c"></canvas>
 <div id="hud" class="panel">iris · <span id="conn" class="dead">connecting…</span><br><span id="stats"></span></div>
 <div id="topics" class="panel"></div>
+<div id="law" class="panel"></div>
 <div id="events" class="panel"></div>
 <script src="app.js"></script>
 </body>
