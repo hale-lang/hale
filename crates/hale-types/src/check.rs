@@ -13423,7 +13423,69 @@ impl<'a> Checker<'a> {
                     } else {
                         false
                     };
-                    if !interface_satisfied && !want.assignable_from(&got) {
+                    // GH #525 item 2 (2026-09-04): perspective
+                    // designation at a CONSTRUCTION site —
+                    // `App { gw: Gateway { router: RouterV2 { } } }`
+                    // where `router: perspective(Router)`. The
+                    // param-default path already asks `serves`
+                    // (the `conforms` computation in the params
+                    // check); this path only knew about
+                    // interfaces, so `perspective(P)` — a plain
+                    // `Ty::Named(P)` whose symbol is a Perspective,
+                    // not an Interface — fell through to
+                    // `assignable_from` and `P != Impl`. Codegen's
+                    // designation branch already fires for an
+                    // override value, so the checker was the only
+                    // thing refusing it. Note the slot is
+                    // program-global (1-1): an override designates
+                    // the whole program's slot, exactly as a
+                    // default does.
+                    let perspective_designated = if let (
+                        Ty::Named(pname),
+                        Ty::Named(arg_name),
+                    ) = (want, &got)
+                    {
+                        if matches!(
+                            self.top.lookup(pname),
+                            Some(TopSymbol::Perspective(_))
+                        ) {
+                            match self.top.symbols.get(arg_name) {
+                                Some(TopSymbol::Locus(li)) => {
+                                    if !li.serves.iter().any(|sv| sv == pname) {
+                                        self.diags.push(Diag::ty(
+                                            init.value.span(),
+                                            format!(
+                                                "{} `{}`: field `{}` is \
+                                                 `perspective({})`, but `{}` \
+                                                 does not serve it — declare \
+                                                 `locus {} : serves {}`",
+                                                kind_label,
+                                                name,
+                                                init.name.name,
+                                                pname,
+                                                arg_name,
+                                                arg_name,
+                                                pname
+                                            ),
+                                        ));
+                                    }
+                                    // Reported (or fine) — either way
+                                    // the generic mismatch below would
+                                    // only repeat it.
+                                    true
+                                }
+                                _ => false,
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    if !interface_satisfied
+                        && !perspective_designated
+                        && !want.assignable_from(&got)
+                    {
                         self.diags.push(Diag::ty(
                             init.value.span(),
                             format!(

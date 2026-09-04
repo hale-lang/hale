@@ -1,0 +1,32 @@
+// GH #525 item 2 (2026-09-04): a containing constructor designates
+// a `perspective(P)` field with a serving locus, overriding the
+// holder's declaration-site default. The override is the impl the
+// program dispatches through — read back through the holder, not
+// just typechecked.
+
+perspective Router {
+    fn route(code: Int) -> Int;
+}
+
+locus RouterV1 : serves Router {
+    fn route(code: Int) -> Int { return code + 100; }
+}
+
+locus RouterV2 : serves Router {
+    fn route(code: Int) -> Int { return code + 200; }
+}
+
+locus Gateway {
+    params { router: perspective(Router) = RouterV1 { }; }
+    fn handle(code: Int) -> Int { return self.router.route(code); }
+}
+
+main locus App {
+    params { gw: Gateway = Gateway { router: RouterV2 { } }; }
+    run() {
+        std::test::assert_eq_int(self.gw.handle(1), 201, "ctor override designates the slot");
+        std::test::assert_eq_int(self.gw.router.route(0), 200, "direct call through the field sees the override");
+    }
+}
+
+fn main() { App { }; }

@@ -1,0 +1,69 @@
+// 65-perspective-ctor-override — designating a perspective slot
+// from a CONTAINING constructor (GH #525 item 2, 2026-09-04).
+//
+// 60-perspective-slot designates at the declaration site:
+//
+//   locus Gateway { params { router: perspective(Router) = RouterV1 { }; } }
+//
+// The holder's default names an impl. But the locus that assembles
+// a Gateway is the one that knows which impl this program wants —
+// a test assembles a fake, a deployment assembles the real thing —
+// and it should be able to say so where it constructs the holder,
+// the way it already can for an interface-typed field:
+//
+//   App { gw: Gateway { router: RouterV2 { } } }
+//
+// The override designates the slot exactly as the default would
+// have: `RouterV2` is instantiated as an owned child of the
+// Gateway, and the program-global `Router` slot points at it. The
+// slot is 1-1, so this is the program's routing, not this
+// Gateway's — same as a default. The impl must `serves Router`;
+// a locus that does not is refused at the override with a message
+// naming the missing `serves` clause.
+
+perspective Router {
+    fn route(code: Int) -> Int;
+    fn health() -> Int;
+}
+
+locus RouterV1 : serves Router {
+    fn route(code: Int) -> Int {
+        return code + 100;
+    }
+    fn health() -> Int {
+        return 1;
+    }
+}
+
+locus RouterV2 : serves Router {
+    fn route(code: Int) -> Int {
+        return code + 200;
+    }
+    fn health() -> Int {
+        return 2;
+    }
+}
+
+locus Gateway {
+    params {
+        router: perspective(Router) = RouterV1 { };
+    }
+    fn handle(code: Int) -> Int {
+        return self.router.route(code);
+    }
+}
+
+main locus App {
+    params {
+        // The constructor, not the declaration, picks the impl.
+        gw: Gateway = Gateway { router: RouterV2 { } };
+    }
+    run() {
+        println(self.gw.handle(41)); // 241 — V2, not the default V1
+        println(self.gw.router.health()); // 2
+    }
+}
+
+fn main() {
+    App { };
+}

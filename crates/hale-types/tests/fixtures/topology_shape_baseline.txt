@@ -474,6 +474,7 @@ crates/hale-codegen/tests/fixtures/examples/62-perspective-bus-contract/main.hl 
 crates/hale-codegen/tests/fixtures/examples/63-reperspective-migrate/main.hl 75c7b88e5a182e96
 crates/hale-codegen/tests/fixtures/examples/64-perspective-bus-swap/main.hl e0f296bf12522941
 crates/hale-codegen/tests/fixtures/examples/65-hashmap-anchor-churn/main.hl 92d6843159115d65
+crates/hale-codegen/tests/fixtures/examples/65-perspective-ctor-override/main.hl a534177a38392623
 crates/hale-codegen/tests/fixtures/examples/66-self-field-retire/main.hl 4e9b425623277732
 crates/hale-codegen/tests/fixtures/examples/67-match-expression/main.hl c47d56a3606d2948
 crates/hale-codegen/tests/fixtures/examples/68-hot-certified/main.hl 5845a32f60e45386
