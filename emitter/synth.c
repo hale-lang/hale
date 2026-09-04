@@ -54,6 +54,14 @@ static int net_fd = -1;
 enum { T_ORDERS_NEW = 1, T_ORDERS_FILL = 2, T_RISK_CHECK = 3, T_METRICS_TICK = 4 };
 enum { LT_MAIN = 1, LT_SUPERVISOR = 2, LT_PRODUCER = 3, LT_ROUTER = 4, LT_WORKER = 5 };
 enum { B_ORDERS_UNIX = 0 };
+/* The wire origin id is a SEPARATE id space from the binding id
+ * (PROTOCOL §8): it names a stream in the sending process and is
+ * echoed verbatim by the receiver, so it is never looked up in the
+ * receiver's binding table. It must be nonzero here — origin 0 is
+ * the reserved "unpairable" reading (a headerless wire, i.e. a
+ * sender without LOTUS_OBS_WIRE=1), and a reference emitter that
+ * sends 0 would model the degenerate case instead of the contract. */
+enum { O_ORDERS_UNIX = 0x51 };
 #define N_WORKERS 3
 
 /* locus instance ids (dynamic space, seeded by births) */
@@ -197,7 +205,7 @@ static void consume_order(ring_ctx *r, uint64_t seq, uint32_t sz) {
   atomic_fetch_add_explicit(&CNT[cnt_binding[B_ORDERS_UNIX]].c[OBS_CB_DELIVERED], 1, memory_order_relaxed);
   atomic_store_explicit(&CNT[cnt_binding[B_ORDERS_UNIX]].c[OBS_CB_SEQ_HW], seq, memory_order_relaxed);
   if (obs) ring_emit(r, T_ORDERS_NEW, OBS_EK_NET_DELIVER, sz,
-                     obs_net_w1(B_ORDERS_UNIX, seq));
+                     obs_net_w1(O_ORDERS_UNIX, seq));
 
   atomic_store_explicit(&r->d->tag_b, LI_ROUTER, memory_order_relaxed);
   if (topic_mode(T_ORDERS_NEW) >= OBS_MODE_COUNTERS)
@@ -247,7 +255,7 @@ static void simulate_order(ring_ctx *r) {
   atomic_fetch_add_explicit(&CNT[cnt_binding[B_ORDERS_UNIX]].c[OBS_CB_SENT], 1, memory_order_relaxed);
   atomic_store_explicit(&CNT[cnt_binding[B_ORDERS_UNIX]].c[OBS_CB_SEQ_HW], seq, memory_order_relaxed);
   if (obs) ring_emit(r, T_ORDERS_NEW, OBS_EK_NET_SEND, sz,
-                     obs_net_w1(B_ORDERS_UNIX, seq));
+                     obs_net_w1(O_ORDERS_UNIX, seq));
 
   int lost = cfg.loss_ppm &&
              (xorshift(&r->rng) % 1000000) < cfg.loss_ppm;

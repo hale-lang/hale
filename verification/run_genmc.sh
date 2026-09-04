@@ -3,7 +3,8 @@
 # interleaving. GH issue #18 item 2 (race-completeness).
 #
 # GenMC must be on PATH, or pointed at via $GENMC. Build it once with
-# verification/build_genmc.sh (needs LLVM 18 + cmake). Exits non-zero
+# hale's verification/build_genmc.sh (needs LLVM 18 + cmake) — the
+# toolchain lives upstream; only the models live here. Exits non-zero
 # if any model reports a race / UAF / assertion violation, so this is
 # usable as a CI gate.
 set -euo pipefail
@@ -12,7 +13,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GENMC="${GENMC:-genmc}"
 
 if ! command -v "$GENMC" >/dev/null 2>&1; then
-    echo "error: genmc not found (set \$GENMC or build with verification/build_genmc.sh)" >&2
+    echo "error: genmc not found. Set \$GENMC, or build it with" >&2
+    echo "       ../hale/verification/build_genmc.sh (LLVM 18 + cmake)" >&2
     exit 127
 fi
 

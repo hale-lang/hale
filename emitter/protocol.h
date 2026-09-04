@@ -14,7 +14,16 @@
 #include <stddef.h>
 
 #define OBS_PROTO_MAJOR 0
-#define OBS_PROTO_MINOR 1
+/* Minor history. Every bump here is purely additive at the tail of
+ * the header, so a consumer at minor N reads a segment at minor
+ * M > N correctly by ignoring what it does not know, and must
+ * check proto_minor before reading a field it does know.
+ *   0.2 (2026-08-12) + model_hash        @ 0x80
+ *   0.3 (2026-08-24) + entity_id_digest  @ 0x88
+ * For both, "absent" and "0" are DIFFERENT answers: absent means
+ * the emitter predates the field, 0 means the emitter has the
+ * field and positively has nothing to report (a harness build). */
+#define OBS_PROTO_MINOR 3
 
 /* "HALEISBO" little-endian; doubles as endianness check. */
 #define OBS_MAGIC 0x4F42534948414C45ULL
@@ -44,7 +53,36 @@ typedef struct {
   uint64_t rings_off;        /* 0x68 */
   _Atomic uint64_t flags;    /* 0x70  bit0 alive; bit1 post-mortem */
   _Atomic uint64_t manifest_gen; /* 0x78 */
+  uint64_t model_hash;       /* 0x80  proto >= 0.2; see below */
+  uint64_t entity_id_digest; /* 0x88  proto >= 0.3; see below */
 } obs_header;
+
+/* model_hash: the topology artifact's `shape_hash` — the identity
+ * of the MODEL this binary was compiled from, stamped at segment
+ * creation. It answers the one question a consumer joining a live
+ * manifest to a source-derived artifact cannot otherwise settle:
+ * was the running process built from the model I am comparing it
+ * against? A comment-only rebuild keeps the value; a model change
+ * moves it.
+ *
+ * Complementary to, not a substitute for, the manifest's per-topic
+ * shape_hash: model identity deliberately EXCLUDES payload field
+ * shape (a payload edit changes the topic row and no model
+ * identity), so the two together are what "in sync" means.
+ *
+ * 0 is a real value meaning "no model" — a synthetic or non-Hale
+ * emitter (this repo's synth.c reads 0). Absent (proto 0.1) is
+ * distinct from 0 and means "unknown"; consumers must not
+ * conflate them. */
+
+/* entity_id_digest (proto >= 0.3): the identity of the canonical
+ * ENTITY ID TABLE whose ids a segment's manifest rows may carry in
+ * `aux_b`. model_hash is structural model identity and does not
+ * cover every table those ids index, so two builds can share a
+ * model_hash while numbering entities differently. A consumer
+ * recomputes this digest from the model it holds and may use the
+ * ids ONLY on a match; on a mismatch it falls back to name
+ * matching. 0 = unstamped. */
 
 static_assert(offsetof(obs_header, magic) == 0x00, "layout");
 static_assert(offsetof(obs_header, proto_major) == 0x08, "layout");
@@ -65,6 +103,9 @@ static_assert(offsetof(obs_header, counters_len) == 0x60, "layout");
 static_assert(offsetof(obs_header, rings_off) == 0x68, "layout");
 static_assert(offsetof(obs_header, flags) == 0x70, "layout");
 static_assert(offsetof(obs_header, manifest_gen) == 0x78, "layout");
+static_assert(offsetof(obs_header, model_hash) == 0x80, "layout");
+static_assert(offsetof(obs_header, entity_id_digest) == 0x88, "layout");
+static_assert(sizeof(obs_header) <= OBS_PAGE, "header fits its page");
 
 #define OBS_FLAG_ALIVE      (1ULL << 0)
 #define OBS_FLAG_POSTMORTEM (1ULL << 1)
@@ -103,7 +144,16 @@ enum {
  * PROTOCOL.md §4 amended to match. */
 typedef struct {
   uint64_t shape_hash; /* topics; 0 otherwise */
-  uint64_t aux_b;      /* binding: owning topic_id; scheduler: cpu */
+  /* aux_b is CONTESTED as of 2026-08-24 — see PROTOCOL.md §4.
+   * v0 meaning (this header, synth.c, the observe library):
+   *   binding -> owning topic_id; scheduler -> cpu index.
+   * hale >= proto 0.3 instead writes the canonical model ENTITY ID
+   * here for every kind, guarded by entity_id_digest, and treats
+   * 0 as "no canonical id".
+   * A consumer MUST NOT read aux_b without first deciding which
+   * emitter it is talking to; the two meanings are not
+   * distinguishable from the value alone. */
+  uint64_t aux_b;
   uint32_t id;
   uint32_t name_off;   /* into string pool */
   uint16_t name_len;
@@ -186,11 +236,26 @@ static inline uint32_t obs_w0_ekind(uint64_t w)      { return (uint32_t)((w >> 2
 static inline uint32_t obs_w0_size_class(uint64_t w) { return (uint32_t)((w >> 25) & 0xFFu); }
 static inline uint64_t obs_w0_ts_delta(uint64_t w)   { return (w >> 33) & OBS_TS_DELTA_MAX; }
 
-/* NET_SEND / NET_DELIVER word1: binding_id:16 | seq:48 */
-static inline uint64_t obs_net_w1(uint32_t binding_id, uint64_t seq) {
-  return ((uint64_t)(binding_id & 0xFFFFu)) | ((seq & 0xFFFFFFFFFFFFULL) << 16);
+/* NET_SEND / NET_DELIVER word1: origin_id:16 | seq:48  (PROTOCOL §8)
+ *
+ * The pair is the SENDER's, carried on the wire and echoed verbatim
+ * by the receiver's NET_DELIVER — so `origin_id` names a stream in
+ * the SENDING process's id space, NOT a binding in the manifest of
+ * whichever segment the record was read from. Consumers match
+ * deliveries to sends on (topic, origin_id, seq); they must never
+ * resolve origin_id against the local binding name table.
+ *
+ * This accessor was called `obs_net_binding` until 2026-08-11 —
+ * a name left behind by the pre-amendment layout, and one that
+ * actively invited the mistake: peek dutifully looked the value up
+ * in the local binding table and rendered `unknown:<origin>` for
+ * every NET record. Renamed rather than aliased (no callers
+ * anywhere), since a misnomer in the executable form of the
+ * protocol is exactly the drift this header exists to prevent. */
+static inline uint64_t obs_net_w1(uint32_t origin_id, uint64_t seq) {
+  return ((uint64_t)(origin_id & 0xFFFFu)) | ((seq & 0xFFFFFFFFFFFFULL) << 16);
 }
-static inline uint32_t obs_net_binding(uint64_t w1) { return (uint32_t)(w1 & 0xFFFFu); }
+static inline uint32_t obs_net_origin(uint64_t w1)  { return (uint32_t)(w1 & 0xFFFFu); }
 static inline uint64_t obs_net_seq(uint64_t w1)     { return (w1 >> 16) & 0xFFFFFFFFFFFFULL; }
 
 /* LOCUS_BIRTH word1: parent:32 | type:20 */
