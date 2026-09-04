@@ -870,6 +870,7 @@ crates/hale-codegen/tests/parse_float_and_base64_decode.rs#3 865d341109268295
 crates/hale-codegen/tests/parse_float_and_base64_decode.rs#4 f2c1228edb650960
 crates/hale-codegen/tests/parse_float_and_base64_decode.rs#5 f2c1228edb650960
 crates/hale-codegen/tests/parse_float_and_base64_decode.rs#6 f2c1228edb650960
+crates/hale-codegen/tests/perspective_ctor_override_agreement.rs#0 c1eb6094c0eecf4b
 crates/hale-codegen/tests/phase_b_fixes.rs#0 b7a78549e2c4bab4
 crates/hale-codegen/tests/phase_b_fixes.rs#1 f2c1228edb650960
 crates/hale-codegen/tests/phase_b_fixes.rs#10 865d341109268295

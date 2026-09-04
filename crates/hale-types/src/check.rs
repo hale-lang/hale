@@ -13440,10 +13440,19 @@ impl<'a> Checker<'a> {
                     // program-global (1-1): an override designates
                     // the whole program's slot, exactly as a
                     // default does.
+                    //
+                    // LOCUS literals only. This fn is shared with
+                    // data-type literals, and codegen's
+                    // `populate_user_type_fields` has no designation
+                    // path (`type Holder { r: perspective(P); }` then
+                    // `Holder { r: Impl { } }` fails at build). A
+                    // data-type field keeps the plain mismatch below
+                    // so check and build agree (PR #531 review).
                     let perspective_designated = if let (
+                        "locus",
                         Ty::Named(pname),
                         Ty::Named(arg_name),
-                    ) = (want, &got)
+                    ) = (kind_label, want, &got)
                     {
                         if matches!(
                             self.top.lookup(pname),

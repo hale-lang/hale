@@ -415,3 +415,31 @@ fn ctor_override_with_non_serving_locus_names_the_missing_serves() {
         msgs
     );
 }
+
+#[test]
+fn ctor_override_on_a_data_type_field_is_still_rejected() {
+    // PR #531 review: `check_literal_fields` is shared with data-type
+    // literals, and codegen has no designation path for a `type`
+    // field, so the checker must keep refusing this exactly as the
+    // base did — otherwise `hale check` passes and `hale build` fails.
+    let src = r#"
+perspective Router {
+    fn route(code: Int) -> Int;
+}
+locus RouterV2 : serves Router {
+    fn route(code: Int) -> Int { return code + 2; }
+}
+type Holder { router: perspective(Router); }
+fn main() {
+    let holder = Holder { router: RouterV2 { } };
+    println(holder.router.route(1));
+}
+"#;
+    let msgs = check(src);
+    assert!(
+        msgs.iter().any(|m| m.contains("type `Holder`")
+            && m.contains("field `router` expects `Router`, got `RouterV2`")),
+        "expected the data-type literal to keep its mismatch, got: {:?}",
+        msgs
+    );
+}
