@@ -583,6 +583,13 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         let owner_self_field_idx = idx;
         llvm_field_tys.push(ptr_field_t.into());
         idx += 1;
+        // GH #526 F.6 (2026-09-05): synthetic `__owner_release: ptr` —
+        // the accept'ing parent TYPE's `release` fn (or null), stored
+        // beside `__owner_self` so the reclaim spine calls the owner's
+        // own body; see LocusInfo::owner_release_field_idx.
+        let owner_release_field_idx = idx;
+        llvm_field_tys.push(ptr_field_t.into());
+        idx += 1;
         // Interest-based ownership, artifact #2b: append one
         // `__owner_for_<I>: ptr` field per interest-type `I` this locus
         // must forward (its entry in the whole-program forwarding sets).
@@ -1188,6 +1195,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 recpool_release_kind_field_idx,
                 parent_self_field_idx,
                 owner_self_field_idx,
+                owner_release_field_idx,
                 owner_forward_field_idxs,
                 parent_on_failure_field_idx,
                 mailbox_field_idx,

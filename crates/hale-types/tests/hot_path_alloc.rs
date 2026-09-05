@@ -572,3 +572,60 @@ fn main() {
         "only locus-returning fns allocate an arena per call"
     );
 }
+
+// ---- GH #526 (2026-09-05): `@unbounded` acknowledges the advisory ---
+//
+// Every hot-path advisory ends with "or acknowledge an intentional
+// shape with `@unbounded` on the enclosing fn/hook". The walker never
+// read the flag, so the acknowledgement did nothing and `hale verify`
+// stayed red on a param-bounded fan-out loop (the DNA Phase 0 fixtures
+// birth one flow child per `fan`). `@unbounded` silences the advisory;
+// `@hot` still hard-errors.
+
+#[test]
+fn unbounded_hook_silences_locus_in_loop_advisory() {
+    let src = r#"
+locus Conn { run() { } }
+
+locus Server {
+    params { fan: Int = 4; }
+    @unbounded
+    run() {
+        let mut n = 0;
+        while n < self.fan {
+            Conn { };
+            n = n + 1;
+        }
+    }
+}
+
+fn main() { }
+"#;
+    let w = warnings(src);
+    assert!(w.is_empty(), "@unbounded run() must silence the advisory, got: {:?}", w);
+}
+
+#[test]
+fn unbounded_fn_silences_locus_in_loop_advisory() {
+    let src = r#"
+locus Conn { run() { } }
+
+@unbounded
+fn spawn_many(n: Int) {
+    let mut i = 0;
+    while i < n {
+        let c = Conn { };
+        i = i + 1;
+    }
+}
+
+fn main() { spawn_many(3); }
+"#;
+    let w = warnings(src);
+    assert!(w.is_empty(), "@unbounded fn must silence the advisory, got: {:?}", w);
+}
+
+// (`@hot` and `@unbounded` cannot stack — the parser admits only
+// `@budget` after `@hot` — so "hot still errors under unbounded" has
+// no representable program; the `emit` gate keeps the precedence
+// anyway.)
