@@ -121,6 +121,7 @@ crates/hale-types/tests/interface_dispatch.rs#4	iso	forbid reaches(a_side, sinks
 crates/hale-types/tests/interface_dispatch.rs#5	iso	forbid reaches(a_side, sinks)	Uncertified	None
 crates/hale-types/tests/interface_dispatch.rs#6	iso	forbid reaches(a_side, b_side)	Holds	None
 crates/hale-types/tests/interface_dispatch.rs#9	one_call	bound llm <= 1 on paths from planners	Holds	None
+crates/hale-types/tests/interface_slot_override.rs#1	gated	forbid reaches(organism, effects(apply_it))	Holds	None
 crates/hale-types/tests/judgment_reachability.rs#0	iso	forbid reaches(a_side, b_side)	Violated	None
 crates/hale-types/tests/judgment_reachability.rs#1	iso	forbid reaches(a_side, b_side)	Uncertified	None
 crates/hale-types/tests/judgment_reachability.rs#10	iso	forbid reaches(a_side, b_side) via { bus }	Holds	None

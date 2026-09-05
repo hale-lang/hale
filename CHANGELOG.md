@@ -8,6 +8,23 @@ behavior.
 
 ## Unreleased
 
+### Claims see every implementation behind an interface-typed slot (GH #533)
+
+`forbid reaches(organism, effects(apply_it))` passed for
+`Holder { dep: Real { } }` over a `dep: Gate = Noop { }` default,
+although `Real::apply` — the carrier — is what runs; with the two
+swapped it refused a path that never runs. The walker resolved an
+interface-typed field through its DEFAULT literal (F.20's fix for
+"effects behind a slot are invisible"), which is fail-open on the
+constructor-shaped assembly #521 is built from. A declared interface
+now keeps its own name in the field-type map, so the call is an
+interface dispatch and fans to every conformer in the closed world —
+the rule a one-hop `self.dep.apply()` and an interface-typed fn
+param already followed. Conservative by construction: no override
+can hide, and a program whose slot could only ever hold pure
+implementations stays silent. Found by the DNA Phase 0 fixtures
+(dna/FRICTION.md F.11).
+
 ### Observation proto 0.4: `aux_b` means one thing (GH #525, iris handoff-14 P31)
 
 Iris's PROTOCOL §4 and its reference emitters had used a manifest
