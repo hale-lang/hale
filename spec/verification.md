@@ -572,7 +572,7 @@ fingerprint covers `{issues, rows}`) and in the document verdict
 entry like any diagnostic, and the duplicate-name case is
 recomputed from the rows themselves — no claim error disappears
 between checking and artifact projection. The evidence engine's
-`ANALYSIS_SEMANTICS_VERSION` is 6. It moves whenever the
+`ANALYSIS_SEMANTICS_VERSION` is 7. It moves whenever the
 producer's RESULTS move, because `validate` compares digests and
 never the implementation: v3 was round 8's synthetic
 implicit-phase certificates and report-less subjects judging
@@ -580,7 +580,10 @@ implicit-phase certificates and report-less subjects judging
 joined the evidence pipeline and its quantitative results changed
 (fan-out became a per-scenario execution count, cross-seed calls
 resolve, an unknown subscriber population stopped reading as an
-absent one). Evidence produced under an earlier version cannot
+absent one); v7 is GH #533, where a call through an interface-typed
+field stopped resolving against the field's default literal and
+fans to every conformer, so a constructor override can no longer
+hide a carrier. Evidence produced under an earlier version cannot
 share an `inputs_digest` with this one. Both digests are RECOMPUTED at
 admission: `law_digest` is the canonical-JSON fingerprint over
 the law rows (serde-canonical rendering, fnv1a64 — a row edit
