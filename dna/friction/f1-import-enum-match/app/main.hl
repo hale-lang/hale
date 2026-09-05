@@ -1,0 +1,7 @@
+// Minimized: `hale check ../lib` is clean; `hale check .` (which
+// imports it) reports "match is not exhaustive ... `__lib_lib_Color`".
+import "../lib" as lib;
+
+fn main() {
+    println(lib::name(lib::Color::Red));
+}

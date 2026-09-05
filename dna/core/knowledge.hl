@@ -1,0 +1,152 @@
+// dna/core/knowledge.hl — semantic memory (#521 comment 1).
+//
+// `Knowledge` is a locus that owns domain data: ideas, edges, bindings
+// and revisions are pure cells in its forms, in exactly one tower
+// (I4). Authorship direction IS the classification — parent-authored
+// knowledge bound to a child is a GOAL, child-authored bound to a
+// parent is a CONCERN, self-authored bound locally is an INITIATIVE —
+// computed from the tower, never a tag that can contradict it. Task
+// history never becomes knowledge by itself: an Attempt PROPOSES, and
+// only the distillation/review path commits a revision. A performer
+// receives a bounded ContextPackage with a digest and a revision, not
+// the store.
+
+type Idea {
+    id: String = "";
+    kind: String = "idea"; // "idea" | "concept" | "practice" | "task_concept"
+    text: String = "";
+    author: String = ""; // a locus path, e.g. "app/support"
+    provenance: String = ""; // "declared" | "observed" | "inferred" | "proposed" | "ratified"
+    revision: Int = 0;
+    accepted: Bool = false;
+}
+
+type KnowledgeEdge { from: String = ""; to: String = ""; rel: String = ""; }
+
+type KnowledgeBinding {
+    idea: String = "";
+    target: String = ""; // locus path the idea is bound to
+    author: String = ""; // who bound it
+    class: String = ""; // derived: "goal" | "concern" | "initiative"
+}
+
+type ContextPackage {
+    target: String = "";
+    revision: Int = 0;
+    digest: String = "";
+    included: String = ""; // idea ids, space-separated
+    included_n: Int = 0;
+    omitted_n: Int = 0; // what this projection left out, stated
+    data_class: String = "";
+}
+
+fn is_ancestor(a: String, b: String) -> Bool {
+    // "app" is an ancestor of "app/support/intake"
+    return len(b) > len(a) && std::str::starts_with(b, a + "/");
+}
+
+fn classify_binding(author: String, target: String) -> String {
+    if author == target { return "initiative"; }
+    if is_ancestor(author, target) { return "goal"; }
+    if is_ancestor(target, author) { return "concern"; }
+    return "lateral"; // siblings do not privately coordinate (H9)
+}
+
+@form(vec)
+locus IdeaRows { capacity { heap rows of Idea; } }
+@form(vec)
+locus EdgeRows { capacity { heap rows of KnowledgeEdge; } }
+@form(vec)
+locus BindingRows { capacity { heap rows of KnowledgeBinding; } }
+
+locus Knowledge {
+    params {
+        ideas: IdeaRows = IdeaRows { };
+        edges: EdgeRows = EdgeRows { };
+        bindings: BindingRows = BindingRows { };
+        proposals: IdeaRows = IdeaRows { };
+        revision: Int = 0;
+        refused_lateral: Int = 0;
+        refused_distill: Int = 0;
+    }
+    // Declared knowledge enters as an accepted revision with its
+    // provenance kept.
+    fn declare(i: Idea) -> Int {
+        self.revision = self.revision + 1;
+        self.ideas.push(Idea { id: i.id, kind: i.kind, text: i.text, author: i.author, provenance: i.provenance, revision: self.revision, accepted: true });
+        return self.revision;
+    }
+    // An Attempt may PROPOSE; it cannot write.
+    fn propose(i: Idea) -> Int {
+        self.proposals.push(Idea { id: i.id, kind: i.kind, text: i.text, author: i.author, provenance: "proposed", revision: 0, accepted: false });
+        return self.proposals.len() - 1;
+    }
+    fn proposal_count() -> Int { return self.proposals.len(); }
+    // Distillation: an independent reviewer accepts a proposal into a
+    // revision. The proposer cannot ratify their own proposal.
+    fn distill(proposal: Int, reviewer: String, verdict: String) -> Bool {
+        let p = self.proposals.get(proposal) or Idea { };
+        if p.id == "" || p.accepted { self.refused_distill = self.refused_distill + 1; return false; }
+        if reviewer == p.author { self.refused_distill = self.refused_distill + 1; return false; }
+        if verdict != "approve" { return false; }
+        self.revision = self.revision + 1;
+        self.ideas.push(Idea { id: p.id, kind: p.kind, text: p.text, author: p.author, provenance: "ratified", revision: self.revision, accepted: true });
+        self.proposals.set(proposal, Idea { id: p.id, kind: p.kind, text: p.text, author: p.author, provenance: "proposed", revision: self.revision, accepted: true }) or discard;
+        return true;
+    }
+    fn link(from: String, to: String, rel: String) {
+        self.edges.push(KnowledgeEdge { from: from, to: to, rel: rel });
+    }
+    // Binding direction is the classification; lateral is refused.
+    fn bind(idea: String, target: String, author: String) -> String {
+        let c = classify_binding(author, target);
+        if c == "lateral" { self.refused_lateral = self.refused_lateral + 1; return c; }
+        self.bindings.push(KnowledgeBinding { idea: idea, target: target, author: author, class: c });
+        return c;
+    }
+    fn accepted_count() -> Int { return self.ideas.len(); }
+    // Bounded by the store's size; one substitute struct per row scanned.
+    @unbounded
+    fn find(id: String) -> Idea {
+        let mut i = 0;
+        while i < self.ideas.len() {
+            let x = self.ideas.get(i) or Idea { };
+            if x.id == id { return x; }
+            i = i + 1;
+        }
+        return Idea { };
+    }
+    // The bounded projection a performer receives: ideas bound to the
+    // target or to any of its ancestors (goals flow down, initiatives
+    // stay local), capped by `budget`, with the omission counted.
+    @unbounded
+    fn context_for(target: String, budget: Int, data_class: String) -> ContextPackage {
+        let mut included = "";
+        let mut omitted_ids = "";
+        let mut n = 0;
+        let mut omitted = 0;
+        let mut i = 0;
+        while i < self.bindings.len() {
+            let b = self.bindings.get(i) or KnowledgeBinding { };
+            let relevant = b.target == target || is_ancestor(b.target, target);
+            // The same idea may be bound in several places; the package
+            // carries it once.
+            let seen = std::str::contains(included, b.idea + " ") || std::str::contains(omitted_ids, b.idea + " ");
+            if relevant && !seen {
+                let idea = self.find(b.idea);
+                if idea.accepted {
+                    if n < budget {
+                        included = included + idea.id + " ";
+                        n = n + 1;
+                    } else {
+                        omitted = omitted + 1;
+                        omitted_ids = omitted_ids + idea.id + " ";
+                    }
+                }
+            }
+            i = i + 1;
+        }
+        let d = hex(std::crypto::sha256(std::bytes::from_string(target + "@" + to_string(self.revision) + ":" + included)));
+        return ContextPackage { target: target, revision: self.revision, digest: d, included: included, included_n: n, omitted_n: omitted, data_class: data_class };
+    }
+}

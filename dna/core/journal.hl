@@ -1,0 +1,313 @@
+// dna/core/journal.hl — the append-only causal authority (#521 comment 1).
+//
+// The Journal is the causal authority; Task status, pending reviews,
+// and retrieval indexes are PROJECTIONS rebuilt from it. Storage is
+// assembled by semantic capability: `Journal` (ordered append with an
+// expected revision, idempotency, durable identity), `Coordination`
+// (leases with fencing tokens), and a rebuildable `RetrievalIndex`.
+// Two implementations of each: in-memory, and a file-backed JSONL
+// journal with a sha256 chain, using only stdlib (no FFI in the core;
+// sqlite arrives as a pond adapter).
+
+type Event {
+    seq: Int = 0;
+    kind: String = ""; // "task.born" | "effect.requested" | ...
+    entity: String = ""; // durable id the event is about
+    body: String = "";
+    prev: String = ""; // digest of the previous event
+    digest: String = ""; // sha256(prev + kind + entity + body)
+}
+
+// F.7 (dna/FRICTION.md): interface methods cannot be `fallible(E)`,
+// so the append contract carries its failure in a result struct.
+type AppendResult {
+    ok: Bool = false;
+    revision: Int = 0; // the revision after a successful append
+    error: String = ""; // "stale_revision" | "io"
+    expected: Int = 0;
+    actual: Int = 0;
+}
+
+interface Journal {
+    fn revision() -> Int;
+    fn head() -> String;
+    fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult;
+    fn read(i: Int) -> Event;
+    fn verify_chain() -> Bool;
+}
+
+fn hex(b: Bytes) -> String {
+    let digits = "0123456789abcdef";
+    let mut out = "";
+    let mut i = 0;
+    let n = len(b);
+    while i < n {
+        let v = std::bytes::at(b, i) or 0;
+        out = out + digits[(v / 16)..(v / 16 + 1)] + digits[(v % 16)..(v % 16 + 1)];
+        i = i + 1;
+    }
+    return out;
+}
+
+fn event_digest(prev: String, kind: String, entity: String, body: String) -> String {
+    return hex(std::crypto::sha256(std::bytes::from_string(prev + "|" + kind + "|" + entity + "|" + body)));
+}
+
+@form(vec)
+locus EventRows {
+    capacity { heap rows of Event; }
+}
+
+// ---- in-memory journal --------------------------------------------
+
+locus MemJournal {
+    params { rows: EventRows = EventRows { }; }
+    fn revision() -> Int { return self.rows.len(); }
+    fn head() -> String {
+        if self.rows.len() == 0 { return "genesis"; }
+        let e = self.rows.get(self.rows.len() - 1) or Event { };
+        return e.digest;
+    }
+    // Compare-and-append: two writers holding the same expected
+    // revision cannot both advance the same entity from the same state.
+    fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
+        let rev = self.rows.len();
+        if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
+        let prev = self.head();
+        self.rows.push(Event { seq: rev, kind: kind, entity: entity, body: body, prev: prev, digest: event_digest(prev, kind, entity, body) });
+        return AppendResult { ok: true, revision: rev + 1 };
+    }
+    fn read(i: Int) -> Event { return self.rows.get(i) or Event { }; }
+    fn verify_chain() -> Bool { return chain_ok(self.rows); }
+}
+
+fn chain_ok(rows: EventRows) -> Bool {
+    let mut prev = "genesis";
+    let mut i = 0;
+    while i < rows.len() {
+        let e = rows.get(i) or Event { };
+        if e.prev != prev { return false; }
+        if e.digest != event_digest(e.prev, e.kind, e.entity, e.body) { return false; }
+        prev = e.digest;
+        i = i + 1;
+    }
+    return true;
+}
+
+// ---- file-backed journal (JSONL, sha256-chained) ---------------------
+
+locus FileJournal {
+    params {
+        path: String = ".hale/dna/journal.jsonl";
+        rows: EventRows = EventRows { };
+        loaded: Int = 0; // rows rehydrated at birth
+        io_errors: Int = 0;
+        last_io_error: String = "";
+    }
+    // Rehydrate: the file is the durable form; the rows are its
+    // in-memory projection. A missing file is an empty journal.
+    birth() { self.load(); }
+    @effects(is: { journal_io })
+    fn load() {
+        let text = std::io::fs::read_file(self.path) or "";
+        let mut rest = text;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            if len(line) > 0 {
+                // F.8 (dna/FRICTION.md): these readers are infallible
+                // ("" / 0 on a missing field); an `or` here typechecks
+                // and then fails codegen.
+                self.rows.push(Event {
+                    seq: std::json::find_int_field(line, "seq"),
+                    kind: std::json::find_string_field(line, "kind"),
+                    entity: std::json::find_string_field(line, "entity"),
+                    body: std::json::find_string_field(line, "body"),
+                    prev: std::json::find_string_field(line, "prev"),
+                    digest: std::json::find_string_field(line, "digest")
+                });
+                self.loaded = self.loaded + 1;
+            }
+            if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+        }
+    }
+    fn revision() -> Int { return self.rows.len(); }
+    fn head() -> String {
+        if self.rows.len() == 0 { return "genesis"; }
+        let e = self.rows.get(self.rows.len() - 1) or Event { };
+        return e.digest;
+    }
+    @effects(is: { journal_io })
+    fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
+        let rev = self.rows.len();
+        if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
+        let prev = self.head();
+        let d = event_digest(prev, kind, entity, body);
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.int_field("seq", rev);
+        b.string_field("kind", kind);
+        b.string_field("entity", entity);
+        b.string_field("body", body);
+        b.string_field("prev", prev);
+        b.string_field("digest", d);
+        b.end_object();
+        // The durable write happens BEFORE the in-memory projection
+        // moves: a crash between them loses nothing that was promised.
+        // F.9 (dna/FRICTION.md): `write_file_append` is Unit-typed in
+        // codegen (Int per spec), so the error is caught by an
+        // error-check fn, not an `or <value>` substitute.
+        let before = self.io_errors;
+        let line = b.result() + "\n";
+        std::io::fs::write_file_append(self.path, line) or self.io_failed(err);
+        if self.io_errors > before { return AppendResult { error: "io", expected: expected, actual: rev }; }
+        self.rows.push(Event { seq: rev, kind: kind, entity: entity, body: body, prev: prev, digest: d });
+        return AppendResult { ok: true, revision: rev + 1 };
+    }
+    fn io_failed(e: IoError) {
+        self.io_errors = self.io_errors + 1;
+        self.last_io_error = e.kind;
+    }
+    fn read(i: Int) -> Event { return self.rows.get(i) or Event { }; }
+    fn verify_chain() -> Bool { return chain_ok(self.rows); }
+}
+
+// ---- coordination: leases with fencing tokens -----------------------
+
+type Lease {
+    key: String = "";
+    holder: String = "";
+    token: Int = 0; // fencing token; monotonically increasing per key
+    expires: Int = 0;
+    present: Bool = false;
+}
+
+// F.7 again: `acquire` reports "held by someone else" as a Lease with
+// `present == false` and `holder` naming the current holder.
+interface Coordination {
+    fn acquire(key: String, holder: String, now: Int, ttl: Int) -> Lease;
+    fn complete(key: String, token: Int, now: Int) -> Bool;
+    fn holder_of(key: String) -> String;
+}
+
+@form(hashmap)
+locus LeaseRows {
+    capacity { pool rows of Lease indexed_by key; }
+}
+
+locus MemLeases {
+    params { rows: LeaseRows = LeaseRows { }; next_token: Int = 1; }
+    fn acquire(key: String, holder: String, now: Int, ttl: Int) -> Lease {
+        let cur = self.rows.get(key) or Lease { };
+        if cur.present && cur.expires > now && cur.holder != holder {
+            return Lease { key: key, holder: cur.holder, token: 0, expires: cur.expires, present: false };
+        }
+        let t = self.next_token;
+        self.next_token = self.next_token + 1;
+        let l = Lease { key: key, holder: holder, token: t, expires: now + ttl, present: true };
+        self.rows.set(l);
+        return l;
+    }
+    // A late writer whose lease expired and was re-acquired holds a
+    // stale token; its completion is refused, never applied.
+    fn complete(key: String, token: Int, now: Int) -> Bool {
+        let cur = self.rows.get(key) or Lease { };
+        if !cur.present { return false; }
+        if cur.token != token { return false; }
+        self.rows.set(Lease { key: key, holder: cur.holder, token: cur.token, expires: 0, present: false });
+        return true;
+    }
+    fn holder_of(key: String) -> String {
+        let cur = self.rows.get(key) or Lease { };
+        if cur.present { return cur.holder; }
+        return "";
+    }
+}
+
+// ---- idempotent effects over the journal --------------------------
+
+// An effect request is committed BEFORE dispatch under a durable key;
+// a retry after a crash finds the key and does not dispatch again;
+// the result is appended once. Both facts are Journal events, so the
+// ledger is a projection and can be rebuilt.
+type EffectStatus { requested: Bool = false; done: Bool = false; ok: Bool = false; }
+
+fn effect_status(j: Journal, key: String) -> EffectStatus {
+    let mut st = EffectStatus { };
+    let mut i = 0;
+    let n = j.revision();
+    while i < n {
+        let e = j.read(i);
+        if e.entity == key {
+            if e.kind == "effect.requested" { st.requested = true; }
+            if e.kind == "effect.result" { st.done = true; st.ok = e.body == "ok"; }
+        }
+        i = i + 1;
+    }
+    return st;
+}
+
+// Returns true if THIS call should dispatch the effect (first time),
+// false if it was already requested (a retry) — the caller then only
+// waits for / records the result.
+fn effect_request(j: Journal, key: String, body: String) -> Bool {
+    let st = effect_status(j, key);
+    if st.requested { return false; }
+    let r = j.append(j.revision(), "effect.requested", key, body);
+    return r.ok;
+}
+
+fn effect_result(j: Journal, key: String, ok: Bool) -> Bool {
+    let st = effect_status(j, key);
+    if st.done { return false; }
+    let r = j.append(j.revision(), "effect.result", key, if ok { "ok" } else { "failed" });
+    return r.ok;
+}
+
+// ---- projections --------------------------------------------------
+
+// Task status is the last task.* event for the id — reconstructed,
+// never stored as the authority.
+fn task_status(j: Journal, task_id: String) -> String {
+    let mut st = "unknown";
+    let mut i = 0;
+    let n = j.revision();
+    while i < n {
+        let e = j.read(i);
+        if e.entity == task_id && std::str::starts_with(e.kind, "task.") {
+            st = e.kind[5..len(e.kind)];
+        }
+        i = i + 1;
+    }
+    return st;
+}
+
+// A derived, disposable retrieval index: term -> count. Delete it and
+// rebuild it from the journal; the journal never changes.
+type TermRow { term: String = ""; count: Int = 0; }
+
+@form(hashmap)
+locus TermRows {
+    capacity { pool rows of TermRow indexed_by term; }
+}
+
+locus RetrievalIndex {
+    params { rows: TermRows = TermRows { }; indexed: Int = 0; }
+    @unbounded
+    fn rebuild(j: Journal) {
+        self.indexed = 0;
+        let mut i = 0;
+        let n = j.revision();
+        while i < n {
+            let e = j.read(i);
+            let cur = self.rows.get(e.kind) or TermRow { term: e.kind };
+            self.rows.set(TermRow { term: e.kind, count: cur.count + 1 });
+            self.indexed = self.indexed + 1;
+            i = i + 1;
+        }
+    }
+    fn count(term: String) -> Int {
+        let r = self.rows.get(term) or TermRow { };
+        return r.count;
+    }
+}

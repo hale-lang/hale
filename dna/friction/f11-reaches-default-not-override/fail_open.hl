@@ -1,0 +1,15 @@
+// Probe i: the interface has TWO impls; the holder's declaration-site
+// default is the harmless one (Noop) and the CONSTRUCTOR overrides it
+// with the carrier (Real). Does `forbid reaches` see the override?
+effect apply_it;
+interface Gate { fn apply(x: String) -> Bool; }
+locus Real { @effects(is: { apply_it }) fn apply(x: String) -> Bool { return true; } }
+locus Noop { fn apply(x: String) -> Bool { return false; } }
+locus Holder { params { dep: Gate = Noop { }; } }
+group organism = { App };
+main locus App {
+    params { h: Holder = Holder { dep: Real { } }; }
+    claims { gated: forbid reaches(organism, effects(apply_it)); }
+    run() { let ok = self.h.dep.apply("i"); }
+}
+fn main() { App { }; }

@@ -1,0 +1,46 @@
+// #526 fixture 8c: the apply gateway is reachable only THROUGH the Dna
+// assembly (the gate), and never from a performer. The constitution
+// says so; the assembly below deliberately constructs a permissive
+// review policy (NoReview) — law is not a constructor flag, so the
+// program still builds only because every apply path passes the gate.
+//
+// Caveat, F.11 (dna/FRICTION.md): `Dna.stage -> self.deployment.apply`
+// goes through the interface-typed `deployment` field whose
+// declaration default is `NoDeployment` (no effect); the constructor
+// override to `LocalApplyDeployment` is what actually runs, and the
+// claims engine resolves the call against the default. So
+// `apply_gated` holds here partly for the wrong reason. The `_fail`
+// sibling uses a concrete handle, which the engine does see.
+import "../../../core" as dna;
+
+group organism = { App };
+group dna_gate = { dna::Dna };
+group performers = { dna::AgentPerformer, dna::HumanWorkGateway, dna::ServicePerformer, dna::ScriptedPerformer };
+group credentials = { dna::CredentialSource };
+
+constitution DnaCore {
+    apply_gated: forbid reaches(organism, effects(genome_apply)) avoiding dna_gate;
+    performers_never_apply: forbid reaches(performers, effects(genome_apply));
+    credentials_sealed: require sealed(all credentials);
+}
+
+// A policy that never blocks. Constructing it does not weaken the law.
+locus NoReview {
+    fn required_authority(change_class: String, m: dna::Magnitude) -> String { return ""; }
+    fn blocking(change_class: String) -> Bool { return false; }
+    fn name() -> String { return "no-review"; }
+}
+
+main locus App {
+    params {
+        dna: dna::Dna = dna::Dna {
+            review_policy: NoReview { },
+            deployment: dna::LocalApplyDeployment { }
+        };
+    }
+    claims { adopt DnaCore; }
+    run() {
+        let d = self.dna.stage("refactor", "sha256:c1", dna::Magnitude { loci: 1 }, dna::Evidence { tests_pass: true });
+    }
+}
+fn main() { App { }; }

@@ -1,0 +1,16 @@
+// Minimized: spec and the typecheck surface say
+//   write_file_append(path, s) -> Int fallible(IoError)
+// but codegen lowers it as Unit, so `let n = ... or 0;` fails with the
+// misleading "expression statement other than locus literal or builtin
+// call", and `or neg_one()` says "`or` expression in value position has
+// Unit success type". Without `or`, the unaddressed fallible call is
+// accepted by BOTH check and build (the path types as Unknown).
+locus W {
+    params { path: String = "/tmp/dna-probe-w.txt"; }
+    fn put(s: String) -> Int {
+        let wrote = std::io::fs::write_file_append(self.path, s) or 0;
+        return wrote;
+    }
+}
+fn neg_one() -> Int { return 0 - 1; }
+fn main() { let w = W { }; println(w.put("x")); }

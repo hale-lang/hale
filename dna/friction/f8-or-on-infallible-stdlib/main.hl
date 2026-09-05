@@ -1,0 +1,8 @@
+// Minimized: `hale check` accepts `or` on an INFALLIBLE stdlib path
+// call (the multi-segment path types as Unknown, so fallibility is
+// invisible to the checker); `hale build` refuses:
+//   codegen error: Unsupported("`or` over unknown path call `std::json::find_int_field`")
+fn main() {
+    let n = std::json::find_int_field("{\"seq\": 3}", "seq") or 0;
+    println(n);
+}
