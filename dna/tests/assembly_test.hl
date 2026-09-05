@@ -1,0 +1,90 @@
+// dna/tests/assembly_test.hl — #526 fixture 7.
+//
+// One `Dna { ... }` is assembled directly in a main's params with
+// every child replaceable through interface substitution: a fake
+// journal, a human-first router, a post-review policy, a deployment
+// that refuses. Model routing returns data, never a locus; intent
+// enters through the membrane; a staged mutation stops at stage.
+// Construction, genome (policy), law (the app's claims) and durable
+// state (the journal) stay four different things.
+
+import "../core" as dna;
+
+// A fake journal: counts appends, keeps nothing (the in-memory fake the
+// issue asks for, proving DNA's owning logic does not change).
+locus CountingJournal {
+    params { appends: Int = 0; }
+    fn revision() -> Int { return self.appends; }
+    fn head() -> String { return "fake"; }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult {
+        if expected != self.appends { return dna::AppendResult { error: "stale_revision", expected: expected, actual: self.appends }; }
+        self.appends = self.appends + 1;
+        return dna::AppendResult { ok: true, revision: self.appends };
+    }
+    fn read(i: Int) -> dna::Event { return dna::Event { }; }
+    fn verify_chain() -> Bool { return true; }
+}
+
+main locus App {
+    params {
+        dna: dna::Dna = dna::Dna {
+            journal: CountingJournal { },
+            work: dna::WorkSystem {
+                human: dna::HumanWorkGateway { operator: "riley", answer: "done" },
+                selection: dna::HumanFirstSelection { }
+            },
+            review_policy: dna::PostReviewRefactors { },
+            boundary: dna::AutonomyBoundary {
+                child: "app",
+                grant: dna::Grant { child: "app", classes: "refactor", max_magnitude: 8, review: "post" }
+            },
+            deployment: dna::NoDeployment { }
+        };
+    }
+    run() {
+        // substitution is visible in the status projection
+        let s0 = self.dna.status();
+        std::test::assert(std::str::contains(s0, "\"routing\": \"human-first\""), "assembled router policy: " + s0);
+        std::test::assert(std::str::contains(s0, "\"review_policy\": \"post-review-refactors\""), "assembled review policy: " + s0);
+        std::test::assert(std::str::contains(s0, "\"deployment\": \"none\""), "assembled deployment: " + s0);
+
+        // intent through the membrane -> durable task -> journal events on the FAKE journal
+        let refused = self.dna.ask(dna::Intent { id: "i0", outcome: "" }, dna::Knobs { });
+        std::test::assert_eq_str(refused, "refused: empty intent", "the membrane gates intent");
+        let t = self.dna.ask(dna::Intent { id: "i1", outcome: "answer the audit", from: "human" }, dna::Knobs { routed: true });
+        std::test::assert_eq_str(t, "t1", "task minted");
+        std::test::assert_eq_int(self.dna.journal.revision(), 3, "intent.offered, task.born, task.done on the substituted journal");
+        let settled = self.dna.metabolism.find(t);
+        std::test::assert_eq_str(settled.disposition, "done", "human-first routing served it: " + settled.detail);
+        std::test::assert(std::str::contains(settled.detail, "a0:human:done"), "the human took attempt 0: " + settled.detail);
+
+        // model routing returns DATA
+        let r = dna::ModelRouter { };
+        let quick = r.ask(dna::ModelRequest { role: "classify", prompt_digest: "d1", context_bytes: 100 });
+        std::test::assert(quick.ok && quick.backend == "quick", "quick class by default: " + quick.backend);
+        let deep = r.ask(dna::ModelRequest { role: "review", prompt_digest: "d2", context_bytes: 100, assurance: 2 });
+        std::test::assert(deep.ok && deep.backend == "deep", "review goes deep: " + deep.backend);
+        let priv = r.ask(dna::ModelRequest { role: "classify", prompt_digest: "d3", context_bytes: 100, data_class: "customer" });
+        std::test::assert(priv.ok && priv.backend == "private", "customer data stays private: " + priv.backend);
+        let too_big = r.ask(dna::ModelRequest { role: "classify", prompt_digest: "d4", context_bytes: 10000000, data_class: "customer" });
+        std::test::assert(!too_big.ok, "no permitted backend -> refused, never leaked: " + too_big.refused);
+        std::test::assert_eq_int(r.calls, 3, "three calls recorded, one refusal not counted as a call");
+        std::test::assert_eq_int(r.spent_micros, 56, "cost recorded: 5 + 50 + 1");
+
+        // a mutation stops at stage: the grant would release a small
+        // refactor, the deployment refuses, the membrane is told
+        let d = self.dna.stage("refactor", "sha256:cand-1",
+            dna::Magnitude { loci: 2 },
+            dna::Evidence { check_clean: true, verify_clean: true, tests_pass: true, replay_ok: true, rollback_rehearsed: true, independent_reviews: 2 });
+        std::test::assert_eq_str(d, "stage", "released by the grant, staged by the deployment");
+        std::test::assert_eq_int(self.dna.deployment.applied(), 0, "nothing applied");
+        std::test::assert(self.dna.membrane.notifications() > 0, "membrane notified");
+        // a law-touching change goes to review regardless
+        let rv = self.dna.stage("refactor", "sha256:cand-2", dna::Magnitude { loci: 1, law_touched: true }, dna::Evidence { tests_pass: true });
+        std::test::assert_eq_str(rv, "review", "law touched -> review");
+        let s1 = self.dna.status();
+        std::test::assert(std::str::contains(s1, "\"tasks_settled\": 1"), "status reflects the run: " + s1);
+    }
+}
+
+fn main() { App { }; }

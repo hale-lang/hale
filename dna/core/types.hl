@@ -1,0 +1,155 @@
+// dna/core/types.hl — pure facts (Σ in proto-form, no lifecycle).
+//
+// Everything here is passed or persisted by value. Identity is a
+// String id minted by the owner that births the thing; durable
+// identity outlives any locus instance (a Task survives a restart
+// as its Journal events, not as its arena).
+
+// ---- effect classes the law reasons about ----------------------------
+// Declared once here; user classes cross seed boundaries. A backend or
+// gateway that performs the effect carries `@effects(is: { ... })` on
+// the one method that does; the app's claims forbid or gate reach.
+effect external_model;   // a prompt leaves the process for a hosted model
+effect genome_apply;     // a candidate becomes the genome (commit/merge/deploy)
+effect journal_io;       // the durable journal's own file I/O
+
+// A bounded outcome offered downward (supersystem -> subsystem).
+type Intent {
+    id: String = "";
+    outcome: String = "";
+    constraints: String = "";
+    from: String = "";       // who offered it: "human", a locus name, ...
+}
+
+// What a settled child hands its owner through `release(c)`.
+// `disposition`: "done" | "failed" | "cancelled" | "declined" |
+// "timeout" | "escalated".
+type Settled {
+    id: String = "";
+    kind: String = "";       // "task" | "workflow" | "step" | "work" | "attempt"
+    parent: String = "";
+    disposition: String = "";
+    detail: String = "";
+    attempts: Int = 0;
+}
+
+// Executor-neutral unit of work: the METHOD is open, the envelope is
+// typed (#521 comment 2).
+type WorkRequest {
+    work_id: String = "";
+    task_id: String = "";
+    step_id: String = "";
+    objective: String = "";
+    context_digest: String = "";   // ContextPackage digest, never the bytes
+    output_contract: String = "";  // e.g. "ReviewVerdict", "Patch", "Assessment"
+    data_class: String = "internal";  // "public" | "internal" | "customer"
+    requires: String = "";         // capability words, space-separated
+    cost_ceiling: Int = 0;
+    attempt_no: Int = 0;
+}
+
+type WorkResult {
+    disposition: String = "";      // "done" | "failed" | "declined" | "timeout"
+    result: String = "";           // structured result (JSON or a value)
+    narrative: String = "";
+    evidence: String = "";         // content digests, space-separated
+    concerns: String = "";
+    performer: String = "";        // performer identity, recorded not hidden
+}
+
+// Autonomy is a property of the parent -> child relationship. The
+// grant is authored by the parent; the child cannot enlarge it.
+type Grant {
+    child: String = "";
+    classes: String = "";          // change classes the child may apply unreviewed
+    max_magnitude: Int = 0;        // scalar ceiling on the SUM of the vector, never a cancel
+    review: String = "pre";        // "pre" | "post" | "sampled" | "audit"
+    may_expand_self: Bool = false; // always false; here so a test can prove it stays false
+}
+
+// Magnitude stays a vector (#521 "do not reduce risk to one score").
+type Magnitude {
+    loci: Int = 0;                 // affected subtree size
+    contract_change: Bool = false; // parent-facing contract changes
+    effects_widened: Bool = false; // new capability / effect class reached
+    law_touched: Bool = false;     // claims / constitution / review policy
+    placement_change: Bool = false;
+    ownership_crossed: Bool = false;
+    state_migration: Bool = false;
+    external_blast: Int = 0;       // 0 none .. 3 customer/financial
+    irreversible: Bool = false;
+    novelty: Int = 0;              // 0 seen-before .. 3 unprecedented
+}
+
+// Evidence-shaped confidence, never an LLM self-rating.
+type Evidence {
+    check_clean: Bool = false;
+    verify_clean: Bool = false;
+    tests_pass: Bool = false;
+    replay_ok: Bool = false;
+    independent_reviews: Int = 0;
+    rollback_rehearsed: Bool = false;
+}
+
+// Dispositions are STRINGS, not an enum: F.1 (dna/FRICTION.md) — a
+// `match` over an enum declared in an imported seed fails the
+// importer's exhaustiveness check, and with a `_` arm fails codegen
+// ("constructor pattern: unknown enum"). Strings cross the seed
+// boundary today; the enum is the shape we want back.
+const DISP_RELEASE: String = "release";
+const DISP_STAGE: String = "stage";
+const DISP_REVIEW: String = "review";
+const DISP_ESCALATE: String = "escalate";
+const DISP_DENY: String = "deny";
+
+fn magnitude_sum(m: Magnitude) -> Int {
+    let mut s = m.loci + m.external_blast + m.novelty;
+    if m.contract_change { s = s + 4; }
+    if m.effects_widened { s = s + 4; }
+    if m.law_touched { s = s + 6; }
+    if m.placement_change { s = s + 2; }
+    if m.ownership_crossed { s = s + 3; }
+    if m.state_migration { s = s + 3; }
+    if m.irreversible { s = s + 5; }
+    return s;
+}
+
+// A hard boundary is any dimension the grant can never cover, no
+// matter what the evidence says: touching law or review policy,
+// widening effects, crossing ownership, or an irreversible external
+// blast. Confidence cannot cancel these (#521).
+fn crosses_hard_boundary(m: Magnitude) -> Bool {
+    if m.law_touched { return true; }
+    if m.effects_widened { return true; }
+    if m.ownership_crossed { return true; }
+    if m.irreversible && m.external_blast > 0 { return true; }
+    return false;
+}
+
+fn evidence_score(e: Evidence) -> Int {
+    let mut s = 0;
+    if e.check_clean { s = s + 1; }
+    if e.verify_clean { s = s + 1; }
+    if e.tests_pass { s = s + 2; }
+    if e.replay_ok { s = s + 2; }
+    if e.rollback_rehearsed { s = s + 2; }
+    s = s + e.independent_reviews * 2;
+    return s;
+}
+
+// required_assurance = policy(class, magnitude vector, novelty,
+// reversibility, boundary crossings, inherited law); proceed only if
+// the grant permits the class AND no hard boundary is crossed AND
+// evidence satisfies required assurance.
+fn dispose(g: Grant, change_class: String, m: Magnitude, e: Evidence) -> String {
+    if crosses_hard_boundary(m) { return DISP_REVIEW; }
+    let permitted = std::str::contains(g.classes, change_class);
+    if !permitted { return DISP_ESCALATE; }
+    let mag = magnitude_sum(m);
+    if mag > g.max_magnitude { return DISP_ESCALATE; }
+    let required = mag + m.novelty * 2;
+    let have = evidence_score(e);
+    if have < required { return DISP_STAGE; }
+    if g.review == "pre" { return DISP_REVIEW; }
+    return DISP_RELEASE;
+}

@@ -30,6 +30,29 @@ shape with `@unbounded` on the enclosing fn/hook", and the walker
 never read the flag, so `hale verify` stayed red on a param-bounded
 fan-out loop. It reads it now; `@hot` still hard-errors.
 
+### `dna/core`: the DNA Phase 0 domain proof (GH #526)
+
+A library seed under `dna/core` and seven Hale-native fixtures under
+`dna/tests` (plus six law fixtures gated from Rust) prove the #521
+process domain in today's Hale: the single-accept chain
+`Metabolism > Task > Workflow > Step > Work > Attempt`, delegation by
+interest-based bubbling with settlement over a keyed topic, fan-out
+and join, typed and structural failure-up, cancellation, executor-
+neutral Work routed to assembly-owned performers, model routing that
+returns data, Review with a pinned candidate and independence,
+AutonomyBoundary with a vector disposition, a sha256-chained JSONL
+journal with compare-and-append, fencing tokens and idempotent
+effects, Knowledge with direction-derived bindings and reviewed
+distillation, and a constructor-shaped `Dna { ... }` assembly.
+`dna/FRICTION.md` records ten findings with minimized reproducers;
+two were compiler bugs fixed above, three are candidate language
+requests (F.4 hold-without-designation, F.7 fallible interface
+methods, and the multi-accept question #521 predicted, which the
+fixtures answered by bubbling instead), the rest are open compiler
+bugs (F.1, F.8, F.9, F.10) with reproducers under `dna/friction/`.
+Wired into CI by `crates/hale-cli/tests/dna_native_suite.rs` and
+`dna_law.rs`.
+
 ### Observation proto 0.4: `aux_b` means one thing (GH #525, iris handoff-14 P31)
 
 Iris's PROTOCOL §4 and its reference emitters had used a manifest

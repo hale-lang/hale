@@ -1,0 +1,41 @@
+// Probe: route Work to an assembly-owned performer over the bus,
+// keyed by work id, with a synchronous round trip.
+interface Performer { fn perform(x: Int) -> Int; }
+locus Doubler { fn perform(x: Int) -> Int { return x * 2; } }
+
+type WorkReq { work_id: String = ""; x: Int = 0; }
+type WorkRes { work_id: String = ""; out: Int = 0; }
+topic WorkRequested { payload: WorkReq; subject: "dna.work.requested"; }
+topic WorkDone { payload: WorkRes; subject: "dna.work.done"; keyed_by work_id; }
+
+locus WorkSystem {
+    params { performer: Performer = Doubler { }; served: Int = 0; }
+    bus { subscribe WorkRequested as on_req; publish WorkDone; }
+    fn on_req(r: WorkReq) {
+        self.served = self.served + 1;
+        WorkDone <- WorkRes { work_id: r.work_id, out: self.performer.perform(r.x) };
+    }
+}
+
+locus Work {
+    params { work_id: String = ""; out: Int = -1; }
+    contract { expose out: Int; }
+    bus { publish WorkRequested; subscribe WorkDone as on_done where key == self.work_id; }
+    fn on_done(r: WorkRes) { self.out = r.out; }
+    run() {
+        WorkRequested <- WorkReq { work_id: self.work_id, x: 21 };
+        println(self.work_id, " out=", self.out);
+    }
+}
+
+locus Step {
+    accept(w: Work) { }
+    release(w: Work) { println("released ", w.out); }
+    run() { Work { work_id: "w1" }; Work { work_id: "w2" }; }
+}
+
+main locus App {
+    params { ws: WorkSystem = WorkSystem { }; s: Step = Step { }; }
+    run() { println("served=", self.ws.served); }
+}
+fn main() { App { }; }

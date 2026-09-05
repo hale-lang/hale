@@ -1,0 +1,33 @@
+// Probe: a DYNAMIC child holds `perspective(P)` with no default and
+// dispatches through the program-global slot the ASSEMBLY designated.
+perspective Performing { fn perform(x: Int) -> Int; fn name() -> String; }
+
+locus Doubler : serves Performing { fn perform(x: Int) -> Int { return x * 2; } fn name() -> String { return "doubler"; } }
+locus Tripler : serves Performing { fn perform(x: Int) -> Int { return x * 3; } fn name() -> String { return "tripler"; } }
+
+locus Attempt {
+    params { performer: perspective(Performing); out: Int = 0; }
+    contract { expose out: Int; }
+    run() { self.out = self.performer.perform(21); }
+}
+
+locus Work {
+    params { total: Int = 0; }
+    accept(a: Attempt) { }
+    release(a: Attempt) { self.total = self.total + a.out; }
+    run() {
+        Attempt { };
+        Attempt { };
+        println("total=", self.total);
+    }
+}
+
+main locus App {
+    params {
+        // the assembly designates the program's performer
+        performer: perspective(Performing) = Tripler { };
+        w: Work = Work { };
+    }
+    run() { println("app performer=", self.performer.name()); }
+}
+fn main() { App { }; }

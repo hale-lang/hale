@@ -1,0 +1,24 @@
+// Probe 7: one child type, two accepting parents, no bus. Which
+// parent's release fires?
+locus Child {
+    params { tag: String = ""; label: String = ""; }
+    contract { expose label: String; }
+    run() { self.label = "ran:" + self.tag; }
+}
+locus ParentA {
+    params { n: Int = 0; }
+    accept(c: Child) { println("A accept ", c.tag); }
+    release(c: Child) { self.n = self.n + 1; println("A release ", c.label); }
+    run() { Child { tag: "from-A" }; println("A run done n=", self.n); }
+}
+locus ParentB {
+    params { n: Int = 0; }
+    accept(c: Child) { println("B accept ", c.tag); }
+    release(c: Child) { self.n = self.n + 1; println("B release ", c.label); }
+    run() { Child { tag: "from-B" }; println("B run done n=", self.n); }
+}
+main locus App {
+    params { a: ParentA = ParentA { }; b: ParentB = ParentB { }; }
+    run() { println("a.n=", self.a.n, " b.n=", self.b.n); }
+}
+fn main() { App { }; }

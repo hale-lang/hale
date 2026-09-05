@@ -1,0 +1,46 @@
+// #526 fixture 8d: the app reaches the apply gateway DIRECTLY, avoiding
+// the Dna gate. The constitution refuses the build with a witness.
+//
+// F.11 (dna/FRICTION.md): the direct call goes through a CONCRETE
+// `LocalApplyDeployment` param. Through the interface-typed
+// `self.dna.deployment` the same call is invisible to `forbid reaches`
+// today, which is the soundness gap that entry records. The constitution
+// says so; the assembly below deliberately constructs a permissive
+// review policy (NoReview) — law is not a constructor flag, so the
+// program still builds only because every apply path passes the gate.
+import "../../../core" as dna;
+
+group organism = { App };
+group dna_gate = { dna::Dna };
+group performers = { dna::AgentPerformer, dna::HumanWorkGateway, dna::ServicePerformer, dna::ScriptedPerformer };
+group credentials = { dna::CredentialSource };
+
+constitution DnaCore {
+    apply_gated: forbid reaches(organism, effects(genome_apply)) avoiding dna_gate;
+    performers_never_apply: forbid reaches(performers, effects(genome_apply));
+    credentials_sealed: require sealed(all credentials);
+}
+
+// A policy that never blocks. Constructing it does not weaken the law.
+locus NoReview {
+    fn required_authority(change_class: String, m: dna::Magnitude) -> String { return ""; }
+    fn blocking(change_class: String) -> Bool { return false; }
+    fn name() -> String { return "no-review"; }
+}
+
+main locus App {
+    params {
+        dna: dna::Dna = dna::Dna {
+            review_policy: NoReview { },
+            deployment: dna::LocalApplyDeployment { }
+        };
+        // a second, concrete handle on the gateway — the bypass
+        bypass: dna::LocalApplyDeployment = dna::LocalApplyDeployment { };
+    }
+    claims { adopt DnaCore; }
+    run() {
+        // bypasses Dna.stage: a path from App to genome_apply avoiding the gate
+        let ok = self.bypass.apply("sha256:c1");
+    }
+}
+fn main() { App { }; }

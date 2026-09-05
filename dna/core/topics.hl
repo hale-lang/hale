@@ -1,0 +1,76 @@
+// dna/core/topics.hl — facts that cross a real boundary.
+//
+// Most transitions stay inside the owning locus and are read by the
+// owner through `release(c)`. Topics exist only where a fact must
+// cross an ownership tower, a placement, persistence, observation, or
+// the external membrane (#521 "domain facts and topic families").
+
+// Human/external intent entering the organism's membrane.
+type IntentOffer { intent_id: String = ""; outcome: String = ""; from: String = ""; to: String = ""; }
+topic IntentOffered { payload: IntentOffer; subject: "dna.intent.offered"; }
+
+// A delegated child Task settled. Published by the Task pool owner
+// (Metabolism) on behalf of the spawning Step, keyed by the PARENT
+// task so only the waiting Step's tower hears it — supersystem
+// mediation, not sibling chatter (H9).
+type TaskSettlement {
+    task_id: String = "";
+    parent_task: String = "";
+    spawning_step: String = "";
+    disposition: String = "";
+    detail: String = "";
+}
+topic TaskSettled { payload: TaskSettlement; subject: "dna.task.settled"; keyed_by parent_task; }
+
+// Upward-only signals (child -> supersystem).
+type Pressure { source: String = ""; what: String = ""; count: Int = 0; }
+topic PressureRaised { payload: Pressure; subject: "dna.pressure.raised"; }
+
+type Concern { source: String = ""; what: String = ""; severity: Int = 0; }
+topic ConcernRaised { payload: Concern; subject: "dna.concern.raised"; }
+
+// Review requests and verdicts cross the membrane (a human answers).
+type ReviewRequest {
+    review_id: String = "";
+    question: String = "";
+    subject_digest: String = "";   // exact candidate under review (TOCTOU pin)
+    required_authority: String = "";
+}
+topic ReviewRequested { payload: ReviewRequest; subject: "dna.review.requested"; }
+
+type Verdict {
+    review_id: String = "";
+    subject_digest: String = "";   // must equal the request's, or the verdict is refused
+    verdict: String = "";          // "approve" | "revise" | "reject" | "abstain"
+    reviewer: String = "";
+    authority: String = "";        // the authority the reviewer claims
+    comment: String = "";
+}
+topic ReviewVerdict { payload: Verdict; subject: "dna.review.verdict"; keyed_by review_id; }
+
+// Work routed to the assembly-owned WorkSystem (F.3/F.4/F.5 in
+// dna/FRICTION.md: a dynamic child cannot be handed an assembly
+// implementation, so the implementations own the Attempts and the
+// bus carries the request and the settlement, keyed by work id).
+topic WorkRequested { payload: WorkRequest; subject: "dna.work.requested"; }
+
+type WorkSettlement {
+    work_id: String = "";
+    disposition: String = "";
+    result: String = "";
+    attempts: Int = 0;
+    history: String = "";      // "a0:human:declined a1:agent:done "
+}
+topic WorkDone { payload: WorkSettlement; subject: "dna.work.done"; keyed_by work_id; }
+
+// A recorded model call (inside an Attempt; never a Work of its own).
+type ModelCall {
+    attempt_id: String = "";
+    backend: String = "";
+    model: String = "";
+    prompt_digest: String = "";
+    data_class: String = "";
+    tokens: Int = 0;
+    cost_micros: Int = 0;
+    ok: Bool = false;
+}

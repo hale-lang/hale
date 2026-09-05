@@ -1,0 +1,25 @@
+// Probe: can a parent hand ITS interface-typed param child to a
+// dynamically accepted child's interface-typed field? (#526 "verify
+// first": ownership semantics of an interface-typed locus value.)
+interface Performer { fn perform(x: Int) -> Int; fn name() -> String; }
+
+locus Doubler { params { calls: Int = 0; } fn perform(x: Int) -> Int { self.calls = self.calls + 1; return x * 2; } fn name() -> String { return "doubler"; } }
+
+locus Attempt {
+    params { performer: Performer; out: Int = 0; }
+    contract { expose out: Int; }
+    run() { self.out = self.performer.perform(21); }
+}
+
+locus Work {
+    params { performer: Performer = Doubler { }; total: Int = 0; }
+    accept(a: Attempt) { }
+    release(a: Attempt) { self.total = self.total + a.out; }
+    run() {
+        Attempt { performer: self.performer };
+        Attempt { performer: self.performer };
+        println("total=", self.total, " name=", self.performer.name());
+    }
+}
+
+fn main() { Work { }; }

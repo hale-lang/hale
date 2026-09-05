@@ -1,0 +1,160 @@
+// dna/core/assembly.hl — the Dna locus a project constructs (#521
+// comment 1: constructor-shaped assembly).
+//
+// "Configuration" is Hale source: a project writes `Dna { memory:
+// ..., work: ..., governance: ..., membrane: ... }` in its main's
+// params, supplying concrete children behind the core's interfaces.
+// The assembly is visible to the ApplicationModel, claims can reason
+// about its reachability and effects, and changing it is an ordinary
+// reviewed genome diff. Nothing here is a config-file loader.
+//
+// Four things stay distinct: construction (which concrete stores,
+// models, gateways exist), genome (evolvable policy loci), law
+// (constitutions adopted by the main, never a constructor flag), and
+// durable state (behind the constructed stores, never a literal).
+
+// ---- the human/external membrane -----------------------------------
+
+interface Membrane {
+    fn offer(i: Intent) -> String;       // "accepted" | "refused: ..."
+    fn notify(kind: String, msg: String);
+    fn notifications() -> Int;
+}
+
+// The local human: intent enters through `hale dna ask`, review
+// requests and status leave through the terminal / Iris. The person
+// is outside the root; this locus owns the boundary.
+locus LocalHumanMembrane {
+    params { who: String = "operator"; offered: Int = 0; notified: Int = 0; last: String = ""; }
+    fn offer(i: Intent) -> String {
+        if i.outcome == "" { return "refused: empty intent"; }
+        self.offered = self.offered + 1;
+        return "accepted";
+    }
+    fn notify(kind: String, msg: String) {
+        self.notified = self.notified + 1;
+        self.last = kind + ": " + msg;
+    }
+    fn notifications() -> Int { return self.notified; }
+}
+
+// ---- governance policy (evolvable genome, bounded by law) -----------
+
+interface ReviewPolicy {
+    fn required_authority(change_class: String, m: Magnitude) -> String;
+    fn blocking(change_class: String) -> Bool;
+    fn name() -> String;
+}
+
+// The safe baseline (#521 open question 15): every application,
+// deployment, external-effect, process-policy and constitutional
+// mutation blocks on a human.
+locus HumanBeforeApply {
+    fn required_authority(change_class: String, m: Magnitude) -> String { return "maintainer"; }
+    fn blocking(change_class: String) -> Bool { return true; }
+    fn name() -> String { return "human-before-apply"; }
+}
+
+// Post-review for reversible internal refactors; everything else blocks.
+locus PostReviewRefactors {
+    fn required_authority(change_class: String, m: Magnitude) -> String {
+        if m.law_touched || m.effects_widened { return "maintainer"; }
+        return "reviewer";
+    }
+    fn blocking(change_class: String) -> Bool { return change_class != "refactor"; }
+    fn name() -> String { return "post-review-refactors"; }
+}
+
+// ---- deployment gateway (an EFFECT, behind an attributed gate) -----
+
+interface Deployment {
+    fn apply(candidate_digest: String) -> Bool;
+    fn kind() -> String;
+    fn applied() -> Int;
+}
+
+// A deployment that DOES apply (simulated): the one method carries
+// `genome_apply`, which the law gates behind the Dna assembly.
+locus LocalApplyDeployment {
+    params { applied_n: Int = 0; last: String = ""; }
+    @effects(is: { genome_apply })
+    fn apply(candidate_digest: String) -> Bool { self.applied_n = self.applied_n + 1; self.last = candidate_digest; return true; }
+    fn kind() -> String { return "local-apply"; }
+    fn applied() -> Int { return self.applied_n; }
+}
+
+// Phase 1: every mutation stops at stage. This gateway refuses.
+locus NoDeployment {
+    params { refused: Int = 0; }
+    fn apply(candidate_digest: String) -> Bool { self.refused = self.refused + 1; return false; }
+    fn kind() -> String { return "none"; }
+    fn applied() -> Int { return 0; }
+}
+
+// ---- Dna --------------------------------------------------------------
+
+locus Dna {
+    params {
+        journal: Journal = MemJournal { };
+        leases: Coordination = MemLeases { };
+        knowledge: Knowledge = Knowledge { };
+        work: WorkSystem = WorkSystem { };
+        metabolism: Metabolism = Metabolism { };
+        boundary: AutonomyBoundary = AutonomyBoundary { child: "app" };
+        review_policy: ReviewPolicy = HumanBeforeApply { };
+        deployment: Deployment = NoDeployment { };
+        membrane: Membrane = LocalHumanMembrane { };
+        asked: Int = 0;
+    }
+    // Intent enters through the membrane and births a durable Task;
+    // its birth and its settlement are Journal events (the causal
+    // authority), the live locus is the expression.
+    fn ask(i: Intent, k: Knobs) -> String {
+        let gate = self.membrane.offer(i);
+        if gate != "accepted" { return gate; }
+        self.asked = self.asked + 1;
+        let born = self.journal.append(self.journal.revision(), "intent.offered", i.id, i.outcome);
+        if !born.ok { return "refused: journal " + born.error; }
+        let id = self.metabolism.offer(i, k);
+        let s = self.metabolism.find(id);
+        let r = self.journal.append(self.journal.revision(), "task.born", id, i.outcome);
+        let r2 = self.journal.append(self.journal.revision(), "task." + s.disposition, id, s.detail);
+        if !r.ok || !r2.ok { self.membrane.notify("journal", "append failed"); }
+        return id;
+    }
+    // A staged mutation: assessed under the boundary, reviewed per
+    // policy, and NEVER applied by this assembly's deployment.
+    fn stage(change_class: String, candidate_digest: String, m: Magnitude, e: Evidence) -> String {
+        let d = self.boundary.assess(change_class, m, e);
+        let r = self.journal.append(self.journal.revision(), "mutation." + d, candidate_digest, change_class);
+        if d == DISP_RELEASE {
+            // the grant would allow it; the deployment gateway decides
+            // whether expression is possible here at all
+            if !self.deployment.apply(candidate_digest) {
+                self.membrane.notify("mutation", "staged (no deployment): " + candidate_digest);
+                return DISP_STAGE;
+            }
+            return "applied";
+        }
+        if d == DISP_REVIEW || d == DISP_STAGE {
+            self.membrane.notify("review", self.review_policy.required_authority(change_class, m) + " needed for " + candidate_digest);
+        }
+        return d;
+    }
+    fn status() -> String {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.int_field("asked", self.asked);
+        b.int_field("journal_revision", self.journal.revision());
+        b.int_field("tasks_settled", self.metabolism.settled_count());
+        b.int_field("work_requests", self.work.requests);
+        b.int_field("attempts", self.work.attempts_made);
+        b.string_field("routing", self.work.policy());
+        b.string_field("review_policy", self.review_policy.name());
+        b.string_field("deployment", self.deployment.kind());
+        b.int_field("knowledge_revision", self.knowledge.revision);
+        b.int_field("notifications", self.membrane.notifications());
+        b.end_object();
+        return b.result();
+    }
+}
