@@ -12356,15 +12356,38 @@ impl<'a> Checker<'a> {
                     }
                     (None, Ty::Unknown) => (Ty::Unknown, Ty::Unknown),
                     (None, other) => {
-                        self.diags.push(Diag::ty(
-                            inner.span(),
-                            format!(
+                        // GH #535: name the callee when there is one —
+                        // "`std::json::find_int_field` is not fallible"
+                        // beats "got `Int`".
+                        let callee = match inner.as_ref() {
+                            Expr::Call { callee, .. } => match callee.as_ref() {
+                                Expr::Path(qn) => Some(
+                                    qn.segments
+                                        .iter()
+                                        .map(|s| s.name.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join("::"),
+                                ),
+                                Expr::Ident(id) => Some(id.name.clone()),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        let msg = match callee {
+                            Some(c) => format!(
+                                "`{}` is not fallible (it returns `{}`); \
+                                 drop the `or` clause",
+                                c,
+                                other.display()
+                            ),
+                            None => format!(
                                 "`or` disposition expects a fallible-typed \
                                  expression on the left; got `{}` (not fallible). \
                                  Drop the `or` clause if the call can't fail.",
                                 other.display()
                             ),
-                        ));
+                        };
+                        self.diags.push(Diag::ty(inner.span(), msg));
                         return other;
                     }
                 };

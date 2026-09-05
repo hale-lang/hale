@@ -1442,6 +1442,8 @@ crates/hale-types/tests/recognition_submodes.rs#0 e44ab1fd789cfdef
 crates/hale-types/tests/recognition_submodes.rs#1 e44ab1fd789cfdef
 crates/hale-types/tests/sealability_survey.rs#0 f4d56c805acf3eb3
 crates/hale-types/tests/stdlib_name_check.rs#3 7ba49c53bd84fd5d
+crates/hale-types/tests/stdlib_or_on_infallible.rs#1 865d341109268295
+crates/hale-types/tests/stdlib_or_on_infallible.rs#4 f7d36b63d0259ddf
 crates/hale-types/tests/stdlib_sig_check.rs#4 90900b8058a0b246
 crates/hale-types/tests/stdlib_sig_check.rs#5 865d341109268295
 crates/hale-types/tests/stdlib_sig_check.rs#7 865d341109268295

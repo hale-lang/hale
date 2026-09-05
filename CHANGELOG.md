@@ -8,6 +8,25 @@ behavior.
 
 ## Unreleased
 
+### `or` on an infallible stdlib call is refused where it is written; `write_file_append` is Unit in the `or` form (GH #535)
+
+The json flat-object readers (`find_string_field`, `find_int_field`,
+`find_bool_field`, `find_field_raw`, `escape_string`,
+`unescape_string`) had no signature rows, so a call typed Unknown
+and `find_int_field(s, "seq") or 0` slid through `hale check` to
+fail at build with "`or` over unknown path call". They are tabled:
+the bare call types precisely, and an `or` on one is refused at
+check time naming the fn. `write_file_append` was `-> Int` to the
+table while its `or` form lowers through the same Unit-success
+channel as `write_file` (the bare legacy call returns an Int
+status); `let n = ... or 0` failed at build with an unrelated
+message. The row says Unit now, so the mismatch is a check-time
+substitute diagnostic and `or discard` / `or handler(err)` are the
+admitted shapes. Spec corrected: it had said "returns bytes
+appended". Found by the DNA Phase 0 fixtures (dna/FRICTION.md F.8,
+F.9). Not changed: a bare fallible stdlib call with no `or` is still
+accepted (the corpus relies on it).
+
 ### A library's own enums and perspectives survive `import` (GH #534)
 
 A library that matched its own enum was clean in-seed and refused
