@@ -912,6 +912,7 @@ crates/hale-codegen/tests/recv_stamped.rs#0 f21a527aa7a90794
 crates/hale-codegen/tests/recv_timeout_sentinel.rs#0 f21a527aa7a90794
 crates/hale-codegen/tests/recv_timeout_sentinel.rs#1 90900b8058a0b246
 crates/hale-codegen/tests/recv_zero_alloc.rs#0 f21a527aa7a90794
+crates/hale-codegen/tests/release_two_parents.rs#0 ef45ee6209ff2c6e
 crates/hale-codegen/tests/replay_asyncio.rs#0 54fdacb60d7cfd77
 crates/hale-codegen/tests/replay_asyncio.rs#1 0576d42781aa84e9
 crates/hale-codegen/tests/replay_determinism.rs#0 4ff23f87ca9a42ec
@@ -1304,6 +1305,8 @@ crates/hale-types/tests/hot_path_alloc.rs#15 95431874c5a9ae8d
 crates/hale-types/tests/hot_path_alloc.rs#16 93c34d52bcde0cf7
 crates/hale-types/tests/hot_path_alloc.rs#17 b1f059c2b92900ae
 crates/hale-types/tests/hot_path_alloc.rs#18 ab273330600fc920
+crates/hale-types/tests/hot_path_alloc.rs#19 234c5f1f87e43729
+crates/hale-types/tests/hot_path_alloc.rs#20 7e39a961fbd87bc6
 crates/hale-types/tests/hot_path_alloc.rs#4 234c5f1f87e43729
 crates/hale-types/tests/hot_path_alloc.rs#6 234c5f1f87e43729
 crates/hale-types/tests/hot_path_alloc.rs#7 8b5c9b6ca27eb054

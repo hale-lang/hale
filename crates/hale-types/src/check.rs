@@ -1548,17 +1548,28 @@ struct HotPathCx<'a> {
     /// the stricter perf hints (`snapshot()`/`finish()` in a loop,
     /// whole-struct self-field replace) activate.
     hot: bool,
+    /// GH #526 (2026-09-05): inside an `@unbounded` fn or lifecycle
+    /// hook. Every advisory this lint emits ends with "or acknowledge
+    /// an intentional shape with `@unbounded` on the enclosing
+    /// fn/hook" — and the walker never read the flag, so the
+    /// acknowledgement the message promised did nothing and `hale
+    /// verify` stayed red on a param-bounded fan-out loop. The flag
+    /// silences the ADVISORY only; `@hot` still hard-errors (a hot
+    /// fn that allocates unboundedly is a contradiction, not an
+    /// acknowledgement).
+    unbounded: bool,
 }
 
 impl HotPathCx<'_> {
-    /// Advisory warn by default; hard error inside `@hot`.
+    /// Advisory warn by default; hard error inside `@hot`; silent
+    /// inside `@unbounded` (unless also `@hot`).
     fn emit(&mut self, span: Span, msg: String) {
         if self.hot {
             self.diags.push(Diag::ty(
                 span,
                 format!("@hot: {}", msg),
             ));
-        } else {
+        } else if !self.unbounded {
             self.diags.push(Diag::warn(span, msg));
         }
     }
@@ -2005,17 +2016,18 @@ fn check_hot_path_alloc(bundle: &Bundle<'_>, top: &TopScope, diags: &mut Vec<Dia
                         })
                         .collect();
                     for m in &l.members {
-                        let (body, in_handler, hot) = match m {
+                        let (body, in_handler, hot, unbounded) = match m {
                             LocusMember::Fn(fd) => (
                                 Some(&fd.body),
                                 handler_names
                                     .contains(fd.name.name.as_str()),
                                 fd.hot,
+                                fd.unbounded,
                             ),
                             LocusMember::Lifecycle(ld) => {
-                                (Some(&ld.body), false, false)
+                                (Some(&ld.body), false, false, ld.unbounded)
                             }
-                            _ => (None, false, false),
+                            _ => (None, false, false, false),
                         };
                         if let Some(b) = body {
                             let mut cx = HotPathCx {
@@ -2024,6 +2036,7 @@ fn check_hot_path_alloc(bundle: &Bundle<'_>, top: &TopScope, diags: &mut Vec<Dia
                                 loop_depth: 0,
                                 in_handler,
                                 hot,
+                                unbounded,
                             };
                             hot_walk_block(b, &mut cx);
                         }
@@ -2036,6 +2049,7 @@ fn check_hot_path_alloc(bundle: &Bundle<'_>, top: &TopScope, diags: &mut Vec<Dia
                         loop_depth: 0,
                         in_handler: false,
                         hot: fd.hot,
+                        unbounded: fd.unbounded,
                     };
                     hot_walk_block(&fd.body, &mut cx);
                 }

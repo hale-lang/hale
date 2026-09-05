@@ -8,6 +8,28 @@ behavior.
 
 ## Unreleased
 
+### `release(c)` runs the accept'ing owner's own body (GH #526 F.6)
+
+One child type accepted by two parent types — `Attempt` under both
+`Work` and `WorkSystem` in the DNA core — segfaulted: the reclaim
+spine found "the" release fn by child type alone, so the first parent
+type that declared `release(c: Attempt)` won program-wide and its
+body ran over the other parent's `self`. Minimized, `B accept` was
+followed by `A release` with B's counter incremented. Every locus
+now carries a synthetic `__owner_release` pointer, stored at accept
+dispatch from the accept'ing parent TYPE (null when that parent
+declares no `release` for the child), and reclaim calls through it.
+Whether a type is a flow (run-completion reclaims) stays type-wide;
+which body runs is per owner. Regression:
+`crates/hale-codegen/tests/release_two_parents.rs`.
+
+### `@unbounded` now acknowledges the hot-path advisory (GH #526 F.2)
+
+Every hot-path advisory ended with "or acknowledge an intentional
+shape with `@unbounded` on the enclosing fn/hook", and the walker
+never read the flag, so `hale verify` stayed red on a param-bounded
+fan-out loop. It reads it now; `@hot` still hard-errors.
+
 ### Observation proto 0.4: `aux_b` means one thing (GH #525, iris handoff-14 P31)
 
 Iris's PROTOCOL §4 and its reference emitters had used a manifest
