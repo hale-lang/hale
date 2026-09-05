@@ -1,0 +1,44 @@
+// lib-enum-persp — GH #534 (DNA F.1 / F.10): a library that matches
+// its OWN enum and serves its OWN perspective. Both were clean
+// in-seed and broke through `import`: the mangler renamed the enum
+// and perspective declarations but not the `Color::Red` variant
+// paths (expression and pattern) nor the `serves` lists.
+
+type Color = enum { Red, Green, Blue };
+
+fn name(c: Color) -> String {
+    return match c {
+        Color::Red -> "red",
+        Color::Green -> "green",
+        Color::Blue -> "blue",
+    };
+}
+
+fn first() -> String {
+    return name(Color::Red);
+}
+
+fn is_green(c: Color) -> Bool {
+    return match c {
+        Color::Green -> true,
+        _ -> false,
+    };
+}
+
+perspective Routing {
+    fn pick() -> String;
+}
+
+locus First : serves Routing {
+    fn pick() -> String { return "first"; }
+}
+
+locus Second : serves Routing {
+    fn pick() -> String { return "second"; }
+}
+
+locus Router {
+    params { policy: perspective(Routing) = First { }; }
+    fn which() -> String { return self.policy.pick(); }
+    fn swap() { reperspective self.policy as Second; }
+}

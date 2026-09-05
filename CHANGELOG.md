@@ -8,6 +8,20 @@ behavior.
 
 ## Unreleased
 
+### A library's own enums and perspectives survive `import` (GH #534)
+
+A library that matched its own enum was clean in-seed and refused
+through `import`: `match is not exhaustive ... cases of
+__lib_<seed>_<Enum>`, and with a `_` arm, codegen's `constructor
+pattern: unknown enum`. Same for `locus L : serves P` — every impl
+served an unknown perspective once imported. The mangler renamed the
+declarations but not the `Color::Red` variant paths (expression and
+pattern position, two segments whose head is a seed-level name) nor
+the `serves` lists. Both are rewritten now, and an importer can spell
+a variant as `lib::Color::Green`. Found by the DNA Phase 0 fixtures
+(dna/FRICTION.md F.1, F.10); `dna/core` can take its enum and its
+routing perspective back.
+
 ### Claims see every implementation behind an interface-typed slot (GH #533)
 
 `forbid reaches(organism, effects(apply_it))` passed for
