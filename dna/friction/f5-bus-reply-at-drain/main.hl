@@ -30,7 +30,7 @@ locus Work {
 
 locus Step {
     accept(w: Work) { }
-    release(w: Work) { println("released ", w.out); }
+    release (w: Work) { println("released ", w.out); }
     run() { Work { work_id: "w1" }; Work { work_id: "w2" }; }
 }
 

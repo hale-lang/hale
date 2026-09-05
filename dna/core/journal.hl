@@ -11,19 +11,19 @@
 
 type Event {
     seq: Int = 0;
-    kind: String = "";        // "task.born" | "effect.requested" | ...
-    entity: String = "";      // durable id the event is about
+    kind: String = ""; // "task.born" | "effect.requested" | ...
+    entity: String = ""; // durable id the event is about
     body: String = "";
-    prev: String = "";        // digest of the previous event
-    digest: String = "";      // sha256(prev + kind + entity + body)
+    prev: String = ""; // digest of the previous event
+    digest: String = ""; // sha256(prev + kind + entity + body)
 }
 
 // F.7 (dna/FRICTION.md): interface methods cannot be `fallible(E)`,
 // so the append contract carries its failure in a result struct.
 type AppendResult {
     ok: Bool = false;
-    revision: Int = 0;        // the revision after a successful append
-    error: String = "";       // "stale_revision" | "io"
+    revision: Int = 0; // the revision after a successful append
+    error: String = ""; // "stale_revision" | "io"
     expected: Int = 0;
     actual: Int = 0;
 }
@@ -100,7 +100,7 @@ locus FileJournal {
     params {
         path: String = ".hale/dna/journal.jsonl";
         rows: EventRows = EventRows { };
-        loaded: Int = 0;           // rows rehydrated at birth
+        loaded: Int = 0; // rows rehydrated at birth
         io_errors: Int = 0;
         last_io_error: String = "";
     }
@@ -177,7 +177,7 @@ locus FileJournal {
 type Lease {
     key: String = "";
     holder: String = "";
-    token: Int = 0;           // fencing token; monotonically increasing per key
+    token: Int = 0; // fencing token; monotonically increasing per key
     expires: Int = 0;
     present: Bool = false;
 }

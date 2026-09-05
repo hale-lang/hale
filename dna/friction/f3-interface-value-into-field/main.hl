@@ -14,7 +14,7 @@ locus Attempt {
 locus Work {
     params { performer: Performer = Doubler { }; total: Int = 0; }
     accept(a: Attempt) { }
-    release(a: Attempt) { self.total = self.total + a.out; }
+    release (a: Attempt) { self.total = self.total + a.out; }
     run() {
         Attempt { performer: self.performer };
         Attempt { performer: self.performer };

@@ -25,15 +25,15 @@ locus Review {
     params {
         review_id: String = "";
         question: String = "";
-        subject_digest: String = "";      // the candidate, pinned
+        subject_digest: String = ""; // the candidate, pinned
         required_authority: String = ""; // e.g. "maintainer", "operator"
-        author: String = "";              // the Attempt/performer that authored the candidate
+        author: String = ""; // the Attempt/performer that authored the candidate
         blocking: Bool = true;
         verdicts: VerdictRows = VerdictRows { };
         settled: Bool = false;
-        outcome: String = "";             // "approve" | "revise" | "reject" | ""
+        outcome: String = ""; // "approve" | "revise" | "reject" | ""
         decided_by: String = "";
-        refused: Int = 0;                 // verdicts refused (wrong digest / authority / independence)
+        refused: Int = 0; // verdicts refused (wrong digest / authority / independence)
         last_refusal: String = "";
     }
     contract {

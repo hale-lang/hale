@@ -170,7 +170,7 @@ locus WorkSystem {
         publish WorkDone;
     }
     accept(a: Attempt) { }
-    release(a: Attempt) {
+    release (a: Attempt) {
         self.attempts_made = self.attempts_made + 1;
     }
     fn policy() -> String { return self.selection.policy_name(); }

@@ -16,7 +16,7 @@
 // ---- the human/external membrane -----------------------------------
 
 interface Membrane {
-    fn offer(i: Intent) -> String;       // "accepted" | "refused: ..."
+    fn offer(i: Intent) -> String; // "accepted" | "refused: ..."
     fn notify(kind: String, msg: String);
     fn notifications() -> Int;
 }

@@ -11,12 +11,12 @@
 
 type ModelRequest {
     attempt_id: String = "";
-    role: String = "";             // "classify" | "synthesize" | "review" | ...
+    role: String = ""; // "classify" | "synthesize" | "review" | ...
     prompt_digest: String = "";
     context_bytes: Int = 0;
     data_class: String = "internal";
     needs_tools: Bool = false;
-    assurance: Int = 0;            // 0 quick .. 2 independent/deep
+    assurance: Int = 0; // 0 quick .. 2 independent/deep
     cost_ceiling_micros: Int = 0;
 }
 
@@ -27,7 +27,7 @@ type ModelResult {
     output: String = "";
     tokens: Int = 0;
     cost_micros: Int = 0;
-    refused: String = "";          // why, when !ok
+    refused: String = ""; // why, when !ok
 }
 
 interface ModelBackend {
@@ -118,7 +118,7 @@ locus EvidenceAwareSelection {
     fn select(req: ModelRequest, quick_ok: Bool, deep_ok: Bool, private_ok: Bool) -> String {
         if req.data_class == "customer" {
             if private_ok { return "private"; }
-            return "";                 // no permitted backend: refuse, never leak
+            return ""; // no permitted backend: refuse, never leak
         }
         if req.assurance >= 2 || req.role == "review" {
             if deep_ok { return "deep"; }
@@ -168,8 +168,8 @@ locus ModelRouter {
         self.calls = self.calls + 1;
         self.last_backend = cls;
         let r = if cls == "deep" { self.deep.complete(req) }
-                else if cls == "private" { self.private.complete(req) }
-                else { self.quick.complete(req) };
+        else if cls == "private" { self.private.complete(req) }
+        else { self.quick.complete(req) };
         self.spent_micros = self.spent_micros + r.cost_micros;
         return r;
     }

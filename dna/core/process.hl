@@ -102,7 +102,7 @@ locus Work {
         attempts: Int = 0;
         disposition: String = "";
         result: String = "";
-        history: String = "";     // "a0:failed a1:done "
+        history: String = ""; // "a0:failed a1:done "
     }
     contract {
         expose work_id: String;
@@ -128,7 +128,7 @@ locus Work {
         self.history = s.history;
     }
     accept(a: Attempt) { }
-    release(a: Attempt) {
+    release (a: Attempt) {
         // The typed settlement signal: fires after the child drains,
         // before it dissolves; we read its final state here.
         self.attempts = self.attempts + 1;
@@ -188,8 +188,8 @@ locus Step {
         task_id: String = "";
         workflow_id: String = "";
         objective: String = "";
-        fan: Int = 1;              // Work children to fan out
-        delegate: Bool = false;    // also spawn a child Task
+        fan: Int = 1; // Work children to fan out
+        delegate: Bool = false; // also spawn a child Task
         routed: Bool = false;
         requires: String = "";
         data_class: String = "internal";
@@ -222,9 +222,9 @@ locus Step {
     on_failure(w: Work, err: ClosureViolation) {
         self.works_violated = self.works_violated + 1;
         self.works_failed = self.works_failed + 1;
-        self.detail = self.detail + "violated:" + err.closure + " ";
+        self.detail = self.detail + "violated:" + err.closure +" ";
     }
-    release(w: Work) {
+    release (w: Work) {
         if w.disposition == "done" { self.works_done = self.works_done + 1; }
         else { self.works_failed = self.works_failed + 1; }
         self.detail = self.detail + w.work_id + "=" + w.disposition + "[" + w.history + "] ";
@@ -281,12 +281,12 @@ locus Workflow {
     params {
         workflow_id: String = "";
         task_id: String = "";
-        revision: Int = 1;         // definition revision bound at birth
+        revision: Int = 1; // definition revision bound at birth
         objective: String = "";
         steps: Int = 1;
         fan: Int = 1;
-        delegate_at: Int = -1;     // which step (if any) delegates a child Task
-        cancel_at: Int = -1;       // the owning Task cancels before this step activates
+        delegate_at: Int = -1; // which step (if any) delegates a child Task
+        cancel_at: Int = -1; // the owning Task cancels before this step activates
         routed: Bool = false;
         requires: String = "";
         data_class: String = "internal";
@@ -294,7 +294,7 @@ locus Workflow {
         escalate: Bool = false;
         steps_done: Int = 0;
         steps_failed: Int = 0;
-        steps_skipped: Int = 0;    // dependents that never activated
+        steps_skipped: Int = 0; // dependents that never activated
         disposition: String = "";
         detail: String = "";
     }
@@ -308,7 +308,7 @@ locus Workflow {
         expose detail: String;
     }
     accept(s: Step) { }
-    release(s: Step) {
+    release (s: Step) {
         if s.disposition == "done" { self.steps_done = self.steps_done + 1; }
         else { self.steps_failed = self.steps_failed + 1; }
         self.detail = self.detail + s.step_id + "=" + s.disposition + " {" + s.detail + "} ";
@@ -357,7 +357,7 @@ locus Workflow {
 locus Task {
     params {
         task_id: String = "";
-        parent_task: String = "";  // "" at the root
+        parent_task: String = ""; // "" at the root
         spawning_step: String = "";
         intent: Intent = Intent { };
         revision: Int = 1;
@@ -382,7 +382,7 @@ locus Task {
         expose detail: String;
     }
     accept(w: Workflow) { }
-    release(w: Workflow) {
+    release (w: Workflow) {
         // One outcome upward, not every internal event.
         self.disposition = w.disposition;
         self.detail = w.detail;
@@ -416,7 +416,7 @@ locus Metabolism {
     }
     bus { publish TaskSettled; }
     accept(t: Task) { }
-    release(t: Task) {
+    release (t: Task) {
         self.log.push(Settled {
             id: t.task_id,
             kind: "task",

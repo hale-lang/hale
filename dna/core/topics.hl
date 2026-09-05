@@ -33,17 +33,17 @@ topic ConcernRaised { payload: Concern; subject: "dna.concern.raised"; }
 type ReviewRequest {
     review_id: String = "";
     question: String = "";
-    subject_digest: String = "";   // exact candidate under review (TOCTOU pin)
+    subject_digest: String = ""; // exact candidate under review (TOCTOU pin)
     required_authority: String = "";
 }
 topic ReviewRequested { payload: ReviewRequest; subject: "dna.review.requested"; }
 
 type Verdict {
     review_id: String = "";
-    subject_digest: String = "";   // must equal the request's, or the verdict is refused
-    verdict: String = "";          // "approve" | "revise" | "reject" | "abstain"
+    subject_digest: String = ""; // must equal the request's, or the verdict is refused
+    verdict: String = ""; // "approve" | "revise" | "reject" | "abstain"
     reviewer: String = "";
-    authority: String = "";        // the authority the reviewer claims
+    authority: String = ""; // the authority the reviewer claims
     comment: String = "";
 }
 topic ReviewVerdict { payload: Verdict; subject: "dna.review.verdict"; keyed_by review_id; }
@@ -59,7 +59,7 @@ type WorkSettlement {
     disposition: String = "";
     result: String = "";
     attempts: Int = 0;
-    history: String = "";      // "a0:human:declined a1:agent:done "
+    history: String = ""; // "a0:human:declined a1:agent:done "
 }
 topic WorkDone { payload: WorkSettlement; subject: "dna.work.done"; keyed_by work_id; }
 

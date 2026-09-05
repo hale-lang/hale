@@ -13,10 +13,10 @@
 
 type Idea {
     id: String = "";
-    kind: String = "idea";      // "idea" | "concept" | "practice" | "task_concept"
+    kind: String = "idea"; // "idea" | "concept" | "practice" | "task_concept"
     text: String = "";
-    author: String = "";        // a locus path, e.g. "app/support"
-    provenance: String = "";    // "declared" | "observed" | "inferred" | "proposed" | "ratified"
+    author: String = ""; // a locus path, e.g. "app/support"
+    provenance: String = ""; // "declared" | "observed" | "inferred" | "proposed" | "ratified"
     revision: Int = 0;
     accepted: Bool = false;
 }
@@ -25,18 +25,18 @@ type KnowledgeEdge { from: String = ""; to: String = ""; rel: String = ""; }
 
 type KnowledgeBinding {
     idea: String = "";
-    target: String = "";        // locus path the idea is bound to
-    author: String = "";        // who bound it
-    class: String = "";         // derived: "goal" | "concern" | "initiative"
+    target: String = ""; // locus path the idea is bound to
+    author: String = ""; // who bound it
+    class: String = ""; // derived: "goal" | "concern" | "initiative"
 }
 
 type ContextPackage {
     target: String = "";
     revision: Int = 0;
     digest: String = "";
-    included: String = "";      // idea ids, space-separated
+    included: String = ""; // idea ids, space-separated
     included_n: Int = 0;
-    omitted_n: Int = 0;         // what this projection left out, stated
+    omitted_n: Int = 0; // what this projection left out, stated
     data_class: String = "";
 }
 
@@ -49,7 +49,7 @@ fn classify_binding(author: String, target: String) -> String {
     if author == target { return "initiative"; }
     if is_ancestor(author, target) { return "goal"; }
     if is_ancestor(target, author) { return "concern"; }
-    return "lateral";           // siblings do not privately coordinate (H9)
+    return "lateral"; // siblings do not privately coordinate (H9)
 }
 
 @form(vec)

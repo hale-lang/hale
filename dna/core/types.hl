@@ -9,16 +9,16 @@
 // Declared once here; user classes cross seed boundaries. A backend or
 // gateway that performs the effect carries `@effects(is: { ... })` on
 // the one method that does; the app's claims forbid or gate reach.
-effect external_model;   // a prompt leaves the process for a hosted model
-effect genome_apply;     // a candidate becomes the genome (commit/merge/deploy)
-effect journal_io;       // the durable journal's own file I/O
+effect external_model; // a prompt leaves the process for a hosted model
+effect genome_apply; // a candidate becomes the genome (commit/merge/deploy)
+effect journal_io; // the durable journal's own file I/O
 
 // A bounded outcome offered downward (supersystem -> subsystem).
 type Intent {
     id: String = "";
     outcome: String = "";
     constraints: String = "";
-    from: String = "";       // who offered it: "human", a locus name, ...
+    from: String = ""; // who offered it: "human", a locus name, ...
 }
 
 // What a settled child hands its owner through `release(c)`.
@@ -26,7 +26,7 @@ type Intent {
 // "timeout" | "escalated".
 type Settled {
     id: String = "";
-    kind: String = "";       // "task" | "workflow" | "step" | "work" | "attempt"
+    kind: String = ""; // "task" | "workflow" | "step" | "work" | "attempt"
     parent: String = "";
     disposition: String = "";
     detail: String = "";
@@ -40,45 +40,45 @@ type WorkRequest {
     task_id: String = "";
     step_id: String = "";
     objective: String = "";
-    context_digest: String = "";   // ContextPackage digest, never the bytes
-    output_contract: String = "";  // e.g. "ReviewVerdict", "Patch", "Assessment"
-    data_class: String = "internal";  // "public" | "internal" | "customer"
-    requires: String = "";         // capability words, space-separated
+    context_digest: String = ""; // ContextPackage digest, never the bytes
+    output_contract: String = ""; // e.g. "ReviewVerdict", "Patch", "Assessment"
+    data_class: String = "internal"; // "public" | "internal" | "customer"
+    requires: String = ""; // capability words, space-separated
     cost_ceiling: Int = 0;
     attempt_no: Int = 0;
 }
 
 type WorkResult {
-    disposition: String = "";      // "done" | "failed" | "declined" | "timeout"
-    result: String = "";           // structured result (JSON or a value)
+    disposition: String = ""; // "done" | "failed" | "declined" | "timeout"
+    result: String = ""; // structured result (JSON or a value)
     narrative: String = "";
-    evidence: String = "";         // content digests, space-separated
+    evidence: String = ""; // content digests, space-separated
     concerns: String = "";
-    performer: String = "";        // performer identity, recorded not hidden
+    performer: String = ""; // performer identity, recorded not hidden
 }
 
 // Autonomy is a property of the parent -> child relationship. The
 // grant is authored by the parent; the child cannot enlarge it.
 type Grant {
     child: String = "";
-    classes: String = "";          // change classes the child may apply unreviewed
-    max_magnitude: Int = 0;        // scalar ceiling on the SUM of the vector, never a cancel
-    review: String = "pre";        // "pre" | "post" | "sampled" | "audit"
+    classes: String = ""; // change classes the child may apply unreviewed
+    max_magnitude: Int = 0; // scalar ceiling on the SUM of the vector, never a cancel
+    review: String = "pre"; // "pre" | "post" | "sampled" | "audit"
     may_expand_self: Bool = false; // always false; here so a test can prove it stays false
 }
 
 // Magnitude stays a vector (#521 "do not reduce risk to one score").
 type Magnitude {
-    loci: Int = 0;                 // affected subtree size
+    loci: Int = 0; // affected subtree size
     contract_change: Bool = false; // parent-facing contract changes
     effects_widened: Bool = false; // new capability / effect class reached
-    law_touched: Bool = false;     // claims / constitution / review policy
+    law_touched: Bool = false; // claims / constitution / review policy
     placement_change: Bool = false;
     ownership_crossed: Bool = false;
     state_migration: Bool = false;
-    external_blast: Int = 0;       // 0 none .. 3 customer/financial
+    external_blast: Int = 0; // 0 none .. 3 customer/financial
     irreversible: Bool = false;
-    novelty: Int = 0;              // 0 seen-before .. 3 unprecedented
+    novelty: Int = 0; // 0 seen-before .. 3 unprecedented
 }
 
 // Evidence-shaped confidence, never an LLM self-rating.
