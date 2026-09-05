@@ -78,7 +78,16 @@ use crate::symbol::Bundle;
 // completeness gate, and a subject-grained CARDINALITY hole now
 // withdraws the bound. This corrects a false `Holds`, so v5
 // evidence must not be replayed.
-pub const ANALYSIS_SEMANTICS_VERSION: u32 = 6;
+// 7 (GH #533, 2026-09-05): a call through an interface-typed FIELD
+// resolved against the field's declaration DEFAULT literal, so a
+// constructor override was invisible — a false `Holds` on
+// `forbid reaches` for the carrier the program actually stored, and
+// a false violation for the mirror. The slot now keeps its declared
+// interface and dispatch fans to every conformer, the rule one-hop
+// slots and interface-typed fn params already followed. Reachability
+// results moved in both directions, so v6 evidence must not be
+// replayed.
+pub const ANALYSIS_SEMANTICS_VERSION: u32 = 7;
 
 /// Digest of the certificate engines' inputs OUTSIDE the model:
 /// the analysis-semantics version above, the Hale-source stdlib

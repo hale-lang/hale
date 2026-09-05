@@ -671,6 +671,22 @@ impl<'a> Mangler<'a> {
         }
     }
 
+    /// GH #534 (DNA F.1): an enum VARIANT path — `Color::Red` in
+    /// expression or pattern position — is two segments whose head
+    /// is a seed-level type name. The single-segment rule left the
+    /// head bare while the declaration was renamed, so an importer's
+    /// exhaustiveness pass saw `__lib_..._Color` with no arms and
+    /// codegen's constructor-pattern arm looked up a `Color` that no
+    /// longer existed. Rewrite the head when it is one of this
+    /// seed's own names (an importer alias is never in the map).
+    fn rewrite_variant_path(&self, q: &mut QualifiedName) {
+        match q.segments.len() {
+            1 => self.rewrite_ident(&mut q.segments[0].name),
+            2 => self.rewrite_ident(&mut q.segments[0].name),
+            _ => {}
+        }
+    }
+
     fn walk_top_decl(&mut self, d: &mut TopDecl) {
         self.push_scope();
         match d {
@@ -743,6 +759,13 @@ impl<'a> Mangler<'a> {
 
     fn walk_locus(&mut self, l: &mut LocusDecl) {
         self.rewrite_ident(&mut l.name.name);
+        // GH #534 (DNA F.10): `locus L : serves P` names a perspective
+        // declared in this seed; the declaration was renamed and the
+        // `serves` list was not, so every impl served an unknown
+        // perspective once imported.
+        for sv in &mut l.serves {
+            self.rewrite_ident(&mut sv.name);
+        }
         for g in &l.generics {
             self.bind(&g.name.name);
         }
@@ -1227,7 +1250,7 @@ impl<'a> Mangler<'a> {
             Pattern::Literal(_, _) | Pattern::Wildcard(_) => {}
             Pattern::Binding(i) => self.bind(&i.name),
             Pattern::Constructor { path, args, .. } => {
-                self.rewrite_single_segment_path(path);
+                self.rewrite_variant_path(path);
                 for a in args {
                     self.walk_pattern(a);
                 }
@@ -1282,7 +1305,7 @@ impl<'a> Mangler<'a> {
         match e {
             Expr::Literal(_, _) | Expr::KwSelf(_) => {}
             Expr::Ident(i) => self.rewrite_ident(&mut i.name),
-            Expr::Path(q) => self.rewrite_single_segment_path(q),
+            Expr::Path(q) => self.rewrite_variant_path(q),
             Expr::Binary { left, right, .. } => {
                 self.walk_expr(left);
                 self.walk_expr(right);

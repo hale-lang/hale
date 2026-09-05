@@ -1272,7 +1272,7 @@ crates/hale-types/tests/effect_assertions.rs#3 18ffc12740f4b203
 crates/hale-types/tests/effect_assertions.rs#5 6c25d1df6a64820f
 crates/hale-types/tests/effect_assertions.rs#8 52f5c2d227dbb8b5
 crates/hale-types/tests/effects_through_handles.rs#4 366138d0626a5646
-crates/hale-types/tests/effects_through_handles.rs#9 8d171dcbfe6d26f9
+crates/hale-types/tests/effects_through_handles.rs#9 b02810e84978532d
 crates/hale-types/tests/frontier_items.rs#1 440e61c90f2db460
 crates/hale-types/tests/frontier_items.rs#4 604a68af0451e08c
 crates/hale-types/tests/frontier_items.rs#5 da1afab5cdfd89e6
@@ -1314,6 +1314,7 @@ crates/hale-types/tests/interface_dispatch.rs#2 970540114cfc4743
 crates/hale-types/tests/interface_dispatch.rs#3 3e8236394613d0b0
 crates/hale-types/tests/interface_dispatch.rs#6 6d6f6da0dc6377b2
 crates/hale-types/tests/interface_dispatch.rs#9 6f2cbe31a3a8633b
+crates/hale-types/tests/interface_slot_override.rs#1 c180c95dda5b3cc4
 crates/hale-types/tests/judgment_causes.rs#11 c81fa6ad060c49cb
 crates/hale-types/tests/judgment_causes.rs#3 e29c8ecbbd11aea2
 crates/hale-types/tests/judgment_causes.rs#8 0f41594939b4eca0
@@ -1367,7 +1368,7 @@ crates/hale-types/tests/model_fanout.rs#1 48fefaa10bc3abfc
 crates/hale-types/tests/model_fanout.rs#12 04bdd600e87989c8
 crates/hale-types/tests/model_fanout.rs#13 b0592a5db3cfd991
 crates/hale-types/tests/model_fanout.rs#14 788a618eef9f9674
-crates/hale-types/tests/model_fanout.rs#16 ea714f6ba0976d60
+crates/hale-types/tests/model_fanout.rs#16 018bd040806fc592
 crates/hale-types/tests/model_fanout.rs#17 929aa0de861fc434
 crates/hale-types/tests/model_fanout.rs#18 a863be2764a92b8e
 crates/hale-types/tests/model_fanout.rs#19 ed98275c99171609
@@ -1441,6 +1442,8 @@ crates/hale-types/tests/recognition_submodes.rs#0 e44ab1fd789cfdef
 crates/hale-types/tests/recognition_submodes.rs#1 e44ab1fd789cfdef
 crates/hale-types/tests/sealability_survey.rs#0 f4d56c805acf3eb3
 crates/hale-types/tests/stdlib_name_check.rs#3 7ba49c53bd84fd5d
+crates/hale-types/tests/stdlib_or_on_infallible.rs#1 865d341109268295
+crates/hale-types/tests/stdlib_or_on_infallible.rs#4 f7d36b63d0259ddf
 crates/hale-types/tests/stdlib_sig_check.rs#4 90900b8058a0b246
 crates/hale-types/tests/stdlib_sig_check.rs#5 865d341109268295
 crates/hale-types/tests/stdlib_sig_check.rs#7 865d341109268295

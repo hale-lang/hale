@@ -1123,10 +1123,20 @@ pub fn summarize_programs_with_renames(
     // GH #18 item 1 — the `@bounded` / `@unbounded` opt-in/carve-out sets.
     // GH #265: every declared locus type name (spawn-site detection).
     let mut locus_type_names: BTreeSet<String> = BTreeSet::new();
+    // GH #533: every declared interface name, so an interface-typed
+    // slot keeps its DECLARED type and dispatch fans to every
+    // conformer instead of binding to the default literal.
+    let mut interface_names: BTreeSet<String> = BTreeSet::new();
     for p in programs {
         for item in &p.items {
-            if let TopDecl::Locus(l) = item {
-                locus_type_names.insert(l.name.name.clone());
+            match item {
+                TopDecl::Locus(l) => {
+                    locus_type_names.insert(l.name.name.clone());
+                }
+                TopDecl::Interface(i) => {
+                    interface_names.insert(i.name.name.clone());
+                }
+                _ => {}
             }
         }
     }
@@ -1367,7 +1377,11 @@ pub fn summarize_programs_with_renames(
                     locus_shapes.insert(locus.clone(), locus_shape_of(l));
                     locus_field_types.insert(
                         locus.clone(),
-                        locus_param_field_types(l, &locus_type_names),
+                        locus_param_field_types(
+                            l,
+                            &locus_type_names,
+                            &interface_names,
+                        ),
                     );
                     locus_inline_arrays
                         .insert(locus.clone(), locus_inline_array_fields(l));
@@ -1856,6 +1870,7 @@ fn param_var_types(params: &[Param]) -> Vec<(String, String)> {
 fn locus_param_field_types(
     l: &LocusDecl,
     locus_types: &BTreeSet<String>,
+    interface_types: &BTreeSet<String>,
 ) -> BTreeMap<String, String> {
     let mut m = BTreeMap::new();
     for member in &l.members {
@@ -1865,13 +1880,28 @@ fn locus_param_field_types(
                 // F.20 interface-typed slot: the DECLARED type is an
                 // interface, which has no body, so `self.sink.emit()`
                 // resolved to nothing and every effect behind the slot
-                // was invisible. The concrete locus in the default is
-                // what actually runs, so resolve through it.
+                // was invisible. F.20's fix resolved through the
+                // DEFAULT literal — and GH #533 (DNA F.11) showed that
+                // is fail-open: `Holder { dep: Real { } }` overrides a
+                // `dep: Gate = Noop { }` default, `Real::apply` runs,
+                // and `forbid reaches(.., effects(apply_it))` passed
+                // because the walker only ever saw `Noop`. (The
+                // mirror — default `Real`, override `Noop` — was a
+                // false positive.)
                 //
-                // Keyed on "declared type is not a declared locus, but
-                // the default instantiates one" — no interface table
-                // needed, and it cannot mis-fire on an ordinary field
-                // whose declared type IS a locus.
+                // Now: a declared INTERFACE keeps its own name, so the
+                // call is `Unresolved` with an interface receiver and
+                // the dispatch rewrite fans it to every conformer in
+                // the closed world — the same rule a one-hop
+                // `self.dep.apply()` and an interface-typed fn param
+                // already follow. Every impl the program could store
+                // into the slot is a conformer, so no override can
+                // hide; "a hole beats a false proof of absence"
+                // (spec/model.md). The default-literal fallback stays
+                // for a declared name that is neither a locus nor an
+                // interface (a `perspective(P)` slot, whose program-
+                // global 1-1 designation IS the default until
+                // reperspective — tracked separately).
                 let concrete_default = match &pd.init {
                     ParamInit::Value(Expr::Struct { path, .. }) => path
                         .segments
@@ -1881,6 +1911,9 @@ fn locus_param_field_types(
                     _ => None,
                 };
                 let resolved = match (&declared, &concrete_default) {
+                    (Some(d), _) if interface_types.contains(d) => {
+                        Some(d.clone())
+                    }
                     (Some(d), Some(c)) if !locus_types.contains(d) => {
                         Some(c.clone())
                     }

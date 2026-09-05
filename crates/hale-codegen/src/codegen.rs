@@ -19422,15 +19422,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // / tuple / further constructor sub-patterns
                     // aren't lowered (parser doesn't even produce
                     // them with the current grammar).
-                    if path.segments.len() != 2 {
+                    // GH #534: an importer's `alias::Enum::Variant`
+                    // resolves its first two segments through the
+                    // per-build rename table.
+                    let aliased: Option<String> = if path.segments.len() == 3 {
+                        let head: Vec<&str> = path.segments[..2]
+                            .iter()
+                            .map(|s| s.name.as_str())
+                            .collect();
+                        self.mangled_for_path(&head)
+                            .filter(|m| self.user_enums.contains_key(m))
+                    } else {
+                        None
+                    };
+                    if path.segments.len() != 2 && aliased.is_none() {
                         return Err(CodegenError::Unsupported(format!(
                             "constructor pattern path must be \
                              `Enum::Variant` (got {} segments)",
                             path.segments.len()
                         )));
                     }
-                    let enum_name = path.segments[0].name.clone();
-                    let variant_name = &path.segments[1].name;
+                    let enum_name = aliased
+                        .clone()
+                        .unwrap_or_else(|| path.segments[0].name.clone());
+                    let variant_name = &path.segments[path.segments.len() - 1].name;
                     let info = self
                         .user_enums
                         .get(&enum_name)
@@ -21878,9 +21893,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // representation a payload variant would
                 // produce, so callers don't have to care which
                 // variant they're holding.
-                if qn.segments.len() == 2 {
-                    let enum_name = qn.segments[0].name.clone();
-                    let variant_name = &qn.segments[1].name;
+                // GH #534: `alias::Enum::Variant` from an importer —
+                // the first two segments are the per-build rename
+                // key for the enum, the third is the variant.
+                let aliased_variant: Option<(String, String)> =
+                    if qn.segments.len() == 3 {
+                        let head: Vec<&str> = qn.segments[..2]
+                            .iter()
+                            .map(|s| s.name.as_str())
+                            .collect();
+                        self.mangled_for_path(&head)
+                            .filter(|m| self.user_enums.contains_key(m))
+                            .map(|m| (m, qn.segments[2].name.clone()))
+                    } else {
+                        None
+                    };
+                if qn.segments.len() == 2 || aliased_variant.is_some() {
+                    let (enum_name, variant_name) = match &aliased_variant {
+                        Some((e, v)) => (e.clone(), v.clone()),
+                        None => (qn.segments[0].name.clone(), qn.segments[1].name.clone()),
+                    };
+                    let variant_name = &variant_name;
                     if let Some(info) = self.user_enums.get(&enum_name).cloned() {
                         let tag = info
                             .variants
