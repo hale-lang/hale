@@ -327,6 +327,19 @@ absence".
 
 **Reproducer:** `dna/friction/f11-reaches-default-not-override/`.
 
+**Resolution:** FIXED upstream (GH #533, hale PR #538, 2026-09-08).
+A declared interface keeps its own name in the field-type map, so
+the call fans to every conformer in the closed world. Conservative
+by construction, and it has a consequence for the core:
+`PrivateModelRouter.private` had been interface-typed, so after the
+fix the confinement claim saw the external backend through it and
+`confine_pass` failed on merged main. An interface-typed slot admits
+every conformer; a CONCRETE slot admits one; confinement by wiring
+therefore needs the concrete type at the boundary, which is what
+`PrivateModelRouter` now declares. Per-field narrowing (only the
+impls the program actually stores into that field) would give the
+precise answer without the concrete type; filed as a follow-up.
+
 ---
 
 ## Requests and bugs, summarized (2026-09-05)

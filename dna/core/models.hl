@@ -132,10 +132,13 @@ locus EvidenceAwareSelection {
 
 // A router for CUSTOMER-facing loci: only the local backend is
 // reachable, so `forbid reaches(customer_side, effects(external_model))`
-// holds structurally, not by a runtime check.
+// holds structurally, not by a runtime check. The slot is CONCRETE on
+// purpose: an interface-typed slot admits every conformer in the
+// closed world (GH #533 — a constructor may store any of them), so
+// confinement by wiring needs the concrete type at the boundary.
 locus PrivateModelRouter {
     params {
-        private: ModelBackend = LocalFakeModel { };
+        private: LocalFakeModel = LocalFakeModel { };
         calls: Int = 0;
     }
     fn ask(req: ModelRequest) -> ModelResult {
