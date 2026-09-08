@@ -2754,6 +2754,23 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                 self.context.ptr_type(AddressSpace::default()).const_null(),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // GH #526 F.6: `__owner_release` starts null too; accept
+        // dispatch stores the owner type's release fn (or leaves null).
+        let owner_release_slot = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                self_ptr,
+                info.owner_release_field_idx,
+                &format!("{}.__owner_release.ptr", locus_name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_store(
+                owner_release_slot,
+                self.context.ptr_type(AddressSpace::default()).const_null(),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
         // Interest-based ownership, artifact #2b: birth-threading — the
         // 3-way write of this child `X`'s `__owner_for_<I>` fields. For
@@ -2939,6 +2956,30 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     self.builder
                         .build_store(owner_slot, owner_ptr)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    // GH #526 F.6: THIS owner type's release fn for this
+                    // child type, so reclaim calls the right body even
+                    // when several parent types accept `locus_name`.
+                    let ptr_t = self.context.ptr_type(AddressSpace::default());
+                    let owner_release_val = match &parent_info.release_param {
+                        Some((_, rel_child)) if rel_child == locus_name => parent_info
+                            .methods
+                            .get("release")
+                            .map(|f| f.as_global_value().as_pointer_value())
+                            .unwrap_or(ptr_t.const_null()),
+                        _ => ptr_t.const_null(),
+                    };
+                    let owner_release_slot = self
+                        .builder
+                        .build_struct_gep(
+                            info.struct_ty,
+                            self_ptr,
+                            info.owner_release_field_idx,
+                            &format!("{}.__owner_release.accept.ptr", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_store(owner_release_slot, owner_release_val)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     let accept_fn = parent_info
                         .methods

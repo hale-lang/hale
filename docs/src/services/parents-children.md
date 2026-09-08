@@ -41,7 +41,10 @@ summaries).
 A locus accepts **one** child type. Writing a second `accept` is a
 compile error that points at both clauses; if a parent needs to own
 two kinds of children, one of them belongs under a different owner
-(or the same owner one level down).
+(or the same owner one level down). The other direction is fine:
+several parent types may accept the *same* child type, and each
+child's `release` fires on the parent that actually accepted it,
+running that parent's own `release` body.
 
 ## Bubbling: the nearest accepting ancestor collects the child
 

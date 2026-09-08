@@ -463,6 +463,16 @@ parent has two effects:
    flow-typed locus is instantiated outside an accept context
    (no owner).
 
+Several parent types may accept the same child type; each child
+carries its accept'ing owner AND that owner type's `release` fn
+(stored at accept dispatch), so the body that fires is the actual
+owner's own, never another parent type's (2026-09-05, GH #526 F.6:
+the reclaim spine used to pick the first declared `release(c: T)`
+program-wide). Whether `T` is a flow remains a type-wide fact: if
+any parent declares `release(c: T)`, every `T` reclaims on
+run-completion, and an owner that declares no `release` simply has
+no bookend called.
+
 `release` has the same shape as `accept` — one typed child
 param — and the same fn signature `(parent_self, child_self)`.
 

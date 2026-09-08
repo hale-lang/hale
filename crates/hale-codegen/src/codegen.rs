@@ -6051,6 +6051,15 @@ pub(crate) struct LocusInfo<'ctx> {
     /// routing-gated). Read by a flow child's run-wrapper to fire
     /// `parent.release(owner, child)`. Null when never accept'd.
     pub(crate) owner_self_field_idx: u32,
+    /// GH #526 F.6 (2026-09-05): index of the synthetic
+    /// `__owner_release: ptr` field — the accept'ing PARENT TYPE's
+    /// `release` fn, stored beside `__owner_self` at accept dispatch
+    /// (null when that parent declares no `release` for this child
+    /// type, or the locus was never accept'd). The reclaim spine used
+    /// to find "the" release fn by child type alone, so with two
+    /// parents accepting one child type the first parent's body ran
+    /// over the other parent's self — silent memory corruption.
+    pub(crate) owner_release_field_idx: u32,
     /// Interest-based ownership, artifact #2b — indices of the synthetic
     /// `__owner_for_<I>: ptr` fields, one per interest-type `I` in this
     /// locus's forwarding set (keyed by `I`). Threaded at birth: set to
@@ -7196,6 +7205,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             // `release(c)` parent bookend — after drain, before
             // dissolve — for a flow with a non-null owner.
+            //
+            // GH #526 F.6: the fn CALLED is the one the accept'ing
+            // parent stored in `__owner_release` at accept dispatch,
+            // not `release_fn` (which is only "some parent releases
+            // this type" — the flow-ness decision). Two parents may
+            // accept one child type; each owner's own body must run
+            // over its own self. A null pointer (this owner declares no
+            // release for the type, or the child was never accept'd)
+            // skips the call.
             if let Some(rfn) = release_fn {
                 let owner_ptr = self
                     .builder
@@ -7211,21 +7229,44 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_load(ptr_t, owner_ptr, &format!("{}.reclaim.owner", locus_name))
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                     .into_pointer_value();
+                let rel_slot = self
+                    .builder
+                    .build_struct_gep(
+                        info.struct_ty,
+                        self_arg,
+                        info.owner_release_field_idx,
+                        &format!("{}.reclaim.owner_release.ptr", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let rel_fn_ptr = self
+                    .builder
+                    .build_load(ptr_t, rel_slot, &format!("{}.reclaim.owner_release", locus_name))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_pointer_value();
                 let owner_null = self
                     .builder
                     .build_is_null(owner, &format!("{}.reclaim.owner.null", locus_name))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let rel_null = self
+                    .builder
+                    .build_is_null(rel_fn_ptr, &format!("{}.reclaim.owner_release.null", locus_name))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let skip = self
+                    .builder
+                    .build_or(owner_null, rel_null, &format!("{}.reclaim.release.skip", locus_name))
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 let fire_bb =
                     self.context.append_basic_block(reclaim, "release.fire");
                 let after_rel_bb =
                     self.context.append_basic_block(reclaim, "release.after");
                 self.builder
-                    .build_conditional_branch(owner_null, after_rel_bb, fire_bb)
+                    .build_conditional_branch(skip, after_rel_bb, fire_bb)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 self.builder.position_at_end(fire_bb);
                 self.builder
-                    .build_call(
-                        rfn,
+                    .build_indirect_call(
+                        rfn.get_type(),
+                        rel_fn_ptr,
                         &[owner.into(), self_arg.into()],
                         &format!("{}.reclaim.release.call", locus_name),
                     )
