@@ -170,8 +170,9 @@ with:
 
 - **The proof follows the call graph**, including calls made on a
   handle (`reader.slurp()`), across seed boundaries into imported
-  libraries, and through interface-typed slots into whatever concrete
-  implementation is bound.
+  libraries, and through interface-typed slots into *every*
+  implementation the program could bind there — not just the
+  declaration's default, since a constructor may override it.
 - **Incompleteness fails closed.** A stdlib call the registry cannot
   classify — or does not know at all — is treated as may-do-anything
   and violates the assertion, rather than being quietly assumed pure.

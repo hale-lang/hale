@@ -869,6 +869,7 @@ const NS_TAR: &[&str] = &["tar"];
 const NS_B64: &[&str] = &["text", "base64"];
 const NS_RAND: &[&str] = &["rand"];
 const NS_FS: &[&str] = &["io", "fs"];
+const NS_JSON: &[&str] = &["json"];
 const NS_FILE: &[&str] = &["io", "file"];
 const NS_TCP: &[&str] = &["io", "tcp"];
 const NS_TLS: &[&str] = &["io", "tls"];
@@ -948,6 +949,16 @@ pub const SIGS: &[FnSig] = &[
     ),
     sig!(NS_STR, "range_eq", [Str, Int, Int, Str], Bool),
     sig!(NS_STR, "byte_at_unchecked", [Str, Int], Int),
+    // GH #535 (DNA F.8): the flat-object json readers are Hale-source
+    // stdlib fns with no rename entry, so a call typed Unknown and an
+    // `or` on one slid through the checker to fail at build. Tabled,
+    // they type precisely and an `or` is refused where it is written.
+    sig!(NS_JSON, "find_string_field", [Str, Str], Str),
+    sig!(NS_JSON, "find_int_field", [Str, Str], Int),
+    sig!(NS_JSON, "find_bool_field", [Str, Str], Bool),
+    sig!(NS_JSON, "find_field_raw", [Str, Str], Str),
+    sig!(NS_JSON, "escape_string", [Str], Str),
+    sig!(NS_JSON, "unescape_string", [Str], Str),
     sig!(NS_STR, "index_of", [Str, Str], Int),
     // #353: the everyday predicates. The runtime carried
     // `lotus_str_contains` / `_starts_with` all along; `ends_with` is
@@ -1070,7 +1081,13 @@ pub const SIGS: &[FnSig] = &[
     sig!(NS_FS, "read_bytes", [Str], Bytes, "IoError"),
     sig!(NS_FS, "write_file", [Str, Str], Unit, "IoError"),
     sig!(NS_FS, "write_bytes", [Str, Bytes], Unit, "IoError"),
-    sig!(NS_FS, "write_file_append", [Str, Str], Int, "IoError"),
+    // GH #535 (DNA F.9): the `or` form lowers through the same
+    // fallible channel as write_file (Unit success); the BARE legacy
+    // call returns an Int status and stays typed Unknown like every
+    // bare fallible row. The row used to say Int and the checker
+    // admitted `let n = ... or 0`, which codegen then refused with a
+    // message about something else.
+    sig!(NS_FS, "write_file_append", [Str, Str], Unit, "IoError"),
     sig!(NS_FS, "file_size", [Str], Int, "IoError"),
     sig!(NS_FS, "mkdir", [Str], Unit, "IoError"),
     sig!(NS_FS, "rename", [Str, Str], Unit, "IoError"),

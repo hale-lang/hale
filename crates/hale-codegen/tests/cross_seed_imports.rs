@@ -443,3 +443,61 @@ fn method_name_shadowed_by_top_level_fn_resolves() {
         String::from_utf8_lossy(&out.stdout)
     );
 }
+
+/// GH #534 (DNA F.1 / F.10): a library's OWN enum variant paths
+/// (`Color::Red` in expression and pattern position) and its `serves`
+/// lists were not renamed with their declarations, so through
+/// `import` the enum had no arms (exhaustiveness refused; with `_`,
+/// codegen looked up a `Color` that no longer existed) and every
+/// perspective impl served an unknown perspective.
+#[test]
+fn library_enum_match_and_perspective_serves_survive_import() {
+    let lib_dir = fixtures_dir().join("lib-enum-persp");
+    let consumer_src_path = fixtures_dir()
+        .join("import-enum-persp-consumer")
+        .join("main.hl");
+    let consumer_src = std::fs::read_to_string(&consumer_src_path)
+        .expect("read consumer main.hl");
+    let mut consumer_prog =
+        parse_source(&consumer_src).expect("parse consumer");
+    consumer_prog.imports.clear();
+    let (lib_items, renames) = resolve_and_mangle_lib(&lib_dir, "lib");
+    // The library's own variant paths and `serves` lists must now
+    // carry the mangled names — that is the whole fix.
+    let renamed_enum = renames
+        .iter()
+        .find(|(k, _)| k == &vec!["lib".to_string(), "Color".to_string()])
+        .map(|(_, m)| m.clone())
+        .expect("Color is renamed");
+    let mut saw_variant_path = false;
+    let mut saw_serves = false;
+    for item in &lib_items {
+        match item {
+            TopDecl::Locus(l) => {
+                for sv in &l.serves {
+                    assert!(sv.name.starts_with("__lib_"), "serves not renamed: {}", sv.name);
+                    saw_serves = true;
+                }
+            }
+            TopDecl::Fn(f) if f.name.name.ends_with("_first") => {
+                let body = format!("{:?}", f.body);
+                assert!(body.contains(&renamed_enum), "variant path head not renamed: {body}");
+                saw_variant_path = true;
+            }
+            _ => {}
+        }
+    }
+    assert!(saw_variant_path && saw_serves, "fixture shape drifted");
+    consumer_prog.items.extend(lib_items);
+
+    let bin = harness::unique_bin(&format!("hale_cross_seed_enum_persp_{}", std::process::id()));
+    build_executable_with_imports(&consumer_prog, &bin, &renames)
+        .expect("build consumer + lib");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "non-zero exit: {:?} stderr={}", out.status, String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for needle in ["first=red", "green=true", "which=second", "after=second", "label=b"] {
+        assert!(stdout.contains(needle), "missing {needle}: {stdout:?}");
+    }
+}
