@@ -4,13 +4,13 @@
 // review policy (NoReview) — law is not a constructor flag, so the
 // program still builds only because every apply path passes the gate.
 //
-// Caveat, F.11 (dna/FRICTION.md): `Dna.stage -> self.deployment.apply`
-// goes through the interface-typed `deployment` field whose
-// declaration default is `NoDeployment` (no effect); the constructor
-// override to `LocalApplyDeployment` is what actually runs, and the
-// claims engine resolves the call against the default. So
-// `apply_gated` holds here partly for the wrong reason. The `_fail`
-// sibling uses a concrete handle, which the engine does see.
+// F.11 is fixed (GH #533): `Dna.stage -> self.deployment.apply` goes
+// through the interface-typed `deployment` field, and the claims
+// engine fans that call to every `Deployment` conformer, the
+// `LocalApplyDeployment` carrier included. `apply_gated` holds for
+// the right reason now: the only path to the carrier runs through
+// the Dna gate. The `_fail` sibling adds a concrete handle that
+// bypasses it.
 import "../../../core" as dna;
 
 group organism = { App };
