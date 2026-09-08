@@ -1,0 +1,48 @@
+// dna/tests/recursion_settlement_test.hl — #526 fixture 1.
+//
+// The single-accept chain Metabolism > Task > Workflow > Step > Work >
+// Attempt births, runs, settles, and reclaims; a delegated child Task
+// bubbles to Metabolism; the spawning Step observes settlement over
+// the keyed TaskSettled topic; lineage survives in the settled record.
+
+import "../core" as dna;
+
+main locus App {
+    params {
+        m: dna::Metabolism = dna::Metabolism { };
+    }
+    run() {
+        // 1. A plain intent: two steps, each fanning out two Works.
+        let t1 = self.m.offer(
+            dna::Intent { outcome: "reduce checkout failures", from: "human" },
+            dna::Knobs { steps: 2, fan: 2 });
+        std::test::assert_eq_str(t1, "t1", "first task id is minted by the pool");
+        let s1 = self.m.find(t1);
+        std::test::assert_eq_str(s1.kind, "task", "settled record is a task row");
+        std::test::assert_eq_str(s1.disposition, "done", "chain settles done: " + s1.detail);
+        std::test::assert_eq_str(s1.parent, "", "root task has no parent");
+        std::test::assert(std::str::contains(s1.detail, "t1/wf1/s0=done"), "step 0 settled through release: " + s1.detail);
+        std::test::assert(std::str::contains(s1.detail, "t1/wf1/s1=done"), "step 1 settled through release: " + s1.detail);
+        std::test::assert(std::str::contains(s1.detail, "t1/wf1/s1/w1=done[t1/wf1/s1/w1/a0:done ]"), "work history names the attempt: " + s1.detail);
+
+        // 2. Delegation: step 0 spawns a child Task. Step does not
+        //    accept Task; the literal bubbles to Metabolism, which
+        //    releases it and publishes TaskSettled keyed by parent.
+        let t2 = self.m.offer(
+            dna::Intent { outcome: "delegating intent", from: "human" },
+            dna::Knobs { steps: 1, fan: 1, delegate_at: 0 });
+        std::test::assert_eq_int(self.m.settled_count(), 3, "root + child + t1 are three settled rows");
+        let child = self.m.find(t2 + ".sub");
+        std::test::assert_eq_str(child.kind, "task", "delegated child is a Task in the pool");
+        std::test::assert_eq_str(child.parent, t2, "lineage: child records its parent task");
+        std::test::assert_eq_str(child.disposition, "done", "child settles done");
+        let root = self.m.find(t2);
+        std::test::assert_eq_str(root.disposition, "done", "parent settles after the child: " + root.detail);
+        std::test::assert(std::str::contains(root.detail, "child t2.sub=done"), "the spawning Step heard TaskSettled over the keyed topic: " + root.detail);
+        // the child settled BEFORE the parent (its row comes first)
+        std::test::assert_eq_str(self.m.settled_at(1).id, "t2.sub", "child row precedes the parent row");
+        std::test::assert_eq_str(self.m.settled_at(2).id, "t2", "parent row is last");
+    }
+}
+
+fn main() { App { }; }

@@ -1,0 +1,8 @@
+// Minimized: an interface method cannot declare `fallible(E)`.
+//   parse error: expected ;, got Ident("fallible")
+type E { kind: String = ""; }
+interface Store {
+    fn put(k: String) -> Int fallible(E);
+}
+locus Mem { fn put(k: String) -> Int fallible(E) { if k == "" { fail E { kind: "empty" }; } return 1; } }
+fn main() { let m = Mem { }; println(m.put("a") or 0); }

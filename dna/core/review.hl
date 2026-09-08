@@ -1,0 +1,153 @@
+// dna/core/review.hl — judgment with provenance, and autonomy as a
+// boundary grant (#521 "Review", "Autonomy is a boundary grant").
+//
+// A Review is a locus, not a Boolean: it owns the exact question, the
+// candidate's digest at decision time, the authority required, and
+// the verdicts it received with their provenance. It settles only when
+// a verdict (a) names the exact candidate digest under review, (b)
+// comes from a reviewer whose claimed authority satisfies the
+// requirement, and (c) is independent of the authoring Attempt. A
+// capable performer with the wrong authority does not settle it.
+//
+// The AutonomyBoundary is owned by the PARENT for one child
+// relationship. It computes the disposition from the grant, the
+// magnitude vector and the evidence (pure fn `dispose` in types.hl),
+// contracts on failure, and never expands on the child's say-so.
+
+// ---- Review -------------------------------------------------------
+
+@form(vec)
+locus VerdictRows {
+    capacity { heap rows of Verdict; }
+}
+
+locus Review {
+    params {
+        review_id: String = "";
+        question: String = "";
+        subject_digest: String = ""; // the candidate, pinned
+        required_authority: String = ""; // e.g. "maintainer", "operator"
+        author: String = ""; // the Attempt/performer that authored the candidate
+        blocking: Bool = true;
+        verdicts: VerdictRows = VerdictRows { };
+        settled: Bool = false;
+        outcome: String = ""; // "approve" | "revise" | "reject" | ""
+        decided_by: String = "";
+        refused: Int = 0; // verdicts refused (wrong digest / authority / independence)
+        last_refusal: String = "";
+    }
+    contract {
+        expose review_id: String;
+        expose settled: Bool;
+        expose outcome: String;
+        expose decided_by: String;
+        expose refused: Int;
+        expose last_refusal: String;
+    }
+    // A verdict is admitted only if it names THIS candidate, carries the
+    // required authority, and is independent of the author.
+    fn consider(v: Verdict) -> Bool {
+        if self.settled { self.last_refusal = "already settled"; self.refused = self.refused + 1; return false; }
+        if v.subject_digest != self.subject_digest {
+            self.last_refusal = "digest mismatch: " + v.subject_digest + " != " + self.subject_digest;
+            self.refused = self.refused + 1;
+            return false;
+        }
+        if !std::str::contains(v.authority, self.required_authority) {
+            self.last_refusal = "authority " + v.authority + " does not satisfy " + self.required_authority;
+            self.refused = self.refused + 1;
+            return false;
+        }
+        if v.reviewer == self.author {
+            self.last_refusal = "reviewer " + v.reviewer + " authored the candidate";
+            self.refused = self.refused + 1;
+            return false;
+        }
+        self.verdicts.push(v);
+        if v.verdict == "abstain" { return true; }
+        self.settled = true;
+        self.outcome = v.verdict;
+        self.decided_by = v.reviewer;
+        return true;
+    }
+    fn verdict_count() -> Int { return self.verdicts.len(); }
+}
+
+// ---- AutonomyBoundary ---------------------------------------------
+
+@form(vec)
+locus AuditRows {
+    capacity { heap rows of AuditRow; }
+}
+
+type AuditRow {
+    seq: Int = 0;
+    change_class: String = "";
+    magnitude: Int = 0;
+    evidence: Int = 0;
+    disposition: String = "";
+    note: String = "";
+}
+
+locus AutonomyBoundary {
+    params {
+        child: String = "";
+        grant: Grant = Grant { };
+        audit: AuditRows = AuditRows { };
+        decisions: Int = 0;
+        contractions: Int = 0;
+        expansions_refused: Int = 0;
+        failures_in_row: Int = 0;
+    }
+    contract {
+        expose child: String;
+        expose decisions: Int;
+        expose contractions: Int;
+        expose expansions_refused: Int;
+    }
+    fn current_grant() -> Grant { return self.grant; }
+    // The disposition of a proposed change under the current grant.
+    fn assess(change_class: String, m: Magnitude, e: Evidence) -> String {
+        let d = dispose(self.grant, change_class, m, e);
+        self.decisions = self.decisions + 1;
+        self.audit.push(AuditRow {
+            seq: self.decisions, change_class: change_class,
+            magnitude: magnitude_sum(m), evidence: evidence_score(e), disposition: d
+        });
+        return d;
+    }
+    // Autonomy evolution is asymmetric: failure contracts automatically...
+    fn note_outcome(ok: Bool) {
+        if ok { self.failures_in_row = 0; return; }
+        self.failures_in_row = self.failures_in_row + 1;
+        if self.failures_in_row >= 2 && self.grant.max_magnitude > 0 {
+            self.grant = Grant {
+                child: self.grant.child, classes: self.grant.classes,
+                max_magnitude: self.grant.max_magnitude / 2,
+                review: "pre", may_expand_self: false
+            };
+            self.contractions = self.contractions + 1;
+            self.audit.push(AuditRow { seq: self.decisions, disposition: "contract", note: "repeated failure" });
+        }
+    }
+    // ...and expansion needs the PARENT. A request from the child (or
+    // anyone who is not the owning parent) is refused and recorded.
+    fn expand(requested_by: String, parent: String, new_max: Int, add_classes: String) -> Bool {
+        if requested_by != parent || self.grant.may_expand_self {
+            self.expansions_refused = self.expansions_refused + 1;
+            self.audit.push(AuditRow { seq: self.decisions, disposition: "refuse-expand", note: "requested by " + requested_by });
+            return false;
+        }
+        self.grant = Grant {
+            child: self.grant.child,
+            classes: self.grant.classes + " " + add_classes,
+            max_magnitude: new_max,
+            review: self.grant.review,
+            may_expand_self: false
+        };
+        self.audit.push(AuditRow { seq: self.decisions, disposition: "expand", note: "by " + parent });
+        return true;
+    }
+    fn audit_count() -> Int { return self.audit.len(); }
+    fn audit_at(i: Int) -> AuditRow { return self.audit.get(i) or AuditRow { }; }
+}

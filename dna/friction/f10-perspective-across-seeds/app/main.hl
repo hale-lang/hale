@@ -1,0 +1,9 @@
+// Minimized: `hale check ../lib` is clean; importing it fails:
+//   type error: locus `__lib_lib_First` serves unknown perspective `Routing`
+//   type error: param `policy`: declared `__lib_lib_Routing`, default is `__lib_lib_First`
+import "../lib" as lib;
+main locus App {
+    params { r: lib::Router = lib::Router { policy: lib::Second { } }; }
+    run() { println(self.r.which()); }
+}
+fn main() { App { }; }

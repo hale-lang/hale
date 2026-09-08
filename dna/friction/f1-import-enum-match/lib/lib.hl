@@ -1,0 +1,8 @@
+type Color = enum { Red, Green };
+
+fn name(c: Color) -> String {
+    return match c {
+        Color::Red -> "red",
+        Color::Green -> "green",
+    };
+}

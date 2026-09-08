@@ -1,0 +1,176 @@
+// dna/core/models.hl — model routing (#521 comment 1 & 2).
+//
+// A model is one resource an AGENT performer uses; it is not the
+// organism's unit of agency. `ModelRouter` owns backends behind the
+// structural `ModelBackend` interface and a selection policy behind
+// `ModelSelection`, and returns pure results — never a backend locus
+// (the CQRS rule). Availability (construction) and policy (selection)
+// are distinct from LAW: a backend that must never see customer data
+// is refused by `allows()` and, at the program level, by an effect
+// class the claims can forbid (dna/tests/dna_law.rs).
+
+type ModelRequest {
+    attempt_id: String = "";
+    role: String = ""; // "classify" | "synthesize" | "review" | ...
+    prompt_digest: String = "";
+    context_bytes: Int = 0;
+    data_class: String = "internal";
+    needs_tools: Bool = false;
+    assurance: Int = 0; // 0 quick .. 2 independent/deep
+    cost_ceiling_micros: Int = 0;
+}
+
+type ModelResult {
+    ok: Bool = false;
+    backend: String = "";
+    model: String = "";
+    output: String = "";
+    tokens: Int = 0;
+    cost_micros: Int = 0;
+    refused: String = ""; // why, when !ok
+}
+
+interface ModelBackend {
+    fn identity() -> String;
+    fn model_name() -> String;
+    fn allows(data_class: String) -> Bool;
+    fn capacity_bytes() -> Int;
+    fn complete(req: ModelRequest) -> ModelResult;
+}
+
+interface ModelSelection {
+    // Returns a backend CLASS name: "quick" | "deep" | "private".
+    fn select(req: ModelRequest, quick_ok: Bool, deep_ok: Bool, private_ok: Bool) -> String;
+}
+
+fn fake_answer(name: String, model: String, req: ModelRequest, max_bytes: Int, price: Int) -> ModelResult {
+    if req.context_bytes > max_bytes {
+        return ModelResult { ok: false, backend: name, model: model, refused: "context too large" };
+    }
+    return ModelResult {
+        ok: true,
+        backend: name,
+        model: model,
+        output: name + ":" + req.role + ":" + req.prompt_digest,
+        tokens: req.context_bytes / 4 + 32,
+        cost_micros: price
+    };
+}
+
+// A deterministic EXTERNAL backend for the proof: its `complete`
+// carries the `external_model` effect class, so the law can forbid a
+// customer-data path from ever reaching it — statically, whatever
+// `allows()` says at runtime. Runtime policy and law must not collapse.
+locus FakeModel {
+    params {
+        name: String = "fake";
+        model: String = "fake-1";
+        max_bytes: Int = 100000;
+        price_micros: Int = 10;
+        calls: Int = 0;
+    }
+    fn identity() -> String { return self.name; }
+    fn model_name() -> String { return self.model; }
+    fn allows(data_class: String) -> Bool { return data_class != "customer"; }
+    fn capacity_bytes() -> Int { return self.max_bytes; }
+    @effects(is: { external_model })
+    fn complete(req: ModelRequest) -> ModelResult {
+        self.calls = self.calls + 1;
+        if !self.allows(req.data_class) {
+            return ModelResult { ok: false, backend: self.name, model: self.model, refused: "data class " + req.data_class };
+        }
+        return fake_answer(self.name, self.model, req, self.max_bytes, self.price_micros);
+    }
+}
+
+// A deterministic LOCAL backend: no effect class, any data class.
+locus LocalFakeModel {
+    params {
+        name: String = "private";
+        model: String = "local-1";
+        max_bytes: Int = 100000;
+        price_micros: Int = 1;
+        calls: Int = 0;
+    }
+    fn identity() -> String { return self.name; }
+    fn model_name() -> String { return self.model; }
+    fn allows(data_class: String) -> Bool { return true; }
+    fn capacity_bytes() -> Int { return self.max_bytes; }
+    fn complete(req: ModelRequest) -> ModelResult {
+        self.calls = self.calls + 1;
+        return fake_answer(self.name, self.model, req, self.max_bytes, self.price_micros);
+    }
+}
+
+// Key material the DNA tree never holds: a sealed source that reports
+// presence and a fingerprint, never bytes (the std::secret shape).
+@sealed locus CredentialSource {
+    params { source: String = ""; loaded: Bool = false; }
+    fn present() -> Bool { return self.source != ""; }
+    fn fingerprint() -> String { return "fp:" + self.source; }
+}
+
+// Evidence-aware selection: private for customer data, deep for
+// review/high assurance, quick otherwise; falls back only to a
+// backend that is actually permitted.
+locus EvidenceAwareSelection {
+    params { default_class: String = "quick"; }
+    fn select(req: ModelRequest, quick_ok: Bool, deep_ok: Bool, private_ok: Bool) -> String {
+        if req.data_class == "customer" {
+            if private_ok { return "private"; }
+            return ""; // no permitted backend: refuse, never leak
+        }
+        if req.assurance >= 2 || req.role == "review" {
+            if deep_ok { return "deep"; }
+        }
+        if quick_ok { return self.default_class; }
+        if deep_ok { return "deep"; }
+        if private_ok { return "private"; }
+        return "";
+    }
+}
+
+// A router for CUSTOMER-facing loci: only the local backend is
+// reachable, so `forbid reaches(customer_side, effects(external_model))`
+// holds structurally, not by a runtime check.
+locus PrivateModelRouter {
+    params {
+        private: ModelBackend = LocalFakeModel { };
+        calls: Int = 0;
+    }
+    fn ask(req: ModelRequest) -> ModelResult {
+        self.calls = self.calls + 1;
+        return self.private.complete(req);
+    }
+}
+
+locus ModelRouter {
+    params {
+        quick: ModelBackend = FakeModel { name: "quick", model: "quick-1", price_micros: 5 };
+        deep: ModelBackend = FakeModel { name: "deep", model: "deep-1", price_micros: 50 };
+        private: ModelBackend = LocalFakeModel { };
+        selection: ModelSelection = EvidenceAwareSelection { };
+        daily_cost_ceiling_micros: Int = 25000000;
+        spent_micros: Int = 0;
+        calls: Int = 0;
+        last_backend: String = "";
+    }
+    // The router returns DATA. Which backend answered is recorded, not hidden.
+    fn ask(req: ModelRequest) -> ModelResult {
+        let quick_ok = self.quick.allows(req.data_class) && self.quick.capacity_bytes() >= req.context_bytes;
+        let deep_ok = self.deep.allows(req.data_class) && self.deep.capacity_bytes() >= req.context_bytes;
+        let private_ok = self.private.allows(req.data_class) && self.private.capacity_bytes() >= req.context_bytes;
+        let cls = self.selection.select(req, quick_ok, deep_ok, private_ok);
+        if cls == "" { return ModelResult { ok: false, refused: "no permitted backend for " + req.data_class }; }
+        if self.spent_micros >= self.daily_cost_ceiling_micros {
+            return ModelResult { ok: false, refused: "cost ceiling" };
+        }
+        self.calls = self.calls + 1;
+        self.last_backend = cls;
+        let r = if cls == "deep" { self.deep.complete(req) }
+        else if cls == "private" { self.private.complete(req) }
+        else { self.quick.complete(req) };
+        self.spent_micros = self.spent_micros + r.cost_micros;
+        return r;
+    }
+}

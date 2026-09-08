@@ -1,0 +1,25 @@
+// #526 fixture 8a: customer-side loci reach only the local model.
+// `forbid reaches(customer_side, effects(external_model))` HOLDS
+// because CustomerTriage is wired to PrivateModelRouter — a structural
+// fact, not a runtime `allows()` check.
+import "../../../core" as dna;
+
+group customer_side = { CustomerTriage };
+
+locus CustomerTriage {
+    params { models: dna::PrivateModelRouter = dna::PrivateModelRouter { }; handled: Int = 0; }
+    fn triage(report_digest: String) -> String {
+        let r = self.models.ask(dna::ModelRequest { role: "classify", prompt_digest: report_digest, context_bytes: 200, data_class: "customer" });
+        self.handled = self.handled + 1;
+        return r.output;
+    }
+}
+
+main locus App {
+    params { triage: CustomerTriage = CustomerTriage { }; }
+    claims {
+        no_leak: forbid reaches(customer_side, effects(external_model));
+    }
+    run() { let o = self.triage.triage("d1"); }
+}
+fn main() { App { }; }

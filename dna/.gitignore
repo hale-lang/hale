@@ -1,0 +1,19 @@
+# `hale build <dir>` writes the binary at <dir>/<dir>; reproducers and
+# law fixtures get built ad hoc while investigating. Never commit them.
+friction/*/app/app
+friction/*/app2/app2
+friction/*/lib/lib
+friction/*/lib2/lib2
+friction/f3-interface-value-into-field/f3-interface-value-into-field
+friction/f4-perspective-must-designate/f4-perspective-must-designate
+friction/f5-bus-reply-at-drain/f5-bus-reply-at-drain
+friction/f6-two-parents-release/f6-two-parents-release
+friction/f7-interface-fallible/f7-interface-fallible
+friction/f8-or-on-infallible-stdlib/f8-or-on-infallible-stdlib
+friction/f9-write-append-unit/f9-write-append-unit
+tests/law/*/apply_gate_pass
+tests/law/*/apply_gate_fail
+tests/law/*/confine_pass
+tests/law/*/confine_fail
+tests/law/*/sealed_pass
+tests/law/*/sealed_fail

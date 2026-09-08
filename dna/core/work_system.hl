@@ -1,0 +1,217 @@
+// dna/core/work_system.hl — Work routed to performers (#521 comment 2).
+//
+// The assembly owns this locus and hands it the performers it wants
+// (interface-typed params, substitutable at construction). Work asks
+// over the bus (WorkRequested), the WorkSystem selects a performer per
+// attempt, performs, births one Attempt per assignment (its own
+// lifetime, its own id), and settles the Work over WorkDone keyed by
+// work id. Reassignment is a new Attempt; a completed result is never
+// re-attributed. Selection compares capability, capacity, trust,
+// independence and cost — AUTHORITY is not among them: a performer
+// never gains the right to settle a decision by being selected
+// (that lives with the Review/AutonomyBoundary).
+
+// Routing policy WANTS to be a perspective (#521 comment 1: "live
+// selection may become a perspective") — one program-global slot the
+// assembly designates at construction (#525 item 2) and the owning
+// WorkSystem re-points with `reperspective`. F.10 (dna/FRICTION.md):
+// a perspective declared in an imported seed does not resolve for
+// `serves` or for the holder's default, so the core ships the
+// interface form; substitution happens at construction only.
+interface WorkSelection {
+    // Returns a performer CLASS: "human" | "agent" | "software" | "service".
+    fn select(req: WorkRequest, attempt_no: Int, last: String) -> String;
+    fn policy_name() -> String;
+}
+
+// The n-th comma-separated class; past the end, the last one keeps trying.
+fn nth_class(order: String, n: Int) -> String {
+    let mut rest = order;
+    let mut i = 0;
+    let mut last = "";
+    while len(rest) > 0 {
+        let c = std::str::index_of(rest, ",");
+        let head = if c < 0 { rest } else { rest[0..c] };
+        if i == n { return head; }
+        last = head;
+        if c < 0 { rest = ""; } else { rest = rest[(c + 1)..len(rest)]; }
+        i = i + 1;
+    }
+    return last;
+}
+
+// Capability first, then the cheapest; escalates to a person only
+// after the cheaper performers declined or failed.
+locus CapabilityFirstSelection {
+    params {
+        default_order: String = "software,agent,human";
+        judgment_order: String = "agent,human";
+        service_order: String = "service,agent";
+    }
+    fn policy_name() -> String { return "capability-first"; }
+    fn select(req: WorkRequest, attempt_no: Int, last: String) -> String {
+        if std::str::contains(req.requires, "judgment") { return nth_class(self.judgment_order, attempt_no); }
+        if std::str::contains(req.requires, "analysis") { return nth_class(self.service_order, attempt_no); }
+        return nth_class(self.default_order, attempt_no);
+    }
+}
+
+// A person first, everywhere: the conservative posture an assembly
+// can designate, or a WorkSystem can swap to under pressure.
+locus HumanFirstSelection {
+    params {
+        default_order: String = "human,software";
+        judgment_order: String = "human,agent";
+        service_order: String = "human,service";
+    }
+    fn policy_name() -> String { return "human-first"; }
+    fn select(req: WorkRequest, attempt_no: Int, last: String) -> String {
+        if std::str::contains(req.requires, "judgment") { return nth_class(self.judgment_order, attempt_no); }
+        if std::str::contains(req.requires, "analysis") { return nth_class(self.service_order, attempt_no); }
+        return nth_class(self.default_order, attempt_no);
+    }
+}
+
+// ---- performers -----------------------------------------------------
+
+// The human is OUTSIDE the root. This is the in-process gateway that
+// owns delivery, response capture, timeout and the typed boundary
+// back into Work — not a fictional human locus.
+locus HumanWorkGateway {
+    params {
+        operator: String = "operator";
+        // scripted answers for the proof: "done" | "declined" | "timeout"
+        answer: String = "done";
+        delivered: Int = 0;
+    }
+    fn kind() -> String { return "human"; }
+    fn identity() -> String { return self.operator; }
+    fn perform(req: WorkRequest) -> WorkResult {
+        self.delivered = self.delivered + 1;
+        if self.answer == "timeout" {
+            return WorkResult { disposition: "timeout", narrative: "no answer within the window", performer: self.operator };
+        }
+        if self.answer == "declined" {
+            return WorkResult { disposition: "declined", narrative: "operator declined", performer: self.operator };
+        }
+        return WorkResult { disposition: "done", result: "human:" + req.objective, narrative: "operator answered", performer: self.operator };
+    }
+}
+
+// One agent Attempt may make several model calls — classify on the
+// quick class, synthesize on whatever the router permits — and it
+// stays ONE performer; the calls nest inside the Attempt's history.
+locus AgentPerformer {
+    params {
+        name: String = "agent";
+        models: ModelRouter = ModelRouter { };
+        calls_made: Int = 0;
+        last_backends: String = "";
+    }
+    fn kind() -> String { return "agent"; }
+    fn identity() -> String { return self.name; }
+    fn perform(req: WorkRequest) -> WorkResult {
+        self.last_backends = "";
+        let c = self.models.ask(ModelRequest {
+            attempt_id: req.work_id + "/a" + to_string(req.attempt_no),
+            role: "classify", prompt_digest: req.context_digest, context_bytes: 400,
+            data_class: req.data_class
+        });
+        self.calls_made = self.calls_made + 1;
+        if !c.ok { return WorkResult { disposition: "failed", narrative: "classify refused: " + c.refused, performer: self.name }; }
+        self.last_backends = c.backend;
+        let s = self.models.ask(ModelRequest {
+            attempt_id: req.work_id + "/a" + to_string(req.attempt_no),
+            role: "synthesize", prompt_digest: req.context_digest, context_bytes: 4000,
+            data_class: req.data_class, assurance: 2
+        });
+        self.calls_made = self.calls_made + 1;
+        if !s.ok { return WorkResult { disposition: "failed", narrative: "synthesize refused: " + s.refused, performer: self.name }; }
+        self.last_backends = self.last_backends + "," + s.backend;
+        return WorkResult {
+            disposition: "done",
+            result: s.output,
+            narrative: "agent: " + c.output + " then " + s.output,
+            evidence: "calls=2 backends=" + self.last_backends,
+            performer: self.name
+        };
+    }
+}
+
+// An external API is a performer only when it fulfils the Work
+// contract (an assessment). Anything that changes the world stays an
+// effect behind a gateway — see dna/tests/dna_law.rs.
+locus ServicePerformer {
+    params { name: String = "analysis-service"; calls: Int = 0; }
+    fn kind() -> String { return "service"; }
+    fn identity() -> String { return self.name; }
+    fn perform(req: WorkRequest) -> WorkResult {
+        self.calls = self.calls + 1;
+        return WorkResult { disposition: "done", result: "assessment:" + req.objective, performer: self.name };
+    }
+}
+
+// ---- the router -------------------------------------------------------
+
+locus WorkSystem {
+    params {
+        human: Performer = HumanWorkGateway { };
+        agent: Performer = AgentPerformer { };
+        software: Performer = ScriptedPerformer { name: "software" };
+        service: Performer = ServicePerformer { };
+        selection: WorkSelection = CapabilityFirstSelection { };
+        max_attempts: Int = 3;
+        requests: Int = 0;
+        attempts_made: Int = 0;
+        last_history: String = "";
+    }
+    bus {
+        subscribe WorkRequested as on_request;
+        publish WorkDone;
+    }
+    accept(a: Attempt) { }
+    release (a: Attempt) {
+        self.attempts_made = self.attempts_made + 1;
+    }
+    fn policy() -> String { return self.selection.policy_name(); }
+    fn perform_as(kind: String, req: WorkRequest) -> WorkResult {
+        if kind == "human" { return self.human.perform(req); }
+        if kind == "agent" { return self.agent.perform(req); }
+        if kind == "service" { return self.service.perform(req); }
+        return self.software.perform(req);
+    }
+    // Bounded by max_attempts; one Attempt literal per try.
+    @unbounded
+    fn on_request(req: WorkRequest) {
+        self.requests = self.requests + 1;
+        let mut n = 0;
+        let mut last = "";
+        let mut history = "";
+        let mut result = "";
+        while n < self.max_attempts && last != "done" {
+            let kind = self.selection.select(req, n, last);
+            let r = self.perform_as(kind, req);
+            let aid = req.work_id + "/a" + to_string(n);
+            Attempt {
+                attempt_id: aid,
+                work_id: req.work_id,
+                attempt_no: n,
+                performer_kind: kind,
+                req: req,
+                outcome: r
+            };
+            history = history + "a" + to_string(n) + ":" + kind + ":" + r.disposition + " ";
+            last = r.disposition;
+            result = r.result;
+            n = n + 1;
+        }
+        self.last_history = history;
+        WorkDone <- WorkSettlement {
+            work_id: req.work_id,
+            disposition: if last == "done" { "done" } else { "failed" },
+            result: result,
+            attempts: n,
+            history: history
+        };
+    }
+}

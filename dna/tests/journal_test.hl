@@ -1,0 +1,102 @@
+// dna/tests/journal_test.hl — #526 fixture 5.
+//
+// The Journal is the causal authority. Compare-and-append rejects a
+// stale expected revision; the sha256 chain verifies; a lease carries
+// a fencing token and a late writer is refused; an effect request is
+// committed before dispatch and survives a simulated crash/retry
+// without dispatching twice; task status is a projection; a retrieval
+// index can be deleted and rebuilt with no loss. The file-backed
+// journal rehydrates from disk with the same chain.
+
+import "../core" as dna;
+
+// A fresh path per run (pid-unique); left behind on purpose — F.9
+// forbids `unlink(path) or discard;` as a statement.
+fn scratch_path() -> String {
+    return "/tmp/dna-journal-" + to_string(std::process::pid()) + ".jsonl";
+}
+
+main locus App {
+    params {
+        mem: dna::MemJournal = dna::MemJournal { };
+        leases: dna::MemLeases = dna::MemLeases { };
+        index: dna::RetrievalIndex = dna::RetrievalIndex { };
+    }
+    run() {
+        // ---- compare-and-append ------------------------------------
+        let a = self.mem.append(0, "task.born", "t1", "reduce checkout failures");
+        std::test::assert(a.ok, "first append at revision 0");
+        std::test::assert_eq_int(a.revision, 1, "revision advances");
+        // two writers read revision 1 and both try to advance from it
+        let w1 = self.mem.append(1, "task.running", "t1", "");
+        let w2 = self.mem.append(1, "task.cancelled", "t1", "");
+        std::test::assert(w1.ok, "the first writer wins");
+        std::test::assert(!w2.ok, "the second writer is refused");
+        std::test::assert_eq_str(w2.error, "stale_revision", "named as stale");
+        std::test::assert_eq_int(w2.actual, 2, "told the actual revision");
+        std::test::assert(self.mem.verify_chain(), "digest chain intact");
+        let e1 = self.mem.read(1);
+        std::test::assert_eq_str(e1.prev, self.mem.read(0).digest, "each event names its predecessor");
+        std::test::assert_eq_int(len(e1.digest), 64, "sha256 hex digest");
+
+        // ---- projections ---------------------------------------------
+        std::test::assert_eq_str(dna::task_status(self.mem, "t1"), "running", "status is rebuilt from events");
+        let done = self.mem.append(2, "task.done", "t1", "");
+        std::test::assert(done.ok, "append");
+        std::test::assert_eq_str(dna::task_status(self.mem, "t1"), "done", "status follows the last event");
+        std::test::assert_eq_str(dna::task_status(self.mem, "t9"), "unknown", "unknown id");
+
+        // ---- fencing ---------------------------------------------------
+        let l1 = self.leases.acquire("work:w1", "attempt-a", 100, 50);
+        std::test::assert(l1.present, "lease acquired");
+        let l2 = self.leases.acquire("work:w1", "attempt-b", 120, 50);
+        std::test::assert(!l2.present, "held lease refused while live");
+        std::test::assert_eq_str(l2.holder, "attempt-a", "names the holder");
+        // attempt-a's lease expires; attempt-b takes over with a new token
+        let l3 = self.leases.acquire("work:w1", "attempt-b", 200, 50);
+        std::test::assert(l3.present && l3.token > l1.token, "re-acquired with a higher fencing token");
+        // the late writer wakes up and tries to complete with its stale token
+        std::test::assert(!self.leases.complete("work:w1", l1.token, 210), "stale token cannot record a late success");
+        std::test::assert(self.leases.complete("work:w1", l3.token, 210), "current token completes");
+        std::test::assert_eq_str(self.leases.holder_of("work:w1"), "", "lease released on completion");
+
+        // ---- idempotent effects across crash/retry ---------------------
+        let first = dna::effect_request(self.mem, "email:welcome:42", "send welcome to 42");
+        std::test::assert(first, "first request dispatches");
+        // crash before the result was recorded; the retry finds the key
+        let retry = dna::effect_request(self.mem, "email:welcome:42", "send welcome to 42");
+        std::test::assert(!retry, "retry does NOT dispatch again");
+        std::test::assert(dna::effect_result(self.mem, "email:welcome:42", true), "result recorded once");
+        std::test::assert(!dna::effect_result(self.mem, "email:welcome:42", true), "a second result is refused");
+        let st = dna::effect_status(self.mem, "email:welcome:42");
+        std::test::assert(st.requested && st.done && st.ok, "ledger projection reads back");
+
+        // ---- retrieval index: delete and rebuild -----------------------
+        self.index.rebuild(self.mem);
+        std::test::assert_eq_int(self.index.count("effect.requested"), 1, "indexed one request");
+        std::test::assert_eq_int(self.index.count("task.born"), 1, "indexed the birth");
+        let fresh = dna::RetrievalIndex { };
+        fresh.rebuild(self.mem);
+        std::test::assert_eq_int(fresh.indexed, self.index.indexed, "a fresh index rebuilds to the same size");
+        std::test::assert_eq_int(fresh.count("task.done"), 1, "same content");
+        std::test::assert(self.mem.verify_chain(), "the journal never changed");
+
+        // ---- file-backed journal rehydrates --------------------------
+        let path = scratch_path();
+        let f1 = dna::FileJournal { path: path };
+        let r1 = f1.append(0, "task.born", "t1", "durable");
+        let r2 = f1.append(1, "task.done", "t1", "");
+        std::test::assert(r1.ok && r2.ok, "two durable appends");
+        std::test::assert(!f1.append(1, "task.x", "t1", "").ok, "stale refused on the file journal too");
+        let head = f1.head();
+        let f2 = dna::FileJournal { path: path };
+        std::test::assert_eq_int(f2.loaded, 2, "rehydrated both events from disk");
+        std::test::assert_eq_str(f2.head(), head, "same chain head after restart");
+        std::test::assert(f2.verify_chain(), "chain verifies after rehydration");
+        std::test::assert_eq_str(dna::task_status(f2, "t1"), "done", "projection survives restart");
+        let r3 = f2.append(2, "task.retained", "t1", "");
+        std::test::assert(r3.ok, "the rehydrated journal continues the chain");
+    }
+}
+
+fn main() { App { }; }

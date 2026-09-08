@@ -1,0 +1,9 @@
+// #526 fixture 8e: every credential source is @sealed.
+import "../../../core" as dna;
+group credentials = { dna::CredentialSource };
+main locus App {
+    params { c: dna::CredentialSource = dna::CredentialSource { source: "PROVIDER_A_API_KEY" }; }
+    claims { confined: require sealed(all credentials); }
+    run() { let p = self.c.present(); }
+}
+fn main() { App { }; }

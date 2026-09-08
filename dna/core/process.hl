@@ -1,0 +1,466 @@
+// dna/core/process.hl — the process recursion, in ordinary Hale.
+//
+//   Metabolism                 flat Task pool; the supersystem that mediates
+//   └── Task                   bounded intention; binds a workflow revision
+//       └── Workflow           dependency topology; mediates sibling Steps
+//           └── Step           synchronization barrier: fan-out / join
+//               └── Work       executor-neutral outcome; survives reassignment
+//                   └── Attempt one performer, one context, one grant
+//
+// Every parent `accept`s exactly ONE concrete child type (spec/types.md
+// F.11, single-accept-type per parent). A Step therefore owns Work and
+// nothing else. Delegation — a Step that needs a child TASK — writes a
+// `Task { }` literal anyway: interest-based ownership bubbles it past
+// Step, Workflow and Task (none accept `Task`) to Metabolism, the
+// nearest ancestor that does. Lineage (`parent_task`, `spawning_step`)
+// is DATA on the child; settlement comes back to the waiting Step over
+// `TaskSettled`, keyed by the parent task, published by Metabolism.
+// That is supersystem mediation in the letter of H9, and it is the
+// honest today-shape for #521 open question 1.
+//
+// Retries never `restart(c)`: restart reuses identity, and #521 wants
+// every Attempt to be its own locus with its own lifetime. A failed
+// Attempt settles as failed; Work births the next one with a new id.
+
+// Proof knobs: how a Task's workflow should behave in a fixture.
+type Knobs {
+    steps: Int = 1;
+    fan: Int = 1;
+    delegate_at: Int = -1;
+    cancel_at: Int = -1;
+    routed: Bool = false;
+    requires: String = "";
+    data_class: String = "internal";
+    fail_first: Int = 0;
+    escalate: Bool = false;
+}
+
+// ---- the settled log (data collection + facade) -------------------
+
+@form(vec)
+locus SettledRows {
+    capacity { heap rows of Settled; }
+}
+
+// ---- Attempt: one allocation of agency ----------------------------
+
+// One assignment of one performer to one Work request, with its own
+// lifetime. F.3 (dna/FRICTION.md): a performer cannot be handed into
+// a child literal, so the locus that OWNS the performer performs and
+// births the Attempt carrying the request and the result. The Attempt
+// is the durable record of the allocation; a retry is a new one.
+locus Attempt {
+    params {
+        attempt_id: String = "";
+        work_id: String = "";
+        attempt_no: Int = 0;
+        performer_kind: String = "";
+        req: WorkRequest = WorkRequest { };
+        outcome: WorkResult = WorkResult { };
+        disposition: String = "";
+        result: String = "";
+        performer_name: String = "";
+    }
+    contract {
+        expose attempt_id: String;
+        expose attempt_no: Int;
+        expose disposition: String;
+        expose result: String;
+        expose performer_name: String;
+        expose performer_kind: String;
+    }
+    run() {
+        self.disposition = self.outcome.disposition;
+        self.result = self.outcome.result;
+        self.performer_name = self.outcome.performer;
+    }
+}
+
+// ---- Work: executor-neutral outcome ---------------------------------
+
+locus Work {
+    params {
+        work_id: String = "";
+        task_id: String = "";
+        step_id: String = "";
+        objective: String = "";
+        requires: String = "";
+        data_class: String = "internal";
+        max_attempts: Int = 3;
+        // When attempts are exhausted: settle as "failed" (typed
+        // settlement through release) or VIOLATE (structural failure
+        // through the parent's on_failure). Both are failure-up; the
+        // second is the ↑ channel proper.
+        escalate: Bool = false;
+        // In-tower shape: the library names its performer (a
+        // deterministic one for the proof). Routed shape: `routed`
+        // sends the request to the assembly-owned WorkSystem, which
+        // owns real performers and the Attempts (F.3/F.5).
+        routed: Bool = false;
+        performer: ScriptedPerformer = ScriptedPerformer { };
+        fail_first: Int = 0;
+        attempts: Int = 0;
+        disposition: String = "";
+        result: String = "";
+        history: String = ""; // "a0:failed a1:done "
+    }
+    contract {
+        expose work_id: String;
+        expose attempts: Int;
+        expose disposition: String;
+        expose result: String;
+        expose history: String;
+    }
+    bus {
+        publish WorkRequested;
+        subscribe WorkDone as on_done where key == self.work_id;
+    }
+    closure attempts_exhausted {
+        captures: work_id, attempts;
+        epoch inline;
+    }
+    // Routed settlement arrives at drain (F.5) — after run(), before
+    // the owner's release(w) reads us.
+    fn on_done(s: WorkSettlement) {
+        self.disposition = s.disposition;
+        self.result = s.result;
+        self.attempts = s.attempts;
+        self.history = s.history;
+    }
+    accept(a: Attempt) { }
+    release (a: Attempt) {
+        // The typed settlement signal: fires after the child drains,
+        // before it dissolves; we read its final state here.
+        self.attempts = self.attempts + 1;
+        self.history = self.history + a.attempt_id + ":" + a.disposition + " ";
+        self.disposition = a.disposition;
+        self.result = a.result;
+    }
+    // Bounded by a param (`max_attempts` / `fan` / `steps`), which the
+    // advisory cannot see; the children are flow children reclaimed by
+    // `release`, only their literal arguments live in this region.
+    @unbounded
+    run() {
+        if self.routed {
+            WorkRequested <- WorkRequest {
+                work_id: self.work_id,
+                task_id: self.task_id,
+                step_id: self.step_id,
+                objective: self.objective,
+                requires: self.requires,
+                data_class: self.data_class
+            };
+        } else {
+            self.performer.fail_first = self.fail_first;
+            let mut n = 0;
+            let mut settled = false;
+            while !settled && n < self.max_attempts {
+                let req = WorkRequest {
+                    work_id: self.work_id,
+                    task_id: self.task_id,
+                    step_id: self.step_id,
+                    objective: self.objective,
+                    attempt_no: n
+                };
+                let r = self.performer.perform(req);
+                // A NEW Attempt per try — never restart(c).
+                Attempt {
+                    attempt_id: self.work_id + "/a" + to_string(n),
+                    work_id: self.work_id,
+                    attempt_no: n,
+                    performer_kind: self.performer.kind(),
+                    req: req,
+                    outcome: r
+                };
+                if self.disposition == "done" { settled = true; }
+                n = n + 1;
+            }
+            if !settled && self.escalate { violate attempts_exhausted; }
+        }
+    }
+}
+
+// ---- Step: the synchronization barrier -------------------------------
+
+locus Step {
+    params {
+        step_id: String = "";
+        task_id: String = "";
+        workflow_id: String = "";
+        objective: String = "";
+        fan: Int = 1; // Work children to fan out
+        delegate: Bool = false; // also spawn a child Task
+        routed: Bool = false;
+        requires: String = "";
+        data_class: String = "internal";
+        fail_first: Int = 0;
+        escalate: Bool = false;
+        works_done: Int = 0;
+        works_failed: Int = 0;
+        works_violated: Int = 0;
+        child_tasks_settled: Int = 0;
+        disposition: String = "";
+        detail: String = "";
+    }
+    contract {
+        expose step_id: String;
+        expose works_done: Int;
+        expose works_failed: Int;
+        expose works_violated: Int;
+        expose child_tasks_settled: Int;
+        expose disposition: String;
+        expose detail: String;
+    }
+    bus {
+        // Only THIS task's delegated children reach this Step: the bus
+        // is the routing table, keyed by the parent task id.
+        subscribe TaskSettled as on_child_task where key == self.task_id;
+    }
+    accept(w: Work) { }
+    // ↑ (H8): a Work that violated `attempts_exhausted` collapses; its
+    // owner absorbs and records. Failures never flow laterally.
+    on_failure(w: Work, err: ClosureViolation) {
+        self.works_violated = self.works_violated + 1;
+        self.works_failed = self.works_failed + 1;
+        self.detail = self.detail + "violated:" + err.closure +" ";
+    }
+    release (w: Work) {
+        if w.disposition == "done" { self.works_done = self.works_done + 1; }
+        else { self.works_failed = self.works_failed + 1; }
+        self.detail = self.detail + w.work_id + "=" + w.disposition + "[" + w.history + "] ";
+    }
+    // One concat per delegated child; bounded by the Step's delegation
+    // count, which the advisory cannot see.
+    @unbounded
+    fn on_child_task(s: TaskSettlement) {
+        self.child_tasks_settled = self.child_tasks_settled + 1;
+        self.detail = self.detail + "child " + s.task_id + "=" + s.disposition + " ";
+    }
+    // Bounded by a param (`max_attempts` / `fan` / `steps`), which the
+    // advisory cannot see; the children are flow children reclaimed by
+    // `release`, only their literal arguments live in this region.
+    @unbounded
+    run() {
+        // fan-out belongs inside a Step
+        let mut i = 0;
+        while i < self.fan {
+            Work {
+                work_id: self.step_id + "/w" + to_string(i),
+                task_id: self.task_id,
+                step_id: self.step_id,
+                objective: self.objective,
+                routed: self.routed,
+                requires: self.requires,
+                data_class: self.data_class,
+                fail_first: self.fail_first,
+                escalate: self.escalate
+            };
+            i = i + 1;
+        }
+        if self.delegate {
+            // Delegation recurses. Step does not accept Task, so this
+            // literal bubbles up to Metabolism; lineage rides as data.
+            Task {
+                task_id: self.task_id + ".sub",
+                parent_task: self.task_id,
+                spawning_step: self.step_id,
+                intent: Intent { outcome: "delegated: " + self.objective, from: self.step_id },
+                steps: 1
+            };
+        }
+        // join at the Step boundary
+        let delegated_ok = !self.delegate || self.child_tasks_settled > 0;
+        if self.works_failed == 0 && delegated_ok { self.disposition = "done"; }
+        else { self.disposition = "failed"; }
+    }
+}
+
+// ---- Workflow: current organization of the work ----------------------
+
+locus Workflow {
+    params {
+        workflow_id: String = "";
+        task_id: String = "";
+        revision: Int = 1; // definition revision bound at birth
+        objective: String = "";
+        steps: Int = 1;
+        fan: Int = 1;
+        delegate_at: Int = -1; // which step (if any) delegates a child Task
+        cancel_at: Int = -1; // the owning Task cancels before this step activates
+        routed: Bool = false;
+        requires: String = "";
+        data_class: String = "internal";
+        fail_first: Int = 0;
+        escalate: Bool = false;
+        steps_done: Int = 0;
+        steps_failed: Int = 0;
+        steps_skipped: Int = 0; // dependents that never activated
+        disposition: String = "";
+        detail: String = "";
+    }
+    contract {
+        expose workflow_id: String;
+        expose revision: Int;
+        expose steps_done: Int;
+        expose steps_failed: Int;
+        expose steps_skipped: Int;
+        expose disposition: String;
+        expose detail: String;
+    }
+    accept(s: Step) { }
+    release (s: Step) {
+        if s.disposition == "done" { self.steps_done = self.steps_done + 1; }
+        else { self.steps_failed = self.steps_failed + 1; }
+        self.detail = self.detail + s.step_id + "=" + s.disposition + " {" + s.detail + "} ";
+    }
+    // Bounded by a param (`max_attempts` / `fan` / `steps`), which the
+    // advisory cannot see; the children are flow children reclaimed by
+    // `release`, only their literal arguments live in this region.
+    @unbounded
+    run() {
+        // The step DAG is a chain here: step i depends on step i-1.
+        // Readiness travels through the Workflow — a failed step
+        // means its dependents never activate.
+        let mut i = 0;
+        let mut cancelled = false;
+        while i < self.steps && self.steps_failed == 0 && !cancelled {
+            if i == self.cancel_at {
+                // Cancellation is a Task-owned transition; the Workflow
+                // stops activating dependents and says so.
+                cancelled = true;
+            } else {
+                Step {
+                    step_id: self.workflow_id + "/s" + to_string(i),
+                    task_id: self.task_id,
+                    workflow_id: self.workflow_id,
+                    objective: self.objective,
+                    fan: self.fan,
+                    delegate: i == self.delegate_at,
+                    routed: self.routed,
+                    requires: self.requires,
+                    data_class: self.data_class,
+                    fail_first: self.fail_first,
+                    escalate: self.escalate
+                };
+                i = i + 1;
+            }
+        }
+        self.steps_skipped = self.steps - self.steps_done - self.steps_failed;
+        if cancelled { self.disposition = "cancelled"; }
+        else if self.steps_failed == 0 && self.steps_done == self.steps { self.disposition = "done"; }
+        else { self.disposition = "failed"; }
+    }
+}
+
+// ---- Task: bounded intention -----------------------------------------
+
+locus Task {
+    params {
+        task_id: String = "";
+        parent_task: String = ""; // "" at the root
+        spawning_step: String = "";
+        intent: Intent = Intent { };
+        revision: Int = 1;
+        steps: Int = 1;
+        fan: Int = 1;
+        delegate_at: Int = -1;
+        cancel_at: Int = -1;
+        routed: Bool = false;
+        requires: String = "";
+        data_class: String = "internal";
+        fail_first: Int = 0;
+        escalate: Bool = false;
+        disposition: String = "";
+        detail: String = "";
+    }
+    contract {
+        expose task_id: String;
+        expose parent_task: String;
+        expose spawning_step: String;
+        expose revision: Int;
+        expose disposition: String;
+        expose detail: String;
+    }
+    accept(w: Workflow) { }
+    release (w: Workflow) {
+        // One outcome upward, not every internal event.
+        self.disposition = w.disposition;
+        self.detail = w.detail;
+    }
+    run() {
+        Workflow {
+            workflow_id: self.task_id + "/wf" + to_string(self.revision),
+            task_id: self.task_id,
+            revision: self.revision,
+            objective: self.intent.outcome,
+            steps: self.steps,
+            fan: self.fan,
+            delegate_at: self.delegate_at,
+            cancel_at: self.cancel_at,
+            routed: self.routed,
+            requires: self.requires,
+            data_class: self.data_class,
+            fail_first: self.fail_first,
+            escalate: self.escalate
+        };
+    }
+}
+
+// ---- Metabolism: the Task pool and the mediating supersystem ---------
+
+locus Metabolism {
+    params {
+        log: SettledRows = SettledRows { };
+        minted: Int = 0;
+        last_id: String = "";
+    }
+    bus { publish TaskSettled; }
+    accept(t: Task) { }
+    release (t: Task) {
+        self.log.push(Settled {
+            id: t.task_id,
+            kind: "task",
+            parent: t.parent_task,
+            disposition: t.disposition,
+            detail: t.detail
+        });
+        if t.parent_task != "" {
+            // Mediation: the child settled; tell the tower that is
+            // waiting, and only that tower (keyed by parent_task).
+            TaskSettled <- TaskSettlement {
+                task_id: t.task_id,
+                parent_task: t.parent_task,
+                spawning_step: t.spawning_step,
+                disposition: t.disposition,
+                detail: t.detail
+            };
+        }
+    }
+    // Intent enters here; accepting it births a durable Task.
+    fn offer(i: Intent, k: Knobs) -> String {
+        self.minted = self.minted + 1;
+        let id = "t" + to_string(self.minted);
+        self.last_id = id;
+        Task {
+            task_id: id, intent: i, steps: k.steps, fan: k.fan,
+            delegate_at: k.delegate_at, cancel_at: k.cancel_at,
+            routed: k.routed, requires: k.requires, data_class: k.data_class,
+            fail_first: k.fail_first, escalate: k.escalate
+        };
+        return id;
+    }
+    fn settled_count() -> Int { return self.log.len(); }
+    fn settled_at(i: Int) -> Settled { return self.log.get(i) or Settled { }; }
+    // Bounded by the log's length; the `or Settled { }` substitute is
+    // one struct per row scanned.
+    @unbounded
+    fn find(id: String) -> Settled {
+        let mut i = 0;
+        while i < self.log.len() {
+            let s = self.log.get(i) or Settled { };
+            if s.id == id { return s; }
+            i = i + 1;
+        }
+        return Settled { };
+    }
+}

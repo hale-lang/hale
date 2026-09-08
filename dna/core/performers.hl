@@ -1,0 +1,45 @@
+// dna/core/performers.hl — who does a unit of Work.
+//
+// Work is executor-neutral (#521 comment 2). A performer is the human,
+// agent, software, or service currently assigned to one Attempt; the
+// backend it uses (a model endpoint, a person's inbox, a binary) is
+// below it. `Performer` is a structural interface, so an Attempt holds
+// whichever concrete locus the assembly hands it, and the compiler
+// checks the contract rather than a registry.
+
+interface Performer {
+    fn kind() -> String;
+    fn identity() -> String;
+    fn perform(req: WorkRequest) -> WorkResult;
+}
+
+// A deterministic performer for the domain proof: scripted outcomes,
+// scripted failures for the first `fail_first` attempts, so retry and
+// reassignment are exercised without a model or a person.
+locus ScriptedPerformer {
+    params {
+        name: String = "script";
+        performer_kind: String = "software";
+        outcome: String = "done";
+        fail_first: Int = 0;
+    }
+    fn kind() -> String { return self.performer_kind; }
+    fn identity() -> String { return self.name; }
+    // One result per attempt; bounded by the caller's attempt cap.
+    @unbounded
+    fn perform(req: WorkRequest) -> WorkResult {
+        if req.attempt_no < self.fail_first {
+            return WorkResult {
+                disposition: "failed",
+                narrative: "scripted failure on attempt " + to_string(req.attempt_no),
+                performer: self.name
+            };
+        }
+        return WorkResult {
+            disposition: self.outcome,
+            result: "ok:" + req.objective,
+            narrative: "scripted " + self.outcome,
+            performer: self.name
+        };
+    }
+}

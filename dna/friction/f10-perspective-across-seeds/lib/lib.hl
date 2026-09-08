@@ -1,0 +1,7 @@
+perspective Routing { fn pick() -> String; }
+locus First : serves Routing { fn pick() -> String { return "first"; } }
+locus Second : serves Routing { fn pick() -> String { return "second"; } }
+locus Router {
+    params { policy: perspective(Routing) = First { }; }
+    fn which() -> String { return self.policy.pick(); }
+}

@@ -1,0 +1,61 @@
+// dna/tests/fanout_join_test.hl — #526 fixture 2.
+//
+// Step fans out N Work; the Workflow activates dependents only when
+// the prior Step settled; cancellation stops activation and is
+// recorded; a failed Attempt is absorbed and Work births a new Attempt
+// with a new id; exceeding the retry bound fails upward — as a typed
+// settlement through release, or structurally through on_failure.
+//
+// Phase 0 runs on one cooperative pool, so children run inline and
+// there is nothing "in flight" to dissolve at cancellation: the
+// cancelled Workflow reports the dependents it never activated. That
+// is the honest single-pool shape; async fan-out is a placement
+// question, not a domain one.
+
+import "../core" as dna;
+
+main locus App {
+    params { m: dna::Metabolism = dna::Metabolism { }; }
+    run() {
+        // 1. Fan-out and retry: three Works, each fails its first attempt
+        //    (scripted), so every Work settles done on attempt a1.
+        let t1 = self.m.offer(dna::Intent { outcome: "fan", from: "test" },
+            dna::Knobs { steps: 1, fan: 3, fail_first: 1 });
+        let s1 = self.m.find(t1);
+        std::test::assert_eq_str(s1.disposition, "done", "retries recover: " + s1.detail);
+        std::test::assert(std::str::contains(s1.detail, "t1/wf1/s0/w0=done[t1/wf1/s0/w0/a0:failed t1/wf1/s0/w0/a1:done ]"),
+            "a failed Attempt is followed by a NEW Attempt id: " + s1.detail);
+        std::test::assert(std::str::contains(s1.detail, "t1/wf1/s0/w2=done"), "all three fanned Works settled: " + s1.detail);
+
+        // 2. Retry bound exceeded: fail_first beyond max_attempts (3).
+        //    Typed failure-up: Work failed -> Step failed -> Workflow
+        //    stops activating -> Task failed. Step 1 never runs.
+        let t2 = self.m.offer(dna::Intent { outcome: "exhaust", from: "test" },
+            dna::Knobs { steps: 3, fan: 1, fail_first: 9 });
+        let s2 = self.m.find(t2);
+        std::test::assert_eq_str(s2.disposition, "failed", "exhausted retries fail upward: " + s2.detail);
+        std::test::assert(std::str::contains(s2.detail, "t2/wf1/s0=failed"), "step 0 failed: " + s2.detail);
+        std::test::assert(!std::str::contains(s2.detail, "t2/wf1/s1"), "dependent step 1 never activated: " + s2.detail);
+        std::test::assert(std::str::contains(s2.detail, "a2:failed"), "three attempts were made before giving up: " + s2.detail);
+
+        // 3. Structural failure-up: the same exhaustion, but the Work
+        //    VIOLATES `attempts_exhausted`; the Step's on_failure absorbs
+        //    it and records the closure by name.
+        let t3 = self.m.offer(dna::Intent { outcome: "violate", from: "test" },
+            dna::Knobs { steps: 2, fan: 1, fail_first: 9, escalate: true });
+        let s3 = self.m.find(t3);
+        std::test::assert_eq_str(s3.disposition, "failed", "violated Work fails the tower: " + s3.detail);
+        std::test::assert(std::str::contains(s3.detail, "violated:attempts_exhausted"), "on_failure named the closure: " + s3.detail);
+
+        // 4. Cancellation before step 1 activates.
+        let t4 = self.m.offer(dna::Intent { outcome: "cancel", from: "test" },
+            dna::Knobs { steps: 3, fan: 1, cancel_at: 1 });
+        let s4 = self.m.find(t4);
+        std::test::assert_eq_str(s4.disposition, "cancelled", "cancelled is its own disposition: " + s4.detail);
+        std::test::assert(std::str::contains(s4.detail, "t4/wf1/s0=done"), "step 0 ran before the cancel: " + s4.detail);
+        std::test::assert(!std::str::contains(s4.detail, "t4/wf1/s1"), "step 1 never activated: " + s4.detail);
+        std::test::assert_eq_int(self.m.settled_count(), 4, "four tasks settled, none leaked");
+    }
+}
+
+fn main() { App { }; }

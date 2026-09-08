@@ -1,0 +1,76 @@
+// dna/tests/performers_test.hl — #526 fixture 3.
+//
+// Human, Agent, Software and Service performers satisfy one parent-
+// facing contract with no shared state; an Agent Attempt makes several
+// model calls under ONE attempt identity; a human timeout/decline is a
+// typed outcome that triggers reassignment; every reassignment is a
+// new Attempt with the Work identity preserved; a service performer
+// fulfils an assessment but never touches a world-changing gateway
+// (that half is law — dna_law.rs).
+//
+// Routed shape (dna/FRICTION.md F.3/F.5): the assembly owns the
+// WorkSystem and its performers; Work asks over the bus and its owner
+// reads the settlement.
+
+import "../core" as dna;
+
+main locus App {
+    params {
+        // The assembly chooses the performers. Here: an operator who
+        // declines, so judgment work reassigns from agent -> human ->
+        // (agent again) and the history shows every assignment.
+        ws: dna::WorkSystem = dna::WorkSystem {
+            human: dna::HumanWorkGateway { operator: "riley", answer: "declined" },
+            // a cost ceiling the fourth task will trip mid-attempt
+            agent: dna::AgentPerformer {
+                name: "architect",
+                models: dna::ModelRouter { daily_cost_ceiling_micros: 60 }
+            },
+            max_attempts: 3
+        };
+        m: dna::Metabolism = dna::Metabolism { };
+    }
+    run() {
+        // 1. Default order: software first, and software succeeds.
+        let t1 = self.m.offer(dna::Intent { outcome: "format the tree", from: "test" },
+            dna::Knobs { routed: true });
+        let s1 = self.m.find(t1);
+        std::test::assert_eq_str(s1.disposition, "done", "routed work settles through the owner: " + s1.detail);
+        std::test::assert(std::str::contains(s1.detail, "[a0:software:done ]"), "software took it on attempt 0: " + s1.detail);
+
+        // 2. Judgment work: agent first. The agent makes two model calls
+        //    (classify on quick, synthesize on deep) inside ONE Attempt.
+        let t2 = self.m.offer(dna::Intent { outcome: "assess the storage migration", from: "test" },
+            dna::Knobs { routed: true, requires: "judgment" });
+        let s2 = self.m.find(t2);
+        std::test::assert_eq_str(s2.disposition, "done", "agent settles judgment work: " + s2.detail);
+        std::test::assert(std::str::contains(s2.detail, "[a0:agent:done ]"), "one Attempt, one performer: " + s2.detail);
+        std::test::assert_eq_int(self.ws.attempts_made, 2, "two Attempt loci so far (t1 a0, t2 a0)");
+
+        // 3. Customer data: the agent's model calls are refused by every
+        //    external backend; the private backend takes them (router
+        //    policy), so the agent still completes on ONE attempt.
+        let t3 = self.m.offer(dna::Intent { outcome: "triage a customer report", from: "test" },
+            dna::Knobs { routed: true, requires: "judgment", data_class: "customer" });
+        let s3 = self.m.find(t3);
+        std::test::assert_eq_str(s3.disposition, "done", "customer-class work routes to the private model: " + s3.detail);
+
+        // 4. Reassignment. The router's ceiling (60 micros) is crossed
+        //    during this task's second model call, so the agent Attempt
+        //    fails; selection moves to the human, who declines (a typed
+        //    outcome, not an error); the cap is reached with the human
+        //    still declining. Every assignment is its own Attempt, the
+        //    Work identity never changes, and nothing is re-attributed.
+        let t4 = self.m.offer(dna::Intent { outcome: "decide the rollout", from: "test" },
+            dna::Knobs { routed: true, requires: "judgment" });
+        let s4 = self.m.find(t4);
+        std::test::assert_eq_str(s4.disposition, "failed", "declined twice after an agent failure: " + s4.detail);
+        std::test::assert(std::str::contains(s4.detail, "a0:agent:failed a1:human:declined a2:human:declined"),
+            "reassignment history, one Attempt per assignment: " + s4.detail);
+        std::test::assert_eq_int(self.m.settled_count(), 4, "four routed tasks settled");
+        std::test::assert_eq_int(self.ws.requests, 4, "the WorkSystem served every request");
+        std::test::assert_eq_int(self.ws.attempts_made, 6, "1 + 1 + 1 + 3 Attempt loci were born and reclaimed");
+    }
+}
+
+fn main() { App { }; }
