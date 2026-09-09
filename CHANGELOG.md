@@ -22,6 +22,33 @@ checked against the header text by `obs_protocol_header.rs`. The
 failure now. Iris's emitter and consumers switch to this copy when
 the iris tree folds in (B2).
 
+### A perspective contract method keeps its name under `import` (GH #542)
+
+A library free fn that shared its name with a perspective contract
+method (`fn pick()` beside `perspective P { fn pick(); }`) broke the
+perspective once imported: every `serves` impl was "missing contract
+method" because the seed mangler had renamed the contract method to
+the free fn's mangled name while the impls' own methods correctly
+kept theirs. Contract methods live in member position exactly like
+locus methods (the pond P1 rule) and are walked that way now. Same
+fix for bus handler references: `subscribe Tick as tick;` names a
+member method, and a free fn `tick` in the seed used to move the
+reference to the mangled free-fn name.
+
+### `dna/core` takes its enum and its routing perspective back (GH #534 follow-through)
+
+With enums and perspectives crossing seed boundaries, `Disposition`
+is an enum again (matched on the importer's side in
+`review_authority_test.hl`) and `WorkRouting` is a perspective the
+assembly designates at construction and the `WorkSystem` re-points
+live with `reperspective`. The swap preserves state by design, so
+each policy lives in its impl's code and the shared footprint holds
+only the decision counter; `assembly_test.hl` swaps policies mid-run
+and reads the counter across both. The checker's match
+exhaustiveness now recognises an importer's `alias::Enum::Variant`
+arm against the seed-mangled scrutinee type, which the #534 codegen
+fix alone had not covered.
+
 ### `or` on an infallible stdlib call is refused where it is written; `write_file_append` is Unit in the `or` form (GH #535)
 
 The json flat-object readers (`find_string_field`, `find_int_field`,

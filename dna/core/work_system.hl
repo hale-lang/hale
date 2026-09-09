@@ -11,17 +11,19 @@
 // never gains the right to settle a decision by being selected
 // (that lives with the Review/AutonomyBoundary).
 
-// Routing policy WANTS to be a perspective (#521 comment 1: "live
-// selection may become a perspective") — one program-global slot the
-// assembly designates at construction (#525 item 2) and the owning
-// WorkSystem re-points with `reperspective`. F.10 (dna/FRICTION.md):
-// a perspective declared in an imported seed does not resolve for
-// `serves` or for the holder's default, so the core ships the
-// interface form; substitution happens at construction only.
-interface WorkSelection {
+// Routing policy is a PERSPECTIVE (#521 comment 1: "live selection
+// may become a perspective"): one program-global slot the assembly
+// designates at construction (#525 item 2) and the owning WorkSystem
+// re-points with `reperspective` — a routing-policy mutation without
+// replacing or restarting its owner. Every impl shares one footprint
+// (the three order params), the perspective soundness rule. Back as
+// a perspective since GH #534 (dna/FRICTION.md F.10).
+perspective WorkRouting {
     // Returns a performer CLASS: "human" | "agent" | "software" | "service".
     fn select(req: WorkRequest, attempt_no: Int, last: String) -> String;
     fn policy_name() -> String;
+    // the shared state every policy continues on
+    fn decisions() -> Int;
 }
 
 // The n-th comma-separated class; past the end, the last one keeps trying.
@@ -40,35 +42,36 @@ fn nth_class(order: String, n: Int) -> String {
     return last;
 }
 
+// `reperspective` swaps CODE and preserves STATE (spec/semantics.md
+// "state-preserving"), so a policy lives in its impl's methods, and
+// the shared footprint holds only the state every policy continues
+// on — here, how many selections have been made.
+
 // Capability first, then the cheapest; escalates to a person only
 // after the cheaper performers declined or failed.
-locus CapabilityFirstSelection {
-    params {
-        default_order: String = "software,agent,human";
-        judgment_order: String = "agent,human";
-        service_order: String = "service,agent";
-    }
+locus CapabilityFirstSelection : serves WorkRouting {
+    params { decisions: Int = 0; }
     fn policy_name() -> String { return "capability-first"; }
+    fn decisions() -> Int { return self.decisions; }
     fn select(req: WorkRequest, attempt_no: Int, last: String) -> String {
-        if std::str::contains(req.requires, "judgment") { return nth_class(self.judgment_order, attempt_no); }
-        if std::str::contains(req.requires, "analysis") { return nth_class(self.service_order, attempt_no); }
-        return nth_class(self.default_order, attempt_no);
+        self.decisions = self.decisions + 1;
+        if std::str::contains(req.requires, "judgment") { return nth_class("agent,human", attempt_no); }
+        if std::str::contains(req.requires, "analysis") { return nth_class("service,agent", attempt_no); }
+        return nth_class("software,agent,human", attempt_no);
     }
 }
 
 // A person first, everywhere: the conservative posture an assembly
 // can designate, or a WorkSystem can swap to under pressure.
-locus HumanFirstSelection {
-    params {
-        default_order: String = "human,software";
-        judgment_order: String = "human,agent";
-        service_order: String = "human,service";
-    }
+locus HumanFirstSelection : serves WorkRouting {
+    params { decisions: Int = 0; }
     fn policy_name() -> String { return "human-first"; }
+    fn decisions() -> Int { return self.decisions; }
     fn select(req: WorkRequest, attempt_no: Int, last: String) -> String {
-        if std::str::contains(req.requires, "judgment") { return nth_class(self.judgment_order, attempt_no); }
-        if std::str::contains(req.requires, "analysis") { return nth_class(self.service_order, attempt_no); }
-        return nth_class(self.default_order, attempt_no);
+        self.decisions = self.decisions + 1;
+        if std::str::contains(req.requires, "judgment") { return nth_class("human,agent", attempt_no); }
+        if std::str::contains(req.requires, "analysis") { return nth_class("human,service", attempt_no); }
+        return nth_class("human,software", attempt_no);
     }
 }
 
@@ -159,7 +162,7 @@ locus WorkSystem {
         agent: Performer = AgentPerformer { };
         software: Performer = ScriptedPerformer { name: "software" };
         service: Performer = ServicePerformer { };
-        selection: WorkSelection = CapabilityFirstSelection { };
+        selection: perspective(WorkRouting) = CapabilityFirstSelection { };
         max_attempts: Int = 3;
         requests: Int = 0;
         attempts_made: Int = 0;
@@ -174,6 +177,11 @@ locus WorkSystem {
         self.attempts_made = self.attempts_made + 1;
     }
     fn policy() -> String { return self.selection.policy_name(); }
+    // A routing-policy mutation: re-point the program's WorkRouting
+    // slot. Only the slot's owner may (the ownership tree is the
+    // redeploy authority); the swap is one store, state preserved.
+    fn route_human_first() { reperspective self.selection as HumanFirstSelection; }
+    fn route_capability_first() { reperspective self.selection as CapabilityFirstSelection; }
     fn perform_as(kind: String, req: WorkRequest) -> WorkResult {
         if kind == "human" { return self.human.perform(req); }
         if kind == "agent" { return self.agent.perform(req); }

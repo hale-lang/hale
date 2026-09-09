@@ -47,9 +47,12 @@ passes, `hale build` fails). `hale check lib` alone is clean.
 `dna/core/types.hl`. The enum is the shape we want back; strings cross
 the seed boundary today.
 
-**Resolution:** pending. Two distinct bugs: (1) exhaustiveness over a
-path-renamed enum; (2) codegen's constructor-pattern arm resolves the
-enum by bare name after the import prefix was applied.
+**Resolution:** FIXED upstream (GH #534, hale PR #538, 2026-09-08):
+the seed mangler now rewrites two-segment `Enum::Variant` paths in
+expression and pattern position, and an importer can spell
+`lib::Enum::Variant` in both. `Disposition` is an enum again in
+`dna/core/types.hl`; `review_authority_test.hl` matches it on the
+importer's side.
 
 ## F.2 — `@unbounded` did not acknowledge the hot-path advisory
 
@@ -290,10 +293,18 @@ interfaces cross the seed boundary. This is the same class as F.1
 
 **Reproducer:** `dna/friction/f10-perspective-across-seeds/`.
 
-**Workaround:** `WorkSelection` is an interface in the core;
-substitution happens at construction only (#525 item 2 proved the
-constructor-site designation in-seed, fixture
-`65-perspective-ctor-override`).
+**Resolution:** FIXED upstream (GH #534, hale PR #538, 2026-09-08):
+`serves` lists are renamed with their perspective. `WorkRouting` is a
+perspective again in `dna/core/work_system.hl`; the assembly
+designates it at construction (#525 item 2, now across a seed
+boundary) and `WorkSystem` re-points it live with `reperspective` —
+`assembly_test.hl` swaps policies mid-run. One thing the swap taught:
+`reperspective` swaps CODE and preserves STATE (the footprint), so a
+policy expressed as params (`default_order: String = ...`) does not
+change when the slot is re-pointed — the new impl's methods ran over
+the old impl's orders. Policies now live in their impls' methods and
+the shared footprint holds only the decision counter, which the test
+reads across both policies through the contract.
 
 ## F.11 — `forbid reaches` follows the declaration default, not the constructor override
 

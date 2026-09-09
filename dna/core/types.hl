@@ -91,16 +91,23 @@ type Evidence {
     rollback_rehearsed: Bool = false;
 }
 
-// Dispositions are STRINGS, not an enum: F.1 (dna/FRICTION.md) — a
-// `match` over an enum declared in an imported seed fails the
-// importer's exhaustiveness check, and with a `_` arm fails codegen
-// ("constructor pattern: unknown enum"). Strings cross the seed
-// boundary today; the enum is the shape we want back.
-const DISP_RELEASE: String = "release";
-const DISP_STAGE: String = "stage";
-const DISP_REVIEW: String = "review";
-const DISP_ESCALATE: String = "escalate";
-const DISP_DENY: String = "deny";
+// The disposition of a proposed change (#521): release inside an
+// already-granted envelope; stage = prepare and verify but do not
+// apply; review = block on a named reviewer; escalate = the current
+// parent cannot decide; deny = outside policy or evidence. An enum
+// again since GH #534 (dna/FRICTION.md F.1): a library's own enum
+// now crosses the seed boundary in expression and pattern position.
+type Disposition = enum { Release, Stage, Review, Escalate, Deny };
+
+fn disposition_name(d: Disposition) -> String {
+    return match d {
+        Disposition::Release -> "release",
+        Disposition::Stage -> "stage",
+        Disposition::Review -> "review",
+        Disposition::Escalate -> "escalate",
+        Disposition::Deny -> "deny",
+    };
+}
 
 fn magnitude_sum(m: Magnitude) -> Int {
     let mut s = m.loci + m.external_blast + m.novelty;
@@ -141,15 +148,15 @@ fn evidence_score(e: Evidence) -> Int {
 // reversibility, boundary crossings, inherited law); proceed only if
 // the grant permits the class AND no hard boundary is crossed AND
 // evidence satisfies required assurance.
-fn dispose(g: Grant, change_class: String, m: Magnitude, e: Evidence) -> String {
-    if crosses_hard_boundary(m) { return DISP_REVIEW; }
+fn dispose(g: Grant, change_class: String, m: Magnitude, e: Evidence) -> Disposition {
+    if crosses_hard_boundary(m) { return Disposition::Review; }
     let permitted = std::str::contains(g.classes, change_class);
-    if !permitted { return DISP_ESCALATE; }
+    if !permitted { return Disposition::Escalate; }
     let mag = magnitude_sum(m);
-    if mag > g.max_magnitude { return DISP_ESCALATE; }
+    if mag > g.max_magnitude { return Disposition::Escalate; }
     let required = mag + m.novelty * 2;
     let have = evidence_score(e);
-    if have < required { return DISP_STAGE; }
-    if g.review == "pre" { return DISP_REVIEW; }
-    return DISP_RELEASE;
+    if have < required { return Disposition::Stage; }
+    if g.review == "pre" { return Disposition::Review; }
+    return Disposition::Release;
 }
