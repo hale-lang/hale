@@ -36,8 +36,8 @@ use serde_json::Value;
 
 const JOURNAL_REL: &str = ".hale/dna/journal.jsonl";
 const BASELINE_REL: &str = ".hale/dna/baseline.topology";
-const VERDICT_SOCK_REL: &str = ".hale/dna/review.verdict.sock";
-const INTENT_SOCK_REL: &str = ".hale/dna/intent.offered.sock";
+const VERDICT_SOCK_REL: &str = ".hale/dna/hale-dna.review.verdict.sock";
+const INTENT_SOCK_REL: &str = ".hale/dna/hale-dna.intent.offered.sock";
 
 pub fn run(args: &[String]) -> ExitCode {
     match args.first().map(String::as_str) {

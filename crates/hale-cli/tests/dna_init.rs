@@ -86,7 +86,7 @@ fn init_attaches_the_dna_and_the_application_still_checks_builds_and_runs() {
     }
     assert!(after.contains("genome: genome::Genome = genome::Genome { }"), "{after}");
     assert!(after.contains("adopt Project;"), "{after}");
-    assert!(after.contains("dna::ReviewVerdict: unix(\".hale/dna/review.verdict.sock\", role: listen)"), "{after}");
+    assert!(after.contains("dna::ReviewVerdict: unix(\".hale/dna/hale-dna.review.verdict.sock\", role: listen)"), "{after}");
     let law = std::fs::read_to_string(app.join("dna_constitution.hl")).unwrap();
     assert!(law.contains("group organism = { App };"), "{law}");
 
