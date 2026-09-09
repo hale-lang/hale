@@ -525,9 +525,13 @@ The output is a versioned document (`TOPOLOGY_DIFF_SCHEMA`, now
 - **`contracts`** — per paired locus, facet by facet, as set
   differences (`removed` / `added`): `sealed`, `params`, `methods`,
   `publishes`, `subscribes` (with the subscription's queue bound
-  and shed policy), `supervises`, `ownership` and `placement` of
-  its statically exact instances. These facets are read from the
-  artifact's `contracts` section (schema 1.18), the per-locus
+  and shed policy), `supervises`, and the `ownership` (who owns its
+  instances) and `placement` (which thread domains) — by owner and
+  domain, not by instance path, so a param rename does not echo
+  here. Plus, per paired topic, its `subject` and payload `shape`
+  when they moved: a wider payload is a contract change for every
+  locus on the topic. These facets are read from the artifact's
+  `contracts` and `topics` sections (schema 1.18+), the per-locus
   regrouping of facts the model already holds.
 - **`effects`** — per paired fn, classes `gained` / `dropped`; and
   per fn-grained certificate (`lowered` rows keyed by subject and

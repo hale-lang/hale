@@ -51,7 +51,7 @@ is:
 |---|---|---|
 | a second publisher of `Tickets` (`EmailIntake`) | `+ locus EmailIntake`, `! claim one_intake: result holds -> violated` | the law `one_intake` is now **violated**; the candidate broke an invariant the team wrote down |
 | `Support` gains the `outbound_email` effect (through `Mailer`) | `! fn Support::on_queue gains … publish`, `+ locus Mailer`, `+ topic Outbound` | a customer-facing side effect appeared where there was none |
-| the Product → Support contract changes | `! locus Support params: +sla_hours: Int`; `QueueStat` gains a field | a parent-facing contract moved |
+| the Product → Support contract changes | `! locus Support params: +sla_hours: Int` · `! topic QueueStats shape: -open:i; +open:i;oldest_hours:i` | a parent-facing contract moved |
 | `Triage` becomes `Dispatch` | `~ locus Triage -> Dispatch (renamed; shape unchanged)` | half the git diff is this rename; it changes nothing |
 | a new law `mail_from_support_only` | `+ claim mail_from_support_only … [holds]` | the candidate added law, which needs a different reviewer than code |
 
@@ -66,6 +66,15 @@ Record, per reviewer and per view:
   rename changes behavior", "no new side effects");
 - **what was missing**: a question the reviewer asked that neither
   view answered.
+
+Known limits of View B going in (found by a dry run with model
+reviewers, 2026-09-09): an effect class reached through a bus edge
+(`Support` → `Outbound` → `Mailer`'s `outbound_email`) shows only as
+`gains publish` on the sender, never by the class's name; wire
+*values* (`owner: "triage"` becoming `"dispatch"`) are outside the
+model; and a field that is added but never read looks the same as
+one that is used. Whether those matter to the reviewer's decision is
+part of what the test measures.
 
 The test passes if View B is *visibly* better on coverage and false
 confidence for a reviewer who does not know Hale — not marginally,
