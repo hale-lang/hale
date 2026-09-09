@@ -8,6 +8,20 @@ behavior.
 
 ## Unreleased
 
+### The observation protocol header lives in hale (GH #527 B1)
+
+`crates/hale-codegen/runtime/obs_protocol.h` is now the executable
+form of the iris observation protocol (formerly iris's
+`emitter/protocol.h`, copied verbatim at proto 0.4). Codegen
+prepends it to the obs runtime translation unit, `lotus_obs.c`
+takes its magic, page size, ekinds and manifest kinds from it and
+pins its own typedefs to the header's layouts with
+`_Static_assert`s, and the Rust test decoder's constants are
+checked against the header text by `obs_protocol_header.rs`. The
+"if protocol.h changes, change both in one commit" rule is a build
+failure now. Iris's emitter and consumers switch to this copy when
+the iris tree folds in (B2).
+
 ### A perspective contract method keeps its name under `import` (GH #542)
 
 A library free fn that shared its name with a perspective contract
