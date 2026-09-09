@@ -8,6 +8,19 @@ behavior.
 
 ## Unreleased
 
+### Iris folds into the hale tree (GH #527 B2)
+
+`hale-lang/iris` is subtree-merged, with history, at `iris/`. Its
+`emitter/protocol.h` forwards to the hale copy (B1), its two GenMC
+models move beside hale's under `verification/` and run in the same
+race-completeness job, its fourteen handoff documents live at
+`iris/handoffs/` as the record they are, and every `.hl` seed under
+`iris/` is checked (and fuse-hl and inspect verified) by
+`crates/hale-cli/tests/iris_seeds_check.rs`, so a compiler change
+that breaks the observer fails the build rather than a handoff.
+`DESIGN.md` §13 records the fold-in; the dependency direction it
+defends is unchanged.
+
 ### `or` on an infallible stdlib call is refused where it is written; `write_file_append` is Unit in the `or` form (GH #535)
 
 The json flat-object readers (`find_string_field`, `find_int_field`,

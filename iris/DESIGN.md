@@ -382,6 +382,22 @@ system has never mentioned?" was an answerable question. Nine
 rounds of fleet field-testing had not surfaced it. See
 [`INSPECTOR.md`](./INSPECTOR.md).
 
+
+**Status 2026-09-09 — folded into the hale tree (hale#527 B2).**
+This repository now lives at `iris/` in `hale-lang/hale`, with its
+history. The dependency direction §13 defends is unchanged and is
+now enforceable in one CI: `hale-model` / `hale-types` never depend
+on anything under `iris/`; the protocol's executable form is
+`crates/hale-codegen/runtime/obs_protocol.h` (`emitter/protocol.h`
+forwards to it — hale#527 B1); the GenMC models moved beside hale's
+under `verification/` and run in its race-completeness job; every
+`.hl` seed here is checked by hale's own test suite
+(`crates/hale-cli/tests/iris_seeds_check.rs`), so a compiler change
+that breaks the observer fails the build instead of a handoff
+document. The handoff record is `handoffs/`. The observer still
+never reinterprets the language, observation stays read-only, and
+intervention enters through declared interfaces (hale#527 B6).
+
 ## 14. Milestones
 
 M0 is not "visualize the codebase." Every milestone is a

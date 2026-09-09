@@ -80,6 +80,8 @@ experiments/token-efficiency/.todo_storage*
 # Cross-session handoff / upstream working docs — not repo content
 # (per CLAUDE.md: no planning/status/progress markdown in-tree).
 HANDOFF-*.md
+# GH #527 B2: the iris handoff record lives in-tree now.
+!iris/handoffs/HANDOFF-*.md
 UPSTREAM*.md
 
 # Agent worktrees (transient; can hold root-owned build artifacts)
