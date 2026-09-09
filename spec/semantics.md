@@ -1140,7 +1140,10 @@ the bus runtime see only the wire form.
 `main` is the binary's entry-point holder and is the only place a
 `bindings { }` member is legal. Bindings choose a transport per
 topic; the same library compiles to in-process or external in
-different binaries by varying the main locus.
+different binaries by varying the main locus. An entry may name an
+imported topic — `dna::ReviewVerdict: unix(...)` binds the
+declaration the library owns, never a re-declaration of it — and
+resolves exactly as a qualified bus subject does (GH #527 B6).
 
 ```hale
 main locus App {

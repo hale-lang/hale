@@ -1,0 +1,78 @@
+// dna/organism — the reference organism (GH #527 B6): the DNA
+// assembly behind a MEMBRANE, two typed topics bound on unix sockets
+// in the main locus's `bindings { }`:
+//
+//   dna.review.verdict   a human's verdict on a pending Review
+//   dna.intent.offered   intent entering the organism
+//
+// Iris (`hale iris --membrane /tmp`) and `hale dna ask` (Track C)
+// publish on those sockets; nothing crosses through the observation
+// segment. The owning locus decides: a verdict goes through the
+// Review's own admission (digest pin, authority, independence), an
+// intent through the membrane gate and the Metabolism. The edge is a
+// declared route in the fleet model, so `hale fleet check` sees it.
+//
+//   hale build dna/organism && ./dna/organism/organism
+//
+// The socket paths are literal (a binding is a deployment fact of the
+// source); a host that needs another directory regenerates this seed
+// or routes with LOTUS_BUS_CONFIG. The pending Review `r1` stands in
+// for the first governed workflow (ratify the declared purpose).
+
+import "../core" as dna;
+
+main locus Organism {
+    params {
+        dna: dna::Dna = dna::Dna { };
+        review: dna::Review = dna::Review {
+            review_id: "r1",
+            question: "ratify the declared purpose?",
+            subject_digest: "sha256:purpose-v1",
+            required_authority: "maintainer",
+            author: "organism"
+        };
+        reported_asked: Int = 0;
+        reported_refused: Int = 0;
+        reported_settled: Bool = false;
+        // 0 = run until killed; otherwise the number of 100ms ticks.
+        ticks: Int = 0;
+    }
+
+    bindings {
+        dna::ReviewVerdict: unix("/tmp/hale-dna.review.verdict.sock", role: listen);
+        dna::IntentOffered: unix("/tmp/hale-dna.intent.offered.sock", role: listen);
+    }
+
+    // Report every membrane-driven transition on stdout: what the
+    // organism DECIDED, in its own words, never what the transport
+    // carried.
+    fn report() {
+        if self.dna.asked > self.reported_asked {
+            self.reported_asked = self.dna.asked;
+            println("organism: intent accepted, task ", self.dna.last_task, " born");
+        }
+        if self.review.refused > self.reported_refused {
+            self.reported_refused = self.review.refused;
+            println("organism: review r1 refused a verdict: ", self.review.last_refusal);
+        }
+        if self.review.settled && !self.reported_settled {
+            self.reported_settled = true;
+            println("organism: review r1 settled ", self.review.outcome, " by ", self.review.decided_by);
+        }
+    }
+
+    run() {
+        println("organism: membrane listening");
+        let mut t = 0;
+        while self.ticks == 0 || t < self.ticks {
+            std::time::sleep(100ms);
+            self.report();
+            t = t + 1;
+        }
+        println("organism: window closed");
+    }
+}
+
+fn main() {
+    Organism { };
+}

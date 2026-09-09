@@ -5,3 +5,4 @@ edition.workspace = true
 description = "The iris observer's sources, embedded so `hale iris` ships in the hale binary (GH #527 B3)"
 
 [dependencies]
+hale-dna = { path = "../hale-dna" }

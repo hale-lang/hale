@@ -23,6 +23,7 @@ the program's own argv; the flag is consumed by `hale run`.
 hale iris [port] [artifact.json]        attach + fuse, serve :port (default 8787)
   --diff <a.topology> <b.topology>      … with the review view over the pair
   --diff <diff.json>                    … over a ready `hale model diff` document
+  --membrane <dir>                      … publishing verdicts and intent to an organism's sockets
 hale iris inspect <artifact.json> [url] artifact-side inspector
 hale iris --where                       print the cache directory
 hale iris --build-only                  materialize + build, print the binary
@@ -61,6 +62,29 @@ built from, it says which live processes are still expressing the
 old artifact: they are listed as stale and ringed on the canvas.
 With a pair and no artifact argument, the `after` side is also the
 law artifact.
+
+**The membrane.** An organism built on the DNA core binds two typed
+control topics on unix sockets (`dna/organism/main.hl` is the
+reference): `dna.review.verdict` and `dna.intent.offered`. Point
+iris at them and the browser can answer a pending Review or offer
+intent (key `m`):
+
+```sh
+hale build dna/organism && ./dna/organism/organism &   # listens under /tmp
+hale iris --membrane /tmp
+```
+
+`--membrane <dir>` routes the observer's publishes of those two
+topics to `<dir>/hale-dna.review.verdict.sock` and
+`<dir>/hale-dna.intent.offered.sock` (an env-configured connect
+route; the organism must already be listening). The panel posts to
+`/ctl/review` and `/ctl/intent`, which publish the DNA core's own
+`Verdict` and `IntentOffer` declarations. Nothing is decided in
+iris: the organism's Review checks the candidate digest, the
+reviewer's authority and independence exactly as it does for a
+local verdict, and the intent goes through the membrane gate and
+the Metabolism. The snapshot reports how many of each were
+published; the organism reports what it decided.
 
 **`hale iris inspect`** is the artifact-side half of that
 comparison: point it at an artifact (and optionally a running

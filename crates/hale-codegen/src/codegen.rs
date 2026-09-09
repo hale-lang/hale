@@ -3335,6 +3335,21 @@ fn resolve_qualified_bus_subjects(
             }
         }
     }
+    // GH #527 B6: `bindings { alias::Topic: unix(...); }` — the
+    // entry keeps the joined path as its ident; resolve it here for
+    // the build path exactly as the qualified bus subjects are.
+    fn rewrite_binding(
+        entry: &mut hale_syntax::ast::BindingEntry,
+        import_renames: &[(Vec<String>, String)],
+    ) {
+        if !entry.topic.name.contains("::") {
+            return;
+        }
+        let segs: Vec<&str> = entry.topic.name.split("::").collect();
+        if let Some(mangled) = lookup(&segs, import_renames) {
+            entry.topic.name = mangled;
+        }
+    }
     use hale_syntax::ast::{Block, ElseBranch, Expr, MatchArmBody, Stmt};
     fn rewrite_send_subject(
         e: &mut Expr,
@@ -3425,6 +3440,11 @@ fn resolve_qualified_bus_subjects(
                     }
                     LocusMember::Fn(fd) => {
                         walk_block(&mut fd.body, import_renames);
+                    }
+                    LocusMember::Bindings(bb) => {
+                        for entry in &mut bb.entries {
+                            rewrite_binding(entry, import_renames);
+                        }
                     }
                     _ => {}
                 }

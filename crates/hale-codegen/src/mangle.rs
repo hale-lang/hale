@@ -540,9 +540,36 @@ impl<'a> QualifiedRenameApplier<'a> {
                     }
                 }
             },
+            // GH #527 B6: a binding may name an IMPORTED topic
+            // (`bindings { dna::ReviewVerdict: unix(...); }`). The
+            // parser keeps the entry an `Ident` with the path joined
+            // by `::`; canonicalize it to the mangled decl exactly as
+            // a qualified bus subject is, so the checker, the model
+            // builder, the desugar's role inference and codegen all
+            // see the one name the topic decl ends up at.
+            LocusMember::Bindings(bb) => {
+                for entry in &mut bb.entries {
+                    if !entry.topic.name.contains("::") {
+                        continue;
+                    }
+                    let segs: Vec<String> = entry
+                        .topic
+                        .name
+                        .split("::")
+                        .map(|s| s.to_string())
+                        .collect();
+                    for (key, mangled) in self.renames {
+                        if key.len() == segs.len()
+                            && key.iter().zip(segs.iter()).all(|(k, p)| k == p)
+                        {
+                            entry.topic.name = mangled.clone();
+                            break;
+                        }
+                    }
+                }
+            }
             LocusMember::Contract(_)
             | LocusMember::Closure(_)
-            | LocusMember::Bindings(_)
             | LocusMember::Placement(_)
             | LocusMember::Topology(_)
             | LocusMember::BirthCheck(_) => {}

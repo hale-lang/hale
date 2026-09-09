@@ -3545,7 +3545,23 @@ impl Parser {
         self.expect(TokenKind::LBrace, "{")?;
         let mut entries = Vec::new();
         while !matches!(self.peek(), TokenKind::RBrace) {
-            let topic = self.expect_ident("topic name")?;
+            // GH #527 B6: a binding may name an IMPORTED topic,
+            // `alias::Topic`. The entry keeps its `Ident` shape with
+            // the path joined by `::` — the same key
+            // `BusSubject::canonical()` gives a qualified bus
+            // subject, so every consumer that matches a binding
+            // against publish/subscribe ends compares like with
+            // like. Codegen resolves the joined name to the mangled
+            // decl exactly as it does for qualified bus subjects.
+            let mut topic = self.expect_ident("topic name")?;
+            while matches!(self.peek(), TokenKind::ColonColon) {
+                self.bump();
+                let seg = self.expect_ident("topic name")?;
+                topic = Ident {
+                    name: format!("{}::{}", topic.name, seg.name),
+                    span: topic.span.merge(seg.span),
+                };
+            }
             self.expect(TokenKind::Colon, ":")?;
             let transport = self.parse_transport_spec()?;
             // F.36 Slice 2: optional codec(L { ... }) clause

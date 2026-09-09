@@ -1,0 +1,70 @@
+//! The DNA core, embedded (GH #521 / #527 B6 / #528).
+//!
+//! `dna/core` is compiler-versioned Hale source the toolchain carries
+//! the way `hale-stdlib` carries the stdlib. Today one consumer
+//! materializes it: `hale iris`, whose observer imports the core's
+//! typed control topics (`dna.review.verdict`, `dna.intent.offered`)
+//! so a verdict or an intent published from the browser is the SAME
+//! declaration the organism binds. Track C (`hale dna init` /
+//! `upgrade`) materializes the same set into a project's `vendor/dna`.
+//!
+//! Paths are relative to a materialization root and keep the repo's
+//! layout (`dna/core/<file>.hl`), so `import "../core"` from a sibling
+//! seed resolves unchanged.
+
+pub struct EmbeddedFile {
+    pub path: &'static str,
+    pub content: &'static str,
+}
+
+macro_rules! core {
+    ($($name:literal),* $(,)?) => {
+        &[$(EmbeddedFile {
+            path: concat!("dna/core/", $name, ".hl"),
+            content: include_str!(concat!("../../../dna/core/", $name, ".hl")),
+        }),*]
+    };
+}
+
+/// Every file of `dna/core`, in the order the repo lists them.
+pub const FILES: &[EmbeddedFile] = core![
+    "assembly",
+    "journal",
+    "knowledge",
+    "models",
+    "performers",
+    "process",
+    "review",
+    "topics",
+    "types",
+    "work_system",
+];
+
+/// The seed path, relative to the materialization root.
+pub const CORE_SEED: &str = "dna/core";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_embedded_set_is_the_repo_directory() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../dna/core");
+        let mut on_disk: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".hl"))
+            .collect();
+        on_disk.sort();
+        let mut embedded: Vec<String> = FILES
+            .iter()
+            .map(|f| f.path.rsplit('/').next().unwrap().to_string())
+            .collect();
+        embedded.sort();
+        assert_eq!(embedded, on_disk, "a dna/core file was added or removed without updating hale-dna");
+        for f in FILES {
+            assert!(!f.content.is_empty(), "{} is empty", f.path);
+        }
+    }
+}

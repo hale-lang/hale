@@ -105,6 +105,24 @@ locus Dna {
         deployment: Deployment = NoDeployment { };
         membrane: Membrane = LocalHumanMembrane { };
         asked: Int = 0;
+        last_task: String = "";
+    }
+    // GH #527 B6: intent crossing the membrane on the typed channel
+    // (`hale dna ask`, Iris) enters through the SAME gate as a local
+    // `ask` — the membrane decides, the Metabolism births the Task,
+    // the Journal records both. The organism's main binds this topic
+    // on a unix socket; nothing about the decision lives in the
+    // transport.
+    bus {
+        subscribe IntentOffered as on_intent;
+    }
+    // Bounded by the humans offering intent; each birth is a Task the
+    // Metabolism owns and settles.
+    @unbounded
+    fn on_intent(o: IntentOffer) {
+        let mut from = o.from;
+        if from == "" { from = "membrane"; }
+        self.last_task = self.ask(Intent { id: o.intent_id, outcome: o.outcome, from: from }, Knobs { });
     }
     // Intent enters through the membrane and births a durable Task;
     // its birth and its settlement are Journal events (the causal
@@ -154,6 +172,7 @@ locus Dna {
         b.string_field("deployment", self.deployment.kind());
         b.int_field("knowledge_revision", self.knowledge.revision);
         b.int_field("notifications", self.membrane.notifications());
+        b.string_field("last_task", self.last_task);
         b.end_object();
         return b.result();
     }
