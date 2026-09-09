@@ -1907,9 +1907,16 @@ copy of the string (capture-by-value — see "Key stability"
 below), the publish site hashes the payload's `keyed_by` field,
 and only a hash match pays the full string compare, so a
 mismatched key still costs one i64 compare per entry. `StringView`
-and `Bytes` are not key-eligible. Remote fanout stays unkeyed at
-v0.1 for String keys just as for scalars — no key material
-crosses a process boundary.
+and `Bytes` are not key-eligible. Remote fanout is unkeyed for
+String keys just as for scalars — no key material crosses a
+process boundary. The RECEIVE side of a binding derives the key
+instead (2026-09-09, DNA F.12): codegen synthesizes one extractor
+per keyed wire subject, the publish site's exact computation over
+the deserialized payload, and every inbound path (unix serve loop,
+boot-window flush, UDP reader, adapter inbound) dispatches keyed.
+A `where key == …` subscription therefore means the same thing on
+both sides of a socket; before this it received nothing over a
+binding.
 
 **`where key == EXPR` — what EXPR can be.**
 

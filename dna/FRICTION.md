@@ -395,8 +395,17 @@ and the listening side's wire dispatch skips every entry with a key
 filter, because nobody re-derives the key from the decoded payload.
 The publisher's counters say `sent=1`; the Review stays open.
 
-**Worked around:** the Review subscribes unkeyed and answers only to
-its own `review_id` in the handler. Correct (every Review is a
+**FIXED (GH #529 prep):** codegen synthesizes a per-keyed-topic
+extractor (the publish site's exact computation over the deserialized
+payload) and the runtime derives the key on every inbound path (unix
+serve loop, boot-window flush, UDP reader, adapter inbound), so
+`where key == …` means the same thing on both sides of a socket. The
+Review subscribes keyed again. Test:
+`crates/hale-codegen/tests/binding_keyed_over_wire.rs` (Int and
+String keys).
+
+**Was worked around:** the Review subscribed unkeyed and answered only
+to its own `review_id` in the handler. Correct (every Review is a
 separate locus, so a foreign verdict is a no-op), and cheap at this
 scale, but it is the pattern the keyed topic exists to make
 unnecessary, and it silently diverges from the in-process idiom: the
@@ -422,17 +431,17 @@ are held for its whole run, so a second connector (the membrane
 client) is left in the backlog and its message is never read. The
 publisher's counters say `sent=1`; the organism journals nothing.
 
-**Worked around:** `hale dna run` writes `.hale/dna/iris.port` while
-iris is attached, and `hale dna ask` / `review` publish through
-iris's `/ctl` endpoints in that case — the same declaration on the
-same socket, one hop later. Without iris the client connects
-directly.
+**FIXED (GH #529 prep):** the serve loop polls the listener beside
+every accepted peer (up to 64): connections are admitted as they
+arrive, each keeps its own framed seq space, a peer's EOF closes
+that peer only, and the exit quiesce still drains every connected
+peer to EOF. `hale dna ask` / `review` connect directly beside an
+attached iris; the `iris.port` detour is gone. Test:
+`crates/hale-codegen/tests/binding_multi_peer.rs`.
 
-**Wanted:** a listen binding that serves N peers (poll over accepted
-connections, per-connection seq space as the re-arm already keeps),
-so the fact "who is connected" is not a routing decision every
-client has to make. Until then a second connector should at least
-be refused loudly rather than queued silently.
+**Was worked around:** `hale dna run` wrote `.hale/dna/iris.port`
+while iris was attached and `ask` / `review` published through
+iris's `/ctl` endpoints.
 
 **Compiler bugs fixed in this track:** F.2 (`@unbounded` ignored by the
 hot-path lint), F.6 (release dispatch by child type alone — memory
@@ -452,10 +461,9 @@ are.
 **Recorded, by design:** F.5 (a bus reply reaches a flow child at
 drain, so the retry loop lives with whoever owns the performers).
 
-**Runtime limitations, worked around:** F.12 (keyed subscriptions
-never hear a wire delivery; the membrane Review filters by id in the
-handler), F.13 (a listen binding serves one peer at a time; `hale dna
-ask` goes through iris while iris holds the membrane).
+**Runtime limitations, FIXED:** F.12 (keyed subscriptions now hear
+wire deliveries — receive-side key derivation), F.13 (a listen
+binding serves many peers).
 
 **Things the survey said to verify, now verified:** `adopt` of a
 constitution declared in an imported seed was not needed — the app's

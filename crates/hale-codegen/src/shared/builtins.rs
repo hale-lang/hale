@@ -2191,6 +2191,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
 
+        // GH #529 prep (DNA F.12): receive-side key derivation.
+        // declare void @lotus_bus_register_key_extractor(ptr subject, ptr fn)
+        let bus_register_kx_ty =
+            void_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
+        self.module.add_function(
+            "lotus_bus_register_key_extractor",
+            bus_register_kx_ty,
+            None,
+        );
+
         // F.36 Slice 3 (2026-05-28): codec-binding registration.
         // declare void @lotus_bus_register_codec(ptr subject, ptr self,
         //   ptr encode_fn, ptr decode_fn)

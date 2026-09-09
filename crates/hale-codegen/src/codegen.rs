@@ -1408,6 +1408,7 @@ pub fn build_executable_with_options(
             .iter()
             .map(|(segs, mangled)| (segs.clone(), mangled.clone()))
             .collect(),
+        key_extractors: BTreeMap::new(),
         bus_state: None,
         shm_ring_subjects: std::collections::BTreeMap::new(),
         routing_key_subjects: std::collections::BTreeMap::new(),
@@ -3608,6 +3609,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// (e.g. `"__lib_foo_Y_Bar"`). Consulted by
     /// `Cx::mangled_for_path` after the static stdlib table.
     import_renames: BTreeMap<Vec<String>, String>,
+    /// GH #529 prep (DNA F.12): per keyed wire subject, the synthesized
+    /// `__key_extract_*` fn the runtime calls on a DESERIALIZED inbound
+    /// payload to derive the routing key a listen binding never
+    /// received — the same (key_lo, key_hi) the publish site computes.
+    key_extractors: BTreeMap<String, inkwell::values::FunctionValue<'ctx>>,
     /// Bus state generated when any locus declares a subscribe.
     /// `Some` iff the program contains at least one `bus subscribe`
     /// declaration. Bus storage itself lives in the C runtime
@@ -8713,6 +8719,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // prelude register call + codec_self global store still
         // run later via `emit_bindings_prelude`.
         self.synthesize_codec_thunks_for_main_bindings()?;
+        self.synthesize_key_extractors()?;
 
         // Pass C: lower lifecycle method bodies (birth, run, ...).
         for l in &locus_decls {
@@ -9200,6 +9207,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // become host imports. The browser bus is in-memory / WebSocket-
         // adapter-driven (a later slice), never cross-process sockets.
         if !self.is_wasm {
+            // GH #529 prep (DNA F.12): tell the runtime how to derive a
+            // keyed topic's key from an inbound payload, so a listen
+            // binding delivers to `where key == …` subscribers exactly
+            // as an in-process publish does.
+            let extractors: Vec<(String, inkwell::values::FunctionValue<'ctx>)> =
+                self.key_extractors.iter().map(|(k, v)| (k.clone(), *v)).collect();
+            if !extractors.is_empty() {
+                let reg_fn = self
+                    .module
+                    .get_function("lotus_bus_register_key_extractor")
+                    .expect("lotus_bus_register_key_extractor declared");
+                for (subject, f) in extractors {
+                    let subj_ptr = self
+                        .builder
+                        .build_global_string_ptr(&subject, "lotus.keyx.subject")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .as_pointer_value();
+                    self.builder
+                        .build_call(
+                            reg_fn,
+                            &[subj_ptr.into(), f.as_global_value().as_pointer_value().into()],
+                            "lotus.keyx.register",
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+            }
             let load_cfg_fn = self
                 .module
                 .get_function("lotus_bus_load_config")
@@ -10682,6 +10715,96 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// `emit_codec_binding_register`, which finds the codec_self
     /// global through `codec_thunks` and stores the constructed
     /// instance into it.
+    /// GH #529 prep (DNA F.12): one `__key_extract_<subject>` fn per
+    /// keyed topic — `void(ptr payload, ptr lo_out, ptr hi_out)` —
+    /// computing exactly the (key_lo, key_hi) pair the publish site in
+    /// `bus/dispatch.rs` computes: scalar keys through
+    /// `key_value_to_i64_pair`, String keys as (FNV hash, char*). The
+    /// runtime calls it on a deserialized inbound payload before the
+    /// keyed local dispatch, so a `where key == …` subscriber hears a
+    /// wire delivery. Registered at the main prelude (beside
+    /// `lotus_bus_load_config`).
+    pub(crate) fn synthesize_key_extractors(&mut self) -> Result<(), CodegenError> {
+        let subjects: Vec<(String, RoutingKeySubjectInfo)> = self
+            .routing_key_subjects
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        if subjects.is_empty() {
+            return Ok(());
+        }
+        let saved_block = self.builder.get_insert_block();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i64_t = self.context.i64_type();
+        let void_t = self.context.void_type();
+        for (subject, info) in subjects {
+            let Some(payload_struct_info) = self.user_types.get(&info.payload_type_name).cloned() else {
+                continue;
+            };
+            let Some((field_idx, field_ty)) = payload_struct_info.fields.get(&info.keyed_by_field).cloned() else {
+                continue;
+            };
+            let sanitized: String = subject
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .collect();
+            let fn_name = format!("__key_extract_{sanitized}");
+            let fn_ty = void_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into()], false);
+            let f = self.module.add_function(&fn_name, fn_ty, None);
+            let bb = self.context.append_basic_block(f, "entry");
+            self.builder.position_at_end(bb);
+            let payload_ptr = f.get_nth_param(0).unwrap().into_pointer_value();
+            let lo_out = f.get_nth_param(1).unwrap().into_pointer_value();
+            let hi_out = f.get_nth_param(2).unwrap().into_pointer_value();
+            let field_slot = self
+                .builder
+                .build_struct_gep(payload_struct_info.struct_ty, payload_ptr, field_idx, "keyx.field.ptr")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let llvm_field_ty = self.llvm_basic_type(&field_ty);
+            let field_val = self
+                .builder
+                .build_load(llvm_field_ty, field_slot, "keyx.field.load")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let (lo, hi) = if matches!(field_ty, CodegenTy::String) {
+                let field_ptr = field_val.into_pointer_value();
+                let hash_fn = self
+                    .module
+                    .get_function("lotus_route_key_hash")
+                    .expect("lotus_route_key_hash declared");
+                let hash = self
+                    .builder
+                    .build_call(hash_fn, &[field_ptr.into()], "keyx.str.hash")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_route_key_hash returns i64")
+                    .into_int_value();
+                let ptr_int = self
+                    .builder
+                    .build_ptr_to_int(field_ptr, i64_t, "keyx.str.ptr")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                (hash, ptr_int)
+            } else {
+                match self.key_value_to_i64_pair(field_val, &field_ty) {
+                    Some(p) => p,
+                    None => {
+                        // not key-eligible: typecheck refuses upstream;
+                        // emit a zero pair rather than a broken module
+                        (i64_t.const_zero(), i64_t.const_zero())
+                    }
+                }
+            };
+            self.builder.build_store(lo_out, lo).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.build_store(hi_out, hi).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.build_return(None).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.key_extractors.insert(subject, f);
+        }
+        if let Some(bb) = saved_block {
+            self.builder.position_at_end(bb);
+        }
+        Ok(())
+    }
+
     pub(crate) fn synthesize_codec_thunks_for_main_bindings(
         &mut self,
     ) -> Result<(), CodegenError> {

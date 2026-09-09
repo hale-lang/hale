@@ -1126,7 +1126,13 @@ control plane; the data plane stays in C:
   The transport loci are deliberately NOT pinned: a pinned locus
   runs birth on its spawned thread, which would make realization
   asynchronous; the serve thread belongs to the C data plane.
-- The serve loop (`lotus_bus_unix_serve`) accepts a peer,
+- The serve loop (`lotus_bus_unix_serve`) serves MANY peers
+  (2026-09-09, DNA F.13): it polls the listener beside every
+  accepted connection (up to 64), admits connections as they
+  arrive, keeps a framed seq space per peer, closes only the peer
+  that hangs up, and — once the listener is shut at exit — drains
+  every connected peer to EOF before leaving. Before this it
+  accepted one peer,
   dispatches its messages, and on peer EOF **re-arms** — closes
   the dead connection and loops back into `accept()` for the
   next peer (GH #233 step 2; peer EOF is not connection loss,

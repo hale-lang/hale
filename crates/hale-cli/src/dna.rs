@@ -494,8 +494,6 @@ fn run_organism(args: &[String]) -> ExitCode {
     };
     let mut observer: Option<std::process::Child> = None;
     let status_path = dna_dir.join("status.json");
-    let port_file = dna_dir.join("iris.port");
-    let _ = fs::remove_file(&port_file);
     if bound {
         eprintln!("hale dna run: membrane bound at {}", dna_dir.display());
         // the status projection, written before iris reads it
@@ -512,10 +510,6 @@ fn run_organism(args: &[String]) -> ExitCode {
             match cmd.spawn() {
                 Ok(c) => {
                     eprintln!("hale dna run: iris at http://127.0.0.1:{port}/  (l law · 4 review vs baseline · 5 organism · m membrane)");
-                    // F.13 (dna/FRICTION.md): a listen binding serves one
-                    // peer at a time, and iris holds the membrane while it
-                    // runs — so `hale dna ask` / `review` go through iris.
-                    let _ = fs::write(&port_file, format!("{port}\n"));
                     observer = Some(c);
                 }
                 Err(e) => eprintln!("hale dna run: could not launch hale iris: {e}"),
@@ -536,7 +530,6 @@ fn run_organism(args: &[String]) -> ExitCode {
         write_status(&root, &status_path);
         std::thread::sleep(std::time::Duration::from_secs(1));
     };
-    let _ = fs::remove_file(&port_file);
     if let Some(mut o) = observer {
         let _ = o.kill();
         let _ = o.wait();
@@ -812,41 +805,12 @@ fn ask(args: &[String]) -> Result<Vec<String>, String> {
     }
 }
 
-/// Publish one typed fact on the membrane. While `hale dna run` has
-/// iris attached, iris HOLDS the organism's listen sockets (a listen
-/// binding serves one peer at a time — F.13 in dna/FRICTION.md), so
-/// the fact goes through iris's `/ctl` endpoint, which publishes the
-/// same declaration on the same socket. Otherwise the embedded
-/// membrane client connects directly.
+/// Publish one typed fact on the membrane: build (once, in the
+/// toolchain cache beside the core it imports) and exec the membrane
+/// client with routes to this project's sockets. A listen binding
+/// serves many peers (F.13, fixed), so this connects beside an
+/// attached iris.
 fn publish_on_membrane(root: &Path, kind: &str, body: &str) -> Result<(), String> {
-    if let Ok(p) = fs::read_to_string(root.join(".hale/dna/iris.port")) {
-        if let Ok(port) = p.trim().parse::<u16>() {
-            let path = if kind == "intent" { "/ctl/intent" } else { "/ctl/review" };
-            match post_local(port, path, body) {
-                Ok(status) if status == 200 => return Ok(()),
-                Ok(status) => return Err(format!("iris refused the {kind} (HTTP {status})")),
-                Err(e) => eprintln!("hale dna: iris at :{port} did not answer ({e}); publishing directly"),
-            }
-        }
-    }
-    publish_directly(root, kind, body)
-}
-
-fn post_local(port: u16, path: &str, body: &str) -> Result<u16, String> {
-    use std::io::{Read, Write};
-    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).map_err(|e| e.to_string())?;
-    s.set_read_timeout(Some(std::time::Duration::from_secs(5))).map_err(|e| e.to_string())?;
-    s.write_all(format!("POST {path} HTTP/1.0\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes())
-        .map_err(|e| e.to_string())?;
-    let mut out = String::new();
-    let _ = s.read_to_string(&mut out);
-    out.split_whitespace().nth(1).and_then(|c| c.parse().ok()).ok_or_else(|| "no HTTP status".to_string())
-}
-
-/// Build (once, in the toolchain cache beside the core it imports)
-/// and exec the membrane client with routes to this project's
-/// sockets.
-fn publish_directly(root: &Path, kind: &str, body: &str) -> Result<(), String> {
     let cache = hale_iris::materialize().map_err(|e| format!("cannot materialize the toolchain cache: {e}"))?;
     let bin = cache.join(hale_dna::MEMBRANE_BIN);
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
