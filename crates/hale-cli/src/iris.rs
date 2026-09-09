@@ -9,6 +9,8 @@
 //! over the shm segment like any other consumer.
 //!
 //!   hale iris [port] [artifact]         fusion + HTTP/SSE at :port (8787)
+//!     --diff <a.topology> <b.topology>  review view: diff the pair here
+//!     --diff <diff.json>                … or carry a ready diff document
 //!   hale iris inspect <artifact> [url]  artifact-side inspector
 //!   hale iris --where                   print the cache directory
 //!   hale iris --build-only              materialize + build, print the binary
@@ -62,7 +64,7 @@ fn exec(bin: &Path, args: &[String]) -> ExitCode {
 pub fn run(args: &[String]) -> ExitCode {
     match args.first().map(String::as_str) {
         Some("--help") | Some("-h") => {
-            eprintln!("usage: hale iris [port] [artifact.json]");
+            eprintln!("usage: hale iris [port] [artifact.json] [--diff <a.topology> <b.topology> | --diff <diff.json>]");
             eprintln!("       hale iris inspect <artifact.json> [http://host:port]");
             eprintln!("       hale iris --where | --build-only");
             ExitCode::SUCCESS
@@ -98,6 +100,43 @@ pub fn run(args: &[String]) -> ExitCode {
             exec(&bin, &args[1..])
         }
         _ => {
+            // GH #527 B5: `--diff a b` diffs the pair HERE (one
+            // engine, `hale_types::topology_diff`) and hands the
+            // document to fuse-hl; `--diff doc.json` hands a ready
+            // one over. With a pair and no artifact positional, the
+            // B side is the artifact the law view runs against.
+            let mut positional: Vec<String> = Vec::new();
+            let mut diff_paths: Vec<String> = Vec::new();
+            let mut it = args.iter();
+            while let Some(a) = it.next() {
+                if a == "--diff" {
+                    for x in it.by_ref() {
+                        if x.starts_with("--") {
+                            break;
+                        }
+                        diff_paths.push(x.clone());
+                        if diff_paths.len() == 2 {
+                            break;
+                        }
+                    }
+                } else if a.starts_with("--") {
+                    eprintln!("hale iris: unknown flag `{a}`");
+                    return ExitCode::from(2);
+                } else {
+                    positional.push(a.clone());
+                }
+            }
+            let diff_doc = match diff_paths.len() {
+                0 => None,
+                1 => Some(diff_paths[0].clone()),
+                _ => match write_pair_diff(&diff_paths[0], &diff_paths[1]) {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        eprintln!("{e}");
+                        return ExitCode::from(2);
+                    }
+                },
+            };
             let (root, bin) = match ensure_built(hale_iris::FUSE_SEED, hale_iris::FUSE_BIN) {
                 Ok(x) => x,
                 Err(e) => {
@@ -105,15 +144,43 @@ pub fn run(args: &[String]) -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            // fuse-hl's positional argv: port, webroot, [artifact].
-            let port = args.first().cloned().unwrap_or_else(|| "8787".to_string());
+            // fuse-hl's positional argv: port, webroot, [artifact], [diff].
+            let port = positional.first().cloned().unwrap_or_else(|| "8787".to_string());
+            let artifact = positional
+                .get(1)
+                .cloned()
+                .or_else(|| if diff_paths.len() == 2 { Some(diff_paths[1].clone()) } else { None });
             let mut fargs = vec![port, root.join(hale_iris::WEBROOT).display().to_string()];
-            if let Some(artifact) = args.get(1) {
-                fargs.push(artifact.clone());
+            if let Some(doc) = diff_doc {
+                fargs.push(artifact.unwrap_or_default());
+                fargs.push(doc);
+            } else if let Some(artifact) = artifact {
+                fargs.push(artifact);
             }
             exec(&bin, &fargs)
         }
     }
+}
+
+/// Diff two topology artifacts with the compiler's own engine and
+/// write the document where fuse-hl can watch it.
+fn write_pair_diff(a: &str, b: &str) -> Result<String, String> {
+    let mut admitted = Vec::new();
+    for p in [a, b] {
+        let raw = std::fs::read_to_string(p).map_err(|e| format!("hale iris --diff: cannot read {p}: {e}"))?;
+        admitted.push(hale_types::topology_diff::admit(p, &raw).map_err(|e| format!("hale iris --diff: {e}"))?);
+    }
+    let d = hale_types::topology_diff::diff(&admitted[0], &admitted[1]);
+    let out = std::env::temp_dir().join(format!("hale-iris-diff-{}.json", std::process::id()));
+    std::fs::write(&out, serde_json::to_string_pretty(&d).unwrap_or_default())
+        .map_err(|e| format!("hale iris --diff: cannot write {}: {e}", out.display()))?;
+    eprintln!(
+        "hale iris: review view over {} -> {} ({})",
+        a,
+        b,
+        d["classification"].as_str().unwrap_or("?")
+    );
+    Ok(out.display().to_string())
 }
 
 /// `hale run --observe`: an iris session for the program's lifetime.

@@ -7,7 +7,7 @@
 // implementation; same segments in, same tables out.
 //
 //   hale build .           # or hale run . -- 8787 ../../render/web
-//   ./fuse-hl [port] [webroot] [topology.json]
+//   ./fuse-hl [port] [webroot] [topology.json] [diff.json]
 //
 // The optional third arg is a topology artifact (`hale check .
 // --dump-topology=...`). When given, fuse-hl verifies its
@@ -16,6 +16,14 @@
 // within a second), and adds a "law" section to /snapshot: each
 // claim with its STATIC verdict and its WITNESSED state against
 // the observed fleet (INSPECTOR.md, "witnessed law").
+//
+// The optional fourth arg is a `hale model diff` document (GH
+// #527 B5). fuse-hl watches it at the same cadence and carries
+// it into /snapshot as a "diff" section, verbatim: the renderer's
+// perspective [4] is the semantic review view over it, and marks
+// live processes still expressing the OLD artifact by the
+// model hash their header carries. fuse-hl does not interpret
+// the diff — one engine (`hale model diff`) owns its meaning.
 //
 // Endpoints: /snapshot (JSON), /events (SSE, capped cadence),
 // / and /app.js (static, whitelist). Snapshots carry monotonic
@@ -273,6 +281,7 @@ locus Cycle {
         wits: WitVec;
         lawmeta: StrVec;
         art_path: String = "";
+        diff_path: String = "";
         reg_dir: String = "/tmp/hale-obs";
         do_disc: Bool = false;
         do_snap: Bool = false;
@@ -557,6 +566,7 @@ locus Cycle {
     // parse allocations die with this Cycle. lawmeta cells:
     // 0 last-digest  1 model  2 verdict  3 digest-state
     // 4 adequacy(raw json)  5 capabilities(raw)  6 groups(raw)
+    // 7 diff document(raw, one line)  8 diff state  9 diff last-hash
 
     fn law_subject_of(topics_raw: String, tname: String) -> String {
         let mut it = std::json::array_first_span(topics_raw);
@@ -845,6 +855,50 @@ locus Cycle {
     // the advisory itself recommends — already applied, one level up
     // than the analysis can see. Measured flat across a 60s soak at
     // ~500k records/s (README § Verified).
+    // ---- diff ingestion (hale model diff document -> lawmeta 7..9) ----
+    // Same cadence as law (1 Hz); re-reads only when the file's
+    // bytes change. The document is carried VERBATIM (one line)
+    // into /snapshot — fuse-hl does not interpret it. Only the
+    // schema is checked, so a document this renderer cannot read
+    // is reported as such rather than rendered wrong.
+    @unbounded
+    fn ingest_diff() {
+        if self.diff_path == "" { return; }
+        let doc = std::io::fs::read_file(self.diff_path) or "";
+        if len(doc) == 0 {
+            if (self.lawmeta.get(8) or "") != "unreadable" {
+                self.lawmeta.set(8, "unreadable") or discard;
+                self.lawmeta.set(7, "") or discard;
+                self.tail_push("diff: " + self.diff_path + " unreadable");
+            }
+            return;
+        }
+        let h = hex16(fnv1a64(doc));
+        if h == (self.lawmeta.get(9) or "") { return; } // unchanged
+        self.lawmeta.set(9, h) or discard;
+        let schema = std::json::find_string_field(doc, "schema");
+        if schema != "1.0" {
+            self.lawmeta.set(8, "unsupported-schema " + schema) or discard;
+            self.lawmeta.set(7, "") or discard;
+            self.tail_push("diff: unsupported schema " + schema + " - not rendered");
+            return;
+        }
+        self.lawmeta.set(7, oneline(doc)) or discard;
+        self.lawmeta.set(8, "loaded") or discard;
+        self.tail_push("diff: loaded (" + std::json::find_string_field(doc, "classification") + ")");
+    }
+
+    @unbounded
+    fn diff_json() -> String {
+        if self.diff_path == "" { return ""; }
+        let mut s = ",\"diff\":{\"path\":\"" + jstr(self.diff_path) + "\"";
+        s = s + ",\"state\":\"" + jstr(self.lawmeta.get(8) or "") + "\"";
+        let doc = self.lawmeta.get(7) or "";
+        if len(doc) > 0 { s = s + ",\"document\":" + doc; }
+        else { s = s + ",\"document\":null"; }
+        return s + "}";
+    }
+
     @unbounded
     fn snapshot() -> String {
         let mut s = "{\"ts\":" + self.now + ",\"processes\":[";
@@ -937,7 +991,7 @@ locus Cycle {
             }
             evi = evi + 1;
         }
-        s = s + "]" + self.law_json() + "}";
+        s = s + "]" + self.law_json() + self.diff_json() + "}";
         return s;
     }
 
@@ -1282,7 +1336,7 @@ locus Cycle {
     }
 
     birth() {
-        if self.do_disc { self.discover(); self.ingest_law(); }
+        if self.do_disc { self.discover(); self.ingest_law(); self.ingest_diff(); }
         self.drain_rings();
         if self.do_snap {
             let snap = self.snapshot();
@@ -1315,6 +1369,7 @@ main locus App {
         srv: std::http::Server;
         reg_dir: String = "/tmp/hale-obs";
         art_path: String = "";
+        diff_path: String = "";
         snap_ns: Int = 100000000; // SSE cadence: 10 Hz
     }
 
@@ -1337,7 +1392,7 @@ main locus App {
             m = m + 1;
         }
         let mut lw = 0;
-        while lw < 7 {
+        while lw < 10 {
             self.lawmeta.push("");
             lw = lw + 1;
         }
@@ -1361,7 +1416,8 @@ main locus App {
                 fds: self.fds,
                 claims: self.claims, gmembers: self.gmembers,
                 wits: self.wits, lawmeta: self.lawmeta,
-                art_path: self.art_path, reg_dir: self.reg_dir,
+                art_path: self.art_path, diff_path: self.diff_path,
+                reg_dir: self.reg_dir,
                 do_disc: do_disc, do_snap: do_snap, now: now
             };
             if (self.meta.get(M_WORKED) or 0) < 2 { std::time::sleep(2ms); }
@@ -1373,6 +1429,7 @@ fn main() {
     let port = std::str::parse_int(std::env::arg_or(1, "8787")) or 8787;
     let webroot = std::env::arg_or(2, "../../render/web");
     let art_path = std::env::arg_or(3, "");
+    let diff_path = std::env::arg_or(4, "");
     let mut reg_dir = "/tmp/hale-obs";
     if std::env::var_exists("XDG_RUNTIME_DIR") {
         reg_dir = std::env::var("XDG_RUNTIME_DIR") + "/hale";
@@ -1391,6 +1448,7 @@ fn main() {
         fds: fds,
         reg_dir: reg_dir,
         art_path: art_path,
+        diff_path: diff_path,
         srv: std::http::Server {
             port: port,
             handler: FuseHandler { snaps: snaps, fds: fds, webroot: webroot },

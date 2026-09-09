@@ -97,3 +97,74 @@ fn iris_inspect_builds_and_reports_a_missing_artifact() {
     assert!(cache.join("hale/iris").exists(), "inspector materialized under the private cache");
     let _ = (out, std::fs::remove_dir_all(&cache));
 }
+
+/// GH #527 B5: `hale iris --diff a b` diffs the pair with the
+/// compiler's engine and fuse-hl carries the document into
+/// /snapshot verbatim, under `diff`.
+#[test]
+fn iris_diff_pair_rides_into_the_snapshot() {
+    let cache = cache_root();
+    let src_a = "type T { n: Int = 0; }\ntopic Evt { payload: T; subject: \"evt\"; }\nlocus Worker {\n    bus { subscribe Evt as on_e; }\n    fn on_e(t: T) { println(\"e\"); }\n}\nmain locus App {\n    params { w: Worker = Worker { }; }\n    bus { publish Evt; }\n    run() { Evt <- T { n: 1 }; }\n}\n";
+    let src_b = src_a.replace("locus Worker", "locus Late {\n    bus { subscribe Evt as on_l; }\n    fn on_l(t: T) { println(\"l\"); }\n}\nlocus Worker")
+        .replace("params { w: Worker = Worker { }; }", "params { w: Worker = Worker { }; l: Late = Late { }; }");
+    let mut artifacts = Vec::new();
+    for (name, src) in [("a", src_a.to_string()), ("b", src_b)] {
+        let seed = cache.join(name);
+        std::fs::create_dir_all(&seed).unwrap();
+        std::fs::write(seed.join("main.hl"), src).unwrap();
+        let art = cache.join(format!("{name}.topology"));
+        let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+            .arg("check")
+            .arg(&seed)
+            .arg(format!("--dump-topology={}", art.display()))
+            .output()
+            .unwrap();
+        assert!(art.is_file(), "artifact {name}: {}", String::from_utf8_lossy(&out.stderr));
+        artifacts.push(art);
+    }
+    let port = free_port();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["iris", &port.to_string(), "--diff"])
+        .arg(&artifacts[0])
+        .arg(&artifacts[1])
+        .env("XDG_CACHE_HOME", &cache)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn hale iris --diff");
+    let deadline = Instant::now() + Duration::from_secs(25);
+    let mut body = String::new();
+    while Instant::now() < deadline {
+        if let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) {
+            let _ = s.set_read_timeout(Some(Duration::from_secs(3)));
+            let _ = s.write_all(b"GET /snapshot HTTP/1.0\r\nHost: x\r\n\r\n");
+            let mut buf = String::new();
+            let _ = s.read_to_string(&mut buf);
+            // the diff loads on the 1 Hz discovery tick
+            if buf.contains("\"state\":\"loaded\"") {
+                body = buf;
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&cache);
+    let json_start = body.find("{\"ts\"").expect("snapshot body");
+    let v: serde_json::Value = serde_json::from_str(&body[json_start..]).expect("snapshot is JSON");
+    assert_eq!(v["diff"]["state"], "loaded", "{body}");
+    let doc = &v["diff"]["document"];
+    assert_eq!(doc["schema"], "1.0");
+    assert_eq!(doc["classification"], "model-shape");
+    let added: Vec<&str> = doc["declarations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["change"] == "added" && r["kind"] == "locus")
+        .map(|r| r["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(added, vec!["Late"]);
+    // the B side became the law artifact
+    assert_eq!(v["law"]["digest"], "verified", "{}", v["law"]);
+}
