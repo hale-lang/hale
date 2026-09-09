@@ -1,0 +1,40 @@
+// Repro 3: do fallible form .set calls (`or discard`) leak
+// per call? fuse-hl does ~1M/s of these on the event path and
+// leaks ~1.4MB/s; idle (1k sets/s) is flat but that rate would
+// hide a small per-call cost. 100M sets from per-iteration
+// children: flat = exonerated; growth = smoking gun.
+type Ent { seq: Int = 0; ts: Int = 0; seg: Int = -1; kind: Int = 0; }
+
+@form(vec)
+locus EntVec { capacity { heap items of Ent; } }
+
+locus Setter {
+    params { v: EntVec; round: Int = 0; }
+    birth() {
+        let mut i = 0;
+        while i < 100000 {
+            let e = self.v.get(i % 1024) or Ent { };
+            self.v.set(i % 1024, Ent { seq: e.seq + 1, ts: self.round, seg: 0, kind: 1 }) or discard;
+            i = i + 1;
+        }
+    }
+}
+
+main locus App {
+    params { v: EntVec = EntVec { }; }
+    birth() {
+        let mut i = 0;
+        while i < 1024 { self.v.push(Ent { }); i = i + 1; }
+    }
+    run() {
+        let mut n = 0;
+        while n < 20 {
+            Setter { v: self.v, round: n };
+            n = n + 1;
+        }
+        let probe = self.v.get(7) or Ent { };
+        println("done, seq[7]=" + probe.seq);
+    }
+}
+
+fn main() { App { }; }

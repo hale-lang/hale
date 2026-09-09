@@ -1,0 +1,12 @@
+emitter/synth
+emitter/peek
+*.dump
+consumer/fuse
+examples/obs-smoke/obs-smoke
+consumer/fuse-hl/fuse-hl
+inspect/inspect
+examples/inspect-demo/inspect-demo
+examples/wasm-flower/flower.wasm
+examples/wasm-flower/flower.mjs
+examples/claims-demo/app/app
+examples/claims-demo/rogue/rogue

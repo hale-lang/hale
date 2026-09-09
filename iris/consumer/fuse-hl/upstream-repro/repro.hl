@@ -1,0 +1,30 @@
+// Minimal repro: does a per-iteration child locus's region
+// reclaim at dissolve? Loop constructs a child that builds a
+// ~1KB string; if regions reclaim, RSS is flat; if not, this
+// leaks ~10MB/s at ~10k iterations/s.
+
+locus Tick {
+    params { n: Int = 0; }
+    birth() {
+        let mut s = "";
+        let mut i = 0;
+        while i < 64 {
+            s = s + "0123456789abcdef";
+            i = i + 1;
+        }
+        if self.n % 100000 == 0 { println("tick " + self.n + " len " + len(s)); }
+    }
+}
+
+main locus App {
+    run() {
+        let mut n = 0;
+        while n < 3000000 {
+            Tick { n: n };
+            n = n + 1;
+        }
+        println("done");
+    }
+}
+
+fn main() { App { }; }

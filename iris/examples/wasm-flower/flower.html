@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>iris wasm spike — flower render loop in Hale</title>
+<style>
+  body { margin: 0; background: #0b0e14; color: #a8b3c4; font: 13px/1.4 system-ui; }
+  #hud { position: fixed; top: 10px; left: 12px; }
+  canvas { display: block; margin: 0 auto; }
+</style>
+</head>
+<body>
+<div id="hud">hale → wasm32 render loop · <span id="stats">…</span></div>
+<canvas id="c" width="800" height="600"></canvas>
+<script type="module">
+import { run } from "./flower.mjs";
+
+const ctx = document.getElementById("c").getContext("2d");
+const stats = document.getElementById("stats");
+let frameCount = 0, wasmUs = 0;
+
+const inst = await run(() => ({
+  ctx_clear: (w, h) => { ctx.clearRect(0, 0, w, h); },
+  ctx_petal: (cx, cy, angle, len, bloom, hue) => {
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(angle);
+    ctx.beginPath();
+    ctx.ellipse(len / 2, 0, len / 2, 6 + 8 * bloom, 0, 0, Math.PI * 2);
+    ctx.fillStyle = `hsla(${hue}, 70%, 60%, ${0.25 + 0.6 * bloom})`;
+    ctx.fill();
+    ctx.restore();
+  },
+  ctx_edge: (x1, y1, x2, y2, load) => {
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.lineWidth = 1 + 6 * load;
+    ctx.strokeStyle = `hsla(${120 - 120 * load}, 80%, 55%, 0.8)`;
+    ctx.stroke();
+  },
+  frame_done: (n) => { frameCount = Number(n); },
+}));
+
+const loop = (t) => {
+  const a = performance.now();
+  inst.exports.frame(t);
+  wasmUs = wasmUs * 0.95 + (performance.now() - a) * 1000 * 0.05;
+  if (frameCount % 30 === 0)
+    stats.textContent = `frame ${frameCount} · wasm ${wasmUs.toFixed(1)}µs/frame`;
+  requestAnimationFrame(loop);
+};
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
