@@ -28,6 +28,7 @@ use hale_syntax::ast::Program;
 
 use hale_lsp as lsp;
 mod fleet;
+mod iris;
 mod mcp;
 mod pkg;
 mod replay;
@@ -56,6 +57,11 @@ fn main() -> ExitCode {
     // Which targets exist, and what the compiler can actually do with
     // each. Naming a target and building it are different capabilities,
     // so the listing states the tier rather than implying parity.
+    // GH #527 B3: the embedded observer. `hale iris [port] [artifact]`,
+    // `hale iris inspect <artifact> [url]`, `--where`, `--build-only`.
+    if cmd == "iris" {
+        return iris::run(&args[2..]);
+    }
     if cmd == "--list-targets" || cmd == "targets" {
         let host = hale_codegen::target::TargetSpec::host();
         for t in hale_codegen::target::TargetSpec::known() {
@@ -227,6 +233,26 @@ fn main() -> ExitCode {
             // `std::env::arg(1..)` see ["foo", "bar"] exactly as a
             // built binary run directly would.
             let user_args: Vec<String> = args.iter().skip(3).cloned().collect();
+            // GH #527 B3: `hale run --observe <target>` — the program
+            // publishes its observation segment (LOTUS_OBS=1, inherited
+            // by the child) and an iris session runs beside it for the
+            // program's lifetime. The flag is consumed here; nothing
+            // reaches the program's argv.
+            if user_args.first().map(String::as_str) == Some("--observe") || target.to_str() == Some("--observe") {
+                let (target, user_args) = if target.to_str() == Some("--observe") {
+                    (PathBuf::from(user_args.first().cloned().unwrap_or_default()), user_args[1..].to_vec())
+                } else {
+                    (target.clone(), user_args[1..].to_vec())
+                };
+                std::env::set_var("LOTUS_OBS", "1");
+                let session = iris::spawn_session();
+                let code = run_program(&target, &user_args);
+                if let Some(mut s) = session {
+                    let _ = s.kill();
+                    let _ = s.wait();
+                }
+                return code;
+            }
             run_program(&target, &user_args)
         }
         "build" => run_build(&target),
@@ -255,6 +281,9 @@ fn usage() {
     eprintln!("    hale run   <file.hl | dir>    compile + run as a native binary");
     eprintln!("    hale build <file.hl | dir>    parse + typecheck + emit native binary");
     eprintln!("    hale replay <rec> <file.hl>   re-run a LOTUS_OBS_RECORD recording");
+    eprintln!("    hale iris  [port] [artifact]  the embedded observer: attach to LOTUS_OBS=1 processes, serve :8787");
+    eprintln!("    hale iris inspect <artifact>  artifact-side inspector (drift / declared-but-silent / law)");
+    eprintln!("    hale run --observe <target>   run with LOTUS_OBS=1 and an iris session beside it");
     eprintln!("        [--diff: report first divergence, fail on any]");
     eprintln!("        [--at <n> | --at <consumer-id>:<ordinal>: SIGSTOP at that consume]");
     eprintln!("        [--allow-live-effects] [--allow-unverified-model] [--allow-truncated]");

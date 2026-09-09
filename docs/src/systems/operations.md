@@ -235,9 +235,11 @@ births so it can reconstruct the supervision graph.
 The segment lives at `/hale-obs-<pid>` with a registration file
 under `$XDG_RUNTIME_DIR/hale/` (or `/tmp/hale-obs/`). The wire
 layout is the iris observation protocol — the canonical contract
-is `spec/runtime.md` § *Native observation emission*; the iris
-project is the reference consumer. Knobs: `LOTUS_OBS_RINGS`
-(default 8), `LOTUS_OBS_SLOTS` (default 4096).
+is `spec/runtime.md` § *Native observation emission*; iris is
+the reference consumer and ships in the binary — `hale run
+--observe prog.hl` runs the program with the segment published
+and an observer beside it (see [Iris](./iris.md)). Knobs:
+`LOTUS_OBS_RINGS` (default 8), `LOTUS_OBS_SLOTS` (default 4096).
 
 **Cross-process edges opt into the wire.** The `(origin, seq)`
 key that pairs a send with its deliveries travels *in the wire
