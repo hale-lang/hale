@@ -8,6 +8,14 @@ behavior.
 
 ## Unreleased
 
+### `hale dna init` / `upgrade` — the DNA attached to an existing application (GH #528 PR 23)
+
+- `hale dna init [app-dir]` materializes the DNA core into `vendor/dna/` (toolchain-owned, pinned in `hale.lock` as `[dna] toolchain`), generates the project-owned `dna/assembly.hl` (the `Genome`: the `Dna` constructor with Phase 1 defaults — file Journal, conservative grant, human review before apply, `NoDeployment`, local membrane — plus the baseline `Review` pinned to the sha256 of the declared purpose), `dna/purpose.hl`, and `dna_constitution.hl` in the application's own seed (`group organism`, the core's groups, `constitution Project` — a constitution names groups its adopting entrypoint must declare, and an importer of the app must see both together); grafts the imports, the `genome` param, `adopt Project;` and the membrane bindings onto the application's `main locus` by span-anchored insertion (nothing existing is rewritten); adds `[claims] base` and a `local` environment to `hale.toml`; and seeds `.hale/dna/journal.jsonl` from the artifact it cuts with `hale check --dump-topology` (`application.attached`, `structure.observed` per locus/topic/binding/effect class/claim with provenance `observed`, `responsibility.proposed` per locus with provenance `inferred` and `ratified: false`, `review.requested` for the baseline). Re-running keeps every file.
+- The application-wide clause `organism_gated` is generated active only when the baseline artifact has no unresolvable edges; otherwise it is written commented with the reason and a `law.deferred` event is journaled — a `forbid reaches` over an application with an indirect call fails closed, and init must leave the application passing its previous checks. The assembly-scoped `apply_gated` (from the `Genome`) always holds.
+- `hale dna upgrade [dir]` re-materializes `vendor/dna` and re-pins the lock without touching `dna/`. `hale fetch` now carries the `[dna]` pin through a rewrite of `hale.lock`.
+- Topology artifact schema 1.18 → **1.19**: an unhashed `bindings` section (topic, subject, transport, role, loss, source site) — the deployment facts the Journal seeding reads and a fleet consumer can read without re-parsing. `shape_hash` unmoved.
+- Docs: new chapter *DNA: a governed application*. Tests: `crates/hale-cli/tests/dna_init.rs`.
+
 ### The typed control channel — verdicts and intent cross the membrane (GH #527 B6)
 
 - **Language:** a `bindings { }` entry may name an imported topic — `bindings { dna::ReviewVerdict: unix("/path", role: listen); }`. The entry keeps its ident shape with the path joined by `::` and canonicalizes to the mangled declaration exactly as a qualified bus subject does, so the checker, the model, role inference and codegen see one name. Unknown paths are still refused (`binding references unknown topic`).

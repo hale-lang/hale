@@ -59,6 +59,7 @@
 - [WebAssembly & the browser](./systems/webassembly.md)
 - [Operations & debugging](./systems/operations.md)
 - [Iris: the embedded observer](./systems/iris.md)
+- [DNA: a governed application](./systems/dna.md)
 - [Record & replay](./systems/replay.md)
 - [Modes](./systems/modes.md)
 

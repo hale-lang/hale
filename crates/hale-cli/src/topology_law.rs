@@ -3346,8 +3346,9 @@ pub fn validate_law_account(
     let schema = v["schema"].as_str().unwrap_or_default();
     let migrated: &[(&str, JF)] = match schema {
         // 1.18 added the per-locus `contracts` section (GH #527
-        // B4); the family account is 1.17's.
-        "1.18" | "1.17" => MIGRATED_117,
+        // B4), 1.19 the declared `bindings` (GH #528); the family
+        // account is 1.17's.
+        "1.19" | "1.18" | "1.17" => MIGRATED_117,
         "1.16" => MIGRATED_116,
         "1.15" => MIGRATED_115,
         _ => MIGRATED_114,

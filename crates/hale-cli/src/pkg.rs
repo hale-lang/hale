@@ -228,6 +228,16 @@ impl DepSpec {
 pub struct Lockfile {
     #[serde(default, rename = "dep")]
     pub deps: Vec<LockedDep>,
+    /// GH #528: `[dna] toolchain = "<version>"` — the compiler
+    /// version whose `dna/core` was materialized into `vendor/dna/`
+    /// by `hale dna init` / `upgrade`. Toolchain-owned, so it is
+    /// pinned here beside the git deps rather than in `hale.toml`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dna: Option<DnaLock>,
+}
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct DnaLock {
+    pub toolchain: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -271,7 +281,7 @@ pub fn fetch(repo_root: &Path) -> Result<(), String> {
     fs::create_dir_all(&vendor_dir)
         .map_err(|e| format!("create vendor/: {}", e))?;
 
-    let mut new_lock = Lockfile { deps: Vec::new() };
+    let mut new_lock = Lockfile { deps: Vec::new(), dna: read_lockfile(&lock_path)?.dna };
     for (name, spec) in &manifest.deps {
         let target = vendor_dir.join(name);
         // Refuse to clone over a directory the user planted by
@@ -308,7 +318,7 @@ fn read_manifest(path: &Path) -> Result<Manifest, String> {
     toml::from_str(&src).map_err(|e| format!("parse {}: {}", path.display(), e))
 }
 
-fn read_lockfile(path: &Path) -> Result<Lockfile, String> {
+pub(crate) fn read_lockfile(path: &Path) -> Result<Lockfile, String> {
     if !path.exists() {
         return Ok(Lockfile::default());
     }
@@ -487,6 +497,7 @@ mod tests {
                     sha: "deadbeefcafef00d".into(),
                 },
             ],
+            dna: None,
         };
         let text = toml::to_string_pretty(&lock).expect("serialize");
         let parsed: Lockfile = toml::from_str(&text).expect("parse");

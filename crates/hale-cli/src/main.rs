@@ -28,6 +28,7 @@ use hale_syntax::ast::Program;
 
 use hale_lsp as lsp;
 mod fleet;
+mod dna;
 mod iris;
 mod mcp;
 mod pkg;
@@ -61,6 +62,11 @@ fn main() -> ExitCode {
     // `hale iris inspect <artifact> [url]`, `--where`, `--build-only`.
     if cmd == "iris" {
         return iris::run(&args[2..]);
+    }
+    // GH #528: `hale dna init|new|upgrade …` — the DNA attached to an
+    // application as ordinary Hale source.
+    if cmd == "dna" {
+        return dna::run(&args[2..]);
     }
     if cmd == "--list-targets" || cmd == "targets" {
         let host = hale_codegen::target::TargetSpec::host();
@@ -292,6 +298,7 @@ fn usage() {
     eprintln!("    hale iris  [port] [artifact]  the embedded observer: attach to LOTUS_OBS=1 processes, serve :8787");
     eprintln!("    hale iris inspect <artifact>  artifact-side inspector (drift / declared-but-silent / law)");
     eprintln!("    hale run --observe <target>   run with LOTUS_OBS=1 and an iris session beside it");
+    eprintln!("    hale dna init|upgrade         attach the DNA to an application (vendor/dna, dna/, seeded Journal)");
     eprintln!("        [--diff: report first divergence, fail on any]");
     eprintln!("        [--at <n> | --at <consumer-id>:<ordinal>: SIGSTOP at that consume]");
     eprintln!("        [--allow-live-effects] [--allow-unverified-model] [--allow-truncated]");
@@ -1669,6 +1676,11 @@ type ImportRenames = Vec<(Vec<String>, String)>;
 /// importing the same lib produce identical mangled names
 /// because they compute the lib's path relative to the same
 /// root.
+/// `find_workspace_root` for sibling modules.
+pub(crate) fn find_workspace_root_pub(start: &Path) -> Option<PathBuf> {
+    find_workspace_root(start)
+}
+
 fn find_workspace_root(start: &Path) -> Option<PathBuf> {
     // Canonicalize first so the walk-up traverses real ancestor
     // directories regardless of whether `start` came in relative
