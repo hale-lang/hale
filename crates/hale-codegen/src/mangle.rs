@@ -905,9 +905,13 @@ impl<'a> Mangler<'a> {
                             if let BusSubject::Topic(ident) = subject {
                                 self.rewrite_ident(&mut ident.name);
                             }
-                            // Handler resolves against top-level fns in
-                            // the seed; rewrite if it's one of ours.
-                            self.rewrite_ident(&mut handler.name);
+                            // GH #542: the handler names a MEMBER method
+                            // of this locus (kept unrenamed by
+                            // walk_method_decl), never a top-level fn.
+                            // Rewriting it when a free fn shared the
+                            // name pointed the subscription at a method
+                            // that does not exist.
+                            let _ = &handler;
                             if let Some(t) = ty {
                                 self.walk_type_expr(t);
                             }
@@ -1017,7 +1021,15 @@ impl<'a> Mangler<'a> {
                 }
                 PerspectiveMember::StableWhen(b) => self.walk_block(b),
                 PerspectiveMember::SerializeAs(t) => self.walk_type_expr(t),
-                PerspectiveMember::Fn(f) => self.walk_fn_decl(f),
+                // GH #542: a contract method's name lives in member
+                // position, exactly like a locus method's (pond P1
+                // below) — looked up on the perspective by its
+                // authored name, never through the seed rename map.
+                // `walk_fn_decl` renamed it when a top-level fn shared
+                // the name, so every `serves` impl (whose own method
+                // correctly kept its name) was "missing" the contract
+                // method once imported.
+                PerspectiveMember::Fn(f) => self.walk_method_decl(f),
                 // Phase 2c: contract bus surface.
                 PerspectiveMember::Bus(bb) => {
                     for bm in &mut bb.members {
@@ -1026,7 +1038,9 @@ impl<'a> Mangler<'a> {
                                 if let BusSubject::Topic(id) = subject {
                                     self.rewrite_ident(&mut id.name);
                                 }
-                                self.rewrite_ident(&mut handler.name);
+                                // GH #542: a contract handler is a member
+                                // method name; see the locus case.
+                                let _ = &handler;
                                 if let Some(t) = ty {
                                     self.walk_type_expr(t);
                                 }
