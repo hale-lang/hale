@@ -85,6 +85,23 @@ In Phase 1 the deployment gateway is `NoDeployment`: every
 mutation stops at `staged`. That is not a claim, it is the
 constructor.
 
+## Running it
+
+```sh
+hale dna run            # in the project; --port N for iris, --no-iris to skip it
+```
+
+`run` is a **stateless host**. It cuts a fresh artifact of what is
+about to run (`.hale/dna/current.topology`), builds, execs the
+organism under `LOTUS_OBS=1` from the project root, waits for the
+membrane sockets, and attaches iris with the law view on the fresh
+artifact, the review view diffing it against the baseline `init`
+cut (which is the application as `init` found it, so the first run's
+review shows exactly what the DNA added), and the membrane panel. It holds no Task state: an intent
+offered through the membrane lands in the organism's Journal, and
+when the organism exits the host reaps iris and exits with the
+organism's code. The Journal is the record either way.
+
 ## The membrane
 
 The organism binds two typed topics on unix sockets under

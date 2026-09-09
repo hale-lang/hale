@@ -38,7 +38,7 @@ fn new_makes_a_governed_application_that_checks_builds_runs_and_tests() {
     assert!(ok, "matrix: {out}");
     let (ok, out) = hale(&["build", "."], &app);
     assert!(ok, "build: {out}");
-    let run = Command::new(app.join("demo-app")).current_dir(&app).output().unwrap();
+    let run = Command::new(app.join("demo-app")).current_dir(&app).env("HALE_DNA_ONESHOT", "1").output().unwrap();
     assert!(run.status.success(), "run: {}", String::from_utf8_lossy(&run.stderr));
     assert!(String::from_utf8_lossy(&run.stdout).contains("1 ping(s) echoed"));
     let (ok, out) = hale(&["test", "."], &app);

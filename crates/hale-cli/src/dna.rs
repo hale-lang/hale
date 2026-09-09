@@ -10,6 +10,7 @@
 //!   hale dna init [app-dir]     attach the DNA to an existing app
 //!   hale dna new <name>         a greenfield app with its DNA
 //!   hale dna upgrade [dir]      re-materialize vendor/dna for this toolchain
+//!   hale dna run [project]      build, run under LOTUS_OBS with iris attached, hold the membrane
 //!
 //! Layout after `init` (root = the workspace holding hale.toml):
 //!
@@ -53,6 +54,7 @@ pub fn run(args: &[String]) -> ExitCode {
             let dir = args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
             report(upgrade(&dir))
         }
+        Some("run") => run_organism(&args[1..]),
         Some("--help") | Some("-h") | None => usage(if args.is_empty() { 2 } else { 0 }),
         Some(other) => {
             eprintln!("hale dna: unknown subcommand `{other}`");
@@ -65,6 +67,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("usage: hale dna init [app-dir]      attach the DNA to an existing application");
     eprintln!("       hale dna new <name>          a greenfield application with its DNA");
     eprintln!("       hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain");
+    eprintln!("       hale dna run [project] [--port N] [--no-iris]");
+    eprintln!("                                    build, run under LOTUS_OBS with iris attached, hold the membrane");
     if code == 0 {
         ExitCode::SUCCESS
     } else {
@@ -353,6 +357,163 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
 }
 
 // ---------------------------------------------------------------
+// run — the stateless host
+// ---------------------------------------------------------------
+
+/// The project root and its DNA entrypoint (from `[environments.local]`).
+fn project(dir: &Path) -> Result<(PathBuf, PathBuf), String> {
+    let start = dir.canonicalize().map_err(|e| format!("{}: {e}", dir.display()))?;
+    let root = crate::find_workspace_root_pub(&start).unwrap_or(start);
+    let manifest = root.join("hale.toml");
+    let (envs, _) = crate::pkg::read_claims_config(&manifest)?;
+    let seed = envs
+        .get("local")
+        .and_then(|e| e.entrypoints.first().cloned())
+        .map(|e| root.join(e))
+        .unwrap_or_else(|| root.clone());
+    if !root.join("dna").is_dir() {
+        return Err(format!("{} has no DNA (no dna/ seed); run `hale dna init` first", root.display()));
+    }
+    Ok((root, seed))
+}
+
+/// `hale dna run [project] [--port N] [--no-iris]`.
+///
+/// A stateless host: it holds no Task state and decides nothing.
+/// It cuts a fresh artifact of what is about to run, builds it,
+/// execs it with LOTUS_OBS=1 from the project root (the membrane
+/// sockets and the Journal are root-relative), waits for the
+/// membrane to be bound, launches `hale iris` against it (law view
+/// on the fresh artifact, review view diffing it against the
+/// baseline `init` cut, membrane attached), and waits for the
+/// organism. When the organism exits, iris is reaped and the
+/// organism's exit code is ours.
+fn run_organism(args: &[String]) -> ExitCode {
+    let mut dir = PathBuf::from(".");
+    let mut port = "8787".to_string();
+    let mut iris = true;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--port" => match it.next() {
+                Some(p) => port = p.clone(),
+                None => {
+                    eprintln!("hale dna run: --port needs a value");
+                    return ExitCode::from(2);
+                }
+            },
+            "--no-iris" => iris = false,
+            f if f.starts_with("--") => {
+                eprintln!("hale dna run: unknown flag `{f}`");
+                return ExitCode::from(2);
+            }
+            p => dir = PathBuf::from(p),
+        }
+    }
+    let (root, seed) = match project(&dir) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("hale dna run: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let me = match std::env::current_exe() {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("hale dna run: {e}");
+            return ExitCode::from(1);
+        }
+    };
+    let dna_dir = root.join(".hale/dna");
+    let _ = fs::create_dir_all(&dna_dir);
+    // 1. a fresh artifact of what is about to run
+    let current = dna_dir.join("current.topology");
+    let st = Command::new(&me)
+        .arg("check")
+        .arg(&seed)
+        .arg(format!("--dump-topology={}", current.display()))
+        .stdout(std::process::Stdio::null())
+        .status();
+    if !matches!(st, Ok(s) if s.success()) {
+        eprintln!("hale dna run: `hale check {}` failed; the organism is not run on a program that does not pass", seed.display());
+        return ExitCode::from(1);
+    }
+    // 2. build
+    let st = Command::new(&me).arg("build").arg(&seed).stdout(std::process::Stdio::null()).status();
+    if !matches!(st, Ok(s) if s.success()) {
+        eprintln!("hale dna run: `hale build {}` failed", seed.display());
+        return ExitCode::from(1);
+    }
+    let bin_name = seed.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "app".into());
+    let bin = seed.join(&bin_name);
+    if !bin.is_file() {
+        eprintln!("hale dna run: no binary at {}", bin.display());
+        return ExitCode::from(1);
+    }
+    // 3. the organism, from the root, observable
+    for sock in [dna_dir.join(crate::iris::MEMBRANE_VERDICT_SOCK), dna_dir.join(crate::iris::MEMBRANE_INTENT_SOCK)] {
+        let _ = fs::remove_file(&sock);
+    }
+    let mut organism = match Command::new(&bin).current_dir(&root).env("LOTUS_OBS", "1").spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("hale dna run: cannot start {}: {e}", bin.display());
+            return ExitCode::from(1);
+        }
+    };
+    eprintln!("hale dna run: organism {} (pid {}) from {} under LOTUS_OBS=1", bin_name, organism.id(), root.display());
+    // 4. the membrane comes up
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let bound = loop {
+        let up = dna_dir.join(crate::iris::MEMBRANE_VERDICT_SOCK).exists() && dna_dir.join(crate::iris::MEMBRANE_INTENT_SOCK).exists();
+        if up {
+            break true;
+        }
+        if let Ok(Some(_)) = organism.try_wait() {
+            break false;
+        }
+        if std::time::Instant::now() > deadline {
+            break false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    let mut observer: Option<std::process::Child> = None;
+    if bound {
+        eprintln!("hale dna run: membrane bound at {}", dna_dir.display());
+        if iris {
+            let baseline = dna_dir.join("baseline.topology");
+            let mut cmd = Command::new(&me);
+            cmd.arg("iris").arg(&port).arg(&current);
+            if baseline.is_file() {
+                cmd.arg("--diff").arg(&baseline).arg(&current);
+            }
+            cmd.arg("--membrane").arg(&dna_dir);
+            cmd.stdin(std::process::Stdio::null());
+            match cmd.spawn() {
+                Ok(c) => {
+                    eprintln!("hale dna run: iris at http://127.0.0.1:{port}/  (l law · 4 review vs baseline · m membrane)");
+                    observer = Some(c);
+                }
+                Err(e) => eprintln!("hale dna run: could not launch hale iris: {e}"),
+            }
+        }
+    } else if organism.try_wait().ok().flatten().is_none() {
+        eprintln!("hale dna run: the membrane did not come up within 20s; the organism runs unobserved");
+    }
+    // 5. supervise: the organism's exit is ours
+    let code = match organism.wait() {
+        Ok(st) => st.code().unwrap_or(1),
+        Err(_) => 1,
+    };
+    if let Some(mut o) = observer {
+        let _ = o.kill();
+        let _ = o.wait();
+    }
+    eprintln!("hale dna run: organism exited ({code}); the Journal at {} is the record", root.join(JOURNAL_REL).display());
+    ExitCode::from(code.clamp(0, 255) as u8)
+}
+
+// ---------------------------------------------------------------
 // new
 // ---------------------------------------------------------------
 
@@ -388,7 +549,11 @@ main locus {locus} {{
     run() {{
         Pings <- Ping {{ n: 1 }};
         std::time::sleep(100ms);
-        println("{name}: ", self.echo.seen, " ping(s) echoed");
+        println("{name}: ", self.echo.seen, " ping(s) echoed; membrane open");
+        // The organism stays up for its membrane (`hale dna run`);
+        // HALE_DNA_ONESHOT makes a run return after the ping.
+        if std::env::var_exists("HALE_DNA_ONESHOT") {{ return; }}
+        while true {{ std::time::sleep(100ms); }}
     }}
 }}
 
