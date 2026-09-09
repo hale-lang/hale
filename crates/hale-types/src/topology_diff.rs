@@ -728,10 +728,19 @@ pub fn diff(a: &Admitted, b: &Admitted) -> Value {
     let count = |v: &Value, key: &str, val: &str| -> usize {
         v.as_array().map(|r| r.iter().filter(|x| x[key] == val).count()).unwrap_or(0)
     };
+    // `shape_hash` covers the model HALF (sorts, relations, endpoint
+    // identity); payload shapes, params and the other contract facets
+    // ride unhashed. A payload that gained a field with the hash
+    // unmoved is a contract change, not "source-only" — the blind
+    // round's frozen-schema case read as harmless under that label.
+    let contract_changed = contracts.as_array().map(|r| !r.is_empty()).unwrap_or(false)
+        || effects["classes"].as_array().map(|r| !r.is_empty()).unwrap_or(false);
     let classification = if identical {
         "identical"
     } else if shape_changed {
         "model-shape"
+    } else if contract_changed {
+        "contract"
     } else {
         "source-only"
     };
@@ -791,6 +800,7 @@ pub fn render_text(d: &Value) -> String {
         str_of(&d["b"]["shape_hash"])
     ));
     o.push_str("legend: + added  - removed  ~ renamed  > moved  * split/joined  ? ambiguous  ! changed in place\n");
+    o.push_str("classes: identical · source-only (no model or contract change) · contract (a contract or effect moved, shape_hash unmoved) · model-shape\n");
     let mut decl_lines: Vec<String> = Vec::new();
     for r in d["declarations"].as_array().map(|x| x.as_slice()).unwrap_or(&[]) {
         let kind = str_of(&r["kind"]);

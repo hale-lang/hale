@@ -254,6 +254,12 @@ fn contract_effect_and_law_deltas_are_per_entity_set_differences() {
     let b = dump(&dir, "b", &changed);
     let d = diff_json(&a, &b);
     let contracts = rows(&d, "contracts");
+    // a wider payload with the same topology is a CONTRACT change, never "source-only"
+    let widened = BASE.replace("type T { n: Int = 0; }", "type T { n: Int = 0; note: String = \"\"; }");
+    let w = dump(&dir, "w", &widened);
+    let dw = diff_json(&a, &w);
+    assert_eq!(dw["classification"], "contract", "{dw}");
+    assert!(rows(&dw, "contracts").iter().any(|r| r["topic"] == "Evt" && r["facet"] == "shape"), "{dw}");
     let app_params = contracts.iter().find(|r| r["locus"] == "App" && r["facet"] == "params").expect("App params delta");
     assert_eq!(app_params["added"], serde_json::json!(["limit: Int"]));
     assert_eq!(app_params["removed"], serde_json::json!([]));

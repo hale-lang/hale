@@ -540,9 +540,12 @@ The output is a versioned document (`TOPOLOGY_DIFF_SCHEMA`, now
   `family` changes; claims added and removed with their result;
   `adequacy` changes per family; the overall `verdict` when it
   moved.
-- **`classification`** — `identical` (same `artifact_digest`),
-  `source-only` (same `shape_hash`: comments, moved lines,
-  re-spelt law) or `model-shape`.
+- **`classification`** — `identical` (same `artifact_digest`);
+  `source-only` (same `shape_hash`, no contract or effect rows:
+  comments, moved lines, re-spelt law); `contract` (same
+  `shape_hash`, but a contract facet or an effect set moved — a
+  payload that gained a field, a param added — which the hash does
+  not cover); or `model-shape`.
 
 **Matching is deterministic and names what it compared.** The
 `matching` section of every document states the rules; they are:
