@@ -8,6 +8,14 @@ behavior.
 
 ## Unreleased
 
+### DNA: mutations stop at stage; the organism is visible in iris (GH #528 PR 28, #527 B7)
+
+- **Observation names imported loci by their author-facing names.** The manifest recorded the mangled symbol (`__lib_vendor_dna_assembly_Dna`), which iris hides as runtime-internal and which never joined with the artifact's `dna::Dna` — every cross-seed tower was invisible and unjoinable. Codegen now emits the same demangled display the artifact uses (imports ∪ stdlib renames).
+- **B7, the experience source.** `hale dna run` re-projects the Journal into `.hale/dna/status.json` once a second (a projection, never state of its own; written atomically) and hands it to `hale iris --organism <file>`; fuse-hl carries it verbatim under `dna` in `/snapshot`; perspective **[5]** (key `5`/`o`) renders tasks and their state, pending Reviews and why, staged mutations, model calls, the expression identity, and tints the DNA lineage tower (Task / Workflow / Step / Work / Attempt) on the canvas, keyed on the core's type names. `hale dna status` gains `model_calls`.
+- **Phase 1 is law, not only construction.** The generated constitution carries `phase1_read_only: forbid reaches(genome, effects(genome_apply))`, which certifies against the assembly as constructed (`NoDeployment`); swapping the gateway becomes a law change a reviewer sees.
+- **Friction F.13** (`dna/FRICTION.md`): a unix listen binding serves one peer at a time, and iris holds the membrane while attached, so `hale dna ask` could not get in. `hale dna run` writes `.hale/dna/iris.port` while iris is attached and `ask` / `review` publish through iris's `/ctl` endpoints in that case (the same declaration on the same socket, one hop later); a multi-peer listener is the wanted fix.
+- Tests: `dna_run` now asserts the organism's status rides in the snapshot with the pending baseline review, imported loci appear under author-facing names and never mangled, `hale dna ask` births a Task while iris is attached, and `status.json` follows the Journal; `dna_new` asserts the read-only clause.
+
 ### DNA core: the hosted model adapter and recorded model-attempt evidence (GH #528 PR 27)
 
 - `HostedModel` (OpenAI-compatible chat completions; `complete` carries `external_model`) and `LocalModel` (the same wire to a local endpoint; no credential, no external class) behind `ModelBackend`. The API key lives in a **sealed** `HostedCredential` read from a named environment variable at birth; it is presented on the wire from inside the locus and never returned — only a readiness bit and a fingerprint leave. A hosted model without a credential is not a permitted backend, so the router refuses before the wire. `ModelRequest` gains `prompt`, `context`, `knowledge_bindings`, `tool_grant`, `retry_of`; digests are computed where they are missing.

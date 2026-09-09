@@ -409,6 +409,31 @@ is the key — so `where key == …` means the same thing on both sides
 of a socket. Until then the checker could at least warn when a keyed
 subscription's topic is bound on a listen transport.
 
+## F.13 — a listen binding serves one peer at a time
+
+**Where:** the membrane (GH #528): `hale dna run` attaches iris to the
+organism's `dna.intent.offered` / `dna.review.verdict` sockets, and
+then `hale dna ask` cannot get in.
+
+**What:** the unix listen transport's serve loop is
+`accept → read until EOF → re-arm` (`lotus_bus_unix_serve`): one
+peer holds the socket until it hangs up. iris's connect-role routes
+are held for its whole run, so a second connector (the membrane
+client) is left in the backlog and its message is never read. The
+publisher's counters say `sent=1`; the organism journals nothing.
+
+**Worked around:** `hale dna run` writes `.hale/dna/iris.port` while
+iris is attached, and `hale dna ask` / `review` publish through
+iris's `/ctl` endpoints in that case — the same declaration on the
+same socket, one hop later. Without iris the client connects
+directly.
+
+**Wanted:** a listen binding that serves N peers (poll over accepted
+connections, per-connection seq space as the re-arm already keeps),
+so the fact "who is connected" is not a routing decision every
+client has to make. Until then a second connector should at least
+be refused loudly rather than queued silently.
+
 **Compiler bugs fixed in this track:** F.2 (`@unbounded` ignored by the
 hot-path lint), F.6 (release dispatch by child type alone — memory
 corruption).
@@ -427,9 +452,10 @@ are.
 **Recorded, by design:** F.5 (a bus reply reaches a flow child at
 drain, so the retry loop lives with whoever owns the performers).
 
-**Runtime limitation, worked around:** F.12 (keyed subscriptions
+**Runtime limitations, worked around:** F.12 (keyed subscriptions
 never hear a wire delivery; the membrane Review filters by id in the
-handler).
+handler), F.13 (a listen binding serves one peer at a time; `hale dna
+ask` goes through iris while iris holds the membrane).
 
 **Things the survey said to verify, now verified:** `adopt` of a
 constitution declared in an imported seed was not needed — the app's

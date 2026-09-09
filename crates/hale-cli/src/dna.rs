@@ -493,8 +493,13 @@ fn run_organism(args: &[String]) -> ExitCode {
         std::thread::sleep(std::time::Duration::from_millis(100));
     };
     let mut observer: Option<std::process::Child> = None;
+    let status_path = dna_dir.join("status.json");
+    let port_file = dna_dir.join("iris.port");
+    let _ = fs::remove_file(&port_file);
     if bound {
         eprintln!("hale dna run: membrane bound at {}", dna_dir.display());
+        // the status projection, written before iris reads it
+        write_status(&root, &status_path);
         if iris {
             let baseline = dna_dir.join("baseline.topology");
             let mut cmd = Command::new(&me);
@@ -502,11 +507,15 @@ fn run_organism(args: &[String]) -> ExitCode {
             if baseline.is_file() {
                 cmd.arg("--diff").arg(&baseline).arg(&current);
             }
-            cmd.arg("--membrane").arg(&dna_dir);
+            cmd.arg("--membrane").arg(&dna_dir).arg("--organism").arg(&status_path);
             cmd.stdin(std::process::Stdio::null());
             match cmd.spawn() {
                 Ok(c) => {
-                    eprintln!("hale dna run: iris at http://127.0.0.1:{port}/  (l law · 4 review vs baseline · m membrane)");
+                    eprintln!("hale dna run: iris at http://127.0.0.1:{port}/  (l law · 4 review vs baseline · 5 organism · m membrane)");
+                    // F.13 (dna/FRICTION.md): a listen binding serves one
+                    // peer at a time, and iris holds the membrane while it
+                    // runs — so `hale dna ask` / `review` go through iris.
+                    let _ = fs::write(&port_file, format!("{port}\n"));
                     observer = Some(c);
                 }
                 Err(e) => eprintln!("hale dna run: could not launch hale iris: {e}"),
@@ -515,17 +524,40 @@ fn run_organism(args: &[String]) -> ExitCode {
     } else if organism.try_wait().ok().flatten().is_none() {
         eprintln!("hale dna run: the membrane did not come up within 20s; the organism runs unobserved");
     }
-    // 5. supervise: the organism's exit is ours
-    let code = match organism.wait() {
-        Ok(st) => st.code().unwrap_or(1),
-        Err(_) => 1,
+    // 5. supervise: the organism's exit is ours. Meanwhile the host
+    // re-projects the Journal into status.json once a second — a
+    // projection, never state of its own.
+    let code = loop {
+        match organism.try_wait() {
+            Ok(Some(st)) => break st.code().unwrap_or(1),
+            Ok(None) => {}
+            Err(_) => break 1,
+        }
+        write_status(&root, &status_path);
+        std::thread::sleep(std::time::Duration::from_secs(1));
     };
+    let _ = fs::remove_file(&port_file);
     if let Some(mut o) = observer {
         let _ = o.kill();
         let _ = o.wait();
     }
+    write_status(&root, &status_path);
     eprintln!("hale dna run: organism exited ({code}); the Journal at {} is the record", root.join(JOURNAL_REL).display());
     ExitCode::from(code.clamp(0, 255) as u8)
+}
+
+/// Re-project the Journal into `status.json` (atomically: write beside,
+/// rename over) when it changed.
+fn write_status(root: &Path, path: &Path) {
+    let Ok(st) = status_projection(root) else { return };
+    let text = serde_json::to_string_pretty(&st).unwrap_or_default();
+    if fs::read_to_string(path).map(|t| t == text).unwrap_or(false) {
+        return;
+    }
+    let tmp = path.with_extension("json.tmp");
+    if fs::write(&tmp, text).is_ok() {
+        let _ = fs::rename(&tmp, path);
+    }
 }
 
 // ---------------------------------------------------------------
@@ -630,6 +662,21 @@ fn status_projection(root: &Path) -> Result<Value, String> {
         .map(|r| serde_json::json!({"candidate": r.entity, "disposition": r.kind.trim_start_matches("mutation."), "class": r.body}))
         .collect();
     let deferred: Vec<Value> = rows.iter().filter(|r| r.kind == "law.deferred").map(body).collect();
+    let model_calls: Vec<Value> = rows
+        .iter()
+        .filter(|r| r.kind == "model.called")
+        .rev()
+        .take(8)
+        .map(|r| {
+            let mut b = body(r);
+            if let Some(o) = b.as_object_mut() {
+                o.insert("attempt".into(), Value::String(r.entity.clone()));
+                o.insert("seq".into(), Value::from(r.seq));
+            }
+            b
+        })
+        .collect();
+    let model_calls_total = rows.iter().filter(|r| r.kind == "model.called").count();
     // expression identity: what init saw, what would run now, what is built
     let current = root.join(".hale/dna/current.topology");
     let current_id = fs::read_to_string(&current)
@@ -653,7 +700,9 @@ fn status_projection(root: &Path) -> Result<Value, String> {
         "reviews": reviews.values().cloned().collect::<Vec<_>>(),
         "mutations": mutations,
         "law_deferred": deferred,
+        "model_calls": {"total": model_calls_total, "recent": model_calls},
         "pressure": "not journaled in Phase 1",
+        "projected_at": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
     }))
 }
 
@@ -763,10 +812,41 @@ fn ask(args: &[String]) -> Result<Vec<String>, String> {
     }
 }
 
+/// Publish one typed fact on the membrane. While `hale dna run` has
+/// iris attached, iris HOLDS the organism's listen sockets (a listen
+/// binding serves one peer at a time — F.13 in dna/FRICTION.md), so
+/// the fact goes through iris's `/ctl` endpoint, which publishes the
+/// same declaration on the same socket. Otherwise the embedded
+/// membrane client connects directly.
+fn publish_on_membrane(root: &Path, kind: &str, body: &str) -> Result<(), String> {
+    if let Ok(p) = fs::read_to_string(root.join(".hale/dna/iris.port")) {
+        if let Ok(port) = p.trim().parse::<u16>() {
+            let path = if kind == "intent" { "/ctl/intent" } else { "/ctl/review" };
+            match post_local(port, path, body) {
+                Ok(status) if status == 200 => return Ok(()),
+                Ok(status) => return Err(format!("iris refused the {kind} (HTTP {status})")),
+                Err(e) => eprintln!("hale dna: iris at :{port} did not answer ({e}); publishing directly"),
+            }
+        }
+    }
+    publish_directly(root, kind, body)
+}
+
+fn post_local(port: u16, path: &str, body: &str) -> Result<u16, String> {
+    use std::io::{Read, Write};
+    let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).map_err(|e| e.to_string())?;
+    s.set_read_timeout(Some(std::time::Duration::from_secs(5))).map_err(|e| e.to_string())?;
+    s.write_all(format!("POST {path} HTTP/1.0\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes())
+        .map_err(|e| e.to_string())?;
+    let mut out = String::new();
+    let _ = s.read_to_string(&mut out);
+    out.split_whitespace().nth(1).and_then(|c| c.parse().ok()).ok_or_else(|| "no HTTP status".to_string())
+}
+
 /// Build (once, in the toolchain cache beside the core it imports)
 /// and exec the membrane client with routes to this project's
 /// sockets.
-fn publish_on_membrane(root: &Path, kind: &str, body: &str) -> Result<(), String> {
+fn publish_directly(root: &Path, kind: &str, body: &str) -> Result<(), String> {
     let cache = hale_iris::materialize().map_err(|e| format!("cannot materialize the toolchain cache: {e}"))?;
     let bin = cache.join(hale_dna::MEMBRANE_BIN);
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -1148,6 +1228,10 @@ constitution Project {{
     apply_gated: forbid reaches(genome, effects(genome_apply)) avoiding dna_gate;
     performers_never_apply: forbid reaches(performers, effects(genome_apply));
     credentials_sealed: require sealed(all credentials);
+    // Phase 1: NOTHING applies. The assembly constructs NoDeployment
+    // and the law says so, so swapping the gateway in dna/assembly.hl
+    // is a law change a reviewer sees, not a constructor detail.
+    phase1_read_only: forbid reaches(genome, effects(genome_apply));
 {organism_clause}}}
 "#
     )

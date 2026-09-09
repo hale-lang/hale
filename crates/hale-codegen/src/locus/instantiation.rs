@@ -1891,7 +1891,9 @@ impl<'ctx, 'p> LocusInstantiate<'ctx> for Cx<'ctx, 'p> {
                 .module
                 .get_function("lotus_obs_locus_birth")
                 .expect("lotus_obs_locus_birth declared");
-            let tname = self.global_string(locus_name);
+            // The author-facing name, never the mangled one (GH #528).
+            let display = self.obs_type_display(locus_name);
+            let tname = self.global_string(&display);
             let parent: inkwell::values::BasicValueEnum = self
                 .current_instantiation_parent
                 .map(|p| p.into())

@@ -29972,6 +29972,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
 
+    /// GH #528 PR 28: the AUTHOR-facing name of a locus type for the
+    /// observation manifest. Imported loci are mangled
+    /// (`__lib_vendor_dna_assembly_Dna`); the manifest is a join key
+    /// against the topology artifact's `sorts.loci`, which renders
+    /// the same locus as `dna::Dna`, and a `__`-prefixed name is what
+    /// iris hides as runtime-internal — so a mangled name made every
+    /// cross-seed tower invisible AND unjoinable. Same table the
+    /// artifact demangles with (imports ∪ stdlib PATH_RENAMES).
+    pub(crate) fn obs_type_display(&self, mangled: &str) -> String {
+        if !mangled.starts_with("__") {
+            return mangled.to_string();
+        }
+        for (segs, m) in &self.import_renames {
+            if m == mangled {
+                return segs.join("::");
+            }
+        }
+        for (segs, m) in hale_stdlib::PATH_RENAMES {
+            if *m == mangled {
+                return segs.join("::");
+            }
+        }
+        mangled.to_string()
+    }
+
     pub(crate) fn global_string(&mut self, s: &str) -> PointerValue<'ctx> {
         let g = self
             .builder

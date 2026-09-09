@@ -86,6 +86,12 @@ local verdict, and the intent goes through the membrane gate and
 the Metabolism. The snapshot reports how many of each were
 published; the organism reports what it decided.
 
+**The organism.** `hale iris --organism <status.json>` adds a third
+source beside the segment and the artifact: a DNA organism's status
+projection (see [DNA](./dna.md)). Perspective [5] renders it and
+tints the lineage tower on the canvas. `hale dna run` wires all of
+this up for you.
+
 **`hale iris inspect`** is the artifact-side half of that
 comparison: point it at an artifact (and optionally a running
 `hale iris` URL) and it reports drift, declared-but-silent

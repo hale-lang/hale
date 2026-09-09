@@ -27,6 +27,12 @@
 // fuse-hl only carries the typed fact. /snapshot reports the
 // membrane and how many of each it published.
 //
+// With HALE_IRIS_DNA_STATUS set (by `hale iris --organism <file>`,
+// which `hale dna run` uses), the organism's status projection —
+// a JSON file the host re-projects from the Journal — rides into
+// /snapshot verbatim under "dna" (GH #528 B7): the third source
+// beside shm (expression) and the artifact (genome).
+//
 // The optional fourth arg is a `hale model diff` document (GH
 // #527 B5). fuse-hl watches it at the same cadence and carries
 // it into /snapshot as a "diff" section, verbatim: the renderer's
@@ -354,6 +360,7 @@ locus Cycle {
         art_path: String = "";
         diff_path: String = "";
         membrane: String = "";
+        organism_path: String = "";
         reg_dir: String = "/tmp/hale-obs";
         do_disc: Bool = false;
         do_snap: Bool = false;
@@ -639,6 +646,7 @@ locus Cycle {
     // 0 last-digest  1 model  2 verdict  3 digest-state
     // 4 adequacy(raw json)  5 capabilities(raw)  6 groups(raw)
     // 7 diff document(raw, one line)  8 diff state  9 diff last-hash
+    // 10 organism status(raw, one line)  11 organism state  12 organism last-hash
 
     fn law_subject_of(topics_raw: String, tname: String) -> String {
         let mut it = std::json::array_first_span(topics_raw);
@@ -968,6 +976,40 @@ locus Cycle {
             + ",\"intents\":" + i.val + "}";
     }
 
+    // ---- organism status ingestion (GH #528 B7) ----
+    // The third source beside shm (expression) and the artifact
+    // (genome): the organism's status projection, a JSON file
+    // `hale dna run` re-projects from the Journal. Carried verbatim;
+    // the renderer's perspective [5] reads it, and the lineage tower
+    // it describes is the one the canvas already shows from births.
+    @unbounded
+    fn ingest_organism() {
+        if self.organism_path == "" { return; }
+        let doc = std::io::fs::read_file(self.organism_path) or "";
+        if len(doc) == 0 {
+            if (self.lawmeta.get(11) or "") != "unreadable" {
+                self.lawmeta.set(11, "unreadable") or discard;
+                self.lawmeta.set(10, "") or discard;
+            }
+            return;
+        }
+        let h = hex16(fnv1a64(doc));
+        if h == (self.lawmeta.get(12) or "") { return; }
+        self.lawmeta.set(12, h) or discard;
+        self.lawmeta.set(10, oneline(doc)) or discard;
+        self.lawmeta.set(11, "loaded") or discard;
+    }
+
+    fn organism_json() -> String {
+        if self.organism_path == "" { return ""; }
+        let mut s = ",\"dna\":{\"path\":\"" + jstr(self.organism_path) + "\"";
+        s = s + ",\"state\":\"" + jstr(self.lawmeta.get(11) or "") + "\"";
+        let doc = self.lawmeta.get(10) or "";
+        if len(doc) > 0 { s = s + ",\"status\":" + doc; }
+        else { s = s + ",\"status\":null"; }
+        return s + "}";
+    }
+
     @unbounded
     fn diff_json() -> String {
         if self.diff_path == "" { return ""; }
@@ -1071,7 +1113,7 @@ locus Cycle {
             }
             evi = evi + 1;
         }
-        s = s + "]" + self.law_json() + self.diff_json() + self.membrane_json() + "}";
+        s = s + "]" + self.law_json() + self.diff_json() + self.membrane_json() + self.organism_json() + "}";
         return s;
     }
 
@@ -1416,7 +1458,7 @@ locus Cycle {
     }
 
     birth() {
-        if self.do_disc { self.discover(); self.ingest_law(); self.ingest_diff(); }
+        if self.do_disc { self.discover(); self.ingest_law(); self.ingest_diff(); self.ingest_organism(); }
         self.drain_rings();
         if self.do_snap {
             let snap = self.snapshot();
@@ -1451,6 +1493,7 @@ main locus App {
         art_path: String = "";
         diff_path: String = "";
         membrane: String = "";
+        organism_path: String = "";
         snap_ns: Int = 100000000; // SSE cadence: 10 Hz
     }
 
@@ -1473,7 +1516,7 @@ main locus App {
             m = m + 1;
         }
         let mut lw = 0;
-        while lw < 10 {
+        while lw < 13 {
             self.lawmeta.push("");
             lw = lw + 1;
         }
@@ -1498,7 +1541,8 @@ main locus App {
                 claims: self.claims, gmembers: self.gmembers,
                 wits: self.wits, lawmeta: self.lawmeta,
                 art_path: self.art_path, diff_path: self.diff_path,
-                membrane: self.membrane, reg_dir: self.reg_dir,
+                membrane: self.membrane, organism_path: self.organism_path,
+                reg_dir: self.reg_dir,
                 do_disc: do_disc, do_snap: do_snap, now: now
             };
             if (self.meta.get(M_WORKED) or 0) < 2 { std::time::sleep(2ms); }
@@ -1514,6 +1558,10 @@ fn main() {
     let mut membrane = "";
     if std::env::var_exists("HALE_IRIS_MEMBRANE") {
         membrane = std::env::var("HALE_IRIS_MEMBRANE");
+    }
+    let mut organism_path = "";
+    if std::env::var_exists("HALE_IRIS_DNA_STATUS") {
+        organism_path = std::env::var("HALE_IRIS_DNA_STATUS");
     }
     let mut reg_dir = "/tmp/hale-obs";
     if std::env::var_exists("XDG_RUNTIME_DIR") {
@@ -1535,6 +1583,7 @@ fn main() {
         art_path: art_path,
         diff_path: diff_path,
         membrane: membrane,
+        organism_path: organism_path,
         srv: std::http::Server {
             port: port,
             handler: FuseHandler { snaps: snaps, fds: fds, webroot: webroot, membrane: membrane },
