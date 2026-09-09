@@ -519,6 +519,7 @@ fn perspective_contract_method_shadowed_by_top_level_fn_resolves() {
         fn pick() -> String { return "free"; }
     "#;
     let consumer_src = r#"
+        import "../lib" as lib;
         fn main() {
             let h = lib::Holder { };
             println(h.which(), " ", lib::pick());
@@ -577,6 +578,7 @@ fn bus_handler_name_shadowed_by_top_level_fn_resolves() {
         fn tick() -> Int { return 42; }
     "#;
     let consumer_src = r#"
+        import "../lib" as lib;
         main locus App {
             params { c: lib::Counter = lib::Counter { }; p: lib::Pub = lib::Pub { }; }
             run() { println("seen=", self.c.seen, " free=", lib::tick()); }
