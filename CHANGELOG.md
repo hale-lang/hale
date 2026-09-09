@@ -8,6 +8,12 @@ behavior.
 
 ## Unreleased
 
+### `hale iris` — the observer ships in the binary (GH #527 B3)
+
+- New workspace crate `hale-iris` embeds the iris observer's sources (`iris/consumer/fuse-hl/**`, the C attach shim and `obs_attach.{c,h}`, `iris/render/web/*`, `iris/inspect/main.hl`, plus the real `obs_protocol.h` in place of the tree's forwarding header) via `include_str!`, exactly as `hale-stdlib` carries the stdlib. `hale iris` materializes them into `$XDG_CACHE_HOME/hale/iris/<toolchain-hash>/` (hash = compiler version + every embedded byte), builds `fuse-hl` there with this same compiler on first use, and execs it: `hale iris [port] [artifact]` (default `:8787`, serves `/`, `/snapshot`, `/events`), `hale iris inspect <artifact> [url]`, `hale iris --where`, `hale iris --build-only`. Because the observer is compiled by the codegen that compiled the observed program, the two halves of one installation cannot drift on the wire layout.
+- `hale run --observe <target> [args…]` sets `LOTUS_OBS=1` on the program and runs an iris session beside it for the program's lifetime; the flag never reaches the program's argv.
+- Docs: new chapter *Iris: the embedded observer*; *Operations & debugging* cross-links it. Tests: `hale-iris` unit tests (file set, real-header check, idempotent materialize) and `crates/hale-cli/tests/iris_cli.rs` (private `XDG_CACHE_HOME`; build once, exec-only second time, `/snapshot` served; inspector builds and runs).
+
 ### Iris folds into the hale tree (GH #527 B2)
 
 `hale-lang/iris` is subtree-merged, with history, at `iris/`. Its

@@ -9,6 +9,7 @@ members = [
     "crates/hale-codegen",
     "crates/hale-lsp",
     "crates/hale-cli",
+    "crates/hale-iris",
     "crates/hale-ts-shim",
 ]
 
