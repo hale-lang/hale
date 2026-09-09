@@ -501,3 +501,109 @@ fn library_enum_match_and_perspective_serves_survive_import() {
         assert!(stdout.contains(needle), "missing {needle}: {stdout:?}");
     }
 }
+
+/// GH #542: a free fn that shares its name with a PERSPECTIVE contract
+/// method. The seed mangler renamed the contract method (member
+/// position, like a locus method) to the free fn's mangled name, so
+/// every `serves` impl -- whose own method correctly kept its name --
+/// was "missing contract method" once imported.
+#[test]
+fn perspective_contract_method_shadowed_by_top_level_fn_resolves() {
+    let lib_src = r#"
+        perspective P { fn pick() -> String; }
+        locus Impl : serves P { fn pick() -> String { return "impl"; } }
+        locus Holder {
+            params { p: perspective(P) = Impl { }; }
+            fn which() -> String { return self.p.pick(); }
+        }
+        fn pick() -> String { return "free"; }
+    "#;
+    let consumer_src = r#"
+        import "../lib" as lib;
+        fn main() {
+            let h = lib::Holder { };
+            println(h.which(), " ", lib::pick());
+        }
+    "#;
+    let alias = "lib";
+    let mut lib_prog = parse_source(lib_src).expect("parse lib");
+    let seed_renames = {
+        let stem_refs: Vec<(String, &Program)> = vec![("thing".to_string(), &lib_prog)];
+        mangle::build_seed_renames(&stem_refs, alias)
+    };
+    let renames: Vec<(Vec<String>, String)> = seed_renames
+        .iter()
+        .map(|(name, mangled)| (vec![alias.to_string(), name.clone()], mangled.clone()))
+        .collect();
+    mangle::mangle_with_renames(&mut lib_prog, &seed_renames);
+    // The contract method kept its authored name; the free fn moved.
+    for item in &lib_prog.items {
+        if let TopDecl::Perspective(p) = item {
+            for m in &p.members {
+                if let hale_syntax::ast::PerspectiveMember::Fn(f) = m {
+                    assert_eq!(f.name.name, "pick", "contract method must keep its name");
+                }
+            }
+        }
+        if let TopDecl::Fn(f) = item {
+            assert!(f.name.name.starts_with("__lib_"), "free fn must be mangled: {}", f.name.name);
+        }
+    }
+    let mut consumer = parse_source(consumer_src).expect("parse consumer");
+    consumer.imports.clear();
+    consumer.items.extend(lib_prog.items);
+    let bin = harness::unique_bin(&format!("hale_persp_method_shadow_{}", std::process::id()));
+    build_executable_with_imports(&consumer, &bin, &renames).expect("build consumer + lib");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "exit: {:?} stderr={}", out.status, String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("impl free"), "got: {stdout:?}");
+}
+
+/// GH #542, the bus-handler face: `subscribe Tick as tick;` names a
+/// member method; a free fn `tick` in the same seed moved the
+/// REFERENCE to the mangled free-fn name while the method kept its.
+#[test]
+fn bus_handler_name_shadowed_by_top_level_fn_resolves() {
+    let lib_src = r#"
+        type Beat { n: Int = 0; }
+        topic Tick { payload: Beat; subject: "c.tick"; }
+        locus Counter {
+            params { seen: Int = 0; }
+            bus { subscribe Tick as tick; }
+            fn tick(b: Beat) { self.seen = self.seen + b.n; }
+        }
+        locus Pub { bus { publish Tick; } run() { Tick <- Beat { n: 5 }; } }
+        fn tick() -> Int { return 42; }
+    "#;
+    let consumer_src = r#"
+        import "../lib" as lib;
+        main locus App {
+            params { c: lib::Counter = lib::Counter { }; p: lib::Pub = lib::Pub { }; }
+            run() { println("seen=", self.c.seen, " free=", lib::tick()); }
+        }
+        fn main() { App { }; }
+    "#;
+    let alias = "lib";
+    let mut lib_prog = parse_source(lib_src).expect("parse lib");
+    let seed_renames = {
+        let stem_refs: Vec<(String, &Program)> = vec![("thing".to_string(), &lib_prog)];
+        mangle::build_seed_renames(&stem_refs, alias)
+    };
+    let renames: Vec<(Vec<String>, String)> = seed_renames
+        .iter()
+        .map(|(name, mangled)| (vec![alias.to_string(), name.clone()], mangled.clone()))
+        .collect();
+    mangle::mangle_with_renames(&mut lib_prog, &seed_renames);
+    let mut consumer = parse_source(consumer_src).expect("parse consumer");
+    consumer.imports.clear();
+    consumer.items.extend(lib_prog.items);
+    let bin = harness::unique_bin(&format!("hale_handler_shadow_{}", std::process::id()));
+    build_executable_with_imports(&consumer, &bin, &renames).expect("build consumer + lib");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "exit: {:?} stderr={}", out.status, String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("seen=5 free=42"), "got: {stdout:?}");
+}
