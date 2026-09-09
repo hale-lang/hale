@@ -17,6 +17,12 @@
 //             (INSPECTOR.md): group hulls, each claim's static
 //             verdict beside its witnessed state, contradicted
 //             routes in alarm. Ledger is DOM; hulls are canvas.
+//   REVIEW    [4] the semantic review view (GH #527 B5): a `hale
+//             model diff` document carried in /snapshot, rendered
+//             as `+ locus EmailIntake`, `! fn … gains publish`,
+//             `! locus … contract`, `! claim … holds -> violated`;
+//             live processes still expressing the OLD artifact
+//             (model hash == diff.a) are ringed stale on canvas.
 
 const canvas = document.getElementById("c");
 const ctx = canvas.getContext("2d");
@@ -26,6 +32,7 @@ const topicsEl = document.getElementById("topics");
 const eventsEl = document.getElementById("events");
 const tipEl = document.getElementById("tip");
 const lawEl = document.getElementById("law");
+const diffEl = document.getElementById("diff");
 
 const FRAME_MS = 1000 / 30;
 const SLATE = "148,163,184";
@@ -146,7 +153,7 @@ function connect() {
   const es = new EventSource("/events");
   es.onopen = () => { connEl.textContent = "live"; connEl.className = "live"; };
   es.onerror = () => { connEl.textContent = "reconnecting…"; connEl.className = "dead"; };
-  es.onmessage = (m) => { try { ingest(JSON.parse(m.data)); renderLawPanel(); } catch (e) {} };
+  es.onmessage = (m) => { try { ingest(JSON.parse(m.data)); renderLawPanel(); renderDiffPanel(); } catch (e) {} };
 }
 connect();
 
@@ -201,6 +208,122 @@ lawEl.addEventListener("click", (e) => {
   selClaim = selClaim === row.dataset.claim ? null : row.dataset.claim;
   renderLawPanel();
 });
+
+// ---- the review view (perspective [4]) -----------------------
+// The diff document is `hale model diff`'s, verbatim (fuse-hl
+// carries, never interprets). Rows render in the diff's own
+// vocabulary; the one thing this view adds is the live fleet:
+// which processes were built from the OLD artifact (their header
+// model hash equals diff.a.shape_hash), which from the new, which
+// from neither.
+
+let showDiff = false;
+
+function modelStatus(p, doc) {
+  if (!doc || !p.model) return "unknown";
+  if (p.model === doc.b.shape_hash) return "current";
+  if (p.model === doc.a.shape_hash) return "stale";
+  return "other";
+}
+
+function isStale(p) {
+  const d = snap && snap.diff && snap.diff.document;
+  return !!d && p.state !== "dead" && modelStatus(p, d) === "stale";
+}
+
+function esc(s) {
+  return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+}
+
+function siteText(v) {
+  return v && v.unit && v.span ? `<span class="site"> ${esc(v.unit)}:${v.span[0]}..${v.span[1]}</span>` : "";
+}
+
+function renderDiffPanel() {
+  const diff = snap && snap.diff;
+  if (!diff || !showDiff) { diffEl.style.display = "none"; if (showDiff === false) topicsEl.style.display = ""; return; }
+  diffEl.style.display = "block";
+  topicsEl.style.display = "none";
+  const d = diff.document;
+  if (!d) {
+    diffEl.innerHTML = `<div class="hdr">review · ${esc(diff.path)}</div><div class="warn">⚠ diff ${esc(diff.state)}</div>`;
+    return;
+  }
+  const a8 = (d.a.shape_hash || "").slice(0, 8), b8 = (d.b.shape_hash || "").slice(0, 8);
+  let h = `<div class="hdr">review · ${a8} → ${b8} · <b>${esc(d.classification)}</b></div>`;
+  // the fleet against the two models
+  const live = (snap.processes || []).filter(p => p.state !== "dead");
+  const counts = { current: 0, stale: 0, other: 0, unknown: 0 };
+  for (const p of live) counts[modelStatus(p, d)]++;
+  h += `<div class="sec">live: <span class="cur">${counts.current} on the new model</span>` +
+       ` · <span class="stale">${counts.stale} still on the old</span>` +
+       ` · <span class="other">${counts.other + counts.unknown} other/unknown</span></div>`;
+  for (const p of live) {
+    const st = modelStatus(p, d);
+    if (st === "stale") h += `<div class="row stale">◌ ${esc(p.name)} pid ${p.pid} — expressing the OLD artifact</div>`;
+  }
+  const decls = d.declarations || [];
+  const rows = [];
+  for (const r of decls) {
+    const k = esc(r.kind), n = esc(r.name);
+    switch (r.change) {
+      case "added": rows.push(`<div class="row add">+ ${k} ${n}${siteText(r.b)}</div>`); break;
+      case "removed": rows.push(`<div class="row del">- ${k} ${n}${siteText(r.a)}</div>`); break;
+      case "renamed": rows.push(`<div class="row ren">~ ${k} ${esc(r.from)} → ${n} <span class="site">renamed; shape unchanged</span></div>`); break;
+      case "moved": rows.push(`<div class="row mv">&gt; ${k} ${n} moved ${esc(r.a && r.a.unit)} → ${esc(r.b && r.b.unit)}</div>`); break;
+      case "split": rows.push(`<div class="row ren">* ${k} ${n} split into ${esc((r.into || []).join(", "))}</div>`); break;
+      case "joined": rows.push(`<div class="row ren">* ${k} ${n} joined from ${esc((r.from || []).join(", "))}</div>`); break;
+      case "ambiguous": rows.push(`<div class="row amb">? ${k} ${n} ${esc(r.question)} ambiguous: ${esc((r.candidates || []).join(", "))}</div>`); break;
+    }
+  }
+  if (rows.length) h += `<div class="sec">declarations</div>` + rows.join("");
+  const contracts = d.contracts || [];
+  if (contracts.length) {
+    h += `<div class="sec">contracts</div>`;
+    for (const r of contracts) {
+      const parts = [...(r.removed || []).map(x => `<span class="del">-${esc(x)}</span>`),
+                     ...(r.added || []).map(x => `<span class="add">+${esc(x)}</span>`)];
+      h += `<div class="row chg">! locus ${esc(r.locus)} ${esc(r.facet)}: ${parts.join("; ")}</div>`;
+    }
+  }
+  const classes = (d.effects && d.effects.classes) || [];
+  const certs = (d.effects && d.effects.certificates) || [];
+  if (classes.length || certs.length) {
+    h += `<div class="sec">effects</div>`;
+    for (const r of classes) {
+      const parts = [];
+      if ((r.gained || []).length) parts.push(`gains ${esc(r.gained.join(", "))}`);
+      if ((r.dropped || []).length) parts.push(`drops ${esc(r.dropped.join(", "))}`);
+      h += `<div class="row chg">! fn ${esc(r.fn)} ${parts.join("; ")}</div>`;
+    }
+    for (const r of certs) {
+      const cls = r.change === "added" ? "add" : r.change === "removed" ? "del" : "chg";
+      const glyph = r.change === "added" ? "+" : r.change === "removed" ? "-" : "!";
+      const tail = r.change === "result" ? `${esc(r.a)} → ${esc(r.b)}` : `[${esc(r.b || r.a)}]`;
+      h += `<div class="row ${cls}">${glyph} certificate ${esc(r.subject)} ${esc(r.form)} ${tail}</div>`;
+    }
+  }
+  const claims = (d.law && d.law.claims) || [];
+  const adequacy = (d.law && d.law.adequacy) || [];
+  const verdict = d.law && d.law.verdict;
+  if (claims.length || adequacy.length || verdict) {
+    h += `<div class="sec">law</div>`;
+    for (const r of claims) {
+      if (r.change === "added") h += `<div class="row add">+ claim ${esc(r.claim)}: ${esc(r.form)} [${esc(r.result)}]</div>`;
+      else if (r.change === "removed") h += `<div class="row del">- claim ${esc(r.claim)}: ${esc(r.form)} [${esc(r.result)}]</div>`;
+      else {
+        const parts = Object.entries(r.changes || {}).map(([k, v]) => `${k} ${esc(v.a)} → ${esc(v.b)}`);
+        h += `<div class="row chg">! claim ${esc(r.claim)}: ${parts.join("; ")}</div>`;
+      }
+    }
+    for (const r of adequacy) h += `<div class="row chg">! adequacy ${esc(r.family)}: ${esc(r.a)} → ${esc(r.b)}</div>`;
+    if (verdict) h += `<div class="row chg">! verdict: ${esc(verdict.a)} → ${esc(verdict.b)}</div>`;
+  }
+  const s = d.summary || {};
+  if (Object.values(s).every(v => v === 0)) h += `<div class="sec">no semantic differences</div>`;
+  h += `<div class="sec" style="margin-top:8px">[4] hides the review · stale flowers are ringed on the canvas</div>`;
+  diffEl.innerHTML = h;
+}
 
 // ---- pair ribbons ------------------------------------------
 // One ribbon per (from,to) process pair; per-topic detail lives
@@ -517,6 +640,20 @@ function drawFlower(p, t, focus) {
     const a = pos.get(l.parent), b = pos.get(l.id);
     if (!a || !b) continue;
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+  }
+
+  // review view: a flower still expressing the OLD artifact wears
+  // a dashed amber ring — the drift is a fact about the fleet,
+  // shown where the fleet is drawn.
+  if (showDiff && isStale(p)) {
+    ctx.save();
+    ctx.setLineDash([5, 5]);
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = `rgba(${AMBER}, 0.75)`;
+    ctx.beginPath();
+    ctx.arc(cx, cy, ring + 14, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
   }
 
   // petals: slate at rest, colored only by activity
@@ -1008,5 +1145,6 @@ addEventListener("keydown", (e) => {
   if (e.key === "h") showPlumbing = !showPlumbing;
   if (e.key === "c") colorMode = colorMode === "topic" ? "latency" : "topic";
   if (e.key === "l" || e.key === "3") { showLaw = !showLaw; renderLawPanel(); }
+  if (e.key === "4" || e.key === "d") { showDiff = !showDiff; renderDiffPanel(); }
   if (e.key === "Escape") { pinned = null; pinnedTopic = null; selClaim = null; renderLawPanel(); }
 });

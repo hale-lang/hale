@@ -8,6 +8,12 @@ behavior.
 
 ## Unreleased
 
+### Iris renders the diff — the review view (GH #527 B5)
+
+- `hale iris --diff <a.topology> <b.topology>` diffs the pair in-process with `hale model diff`'s engine and hands the document to the observer; `--diff <diff.json>` hands over a ready one. fuse-hl takes it as its fourth argument, watches it at the 1 Hz discovery cadence, and carries it into `/snapshot` **verbatim** under `diff` (`path`, `state`, `document`) — the observer never interprets the diff; one engine owns its meaning. An unreadable file or a document of another schema is reported as such, not rendered wrong.
+- `app.js` perspective **[4]** (key `4` or `d`): the semantic review view — declarations (`+ locus EmailIntake`, `~ locus Worker → Crew`, `? … ambiguous`), per-locus contract deltas, effect and certificate deltas, law and adequacy deltas, the classification — plus the fleet against the two models: every live process reports the model hash it was built from, so processes still expressing the OLD artifact are counted, listed as stale, and ringed dashed-amber on the canvas. With a pair and no artifact argument the B side becomes the law artifact.
+- Tests: `iris_cli` gains `iris_diff_pair_rides_into_the_snapshot` (two artifacts cut by `hale check`, `hale iris --diff`, `/snapshot` carries `diff.state == loaded`, the document's classification and added locus, and the law view verified against the B side).
+
 ### `hale model diff` — the semantic difference between two topology artifacts (GH #527 B4)
 
 - `hale model diff <a.topology> <b.topology> [--json|--text]` compares two `--dump-topology` artifacts and emits a versioned diff document (`TOPOLOGY_DIFF_SCHEMA` 1.0, naming both inputs by `artifact_digest` and `shape_hash`): `declarations` (persisted / moved / renamed / split / joined / added / removed / ambiguous, with both sides' source sites), `contracts` (per-locus facet deltas: sealed, params, methods, publishes, subscribes with queue bound and shed policy, supervises, ownership, placement), `effects` (classes gained/dropped per fn; fn-grained certificates added/removed/result changed), `law` (claim form/result/verdict/family changes, claims added/removed, adequacy per family, overall verdict) and a `classification` (identical / source-only / model-shape). `--text` renders the same rows as a review view. Both inputs pass the renderer's admission gates; an edited artifact is refused.

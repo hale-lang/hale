@@ -21,6 +21,8 @@ the program's own argv; the flag is consumed by `hale run`.
 
 ```
 hale iris [port] [artifact.json]        attach + fuse, serve :port (default 8787)
+  --diff <a.topology> <b.topology>      … with the review view over the pair
+  --diff <diff.json>                    … over a ready `hale model diff` document
 hale iris inspect <artifact.json> [url] artifact-side inspector
 hale iris --where                       print the cache directory
 hale iris --build-only                  materialize + build, print the binary
@@ -39,6 +41,26 @@ see (the registration files under `$XDG_RUNTIME_DIR/hale/` or
 Pass a `--dump-topology` artifact as the second argument and
 iris overlays what the compiler *declared* on what the runtime
 *does*: declared-but-silent topics, undeclared traffic, drift.
+
+**The review view.** Give iris a change instead of a snapshot and
+it renders the change over the running fleet (key `4`):
+
+```sh
+hale check . --dump-topology=before.topology      # before the edit
+hale check . --dump-topology=after.topology       # after
+hale iris --diff before.topology after.topology   # or: --diff diff.json
+```
+
+`--diff a b` runs `hale model diff` in-process and hands the
+document to the observer; `--diff doc.json` hands over one you
+already have. The view lists the semantic rows (`+ locus
+EmailIntake`, `! fn Intake::on_mail gains publish`, `! locus
+Support subscribes: +Tickets`, `! claim iso: holds → violated`),
+and, because every observed process reports the model hash it was
+built from, it says which live processes are still expressing the
+old artifact: they are listed as stale and ringed on the canvas.
+With a pair and no artifact argument, the `after` side is also the
+law artifact.
 
 **`hale iris inspect`** is the artifact-side half of that
 comparison: point it at an artifact (and optionally a running
