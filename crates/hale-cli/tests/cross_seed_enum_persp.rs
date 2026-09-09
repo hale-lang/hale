@@ -43,7 +43,7 @@ fn consumer_of_enum_and_perspective_library_checks_builds_and_runs() {
     let _ = std::fs::remove_file(&bin);
     assert!(out.status.success(), "consumer exit: {:?}", out.status);
     let stdout = String::from_utf8_lossy(&out.stdout);
-    for needle in ["first=red", "green=true", "which=second", "after=second", "label=b"] {
+    for needle in ["first=red", "green=true", "which=second", "after=second", "label=b", "picked=g"] {
         assert!(stdout.contains(needle), "missing {needle}: {stdout:?}");
     }
 }

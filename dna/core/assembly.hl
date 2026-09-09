@@ -126,20 +126,30 @@ locus Dna {
     // policy, and NEVER applied by this assembly's deployment.
     fn stage(change_class: String, candidate_digest: String, m: Magnitude, e: Evidence) -> String {
         let d = self.boundary.assess(change_class, m, e);
-        let r = self.journal.append(self.journal.revision(), "mutation." + d, candidate_digest, change_class);
-        if d == DISP_RELEASE {
-            // the grant would allow it; the deployment gateway decides
-            // whether expression is possible here at all
-            if !self.deployment.apply(candidate_digest) {
-                self.membrane.notify("mutation", "staged (no deployment): " + candidate_digest);
-                return DISP_STAGE;
-            }
-            return "applied";
-        }
-        if d == DISP_REVIEW || d == DISP_STAGE {
-            self.membrane.notify("review", self.review_policy.required_authority(change_class, m) + " needed for " + candidate_digest);
-        }
-        return d;
+        let name = disposition_name(d);
+        let r = self.journal.append(self.journal.revision(), "mutation." + name, candidate_digest, change_class);
+        return match d {
+            Disposition::Release -> {
+                // the grant would allow it; the deployment gateway
+                // decides whether expression is possible here at all
+                if self.deployment.apply(candidate_digest) {
+                    "applied"
+                } else {
+                    self.membrane.notify("mutation", "staged (no deployment): " + candidate_digest);
+                    "stage"
+                }
+            },
+            Disposition::Review -> {
+                self.membrane.notify("review", self.review_policy.required_authority(change_class, m) + " needed for " + candidate_digest);
+                name
+            },
+            Disposition::Stage -> {
+                self.membrane.notify("review", self.review_policy.required_authority(change_class, m) + " needed for " + candidate_digest);
+                name
+            },
+            Disposition::Escalate -> name,
+            Disposition::Deny -> name,
+        };
     }
     fn status() -> String {
         let b = std::json::Builder { };

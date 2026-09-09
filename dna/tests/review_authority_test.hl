@@ -63,28 +63,38 @@ main locus App {
         std::test::assert_eq_int(self.review.verdict_count(), 2, "abstain + approve kept in lineage");
 
         // ---- Disposition is a vector policy -------------------------
+        // The disposition is the library's own enum, matched here on the
+        // importer's side (GH #534 closed dna/FRICTION.md F.1).
+        let lens = match self.boundary.assess("refactor", dna::Magnitude { loci: 1, law_touched: true }, dna::Evidence { }) {
+            dna::Disposition::Review -> "blocked-on-a-reviewer",
+            dna::Disposition::Release -> "released",
+            dna::Disposition::Stage -> "staged",
+            dna::Disposition::Escalate -> "escalated",
+            dna::Disposition::Deny -> "denied",
+        };
+        std::test::assert_eq_str(lens, "blocked-on-a-reviewer", "importer-side match over the library enum");
         let small = dna::Magnitude { loci: 2 };
         let strong = dna::Evidence { check_clean: true, verify_clean: true, tests_pass: true, replay_ok: true, rollback_rehearsed: true, independent_reviews: 3 };
         let weak = dna::Evidence { check_clean: true };
         // 6. Permitted class, small magnitude, strong evidence, post-review grant -> release.
-        std::test::assert_eq_str(self.boundary.assess("refactor", small, strong), "release", "release inside the envelope");
+        std::test::assert_eq_str(dna::disposition_name(self.boundary.assess("refactor", small, strong)), "release", "release inside the envelope");
         // 7. Same change, weak evidence -> stage (prepare, do not apply).
-        std::test::assert_eq_str(self.boundary.assess("refactor", small, weak), "stage", "insufficient evidence stages");
+        std::test::assert_eq_str(dna::disposition_name(self.boundary.assess("refactor", small, weak)), "stage", "insufficient evidence stages");
         // 8. A class outside the grant -> escalate, however strong the evidence.
-        std::test::assert_eq_str(self.boundary.assess("deploy", small, strong), "escalate", "class not granted escalates");
+        std::test::assert_eq_str(dna::disposition_name(self.boundary.assess("deploy", small, strong)), "escalate", "class not granted escalates");
         // 9. Hard boundaries: law touched / effects widened / ownership crossed
         //    -> review, and NO evidence score cancels that.
         let law = dna::Magnitude { loci: 1, law_touched: true };
-        std::test::assert_eq_str(self.boundary.assess("refactor", law, strong), "review", "law touched: review regardless of evidence");
+        std::test::assert_eq_str(dna::disposition_name(self.boundary.assess("refactor", law, strong)), "review", "law touched: review regardless of evidence");
         let widen = dna::Magnitude { loci: 1, effects_widened: true };
-        std::test::assert_eq_str(self.boundary.assess("refactor", widen, strong), "review", "effects widened: review regardless of evidence");
+        std::test::assert_eq_str(dna::disposition_name(self.boundary.assess("refactor", widen, strong)), "review", "effects widened: review regardless of evidence");
         let cross = dna::Magnitude { loci: 1, ownership_crossed: true };
-        std::test::assert_eq_str(self.boundary.assess("docs", cross, strong), "review", "ownership crossed: review");
+        std::test::assert_eq_str(dna::disposition_name(self.boundary.assess("docs", cross, strong)), "review", "ownership crossed: review");
         let blast = dna::Magnitude { loci: 1, irreversible: true, external_blast: 3 };
-        std::test::assert_eq_str(self.boundary.assess("docs", blast, strong), "review", "irreversible external blast: review");
+        std::test::assert_eq_str(dna::disposition_name(self.boundary.assess("docs", blast, strong)), "review", "irreversible external blast: review");
         // 10. Magnitude over the ceiling escalates even for a permitted class.
         let big = dna::Magnitude { loci: 40 };
-        std::test::assert_eq_str(self.boundary.assess("refactor", big, strong), "escalate", "magnitude ceiling escalates");
+        std::test::assert_eq_str(dna::disposition_name(self.boundary.assess("refactor", big, strong)), "escalate", "magnitude ceiling escalates");
 
         // ---- Autonomy evolution is asymmetric ------------------------
         // 11. The child cannot expand its own grant.
@@ -94,14 +104,14 @@ main locus App {
         // 12. The parent can.
         std::test::assert(self.boundary.expand("Product", "Product", 20, "deploy"), "parent expansion admitted");
         std::test::assert_eq_int(self.boundary.current_grant().max_magnitude, 20, "ceiling raised by the parent");
-        std::test::assert_eq_str(self.boundary.assess("deploy", small, strong), "release", "newly granted class releases");
+        std::test::assert_eq_str(dna::disposition_name(self.boundary.assess("deploy", small, strong)), "release", "newly granted class releases");
         // 13. Repeated failure contracts the grant automatically.
         self.boundary.note_outcome(false);
         self.boundary.note_outcome(false);
         std::test::assert_eq_int(self.boundary.contractions, 1, "contracted after two failures");
         std::test::assert_eq_int(self.boundary.current_grant().max_magnitude, 10, "ceiling halved");
         std::test::assert_eq_str(self.boundary.current_grant().review, "pre", "review tightened to pre");
-        std::test::assert(self.boundary.audit_count() >= 12, "every decision is in the audit trail");
+        std::test::assert(self.boundary.audit_count() >= 13, "every decision is in the audit trail");
     }
 }
 
