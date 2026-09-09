@@ -1,0 +1,1400 @@
+// fuse-hl — the Hale fuse: multi-segment fusion + the serve
+// surface, in Hale. glue.c wraps obs_attach (mmap'd shm can't
+// be pure Hale yet); everything above it — topic join by
+// (shape, name), NET_SEND<->NET_DELIVER seq matching into
+// cross-process edges, the live-locus table, snapshot JSON,
+// HTTP + SSE — lives here. consumer/fuse.c is the reference
+// implementation; same segments in, same tables out.
+//
+//   hale build .           # or hale run . -- 8787 ../../render/web
+//   ./fuse-hl [port] [webroot] [topology.json]
+//
+// The optional third arg is a topology artifact (`hale check .
+// --dump-topology=...`). When given, fuse-hl verifies its
+// artifact_digest, ingests claims/groups/adequacy, watches the
+// file for digest changes (1 Hz — a ride-along re-cut lands
+// within a second), and adds a "law" section to /snapshot: each
+// claim with its STATIC verdict and its WITNESSED state against
+// the observed fleet (INSPECTOR.md, "witnessed law").
+//
+// Endpoints: /snapshot (JSON), /events (SSE, capped cadence),
+// / and /app.js (static, whitelist). Snapshots carry monotonic
+// TOTALS; the frontend derives rates from consecutive frames.
+//
+// Memory shape: all per-cycle work (event drain, FFI name
+// strings, snapshot JSON) happens inside a per-iteration Cycle
+// child locus — its region reclaims at dissolve, so the
+// long-running App region only holds the bounded tables. This
+// is the fix for `hale check`'s unbounded-allocation advisory
+// on the first draft, and it held: RSS is flat where the draft
+// leaked ~2 MB/s.
+
+import "attach" as fz;
+
+// ekinds / manifest kinds / counter cells (PROTOCOL.md)
+const EK_BUS_PUBLISH: Int = 1;
+const EK_BUS_DELIVER: Int = 2;
+const EK_NET_SEND: Int = 3;
+const EK_NET_DELIVER: Int = 4;
+const EK_LOCUS_BIRTH: Int = 5;
+const EK_LOCUS_DISSOLVE: Int = 6;
+const EK_RESTART: Int = 7;
+const EK_BINDING_DOWN: Int = 12;
+const MK_TOPIC: Int = 0;
+const MK_LOCUS_TYPE: Int = 1;
+const MK_BINDING: Int = 2;
+const CT_PUBLISHED: Int = 0;
+const CT_DELIVERED: Int = 1;
+const CG_RECORDS_TOTAL: Int = 2;
+
+// seq-match window: per net topic, WINDOW in-flight slots in
+// one flat vec (slot s owns [s*WINDOW, (s+1)*WINDOW)). The C
+// reference uses 65536; 16384 covers the same drain-interleave
+// spread at our poll cadence with 1/4 the memory.
+const WINDOW: Int = 16384;
+const NET_SLOTS: Int = 32;
+// pending-deliver windows: per (net topic, receiver seg), for
+// delivers that arrive before their send in drain interleave.
+// Sends live in the shared per-topic window and are NOT cleared
+// on match — multicast fan-out means one send matches a deliver
+// from EVERY listening seg (M2: mixed unix+udp).
+const PWINDOW: Int = 2048;
+const MAX_SEGS: Int = 16;
+const EV_TAIL: Int = 8;
+const SSE_SLOTS: Int = 8;
+const BATCH: Int = 512; // events per fz_next_batch call
+
+// meta cells (IntVec indices): mutable scalars shared between
+// App and the per-cycle child.
+const M_TAIL_HEAD: Int = 0;
+const M_NET_SLOTS: Int = 1;
+const M_WORKED: Int = 2; // 0 idle · 1 worked · 2 budget-exhausted (behind)
+const M_CLAIMS_N: Int = 3; // ClaimVec rows in use (vec has no clear)
+const M_GROUPS_N: Int = 4; // GroupVec rows in use
+const M_RSS_LOG: Int = 5; // last rss_note() timestamp (ns)
+const META_CELLS: Int = 6;
+
+// ---- rows ----
+
+// model: the topology artifact shape_hash this binary was built
+// from (PROTOCOL §3, proto >= 0.2). "" means the emitter predates
+// the field and said nothing — which is NOT the same as
+// "0000000000000000", an emitter that positively has no model.
+type SegRow { h: Int = -1; pid: Int = 0; name: String = ""; dead: Int = 0; restarts: Int = 0; reg: String = ""; model: String = ""; }
+type LocusRow { seg: Int = -1; inst: Int = 0; tname: String = ""; parent: Int = 0; alive: Int = 0; pub: Int = 0; dlv: Int = 0; }
+type TopicRow { key: String = ""; name: String = ""; shape: String = ""; slot: Int = -1; }
+type TopicSeg { topic: Int = -1; seg: Int = -1; local_id: Int = -1; line: Int = -1; sends: Int = 0; delivers: Int = 0; }
+type EdgeRow { topic: Int = -1; from_seg: Int = -1; to_seg: Int = -1; matched: Int = 0; lat_sum: Int = 0; lat_max: Int = 0; }
+type SeqEnt { seq: Int = 0; ts: Int = 0; seg: Int = -1; kind: Int = 0; origin: Int = 0; }
+// law rows (artifact-fed; see INSPECTOR.md "witnessed law").
+// ClaimRow.kind: 1=count 2=require_endpoint 3=forbid_reaches 0=other
+type ClaimRow { name: String = ""; form: String = ""; family: String = "";
+    sresult: String = ""; kind: Int = 0; pubs: Int = 0;
+    subject: String = ""; tdisp: String = ""; grp: String = "";
+    src: String = ""; dst: String = ""; cmp: String = ""; n: Int = 0; }
+type GroupRow { gname: String = ""; member: String = ""; }
+// WitRow: observed (topic, seg, locus-type) participation, from
+// attributed BUS records. kind 1=publish 2=deliver; tname "?" =
+// unattributed (a real event whose locus the record didn't carry).
+type WitRow { topic: Int = -1; seg: Int = -1; tname: String = ""; kind: Int = 0; count: Int = 0; }
+type SnapEntry { key: String = ""; val: String = ""; }
+type FdEntry { key: String = ""; fd: Int = -1; }
+
+@form(vec)
+locus SegVec { capacity { heap items of SegRow; } }
+@form(vec)
+locus LocusVec { capacity { heap items of LocusRow; } }
+@form(vec)
+locus TopicVec { capacity { heap items of TopicRow; } }
+@form(vec)
+locus TopicSegVec { capacity { heap items of TopicSeg; } }
+@form(vec)
+locus EdgeVec { capacity { heap items of EdgeRow; } }
+@form(vec)
+locus SeqVec { capacity { heap items of SeqEnt; } }
+@form(vec)
+locus StrVec { capacity { heap items of String; } }
+@form(vec)
+locus IntVec { capacity { heap items of Int; } }
+@form(vec)
+locus ClaimVec { capacity { heap items of ClaimRow; } }
+@form(vec)
+locus GroupVec { capacity { heap items of GroupRow; } }
+@form(vec)
+locus WitVec { capacity { heap items of WitRow; } }
+
+// cross-pool cells: the fusion loop writes, http handlers read
+// (and /events writes claimed fds) — serialized per metrics'
+// MetricMap discipline.
+@form(hashmap, sync = serialized)
+locus SnapMap { capacity { pool entries of SnapEntry indexed_by key; } }
+@form(hashmap, sync = serialized)
+locus FdMap { capacity { pool entries of FdEntry indexed_by key; } }
+
+// ---- http handler (io pool) ----
+
+locus FuseHandler {
+    params {
+        snaps: SnapMap;
+        fds: FdMap;
+        webroot: String = "render/web";
+    }
+
+    fn handle(req: std::http::Request) -> std::http::Response {
+        if req.path == "/snapshot" {
+            let e = self.snaps.get("snap") or SnapEntry { key: "snap", val: "{}" };
+            return std::http::Response {
+                status: 200,
+                content_type: "application/json",
+                headers: "Access-Control-Allow-Origin: *",
+                body: e.val
+            };
+        }
+        if req.path == "/events" {
+            let mut slot = 0;
+            let mut claimed = -1;
+            while slot < SSE_SLOTS {
+                let e = self.fds.get("" + slot) or FdEntry { key: "" + slot, fd: -1 };
+                if e.fd < 0 {
+                    self.fds.set(FdEntry { key: "" + slot, fd: req.conn_fd });
+                    claimed = slot;
+                    slot = SSE_SLOTS;
+                }
+                slot = slot + 1;
+            }
+            if claimed < 0 {
+                return std::http::Response { status: 503, body: "sse slots full" };
+            }
+            // a stalled client may cost the pump 200ms, never a stall
+            fz::fz_set_sndtimeo(req.conn_fd, 200);
+            // takeover: status line + these headers only; the
+            // fusion loop owns the fd from here and pumps frames.
+            return std::http::Response {
+                status: 200,
+                headers: "Content-Type: text/event-stream\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *",
+                body: "",
+                takeover: true
+            };
+        }
+        if req.path == "/" {
+            let html = std::io::fs::read_file(self.webroot + "/index.html")
+            or "<h1>fuse-hl: no webroot</h1>";
+            return std::http::Response {
+                status: 200, content_type: "text/html; charset=utf-8", body: html
+            };
+        }
+        if req.path == "/app.js" {
+            let js = std::io::fs::read_file(self.webroot + "/app.js") or "";
+            return std::http::Response {
+                status: 200, content_type: "text/javascript; charset=utf-8", body: js
+            };
+        }
+        return std::http::Response { status: 404, body: "not found" };
+    }
+}
+
+// ---- json helpers ----
+
+fn basename(p: String) -> String {
+    let mut i = std::str::index_of(p, "/");
+    let mut rest = p;
+    while i >= 0 {
+        rest = std::str::substring(rest, i + 1, len(rest));
+        i = std::str::index_of(rest, "/");
+    }
+    return rest;
+}
+
+// Collapse a raw artifact JSON fragment to one physical line.
+// find_field_raw returns the pretty-printed value verbatim, and
+// the artifact is indented — its literal newlines are legal JSON
+// whitespace but they break SSE's `data:`-line framing, splitting
+// the frame so the client parses only the first line. Valid JSON
+// never contains a literal newline/CR/tab INSIDE a string (those
+// must be escaped), so dropping them is content-preserving.
+fn oneline(s: String) -> String {
+    let a = std::str::replace(s, "\n", "");
+    let b = std::str::replace(a, "\r", "");
+    return std::str::replace(b, "\t", "");
+}
+
+fn jstr(s: String) -> String {
+    // names/events here are protocol identifiers and formatted
+    // lines; escape the two structural characters.
+    let a = std::str::replace(s, "\\", "\\\\");
+    return std::str::replace(a, "\"", "\\\"");
+}
+
+// FNV-1a/64 — the one hash this ecosystem uses (PROTOCOL §4,
+// artifact_digest). Int is i64 and wraps two's-complement, which
+// is what the u64 spec needs; same code as inspect/main.hl.
+fn fnv1a64(s: String) -> Int {
+    let mut h = -3750763034362895579; // 0xcbf29ce484222325
+    let mut i = 0;
+    let n = len(s);
+    while i < n {
+        h = h ^ std::str::byte_at_unchecked(s, i);
+        h = h * 1099511628211; // 0x100000001b3
+        i = i + 1;
+    }
+    h
+}
+
+fn hex16(v: Int) -> String {
+    let digits = "0123456789abcdef";
+    let mut out = "";
+    let mut sh = 60;
+    while sh >= 0 {
+        let nib = (v >> sh) & 15;
+        out = out + digits[nib..(nib + 1)];
+        sh = sh - 4;
+    }
+    out
+}
+
+// ---- one fusion cycle (per-iteration child: region reclaims
+// at dissolve, keeping the long-running App region flat) ----
+
+locus Cycle {
+    params {
+        segs: SegVec;
+        loci: LocusVec;
+        topics: TopicVec;
+        tsegs: TopicSegVec;
+        edges: EdgeVec;
+        inflight: SeqVec;
+        tail: StrVec;
+        meta: IntVec;
+        evbuf: Bytes;
+        snaps: SnapMap;
+        fds: FdMap;
+        claims: ClaimVec;
+        gmembers: GroupVec;
+        wits: WitVec;
+        lawmeta: StrVec;
+        art_path: String = "";
+        reg_dir: String = "/tmp/hale-obs";
+        do_disc: Bool = false;
+        do_snap: Bool = false;
+        now: Int = 0;
+    }
+
+    fn tail_push(line: String) {
+        let th = self.meta.get(M_TAIL_HEAD) or 0;
+        self.tail.set(th % EV_TAIL, line) or discard;
+        self.meta.set(M_TAIL_HEAD, th + 1) or discard;
+    }
+
+    // ---- discovery ----
+
+    fn known_reg(p: String) -> Bool {
+        let mut i = 0;
+        let mut hit = false;
+        while i < self.segs.len() {
+            let g = self.segs.get(i) or SegRow { };
+            if g.reg == p { hit = true; i = self.segs.len(); }
+            i = i + 1;
+        }
+        return hit;
+    }
+
+    fn discover() {
+        let n = std::io::fs::list_dir_count(self.reg_dir) or 0;
+        let mut i = 0;
+        while i < n {
+            let name = std::io::fs::list_dir_at(self.reg_dir, i) or "";
+            if std::str::index_of(name, ".json") >= 0 {
+                let p = self.reg_dir + "/" + name;
+                if !self.known_reg(p) {
+                    let h = fz::fz_attach(p);
+                    if h >= 0 {
+                        if fz::fz_alive(h) == 0 {
+                            // stale registration: dead at attach
+                            // time — GC file + segment, keep the
+                            // slot (PROTOCOL §1)
+                            let stale_pid = fz::fz_pid(h);
+                            fz::fz_detach(h);
+                            fz::fz_unlink(p);
+                            fz::fz_unlink("/dev/shm/hale-obs-" + stale_pid);
+                        } else {
+                            self.segs.push(SegRow {
+                                h: h, pid: fz::fz_pid(h),
+                                name: basename(fz::fz_exe(h)),
+                                dead: 0, restarts: 0, reg: p,
+                                model: fz::fz_model_hash_hex(h)
+                            });
+                            self.index_topics(self.segs.len() - 1);
+                            println("fuse-hl: attached pid " + fz::fz_pid(h));
+                        }
+                    }
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    // ---- manifest join ----
+
+    fn tseg_index(si: Int, local_id: Int) -> Int {
+        let mut i = 0;
+        let mut found = -1;
+        while i < self.tsegs.len() {
+            let ts = self.tsegs.get(i) or TopicSeg { };
+            if ts.seg == si {
+                if ts.local_id == local_id { found = i; i = self.tsegs.len(); }
+            }
+            i = i + 1;
+        }
+        return found;
+    }
+
+    fn topic_index(key: String) -> Int {
+        let mut i = 0;
+        let mut found = -1;
+        while i < self.topics.len() {
+            let t = self.topics.get(i) or TopicRow { };
+            if t.key == key { found = i; i = self.topics.len(); }
+            i = i + 1;
+        }
+        return found;
+    }
+
+    fn index_topics(si: Int) {
+        let g = self.segs.get(si) or SegRow { };
+        let n = fz::fz_entry_count(g.h);
+        let mut i = 0;
+        while i < n {
+            if fz::fz_entry_kind(g.h, i) == MK_TOPIC {
+                let id = fz::fz_entry_id(g.h, i);
+                if self.tseg_index(si, id) < 0 {
+                    let nm = fz::fz_name(g.h, MK_TOPIC, id);
+                    if nm != "" {
+                        let shape = fz::fz_entry_shape_hex(g.h, i);
+                        let key = shape + "/" + nm;
+                        let mut ti = self.topic_index(key);
+                        if ti < 0 {
+                            self.topics.push(TopicRow {
+                                key: key, name: nm, shape: shape, slot: -1
+                            });
+                            ti = self.topics.len() - 1;
+                        }
+                        self.tsegs.push(TopicSeg {
+                            topic: ti, seg: si, local_id: id,
+                            line: fz::fz_counter_line(g.h, MK_TOPIC, id),
+                            sends: 0, delivers: 0
+                        });
+                    }
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    // ---- locus + edge tables ----
+
+    fn locus_upsert(si: Int, inst: Int, tname: String, parent: Int, alive: Int) {
+        let mut i = 0;
+        let mut slot = -1;
+        let mut dead_slot = -1;
+        while i < self.loci.len() {
+            let l = self.loci.get(i) or LocusRow { };
+            if l.seg == si {
+                if l.inst == inst { slot = i; i = self.loci.len(); }
+            }
+            if slot < 0 {
+                if l.alive == 0 { dead_slot = i; }
+            }
+            i = i + 1;
+        }
+        if slot >= 0 {
+            self.loci.set(slot, LocusRow {
+                seg: si, inst: inst, tname: tname, parent: parent, alive: alive
+            }) or discard;
+        } else {
+            if alive == 1 {
+                let row = LocusRow {
+                    seg: si, inst: inst, tname: tname, parent: parent, alive: 1
+                };
+                if dead_slot >= 0 { self.loci.set(dead_slot, row) or discard; }
+                else { self.loci.push(row); }
+            }
+        }
+    }
+
+    fn locus_row(si: Int, inst: Int) -> LocusRow {
+        let mut i = 0;
+        let mut out = LocusRow { };
+        while i < self.loci.len() {
+            let l = self.loci.get(i) or LocusRow { };
+            if l.seg == si {
+                if l.inst == inst { out = l; i = self.loci.len(); }
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    fn edge_bump(ti: Int, from_seg: Int, to_seg: Int, lat: Int) {
+        let mut i = 0;
+        let mut found = -1;
+        while i < self.edges.len() {
+            let e = self.edges.get(i) or EdgeRow { };
+            if e.topic == ti {
+                if e.from_seg == from_seg {
+                    if e.to_seg == to_seg { found = i; i = self.edges.len(); }
+                }
+            }
+            i = i + 1;
+        }
+        if found < 0 {
+            self.edges.push(EdgeRow {
+                topic: ti, from_seg: from_seg, to_seg: to_seg,
+                matched: 1, lat_sum: lat, lat_max: lat
+            });
+        } else {
+            let mut e = self.edges.get(found) or EdgeRow { };
+            e.matched = e.matched + 1;
+            e.lat_sum = e.lat_sum + lat;
+            if lat > e.lat_max { e.lat_max = lat; }
+            self.edges.set(found, e) or discard;
+        }
+    }
+
+    // ---- seq matching (order-independent, per C reference) ----
+
+    fn net_slot_for(ti: Int) -> Int {
+        let mut t = self.topics.get(ti) or TopicRow { };
+        if t.slot < 0 {
+            let used = self.meta.get(M_NET_SLOTS) or 0;
+            if used < NET_SLOTS {
+                t.slot = used;
+                self.meta.set(M_NET_SLOTS, used + 1) or discard;
+                self.topics.set(ti, t) or discard;
+            }
+        }
+        return t.slot;
+    }
+
+    fn pending_base(slot: Int, seg: Int) -> Int {
+        return NET_SLOTS * WINDOW + (slot * MAX_SEGS + seg) * PWINDOW;
+    }
+
+    fn net_event(si: Int, tsi: Int, is_send: Bool, ts: Int, seq: Int, origin: Int) {
+        let mut tseg = self.tsegs.get(tsi) or TopicSeg { };
+        if is_send { tseg.sends = tseg.sends + 1; }
+        else { tseg.delivers = tseg.delivers + 1; }
+        self.tsegs.set(tsi, tseg) or discard;
+
+        let slot = self.net_slot_for(tseg.topic);
+        if slot < 0 { return; }
+        let sidx = slot * WINDOW + (seq + origin * 7919) % WINDOW;
+
+        if is_send {
+            // store (overwrite on window wrap); kept after matches
+            // so every listener can pair against it
+            self.inflight.set(sidx, SeqEnt { seq: seq, ts: ts, seg: si, kind: 1, origin: origin }) or discard;
+            // sweep pending delivers parked by any other seg
+            let mut rs = 0;
+            while rs < self.segs.len() {
+                if rs != si {
+                    if rs < MAX_SEGS {
+                        let pidx = self.pending_base(slot, rs) + (seq + origin * 7919) % PWINDOW;
+                        let pe = self.inflight.get(pidx) or SeqEnt { };
+                        if pe.kind == 2 {
+                            if pe.seq == seq && pe.origin == origin {
+                                let mut lat = 0;
+                                if pe.ts > ts { lat = pe.ts - ts; }
+                                self.edge_bump(tseg.topic, si, rs, lat);
+                                self.inflight.set(pidx, SeqEnt { }) or discard;
+                            }
+                        }
+                    }
+                }
+                rs = rs + 1;
+            }
+        } else {
+            let e = self.inflight.get(sidx) or SeqEnt { };
+            if e.kind == 1 {
+                if e.seq == seq && e.origin == origin {
+                    if e.seg != si {
+                        let mut lat = 0;
+                        if ts > e.ts { lat = ts - e.ts; }
+                        self.edge_bump(tseg.topic, e.seg, si, lat);
+                        return; // send entry stays for other listeners
+                    }
+                }
+            }
+            // deliver-before-send: park in this seg's pending window
+            if si < MAX_SEGS {
+                let pidx = self.pending_base(slot, si) + (seq + origin * 7919) % PWINDOW;
+                self.inflight.set(pidx, SeqEnt { seq: seq, ts: ts, seg: si, kind: 2, origin: origin }) or discard;
+            }
+        }
+    }
+
+    // ---- event pump ----
+
+    fn locus_bump(si: Int, inst: Int, is_pub: Bool) {
+        let mut i = 0;
+        while i < self.loci.len() {
+            let l = self.loci.get(i) or LocusRow { };
+            if l.seg == si {
+                if l.inst == inst {
+                    let mut lm = l;
+                    if is_pub { lm.pub = lm.pub + 1; }
+                    else { lm.dlv = lm.dlv + 1; }
+                    self.loci.set(i, lm) or discard;
+                    i = self.loci.len();
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    // ---- law ingestion (artifact -> claims/groups/lawmeta) ----
+    // Discovery cadence (1 Hz); reparses only when artifact_digest
+    // changes, so a ride-along re-cut lands within a second. All
+    // parse allocations die with this Cycle. lawmeta cells:
+    // 0 last-digest  1 model  2 verdict  3 digest-state
+    // 4 adequacy(raw json)  5 capabilities(raw)  6 groups(raw)
+
+    fn law_subject_of(topics_raw: String, tname: String) -> String {
+        let mut it = std::json::array_first_span(topics_raw);
+        let mut out = "";
+        while !it.done {
+            if std::json::iter_find_string_field(it, topics_raw, "name") == tname {
+                out = std::json::iter_find_string_field(it, topics_raw, "subject");
+            }
+            it = std::json::array_next_span(it, topics_raw);
+        }
+        return out;
+    }
+
+    fn claim_form_of(claims_raw: String, name: String) -> String {
+        let mut it = std::json::array_first_span(claims_raw);
+        let mut out = "";
+        while !it.done {
+            if std::json::iter_find_string_field(it, claims_raw, "name") == name {
+                out = std::json::iter_find_string_field(it, claims_raw, "form");
+            }
+            it = std::json::array_next_span(it, claims_raw);
+        }
+        return out;
+    }
+
+    fn grow_claim(idx: Int, row: ClaimRow) -> Int {
+        if idx < self.claims.len() { self.claims.set(idx, row) or discard; }
+        else { self.claims.push(row); }
+        return idx + 1;
+    }
+
+    fn grow_group(idx: Int, gname: String, member: String) -> Int {
+        let row = GroupRow { gname: gname, member: member };
+        if idx < self.gmembers.len() { self.gmembers.set(idx, row) or discard; }
+        else { self.gmembers.push(row); }
+        return idx + 1;
+    }
+
+    // The tables grow by document rows, loaded at 1 Hz into
+    // capacity vecs whose used-count resets per ingest (M_CLAIMS_N /
+    // M_GROUPS_N) — bounded by the artifact, not by time.
+    @unbounded
+    fn ingest_law() {
+        if self.art_path == "" { return; }
+        let art = std::io::fs::read_file(self.art_path) or "";
+        if len(art) == 0 { return; }
+        // last occurrence of the digest marker (a user string
+        // containing it cannot shadow the real, final key)
+        let key = ",\n  \"artifact_digest\": \"";
+        let mut at = -1;
+        let mut from = 0;
+        let mut going = true;
+        while going {
+            let rel = std::str::index_of(art[from..len(art)], key);
+            if rel < 0 { going = false; }
+            else { at = from + rel; from = at + 1; }
+        }
+        if at < 0 {
+            self.lawmeta.set(3, "none") or discard;
+            return;
+        }
+        let rest = art[(at + len(key))..len(art)];
+        let q = std::str::index_of(rest, "\"");
+        if q < 0 { return; }
+        let claimed = rest[0..q];
+        if claimed == (self.lawmeta.get(0) or "") { return; } // unchanged
+        self.lawmeta.set(0, claimed) or discard;
+        if claimed != hex16(fnv1a64(art[0..at])) {
+            // refuse, don't warn: the sections this ledger is built
+            // from are exactly what shape_hash does not cover
+            self.lawmeta.set(3, "mismatch") or discard;
+            self.meta.set(M_CLAIMS_N, 0) or discard;
+            self.meta.set(M_GROUPS_N, 0) or discard;
+            self.tail_push("law: artifact_digest MISMATCH - claims cleared");
+            return;
+        }
+        self.lawmeta.set(3, "verified") or discard;
+        self.lawmeta.set(1, std::json::find_string_field(art, "shape_hash")) or discard;
+        self.lawmeta.set(2, std::json::find_string_field(art, "verdict")) or discard;
+        self.lawmeta.set(4, std::json::find_field_raw(art, "adequacy")) or discard;
+        self.lawmeta.set(5, std::json::find_field_raw(art, "capabilities")) or discard;
+        let groups_raw = std::json::find_field_raw(art, "groups");
+        self.lawmeta.set(6, groups_raw) or discard;
+
+        // groups -> member rows
+        let mut gi = 0;
+        let mut git = std::json::object_first(groups_raw);
+        while !git.done {
+            let gname = std::json::obj_key_string(git, groups_raw);
+            let members = std::json::obj_value_raw(git, groups_raw);
+            let mut mi = std::json::array_first_span(members);
+            while !mi.done {
+                let m = std::json::iter_substring(mi, members);
+                if len(m) >= 2 {
+                    gi = self.grow_group(gi, gname,
+                        std::json::unescape_string(m[1..(len(m) - 1)]));
+                }
+                mi = std::json::array_next_span(mi, members);
+            }
+            git = std::json::object_next(git, groups_raw);
+        }
+        self.meta.set(M_GROUPS_N, gi) or discard;
+
+        // law.rows -> claim rows (structured; no form parsing)
+        let law_raw = std::json::find_field_raw(art, "law");
+        let topics_raw = std::json::find_field_raw(law_raw, "topics");
+        let rows = std::json::find_field_raw(law_raw, "rows");
+        let claims_raw = std::json::find_field_raw(art, "claims");
+        let mut ci = 0;
+        let mut ri = std::json::array_first_span(rows);
+        while !ri.done {
+            let nm = std::json::iter_find_string_field(ri, rows, "name");
+            let lr = std::json::iter_find_field_raw(ri, rows, "law");
+            let lkind = std::json::find_string_field(lr, "kind");
+            let mut row = ClaimRow {
+                name: nm,
+                form: self.claim_form_of(claims_raw, nm),
+                family: std::json::iter_find_string_field(ri, rows, "family"),
+                sresult: std::json::iter_find_string_field(ri, rows, "verdict")
+            };
+            if lkind == "count" {
+                row.kind = 1;
+                if std::json::find_bool_field(lr, "publishers") { row.pubs = 1; }
+                row.tdisp = std::json::find_string_field(
+                    std::json::find_field_raw(lr, "topic"), "name");
+                row.subject = self.law_subject_of(topics_raw, row.tdisp);
+                row.cmp = std::json::find_string_field(lr, "cmp");
+                row.n = std::json::find_int_field(lr, "n");
+            }
+            if lkind == "require_endpoint" {
+                row.kind = 2;
+                if std::json::find_bool_field(lr, "publishers") { row.pubs = 1; }
+                row.grp = std::json::find_string_field(
+                    std::json::find_field_raw(lr, "group"), "name");
+                row.tdisp = std::json::find_string_field(
+                    std::json::find_field_raw(lr, "topic"), "name");
+                row.subject = self.law_subject_of(topics_raw, row.tdisp);
+            }
+            if lkind == "forbid_reaches" {
+                row.kind = 3;
+                row.src = std::json::find_string_field(
+                    std::json::find_field_raw(
+                        std::json::find_field_raw(lr, "src"), "group"), "name");
+                row.dst = std::json::find_string_field(
+                    std::json::find_field_raw(
+                        std::json::find_field_raw(lr, "dst"), "group"), "name");
+            }
+            ci = self.grow_claim(ci, row);
+            ri = std::json::array_next_span(ri, rows);
+        }
+        self.meta.set(M_CLAIMS_N, ci) or discard;
+        self.tail_push("law: ingested " + ci + " claim(s), digest verified");
+    }
+
+    // witnessed-law evidence: which locus TYPES touch which fused
+    // topics. One row per (topic, seg, type, verb); "?" records
+    // unattributed evidence — real traffic whose publisher the
+    // record couldn't name, which the evaluator treats as reason
+    // to abstain, never as a countable participant.
+    fn wit_note(si: Int, local_id: Int, inst: Int, kind: Int) {
+        let tsi = self.tseg_index(si, local_id);
+        if tsi < 0 { return; }
+        let tseg = self.tsegs.get(tsi) or TopicSeg { };
+        let mut tname = "?";
+        if inst > 0 {
+            let l = self.locus_row(si, inst);
+            if l.tname != "" { tname = l.tname; }
+        }
+        let mut i = 0;
+        while i < self.wits.len() {
+            let w = self.wits.get(i) or WitRow { };
+            if w.topic == tseg.topic {
+                if w.seg == si && w.kind == kind && w.tname == tname {
+                    self.wits.set(i, WitRow { topic: w.topic, seg: w.seg,
+                        tname: w.tname, kind: w.kind, count: w.count + 1 }) or discard;
+                    return;
+                }
+            }
+            i = i + 1;
+        }
+        // bounded: topics x types x segs in practice; 512 is a loud
+        // ceiling, not a silent cap — overflow shows in the tail.
+        if self.wits.len() < 512 {
+            self.wits.push(WitRow { topic: tseg.topic, seg: si, tname: tname, kind: kind, count: 1 });
+        } else {
+            self.tail_push("law: witness table full (512) — evidence dropped");
+        }
+    }
+
+    fn handle_event(si: Int, k: Int, id: Int, ts: Int, w1: Int) {
+        let g = self.segs.get(si) or SegRow { };
+        if k == EK_BUS_PUBLISH {
+            let bl = (w1 >> 44) & 1048575;
+            if bl > 0 { self.locus_bump(si, bl, true); }
+            self.wit_note(si, id, bl, 1);
+        }
+        if k == EK_BUS_DELIVER {
+            let bl = (w1 >> 44) & 1048575;
+            if bl > 0 { self.locus_bump(si, bl, false); }
+            self.wit_note(si, id, bl, 2);
+        }
+        if k == EK_NET_SEND {
+            let tsi = self.tseg_index(si, id);
+            if tsi >= 0 {
+                self.net_event(si, tsi, true, ts, (w1 >> 16) & 281474976710655, w1 & 65535);
+            }
+        }
+        if k == EK_NET_DELIVER {
+            let tsi = self.tseg_index(si, id);
+            if tsi >= 0 {
+                self.net_event(si, tsi, false, ts, (w1 >> 16) & 281474976710655, w1 & 65535);
+            }
+        }
+        if k == EK_LOCUS_BIRTH {
+            let btype = (w1 >> 32) & 1048575;
+            let bparent = w1 & 4294967295;
+            let tname = fz::fz_name(g.h, MK_LOCUS_TYPE, btype);
+            self.locus_upsert(si, id, tname, bparent, 1);
+        }
+        if k == EK_LOCUS_DISSOLVE {
+            let l = self.locus_row(si, id);
+            self.locus_upsert(si, id, l.tname, l.parent, 0);
+            self.tail_push("pid " + g.pid + ": " + l.tname + "#" + id
+                    + " dissolved (reason " + w1 + ")");
+        }
+        if k == EK_RESTART {
+            let mut gm = self.segs.get(si) or SegRow { };
+            gm.restarts = gm.restarts + 1;
+            self.segs.set(si, gm) or discard;
+            self.tail_push("pid " + g.pid + ": restart -> locus#" + id);
+        }
+        if k == EK_BINDING_DOWN {
+            self.tail_push("pid " + g.pid + ": binding "
+                    + fz::fz_name(g.h, MK_BINDING, id) + " DOWN");
+        }
+    }
+
+    fn drain_rings() {
+        let mut si = 0;
+        while si < self.segs.len() {
+            let g = self.segs.get(si) or SegRow { };
+            if g.dead == 0 {
+                self.index_topics(si); // cheap; late manifest entries
+                let mut batches = 400; // <= 200k events per seg per cycle
+                while batches > 0 {
+                    let n = fz::fz_next_batch(g.h, self.evbuf);
+                    if n == 0 { batches = 0; }
+                    else {
+                        if batches == 1 { self.meta.set(M_WORKED, 2) or discard; }
+                        else { self.meta.set(M_WORKED, 1) or discard; }
+                        let mut e = 0;
+                        while e < n {
+                            let off = e * 32;
+                            let ts = std::bytes::read_i64_le(self.evbuf, off) or 0;
+                            let k = std::bytes::read_u32_le(self.evbuf, off + 8) or 0;
+                            let id = std::bytes::read_u32_le(self.evbuf, off + 12) or 0;
+                            let w1 = std::bytes::read_i64_le(self.evbuf, off + 16) or 0;
+                            self.handle_event(si, k, id, ts, w1);
+                            e = e + 1;
+                        }
+                        if n < BATCH { batches = 0; }
+                        else { batches = batches - 1; }
+                    }
+                }
+                if fz::fz_alive(g.h) == 0 {
+                    let mut gm = self.segs.get(si) or SegRow { };
+                    gm.dead = 1;
+                    self.segs.set(si, gm) or discard;
+                    self.tail_push("pid " + g.pid + ": process EXITED");
+                }
+            }
+            si = si + 1;
+        }
+    }
+
+    // ---- snapshot ----
+
+    // The survey is right about the mechanism and wrong about the
+    // lifetime: every `s = s + ...` below does bump-allocate a fresh
+    // string in this locus's region and never reclaims the old one —
+    // but `Cycle` IS the per-iteration child, born and dissolved once
+    // per fusion loop, so the whole region goes back at dissolve. The
+    // loops are over the fused tables (segs/loci/topics/edges), which
+    // are capacity-bounded forms, not unbounded streams. This is the
+    // "move the allocating work into a per-iteration child locus" fix
+    // the advisory itself recommends — already applied, one level up
+    // than the analysis can see. Measured flat across a 60s soak at
+    // ~500k records/s (README § Verified).
+    @unbounded
+    fn snapshot() -> String {
+        let mut s = "{\"ts\":" + self.now + ",\"processes\":[";
+        let mut i = 0;
+        while i < self.segs.len() {
+            let g = self.segs.get(i) or SegRow { };
+            if i > 0 { s = s + ","; }
+            let mut state = "live";
+            if g.dead == 1 { state = "dead"; }
+            s = s + "{\"pid\":" + g.pid + ",\"name\":\"" + jstr(g.name)
+                + "\",\"state\":\"" + state + "\""
+                + ",\"model\":\"" + g.model + "\""
+                + ",\"records\":" + fz::fz_counter(g.h, 0, CG_RECORDS_TOTAL)
+                + ",\"overruns\":" + fz::fz_overruns(g.h)
+                + ",\"restarts\":" + g.restarts + ",\"loci\":[";
+            let mut li = 0;
+            let mut nl = 0;
+            while li < self.loci.len() {
+                let l = self.loci.get(li) or LocusRow { };
+                if l.seg == i {
+                    if l.alive == 1 {
+                        if nl > 0 { s = s + ","; }
+                        s = s + "{\"id\":" + l.inst + ",\"type\":\"" + jstr(l.tname)
+                            + "\",\"parent\":" + l.parent
+                            + ",\"pub\":" + l.pub + ",\"dlv\":" + l.dlv + "}";
+                        nl = nl + 1;
+                    }
+                }
+                li = li + 1;
+            }
+            s = s + "]}";
+            i = i + 1;
+        }
+        s = s + "],\"topics\":[";
+        let mut ti = 0;
+        while ti < self.topics.len() {
+            let t = self.topics.get(ti) or TopicRow { };
+            if ti > 0 { s = s + ","; }
+            let mut pub = 0;
+            let mut dlv = 0;
+            let mut si2 = 0;
+            while si2 < self.tsegs.len() {
+                let ts2 = self.tsegs.get(si2) or TopicSeg { };
+                if ts2.topic == ti {
+                    let g2 = self.segs.get(ts2.seg) or SegRow { };
+                    pub = pub + fz::fz_counter(g2.h, ts2.line, CT_PUBLISHED);
+                    dlv = dlv + fz::fz_counter(g2.h, ts2.line, CT_DELIVERED);
+                }
+                si2 = si2 + 1;
+            }
+            s = s + "{\"name\":\"" + jstr(t.name) + "\",\"shape\":\"" + t.shape
+                + "\",\"pub\":" + pub + ",\"dlv\":" + dlv + "}";
+            ti = ti + 1;
+        }
+        s = s + "],\"edges\":[";
+        let mut ei = 0;
+        while ei < self.edges.len() {
+            let e = self.edges.get(ei) or EdgeRow { };
+            let t = self.topics.get(e.topic) or TopicRow { };
+            let gf = self.segs.get(e.from_seg) or SegRow { };
+            let gt = self.segs.get(e.to_seg) or SegRow { };
+            let mut sends = 0;
+            let mut delivers = 0;
+            let mut si3 = 0;
+            while si3 < self.tsegs.len() {
+                let ts3 = self.tsegs.get(si3) or TopicSeg { };
+                if ts3.topic == e.topic {
+                    if ts3.seg == e.from_seg { sends = ts3.sends; }
+                    if ts3.seg == e.to_seg { delivers = ts3.delivers; }
+                }
+                si3 = si3 + 1;
+            }
+            if ei > 0 { s = s + ","; }
+            s = s + "{\"topic\":\"" + jstr(t.name) + "\",\"from\":" + gf.pid
+                + ",\"to\":" + gt.pid + ",\"matched\":" + e.matched
+                + ",\"latSum\":" + e.lat_sum + ",\"latMax\":" + e.lat_max
+                + ",\"sends\":" + sends + ",\"delivers\":" + delivers + "}";
+            ei = ei + 1;
+        }
+        s = s + "],\"events\":[";
+        let th = self.meta.get(M_TAIL_HEAD) or 0;
+        let mut evi = 0;
+        let mut ne = 0;
+        while evi < EV_TAIL {
+            let line = self.tail.get((th + evi) % EV_TAIL) or "";
+            if line != "" {
+                if ne > 0 { s = s + ","; }
+                s = s + "\"" + jstr(line) + "\"";
+                ne = ne + 1;
+            }
+            evi = evi + 1;
+        }
+        s = s + "]" + self.law_json() + "}";
+        return s;
+    }
+
+    // ---- witnessed-law evaluation --------------------------------
+    // hale evaluated each claim over DECLARATIONS; these evaluate
+    // the same predicate over the OBSERVED fleet. The asymmetry is
+    // deliberate and preserved: observation can falsify (a route
+    // exists, a second writer exists) and can report non-exercise,
+    // but can never prove a universal — so "consistent" always
+    // names its basis, and unattributed evidence makes the
+    // evaluator abstain (unwitnessed) rather than guess.
+
+    fn group_has(gname: String, tname: String) -> Bool {
+        let gn = self.meta.get(M_GROUPS_N) or 0;
+        let mut i = 0;
+        let mut hit = false;
+        while i < gn {
+            let g = self.gmembers.get(i) or GroupRow { };
+            if g.gname == gname && g.member == tname { hit = true; i = gn; }
+            i = i + 1;
+        }
+        return hit;
+    }
+
+    fn topic_is(ti: Int, subject: String) -> Bool {
+        let t = self.topics.get(ti) or TopicRow { };
+        return t.name == subject;
+    }
+
+    // distinct attributed locus types on subject+verb, fleet-wide
+    fn wit_distinct(subject: String, kind: Int) -> Int {
+        let mut c = 0;
+        let mut i = 0;
+        while i < self.wits.len() {
+            let w = self.wits.get(i) or WitRow { };
+            if w.kind == kind && w.tname != "?" {
+                if self.topic_is(w.topic, subject) {
+                    // count once per type: skip if an earlier row
+                    // already carried this tname for this subject
+                    let mut j = 0;
+                    let mut seen = false;
+                    while j < i {
+                        let v = self.wits.get(j) or WitRow { };
+                        if v.kind == kind && v.tname == w.tname {
+                            if self.topic_is(v.topic, subject) { seen = true; j = i; }
+                        }
+                        j = j + 1;
+                    }
+                    if !seen { c = c + 1; }
+                }
+            }
+            i = i + 1;
+        }
+        return c;
+    }
+
+    fn wit_unattr(subject: String, kind: Int) -> Bool {
+        let mut i = 0;
+        let mut hit = false;
+        while i < self.wits.len() {
+            let w = self.wits.get(i) or WitRow { };
+            if w.kind == kind && w.tname == "?" {
+                if self.topic_is(w.topic, subject) { hit = true; i = self.wits.len(); }
+            }
+            i = i + 1;
+        }
+        return hit;
+    }
+
+    fn wit_types_json(subject: String, kind: Int) -> String {
+        let mut out = "[";
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.wits.len() {
+            let w = self.wits.get(i) or WitRow { };
+            if w.kind == kind && self.topic_is(w.topic, subject) {
+                let mut j = 0;
+                let mut seen = false;
+                while j < i {
+                    let v = self.wits.get(j) or WitRow { };
+                    if v.kind == kind && v.tname == w.tname {
+                        if self.topic_is(v.topic, subject) { seen = true; j = i; }
+                    }
+                    j = j + 1;
+                }
+                if !seen {
+                    if n > 0 { out = out + ","; }
+                    let mut nm = w.tname;
+                    if nm == "?" { nm = "(unattributed)"; }
+                    out = out + "\"" + jstr(nm) + "\"";
+                    n = n + 1;
+                }
+            }
+            i = i + 1;
+        }
+        return out + "]";
+    }
+
+    fn wit_group_hit(subject: String, kind: Int, gname: String) -> String {
+        let mut i = 0;
+        let mut out = "";
+        while i < self.wits.len() {
+            let w = self.wits.get(i) or WitRow { };
+            if w.kind == kind && w.tname != "?" {
+                if self.topic_is(w.topic, subject) {
+                    if self.group_has(gname, w.tname) { out = w.tname; i = self.wits.len(); }
+                }
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    fn group_active(gname: String, kind: Int) -> Bool {
+        let mut i = 0;
+        let mut hit = false;
+        while i < self.wits.len() {
+            let w = self.wits.get(i) or WitRow { };
+            if w.kind == kind && w.tname != "?" {
+                if self.group_has(gname, w.tname) { hit = true; i = self.wits.len(); }
+            }
+            i = i + 1;
+        }
+        return hit;
+    }
+
+    // one-hop forbid falsifier: a topic where src published and
+    // dst delivered. Returns the route as JSON, or "". Same
+    // lifetime argument as snapshot(): Cycle IS the per-iteration
+    // child, so this region reclaims at dissolve; the loops are
+    // over the bounded witness table.
+    @unbounded
+    fn forbid_route(src: String, dst: String) -> String {
+        let mut i = 0;
+        let mut out = "";
+        while i < self.wits.len() {
+            let w = self.wits.get(i) or WitRow { };
+            if w.kind == 1 && w.tname != "?" {
+                if self.group_has(src, w.tname) {
+                    let mut j = 0;
+                    while j < self.wits.len() {
+                        let v = self.wits.get(j) or WitRow { };
+                        if v.kind == 2 && v.topic == w.topic && v.tname != "?" {
+                            if self.group_has(dst, v.tname) {
+                                let t = self.topics.get(w.topic) or TopicRow { };
+                                out = "{\"topic\":\"" + jstr(t.name)
+                                    + "\",\"pub\":\"" + jstr(w.tname)
+                                    + "\",\"dlv\":\"" + jstr(v.tname) + "\"}";
+                                j = self.wits.len();
+                                i = self.wits.len();
+                            }
+                        }
+                        j = j + 1;
+                    }
+                }
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    // fused counter total for a subject (counters are the
+    // dormant-mode contract: exercise is judged on them, not on
+    // whether we happened to drain records)
+    fn fused_total(subject: String, cell: Int) -> Int {
+        let mut tot = 0;
+        let mut i = 0;
+        while i < self.tsegs.len() {
+            let ts = self.tsegs.get(i) or TopicSeg { };
+            if self.topic_is(ts.topic, subject) {
+                let g = self.segs.get(ts.seg) or SegRow { };
+                tot = tot + fz::fz_counter(g.h, ts.line, cell);
+            }
+            i = i + 1;
+        }
+        return tot;
+    }
+
+    fn eval_claim_json(c: ClaimRow) -> String {
+        let mut wstate = "unsupported";
+        let mut detail = "witnessing not implemented for this form";
+        let mut extra = "";
+        if c.kind == 1 {
+            let mut wk = 2;
+            let mut cell = CT_DELIVERED;
+            let mut verb = "subscriber";
+            if c.pubs == 1 { wk = 1; cell = CT_PUBLISHED; verb = "publisher"; }
+            let tot = self.fused_total(c.subject, cell);
+            if tot == 0 {
+                wstate = "not_exercised";
+                detail = "no " + verb + " traffic observed on \"" + c.subject + "\"";
+            } else {
+                let dc = self.wit_distinct(c.subject, wk);
+                let unatt = self.wit_unattr(c.subject, wk);
+                extra = ",\"witnesses\":" + self.wit_types_json(c.subject, wk);
+                if c.cmp == ">=" {
+                    if dc >= c.n { wstate = "consistent"; detail = dc + " distinct " + verb + " type(s) observed"; }
+                    else { wstate = "unwitnessed"; detail = "only " + dc + " of " + c.n + " required " + verb + " type(s) observed"; }
+                } else {
+                    // == and <= share the falsifying direction
+                    if dc > c.n {
+                        wstate = "contradicted";
+                        detail = dc + " distinct " + verb + " types observed on \"" + c.subject + "\" - the model declares " + c.n + ". The compiler is deployment-blind by design; this is the fleet.";
+                    } else {
+                        if unatt {
+                            wstate = "unwitnessed";
+                            detail = "unattributed " + verb + " traffic on \"" + c.subject + "\" - cannot bound the count";
+                        } else {
+                            if c.cmp == "==" && dc < c.n {
+                                wstate = "unwitnessed";
+                                detail = "only " + dc + " of " + c.n + " declared " + verb + " type(s) active";
+                            } else {
+                                wstate = "consistent";
+                                detail = dc + " distinct " + verb + " type(s) observed, within bound";
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if c.kind == 2 {
+            let mut wk = 2;
+            let mut verb = "delivery to";
+            if c.pubs == 1 { wk = 1; verb = "publish by"; }
+            let pubtot = self.fused_total(c.subject, CT_PUBLISHED);
+            let hit = self.wit_group_hit(c.subject, wk, c.grp);
+            if hit != "" {
+                wstate = "consistent";
+                detail = verb + " " + hit + " (in " + c.grp + ") witnessed";
+            } else {
+                if pubtot == 0 {
+                    wstate = "not_exercised";
+                    detail = "nothing has ever published \"" + c.subject + "\" - the wiring exists, no traffic has pressured it";
+                } else {
+                    wstate = "unwitnessed";
+                    detail = "traffic flows on \"" + c.subject + "\" but no " + verb + " any member of " + c.grp + " observed";
+                }
+            }
+        }
+        if c.kind == 3 {
+            let route = self.forbid_route(c.src, c.dst);
+            if route != "" {
+                wstate = "contradicted";
+                detail = "one-hop route observed from " + c.src + " to " + c.dst;
+                extra = ",\"route\":" + route;
+            } else {
+                if self.group_active(c.src, 1) && self.group_active(c.dst, 2) {
+                    wstate = "consistent";
+                    detail = "both wings active, no one-hop route observed; multi-hop chains unchecked (M3)";
+                } else {
+                    wstate = "not_exercised";
+                    detail = "the boundary has not been pressured (a wing is inactive)";
+                }
+            }
+        }
+        return "{\"name\":\"" + jstr(c.name) + "\",\"family\":\"" + jstr(c.family)
+            + "\",\"form\":\"" + jstr(c.form)
+            + "\",\"static\":\"" + jstr(c.sresult)
+            + "\",\"witnessed\":\"" + wstate
+            + "\",\"detail\":\"" + jstr(detail)
+            + "\",\"subject\":\"" + jstr(c.subject)
+            + "\",\"group\":\"" + jstr(c.grp)
+            + "\",\"src\":\"" + jstr(c.src)
+            + "\",\"dst\":\"" + jstr(c.dst) + "\"" + extra + "}";
+    }
+
+    @unbounded
+    fn law_json() -> String {
+        if self.art_path == "" { return ""; }
+        let mut s = ",\"law\":{\"artifact\":\"" + jstr(self.art_path) + "\"";
+        s = s + ",\"digest\":\"" + (self.lawmeta.get(3) or "") + "\"";
+        let mdl = self.lawmeta.get(1) or "";
+        s = s + ",\"model\":\"" + mdl + "\"";
+        s = s + ",\"verdict\":\"" + (self.lawmeta.get(2) or "") + "\"";
+        // evidence provenance: which live processes were built from
+        // THIS model (witness quality, rendered, not hidden)
+        let mut insync = 0;
+        let mut other = 0;
+        let mut unk = 0;
+        let mut si = 0;
+        while si < self.segs.len() {
+            let g = self.segs.get(si) or SegRow { };
+            if g.dead == 0 {
+                if g.model == mdl { insync = insync + 1; }
+                else {
+                    if g.model == "" || g.model == "0000000000000000" { unk = unk + 1; }
+                    else { other = other + 1; }
+                }
+            }
+            si = si + 1;
+        }
+        s = s + ",\"evidence\":{\"in_sync\":" + insync + ",\"other_model\":" + other + ",\"no_model\":" + unk + "}";
+        let adq = self.lawmeta.get(4) or "";
+        if len(adq) > 0 { s = s + ",\"adequacy\":" + oneline(adq); }
+        let cap = self.lawmeta.get(5) or "";
+        if len(cap) > 0 { s = s + ",\"capabilities\":" + oneline(cap); }
+        let grw = self.lawmeta.get(6) or "";
+        if len(grw) > 0 { s = s + ",\"groups\":" + oneline(grw); }
+        s = s + ",\"claims\":[";
+        let cn = self.meta.get(M_CLAIMS_N) or 0;
+        let mut i = 0;
+        while i < cn {
+            let c = self.claims.get(i) or ClaimRow { };
+            if i > 0 { s = s + ","; }
+            s = s + self.eval_claim_json(c);
+            i = i + 1;
+        }
+        return s + "]}";
+    }
+
+    fn rss_note(now: Int) {
+        let last = self.meta.get(M_RSS_LOG) or 0;
+        if now - last < 60000000000 { return; }
+        self.meta.set(M_RSS_LOG, now) or discard;
+        let statm = std::io::fs::read_file("/proc/self/statm") or "";
+        let sp1 = std::str::index_of(statm, " ");
+        if sp1 < 0 { return; }
+        let rest = std::str::substring(statm, sp1 + 1, len(statm));
+        let sp2 = std::str::index_of(rest, " ");
+        if sp2 < 0 { return; }
+        let pages = std::str::parse_int(std::str::substring(rest, 0, sp2)) or 0;
+        println("fuse-hl: rss " + (pages * 4096 / 1048576) + "MB, segs "
+                + self.segs.len() + ", topics " + self.topics.len()
+                + ", loci " + self.loci.len() + ", edges " + self.edges.len());
+    }
+
+    fn drop_sse(slot: Int) {
+        self.fds.set(FdEntry { key: "" + slot, fd: -1 });
+    }
+
+    fn pump_sse(snap: String) {
+        let frame = "data: " + snap + "\n\n";
+        let mut i = 0;
+        while i < SSE_SLOTS {
+            let e = self.fds.get("" + i) or FdEntry { key: "" + i, fd: -1 };
+            if e.fd >= 0 {
+                let st = std::io::tcp::Stream { conn_fd: e.fd, owns_fd: false };
+                st.send(frame) or self.drop_sse(i);
+            }
+            i = i + 1;
+        }
+    }
+
+    birth() {
+        if self.do_disc { self.discover(); self.ingest_law(); }
+        self.drain_rings();
+        if self.do_snap {
+            let snap = self.snapshot();
+            self.snaps.set(SnapEntry { key: "snap", val: snap });
+            self.pump_sse(snap);
+            self.rss_note(self.now);
+        }
+    }
+}
+
+// ---- the long-running shell --------------------------------
+
+main locus App {
+    params {
+        segs: SegVec = SegVec { };
+        loci: LocusVec = LocusVec { };
+        topics: TopicVec = TopicVec { };
+        tsegs: TopicSegVec = TopicSegVec { };
+        edges: EdgeVec = EdgeVec { };
+        inflight: SeqVec = SeqVec { };
+        tail: StrVec = StrVec { };
+        meta: IntVec = IntVec { };
+        evbuf: Bytes;
+        snaps: SnapMap;
+        fds: FdMap;
+        claims: ClaimVec = ClaimVec { };
+        gmembers: GroupVec = GroupVec { };
+        wits: WitVec = WitVec { };
+        lawmeta: StrVec = StrVec { };
+        srv: std::http::Server;
+        reg_dir: String = "/tmp/hale-obs";
+        art_path: String = "";
+        snap_ns: Int = 100000000; // SSE cadence: 10 Hz
+    }
+
+    placement { srv: cooperative(pool = io); }
+
+    birth() {
+        let mut i = 0;
+        while i < NET_SLOTS * WINDOW + NET_SLOTS * MAX_SEGS * PWINDOW {
+            self.inflight.push(SeqEnt { });
+            i = i + 1;
+        }
+        let mut t = 0;
+        while t < EV_TAIL {
+            self.tail.push("");
+            t = t + 1;
+        }
+        let mut m = 0;
+        while m < META_CELLS {
+            self.meta.push(0);
+            m = m + 1;
+        }
+        let mut lw = 0;
+        while lw < 7 {
+            self.lawmeta.push("");
+            lw = lw + 1;
+        }
+    }
+
+    run() {
+        let mut last_disc = 0;
+        let mut last_snap = 0;
+        while true {
+            let now = fz::fz_now();
+            let mut do_disc = false;
+            if now - last_disc > 1000000000 { do_disc = true; last_disc = now; }
+            let mut do_snap = false;
+            if now - last_snap > self.snap_ns { do_snap = true; last_snap = now; }
+            self.meta.set(M_WORKED, 0) or discard;
+            Cycle {
+                segs: self.segs, loci: self.loci, topics: self.topics,
+                tsegs: self.tsegs, edges: self.edges, inflight: self.inflight,
+                tail: self.tail, meta: self.meta, evbuf: self.evbuf,
+                snaps: self.snaps,
+                fds: self.fds,
+                claims: self.claims, gmembers: self.gmembers,
+                wits: self.wits, lawmeta: self.lawmeta,
+                art_path: self.art_path, reg_dir: self.reg_dir,
+                do_disc: do_disc, do_snap: do_snap, now: now
+            };
+            if (self.meta.get(M_WORKED) or 0) < 2 { std::time::sleep(2ms); }
+        }
+    }
+}
+
+fn main() {
+    let port = std::str::parse_int(std::env::arg_or(1, "8787")) or 8787;
+    let webroot = std::env::arg_or(2, "../../render/web");
+    let art_path = std::env::arg_or(3, "");
+    let mut reg_dir = "/tmp/hale-obs";
+    if std::env::var_exists("XDG_RUNTIME_DIR") {
+        reg_dir = std::env::var("XDG_RUNTIME_DIR") + "/hale";
+    }
+    let snaps = SnapMap { };
+    let fds = FdMap { };
+    let bb = std::bytes::BytesBuilder { };
+    let mut zi = 0;
+    while zi < BATCH * 8 {
+        bb.append_u32_le(0);
+        zi = zi + 1;
+    }
+    App {
+        evbuf: bb.snapshot(),
+        snaps: snaps,
+        fds: fds,
+        reg_dir: reg_dir,
+        art_path: art_path,
+        srv: std::http::Server {
+            port: port,
+            handler: FuseHandler { snaps: snaps, fds: fds, webroot: webroot },
+            ready_signal: "fuse-hl: listening"
+        }
+    };
+}

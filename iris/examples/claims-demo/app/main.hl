@@ -1,0 +1,76 @@
+// claims-demo/app — law-bearing app for the flower's law view.
+//
+// Every claim below HOLDS statically. The point of the demo is
+// what observation adds to that verdict:
+//
+//   single_writer  count publishers(topic Metrics) == 1
+//       holds — DeltaTriage is the only declared publisher IN
+//       THIS SEED. Start ../rogue (a separate binary publishing
+//       the same subject+shape) and the fused fleet has two:
+//       static holds, witnessed CONTRADICTED. The compiler is
+//       deployment-blind on principle; the observer is the only
+//       thing that can see this.
+//   consumed       require subscribes(some gamma_wing, topic Metrics)
+//       holds, and traffic flows -> witnessed consistent.
+//   audited        require subscribes(some gamma_wing, topic Audits)
+//       holds — the wiring exists — but nothing ever publishes
+//       an Audit: witnessed NOT EXERCISED. Law that no traffic
+//       has ever pressured; coverage for claims.
+//   iso            forbid reaches(gamma_wing, delta_wing)
+//       holds (flow is delta->gamma, never back). Witnessed
+//       consistent on the one-hop basis once both wings run.
+//
+//   hale check . --dump-topology=/tmp/claims-demo.topo.json
+//   LOTUS_OBS=1 ./app &
+//   ../../consumer/fuse-hl/fuse-hl 8787 ../../render/web /tmp/claims-demo.topo.json
+
+type Task { id: Int = 0; }
+type Metric { n: Int = 0; }
+type Audit { note: String = ""; }
+
+topic Tasks { payload: Task; subject: "tasks"; }
+topic Metrics { payload: Metric; subject: "metrics"; }
+topic Audits { payload: Audit; subject: "audit"; }
+
+locus DeltaTriage {
+    params { seen: Int = 0; }
+    bus { subscribe Tasks as on_task; publish Metrics; }
+    fn on_task(t: Task) {
+        self.seen = self.seen + 1;
+        Metrics <- Metric { n: t.id };
+    }
+}
+
+locus GammaResearch {
+    params { total: Int = 0; }
+    bus { subscribe Metrics as on_metric; subscribe Audits as on_audit; }
+    fn on_metric(m: Metric) { self.total = self.total + m.n; }
+    fn on_audit(a: Audit) { }
+}
+
+group delta_wing = { DeltaTriage };
+group gamma_wing = { GammaResearch };
+
+main locus Org {
+    params {
+        triage: DeltaTriage = DeltaTriage { };
+        research: GammaResearch = GammaResearch { };
+    }
+    bus { publish Tasks; publish Audits; }
+    claims {
+        single_writer: count publishers(topic Metrics) == 1;
+        consumed: require subscribes(some gamma_wing, topic Metrics);
+        audited: require subscribes(some gamma_wing, topic Audits);
+        iso: forbid reaches(gamma_wing, delta_wing);
+    }
+    run() {
+        let mut i = 0;
+        while i < 3000 {
+            Tasks <- Task { id: i };
+            std::time::sleep(100ms);
+            i = i + 1;
+        }
+    }
+}
+
+fn main() { Org { }; }

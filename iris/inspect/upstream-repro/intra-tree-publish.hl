@@ -1,0 +1,32 @@
+// One publisher, one function, one loop, two topics.
+// The ONLY difference between them is where the subscriber sits:
+//   to_child   -> Kid, which is a param of Pub  (publisher's OWN CHILD)
+//   to_sibling -> Sib, which is a param of App  (publisher's SIBLING)
+// Everything else — publish site, enclosing fn, payload, rate,
+// transport (none), subscriber count (1) — is identical.
+type P { v: Int = 0; }
+
+topic ToChild { payload: P; subject: "to_child"; }
+topic ToSibling { payload: P; subject: "to_sibling"; }
+
+locus Kid { bus { subscribe ToChild as on_p; } fn on_p(p: P) { } }
+locus Sib { bus { subscribe ToSibling as on_p; } fn on_p(p: P) { } }
+
+locus Pub {
+    params { k: Kid = Kid { }; }
+    bus { publish ToChild; publish ToSibling; }
+    run() {
+        let mut i = 0;
+        while i < 600 {
+            ToChild <- P { v: i };
+            ToSibling <- P { v: i };
+            std::time::sleep(100ms);
+            i = i + 1;
+        }
+    }
+}
+
+main locus App {
+    params { p: Pub = Pub { }; s: Sib = Sib { }; }
+}
+fn main() { App { }; }

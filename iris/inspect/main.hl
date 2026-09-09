@@ -1,0 +1,352 @@
+// iris inspect — the model you are editing vs. the fleet that is running.
+//
+// Slice 1 of INSPECTOR.md: the wire-shape drift check. Reads a
+// topology artifact cut from the working tree (`hale check
+// --dump-topology`) and the fused snapshot from a live fuse-hl,
+// joins topics on the wire subject, and reports the verdict per
+// declaration.
+//
+//   hale build .
+//   ./inspect [artifact.json] [http://host:port]
+//
+// The join is PROTOCOL §4's: the artifact's `topics[].subject` is
+// the byte-exact key the emitter's manifest rows use, and its
+// `payload_hash` is the same `hale_types::topic_identity` value the
+// manifest carries as `shape_hash`. So a mismatch is not a
+// heuristic — it is the fusion key disagreeing, which is exactly
+// the condition under which a mixed fleet silently stops fusing
+// and headered datagrams stop deserializing at the old peers
+// (handoff-4 P16).
+//
+// No FFI: this is a client of fuse-hl's HTTP surface, which is the
+// same surface the MCP co-debugger reads (DESIGN §11). Remote
+// observation falls out — the artifact is local, the fleet needn't
+// be.
+//
+// Exit status: 0 clean, 1 drift found, 2 could not run the check.
+
+// ---- verdicts ----------------------------------------------
+const V_SYNC: Int = 0; // declared, running, hashes agree
+const V_DRIFT: Int = 1; // declared, running, hashes DISAGREE
+const V_SILENT: Int = 2; // declared, never observed
+const V_EXTRA: Int = 3; // observed, not in this artifact
+
+type Decl { name: String = ""; subject: String = ""; shape: String = "";
+    hash: String = ""; verdict: Int = 2; live: String = "";
+    pubs: Int = 0; dlvs: Int = 0; }
+type Live { name: String = ""; hash: String = ""; pubs: Int = 0;
+    dlvs: Int = 0; claimed: Int = 0; }
+type Proc { pid: Int = 0; name: String = ""; state: String = "";
+    model: String = ""; }
+
+@form(vec) locus DeclVec { capacity { heap items of Decl; } }
+@form(vec) locus LiveVec { capacity { heap items of Live; } }
+@form(vec) locus ProcVec { capacity { heap items of Proc; } }
+
+// ---- FNV-1a/64, the one hash this ecosystem uses -------------
+// PROTOCOL §4 (topic identity) and the artifact's integrity digest
+// are the same function over different bytes. Int is i64 and wraps
+// two's-complement, which is what the u64 spec needs; verified
+// against PROTOCOL §4's pinned vectors.
+fn fnv1a64(s: String) -> Int {
+    let mut h = -3750763034362895579; // 0xcbf29ce484222325
+    let mut i = 0;
+    let n = len(s);
+    while i < n {
+        h = h ^ std::str::byte_at_unchecked(s, i);
+        h = h * 1099511628211; // 0x100000001b3
+        i = i + 1;
+    }
+    h
+}
+
+fn hex16(v: Int) -> String {
+    let digits = "0123456789abcdef";
+    let mut out = "";
+    let mut sh = 60;
+    while sh >= 0 {
+        let nib = (v >> sh) & 15;
+        out = out + digits[nib..(nib + 1)];
+        sh = sh - 4;
+    }
+    out
+}
+
+// ---- artifact integrity (schema 1.3) -------------------------
+// The digest is the artifact's FINAL key, so the hashed body is
+// every byte before the marker — verification is a prefix hash,
+// no re-serialization. Searching for the LAST occurrence means a
+// user-authored string containing the marker cannot shadow it.
+//
+// Three states, never two: -1 = no digest (every artifact before
+// schema 1.3), 0 = present and WRONG, 1 = verified. A consumer may
+// accept an older artifact but must never mistake "nothing to
+// check" for "checked and intact".
+const DIGEST_KEY: String = ",\n  \"artifact_digest\": \"";
+
+fn verify_digest(art: String) -> Int {
+    let mut at = -1;
+    let mut from = 0;
+    while true {
+        let rel = std::str::index_of(art[from..len(art)], DIGEST_KEY);
+        if rel < 0 { break; }
+        at = from + rel;
+        from = at + 1;
+    }
+    if at < 0 { return -1; }
+    let body = art[0..at];
+    let rest = art[(at + len(DIGEST_KEY))..len(art)];
+    let q = std::str::index_of(rest, "\"");
+    if q < 0 { return 0; }
+    let claimed = rest[0..q];
+    if claimed == hex16(fnv1a64(body)) { return 1; }
+    return 0;
+}
+
+main locus App {
+    params {
+        decls: DeclVec = DeclVec { };
+        lives: LiveVec = LiveVec { };
+        procs: ProcVec = ProcVec { };
+    }
+
+    // ---- Tier 0: is the running binary built from THIS model? ----
+    // PROTOCOL §3 model_hash (proto >= 0.2) is the artifact's
+    // `shape_hash`, stamped at segment creation. Before it existed
+    // this was inferred from per-file digests, which is a guess
+    // about the build rather than a fact about the process.
+    //
+    // The two identities are deliberately orthogonal and both are
+    // reported: model identity EXCLUDES payload field shape, so
+    // editing a payload moves the topic hashes and NOT the model,
+    // while restructuring the locus tower moves the model and not
+    // the topic hashes. "In sync" means both agree.
+    @unbounded
+    fn load_procs(snap: String) -> Int {
+        let procs = std::json::find_field_raw(snap, "processes");
+        if len(procs) == 0 { return 0; }
+        let mut it = std::json::array_first_span(procs);
+        let mut n = 0;
+        while !it.done {
+            self.procs.push(Proc {
+                pid: std::json::iter_find_int_field(it, procs, "pid"),
+                name: std::json::iter_find_string_field(it, procs, "name"),
+                state: std::json::iter_find_string_field(it, procs, "state"),
+                model: std::json::iter_find_string_field(it, procs, "model")
+            });
+            n = n + 1;
+            it = std::json::array_next_span(it, procs);
+        }
+        n
+    }
+
+    // Returns the count of processes whose model disagrees.
+    fn report_model(want: String) -> Int {
+        let mut bad = 0;
+        let mut i = 0;
+        while i < self.procs.len() {
+            let p = self.procs.get(i) or Proc { };
+            let tag = "  pid " + p.pid + " " + p.name;
+            if p.model == want {
+                println(tag + "  model in sync");
+            } else if len(p.model) == 0 {
+                // proto 0.1 emitter: said nothing. Not a finding —
+                // absence of the field is not disagreement.
+                println(tag + "  model unknown (emitter predates proto 0.2)");
+            } else if p.model == "0000000000000000" {
+                // A real answer: built without a model. The synth
+                // reference emitter is exactly this.
+                println(tag + "  no model (synthetic / non-Hale emitter)");
+            } else {
+                bad = bad + 1;
+                println(tag + "  MODEL DRIFTED");
+                println("           tree  " + want);
+                println("           built " + p.model);
+                println("           this process was compiled from a different topology —");
+                println("           loci, wiring or supervision differ, not just payloads.");
+            }
+            i = i + 1;
+        }
+        bad
+    }
+
+    // ---- artifact side ----
+    // Both loaders grow a table per input row, which is what the
+    // survey flags. Bounded by the size of one document, loaded
+    // once, in a process that exits — there is no second iteration
+    // to accumulate across. Acknowledged rather than reshaped: a
+    // ring buffer here would drop topics, which is the opposite of
+    // the job.
+    @unbounded
+    fn load_decls(art: String) -> Int {
+        let topics = std::json::find_field_raw(art, "topics");
+        if len(topics) == 0 { return 0; }
+        let mut it = std::json::array_first_span(topics);
+        let mut n = 0;
+        while !it.done {
+            let subject = std::json::iter_find_string_field(it, topics, "subject");
+            if len(subject) > 0 {
+                self.decls.push(Decl {
+                    name: std::json::iter_find_string_field(it, topics, "name"),
+                    subject: subject,
+                    shape: std::json::iter_find_string_field(it, topics, "shape"),
+                    hash: std::json::iter_find_string_field(it, topics, "payload_hash"),
+                    verdict: V_SILENT, live: "", pubs: 0, dlvs: 0
+                });
+                n = n + 1;
+            }
+            it = std::json::array_next_span(it, topics);
+        }
+        n
+    }
+
+    // ---- live side ----
+    @unbounded
+    fn load_lives(snap: String) -> Int {
+        let topics = std::json::find_field_raw(snap, "topics");
+        if len(topics) == 0 { return 0; }
+        let mut it = std::json::array_first_span(topics);
+        let mut n = 0;
+        while !it.done {
+            let nm = std::json::iter_find_string_field(it, topics, "name");
+            if len(nm) > 0 {
+                self.lives.push(Live {
+                    name: nm,
+                    hash: std::json::iter_find_string_field(it, topics, "shape"),
+                    pubs: std::json::iter_find_int_field(it, topics, "pub"),
+                    dlvs: std::json::iter_find_int_field(it, topics, "dlv"),
+                    claimed: 0
+                });
+                n = n + 1;
+            }
+            it = std::json::array_next_span(it, topics);
+        }
+        n
+    }
+
+    // ---- the join ----
+    // Artifact `subject` is the manifest's key by construction, so
+    // this is an equality join, not a match heuristic.
+    fn join() {
+        let mut i = 0;
+        while i < self.decls.len() {
+            let mut d = self.decls.get(i) or Decl { };
+            let mut j = 0;
+            while j < self.lives.len() {
+                let mut l = self.lives.get(j) or Live { };
+                if l.name == d.subject {
+                    d.live = l.hash;
+                    d.pubs = l.pubs;
+                    d.dlvs = l.dlvs;
+                    if l.hash == d.hash { d.verdict = V_SYNC; }
+                    else { d.verdict = V_DRIFT; }
+                    l.claimed = 1;
+                    self.lives.set(j, l) or discard;
+                }
+                j = j + 1;
+            }
+            self.decls.set(i, d) or discard;
+            i = i + 1;
+        }
+    }
+
+    fn report() -> Int {
+        let mut drifted = 0;
+        let mut silent = 0;
+        let mut synced = 0;
+
+        println("");
+        let mut i = 0;
+        while i < self.decls.len() {
+            let d = self.decls.get(i) or Decl { };
+            if d.verdict == V_DRIFT {
+                drifted = drifted + 1;
+                println("  DRIFTED  " + d.name + "  (subject \"" + d.subject + "\")");
+                println("           tree  " + d.hash + "  " + d.shape);
+                println("           fleet " + d.live + "  <- running processes are on this");
+                println("           a mixed fleet will not fuse on this topic, and");
+                println("           headered datagrams will not deserialize at the old peers.");
+            } else if d.verdict == V_SILENT {
+                silent = silent + 1;
+                println("  silent   " + d.name + "  (subject \"" + d.subject
+                        + "\") declared, never observed");
+            } else {
+                synced = synced + 1;
+                println("  in sync  " + d.name + "  (subject \"" + d.subject
+                        + "\")  pub " + d.pubs + " / dlv " + d.dlvs);
+            }
+            i = i + 1;
+        }
+
+        // Observed-but-undeclared is informational, not a finding:
+        // in a fleet it is simply another binary's topic, and this
+        // artifact is one seed's closed world.
+        let mut j = 0;
+        while j < self.lives.len() {
+            let l = self.lives.get(j) or Live { };
+            if l.claimed == 0 {
+                println("  (other)  " + l.name
+                        + "  observed, not declared in this artifact");
+            }
+            j = j + 1;
+        }
+
+        println("");
+        println("  " + synced + " in sync, " + drifted + " drifted, "
+                + silent + " declared-silent");
+        drifted
+    }
+
+    run() {
+        let art_path = std::env::arg_or(1, "topology.json");
+        let base = std::env::arg_or(2, "http://127.0.0.1:8787");
+
+        let art = std::io::fs::read_file(art_path) or "";
+        if len(art) == 0 {
+            println("inspect: cannot read artifact " + art_path);
+            println("         cut one with: hale check . --dump-topology=" + art_path);
+            std::process::exit(2);
+        }
+
+        let integrity = verify_digest(art);
+        if integrity == 0 {
+            // Refuse rather than warn: the topics rows are exactly
+            // the part `shape_hash` does not cover, so an artifact
+            // whose digest disagrees is the one case where joining
+            // on them is meaningless.
+            println("inspect: artifact_digest MISMATCH in " + art_path);
+            println("         the topics rows this check joins on are not covered by");
+            println("         shape_hash, so a failed digest makes the join meaningless.");
+            std::process::exit(2);
+        }
+
+        let resp = std::http::get(base + "/snapshot") or {
+            println("inspect: no fuse-hl at " + base);
+            println("         start one: cd consumer/fuse-hl && ./fuse-hl");
+            std::process::exit(2);
+            return;
+        };
+        let snap = std::str::from_bytes(resp.body);
+
+        let nd = self.load_decls(art);
+        let nl = self.load_lives(snap);
+        let np = self.load_procs(snap);
+        let model = std::json::find_string_field(art, "shape_hash");
+
+        println("iris inspect");
+        println("  artifact  " + art_path + "  ("
+                + (if integrity == 1 { "digest verified" }
+                    else { "no digest — pre-1.3 artifact, unverified" })
+                + ", " + nd + " declared topics, model " + model + ")");
+        println("  fleet     " + base + "  (" + np + " processes, "
+                + nl + " observed topics)");
+        println("");
+
+        let model_bad = self.report_model(model);
+        self.join();
+        let drifted = self.report();
+        if drifted > 0 || model_bad > 0 { std::process::exit(1); }
+    }
+}
+
+fn main() { App { }; }

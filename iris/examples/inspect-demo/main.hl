@@ -1,0 +1,70 @@
+// inspect-demo — a small observed app for driving `inspect`.
+//
+// Three declared topics; one is fully wired but never sent, so a
+// single run exercises every verdict the inspector draws:
+//
+//   orders  published + consumed        -> in sync
+//   fills   published + consumed        -> in sync
+//   audit   wired both ends, never sent -> declared-silent
+//
+// `audit` is deliberately COMPLETE wiring — a declared publisher
+// and a real subscriber — with nothing ever sending one. That is
+// both the honest production shape of a silent topic (wiring whose
+// code path did not run) and the only shape that keeps `hale
+// verify` green: the bus-graph advisories fire on a topic with no
+// publisher OR no subscriber, and unlike the allocation survey's
+// `@unbounded` there is no annotation to acknowledge an intentional
+// one. Dropping either end trades a clean gate for a warning.
+//
+//   LOTUS_OBS=1 ./inspect-demo          # run it under observation
+//   hale check . --dump-topology=/tmp/demo.topo.json
+//   ../../inspect/inspect /tmp/demo.topo.json
+//
+// To watch drift: add a field to `Order`, re-cut the artifact
+// WITHOUT restarting this process, and run inspect again. The
+// running fleet keeps the old shape hash; the tree has the new one.
+
+type Order { id: Int = 0; label: String = ""; }
+type Fill { id: Int = 0; qty: Int = 0; }
+type Audit { note: String = ""; }
+
+topic Orders { payload: Order; subject: "orders"; }
+topic Fills { payload: Fill; subject: "fills"; }
+topic Audits { payload: Audit; subject: "audit"; }
+
+locus Worker {
+    bus { subscribe Orders as on_order; publish Fills; }
+    fn on_order(o: Order) {
+        Fills <- Fill { id: o.id, qty: o.id * 2 };
+    }
+}
+
+locus Archivist {
+    bus { subscribe Audits as on_audit; }
+    fn on_audit(a: Audit) { }
+}
+
+locus Ledger {
+    bus { subscribe Fills as on_fill; }
+    params { seen: Int = 0; }
+    fn on_fill(f: Fill) { self.seen = self.seen + 1; }
+}
+
+main locus App {
+    params {
+        w: Worker = Worker { };
+        l: Ledger = Ledger { };
+        x: Archivist = Archivist { };
+    }
+    bus { publish Orders; publish Audits; }
+    run() {
+        let mut i = 0;
+        while i < 600 {
+            Orders <- Order { id: i, label: "demo" };
+            std::time::sleep(100ms);
+            i = i + 1;
+        }
+    }
+}
+
+fn main() { App { }; }
