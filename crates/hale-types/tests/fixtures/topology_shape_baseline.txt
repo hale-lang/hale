@@ -69,9 +69,9 @@ crates/hale-cli/tests/lsp.rs#2 b29607ed90e8c752
 crates/hale-cli/tests/mcp.rs#0 f51de0d8f30c09eb
 crates/hale-cli/tests/model_cli.rs#0 fe792359db91a886
 crates/hale-cli/tests/model_cli.rs#1 b4fae18a6eab4b45
-crates/hale-cli/tests/model_diff.rs#0 f3cd57de1f8b1d73
-crates/hale-cli/tests/model_diff.rs#1 e3c873f0320c5de4
-crates/hale-cli/tests/model_diff.rs#2 cd50f7c412678d2a
+crates/hale-cli/tests/model_diff.rs#0 8dbc408bf5e82ad8
+crates/hale-cli/tests/model_diff.rs#1 4c84d8533870f93f
+crates/hale-cli/tests/model_diff.rs#2 e5bd68b9bb8e2d01
 crates/hale-cli/tests/obs_entity_ids.rs#0 fb20557a8843b5e0
 crates/hale-cli/tests/obs_entity_ids.rs#1 de47d9bc0131dfb8
 crates/hale-cli/tests/obs_model_hash.rs#0 ce2333a3a11cb8ee
