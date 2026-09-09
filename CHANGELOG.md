@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### `hale dna new <name>` — a greenfield application with its DNA (GH #528 PR 24)
+
+- `hale dna new <name>` writes the `hale init` shape with a `main locus` entrypoint (a topic, a subscriber, one publish), a `tests/` seed importing it, `.gitignore`, and then runs `init` on it: `vendor/dna`, `dna/assembly.hl`, `dna/purpose.hl`, `dna_constitution.hl`, the seeded Journal, the environments table. A fresh application has no unresolvable edges, so `organism_gated` is active. Refuses a non-empty directory. Tests: `crates/hale-cli/tests/dna_new.rs` (matrix, build, run, `hale test`).
+
 ### `hale dna init` / `upgrade` — the DNA attached to an existing application (GH #528 PR 23)
 
 - `hale dna init [app-dir]` materializes the DNA core into `vendor/dna/` (toolchain-owned, pinned in `hale.lock` as `[dna] toolchain`), generates the project-owned `dna/assembly.hl` (the `Genome`: the `Dna` constructor with Phase 1 defaults — file Journal, conservative grant, human review before apply, `NoDeployment`, local membrane — plus the baseline `Review` pinned to the sha256 of the declared purpose), `dna/purpose.hl`, and `dna_constitution.hl` in the application's own seed (`group organism`, the core's groups, `constitution Project` — a constitution names groups its adopting entrypoint must declare, and an importer of the app must see both together); grafts the imports, the `genome` param, `adopt Project;` and the membrane bindings onto the application's `main locus` by span-anchored insertion (nothing existing is rewritten); adds `[claims] base` and a `local` environment to `hale.toml`; and seeds `.hale/dna/journal.jsonl` from the artifact it cuts with `hale check --dump-topology` (`application.attached`, `structure.observed` per locus/topic/binding/effect class/claim with provenance `observed`, `responsibility.proposed` per locus with provenance `inferred` and `ratified: false`, `review.requested` for the baseline). Re-running keeps every file.
