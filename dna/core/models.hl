@@ -12,8 +12,13 @@
 type ModelRequest {
     attempt_id: String = "";
     role: String = ""; // "classify" | "synthesize" | "review" | ...
-    prompt_digest: String = "";
+    prompt: String = ""; // the instruction (a hosted backend sends it; a fake one hashes it)
+    context: String = ""; // the assembled context (knowledge bindings rendered)
+    prompt_digest: String = ""; // sha256 of `prompt` when empty and a prompt is given
     context_bytes: Int = 0;
+    knowledge_bindings: String = ""; // ids the context came from, for the evidence
+    tool_grant: String = "";
+    retry_of: String = "";
     data_class: String = "internal";
     needs_tools: Bool = false;
     assurance: Int = 0; // 0 quick .. 2 independent/deep
@@ -99,6 +104,244 @@ locus LocalFakeModel {
     fn complete(req: ModelRequest) -> ModelResult {
         self.calls = self.calls + 1;
         return fake_answer(self.name, self.model, req, self.max_bytes, self.price_micros);
+    }
+}
+
+// ---- the hosted adapter (GH #528 PR 27) ------------------------------
+//
+// One adapter over an OpenAI-compatible chat-completions endpoint,
+// behind the same `ModelBackend` interface as the fakes. Two loci
+// share the wire code and differ in what the law can see:
+//
+//   HostedModel  — a prompt leaves the process for a hosted model:
+//                  `complete` carries `external_model`, and the
+//                  credential is presented from a SEALED locus that
+//                  never returns the material.
+//   LocalModel   — the same wire to a local endpoint (an
+//                  OpenAI-compatible server on this host); no
+//                  external_model class, any data class.
+//
+// Every call publishes `ModelCalled` with the evidence list; the
+// assembly journals it. The prompt's digest, not the prompt, is what
+// the record carries.
+
+fn openai_chat_body(model: String, req: ModelRequest, temperature_milli: Int, max_tokens: Int) -> String {
+    let mut b = "{\"model\": " + jq(model) + ", \"messages\": [";
+    if len(req.context) > 0 {
+        b = b + "{\"role\": \"system\", \"content\": " + jq(req.context) + "}, ";
+    }
+    b = b + "{\"role\": \"user\", \"content\": " + jq(req.prompt) + "}]";
+    b = b + ", \"temperature\": " + to_string(temperature_milli / 1000) + "." + pad3(temperature_milli % 1000);
+    if max_tokens > 0 { b = b + ", \"max_tokens\": " + to_string(max_tokens); }
+    return b + "}";
+}
+
+fn jq(s: String) -> String {
+    return "\"" + std::json::escape_string(s) + "\"";
+}
+
+fn pad3(n: Int) -> String {
+    if n < 10 { return "00" + to_string(n); }
+    if n < 100 { return "0" + to_string(n); }
+    return to_string(n);
+}
+
+fn digest_of(s: String) -> String {
+    if len(s) == 0 { return ""; }
+    return "sha256:" + hex(std::crypto::sha256(std::bytes::from_string(s)));
+}
+
+// The first choice's message content; "" when the shape is not a
+// chat completion. `usage` and `model` are read the same way.
+fn openai_text(body: String) -> String {
+    let choices = std::json::find_field_raw(body, "choices");
+    if len(choices) == 0 { return ""; }
+    let first = std::json::array_first_span(choices);
+    if first.done { return ""; }
+    let msg = std::json::find_field_raw(std::json::iter_substring(first, choices), "message");
+    if len(msg) == 0 { return ""; }
+    return std::json::find_string_field(msg, "content");
+}
+
+type ChatOutcome {
+    ok: Bool = false;
+    status: Int = 0;
+    text: String = "";
+    reported_model: String = "";
+    input_tokens: Int = 0;
+    output_tokens: Int = 0;
+    refused: String = "";
+}
+
+fn parse_chat(status: Int, body: String) -> ChatOutcome {
+    if status != 200 {
+        let why = std::json::find_string_field(std::json::find_field_raw(body, "error"), "message");
+        return ChatOutcome { status: status, refused: "http " + to_string(status) + " " + why };
+    }
+    let text = openai_text(body);
+    if len(text) == 0 { return ChatOutcome { status: status, refused: "no completion in the response" }; }
+    let usage = std::json::find_field_raw(body, "usage");
+    return ChatOutcome {
+        ok: true, status: status, text: text,
+        reported_model: std::json::find_string_field(body, "model"),
+        input_tokens: std::json::find_int_field(usage, "prompt_tokens"),
+        output_tokens: std::json::find_int_field(usage, "completion_tokens")
+    };
+}
+
+// A hosted credential: read from the environment at birth, presented
+// on the wire from inside this sealed locus, never returned. The only
+// things that leave are a readiness bit, a fingerprint (a correlation
+// handle over a high-entropy token), and HTTP responses.
+@sealed locus HostedCredential {
+    params { env_var: String = "OPENAI_API_KEY"; value: Bytes = b""; }
+    birth() {
+        if len(self.env_var) > 0 && std::env::var_exists(self.env_var) {
+            self.value = std::bytes::from_string(std::env::var(self.env_var));
+        }
+    }
+    fn ready() -> Bool { return len(self.value) > 0; }
+    @effects(is: { secret_use })
+    fn fingerprint() -> String {
+        if !self.ready() { return ""; }
+        let h = hex(std::crypto::sha256(self.value));
+        return "fp:" + h[0..16];
+    }
+    // POST a JSON body with the bearer credential attached HERE.
+    @effects(is: { secret_use, external_model })
+    fn post_json(url: String, body: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
+        let u = std::http::parse_url(url) or raise;
+        let req = std::http::ClientRequest {
+            method: "POST",
+            url: u,
+            headers: "Content-Type: application/json\r\nAuthorization: Bearer " + std::str::from_bytes(self.value),
+            body: std::bytes::from_string(body)
+        };
+        return std::http::request(req) or raise;
+    }
+}
+
+locus HostedModel {
+    params {
+        name: String = "hosted";
+        adapter: String = "hosted";
+        endpoint: String = "https://api.openai.com/v1/chat/completions";
+        model: String = "gpt-4o-mini";
+        credential: HostedCredential = HostedCredential { };
+        max_bytes: Int = 400000;
+        temperature_milli: Int = 0;
+        max_tokens: Int = 1024;
+        // price per 1k tokens, micro-dollars (0.15 / 0.60 per M ≈ gpt-4o-mini)
+        input_micros_per_1k: Int = 150;
+        output_micros_per_1k: Int = 600;
+        calls: Int = 0;
+        last: ModelEvidence = ModelEvidence { };
+    }
+    bus { publish ModelCalled; }
+    fn identity() -> String { return self.name; }
+    fn model_name() -> String { return self.model; }
+    // A hosted model never sees customer data, and a backend without a
+    // credential is not a permitted backend — the router refuses
+    // cleanly instead of the wire failing.
+    fn allows(data_class: String) -> Bool { return data_class != "customer" && self.credential.ready(); }
+    fn capacity_bytes() -> Int { return self.max_bytes; }
+    @effects(is: { external_model })
+    fn complete(req: ModelRequest) -> ModelResult {
+        self.calls = self.calls + 1;
+        let mut ev = ModelEvidence {
+            attempt_id: req.attempt_id, adapter: self.adapter, backend: self.name,
+            endpoint: self.endpoint, credential: self.credential.fingerprint(),
+            requested_model: self.model,
+            params: "temperature=" + to_string(self.temperature_milli / 1000) + "." + pad3(self.temperature_milli % 1000) + " max_tokens=" + to_string(self.max_tokens),
+            prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
+            context_digest: digest_of(req.context),
+            knowledge_bindings: req.knowledge_bindings, tool_grant: req.tool_grant,
+            retry_of: req.retry_of, data_class: req.data_class
+        };
+        if !self.allows(req.data_class) {
+            ev.refused = if self.credential.ready() { "data class " + req.data_class } else { "credential not present" };
+            self.last = ev;
+            ModelCalled <- ev;
+            return ModelResult { ok: false, backend: self.name, model: self.model, refused: ev.refused };
+        }
+        let body = openai_chat_body(self.model, req, self.temperature_milli, self.max_tokens);
+        let t0 = std::time::monotonic();
+        let resp = self.credential.post_json(self.endpoint, body) or self.transport_failed(err);
+        ev.elapsed = to_string(std::time::monotonic() - t0);
+        let out = parse_chat(resp.status, std::str::from_bytes(resp.body));
+        ev.ok = out.ok;
+        ev.refused = out.refused;
+        ev.reported_model = out.reported_model;
+        ev.input_tokens = out.input_tokens;
+        ev.output_tokens = out.output_tokens;
+        ev.response_digest = digest_of(out.text);
+        ev.cost_micros = (out.input_tokens * self.input_micros_per_1k + out.output_tokens * self.output_micros_per_1k) / 1000;
+        self.last = ev;
+        ModelCalled <- ev;
+        if !out.ok {
+            return ModelResult { ok: false, backend: self.name, model: self.model, refused: out.refused };
+        }
+        return ModelResult {
+            ok: true, backend: self.name, model: out.reported_model, output: out.text,
+            tokens: out.input_tokens + out.output_tokens, cost_micros: ev.cost_micros
+        };
+    }
+    fn transport_failed(e: std::http::HttpError) -> std::http::ClientResponse {
+        return std::http::ClientResponse { status: 0, body: std::bytes::from_string("{\"error\": {\"message\": " + jq(e.kind + " " + e.detail) + "}}") };
+    }
+}
+
+// The same wire to a local OpenAI-compatible endpoint (an inference
+// server on this host). No credential, no external_model class: the
+// prompt does not leave the process boundary the law cares about, so
+// a customer-data path may reach it.
+locus LocalModel {
+    params {
+        name: String = "private";
+        endpoint: String = "http://127.0.0.1:11434/v1/chat/completions";
+        model: String = "llama3";
+        max_bytes: Int = 400000;
+        temperature_milli: Int = 0;
+        max_tokens: Int = 1024;
+        calls: Int = 0;
+        last: ModelEvidence = ModelEvidence { };
+    }
+    bus { publish ModelCalled; }
+    fn identity() -> String { return self.name; }
+    fn model_name() -> String { return self.model; }
+    fn allows(data_class: String) -> Bool { return true; }
+    fn capacity_bytes() -> Int { return self.max_bytes; }
+    fn complete(req: ModelRequest) -> ModelResult {
+        self.calls = self.calls + 1;
+        let mut ev = ModelEvidence {
+            attempt_id: req.attempt_id, adapter: "local", backend: self.name,
+            endpoint: self.endpoint, requested_model: self.model,
+            params: "temperature=" + to_string(self.temperature_milli / 1000) + "." + pad3(self.temperature_milli % 1000) + " max_tokens=" + to_string(self.max_tokens),
+            prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
+            context_digest: digest_of(req.context),
+            knowledge_bindings: req.knowledge_bindings, tool_grant: req.tool_grant,
+            retry_of: req.retry_of, data_class: req.data_class
+        };
+        let body = openai_chat_body(self.model, req, self.temperature_milli, self.max_tokens);
+        let t0 = std::time::monotonic();
+        let resp = std::http::post(self.endpoint, std::bytes::from_string(body), "application/json") or self.transport_failed(err);
+        ev.elapsed = to_string(std::time::monotonic() - t0);
+        let out = parse_chat(resp.status, std::str::from_bytes(resp.body));
+        ev.ok = out.ok;
+        ev.refused = out.refused;
+        ev.reported_model = out.reported_model;
+        ev.input_tokens = out.input_tokens;
+        ev.output_tokens = out.output_tokens;
+        ev.response_digest = digest_of(out.text);
+        self.last = ev;
+        ModelCalled <- ev;
+        if !out.ok {
+            return ModelResult { ok: false, backend: self.name, model: self.model, refused: out.refused };
+        }
+        return ModelResult { ok: true, backend: self.name, model: out.reported_model, output: out.text, tokens: out.input_tokens + out.output_tokens };
+    }
+    fn transport_failed(e: std::http::HttpError) -> std::http::ClientResponse {
+        return std::http::ClientResponse { status: 0, body: std::bytes::from_string("{\"error\": {\"message\": " + jq(e.kind + " " + e.detail) + "}}") };
     }
 }
 

@@ -1049,6 +1049,21 @@ locus Genome {{
     params {{
         core: dna::Dna = dna::Dna {{
             journal: dna::FileJournal {{ path: ".hale/dna/journal.jsonl" }},
+            // Models: hosted adapters present a credential from a sealed
+            // locus (set OPENAI_API_KEY; the material never enters this
+            // tree) and are not permitted backends without one; the
+            // private slot is a local OpenAI-compatible endpoint. Every
+            // call journals its evidence, never the prompt.
+            work: dna::WorkSystem {{
+                agent: dna::AgentPerformer {{
+                    name: "agent",
+                    models: dna::ModelRouter {{
+                        quick: dna::HostedModel {{ name: "quick", model: "gpt-4o-mini", credential: dna::HostedCredential {{ env_var: "OPENAI_API_KEY" }} }},
+                        deep: dna::HostedModel {{ name: "deep", model: "gpt-4o", credential: dna::HostedCredential {{ env_var: "OPENAI_API_KEY" }}, input_micros_per_1k: 2500, output_micros_per_1k: 10000 }},
+                        private: dna::LocalModel {{ name: "private", endpoint: "http://127.0.0.1:11434/v1/chat/completions", model: "llama3" }}
+                    }}
+                }}
+            }},
             boundary: dna::AutonomyBoundary {{
                 child: "{project}",
                 grant: dna::Grant {{ child: "{project}", classes: "refactor docs", max_magnitude: 4, review: "pre" }}
@@ -1124,7 +1139,7 @@ group organism = {{ {main_name} }};
 group genome = {{ genome::Genome }};
 group dna_gate = {{ dna::Dna }};
 group performers = {{ dna::AgentPerformer, dna::HumanWorkGateway, dna::ServicePerformer, dna::ScriptedPerformer }};
-group credentials = {{ dna::CredentialSource }};
+group credentials = {{ dna::CredentialSource, dna::HostedCredential }};
 
 constitution Project {{
     // A mutation is applied only THROUGH the assembly's gate, never by
