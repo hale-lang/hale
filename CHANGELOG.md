@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### `hale dna run` — the stateless host (GH #528 PR 25)
+
+- `hale dna run [project] [--port N] [--no-iris]` cuts a fresh artifact of what is about to run (`.hale/dna/current.topology`; a program that does not check is not run), builds, execs the organism under `LOTUS_OBS=1` from the project root (the membrane sockets and the Journal are root-relative), waits up to 20s for the membrane to be bound, launches `hale iris <port> current --diff baseline current --membrane .hale/dna` (law on the fresh artifact, review view vs the `init` baseline, the membrane panel), and waits for the organism; on exit it reaps iris and returns the organism's code. It holds no Task state and decides nothing. The greenfield app from `hale dna new` now stays up for its membrane (`HALE_DNA_ONESHOT=1` returns after the ping). Tests: `crates/hale-cli/tests/dna_run.rs` (iris comes up with membrane + verified law + the review view classifying current vs baseline as identical; an intent posted through the membrane is journaled as `task.born` by the organism; a project without DNA is refused).
+
 ### `hale dna new <name>` — a greenfield application with its DNA (GH #528 PR 24)
 
 - `hale dna new <name>` writes the `hale init` shape with a `main locus` entrypoint (a topic, a subscriber, one publish), a `tests/` seed importing it, `.gitignore`, and then runs `init` on it: `vendor/dna`, `dna/assembly.hl`, `dna/purpose.hl`, `dna_constitution.hl`, the seeded Journal, the environments table. A fresh application has no unresolvable edges, so `organism_gated` is active. Refuses a non-empty directory. Tests: `crates/hale-cli/tests/dna_new.rs` (matrix, build, run, `hale test`).
