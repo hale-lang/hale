@@ -31,6 +31,20 @@ fn ensure_built(seed: &str, bin: &str) -> Result<(PathBuf, PathBuf), String> {
     if bin_path.is_file() {
         return Ok((root, bin_path));
     }
+    // One build per cache, ever: two `hale iris` (or a test shard's
+    // five) racing to build the same seed into the same directory
+    // would trample each other's objects. An exclusive flock on the
+    // cache root serializes them; the loser finds the binary built.
+    let lock_path = root.join(".build.lock");
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|e| format!("hale iris: cannot open {}: {e}", lock_path.display()))?;
+    let _guard = BuildLock::acquire(&lock);
+    if bin_path.is_file() {
+        return Ok((root, bin_path));
+    }
     let me = std::env::current_exe().map_err(|e| format!("hale iris: cannot locate the hale binary: {e}"))?;
     eprintln!("hale iris: building the observer ({} @ {})", seed, root.display());
     let status = Command::new(&me)
@@ -47,6 +61,35 @@ fn ensure_built(seed: &str, bin: &str) -> Result<(PathBuf, PathBuf), String> {
         return Err(format!("hale iris: build produced no binary at {}", bin_path.display()));
     }
     Ok((root, bin_path))
+}
+
+/// An exclusive advisory lock held for the build; released on drop.
+struct BuildLock<'a>(&'a std::fs::File);
+
+impl<'a> BuildLock<'a> {
+    fn acquire(f: &'a std::fs::File) -> Self {
+        use std::os::unix::io::AsRawFd;
+        // SAFETY: flock on a valid, open descriptor we own for the
+        // guard's lifetime; EINTR is retried, other errors mean "no
+        // lock", which degrades to the old racy behavior, never worse.
+        loop {
+            let r = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) };
+            if r == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                break;
+            }
+        }
+        BuildLock(f)
+    }
+}
+
+impl Drop for BuildLock<'_> {
+    fn drop(&mut self) {
+        use std::os::unix::io::AsRawFd;
+        // SAFETY: same descriptor, still open.
+        unsafe {
+            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
 }
 
 fn exec(bin: &Path, args: &[String], envs: &[(String, String)]) -> ExitCode {
