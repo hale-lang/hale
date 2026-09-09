@@ -104,7 +104,7 @@ fn iris_inspect_builds_and_reports_a_missing_artifact() {
 #[test]
 fn iris_diff_pair_rides_into_the_snapshot() {
     let cache = cache_root();
-    let src_a = "type T { n: Int = 0; }\ntopic Evt { payload: T; subject: \"evt\"; }\nlocus Worker {\n    bus { subscribe Evt as on_e; }\n    fn on_e(t: T) { println(\"e\"); }\n}\nmain locus App {\n    params { w: Worker = Worker { }; }\n    bus { publish Evt; }\n    run() { Evt <- T { n: 1 }; }\n}\n";
+    let src_a = "type T { n: Int = 0; }\ntopic Evt { payload: T; subject: \"evt\"; }\nlocus Worker {\n    bus { subscribe Evt as on_e; }\n    fn on_e(t: T) { println(\"e\"); }\n}\nmain locus App {\n    params { w: Worker = Worker { }; }\n    bus { publish Evt; }\n    run() { Evt <- T { n: 1 }; }\n}\nfn main() { App { }; }\n";
     let src_b = src_a.replace("locus Worker", "locus Late {\n    bus { subscribe Evt as on_l; }\n    fn on_l(t: T) { println(\"l\"); }\n}\nlocus Worker")
         .replace("params { w: Worker = Worker { }; }", "params { w: Worker = Worker { }; l: Late = Late { }; }");
     let mut artifacts = Vec::new();
