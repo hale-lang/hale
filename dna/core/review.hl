@@ -107,12 +107,13 @@ locus AutonomyBoundary {
     }
     fn current_grant() -> Grant { return self.grant; }
     // The disposition of a proposed change under the current grant.
-    fn assess(change_class: String, m: Magnitude, e: Evidence) -> String {
+    fn assess(change_class: String, m: Magnitude, e: Evidence) -> Disposition {
         let d = dispose(self.grant, change_class, m, e);
         self.decisions = self.decisions + 1;
         self.audit.push(AuditRow {
             seq: self.decisions, change_class: change_class,
-            magnitude: magnitude_sum(m), evidence: evidence_score(e), disposition: d
+            magnitude: magnitude_sum(m), evidence: evidence_score(e),
+            disposition: disposition_name(d)
         });
         return d;
     }

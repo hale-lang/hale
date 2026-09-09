@@ -352,6 +352,10 @@ crates/hale-codegen/tests/cross_locus_from_method.rs#6 4dc3ef9029ded8d0
 crates/hale-codegen/tests/cross_locus_from_method.rs#7 fcd7b15eda245808
 crates/hale-codegen/tests/cross_seed_imports.rs#0 19c45840adcf5be3
 crates/hale-codegen/tests/cross_seed_imports.rs#1 7ba49c53bd84fd5d
+crates/hale-codegen/tests/cross_seed_imports.rs#2 89a7431e3e28532a
+crates/hale-codegen/tests/cross_seed_imports.rs#3 f2c1228edb650960
+crates/hale-codegen/tests/cross_seed_imports.rs#4 d4e741f73d4026f0
+crates/hale-codegen/tests/cross_seed_imports.rs#5 7d5cf57defcf548e
 crates/hale-codegen/tests/cross_seed_locus_arg.rs#0 0bf5244b2cba771c
 crates/hale-codegen/tests/cross_seed_locus_arg.rs#1 0bf5244b2cba771c
 crates/hale-codegen/tests/cross_seed_locus_arg.rs#2 a3ae8b631fccba11

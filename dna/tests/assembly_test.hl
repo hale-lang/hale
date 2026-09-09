@@ -84,6 +84,20 @@ main locus App {
         std::test::assert_eq_str(rv, "review", "law touched -> review");
         let s1 = self.dna.status();
         std::test::assert(std::str::contains(s1, "\"tasks_settled\": 1"), "status reflects the run: " + s1);
+
+        // routing policy is a perspective: the assembly designated
+        // human-first at construction (#525), and the WorkSystem can
+        // re-point the program's slot live (GH #534 closed F.10)
+        self.dna.work.route_capability_first();
+        std::test::assert_eq_str(self.dna.work.policy(), "capability-first", "live routing-policy swap");
+        let t2 = self.dna.ask(dna::Intent { id: "i2", outcome: "format the tree", from: "human" }, dna::Knobs { routed: true });
+        let settled2 = self.dna.metabolism.find(t2);
+        std::test::assert(std::str::contains(settled2.detail, "a0:software:done"), "the swapped policy routed software first: " + settled2.detail);
+        // the swap preserved the slot's STATE: the decision counter kept
+        // counting across both policies (the footprint they share)
+        std::test::assert_eq_int(self.dna.work.selection.decisions(), 2, "state survives the swap: one decision under each policy");
+        self.dna.work.route_human_first();
+        std::test::assert_eq_str(self.dna.work.policy(), "human-first", "swapped back");
     }
 }
 

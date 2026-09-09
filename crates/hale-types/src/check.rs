@@ -108,14 +108,30 @@ fn match_is_exhaustive(scrut_ty: &Ty, arms: &[MatchArm], top: &TopScope) -> bool
             // `<template>_<arg>_<arg>...` so the prefix check
             // is unambiguous.
             let mangle_prefix = format!("{}_", name);
+            // GH #534: an importer's arm is `alias::Enum::Variant` —
+            // three segments whose middle is the enum's authored name,
+            // while the scrutinee is typed by the seed-mangled name
+            // `__lib_<id>_<stem>_Enum`. The checker holds no alias
+            // table (the same limitation the `__lib_` tail matching
+            // elsewhere documents), so match on the mangled tail.
             for arm in arms.iter().filter(unguarded) {
                 if let Pattern::Constructor { path, .. } = &arm.pattern {
-                    if let [enum_seg, variant_seg] = path.segments.as_slice() {
+                    let segs: Vec<&str> =
+                        path.segments.iter().map(|s| s.name.as_str()).collect();
+                    let (enum_seg, variant_seg) = match segs.as_slice() {
+                        [e, v] => (*e, *v),
+                        [_, e, v]
+                            if name.starts_with("__lib_")
+                                && name.ends_with(&format!("_{}", e)) =>
+                        {
+                            (name.as_str(), *v)
+                        }
+                        _ => continue,
+                    };
+                    {
                         let matches_template_or_monomorph =
-                            enum_seg.name == *name
-                                || enum_seg
-                                    .name
-                                    .starts_with(&mangle_prefix);
+                            enum_seg == *name
+                                || enum_seg.starts_with(&mangle_prefix);
                         if matches_template_or_monomorph {
                             // m47-payloads: a Constructor arm
                             // covers its variant whether the
@@ -127,7 +143,7 @@ fn match_is_exhaustive(scrut_ty: &Ty, arms: &[MatchArm], top: &TopScope) -> bool
                             // variant; we still treat them as
                             // covering for v0.1 — same permissive
                             // policy the Bool literal arms get.
-                            covered.insert(variant_seg.name.as_str());
+                            covered.insert(variant_seg);
                         }
                     }
                 }
