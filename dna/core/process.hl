@@ -436,7 +436,10 @@ locus Metabolism {
             };
         }
     }
-    // Intent enters here; accepting it births a durable Task.
+    // Intent enters here; accepting it births a durable Task. Reached
+    // per intent from the membrane handler: one Task per offer, owned
+    // and settled here.
+    @unbounded
     fn offer(i: Intent, k: Knobs) -> String {
         self.minted = self.minted + 1;
         let id = "t" + to_string(self.minted);

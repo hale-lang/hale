@@ -107,8 +107,15 @@ name = "hale-corpus"
 version = "0.19.2"
 
 [[package]]
+name = "hale-dna"
+version = "0.19.2"
+
+[[package]]
 name = "hale-iris"
 version = "0.19.2"
+dependencies = [
+ "hale-dna",
+]
 
 [[package]]
 name = "hale-lsp"

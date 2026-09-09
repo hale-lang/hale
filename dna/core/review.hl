@@ -44,8 +44,31 @@ locus Review {
         expose refused: Int;
         expose last_refusal: String;
     }
+    // GH #527 B6: a verdict crossing the membrane (a human in Iris,
+    // `hale dna review`) arrives on the typed channel and goes through
+    // the same admission as a local one. Nothing about authority or
+    // the TOCTOU pin is relaxed for a remote verdict — the reviewer's
+    // claimed authority is checked here, by the owning locus, never
+    // by the transport.
+    //
+    // Unkeyed on purpose (F.12): the topic is `keyed_by review_id`,
+    // but remote fanout is unkeyed at v0.1 (spec/semantics.md) and a
+    // `where key == self.review_id` subscription never sees a wire
+    // delivery. Every Review hears every verdict and answers only to
+    // its own id — a handful of rows per candidate, never a stream.
+    bus {
+        subscribe ReviewVerdict as on_verdict;
+    }
+    @unbounded
+    fn on_verdict(v: Verdict) {
+        if v.review_id != self.review_id { return; }
+        self.consider(v);
+    }
     // A verdict is admitted only if it names THIS candidate, carries the
-    // required authority, and is independent of the author.
+    // required authority, and is independent of the author. Reached
+    // per verdict from the membrane handler: bounded by the reviewers
+    // of one candidate.
+    @unbounded
     fn consider(v: Verdict) -> Bool {
         if self.settled { self.last_refusal = "already settled"; self.refused = self.refused + 1; return false; }
         if v.subject_digest != self.subject_digest {

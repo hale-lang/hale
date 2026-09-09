@@ -47,8 +47,8 @@ fn iris_materializes_builds_once_and_serves_a_snapshot() {
     assert!(ok, "--build-only: {err}");
     let bin = PathBuf::from(out.trim());
     assert!(bin.is_file(), "built binary at {}", bin.display());
-    assert!(dir.join("render/web/app.js").is_file(), "web assets materialized");
-    assert!(dir.join("emitter/protocol.h").is_file(), "protocol header materialized");
+    assert!(dir.join("iris/render/web/app.js").is_file(), "web assets materialized");
+    assert!(dir.join("iris/emitter/protocol.h").is_file(), "protocol header materialized");
 
     // Second time is exec-only: no build banner.
     let (ok, _, err) = hale(&cache, &["iris", "--build-only"]);

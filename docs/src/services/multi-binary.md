@@ -29,6 +29,11 @@ main locus App {
 }
 ```
 
+A binding may name a topic the seed imports — `bindings {
+core::Verdict: unix("/tmp/verdicts.sock", role: listen); }` — so a
+library's own declarations are what cross the socket, not copies
+of them.
+
 `bindings { }` is legal only on a `main` locus. The publisher's
 `MatchReady <- info;` and the subscriber's `subscribe MatchReady
 as ...` are *unchanged* — they don't know or care that delivery

@@ -8,6 +8,15 @@ behavior.
 
 ## Unreleased
 
+### The typed control channel — verdicts and intent cross the membrane (GH #527 B6)
+
+- **Language:** a `bindings { }` entry may name an imported topic — `bindings { dna::ReviewVerdict: unix("/path", role: listen); }`. The entry keeps its ident shape with the path joined by `::` and canonicalizes to the mangled declaration exactly as a qualified bus subject does, so the checker, the model, role inference and codegen see one name. Unknown paths are still refused (`binding references unknown topic`).
+- **DNA core:** `Review` subscribes `ReviewVerdict` and admits a remote verdict through the same gate as a local one (digest pin, authority, independence); `Dna` subscribes `IntentOffered` and routes it through the membrane gate and the Metabolism (`status` gains `last_task`). `dna/organism/main.hl` is the reference organism: the assembly behind two listen bindings under `/tmp`, reporting every membrane-driven decision on stdout.
+- **Iris:** fuse-hl imports the core and publishes the core's own `Verdict` / `IntentOffer` from `POST /ctl/review` and `POST /ctl/intent` (only when started with a membrane; 409 otherwise, 400 on a malformed body); `/snapshot` carries `membrane {dir, verdicts, intents}`; `app.js` gains the membrane panel (key `m`). `hale iris --membrane <dir>` routes the two publishes to the organism's sockets with an env-configured connect route (`LOTUS_BUS_CONFIG`), so an observer started without an organism has nothing to fail on. A new `hale-dna` crate embeds `dna/core` (the set is checked against the directory); `hale iris` materializes it beside the iris tree in the repo's layout.
+- **Fleet:** the edge is a declared route in the plan; `hale fleet check` admits it over the organism's and the observer's artifacts and refuses a route whose producer never publishes the topic.
+- **Friction F.12** (`dna/FRICTION.md`): a keyed subscription never hears a wire delivery (remote fanout is unkeyed at v0.1 and the listening side skips keyed filters), so the Review subscribes unkeyed and answers only to its own id. The keyed idiom means different things on the two sides of a socket; receive-side key derivation is the wanted fix.
+- Tests: `crates/hale-cli/tests/dna_membrane.rs` (an importing seed binds an imported topic and refuses an unknown one; an intent births a Task, a wrong-authority verdict is refused by the Review, the right one settles it, a malformed request never publishes, the snapshot counts; the fleet plan's routes and laws hold and a phantom producer is refused).
+
 ### Iris renders the diff — the review view (GH #527 B5)
 
 - `hale iris --diff <a.topology> <b.topology>` diffs the pair in-process with `hale model diff`'s engine and hands the document to the observer; `--diff <diff.json>` hands over a ready one. fuse-hl takes it as its fourth argument, watches it at the 1 Hz discovery cadence, and carries it into `/snapshot` **verbatim** under `diff` (`path`, `state`, `document`) — the observer never interprets the diff; one engine owns its meaning. An unreadable file or a document of another schema is reported as such, not rendered wrong.

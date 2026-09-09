@@ -26,30 +26,43 @@ pub struct EmbeddedFile {
 /// library it wraps, the protocol header (the HALE copy — the iris
 /// tree's `emitter/protocol.h` only forwards to it, and a forward
 /// cannot resolve from a cache directory), the web renderer, and the
-/// artifact inspector. Paths keep the iris tree's layout so every
-/// relative `#include` and `hale.toml` `csrc` entry resolves unchanged.
+/// artifact inspector. Paths keep the REPO's layout (`iris/…` beside
+/// `dna/…`, see [`ALL_FILES`]) so every relative `#include`,
+/// `hale.toml` `csrc` entry and `import "../../../dna/core"` resolves
+/// unchanged.
 pub const FILES: &[EmbeddedFile] = &[
-    EmbeddedFile { path: "consumer/fuse-hl/main.hl", content: include_str!("../../../iris/consumer/fuse-hl/main.hl") },
-    EmbeddedFile { path: "consumer/fuse-hl/attach/attach.hl", content: include_str!("../../../iris/consumer/fuse-hl/attach/attach.hl") },
-    EmbeddedFile { path: "consumer/fuse-hl/attach/glue.c", content: include_str!("../../../iris/consumer/fuse-hl/attach/glue.c") },
-    EmbeddedFile { path: "consumer/fuse-hl/attach/hale.toml", content: include_str!("../../../iris/consumer/fuse-hl/attach/hale.toml") },
-    EmbeddedFile { path: "consumer/obs_attach.c", content: include_str!("../../../iris/consumer/obs_attach.c") },
-    EmbeddedFile { path: "consumer/obs_attach.h", content: include_str!("../../../iris/consumer/obs_attach.h") },
-    EmbeddedFile { path: "emitter/protocol.h", content: include_str!("../../hale-codegen/runtime/obs_protocol.h") },
-    EmbeddedFile { path: "render/web/index.html", content: include_str!("../../../iris/render/web/index.html") },
-    EmbeddedFile { path: "render/web/app.js", content: include_str!("../../../iris/render/web/app.js") },
-    EmbeddedFile { path: "inspect/main.hl", content: include_str!("../../../iris/inspect/main.hl") },
+    EmbeddedFile { path: "iris/consumer/fuse-hl/main.hl", content: include_str!("../../../iris/consumer/fuse-hl/main.hl") },
+    EmbeddedFile { path: "iris/consumer/fuse-hl/attach/attach.hl", content: include_str!("../../../iris/consumer/fuse-hl/attach/attach.hl") },
+    EmbeddedFile { path: "iris/consumer/fuse-hl/attach/glue.c", content: include_str!("../../../iris/consumer/fuse-hl/attach/glue.c") },
+    EmbeddedFile { path: "iris/consumer/fuse-hl/attach/hale.toml", content: include_str!("../../../iris/consumer/fuse-hl/attach/hale.toml") },
+    EmbeddedFile { path: "iris/consumer/obs_attach.c", content: include_str!("../../../iris/consumer/obs_attach.c") },
+    EmbeddedFile { path: "iris/consumer/obs_attach.h", content: include_str!("../../../iris/consumer/obs_attach.h") },
+    EmbeddedFile { path: "iris/emitter/protocol.h", content: include_str!("../../hale-codegen/runtime/obs_protocol.h") },
+    EmbeddedFile { path: "iris/render/web/index.html", content: include_str!("../../../iris/render/web/index.html") },
+    EmbeddedFile { path: "iris/render/web/app.js", content: include_str!("../../../iris/render/web/app.js") },
+    EmbeddedFile { path: "iris/inspect/main.hl", content: include_str!("../../../iris/inspect/main.hl") },
 ];
 
+/// Everything `hale iris` materializes: the iris tree plus the DNA
+/// core the observer imports for its typed control topics (GH #527
+/// B6) — one declaration of `dna.review.verdict`, bound by the
+/// organism and published by the observer.
+pub fn all_files() -> impl Iterator<Item = (&'static str, &'static str)> {
+    FILES
+        .iter()
+        .map(|f| (f.path, f.content))
+        .chain(hale_dna::FILES.iter().map(|f| (f.path, f.content)))
+}
+
 /// The seed `hale build` compiles for `hale iris` (relative to the root).
-pub const FUSE_SEED: &str = "consumer/fuse-hl";
+pub const FUSE_SEED: &str = "iris/consumer/fuse-hl";
 /// The binary that build produces (`<dir>/<dirname>`).
-pub const FUSE_BIN: &str = "consumer/fuse-hl/fuse-hl";
+pub const FUSE_BIN: &str = "iris/consumer/fuse-hl/fuse-hl";
 /// The seed for `hale iris inspect`.
-pub const INSPECT_SEED: &str = "inspect";
-pub const INSPECT_BIN: &str = "inspect/inspect";
+pub const INSPECT_SEED: &str = "iris/inspect";
+pub const INSPECT_BIN: &str = "iris/inspect/inspect";
 /// The web root fuse-hl serves.
-pub const WEBROOT: &str = "render/web";
+pub const WEBROOT: &str = "iris/render/web";
 
 /// FNV-1a over the compiler version and every embedded byte. Two
 /// toolchains with the same iris sources and the same compiler share
@@ -63,10 +76,10 @@ pub fn toolchain_hash() -> u64 {
         }
     };
     eat(env!("CARGO_PKG_VERSION").as_bytes());
-    for f in FILES {
-        eat(f.path.as_bytes());
+    for (path, content) in all_files() {
+        eat(path.as_bytes());
         eat(&[0]);
-        eat(f.content.as_bytes());
+        eat(content.as_bytes());
         eat(&[0]);
     }
     h
@@ -86,10 +99,10 @@ pub fn cache_dir() -> Option<PathBuf> {
 /// with the same content. Idempotent; a partial earlier run is
 /// completed, never trusted.
 pub fn materialize_into(root: &Path) -> io::Result<()> {
-    for f in FILES {
-        let p = root.join(f.path);
+    for (path, content) in all_files() {
+        let p = root.join(path);
         if let Ok(existing) = std::fs::read_to_string(&p) {
-            if existing == f.content {
+            if existing == content {
                 continue;
             }
         }
@@ -97,7 +110,7 @@ pub fn materialize_into(root: &Path) -> io::Result<()> {
             std::fs::create_dir_all(parent)?;
         }
         let tmp = p.with_extension("tmp-materialize");
-        std::fs::write(&tmp, f.content)?;
+        std::fs::write(&tmp, content)?;
         std::fs::rename(&tmp, &p)?;
     }
     Ok(())
@@ -119,15 +132,16 @@ mod tests {
     #[test]
     fn every_embedded_file_is_nonempty_and_unique() {
         let mut seen = std::collections::BTreeSet::new();
-        for f in FILES {
-            assert!(!f.content.is_empty(), "{} is empty", f.path);
-            assert!(seen.insert(f.path), "{} listed twice", f.path);
+        for (path, content) in all_files() {
+            assert!(!content.is_empty(), "{} is empty", path);
+            assert!(seen.insert(path), "{} listed twice", path);
         }
+        assert!(all_files().any(|(p, _)| p == "dna/core/topics.hl"), "the control topics ride along");
     }
 
     #[test]
     fn the_protocol_header_is_the_hale_copy_not_the_forwarder() {
-        let h = FILES.iter().find(|f| f.path == "emitter/protocol.h").unwrap();
+        let h = FILES.iter().find(|f| f.path == "iris/emitter/protocol.h").unwrap();
         assert!(h.content.contains("#define OBS_PROTO_MINOR"), "must be the real header");
         assert!(!h.content.contains("crates/hale-codegen/runtime/obs_protocol.h"), "must not be the forwarder");
     }

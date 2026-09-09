@@ -382,6 +382,33 @@ yet — the fixtures should sit for a while first):
    field (the identity coercion), WITH an ownership rule. Probably
    subsumed by F.4 for the performer case.
 
+## F.12 — a keyed subscription never hears a wire delivery
+
+**Where:** `dna/core/review.hl`, the membrane (GH #527 B6).
+
+**What:** `ReviewVerdict` is `keyed_by review_id` so a verdict reaches
+only the Review it names — the same idiom `Step` uses for `WorkDone`.
+Bound on a unix socket, a `subscribe ReviewVerdict as on_verdict where
+key == self.review_id` subscription receives nothing: remote fanout
+is unkeyed at v0.1 (`spec/semantics.md`, "Remote fanout stays unkeyed")
+and the listening side's wire dispatch skips every entry with a key
+filter, because nobody re-derives the key from the decoded payload.
+The publisher's counters say `sent=1`; the Review stays open.
+
+**Worked around:** the Review subscribes unkeyed and answers only to
+its own `review_id` in the handler. Correct (every Review is a
+separate locus, so a foreign verdict is a no-op), and cheap at this
+scale, but it is the pattern the keyed topic exists to make
+unnecessary, and it silently diverges from the in-process idiom: the
+same source line means "mine only" locally and "everyone's" over a
+binding.
+
+**Wanted:** key derivation on the receive side of a binding — the
+codec already decodes the payload and the topic declares which field
+is the key — so `where key == …` means the same thing on both sides
+of a socket. Until then the checker could at least warn when a keyed
+subscription's topic is bound on a listen transport.
+
 **Compiler bugs fixed in this track:** F.2 (`@unbounded` ignored by the
 hot-path lint), F.6 (release dispatch by child type alone — memory
 corruption).
@@ -399,6 +426,10 @@ are.
 
 **Recorded, by design:** F.5 (a bus reply reaches a flow child at
 drain, so the retry loop lives with whoever owns the performers).
+
+**Runtime limitation, worked around:** F.12 (keyed subscriptions
+never hear a wire delivery; the membrane Review filters by id in the
+handler).
 
 **Things the survey said to verify, now verified:** `adopt` of a
 constitution declared in an imported seed was not needed — the app's
