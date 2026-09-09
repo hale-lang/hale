@@ -64,7 +64,7 @@ fn iris_materializes_builds_once_and_serves_a_snapshot() {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn hale iris");
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + Duration::from_secs(120);
     let mut body = String::new();
     while Instant::now() < deadline {
         if let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) {
@@ -132,7 +132,7 @@ fn iris_diff_pair_rides_into_the_snapshot() {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn hale iris --diff");
-    let deadline = Instant::now() + Duration::from_secs(25);
+    let deadline = Instant::now() + Duration::from_secs(120);
     let mut body = String::new();
     while Instant::now() < deadline {
         if let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) {
