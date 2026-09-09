@@ -32,15 +32,19 @@ fn hale(sub: &str, dir: &str) -> (bool, String) {
 /// wasm32 and is covered by the wasm example tests, not here.)
 const CHECKED: &[&str] = &[
     "consumer/fuse-hl",
-    "consumer/fuse-hl/upstream-repro",
     "inspect",
-    "inspect/upstream-repro",
     "observe",
     "examples/obs-smoke",
+    "examples/obs-smoke/lib/observe",
     "examples/inspect-demo",
     "examples/claims-demo/app",
     "examples/claims-demo/rogue",
 ];
+
+/// Directories of standalone single-file repro programs (each with its
+/// own `main`), checked one FILE at a time — as a seed they would be
+/// duplicate declarations.
+const CHECKED_PER_FILE: &[&str] = &["consumer/fuse-hl/upstream-repro", "inspect/upstream-repro"];
 
 /// The shipping consumer and the inspector are held to the discipline gate.
 const VERIFIED: &[&str] = &["consumer/fuse-hl", "inspect"];
@@ -52,6 +56,32 @@ fn every_iris_seed_checks_clean() {
         let (ok, text) = hale("check", d);
         if !ok {
             failed.push(format!("--- iris/{d}\n{text}"));
+        }
+    }
+    for d in CHECKED_PER_FILE {
+        let dir = repo_root().join("iris").join(d);
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .expect("repro dir")
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|x| x == "hl").unwrap_or(false))
+            .collect();
+        files.sort();
+        assert!(!files.is_empty(), "iris/{d} has no repro programs");
+        for f in files {
+            let out = Command::new(env!("CARGO_BIN_EXE_hale"))
+                .arg("check")
+                .arg(&f)
+                .output()
+                .expect("invoke hale check");
+            if !out.status.success() {
+                failed.push(format!(
+                    "--- {}\n{}{}",
+                    f.display(),
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                ));
+            }
         }
     }
     assert!(failed.is_empty(), "iris seeds failed hale check:\n{}", failed.join("\n"));
@@ -92,6 +122,7 @@ fn the_seed_list_is_complete() {
     walk(&root, &root, &mut found);
     found.sort();
     let mut expected: Vec<String> = CHECKED.iter().map(|s| s.to_string()).collect();
+    expected.extend(CHECKED_PER_FILE.iter().map(|s| s.to_string()));
     expected.push("consumer/fuse-hl/attach".to_string()); // FFI shim: checked as part of fuse-hl
     expected.push("examples/wasm-flower".to_string());
     expected.sort();
