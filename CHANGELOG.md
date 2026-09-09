@@ -8,6 +8,19 @@ behavior.
 
 ## Unreleased
 
+### A perspective contract method keeps its name under `import` (GH #542)
+
+A library free fn that shared its name with a perspective contract
+method (`fn pick()` beside `perspective P { fn pick(); }`) broke the
+perspective once imported: every `serves` impl was "missing contract
+method" because the seed mangler had renamed the contract method to
+the free fn's mangled name while the impls' own methods correctly
+kept theirs. Contract methods live in member position exactly like
+locus methods (the pond P1 rule) and are walked that way now. Same
+fix for bus handler references: `subscribe Tick as tick;` names a
+member method, and a free fn `tick` in the seed used to move the
+reference to the mangled free-fn name.
+
 ### `dna/core` takes its enum and its routing perspective back (GH #534 follow-through)
 
 With enums and perspectives crossing seed boundaries, `Disposition`
