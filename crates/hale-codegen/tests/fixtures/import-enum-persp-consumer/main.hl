@@ -22,6 +22,14 @@ main locus App {
             lib::Color::Blue -> "b",
         };
         println("label=", label);
+        // a TYPED scrutinee (the lib's enum as a return type): the
+        // checker's exhaustiveness must recognise the aliased arms
+        let picked = match lib::pick_color() {
+            lib::Color::Red -> "r",
+            lib::Color::Green -> "g",
+            lib::Color::Blue -> "b",
+        };
+        println("picked=", picked);
     }
 }
 
