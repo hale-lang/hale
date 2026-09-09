@@ -471,11 +471,27 @@ pub fn derive_application_model(bundle: &Bundle<'_>) -> ApplicationModel {
         for m in &l.members {
             let LocusMember::Params(pb) = m else { continue };
             for prm in &pb.params {
-                let Some(TypeExpr::Named { path, .. }) = &prm.ty else {
-                    continue;
+                // GH #527 B4: EVERY declared param, not only the
+                // locus-typed ones — `hale model diff` compares the
+                // params facet of a locus contract, and a widened
+                // `limit: Int` is a contract change. A named type
+                // keeps its last segment (what `decl` resolves
+                // against); any other form renders through the
+                // payload descriptor so distinct forms stay
+                // distinct.
+                let Some(ty) = &prm.ty else { continue };
+                let rendered = match ty {
+                    TypeExpr::Named { path, generic_args, .. }
+                        if generic_args.is_empty() =>
+                    {
+                        match path.segments.last() {
+                            Some(seg) => seg.name.clone(),
+                            None => continue,
+                        }
+                    }
+                    other => type_descriptor(other),
                 };
-                let Some(seg) = path.segments.last() else { continue };
-                params.push((prm.name.name.clone(), seg.name.clone()));
+                params.push((prm.name.name.clone(), rendered));
             }
         }
         locus_rows.insert(

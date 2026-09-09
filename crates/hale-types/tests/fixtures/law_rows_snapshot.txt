@@ -22,6 +22,7 @@ crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#4	isolation	forbid r
 crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#5	isolation	forbid reaches(probes, sinks)	Invalid	None
 crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#6	isolation	forbid reaches(sources, targets) avoiding mask	Invalid	None
 crates/hale-cli/tests/model_cli.rs#0	wired	require subscribes(some subs, topic Evt)	Holds	None
+crates/hale-cli/tests/model_diff.rs#0	consumed	require subscribes(some workers, topic Evt)	Holds	None
 crates/hale-cli/tests/topology_artifact_contract.rs#0	wired	require subscribes(some subs, topic Tk)	Holds	None
 crates/hale-cli/tests/topology_artifact_contract.rs#1	wired	require subscribes(some subs, topic Tk)	Violated	None
 crates/hale-cli/tests/topology_artifact_contract.rs#2	wired	require subscribes(some subs, topic Tk)	Holds	None

@@ -860,6 +860,44 @@ and *moving source lines doesn't move a pixel* (provenance spans
 change; the model shape doesn't) — which is what makes generated
 diagrams safe to commit and regression-test.
 
+### Diffing two artifacts
+
+Two committed artifacts can be compared semantically — the
+review view of a change, rather than a text diff of two JSON
+documents:
+
+```text
+hale model diff before.topology after.topology --text
+hale model diff before.topology after.topology          # versioned JSON
+```
+
+```text
+classification: model-shape  (shape_hash 560bb0… -> 578951…)
+declarations:
+  ~ locus Worker -> Crew  (renamed; shape unchanged)
+  + locus Pager  (main.hl:248..253)
+  + topic Alerts  (main.hl:71..77)
+contracts:
+  ! locus App params: +limit: Int
+  ! locus App publishes: +Alerts
+effects:
+  ! fn Crew::on_e gains publish
+law:
+  + claim quiet: count publishers(topic Out) == 0  [violated]
+```
+
+Declarations are `persisted`, `moved`, `renamed`, `split`,
+`joined`, `added` or `removed`; a rename is reported only when
+exactly one added declaration has the removed one's shape, and
+anything with more than one candidate is reported as `ambiguous`
+with the candidates rather than guessed. Contract deltas are per
+locus (params, methods, publishes, subscribes with queue bounds,
+supervision, ownership, placement); effect deltas per function;
+law deltas per claim, plus adequacy and the overall verdict. A
+comment-only edit classifies as `source-only`; the same artifact
+twice as `identical`. Both inputs go through the same admission
+gates as the renderer, so an edited artifact is refused.
+
 ### One verdict vocabulary
 
 Bundle claims and fn-grained certificates (`@effects`, `@budget`,
