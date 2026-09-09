@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### DNA: the kill test for Track D (GH #529)
+
+- `dna/kill-test/`: the falsification test the track puts before its apply path. `before/` and `after/` are one small application (a support desk) around a proposed change that does five different things to the model (a second publisher that flips a law to violated, a locus gaining `outbound_email`, a parent-facing contract change, a pure rename, a new law); `run.sh` prints the git diff and `hale model diff --text` over the same change (and opens iris [4] with `--iris`); `WALKTHROUGH.md` is the protocol and scoring for a reviewer who does not care about Hale. If the semantic diff is not visibly better than the git diff for deciding, Track D is reordered or stopped.
+
 ### Bindings: a listener serves many peers, and keyed topics keep their routing across the socket (DNA F.12 + F.13, GH #529 prep)
 
 - **F.13 — a listen binding serves many peers.** The unix serve loop was accept → read until EOF → re-arm: one peer held the socket until it hung up, and a second connector (an observer holding the membrane, then a CLI publishing one fact) sat in the backlog with its message never read. The loop now polls the listener beside every accepted peer (up to 64), admits connections as they arrive, keeps a framed seq space per peer, closes only the peer that hangs up, and — once the listener is shut at exit — drains every connected peer to EOF, so the exit quiesce still delivers the kernel-queued tail. Listen backlog 1 → 16. `hale dna ask` / `review` connect directly beside an attached iris; the `.hale/dna/iris.port` detour is gone. Test: `binding_multi_peer` (two publishers connected together, both deliver, no seq gaps).

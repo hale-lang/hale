@@ -1,0 +1,105 @@
+// dna/kill-test — the application AFTER the change (GH #529, the
+// falsification test). The proposal, as a candidate would describe it:
+// "tickets can now arrive by email, support engineers get an SLA and
+// can reply to customers, and triage is renamed dispatch."
+//
+// What that does to the model, which the reviewer has to see:
+//   - EmailIntake is a NEW locus that publishes Tickets (a second
+//     publisher — one_intake's count changes);
+//   - Support GAINS the outbound_email effect through Mailer;
+//   - the Product -> Support contract changes: Support's params gain
+//     sla_hours, and QueueStats gains a field (payload shape);
+//   - Triage becomes Dispatch — same shape, only the name;
+//   - a new claim gates mail behind support_side.
+
+effect outbound_email; // a message leaves for a customer's inbox
+
+type Ticket { id: Int = 0; severity: Int = 0; body: String = ""; }
+type Assignment { ticket: Int = 0; owner: String = ""; }
+type QueueStat { open: Int = 0; oldest_hours: Int = 0; }
+type Mail { to: String = ""; body: String = ""; }
+
+topic Tickets { payload: Ticket; subject: "desk.tickets"; }
+topic Assignments { payload: Assignment; subject: "desk.assignments"; keyed_by ticket; }
+topic QueueStats { payload: QueueStat; subject: "desk.queue"; }
+topic Outbound { payload: Mail; subject: "desk.mail"; }
+
+locus Intake {
+    params { received: Int = 0; }
+    bus { subscribe Tickets as on_ticket; publish Assignments; }
+    fn on_ticket(t: Ticket) {
+        self.received = self.received + 1;
+        Assignments <- Assignment { ticket: t.id, owner: "dispatch" };
+    }
+}
+
+locus EmailIntake {
+    params { polled: Int = 0; }
+    bus { publish Tickets; }
+    fn poll() {
+        self.polled = self.polled + 1;
+        Tickets <- Ticket { id: 100 + self.polled, severity: 1, body: "from mail" };
+    }
+}
+
+locus Dispatch {
+    params { handled: Int = 0; }
+    bus { subscribe Assignments as on_assignment; publish QueueStats; }
+    fn on_assignment(a: Assignment) {
+        self.handled = self.handled + 1;
+        QueueStats <- QueueStat { open: self.handled, oldest_hours: 0 };
+    }
+}
+
+locus Mailer {
+    params { sent: Int = 0; }
+    bus { subscribe Outbound as on_mail; }
+    @effects(is: { outbound_email })
+    fn on_mail(m: Mail) { self.sent = self.sent + 1; }
+}
+
+locus Support {
+    params { engineer: String = "sam"; sla_hours: Int = 8; resolved: Int = 0; }
+    bus { subscribe QueueStats as on_queue; publish Outbound; }
+    fn on_queue(q: QueueStat) {
+        if q.open > 0 {
+            self.resolved = self.resolved + 1;
+            Outbound <- Mail { to: "customer", body: "we are on it" };
+        }
+    }
+}
+
+locus Product {
+    params { watched: Int = 0; }
+    bus { subscribe QueueStats as on_queue; }
+    fn on_queue(q: QueueStat) { self.watched = self.watched + 1; }
+}
+
+group product_side = { Product };
+group support_side = { Support, Dispatch };
+group mail = { Mailer };
+
+main locus Desk {
+    params {
+        intake: Intake = Intake { };
+        email: EmailIntake = EmailIntake { };
+        dispatch: Dispatch = Dispatch { };
+        mailer: Mailer = Mailer { };
+        support: Support = Support { };
+        product: Product = Product { };
+    }
+    bus { publish Tickets; }
+    claims {
+        product_never_emails: forbid reaches(product_side, effects(outbound_email));
+        one_intake: count publishers(topic Tickets) == 1;
+        mail_from_support_only: require publishes(some support_side, topic Outbound);
+    }
+    run() {
+        Tickets <- Ticket { id: 1, severity: 2, body: "login broken" };
+        self.email.poll();
+    }
+}
+
+fn main() {
+    Desk { };
+}
