@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### `hale model diff`: what a dry run of the kill test found (GH #529)
+
+- Two reviewers who did not know the language read the kill test's views. Both decided from the semantic diff (a law flipping to violated is one line) and wrote their revision comments from the git diff. Four things they could not read in the semantic view are fixed: a persisted topic whose payload shape or wire subject moved now has a `contracts` row (`! topic QueueStats shape: …` — a wider payload is a contract change for every locus on it); a param rename no longer echoes as ownership and placement rows (those facets are by owner and thread domain now, not by instance path); the text view carries a legend for `+ - ~ > * ? !` and labels source sites as byte offsets; a claim whose result and verdict move together is stated once. Not fixed, stated in `dna/kill-test/WALKTHROUGH.md`: an effect class reached through a bus edge shows only as `gains publish` on the sender, wire values are outside the model, and an added-but-unread field looks like a used one.
+
 ### DNA: the kill test for Track D (GH #529)
 
 - `dna/kill-test/`: the falsification test the track puts before its apply path. `before/` and `after/` are one small application (a support desk) around a proposed change that does five different things to the model (a second publisher that flips a law to violated, a locus gaining `outbound_email`, a parent-facing contract change, a pure rename, a new law); `run.sh` prints the git diff and `hale model diff --text` over the same change (and opens iris [4] with `--iris`); `WALKTHROUGH.md` is the protocol and scoring for a reviewer who does not care about Hale. If the semantic diff is not visibly better than the git diff for deciding, Track D is reordered or stopped.

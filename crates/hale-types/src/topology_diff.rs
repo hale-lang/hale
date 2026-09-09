@@ -272,19 +272,18 @@ fn locus_facets(a: &Admitted, locus: &str, map: &RenameMap) -> BTreeMap<&'static
             .unwrap_or_default(),
     );
     let insts = c["instances"].as_array().cloned().unwrap_or_default();
+    // Ownership and placement as WHO owns / WHERE, not by instance
+    // path: the path is the owner's param name, which the owner's own
+    // params facet already reports — carrying it here made a param
+    // rename echo as two more rows (the kill-test reviewers read them
+    // as noise).
     out.insert(
         "ownership",
-        insts
-            .iter()
-            .map(|i| format!("{} owned by {}", str_of(&i["path"]), i["owner"].as_str().unwrap_or("nobody")))
-            .collect(),
+        insts.iter().map(|i| format!("owned by {}", i["owner"].as_str().unwrap_or("nobody"))).collect(),
     );
     out.insert(
         "placement",
-        insts
-            .iter()
-            .map(|i| format!("{} on {}", str_of(&i["path"]), i["domain"].as_str().unwrap_or("unplaced")))
-            .collect(),
+        insts.iter().map(|i| format!("on {}", i["domain"].as_str().unwrap_or("unplaced"))).collect(),
     );
     out
 }
@@ -544,9 +543,34 @@ fn declarations(a: &Admitted, b: &Admitted) -> (Value, BTreeMap<&'static str, Pa
     (Value::Array(rows), pairings, map)
 }
 
-fn contracts(a: &Admitted, b: &Admitted, loci: &Pairing, map: &RenameMap) -> Value {
+fn topic_row<'a>(art: &'a Admitted, name: &str) -> Option<&'a Value> {
+    art.v["topics"].as_array()?.iter().find(|t| t["name"] == name)
+}
+
+fn contracts(a: &Admitted, b: &Admitted, loci: &Pairing, topics: &Pairing, map: &RenameMap) -> Value {
     let none = RenameMap::new();
     let mut rows: Vec<Value> = Vec::new();
+    // A paired topic whose wire subject or payload shape moved is a
+    // contract change for every locus on it (the kill test's QueueStat
+    // gained a field and the view said nothing).
+    for (na, nb) in &topics.pairs {
+        let (Some(ta), Some(tb)) = (topic_row(a, na), topic_row(b, nb)) else { continue };
+        for facet in ["subject", "shape"] {
+            if ta[facet] != tb[facet] {
+                let mut row = Map::new();
+                row.insert("topic".into(), json!(nb));
+                if na != nb {
+                    row.insert("from".into(), json!(na));
+                }
+                row.insert("facet".into(), json!(facet));
+                row.insert("removed".into(), json!([str_of(&ta[facet])]));
+                row.insert("added".into(), json!([str_of(&tb[facet])]));
+                row.insert("a".into(), site_json(&decl_site(a, na)));
+                row.insert("b".into(), site_json(&decl_site(b, nb)));
+                rows.push(Value::Object(row));
+            }
+        }
+    }
     for (na, nb) in &loci.pairs {
         let fa = locus_facets(a, na, map);
         let fb = locus_facets(b, nb, &none);
@@ -642,7 +666,9 @@ fn law(a: &Admitted, b: &Admitted, claims: &Pairing, map: &RenameMap) -> Value {
             changes.insert("result".into(), json!({"a": ca["result"], "b": cb["result"]}));
         }
         if let (Some(la), Some(lb)) = (law_row(a, na), law_row(b, nb)) {
-            if la["verdict"] != lb["verdict"] {
+            // the typed verdict; only its own row when it differs from
+            // the surface result (they move together almost always)
+            if la["verdict"] != lb["verdict"] && (la["verdict"] != ca["result"] || lb["verdict"] != cb["result"]) {
                 changes.insert("verdict".into(), json!({"a": la["verdict"], "b": lb["verdict"]}));
             }
             if la["family"] != lb["family"] {
@@ -694,7 +720,7 @@ fn law(a: &Admitted, b: &Admitted, claims: &Pairing, map: &RenameMap) -> Value {
 pub fn diff(a: &Admitted, b: &Admitted) -> Value {
     let (decls, pairings, map) = declarations(a, b);
     let empty = Pairing { pairs: Vec::new() };
-    let contracts = contracts(a, b, pairings.get("locus").unwrap_or(&empty), &map);
+    let contracts = contracts(a, b, pairings.get("locus").unwrap_or(&empty), pairings.get("topic").unwrap_or(&empty), &map);
     let effects = effects(a, b, pairings.get("fn").unwrap_or(&empty));
     let law = law(a, b, pairings.get("claim").unwrap_or(&empty), &map);
     let identical = a.artifact_digest == b.artifact_digest;
@@ -702,10 +728,19 @@ pub fn diff(a: &Admitted, b: &Admitted) -> Value {
     let count = |v: &Value, key: &str, val: &str| -> usize {
         v.as_array().map(|r| r.iter().filter(|x| x[key] == val).count()).unwrap_or(0)
     };
+    // `shape_hash` covers the model HALF (sorts, relations, endpoint
+    // identity); payload shapes, params and the other contract facets
+    // ride unhashed. A payload that gained a field with the hash
+    // unmoved is a contract change, not "source-only" — the blind
+    // round's frozen-schema case read as harmless under that label.
+    let contract_changed = contracts.as_array().map(|r| !r.is_empty()).unwrap_or(false)
+        || effects["classes"].as_array().map(|r| !r.is_empty()).unwrap_or(false);
     let classification = if identical {
         "identical"
     } else if shape_changed {
         "model-shape"
+    } else if contract_changed {
+        "contract"
     } else {
         "source-only"
     };
@@ -744,7 +779,7 @@ pub fn diff(a: &Admitted, b: &Admitted) -> Value {
 
 fn site_text(v: &Value) -> String {
     match (v["unit"].as_str(), v["span"].as_array()) {
-        (Some(u), Some(sp)) if sp.len() == 2 => format!("  ({u}:{}..{})", sp[0], sp[1]),
+        (Some(u), Some(sp)) if sp.len() == 2 => format!("  ({u} bytes {}..{})", sp[0], sp[1]),
         _ => String::new(),
     }
 }
@@ -764,6 +799,8 @@ pub fn render_text(d: &Value) -> String {
         str_of(&d["a"]["shape_hash"]),
         str_of(&d["b"]["shape_hash"])
     ));
+    o.push_str("legend: + added  - removed  ~ renamed  > moved  * split/joined  ? ambiguous  ! changed in place\n");
+    o.push_str("classes: identical · source-only (no model or contract change) · contract (a contract or effect moved, shape_hash unmoved) · model-shape\n");
     let mut decl_lines: Vec<String> = Vec::new();
     for r in d["declarations"].as_array().map(|x| x.as_slice()).unwrap_or(&[]) {
         let kind = str_of(&r["kind"]);
@@ -805,7 +842,11 @@ pub fn render_text(d: &Value) -> String {
             for x in names(&r["added"]) {
                 parts.push(format!("+{x}"));
             }
-            o.push_str(&format!("  ! locus {} {}: {}\n", str_of(&r["locus"]), str_of(&r["facet"]), parts.join("; ")));
+            if r["topic"].is_string() {
+                o.push_str(&format!("  ! topic {} {}: {}\n", str_of(&r["topic"]), str_of(&r["facet"]), parts.join("; ")));
+            } else {
+                o.push_str(&format!("  ! locus {} {}: {}\n", str_of(&r["locus"]), str_of(&r["facet"]), parts.join("; ")));
+            }
         }
     }
     let classes = d["effects"]["classes"].as_array().cloned().unwrap_or_default();
