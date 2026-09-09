@@ -480,7 +480,8 @@ actually hash — not what their names suggest.
 | `model_shape` (in `EvidenceTable`) | the `shape_hash` the sidecar was derived beside | the model half does |
 | obs `model_hash` | **the emitted `shape_hash`** — `model_shape_hash` renders the artifact and reads that field out | the model half does. It is the runtime exposure of `TopologyShapeV1`, **not** a full-model identity |
 | obs `entity_id_digest` | the exact stamped id table (kind, name, id) | the numbering does. It exists because `model_hash` does *not* cover every table the ids index — arrangement bindings are not in the artifact at all, and an unused topic's wire subject rides an unhashed section, so two builds could share a `model_hash` while numbering entities differently |
-| `TOPOLOGY_SCHEMA` | the artifact's decoding contract | a field becomes required, a section changes meaning, or a family moves |
+| `TOPOLOGY_SCHEMA` | the artifact's decoding contract | a field becomes required, a section changes meaning, or a family moves (1.18 added the per-locus `contracts` section) |
+| `TOPOLOGY_DIFF_SCHEMA` | the `hale model diff` document's decoding contract | a diff section changes meaning or a field becomes required |
 | `ANALYSIS_SEMANTICS_VERSION` | the evidence producer's SEMANTICS | its **results** move |
 
 Two rules that are easy to get wrong.
@@ -497,6 +498,74 @@ And making an artifact field **required** is a decoding-contract
 change, not an additive one: an artifact written before the change
 passes the schema gate and is then refused for omitting something
 its schema never demanded. That is a `TOPOLOGY_SCHEMA` transition.
+
+## Diffing two artifacts
+
+`hale model diff <a.topology> <b.topology> [--json|--text]` is the
+semantic difference between two topology artifacts (GH #527). It
+is defined over **artifacts**, not in-process models: both inputs
+are byte-reproducible, digest-verified documents a caller can keep
+as evidence, so the diff is replayable by anyone holding them.
+Each input passes the renderer's admission gates — canonical
+top-level order, `artifact_digest`, `semantics`, recomputed
+`shape_hash`, exact `TOPOLOGY_SCHEMA` — and an artifact that fails
+any of them is refused, never diffed.
+
+The output is a versioned document (`TOPOLOGY_DIFF_SCHEMA`, now
+`1.0`) naming both inputs by path, `artifact_digest` and
+`shape_hash`, with these sections:
+
+- **`declarations`** — one row per (kind, name) across loci,
+  topics, fns, groups and claims: `persisted`, `moved` (same name
+  and kind, a different source unit), `renamed`, `split`, `joined`,
+  `added`, `removed`, or `ambiguous`. Rows carry both sides' source
+  sites (`unit`, `span`), with units taken relative to each
+  artifact's common source root so two checkouts of one program
+  compare.
+- **`contracts`** — per paired locus, facet by facet, as set
+  differences (`removed` / `added`): `sealed`, `params`, `methods`,
+  `publishes`, `subscribes` (with the subscription's queue bound
+  and shed policy), `supervises`, `ownership` and `placement` of
+  its statically exact instances. These facets are read from the
+  artifact's `contracts` section (schema 1.18), the per-locus
+  regrouping of facts the model already holds.
+- **`effects`** — per paired fn, classes `gained` / `dropped`; and
+  per fn-grained certificate (`lowered` rows keyed by subject and
+  form), `added` / `removed` / `result` changed.
+- **`law`** — per paired claim, `form` / `result` / `verdict` /
+  `family` changes; claims added and removed with their result;
+  `adequacy` changes per family; the overall `verdict` when it
+  moved.
+- **`classification`** — `identical` (same `artifact_digest`),
+  `source-only` (same `shape_hash`: comments, moved lines,
+  re-spelt law) or `model-shape`.
+
+**Matching is deterministic and names what it compared.** The
+`matching` section of every document states the rules; they are:
+
+1. Declarations pair by (kind, name). Loci are matched first.
+2. A removed and an added declaration of one kind pair as a
+   **rename** only when each is the other's *unique* shape-
+   signature match. A locus's signature is its contract facets
+   minus the instance paths (which embed its name); a topic's is
+   subject and payload shape; a fn's is owner, kind and effect
+   classes; a group's is its members; a claim's is its rendered
+   form. More than one candidate on either side is reported as
+   `ambiguous`, with the candidates, and the declarations stay
+   `removed` / `added`.
+3. An accepted locus or group rename is read through wherever the
+   name recurs on the A side — fn owners (`Old::m` pairs with
+   `New::m`), group members, param types, supervised children,
+   claim forms — so a rename does not echo as a contract or law
+   delta in every declaration that mentions it.
+4. A **split** is one removed locus whose local method set is
+   exactly partitioned by two or more added loci; a **join** is the
+   mirror. Anything short of an exact partition is not a split.
+
+Nothing is guessed. The rule about joins that make wrong
+hypotheses feel evidenced applies with full force to a tool whose
+output is a review view: a wrong "renamed" row would hide a
+removal and an addition behind one reassuring line.
 
 ## Adding a judgment family
 

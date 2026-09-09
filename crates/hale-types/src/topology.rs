@@ -175,7 +175,7 @@ use crate::symbol::Bundle;
 // stdlib re-emerges into user code only from inside its own loops,
 // which sets the bit either way — so this bumps the schema without
 // moving a single committed baseline hash.
-pub const TOPOLOGY_SCHEMA: &str = "1.17";
+pub const TOPOLOGY_SCHEMA: &str = "1.18";
 
 /// GH #408 Phase 0: what the rows MEAN, as distinct from their shape.
 ///
@@ -639,6 +639,154 @@ pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
             ",\n  \"declares_publish\": [{}]",
             decl_rows.join(", ")
         ));
+        // GH #527 B4 (schema 1.18): the per-locus CONTRACT section
+        // — what `hale model diff` compares locus by locus: params,
+        // methods, the topics it publishes and subscribes (with the
+        // subscription's queue bound), the supervision it declares,
+        // and its statically exact instances with their owner and
+        // thread domain. Every fact here already lives in the model;
+        // the diff needs them grouped by locus, and a diff over
+        // artifacts (replayable, both inputs storable as evidence)
+        // cannot regroup what the artifact does not carry. Unhashed:
+        // a regrouping of shape facts is not new shape.
+        {
+            let e = &vmodel.entities;
+            let r = &vmodel.relations;
+            let owner_of = |fid: hale_model::FunctionId| -> Option<hale_model::LocusDeclId> {
+                e.functions.get(fid.index()).and_then(|f| f.owner)
+            };
+            let topic_disp = |t: &Option<hale_model::TopicId>, subj: hale_model::SubjectId| -> String {
+                match t {
+                    Some(tid) => e.topics.get(tid.index()).map(|tp| tp.display.clone()).unwrap_or_default(),
+                    None => format!("\"{}\"", subj_pat(subj)),
+                }
+            };
+            let mut rows: Vec<String> = Vec::new();
+            for (li, l) in e.loci.iter().enumerate() {
+                let lid = hale_model::LocusDeclId(li as u32);
+                let params: Vec<String> = l
+                    .params
+                    .iter()
+                    .map(|p| format!("{{\"name\": {}, \"type\": {}}}", quote(&p.name), quote(&p.type_name)))
+                    .collect();
+                let mut methods: Vec<String> = r
+                    .member_of
+                    .iter()
+                    .filter(|m| m.locus == lid)
+                    .filter_map(|m| e.functions.get(m.function.index()))
+                    .map(|f| quote(&f.display))
+                    .collect();
+                methods.sort();
+                methods.dedup();
+                let mut publishes: BTreeSet<String> = BTreeSet::new();
+                for pr in &r.publishes {
+                    if owner_of(pr.function) == Some(lid) {
+                        publishes.insert(quote(&topic_disp(&pr.declared_topic, pr.subject)));
+                    }
+                }
+                for dr in &r.declares_publish {
+                    if dr.locus == lid {
+                        publishes.insert(quote(&topic_disp(&dr.declared_topic, dr.subject)));
+                    }
+                }
+                let mut subscribes: BTreeSet<String> = BTreeSet::new();
+                for sr in &r.subscribes {
+                    if owner_of(sr.handler) != Some(lid) {
+                        continue;
+                    }
+                    let cap = match sr.capacity {
+                        hale_model::Capacity::Unbounded => "null".to_string(),
+                        hale_model::Capacity::Bounded(n) => n.to_string(),
+                    };
+                    let shed = match sr.shed {
+                        hale_model::ShedPolicy::None => "none",
+                        hale_model::ShedPolicy::DropOld => "drop_old",
+                        hale_model::ShedPolicy::DropNew => "drop_new",
+                    };
+                    subscribes.insert(format!(
+                        "{{\"topic\": {}, \"handler\": {}, \"capacity\": {}, \"shed\": {}}}",
+                        quote(&topic_disp(&sr.declared_topic, sr.subject)),
+                        quote(&fn_disp(sr.handler)),
+                        cap,
+                        quote(shed)
+                    ));
+                }
+                let mut supervises: Vec<(u32, String)> = r
+                    .supervises
+                    .iter()
+                    .filter(|sv| sv.parent == lid)
+                    .map(|sv| {
+                        let child = match &sv.child {
+                            hale_model::SupervisedRef::Locus(c) => {
+                                e.loci.get(c.index()).map(|x| x.display.clone()).unwrap_or_default()
+                            }
+                            hale_model::SupervisedRef::External(n) => n.clone(),
+                        };
+                        let retry = match sv.policy.retry_bound {
+                            Some(n) => n.to_string(),
+                            None => "null".to_string(),
+                        };
+                        let ops: Vec<String> = sv.policy.ops.iter().map(|o| quote(o)).collect();
+                        (
+                            sv.authored_ordinal,
+                            format!(
+                                "{{\"child\": {}, \"error\": {}, \"ops\": [{}], \"retry\": {}}}",
+                                quote(&child),
+                                quote(&sv.error_type),
+                                ops.join(", "),
+                                retry
+                            ),
+                        )
+                    })
+                    .collect();
+                supervises.sort();
+                let mut instances: Vec<String> = Vec::new();
+                for (ii, inst) in e.locus_instances.iter().enumerate() {
+                    if inst.decl != lid {
+                        continue;
+                    }
+                    let iid = hale_model::LocusInstanceId(ii as u32);
+                    let owner = r
+                        .owns
+                        .iter()
+                        .find(|o| o.child == iid)
+                        .and_then(|o| e.locus_instances.get(o.parent.index()))
+                        .map(|p| quote(&p.path))
+                        .unwrap_or_else(|| "null".to_string());
+                    let domain = r
+                        .placed_in
+                        .iter()
+                        .find(|pl| pl.instance == iid)
+                        .and_then(|pl| e.thread_domains.get(pl.domain.index()))
+                        .map(|d| quote(&d.name))
+                        .unwrap_or_else(|| "null".to_string());
+                    instances.push(format!(
+                        "{{\"path\": {}, \"owner\": {}, \"domain\": {}}}",
+                        quote(&inst.path),
+                        owner,
+                        domain
+                    ));
+                }
+                instances.sort();
+                rows.push(format!(
+                    "{{\"locus\": {}, \"sealed\": {}, \"params\": [{}], \"methods\": [{}], \"publishes\": [{}], \"subscribes\": [{}], \"supervises\": [{}], \"instances\": [{}]{}}}",
+                    quote(&l.display),
+                    l.sealed,
+                    params.join(", "),
+                    methods.join(", "),
+                    publishes.iter().cloned().collect::<Vec<_>>().join(", "),
+                    subscribes.iter().cloned().collect::<Vec<_>>().join(", "),
+                    supervises.into_iter().map(|(_, s)| s).collect::<Vec<_>>().join(", "),
+                    instances.join(", "),
+                    ep_loc(l.provenance)
+                ));
+            }
+            rows.sort();
+            out.push_str(&format!(
+                ",\n  \"contracts\": [{}]",
+                rows.join(", ")
+            ));
+        }
     }
     out.push_str(",\n  \"claims\": [\n");
     for o in &outcomes {
@@ -1502,6 +1650,7 @@ const CANONICAL_TOP_LEVEL: &[&str] = &[
     "topics",
     "endpoints",
     "declares_publish",
+    "contracts",
     "claims",
     "lowered",
     "law",

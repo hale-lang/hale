@@ -179,14 +179,21 @@ fn main() -> ExitCode {
     // loading, imports, and the ill-typed refusal are identical.
     if cmd == "model" {
         let rest: Vec<String> = args.iter().skip(2).cloned().collect();
+        // GH #527 B4: `hale model diff <a> <b> [--json|--text]` —
+        // the semantic difference between two topology artifacts.
+        if rest.first().map(String::as_str) == Some("diff") {
+            return run_model_diff(&rest[1..]);
+        }
         if rest.first().map(String::as_str) != Some("dump") {
-            eprintln!(
-                "usage: hale model dump <file.hl | dir>\n\
-                 \n\
-                 Derives the canonical ApplicationModel (GH #476) and \
-                 prints an internal,\nnon-stable dump. Experimental \
-                 surface pre-1.0."
-            );
+            eprintln!("usage: hale model dump <file.hl | dir>");
+            eprintln!("       hale model diff <a.topology> <b.topology> [--json|--text]");
+            eprintln!();
+            eprintln!("`dump` derives the canonical ApplicationModel (GH #476) and prints an internal,");
+            eprintln!("non-stable dump (experimental, pre-1.0).");
+            eprintln!("`diff` compares two --dump-topology artifacts: declarations (added / removed /");
+            eprintln!("renamed / moved / split / joined / ambiguous), per-locus contract deltas, effect");
+            eprintln!("and certificate deltas, law and adequacy deltas, and a source-only vs model-shape");
+            eprintln!("classification. JSON (versioned, digest-bearing) by default; --text for a review view.");
             return ExitCode::from(2);
         }
         // The check pipeline's dump section reads PROCESS argv (it
@@ -278,6 +285,7 @@ fn usage() {
     eprintln!("    hale verify <file.hl | dir>   check + FAIL on any advisory (discipline gate)");
     eprintln!("    hale topology graph <artifact> render a --dump-topology artifact (svg|mermaid|dot; experimental)");
     eprintln!("    hale model dump <file.hl | dir> derive + print the canonical ApplicationModel (internal; experimental)");
+    eprintln!("    hale model diff <a> <b>       semantic diff of two --dump-topology artifacts (--json|--text)");
     eprintln!("    hale run   <file.hl | dir>    compile + run as a native binary");
     eprintln!("    hale build <file.hl | dir>    parse + typecheck + emit native binary");
     eprintln!("    hale replay <rec> <file.hl>   re-run a LOTUS_OBS_RECORD recording");
@@ -6609,4 +6617,53 @@ fn diff_lines(expected: &str, current: &str) -> Vec<String> {
         out.push(format!("  + {}", added));
     }
     out
+}
+
+/// GH #527 B4: `hale model diff <a> <b> [--json|--text]`.
+fn run_model_diff(rest: &[String]) -> ExitCode {
+    let mut paths: Vec<&String> = Vec::new();
+    let mut text = false;
+    for a in rest {
+        match a.as_str() {
+            "--json" => text = false,
+            "--text" => text = true,
+            "--help" | "-h" => {
+                eprintln!("usage: hale model diff <a.topology> <b.topology> [--json|--text]");
+                return ExitCode::SUCCESS;
+            }
+            f if f.starts_with("--") => {
+                eprintln!("hale model diff: unknown flag `{f}`");
+                return ExitCode::from(2);
+            }
+            _ => paths.push(a),
+        }
+    }
+    if paths.len() != 2 {
+        eprintln!("usage: hale model diff <a.topology> <b.topology> [--json|--text]");
+        return ExitCode::from(2);
+    }
+    let mut admitted = Vec::new();
+    for p in &paths {
+        let raw = match std::fs::read_to_string(p) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("hale model diff: cannot read {p}: {e}");
+                return ExitCode::from(2);
+            }
+        };
+        match hale_types::topology_diff::admit(p, &raw) {
+            Ok(a) => admitted.push(a),
+            Err(e) => {
+                eprintln!("hale model diff: {e}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let d = hale_types::topology_diff::diff(&admitted[0], &admitted[1]);
+    if text {
+        print!("{}", hale_types::topology_diff::render_text(&d));
+    } else {
+        println!("{}", serde_json::to_string_pretty(&d).unwrap_or_default());
+    }
+    ExitCode::SUCCESS
 }

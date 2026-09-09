@@ -37,6 +37,7 @@ pub mod model_builder;
 pub mod model_query;
 pub mod topic_identity;
 pub mod topology;
+pub mod topology_diff;
 pub mod topology_projection;
 pub mod model_graph;
 pub mod verdict;
