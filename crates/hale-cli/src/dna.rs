@@ -8,6 +8,7 @@
 //! owns, and every generated fact carries its provenance.
 //!
 //!   hale dna init [app-dir]     attach the DNA to an existing app
+//!   hale dna new <name>         a greenfield app with its DNA
 //!   hale dna upgrade [dir]      re-materialize vendor/dna for this toolchain
 //!
 //! Layout after `init` (root = the workspace holding hale.toml):
@@ -44,6 +45,10 @@ pub fn run(args: &[String]) -> ExitCode {
             let dir = args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
             report(init(&dir))
         }
+        Some("new") => match args.get(1) {
+            Some(name) => report(new_project(Path::new(name))),
+            None => usage(2),
+        },
         Some("upgrade") => {
             let dir = args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
             report(upgrade(&dir))
@@ -58,6 +63,7 @@ pub fn run(args: &[String]) -> ExitCode {
 
 fn usage(code: u8) -> ExitCode {
     eprintln!("usage: hale dna init [app-dir]      attach the DNA to an existing application");
+    eprintln!("       hale dna new <name>          a greenfield application with its DNA");
     eprintln!("       hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain");
     if code == 0 {
         ExitCode::SUCCESS
@@ -344,6 +350,102 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
         "vendor/dna: {} file(s) rewritten, {} unchanged; hale.lock pins toolchain {}. dna/ untouched.",
         w, same, TOOLCHAIN
     )])
+}
+
+// ---------------------------------------------------------------
+// new
+// ---------------------------------------------------------------
+
+fn new_project(dir: &Path) -> Result<Vec<String>, String> {
+    if dir.exists() && fs::read_dir(dir).map(|mut d| d.next().is_some()).unwrap_or(false) {
+        return Err(format!("{} exists and is not empty; `hale dna init` attaches to an existing application", dir.display()));
+    }
+    fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let name = dir
+        .canonicalize()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+        .unwrap_or_else(|| "app".to_string());
+    let locus = pascal(&name);
+    let main_hl = format!(
+        r#"/// {name} — a governed application. The entrypoint is a `main locus`
+/// so the DNA can attach: its `genome` param is the assembly
+/// (dna/assembly.hl), `Project` is its law (dna/constitution.hl),
+/// and the membrane sockets are where a human's verdict or intent
+/// enters. Every `.hl` in this directory shares one scope.
+type Ping {{ n: Int = 0; }}
+topic Pings {{ payload: Ping; subject: "{sub}.ping"; }}
+
+locus Echo {{
+    params {{ seen: Int = 0; }}
+    bus {{ subscribe Pings as on_ping; }}
+    fn on_ping(p: Ping) {{ self.seen = self.seen + 1; }}
+}}
+
+main locus {locus} {{
+    params {{ echo: Echo = Echo {{ }}; }}
+    bus {{ publish Pings; }}
+    run() {{
+        Pings <- Ping {{ n: 1 }};
+        std::time::sleep(100ms);
+        println("{name}: ", self.echo.seen, " ping(s) echoed");
+    }}
+}}
+
+fn main() {{
+    {locus} {{ }};
+}}
+"#,
+        name = name,
+        locus = locus,
+        sub = name.replace('-', "_"),
+    );
+    let test_hl = format!(
+        r#"// `hale test` discovers *_test.hl recursively; this seed imports the
+// application and asserts against it, typechecked next to the code.
+
+import ".." as app;
+
+fn main() {{
+    let e = app::Echo {{ }};
+    std::test::assert_eq_int(e.seen, 0, "a fresh Echo has seen nothing");
+}}
+"#
+    );
+    let gitignore = format!("# the build artifact\n/{name}\n# toolchain-managed\n/vendor/\n/.hale/dna/*.sock\n");
+    let mut out = Vec::new();
+    for (f, c) in [("hale.toml", "[deps]\n".to_string()), ("main.hl", main_hl), ("tests/main_test.hl", test_hl), (".gitignore", gitignore)] {
+        let p = dir.join(f);
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        fs::write(&p, c).map_err(|e| format!("write {}: {e}", p.display()))?;
+        out.push(format!("created {}", p.display()));
+    }
+    let mut rest = init(dir)?;
+    out.append(&mut rest);
+    Ok(out)
+}
+
+fn pascal(s: &str) -> String {
+    let mut out = String::new();
+    let mut up = true;
+    for ch in s.chars() {
+        if ch.is_alphanumeric() {
+            if up {
+                out.extend(ch.to_uppercase());
+                up = false;
+            } else {
+                out.push(ch);
+            }
+        } else {
+            up = true;
+        }
+    }
+    if out.is_empty() || out.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        out = format!("App{out}");
+    }
+    out
 }
 
 // ---------------------------------------------------------------

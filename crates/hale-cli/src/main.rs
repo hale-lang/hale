@@ -298,7 +298,7 @@ fn usage() {
     eprintln!("    hale iris  [port] [artifact]  the embedded observer: attach to LOTUS_OBS=1 processes, serve :8787");
     eprintln!("    hale iris inspect <artifact>  artifact-side inspector (drift / declared-but-silent / law)");
     eprintln!("    hale run --observe <target>   run with LOTUS_OBS=1 and an iris session beside it");
-    eprintln!("    hale dna init|upgrade         attach the DNA to an application (vendor/dna, dna/, seeded Journal)");
+    eprintln!("    hale dna init|new|upgrade     attach the DNA to an application (vendor/dna, dna/, seeded Journal)");
     eprintln!("        [--diff: report first divergence, fail on any]");
     eprintln!("        [--at <n> | --at <consumer-id>:<ordinal>: SIGSTOP at that consume]");
     eprintln!("        [--allow-live-effects] [--allow-unverified-model] [--allow-truncated]");
