@@ -43,6 +43,16 @@ pub const FILES: &[EmbeddedFile] = core![
 /// The seed path, relative to the materialization root.
 pub const CORE_SEED: &str = "dna/core";
 
+/// The membrane client (`dna/membrane`): publishes one typed fact on
+/// the organism's control topics and exits. `hale dna ask` builds
+/// and execs it from the toolchain cache beside the core it imports.
+pub const MEMBRANE_CLIENT: EmbeddedFile = EmbeddedFile {
+    path: "dna/membrane/main.hl",
+    content: include_str!("../../../dna/membrane/main.hl"),
+};
+pub const MEMBRANE_SEED: &str = "dna/membrane";
+pub const MEMBRANE_BIN: &str = "dna/membrane/membrane";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -66,5 +76,6 @@ mod tests {
         for f in FILES {
             assert!(!f.content.is_empty(), "{} is empty", f.path);
         }
+        assert!(MEMBRANE_CLIENT.content.contains("main locus Client"));
     }
 }

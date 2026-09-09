@@ -11,6 +11,10 @@
 //!   hale dna new <name>         a greenfield app with its DNA
 //!   hale dna upgrade [dir]      re-materialize vendor/dna for this toolchain
 //!   hale dna run [project]      build, run under LOTUS_OBS with iris attached, hold the membrane
+//!   hale dna status [--json]    the status projection, from the Journal
+//!   hale dna ask <intent…>      offer intent over the membrane
+//!   hale dna history [<entity>] walk the Journal by causal links
+//!   hale dna review <id> <verdict> a verdict over the membrane (the Review decides)
 //!
 //! Layout after `init` (root = the workspace holding hale.toml):
 //!
@@ -55,6 +59,10 @@ pub fn run(args: &[String]) -> ExitCode {
             report(upgrade(&dir))
         }
         Some("run") => run_organism(&args[1..]),
+        Some("status") => report(status(&args[1..])),
+        Some("ask") => report(ask(&args[1..])),
+        Some("history") => report(history(&args[1..])),
+        Some("review") => report(review(&args[1..])),
         Some("--help") | Some("-h") | None => usage(if args.is_empty() { 2 } else { 0 }),
         Some(other) => {
             eprintln!("hale dna: unknown subcommand `{other}`");
@@ -69,6 +77,13 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain");
     eprintln!("       hale dna run [project] [--port N] [--no-iris]");
     eprintln!("                                    build, run under LOTUS_OBS with iris attached, hold the membrane");
+    eprintln!("       hale dna status [project] [--json]");
+    eprintln!("                                    the organism's status projection, from the Journal");
+    eprintln!("       hale dna ask [--to <locus>] <intent…>");
+    eprintln!("                                    offer intent over the membrane; prints the Task born or the refusal");
+    eprintln!("       hale dna history [<entity>]  walk the Journal by causal links (works offline)");
+    eprintln!("       hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>] [--comment <c>]");
+    eprintln!("                                    send a verdict over the membrane; the Review decides");
     if code == 0 {
         ExitCode::SUCCESS
     } else {
@@ -511,6 +526,387 @@ fn run_organism(args: &[String]) -> ExitCode {
     }
     eprintln!("hale dna run: organism exited ({code}); the Journal at {} is the record", root.join(JOURNAL_REL).display());
     ExitCode::from(code.clamp(0, 255) as u8)
+}
+
+// ---------------------------------------------------------------
+// the Journal as read by the host: status / ask / history
+// ---------------------------------------------------------------
+
+#[derive(Clone)]
+struct Row {
+    seq: u64,
+    kind: String,
+    entity: String,
+    body: String,
+    prev: String,
+    digest: String,
+}
+
+fn read_journal(root: &Path) -> Result<Vec<Row>, String> {
+    let p = root.join(JOURNAL_REL);
+    let text = fs::read_to_string(&p).map_err(|e| format!("no Journal at {}: {e} (run `hale dna init`)", p.display()))?;
+    let mut rows = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let v: Value = serde_json::from_str(line).map_err(|e| format!("{}:{}: not JSON: {e}", p.display(), i + 1))?;
+        let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
+        rows.push(Row { seq: v["seq"].as_u64().unwrap_or(i as u64), kind: s("kind"), entity: s("entity"), body: s("body"), prev: s("prev"), digest: s("digest") });
+    }
+    Ok(rows)
+}
+
+/// The chain, verified exactly as `FileJournal.verify_chain` does.
+fn chain_ok(rows: &[Row]) -> bool {
+    let mut prev = "genesis".to_string();
+    for r in rows {
+        if r.prev != prev {
+            return false;
+        }
+        let d = hex(&openssl::sha::sha256(format!("{}|{}|{}|{}", prev, r.kind, r.entity, r.body).as_bytes()));
+        if d != r.digest {
+            return false;
+        }
+        prev = r.digest.clone();
+    }
+    true
+}
+
+fn membrane_up(root: &Path) -> bool {
+    let d = root.join(".hale/dna");
+    d.join(crate::iris::MEMBRANE_VERDICT_SOCK).exists() && d.join(crate::iris::MEMBRANE_INTENT_SOCK).exists()
+}
+
+/// The status projection: everything the Journal can vouch for, plus
+/// the expression identity from the artifacts on disk and whether an
+/// organism is currently bound to its membrane.
+fn status_projection(root: &Path) -> Result<Value, String> {
+    let rows = read_journal(root)?;
+    let body = |r: &Row| -> Value { serde_json::from_str(&r.body).unwrap_or(Value::String(r.body.clone())) };
+    let attached = rows.iter().find(|r| r.kind == "application.attached").map(body).unwrap_or(Value::Null);
+    // tasks: born minus settled
+    let mut tasks: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
+    for r in &rows {
+        if r.kind == "task.born" {
+            tasks.insert(r.entity.clone(), serde_json::json!({"id": r.entity, "outcome": r.body, "state": "active", "since": r.seq}));
+        } else if let Some(disp) = r.kind.strip_prefix("task.") {
+            if let Some(t) = tasks.get_mut(&r.entity) {
+                t["state"] = Value::String(disp.to_string());
+                t["detail"] = Value::String(r.body.clone());
+            }
+        }
+    }
+    let intents_offered = rows.iter().filter(|r| r.kind == "intent.offered").count();
+    let intents_refused: Vec<Value> = rows.iter().filter(|r| r.kind == "intent.refused").map(|r| serde_json::json!({"id": r.entity, "reason": r.body})).collect();
+    // reviews: requested minus settled, with why
+    let mut reviews: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
+    for r in &rows {
+        let id = r.entity.strip_prefix("review:").unwrap_or(&r.entity).to_string();
+        match r.kind.as_str() {
+            "review.requested" => {
+                let b = body(r);
+                reviews.insert(id.clone(), serde_json::json!({"id": id, "state": "pending", "question": b["question"], "required_authority": b["required_authority"], "subject_digest": b["subject_digest"], "refusals": []}));
+            }
+            "review.settled" => {
+                if let Some(v) = reviews.get_mut(&id) {
+                    v["state"] = Value::String("settled".into());
+                    v["settled"] = Value::String(r.body.clone());
+                }
+            }
+            "review.refused" => {
+                if let Some(v) = reviews.get_mut(&id) {
+                    if let Some(a) = v["refusals"].as_array_mut() {
+                        a.push(Value::String(r.body.clone()));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mutations: Vec<Value> = rows
+        .iter()
+        .filter(|r| r.kind.starts_with("mutation."))
+        .map(|r| serde_json::json!({"candidate": r.entity, "disposition": r.kind.trim_start_matches("mutation."), "class": r.body}))
+        .collect();
+    let deferred: Vec<Value> = rows.iter().filter(|r| r.kind == "law.deferred").map(body).collect();
+    // expression identity: what init saw, what would run now, what is built
+    let current = root.join(".hale/dna/current.topology");
+    let current_id = fs::read_to_string(&current)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .map(|v| serde_json::json!({"shape_hash": v["shape_hash"], "artifact_digest": v["artifact_digest"], "verdict": v["verdict"]}))
+        .unwrap_or(Value::Null);
+    let seed = crate::pkg::read_claims_config(&root.join("hale.toml"))
+        .ok()
+        .and_then(|(envs, _)| envs.get("local").and_then(|e| e.entrypoints.first().cloned()))
+        .map(|e| root.join(e))
+        .unwrap_or_else(|| root.to_path_buf());
+    let bin = seed.join(seed.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+    let build_digest = crate::sign::sha256_file(&bin).ok();
+    Ok(serde_json::json!({
+        "organism": if membrane_up(root) { "running (membrane bound)" } else { "not running — reading the Journal" },
+        "journal": {"path": JOURNAL_REL, "revision": rows.len(), "chain": if chain_ok(&rows) { "verified" } else { "BROKEN" }},
+        "expression": {"attached": attached, "current": current_id, "build_digest": build_digest, "toolchain": TOOLCHAIN},
+        "intents": {"offered": intents_offered, "refused": intents_refused},
+        "tasks": tasks.values().cloned().collect::<Vec<_>>(),
+        "reviews": reviews.values().cloned().collect::<Vec<_>>(),
+        "mutations": mutations,
+        "law_deferred": deferred,
+        "pressure": "not journaled in Phase 1",
+    }))
+}
+
+fn status(args: &[String]) -> Result<Vec<String>, String> {
+    let mut dir = PathBuf::from(".");
+    let mut json = false;
+    for a in args {
+        match a.as_str() {
+            "--json" => json = true,
+            f if f.starts_with("--") => return Err(format!("status: unknown flag `{f}`")),
+            p => dir = PathBuf::from(p),
+        }
+    }
+    let (root, _) = project(&dir)?;
+    let st = status_projection(&root)?;
+    if json {
+        return Ok(vec![serde_json::to_string_pretty(&st).unwrap_or_default()]);
+    }
+    let mut out = Vec::new();
+    let s = |v: &Value| v.as_str().unwrap_or("").to_string();
+    out.push(format!("organism:   {}", s(&st["organism"])));
+    out.push(format!("journal:    {} event(s), chain {}", st["journal"]["revision"], s(&st["journal"]["chain"])));
+    let e = &st["expression"];
+    out.push(format!(
+        "expression: attached {} (shape {}) · current shape {} · build {}",
+        s(&e["attached"]["main"]),
+        s(&e["attached"]["shape_hash"]),
+        e["current"]["shape_hash"].as_str().unwrap_or("not cut"),
+        e["build_digest"].as_str().map(|d| d[..12].to_string()).unwrap_or_else(|| "not built".into())
+    ));
+    out.push(format!("intents:    {} offered, {} refused", st["intents"]["offered"], st["intents"]["refused"].as_array().map(|a| a.len()).unwrap_or(0)));
+    let tasks = st["tasks"].as_array().cloned().unwrap_or_default();
+    out.push(format!("tasks:      {}", if tasks.is_empty() { "none".to_string() } else { format!("{}", tasks.len()) }));
+    for t in &tasks {
+        out.push(format!("  {} [{}] {}", s(&t["id"]), s(&t["state"]), s(&t["outcome"])));
+    }
+    let reviews = st["reviews"].as_array().cloned().unwrap_or_default();
+    let pending = reviews.iter().filter(|r| r["state"] == "pending").count();
+    out.push(format!("reviews:    {} pending of {}", pending, reviews.len()));
+    for r in &reviews {
+        let why = if r["state"] == "pending" {
+            format!("needs {} — {}", s(&r["required_authority"]), s(&r["question"]))
+        } else {
+            format!("settled {}", s(&r["settled"]))
+        };
+        let refusals = r["refusals"].as_array().map(|a| a.len()).unwrap_or(0);
+        out.push(format!("  {} [{}] {}{}", s(&r["id"]), s(&r["state"]), why, if refusals > 0 { format!(" ({refusals} verdict(s) refused)") } else { String::new() }));
+    }
+    let muts = st["mutations"].as_array().map(|a| a.len()).unwrap_or(0);
+    out.push(format!("mutations:  {} (every one stops at stage in Phase 1)", muts));
+    let deferred = st["law_deferred"].as_array().map(|a| a.len()).unwrap_or(0);
+    if deferred > 0 {
+        out.push(format!("law:        {} clause(s) deferred at init (see dna_constitution.hl)", deferred));
+    }
+    Ok(out)
+}
+
+/// `hale dna ask [--to <locus>] <intent…>`: publish a typed
+/// IntentOffered on the membrane through the embedded client, then
+/// read the organism's answer back from the Journal — the Task born
+/// or the refusal. The host publishes and reads; it decides nothing.
+fn ask(args: &[String]) -> Result<Vec<String>, String> {
+    let mut to = String::new();
+    let mut words: Vec<String> = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--to" => to = it.next().cloned().ok_or("--to needs a locus")?,
+            f if f.starts_with("--") => return Err(format!("ask: unknown flag `{f}`")),
+            w => words.push(w.to_string()),
+        }
+    }
+    if words.is_empty() {
+        return Err("ask: say what should happen — `hale dna ask \"<intent>\"`".into());
+    }
+    let outcome = words.join(" ");
+    let (root, _) = project(Path::new("."))?;
+    let rows_before = read_journal(&root)?.len();
+    if !membrane_up(&root) {
+        return Err(format!(
+            "the organism is not running (no membrane under {}); start it with `hale dna run`. The Journal has {} event(s).",
+            root.join(".hale/dna").display(),
+            rows_before
+        ));
+    }
+    let intent_id = format!("i{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0));
+    let who = std::env::var("USER").unwrap_or_else(|_| "human".into());
+    let body = serde_json::json!({"intent_id": intent_id, "outcome": outcome, "from": who, "to": to}).to_string();
+    publish_on_membrane(&root, "intent", &body)?;
+    // the organism's answer, from the Journal
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let rows = read_journal(&root)?;
+        if let Some(r) = rows.iter().skip(rows_before).find(|r| r.kind == "intent.refused" && r.entity == intent_id) {
+            return Ok(vec![format!("refused: {}", r.body)]);
+        }
+        if let Some(pos) = rows.iter().skip(rows_before).position(|r| r.kind == "intent.offered" && r.entity == intent_id) {
+            if let Some(t) = rows.iter().skip(rows_before + pos).find(|r| r.kind == "task.born") {
+                let state = rows.iter().skip(rows_before).filter(|x| x.entity == t.entity && x.kind.starts_with("task.") && x.kind != "task.born").last().map(|x| x.kind.trim_start_matches("task.").to_string()).unwrap_or_else(|| "active".into());
+                return Ok(vec![format!("task {} born for intent {} [{}]", t.entity, intent_id, state)]);
+            }
+        }
+        if std::time::Instant::now() > deadline {
+            return Err(format!("published intent {intent_id}, but the organism journaled no answer within 10s (Journal revision {})", rows.len()));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+}
+
+/// Build (once, in the toolchain cache beside the core it imports)
+/// and exec the membrane client with routes to this project's
+/// sockets.
+fn publish_on_membrane(root: &Path, kind: &str, body: &str) -> Result<(), String> {
+    let cache = hale_iris::materialize().map_err(|e| format!("cannot materialize the toolchain cache: {e}"))?;
+    let bin = cache.join(hale_dna::MEMBRANE_BIN);
+    let me = std::env::current_exe().map_err(|e| e.to_string())?;
+    if !bin.is_file() {
+        eprintln!("hale dna: building the membrane client ({})", cache.join(hale_dna::MEMBRANE_SEED).display());
+        let st = Command::new(&me).arg("build").arg(cache.join(hale_dna::MEMBRANE_SEED)).stdout(std::process::Stdio::null()).status().map_err(|e| e.to_string())?;
+        if !st.success() || !bin.is_file() {
+            return Err("building the membrane client failed".into());
+        }
+    }
+    let dna_dir = root.join(".hale/dna");
+    let conf = std::env::temp_dir().join(format!("hale-dna-membrane-{}.conf", std::process::id()));
+    fs::write(
+        &conf,
+        format!(
+            "dna.review.verdict = unix://{}/{} : connect\ndna.intent.offered = unix://{}/{} : connect\n",
+            dna_dir.display(),
+            crate::iris::MEMBRANE_VERDICT_SOCK,
+            dna_dir.display(),
+            crate::iris::MEMBRANE_INTENT_SOCK
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+    let out = Command::new(&bin).arg(kind).arg(body).env("LOTUS_BUS_CONFIG", &conf).output().map_err(|e| format!("membrane client: {e}"))?;
+    let _ = fs::remove_file(&conf);
+    if !out.status.success() {
+        return Err(format!("membrane client failed: {}", String::from_utf8_lossy(&out.stderr)));
+    }
+    Ok(())
+}
+
+/// `hale dna review <id> <verdict> [--as R] [--authority A] [--comment C]`:
+/// a verdict on a pending Review, over the membrane. The candidate
+/// digest is the one the Journal recorded for the request — the
+/// organism still pins it against the Review's own — and the answer
+/// (settled, or refused with the reason) is read back from the
+/// Journal. Track D extends this to staged mutations.
+fn review(args: &[String]) -> Result<Vec<String>, String> {
+    let mut pos: Vec<String> = Vec::new();
+    let mut reviewer = std::env::var("USER").unwrap_or_else(|_| "human".into());
+    let mut authority = "maintainer".to_string();
+    let mut comment = String::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--as" => reviewer = it.next().cloned().ok_or("--as needs a reviewer")?,
+            "--authority" => authority = it.next().cloned().ok_or("--authority needs a value")?,
+            "--comment" => comment = it.next().cloned().ok_or("--comment needs text")?,
+            f if f.starts_with("--") => return Err(format!("review: unknown flag `{f}`")),
+            w => pos.push(w.to_string()),
+        }
+    }
+    let (Some(id), Some(verdict)) = (pos.first().cloned(), pos.get(1).cloned()) else {
+        return Err("review: `hale dna review <review_id> approve|revise|reject|abstain`".into());
+    };
+    if !["approve", "revise", "reject", "abstain"].contains(&verdict.as_str()) {
+        return Err(format!("review: verdict `{verdict}` is not one of approve | revise | reject | abstain"));
+    }
+    let (root, _) = project(Path::new("."))?;
+    let rows = read_journal(&root)?;
+    let requested = rows
+        .iter()
+        .find(|r| r.kind == "review.requested" && (r.entity == format!("review:{id}") || r.entity == id))
+        .ok_or_else(|| format!("no `review.requested` for `{id}` in the Journal (pending: {})", rows.iter().filter(|r| r.kind == "review.requested").map(|r| r.entity.trim_start_matches("review:").to_string()).collect::<Vec<_>>().join(", ")))?;
+    let digest = serde_json::from_str::<Value>(&requested.body).ok().and_then(|b| b["subject_digest"].as_str().map(|s| s.to_string())).unwrap_or_default();
+    if !membrane_up(&root) {
+        return Err("the organism is not running (no membrane); start it with `hale dna run`".into());
+    }
+    let before = rows.len();
+    let body = serde_json::json!({"review_id": id, "subject_digest": digest, "verdict": verdict, "reviewer": reviewer, "authority": authority, "comment": comment}).to_string();
+    publish_on_membrane(&root, "verdict", &body)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let rows = read_journal(&root)?;
+        if let Some(r) = rows.iter().skip(before).find(|r| (r.kind == "review.settled" || r.kind == "review.refused") && r.entity == id) {
+            return Ok(vec![if r.kind == "review.settled" { format!("review {id} settled: {}", r.body) } else { format!("review {id} refused the verdict: {}", r.body) }]);
+        }
+        if std::time::Instant::now() > deadline {
+            return Err(format!("published the verdict, but the organism journaled no answer for `{id}` within 10s"));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+}
+
+/// `hale dna history [<entity>]`: the Journal in order, or the rows
+/// that concern one entity and everything they link to (an intent's
+/// Task, a Task's settlement, a Review's verdicts), by id.
+fn history(args: &[String]) -> Result<Vec<String>, String> {
+    let mut dir = PathBuf::from(".");
+    let mut entity: Option<String> = None;
+    for a in args {
+        if a.starts_with("--") {
+            return Err(format!("history: unknown flag `{a}`"));
+        } else if Path::new(a).join("hale.toml").exists() {
+            dir = PathBuf::from(a);
+        } else {
+            entity = Some(a.clone());
+        }
+    }
+    let (root, _) = project(&dir)?;
+    let rows = read_journal(&root)?;
+    let chain = if chain_ok(&rows) { "verified" } else { "BROKEN" };
+    let selected: Vec<&Row> = match &entity {
+        None => rows.iter().collect(),
+        Some(e) => {
+            // seed: rows about the entity; expand once through ids that
+            // co-occur (a task born for an intent, a settlement for a task).
+            let mut ids: BTreeSet<String> = BTreeSet::new();
+            ids.insert(e.clone());
+            let mentions = |r: &Row, id: &str| r.entity == id || r.entity.ends_with(&format!(":{id}")) || r.body.contains(id);
+            let looks_like_id = |t: &str| -> bool {
+                let mut ch = t.chars();
+                matches!(ch.next(), Some('i') | Some('t') | Some('w') | Some('a') | Some('r')) && ch.clone().next().is_some() && ch.all(|c| c.is_ascii_alphanumeric())
+            };
+            for _ in 0..3 {
+                let snapshot: Vec<String> = ids.iter().cloned().collect();
+                for r in &rows {
+                    if snapshot.iter().any(|id| mentions(r, id)) {
+                        ids.insert(r.entity.trim_start_matches("review:").trim_start_matches("locus:").to_string());
+                        // ids named in the body ("i1: write the changelog")
+                        for tok in r.body.split(|c: char| c == ':' || c.is_whitespace() || c == ',' || c == '"') {
+                            if looks_like_id(tok) && tok.len() <= 20 {
+                                ids.insert(tok.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            rows.iter().filter(|r| ids.iter().any(|id| mentions(r, id))).collect()
+        }
+    };
+    let mut out = vec![format!("journal {} — {} event(s), chain {}", root.join(JOURNAL_REL).display(), rows.len(), chain)];
+    if let Some(e) = &entity {
+        out.push(format!("history of {e}: {} event(s)", selected.len()));
+    }
+    for r in selected {
+        let b = if r.body.len() > 96 { format!("{}…", &r.body[..96]) } else { r.body.clone() };
+        out.push(format!("{:>5}  {:<22} {:<28} {}", r.seq, r.kind, r.entity, b));
+    }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------

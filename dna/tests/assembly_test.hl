@@ -53,7 +53,8 @@ main locus App {
         std::test::assert_eq_str(refused, "refused: empty intent", "the membrane gates intent");
         let t = self.dna.ask(dna::Intent { id: "i1", outcome: "answer the audit", from: "human" }, dna::Knobs { routed: true });
         std::test::assert_eq_str(t, "t1", "task minted");
-        std::test::assert_eq_int(self.dna.journal.revision(), 3, "intent.offered, task.born, task.done on the substituted journal");
+        // the refusal is journaled too (GH #528: `hale dna ask` reads the answer back from the Journal)
+        std::test::assert_eq_int(self.dna.journal.revision(), 4, "intent.refused, intent.offered, task.born, task.done on the substituted journal");
         let settled = self.dna.metabolism.find(t);
         std::test::assert_eq_str(settled.disposition, "done", "human-first routing served it: " + settled.detail);
         std::test::assert(std::str::contains(settled.detail, "a0:human:done"), "the human took attempt 0: " + settled.detail);

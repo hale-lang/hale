@@ -102,6 +102,33 @@ offered through the membrane lands in the organism's Journal, and
 when the organism exits the host reaps iris and exits with the
 organism's code. The Journal is the record either way.
 
+## Talking to it
+
+```sh
+hale dna status [--json]        # the status projection, from the Journal
+hale dna ask "write the changelog"
+hale dna review purpose approve --as riley --comment "ratified"
+hale dna history [t1]           # the Journal, or one entity's causal history
+```
+
+`status` reads the Journal: tasks born and settled, pending Reviews
+and why (the authority they need, the question), staged mutations,
+the expression identity (the artifact `init` attached, the artifact
+that would run now, the build digest), the chain's integrity, and
+whether an organism is currently bound to its membrane. It works
+offline and says so.
+
+`ask` publishes a typed `IntentOffered` through the embedded
+membrane client and reads the organism's answer back from the
+Journal: the Task it birthed, or the refusal. `review` does the same
+with a `Verdict` on a pending Review, using the candidate digest the
+Journal recorded for the request; the Review still checks it, the
+reviewer's authority and independence, and the Journal records
+`review.settled` or `review.refused` with the reason. `history`
+walks the Journal from an intent, Task or Review id through the
+rows that link to it. None of these decide anything: the host
+publishes and reads.
+
 ## The membrane
 
 The organism binds two typed topics on unix sockets under

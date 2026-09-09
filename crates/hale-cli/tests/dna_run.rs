@@ -30,9 +30,9 @@ fn run_hosts_the_organism_with_iris_and_the_membrane_and_holds_no_state() {
     let d = std::env::temp_dir().join(format!("hale_dna_run_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let (ok, out) = hale(&["dna", "new", "org"], &d);
+    let (ok, out) = hale(&["dna", "new", "orgrun"], &d);
     assert!(ok, "{out}");
-    let app: PathBuf = d.join("org");
+    let app: PathBuf = d.join("orgrun");
     let cache = d.join("cache");
     let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
@@ -59,7 +59,7 @@ fn run_hosts_the_organism_with_iris_and_the_membrane_and_holds_no_state() {
     }
     let finish = |host: &mut std::process::Child| {
         // the host's children are the organism and iris; end the organism first
-        let _ = Command::new("pkill").args(["-x", "org"]).status();
+        let _ = Command::new("pkill").args(["-x", "orgrun"]).status();
         let _ = host.wait();
         let _ = Command::new("pkill").args(["-x", "fuse-hl"]).status();
     };

@@ -115,6 +115,17 @@ locus Dna {
     // transport.
     bus {
         subscribe IntentOffered as on_intent;
+        subscribe ReviewSettled as on_review_settled;
+    }
+    // The Review decided; the Journal records it (the file
+    // `hale dna status` and `history` read).
+    @unbounded
+    fn on_review_settled(r: ReviewSettlement) {
+        if r.refusal != "" {
+            let x = self.journal.append(self.journal.revision(), "review.refused", r.review_id, r.refusal);
+            return;
+        }
+        let x = self.journal.append(self.journal.revision(), "review.settled", r.review_id, r.outcome + " by " + r.decided_by);
     }
     // Bounded by the humans offering intent; each birth is a Task the
     // Metabolism owns and settles.
@@ -129,13 +140,17 @@ locus Dna {
     // authority), the live locus is the expression.
     fn ask(i: Intent, k: Knobs) -> String {
         let gate = self.membrane.offer(i);
-        if gate != "accepted" { return gate; }
+        if gate != "accepted" {
+            let x = self.journal.append(self.journal.revision(), "intent.refused", i.id, gate);
+            return gate;
+        }
         self.asked = self.asked + 1;
         let born = self.journal.append(self.journal.revision(), "intent.offered", i.id, i.outcome);
         if !born.ok { return "refused: journal " + born.error; }
         let id = self.metabolism.offer(i, k);
         let s = self.metabolism.find(id);
-        let r = self.journal.append(self.journal.revision(), "task.born", id, i.outcome);
+        // the birth names its intent, so a reader can walk intent -> task
+        let r = self.journal.append(self.journal.revision(), "task.born", id, i.id + ": " + i.outcome);
         let r2 = self.journal.append(self.journal.revision(), "task." + s.disposition, id, s.detail);
         if !r.ok || !r2.ok { self.membrane.notify("journal", "append failed"); }
         return id;

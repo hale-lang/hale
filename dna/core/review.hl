@@ -58,11 +58,18 @@ locus Review {
     // its own id — a handful of rows per candidate, never a stream.
     bus {
         subscribe ReviewVerdict as on_verdict;
+        publish ReviewSettled;
     }
     @unbounded
     fn on_verdict(v: Verdict) {
         if v.review_id != self.review_id { return; }
-        self.consider(v);
+        let admitted = self.consider(v);
+        if admitted && self.settled {
+            ReviewSettled <- ReviewSettlement { review_id: self.review_id, outcome: self.outcome, decided_by: self.decided_by };
+        }
+        if !admitted {
+            ReviewSettled <- ReviewSettlement { review_id: self.review_id, refusal: self.last_refusal };
+        }
     }
     // A verdict is admitted only if it names THIS candidate, carries the
     // required authority, and is independent of the author. Reached
