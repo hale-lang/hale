@@ -84,6 +84,7 @@ main locus App {
     }
     run() { Evt <- T { n: 1 }; }
 }
+fn main() { App { }; }
 "#;
 
 #[test]
@@ -196,6 +197,7 @@ main locus App {
     bus { publish Evt; publish Cmd; }
     run() { Evt <- T { n: 1 }; Cmd <- T { n: 2 }; }
 }
+fn main() { App { }; }
 "#;
     let after = r#"
 type T { n: Int = 0; }
@@ -214,6 +216,7 @@ main locus App {
     bus { publish Evt; publish Cmd; }
     run() { Evt <- T { n: 1 }; Cmd <- T { n: 2 }; }
 }
+fn main() { App { }; }
 "#;
     let a = dump(&dir, "a", before);
     let b = dump(&dir, "b", after);
