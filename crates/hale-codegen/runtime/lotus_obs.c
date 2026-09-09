@@ -59,21 +59,26 @@
 #include <time.h>
 #include <unistd.h>
 
-#define OBS_MAGIC 0x4F42534948414C45ULL
-#define OBS_PAGE 4096
+/* GH #527 B1 (2026-09-09): the protocol's executable form is
+ * obs_protocol.h, in this directory, prepended to this translation
+ * unit by codegen (RUNTIME_OBS_C_SOURCE). OBS_MAGIC, OBS_PAGE, the
+ * proto minor, the ekinds, the manifest kinds and OBS_TS_DELTA_MAX
+ * come from it; the struct typedefs below are this file's own
+ * spellings and are pinned to the header's layouts by the
+ * _Static_asserts after them, so the emitter and the consumer
+ * cannot disagree about a byte and both build. */
 #define OBS_ENTRY_CAP 256
 #define OBS_INSTANCE_CAP 4096
-#define OBS_TS_DELTA_MAX 0x7FFFFFFFULL
 
-/* ekinds (PROTOCOL §8) */
-#define EK_EPOCH 0
-#define EK_BUS_PUBLISH 1
-#define EK_BUS_DELIVER 2
-#define EK_NET_SEND 3
-#define EK_NET_DELIVER 4
-#define EK_LOCUS_BIRTH 5
-#define EK_LOCUS_DISSOLVE 6
-#define EK_RESTART 7
+/* ekinds (PROTOCOL §8) — this file's short names for the header's. */
+#define EK_EPOCH OBS_EK_EPOCH
+#define EK_BUS_PUBLISH OBS_EK_BUS_PUBLISH
+#define EK_BUS_DELIVER OBS_EK_BUS_DELIVER
+#define EK_NET_SEND OBS_EK_NET_SEND
+#define EK_NET_DELIVER OBS_EK_NET_DELIVER
+#define EK_LOCUS_BIRTH OBS_EK_LOCUS_BIRTH
+#define EK_LOCUS_DISSOLVE OBS_EK_LOCUS_DISSOLVE
+#define EK_RESTART OBS_EK_RESTART
 /* GH #296 Phase 1 (recording mode only — never emitted under plain
  * LOTUS_OBS=1, so a pre-addendum consumer attached to an observed
  * process never sees it): a dequeue-driven handler invoke on the
@@ -86,7 +91,7 @@
  * consumption point. w1 packs locus:20 (subscriber) | pub_id:44
  * (the delivery's deterministic identity — see the v0.2 note);
  * id = 0. */
-#define EK_DROP_MARK 14
+#define EK_DROP_MARK OBS_EK_DROP_MARK
 
 /* GH #296 recorder events live in a PRIVATE event namespace on
  * PRIVATE per-thread rings that are never part of the public
@@ -121,10 +126,10 @@
 #define REC_EV_ASYNC_EXPIRE 7
 #define OBS_REC_PRIV_RING 0x80000000u
 
-/* manifest kinds */
-#define MK_TOPIC 0
-#define MK_LOCUS_TYPE 1
-#define MK_BINDING 2
+/* manifest kinds — the header's enum, this file's short names. */
+#define MK_TOPIC OBS_MK_TOPIC
+#define MK_LOCUS_TYPE OBS_MK_LOCUS_TYPE
+#define MK_BINDING OBS_MK_BINDING
 
 typedef struct {
   uint64_t magic;
@@ -166,6 +171,33 @@ typedef struct { _Atomic uint64_t c[8]; } obs_cline_t;
 typedef struct { uint64_t data_off; _Atomic uint64_t head, dropped;
                  uint32_t tag_a; _Atomic uint32_t tag_b;
                  uint8_t reserved[32]; } obs_rdesc_t;
+
+/* Layout pins against obs_protocol.h (GH #527 B1). A field that moves
+ * in one and not the other fails THIS build. */
+_Static_assert(sizeof(obs_hdr_t) == sizeof(obs_header), "obs_hdr_t/obs_header size");
+_Static_assert(offsetof(obs_hdr_t, proto_minor) == offsetof(obs_header, proto_minor), "proto_minor @0x0A");
+_Static_assert(offsetof(obs_hdr_t, ring_count) == offsetof(obs_header, ring_count), "ring_count @0x1C");
+_Static_assert(offsetof(obs_hdr_t, ring_slots) == offsetof(obs_header, ring_slots), "ring_slots @0x20");
+_Static_assert(offsetof(obs_hdr_t, manifest_off) == offsetof(obs_header, manifest_off), "manifest_off @0x40");
+_Static_assert(offsetof(obs_hdr_t, counters_off) == offsetof(obs_header, counters_off), "counters_off @0x58");
+_Static_assert(offsetof(obs_hdr_t, rings_off) == offsetof(obs_header, rings_off), "rings_off @0x68");
+_Static_assert(offsetof(obs_hdr_t, flags) == offsetof(obs_header, flags), "flags @0x70");
+_Static_assert(offsetof(obs_hdr_t, model_hash) == offsetof(obs_header, model_hash), "model_hash @0x80");
+_Static_assert(offsetof(obs_hdr_t, entity_id_digest) == offsetof(obs_header, entity_id_digest), "entity_id_digest @0x88");
+_Static_assert(sizeof(obs_ctrl_t) == sizeof(obs_control), "control size");
+_Static_assert(sizeof(obs_mh_t) == sizeof(obs_manifest_hdr), "manifest hdr size");
+_Static_assert(offsetof(obs_mh_t, pool_used) == offsetof(obs_manifest_hdr, pool_used), "pool_used");
+_Static_assert(sizeof(obs_me_t) == sizeof(obs_manifest_entry), "manifest entry is 32 B");
+_Static_assert(offsetof(obs_me_t, aux_b) == offsetof(obs_manifest_entry, aux_b), "aux_b @8");
+_Static_assert(offsetof(obs_me_t, id) == offsetof(obs_manifest_entry, id), "id @16");
+_Static_assert(offsetof(obs_me_t, aux_a) == offsetof(obs_manifest_entry, aux_a), "aux_a @22");
+_Static_assert(offsetof(obs_me_t, kind) == offsetof(obs_manifest_entry, kind), "kind @24");
+_Static_assert(offsetof(obs_me_t, flags) == offsetof(obs_manifest_entry, flags), "flags @25");
+_Static_assert(sizeof(obs_cline_t) == sizeof(obs_counter_line), "counter line is 64 B");
+_Static_assert(sizeof(obs_rdesc_t) == sizeof(obs_ring_desc), "ring desc is 64 B");
+_Static_assert(offsetof(obs_rdesc_t, head) == offsetof(obs_ring_desc, head), "head @8");
+_Static_assert(offsetof(obs_rdesc_t, dropped) == offsetof(obs_ring_desc, dropped), "dropped @16");
+_Static_assert(offsetof(obs_rdesc_t, tag_a) == offsetof(obs_ring_desc, tag_a), "tag_a @24");
 
 /* #247 primitives (lotus_arena.c). */
 void lotus_spsc_emit(void *seg_base, void *desc, int64_t ring_slots,

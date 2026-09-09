@@ -21,6 +21,20 @@ that breaks the observer fails the build rather than a handoff.
 `DESIGN.md` §13 records the fold-in; the dependency direction it
 defends is unchanged.
 
+### The observation protocol header lives in hale (GH #527 B1)
+
+`crates/hale-codegen/runtime/obs_protocol.h` is now the executable
+form of the iris observation protocol (formerly iris's
+`emitter/protocol.h`, copied verbatim at proto 0.4). Codegen
+prepends it to the obs runtime translation unit, `lotus_obs.c`
+takes its magic, page size, ekinds and manifest kinds from it and
+pins its own typedefs to the header's layouts with
+`_Static_assert`s, and the Rust test decoder's constants are
+checked against the header text by `obs_protocol_header.rs`. The
+"if protocol.h changes, change both in one commit" rule is a build
+failure now. Iris's emitter and consumers switch to this copy when
+the iris tree folds in (B2).
+
 ### `or` on an infallible stdlib call is refused where it is written; `write_file_append` is Unit in the `or` form (GH #535)
 
 The json flat-object readers (`find_string_field`, `find_int_field`,

@@ -13,6 +13,32 @@
 //!   mod obs;
 #![allow(dead_code)]
 
+/// GH #527 B1: the decoder's constants, checked against
+/// `runtime/obs_protocol.h` by `obs_protocol_header.rs` so the two
+/// cannot drift apart silently (the old "change both in one commit"
+/// rule, now a test).
+pub const PROTO_MAJOR: u16 = 0;
+pub const PROTO_MINOR: u16 = 4;
+pub const MAGIC: u64 = 0x4F42534948414C45;
+pub const EK_EPOCH: u32 = 0;
+pub const EK_BUS_PUBLISH: u32 = 1;
+pub const EK_BUS_DELIVER: u32 = 2;
+pub const EK_NET_SEND: u32 = 3;
+pub const EK_NET_DELIVER: u32 = 4;
+pub const EK_LOCUS_BIRTH: u32 = 5;
+pub const EK_LOCUS_DISSOLVE: u32 = 6;
+pub const EK_RESTART: u32 = 7;
+pub const EK_DROP_MARK: u32 = 14;
+/// Header field offsets the decoder reads (PROTOCOL §3).
+pub const OFF_PROTO_MINOR: usize = 0x0A;
+pub const OFF_RING_COUNT: usize = 0x1C;
+pub const OFF_RING_SLOTS: usize = 0x20;
+pub const OFF_MANIFEST_OFF: usize = 0x40;
+pub const OFF_COUNTERS_OFF: usize = 0x58;
+pub const OFF_RINGS_OFF: usize = 0x68;
+pub const OFF_MODEL_HASH: usize = 0x80;
+pub const OFF_ENTITY_ID_DIGEST: usize = 0x88;
+
 pub fn read_u64(seg: &[u8], off: usize) -> u64 {
     u64::from_le_bytes(seg[off..off + 8].try_into().unwrap())
 }
