@@ -48,6 +48,17 @@ type Verdict {
 }
 topic ReviewVerdict { payload: Verdict; subject: "dna.review.verdict"; keyed_by review_id; }
 
+// A Review settled (or refused a verdict): the owning Review announces
+// it, the assembly journals it. The decision stays with the Review;
+// this is the record of it (GH #528 `hale dna status`).
+type ReviewSettlement {
+    review_id: String = "";
+    outcome: String = ""; // "approve" | "revise" | "reject" | "" when a verdict was refused
+    decided_by: String = "";
+    refusal: String = ""; // non-empty when a verdict was refused, with the reason
+}
+topic ReviewSettled { payload: ReviewSettlement; subject: "dna.review.settled"; }
+
 // Work routed to the assembly-owned WorkSystem (F.3/F.4/F.5 in
 // dna/FRICTION.md: a dynamic child cannot be handed an assembly
 // implementation, so the implementations own the Attempts and the

@@ -1,0 +1,52 @@
+// dna/membrane — the membrane client: publishes ONE typed fact on the
+// organism's control topics and exits (GH #528 `hale dna ask`).
+//
+//   membrane intent  '{"intent_id": "...", "outcome": "...", "from": "...", "to": "..."}'
+//   membrane verdict '{"review_id": "...", "subject_digest": "...", "verdict": "...", "reviewer": "...", "authority": "...", "comment": "..."}'
+//
+// `hale dna` execs it with LOTUS_BUS_CONFIG routing the two topics to
+// the organism's listen sockets. The organism decides; this program
+// only carries the fact — the same declarations the organism binds,
+// imported from the core.
+
+import "../core" as dna;
+
+main locus Client {
+    params {
+        kind: String = "";
+        body: String = "";
+    }
+    bus {
+        publish dna::IntentOffered;
+        publish dna::ReviewVerdict;
+    }
+    run() {
+        if self.kind == "intent" {
+            dna::IntentOffered <- dna::IntentOffer {
+                intent_id: std::json::find_string_field(self.body, "intent_id"),
+                outcome: std::json::find_string_field(self.body, "outcome"),
+                from: std::json::find_string_field(self.body, "from"),
+                to: std::json::find_string_field(self.body, "to")
+            };
+        } else if self.kind == "verdict" {
+            dna::ReviewVerdict <- dna::Verdict {
+                review_id: std::json::find_string_field(self.body, "review_id"),
+                subject_digest: std::json::find_string_field(self.body, "subject_digest"),
+                verdict: std::json::find_string_field(self.body, "verdict"),
+                reviewer: std::json::find_string_field(self.body, "reviewer"),
+                authority: std::json::find_string_field(self.body, "authority"),
+                comment: std::json::find_string_field(self.body, "comment")
+            };
+        } else {
+            println("membrane: unknown kind `", self.kind, "` (intent | verdict)");
+            return;
+        }
+        // let the connect-role fanout flush before the process ends
+        std::time::sleep(300ms);
+        println("membrane: published ", self.kind);
+    }
+}
+
+fn main() {
+    Client { kind: std::env::arg_or(1, ""), body: std::env::arg_or(2, "") };
+}

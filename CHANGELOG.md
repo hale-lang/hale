@@ -8,6 +8,13 @@ behavior.
 
 ## Unreleased
 
+### `hale dna status / ask / history / review` over the membrane (GH #528 PR 26)
+
+- `hale dna status [--json]` is a projection of the Journal (and the artifacts on disk): tasks born/settled, pending Reviews with why (required authority, question) and refused verdicts, staged mutations, intents offered/refused, the expression identity (attached artifact, current artifact, build digest, toolchain), the chain's integrity, and whether an organism is bound to its membrane. Works offline and says so.
+- `hale dna ask [--to <locus>] <intent…>` publishes a typed `IntentOffered` through the embedded membrane client (`dna/membrane`, built once in the toolchain cache beside the core it imports, routed with `LOTUS_BUS_CONFIG`) and reads the answer back from the Journal: `task t1 born` or `refused: …`. `hale dna review <id> approve|revise|reject|abstain [--as R] [--authority A] [--comment C]` sends a `Verdict` the same way, with the candidate digest the Journal recorded for the request; the Review still decides. `hale dna history [<entity>]` walks the Journal by id links.
+- DNA core: `Review` publishes `ReviewSettled` (settled, or a refusal with its reason) and `Dna` journals it as `review.settled` / `review.refused`; a refused intent is journaled as `intent.refused`. The assembly test's event count moves 3 → 4 accordingly.
+- Tests: `crates/hale-cli/tests/dna_status.rs` — offline status/ask/history; then with the organism up: ask births `t1`, a wrong-authority verdict is refused by the Review, a maintainer's settles it, status (text and JSON) and history reflect all of it.
+
 ### `hale dna run` — the stateless host (GH #528 PR 25)
 
 - `hale dna run [project] [--port N] [--no-iris]` cuts a fresh artifact of what is about to run (`.hale/dna/current.topology`; a program that does not check is not run), builds, execs the organism under `LOTUS_OBS=1` from the project root (the membrane sockets and the Journal are root-relative), waits up to 20s for the membrane to be bound, launches `hale iris <port> current --diff baseline current --membrane .hale/dna` (law on the fresh artifact, review view vs the `init` baseline, the membrane panel), and waits for the organism; on exit it reaps iris and returns the organism's code. It holds no Task state and decides nothing. The greenfield app from `hale dna new` now stays up for its membrane (`HALE_DNA_ONESHOT=1` returns after the ping). Tests: `crates/hale-cli/tests/dna_run.rs` (iris comes up with membrane + verified law + the review view classifying current vs baseline as identical; an intent posted through the membrane is journaled as `task.born` by the organism; a project without DNA is refused).
