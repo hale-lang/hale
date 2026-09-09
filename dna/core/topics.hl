@@ -74,14 +74,32 @@ type WorkSettlement {
 }
 topic WorkDone { payload: WorkSettlement; subject: "dna.work.done"; keyed_by work_id; }
 
-// A recorded model call (inside an Attempt; never a Work of its own).
-type ModelCall {
+// A recorded model call (inside an Attempt; never a Work of its own):
+// the evidence list from #521 comment 1. Published by the backend
+// that made the call on `ModelCalled`; the assembly journals it.
+type ModelEvidence {
     attempt_id: String = "";
-    backend: String = "";
-    model: String = "";
+    adapter: String = ""; // "hosted" | "local" | "fake"
+    backend: String = ""; // the router-facing name ("quick", "deep", "private")
+    endpoint: String = ""; // where the prompt went (never the credential)
+    credential: String = ""; // the credential's fingerprint (a correlation handle), or ""
+    requested_model: String = "";
+    reported_model: String = ""; // what the endpoint said it ran
+    params: String = ""; // decoding knobs as sent, "temperature=0.0 max_tokens=512"
     prompt_digest: String = "";
-    data_class: String = "";
-    tokens: Int = 0;
+    context_digest: String = "";
+    knowledge_bindings: String = ""; // ids of the bindings the context was assembled from
+    tool_grant: String = ""; // tools offered on this call, "" when none
+    response_digest: String = "";
+    artifact_digest: String = ""; // digest of what the attempt produced from it, when known
+    input_tokens: Int = 0;
+    output_tokens: Int = 0;
+    elapsed: String = ""; // wall time of the call, as a Duration renders
     cost_micros: Int = 0;
+    validation: String = ""; // what was checked on the response ("json", "schema:X", "")
+    retry_of: String = ""; // the previous call in this attempt this one retries, or ""
+    data_class: String = "";
     ok: Bool = false;
+    refused: String = "";
 }
+topic ModelCalled { payload: ModelEvidence; subject: "dna.model.called"; }

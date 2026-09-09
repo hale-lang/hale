@@ -52,7 +52,8 @@ fn dna_core_verifies_clean() {
 }
 
 /// A suite that quietly emptied would pass the check above by
-/// running nothing. #526 names eight programs; seven are Hale-native.
+/// running nothing. #526 names eight programs; seven are Hale-native,
+/// and #528 adds the hosted-model adapter's.
 #[test]
 fn dna_fixture_set_is_complete() {
     let dir = repo_root().join("dna/tests");
@@ -70,6 +71,7 @@ fn dna_fixture_set_is_complete() {
         vec![
             "assembly_test.hl",
             "fanout_join_test.hl",
+            "hosted_model_test.hl",
             "journal_test.hl",
             "knowledge_test.hl",
             "performers_test.hl",

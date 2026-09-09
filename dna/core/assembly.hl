@@ -116,6 +116,37 @@ locus Dna {
     bus {
         subscribe IntentOffered as on_intent;
         subscribe ReviewSettled as on_review_settled;
+        subscribe ModelCalled as on_model_called;
+    }
+    // Every model call's evidence, journaled (never the prompt).
+    @unbounded
+    fn on_model_called(ev: ModelEvidence) {
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("adapter", ev.adapter);
+        b.string_field("backend", ev.backend);
+        b.string_field("endpoint", ev.endpoint);
+        b.string_field("credential", ev.credential);
+        b.string_field("requested_model", ev.requested_model);
+        b.string_field("reported_model", ev.reported_model);
+        b.string_field("params", ev.params);
+        b.string_field("prompt_digest", ev.prompt_digest);
+        b.string_field("context_digest", ev.context_digest);
+        b.string_field("knowledge_bindings", ev.knowledge_bindings);
+        b.string_field("tool_grant", ev.tool_grant);
+        b.string_field("response_digest", ev.response_digest);
+        b.string_field("artifact_digest", ev.artifact_digest);
+        b.int_field("input_tokens", ev.input_tokens);
+        b.int_field("output_tokens", ev.output_tokens);
+        b.string_field("elapsed", ev.elapsed);
+        b.int_field("cost_micros", ev.cost_micros);
+        b.string_field("validation", ev.validation);
+        b.string_field("retry_of", ev.retry_of);
+        b.string_field("data_class", ev.data_class);
+        b.bool_field("ok", ev.ok);
+        b.string_field("refused", ev.refused);
+        b.end_object();
+        let x = self.journal.append(self.journal.revision(), "model.called", ev.attempt_id, b.result());
     }
     // The Review decided; the Journal records it (the file
     // `hale dna status` and `history` read).

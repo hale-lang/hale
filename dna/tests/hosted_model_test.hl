@@ -1,0 +1,111 @@
+// dna/tests/hosted_model_test.hl — GH #528 PR 27: the hosted adapter.
+//
+// A fake OpenAI-compatible endpoint in this same program (io pool)
+// answers chat completions and insists on a bearer credential. The
+// HostedModel presents the credential from a sealed locus (the test
+// never sees it), records the evidence list on every call, refuses
+// customer data and a missing credential without touching the wire,
+// and the LocalModel reaches the same endpoint with no credential
+// and no external_model class.
+
+import "../core" as dna;
+
+locus FakeOpenAi {
+    params { seen: Int = 0; }
+    fn handle(req: std::http::Request) -> std::http::Response {
+        if !std::str::contains(req.headers, "Authorization: Bearer ") && req.path == "/v1/chat/completions" {
+            return std::http::Response { status: 401, content_type: "application/json", body: "{\"error\": {\"message\": \"no bearer\"}}" };
+        }
+        if req.path == "/v1/chat/completions" || req.path == "/local/v1/chat/completions" {
+            let model = std::json::find_string_field(req.body, "model");
+            let n = len(req.body) / 4;
+            return std::http::Response {
+                status: 200, content_type: "application/json",
+                body: "{\"id\": \"chatcmpl-1\", \"model\": \"" + model + "-2026\", \"choices\": [{\"index\": 0, \"message\": {\"role\": \"assistant\", \"content\": \"the answer\"}, \"finish_reason\": \"stop\"}], \"usage\": {\"prompt_tokens\": " + to_string(n) + ", \"completion_tokens\": 3, \"total_tokens\": " + to_string(n + 3) + "}}"
+            };
+        }
+        return std::http::Response { status: 404, body: "no" };
+    }
+}
+
+main locus App {
+    params {
+        srv: std::http::Server = std::http::Server { port: 47391, handler: FakeOpenAi { } };
+        hosted: dna::HostedModel = dna::HostedModel {
+            name: "quick", model: "test-model",
+            endpoint: "http://127.0.0.1:47391/v1/chat/completions",
+            // any present env var stands in for the API key; the server only checks presence
+            credential: dna::HostedCredential { env_var: "HOME" },
+            max_tokens: 64
+        };
+        keyless: dna::HostedModel = dna::HostedModel {
+            name: "deep", model: "test-model",
+            endpoint: "http://127.0.0.1:47391/v1/chat/completions",
+            credential: dna::HostedCredential { env_var: "HALE_DNA_NO_SUCH_KEY_7f3a" }
+        };
+        local: dna::LocalModel = dna::LocalModel {
+            name: "private", model: "local-model",
+            endpoint: "http://127.0.0.1:47391/local/v1/chat/completions"
+        };
+        core: dna::Dna = dna::Dna { };
+    }
+    placement { srv: cooperative(pool = io); }
+    run() {
+        std::time::sleep(200ms);
+        // 1. a hosted call: the credential is presented, the evidence is complete
+        let r = self.hosted.complete(dna::ModelRequest {
+            attempt_id: "w1/a0", role: "synthesize", prompt: "say the answer", context: "ctx",
+            context_bytes: 3, knowledge_bindings: "kb1 kb2", data_class: "internal"
+        });
+        std::test::assert(r.ok, "hosted call succeeded: " + r.refused);
+        std::test::assert_eq_str(r.output, "the answer", "the completion text");
+        std::test::assert_eq_str(r.model, "test-model-2026", "the model the endpoint REPORTED");
+        std::test::assert(r.tokens > 3, "tokens from usage");
+        let ev = self.hosted.last;
+        std::test::assert_eq_str(ev.adapter, "hosted", "adapter identity");
+        std::test::assert_eq_str(ev.requested_model, "test-model", "requested model");
+        std::test::assert_eq_str(ev.reported_model, "test-model-2026", "reported model");
+        std::test::assert(std::str::contains(ev.credential, "fp:"), "credential recorded as a fingerprint, never bytes: " + ev.credential);
+        std::test::assert(std::str::contains(ev.prompt_digest, "sha256:"), "prompt digest, not the prompt");
+        std::test::assert(std::str::contains(ev.context_digest, "sha256:"), "context digest");
+        std::test::assert(std::str::contains(ev.response_digest, "sha256:"), "response digest");
+        std::test::assert_eq_str(ev.knowledge_bindings, "kb1 kb2", "knowledge bindings used");
+        std::test::assert(std::str::contains(ev.params, "max_tokens=64"), "parameters as sent: " + ev.params);
+        std::test::assert(ev.output_tokens == 3, "output tokens from usage");
+        std::test::assert(len(ev.elapsed) > 0, "wall time recorded");
+        std::test::assert(ev.cost_micros > 0, "cost from the price table");
+        std::test::assert_eq_str(ev.data_class, "internal", "data classification");
+        // 2. customer data never reaches a hosted model; no wire call is made
+        let c = self.hosted.complete(dna::ModelRequest { attempt_id: "w1/a1", prompt: "leak?", data_class: "customer" });
+        std::test::assert(!c.ok, "customer data refused");
+        std::test::assert(std::str::contains(c.refused, "data class customer"), c.refused);
+        std::test::assert_eq_int(self.hosted.calls, 2, "counted");
+        // 3. no credential: not a permitted backend, refused before the wire
+        std::test::assert(!self.keyless.allows("internal"), "a keyless hosted model is not permitted");
+        let k = self.keyless.complete(dna::ModelRequest { attempt_id: "w1/a2", prompt: "x" });
+        std::test::assert(std::str::contains(k.refused, "credential not present"), k.refused);
+        // 4. the local endpoint: same wire, no credential, any data class
+        std::test::assert(self.local.allows("customer"), "local model allows customer data");
+        let l = self.local.complete(dna::ModelRequest { attempt_id: "w2/a0", prompt: "local?", data_class: "customer" });
+        std::test::assert(l.ok, "local call succeeded: " + l.refused);
+        std::test::assert_eq_str(self.local.last.adapter, "local", "local adapter identity");
+        std::test::assert_eq_str(self.local.last.credential, "", "no credential on the local wire");
+        // 5. every call was journaled by the assembly as model.called evidence
+        std::time::sleep(100ms);
+        let mut n = 0;
+        let mut i = 0;
+        while i < self.core.journal.revision() {
+            if self.core.journal.read(i).kind == "model.called" { n = n + 1; }
+            i = i + 1;
+        }
+        std::test::assert_eq_int(n, 4, "four calls, four evidence rows");
+        let first = self.core.journal.read(0);
+        std::test::assert_eq_str(first.entity, "w1/a0", "keyed by attempt");
+        std::test::assert(std::str::contains(first.body, "\"reported_model\": \"test-model-2026\""), "evidence body: " + first.body);
+        std::test::assert(!std::str::contains(first.body, "say the answer"), "the prompt itself is never journaled");
+    }
+}
+
+fn main() {
+    App { };
+}

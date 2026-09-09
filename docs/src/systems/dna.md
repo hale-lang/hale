@@ -85,6 +85,31 @@ In Phase 1 the deployment gateway is `NoDeployment`: every
 mutation stops at `staged`. That is not a claim, it is the
 constructor.
 
+## Models
+
+The core ships one adapter over an OpenAI-compatible chat endpoint,
+behind the same `ModelBackend` interface as its fakes, in two
+shapes the law can tell apart:
+
+- `HostedModel` — a prompt leaves the process. `complete` carries
+  the `external_model` effect class, so a claim can keep customer
+  data away from it structurally; the API key is read from the
+  environment into a **sealed** `HostedCredential` that presents it
+  on the wire and never returns it. Without a credential the model
+  is not a permitted backend, and the router refuses before the
+  wire.
+- `LocalModel` — the same wire to a local endpoint (an inference
+  server on this host), no credential, no `external_model`, any
+  data class.
+
+Every call publishes `ModelCalled` and the assembly journals it
+as `model.called`: adapter and endpoint, the credential's
+fingerprint, requested and reported model, parameters as sent,
+prompt and context digests (never the prompt), the knowledge
+bindings used, tool grant, response digest, tokens, wall time,
+cost, validation, retry lineage, data class, and the refusal when
+there was one. `hale dna history w1/a0` shows an attempt's calls.
+
 ## Running it
 
 ```sh

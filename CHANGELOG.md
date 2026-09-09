@@ -8,6 +8,14 @@ behavior.
 
 ## Unreleased
 
+### DNA core: the hosted model adapter and recorded model-attempt evidence (GH #528 PR 27)
+
+- `HostedModel` (OpenAI-compatible chat completions; `complete` carries `external_model`) and `LocalModel` (the same wire to a local endpoint; no credential, no external class) behind `ModelBackend`. The API key lives in a **sealed** `HostedCredential` read from a named environment variable at birth; it is presented on the wire from inside the locus and never returned — only a readiness bit and a fingerprint leave. A hosted model without a credential is not a permitted backend, so the router refuses before the wire. `ModelRequest` gains `prompt`, `context`, `knowledge_bindings`, `tool_grant`, `retry_of`; digests are computed where they are missing.
+- `ModelCall` becomes `ModelEvidence` (the #521 list: adapter, endpoint, credential fingerprint, requested and reported model, params, prompt/context/response/artifact digests, knowledge bindings, tool grant, tokens, wall time, cost, validation, retry lineage, data class, ok/refused), published on `ModelCalled` by the backend that made the call and journaled by `Dna` as `model.called`, keyed by attempt — never the prompt.
+- The adapter is written over the stdlib (`std::http::request`, `std::json`, `std::crypto`) rather than pond's `agent/llm` client, so the core stays dependency-free and compiles wherever the toolchain does; pond remains the place for streaming and vendor-specific surfaces.
+- `hale dna init` / `new` wire the generated assembly's router with `HostedModel` quick/deep on `OPENAI_API_KEY` and a `LocalModel` private slot at `http://127.0.0.1:11434`; `HostedCredential` joins the `credentials` group `require sealed(all credentials)` covers.
+- Test: `dna/tests/hosted_model_test.hl` — a fake OpenAI-compatible endpoint in the same program that insists on a bearer: the credential is presented, the evidence list is complete and the prompt never journaled, customer data and a missing credential are refused before the wire, the local model reaches the endpoint credential-free.
+
 ### `hale dna status / ask / history / review` over the membrane (GH #528 PR 26)
 
 - `hale dna status [--json]` is a projection of the Journal (and the artifacts on disk): tasks born/settled, pending Reviews with why (required authority, question) and refused verdicts, staged mutations, intents offered/refused, the expression identity (attached artifact, current artifact, build digest, toolchain), the chain's integrity, and whether an organism is bound to its membrane. Works offline and says so.
