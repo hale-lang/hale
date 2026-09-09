@@ -48,8 +48,10 @@ fn run_hosts_the_organism_with_iris_and_the_membrane_and_holds_no_state() {
     let mut snap = String::new();
     while Instant::now() < deadline {
         let s = http(port, "GET /snapshot HTTP/1.0\r\nHost: x\r\n\r\n");
-        // the diff AND the organism's status both report loaded, the law verified
-        if s.contains("\"membrane\"") && s.matches("\"state\":\"loaded\"").count() >= 2 && s.contains("\"digest\":\"verified\"") && s.contains("\"processes\":[{") {
+        // the diff AND the organism's status both report loaded, the law
+        // verified, and the organism's locus tree replayed (a process
+        // attaches before its births are replayed, so wait for a type)
+        if s.contains("\"membrane\"") && s.matches("\"state\":\"loaded\"").count() >= 2 && s.contains("\"digest\":\"verified\"") && s.contains("\"processes\":[{") && s.contains("\"type\":\"") {
             snap = s;
             break;
         }
