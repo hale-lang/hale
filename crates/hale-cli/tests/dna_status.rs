@@ -19,7 +19,7 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     let (ok, out) = hale(&["dna", "new", "orgstat"], &d);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("orgstat");
-    let cache = d.join("cache");
+    let cache = std::env::temp_dir().join("hale-tests-iris-cache");
 
     // offline: the Journal answers, and says the organism is not running
     let (ok, out) = hale(&["dna", "status"], &app);
