@@ -44,14 +44,24 @@ fn run_hosts_the_organism_with_iris_and_the_membrane_and_holds_no_state() {
         .spawn()
         .expect("spawn hale dna run");
     // iris comes up with the membrane, the current artifact and the review view
+    // The observer discovers EVERY LOTUS_OBS=1 process on the machine
+    // (a CI shard runs other observed tests beside this one), so wait
+    // for and assert on the organism's own process by name.
+    let organism_loci = |s: &str| -> Option<Vec<String>> {
+        let json = s.find("{\"ts\"")?;
+        let v: serde_json::Value = serde_json::from_str(&s[json..]).ok()?;
+        let p = v["processes"].as_array()?.iter().find(|p| p["name"] == "orgrun")?;
+        Some(p["loci"].as_array()?.iter().map(|l| l["type"].as_str().unwrap_or("").to_string()).collect())
+    };
     let deadline = Instant::now() + Duration::from_secs(90);
     let mut snap = String::new();
     while Instant::now() < deadline {
         let s = http(port, "GET /snapshot HTTP/1.0\r\nHost: x\r\n\r\n");
         // the diff AND the organism's status both report loaded, the law
-        // verified, and the organism's locus tree replayed (a process
+        // verified, and the organism's own locus tree replayed (a process
         // attaches before its births are replayed, so wait for a type)
-        if s.contains("\"membrane\"") && s.matches("\"state\":\"loaded\"").count() >= 2 && s.contains("\"digest\":\"verified\"") && s.contains("\"processes\":[{") && s.contains("\"type\":\"") {
+        let tree_up = organism_loci(&s).map(|t| !t.is_empty()).unwrap_or(false);
+        if s.contains("\"membrane\"") && s.matches("\"state\":\"loaded\"").count() >= 2 && s.contains("\"digest\":\"verified\"") && tree_up {
             snap = s;
             break;
         }
@@ -84,8 +94,9 @@ fn run_hosts_the_organism_with_iris_and_the_membrane_and_holds_no_state() {
     let compact = snap.replace(' ', "");
     assert!(compact.contains("\"dna\":{"), "{snap}");
     assert!(compact.contains("\"reviews\":[{") && compact.contains("\"state\":\"pending\""), "the status projection carries the pending purpose review: {snap}");
-    assert!(compact.contains("\"type\":\"dna::Dna\"") || compact.contains("\"type\":\"dna::Metabolism\""), "imported loci observed under their author-facing names: {snap}");
-    assert!(!compact.contains("\"type\":\"__lib_"), "no mangled locus type names in the observation: {snap}");
+    let types = organism_loci(&snap).expect("the organism's process in the snapshot");
+    assert!(types.iter().any(|t| t == "dna::Dna" || t == "dna::Metabolism"), "imported loci observed under their author-facing names: {types:?}");
+    assert!(!types.iter().any(|t| t.starts_with("__lib_")), "no mangled locus type names in the observation: {types:?}");
     // an intent through the membrane lands in the organism's Journal
     let before = std::fs::read_to_string(app.join(".hale/dna/journal.jsonl")).unwrap().lines().count();
     let body = r#"{"intent_id":"i1","outcome":"write the changelog","from":"test"}"#;
