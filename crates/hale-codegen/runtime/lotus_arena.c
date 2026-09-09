@@ -11903,7 +11903,9 @@ lotus_transport_t *lotus_transport_listener_create(const char *path) {
         errno = save;
         return NULL;
     }
-    if (listen(sock, 1) < 0) {
+    /* F.13: several connectors may arrive together (an observer, a
+     * CLI, a peer binary); the serve loop admits them all. */
+    if (listen(sock, 16) < 0) {
         perror("lotus_transport_listener_create: listen");
         int save = errno;
         close(sock);
@@ -15001,6 +15003,10 @@ static lotus_deserialize_fn lotus_bus_find_deserializer(
  * delivered now. The unlocked pend_head read is a fast filter —
  * the flush itself re-checks under the entry lock. */
 static void lotus_bus_early_flush(lotus_bus_remote_entry_t *entry);
+static void lotus_bus_local_dispatch_inbound(lotus_bus_queue_t *queue,
+                                             const char *subject,
+                                             const void *struct_payload,
+                                             size_t struct_size);
 static void lotus_bus_early_flush_for_subject(const char *pattern) {
     for (size_t i = 0; i < g_bus_remote_count; i++) {
         lotus_bus_remote_entry_t *e = g_bus_remote_entries[i];
@@ -15113,8 +15119,8 @@ static void lotus_bus_early_flush(lotus_bus_remote_entry_t *entry) {
                                           (uint64_t)m->len);
         }
         if (lotus_obs_begin_redispatch) lotus_obs_begin_redispatch();
-        lotus_bus_local_dispatch(g_bus_queue_for_remote, entry->subject,
-                                 struct_buf, (size_t)struct_size);
+        lotus_bus_local_dispatch_inbound(g_bus_queue_for_remote, entry->subject,
+                                         struct_buf, (size_t)struct_size);
         if (lotus_obs_end_redispatch) lotus_obs_end_redispatch();
         uint64_t dseq = LOTUS_CTR_BUMP(entry->ctr_msgs_delivered);
         LOTUS_CTR_ADD(entry->ctr_bytes_delivered, m->len);
@@ -15170,20 +15176,197 @@ typedef struct lotus_bus_reader_args {
  * accept). Exits when `closing` is set or accept refuses
  * (teardown shuts the listener down via
  * lotus_bus_transport_interrupt / destroy_all). */
+/* DNA F.12 (GH #529 prep): receive-side key derivation.
+ *
+ * A keyed topic's publish site computes (key_lo, key_hi) from the
+ * payload's `keyed_by` field and routes to `where key == …`
+ * subscribers; a message arriving over a binding carried no key,
+ * so every inbound path dispatched UNKEYED and the keyed dispatch
+ * skipped the filtered subscribers (kind=1) by design — the same
+ * subscription meant "mine only" in-process and "nothing" over a
+ * socket. Codegen now synthesizes one extractor per keyed wire
+ * subject (`__key_extract_*`, the publish site's exact
+ * computation over the DESERIALIZED payload) and registers it at
+ * the main prelude; every inbound path derives the key here and
+ * takes the keyed dispatch. Subjects without an extractor are
+ * unkeyed topics and dispatch as before. */
+typedef void (*lotus_key_extract_fn)(const void *payload,
+                                     uint64_t *key_lo,
+                                     uint64_t *key_hi);
+typedef struct {
+    char                 *subject;   /* owned */
+    lotus_key_extract_fn  fn;
+} lotus_key_extractor_t;
+static lotus_key_extractor_t *g_key_extractors      = NULL;
+static size_t                 g_key_extractor_count = 0;
+static size_t                 g_key_extractor_cap   = 0;
+
+void lotus_bus_register_key_extractor(const char *subject,
+                                      lotus_key_extract_fn fn) {
+    if (!subject || !fn) return;
+    for (size_t i = 0; i < g_key_extractor_count; i++) {
+        if (strcmp(g_key_extractors[i].subject, subject) == 0) {
+            g_key_extractors[i].fn = fn;
+            return;
+        }
+    }
+    if (g_key_extractor_count == g_key_extractor_cap) {
+        size_t nc = g_key_extractor_cap ? g_key_extractor_cap * 2 : 8;
+        lotus_key_extractor_t *grown = (lotus_key_extractor_t *)
+            realloc(g_key_extractors, nc * sizeof(*grown));
+        if (!grown) return;
+        g_key_extractors   = grown;
+        g_key_extractor_cap = nc;
+    }
+    g_key_extractors[g_key_extractor_count].subject = strdup(subject);
+    g_key_extractors[g_key_extractor_count].fn      = fn;
+    g_key_extractor_count++;
+}
+
+static lotus_key_extract_fn lotus_bus_find_key_extractor(const char *subject) {
+    if (!subject) return NULL;
+    for (size_t i = 0; i < g_key_extractor_count; i++) {
+        if (strcmp(g_key_extractors[i].subject, subject) == 0) {
+            return g_key_extractors[i].fn;
+        }
+    }
+    return NULL;
+}
+
+/* Every inbound path (unix serve loop, boot-window flush, UDP
+ * reader, adapter inbound) lands here with STRUCT bytes: derive
+ * the key when the subject is keyed, dispatch keyed; else the
+ * unkeyed local fanout as before. */
+static void lotus_bus_local_dispatch_inbound(lotus_bus_queue_t *queue,
+                                             const char *subject,
+                                             const void *struct_payload,
+                                             size_t struct_size) {
+    lotus_key_extract_fn kx = lotus_bus_find_key_extractor(subject);
+    if (kx) {
+        uint64_t lo = 0, hi = 0;
+        kx(struct_payload, &lo, &hi);
+        lotus_bus_local_dispatch_keyed(queue, subject, struct_payload,
+                                       struct_size, lo, hi);
+        return;
+    }
+    lotus_bus_local_dispatch(queue, subject, struct_payload, struct_size);
+}
+
+/* DNA F.13 (GH #529 prep): a listen binding serves N peers.
+ *
+ * The serve loop used to be accept -> read until EOF -> re-arm:
+ * ONE peer held the socket until it hung up, and a second
+ * connector (an observer holding the membrane, then a CLI
+ * publishing one fact) sat in the backlog with its message never
+ * read. Now the loop polls the listener beside every accepted
+ * peer: connections are admitted as they arrive, each keeps its
+ * own framed seq space (the re-arm's per-peer reset, per peer),
+ * a peer's EOF closes that peer only, and teardown's shutdown of
+ * the listener (or the poll timeout) lets `closing` end the loop.
+ * The transport struct stays the single-connection view the recv
+ * helpers expect: the active peer's fd and seq state are swapped
+ * in around each read. */
+#define LOTUS_UNIX_MAX_PEERS 64
+typedef struct {
+    int      fd;
+    uint64_t recv_seq;
+    uint64_t recv_origin;
+    uint64_t seq_gaps;
+} lotus_unix_peer_t;
+
 static void lotus_bus_unix_serve(lotus_bus_remote_entry_t *entry) {
     lotus_transport_t *t = entry->transport;
     if (!t) return;
     char wire_buf[LOTUS_PAYLOAD_MAX];
     char struct_buf[LOTUS_PAYLOAD_MAX];
+    lotus_unix_peer_t peers[LOTUS_UNIX_MAX_PEERS];
+    int npeers = 0;
+    int warned_full = 0;
+    /* The exit quiesce (lotus_bus_ingress_quiesce) half-closes the
+     * LISTENER and expects the reader to drain every accepted peer
+     * to a true EOF — the kernel hands over queued data before EOF
+     * even after SHUT_RDWR. So a dead listener is not "stop": it is
+     * "admit nobody new, shut the peers down so the silent ones end
+     * too, and leave when the last one has drained". */
+    int listener_down = 0;
     while (!entry->closing) {
-        /* The listener socket was bound at realization, so a
-         * peer's connect-with-retry succeeds as soon as this
-         * binary boots, whether or not this thread has reached
-         * accept yet (m59's no-hang-at-boot property). */
-        if (lotus_transport_listener_accept(t) != 0) break;
-        while (!entry->closing) {
+        struct pollfd pfds[1 + LOTUS_UNIX_MAX_PEERS];
+        pfds[0].fd = listener_down ? -1 : t->listen_fd;   /* -1: poll ignores */
+        pfds[0].events = POLLIN;
+        pfds[0].revents = 0;
+        for (int i = 0; i < npeers; i++) {
+            pfds[1 + i].fd = peers[i].fd;
+            pfds[1 + i].events = POLLIN;
+            pfds[1 + i].revents = 0;
+        }
+        int pr = poll(pfds, (nfds_t)(1 + npeers), 250);
+        if (pr < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (entry->closing) break;
+        if (pr == 0) continue;
+        /* new peer(s): the listener socket was bound at
+         * realization, so a peer's connect-with-retry succeeds as
+         * soon as this binary boots (m59's no-hang-at-boot). */
+        if (!listener_down && (pfds[0].revents & (POLLIN | POLLERR | POLLHUP))) {
+            int conn = accept(t->listen_fd, NULL, NULL);
+            if (conn < 0) {
+                if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+                    /* spurious readiness */
+                } else {
+                    /* listener shut down (exit quiesce or teardown):
+                     * drain what is connected, then leave. */
+                    listener_down = 1;
+                    for (int i = 0; i < npeers; i++) {
+                        shutdown(peers[i].fd, SHUT_RDWR);
+                    }
+                }
+            } else {
+                lotus_set_cloexec(conn);
+                if (npeers < LOTUS_UNIX_MAX_PEERS) {
+                    peers[npeers].fd = conn;
+                    peers[npeers].recv_seq = 0;
+                    peers[npeers].recv_origin = 0;
+                    peers[npeers].seq_gaps = 0;
+                    npeers++;
+                } else {
+                    if (!warned_full) {
+                        fprintf(stderr,
+                                "lotus_bus_unix_serve: %s: %d peers already "
+                                "connected; refusing another\n",
+                                entry->subject ? entry->subject : "?",
+                                LOTUS_UNIX_MAX_PEERS);
+                        warned_full = 1;
+                    }
+                    close(conn);
+                }
+            }
+        }
+        for (int i = 0; i < npeers; i++) {
+            if (entry->closing) break;
+            if (!(pfds[1 + i].revents & (POLLIN | POLLERR | POLLHUP))) continue;
+            /* swap this peer into the transport's single-connection view */
+            t->conn_fd     = peers[i].fd;
+            t->recv_seq    = peers[i].recv_seq;
+            t->recv_origin = peers[i].recv_origin;
+            t->seq_gaps    = peers[i].seq_gaps;
             ssize_t n = lotus_transport_recv(t, wire_buf, sizeof(wire_buf));
-            if (n <= 0) break;     /* peer closed (0) or error (-1) */
+            peers[i].recv_seq    = t->recv_seq;
+            peers[i].recv_origin = t->recv_origin;
+            peers[i].seq_gaps    = t->seq_gaps;
+            if (n <= 0) {
+                /* peer closed (0) or error (-1): close THIS peer only
+                 * (GH #233 step 2's re-arm, per peer). */
+                close(peers[i].fd);
+                t->conn_fd = -1;
+                LOTUS_CTR_BUMP(entry->ctr_rearms);
+                peers[i] = peers[npeers - 1];
+                pfds[1 + i] = pfds[npeers];   /* keep revents aligned with the swap */
+                npeers--;
+                i--;
+                continue;
+            }
 
             /* m60: deserialize wire bytes into struct-layout bytes
              * before handing them to local dispatch. Look up the
@@ -15238,9 +15421,9 @@ static void lotus_bus_unix_serve(lotus_bus_remote_entry_t *entry) {
              * BUS_PUBLISH probe at the top of local_dispatch counts it
              * as a delivery, not a publish. */
             if (lotus_obs_begin_redispatch) lotus_obs_begin_redispatch();
-            lotus_bus_local_dispatch(g_bus_queue_for_remote,
-                                     entry->subject,
-                                     struct_buf, (size_t)struct_size);
+            lotus_bus_local_dispatch_inbound(g_bus_queue_for_remote,
+                                             entry->subject,
+                                             struct_buf, (size_t)struct_size);
             if (lotus_obs_end_redispatch) lotus_obs_end_redispatch();
             uint64_t dseq = LOTUS_CTR_BUMP(entry->ctr_msgs_delivered);
             LOTUS_CTR_ADD(entry->ctr_bytes_delivered, n);
@@ -15272,18 +15455,13 @@ static void lotus_bus_unix_serve(lotus_bus_remote_entry_t *entry) {
                         (uint64_t)n);
                 }
             }
-        }
-        /* GH #233 step 2: re-arm. Close the dead connection and
-         * loop back into accept for the next peer. */
-        if (t->conn_fd >= 0) {
-            close(t->conn_fd);
             t->conn_fd = -1;
-            /* Fresh peer = fresh seq space (a reconnecting
-             * publisher restarts its counter at 1). */
-            t->recv_seq = 0;
-            LOTUS_CTR_BUMP(entry->ctr_rearms);
         }
+        if (listener_down && npeers == 0) break;
     }
+    /* teardown: every peer still connected goes with the loop */
+    for (int i = 0; i < npeers; i++) close(peers[i].fd);
+    t->conn_fd = -1;
 }
 
 /* GH #468 test hook: deterministically stretch the reader's
@@ -15634,9 +15812,9 @@ static void *lotus_bus_udp_reader_thread_main(void *arg) {
         /* iris handoff-4 P15: mark the inbound re-dispatch (delivery,
          * not a publish) so it doesn't inflate the published counter. */
         if (lotus_obs_begin_redispatch) lotus_obs_begin_redispatch();
-        lotus_bus_local_dispatch(g_bus_queue_for_remote,
-                                 args->entry->subject,
-                                 struct_buf, (size_t)struct_size);
+        lotus_bus_local_dispatch_inbound(g_bus_queue_for_remote,
+                                         args->entry->subject,
+                                         struct_buf, (size_t)struct_size);
         if (lotus_obs_end_redispatch) lotus_obs_end_redispatch();
         uint64_t dseq2 = LOTUS_CTR_BUMP(args->entry->ctr_msgs_delivered);
         LOTUS_CTR_ADD(args->entry->ctr_bytes_delivered, n);
@@ -15788,8 +15966,8 @@ static void *lotus_replay_injector_worker(void *arg) {
             lotus_replay_inject_begin(subject, bytes, size, pub_id);
         }
         if (lotus_obs_begin_redispatch) lotus_obs_begin_redispatch();
-        lotus_bus_local_dispatch(g_bus_queue_for_remote, subject,
-                                 struct_buf, (size_t)struct_size);
+        lotus_bus_local_dispatch_inbound(g_bus_queue_for_remote, subject,
+                                         struct_buf, (size_t)struct_size);
         if (lotus_obs_end_redispatch) lotus_obs_end_redispatch();
         if (lotus_replay_note_injected) lotus_replay_note_injected();
         atomic_store_explicit(&w->next_idx, i + 1,

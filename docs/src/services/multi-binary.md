@@ -34,6 +34,12 @@ core::Verdict: unix("/tmp/verdicts.sock", role: listen); }` — so a
 library's own declarations are what cross the socket, not copies
 of them.
 
+A listen binding serves any number of connected publishers at once,
+and a `keyed_by` topic keeps its routing across the socket: the
+receiving side derives the key from the payload, so a
+`subscribe T as h where key == self.k` behind a binding hears
+exactly what it would hear in-process.
+
 `bindings { }` is legal only on a `main` locus. The publisher's
 `MatchReady <- info;` and the subscriber's `subscribe MatchReady
 as ...` are *unchanged* — they don't know or care that delivery

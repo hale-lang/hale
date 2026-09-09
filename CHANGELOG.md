@@ -8,6 +8,11 @@ behavior.
 
 ## Unreleased
 
+### Bindings: a listener serves many peers, and keyed topics keep their routing across the socket (DNA F.12 + F.13, GH #529 prep)
+
+- **F.13 — a listen binding serves many peers.** The unix serve loop was accept → read until EOF → re-arm: one peer held the socket until it hung up, and a second connector (an observer holding the membrane, then a CLI publishing one fact) sat in the backlog with its message never read. The loop now polls the listener beside every accepted peer (up to 64), admits connections as they arrive, keeps a framed seq space per peer, closes only the peer that hangs up, and — once the listener is shut at exit — drains every connected peer to EOF, so the exit quiesce still delivers the kernel-queued tail. Listen backlog 1 → 16. `hale dna ask` / `review` connect directly beside an attached iris; the `.hale/dna/iris.port` detour is gone. Test: `binding_multi_peer` (two publishers connected together, both deliver, no seq gaps).
+- **F.12 — keyed subscriptions hear wire deliveries.** Remote fanout carries no key material, and the receive side dispatched unkeyed, so `subscribe T as h where key == self.k` behind a binding received nothing. Codegen now synthesizes one `__key_extract_*` per keyed wire subject (the publish site's exact computation over the deserialized payload: scalars through the same pair packing, String keys as FNV hash + pointer) and registers it at the main prelude; the runtime derives the key on every inbound path (unix serve loop, boot-window flush, UDP reader, adapter inbound) and takes the keyed dispatch. The DNA core's Review subscribes `where key == self.review_id` again. Test: `binding_keyed_over_wire` (Int and String keys; an unmatched key reaches no filtered subscriber). Spec: `semantics.md` (String keys), `runtime.md` (the serve loop).
+
 ### DNA: mutations stop at stage; the organism is visible in iris (GH #528 PR 28, #527 B7)
 
 - **Observation names imported loci by their author-facing names.** The manifest recorded the mangled symbol (`__lib_vendor_dna_assembly_Dna`), which iris hides as runtime-internal and which never joined with the artifact's `dna::Dna` — every cross-seed tower was invisible and unjoinable. Codegen now emits the same demangled display the artifact uses (imports ∪ stdlib renames).

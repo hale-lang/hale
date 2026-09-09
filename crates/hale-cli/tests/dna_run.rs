@@ -91,8 +91,8 @@ fn run_hosts_the_organism_with_iris_and_the_membrane_and_holds_no_state() {
     let body = r#"{"intent_id":"i1","outcome":"write the changelog","from":"test"}"#;
     let r = http(port, &format!("POST /ctl/intent HTTP/1.0\r\nHost: x\r\nContent-Length: {}\r\n\r\n{body}", body.len()));
     assert!(r.contains("200"), "{r}");
-    // …and so does `hale dna ask` WHILE iris holds the membrane (F.13:
-    // it goes through iris's /ctl, and the answer comes from the Journal)
+    // …and so does `hale dna ask` while iris is attached to the same
+    // sockets (F.13, fixed: a listen binding serves many peers)
     let ask = Command::new(env!("CARGO_BIN_EXE_hale"))
         .args(["dna", "ask", "also", "tag", "the", "release"])
         .current_dir(&app)
@@ -131,7 +131,6 @@ fn run_hosts_the_organism_with_iris_and_the_membrane_and_holds_no_state() {
     assert!(grew, "the organism journaled intent.offered + task.born");
     assert!(ask.status.success() && ask_out.contains("task t2 born"), "ask through iris: {ask_out}");
     assert!(status_ok, "status.json re-projected from the Journal");
-    assert!(!app.join(".hale/dna/iris.port").exists(), "the port file is gone with the host");
     let _ = std::fs::remove_dir_all(&d);
 }
 

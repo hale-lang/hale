@@ -171,12 +171,6 @@ your application's. Imported loci are observed under their
 author-facing names (`dna::Dna`, not a mangled symbol), so the
 tower is visible and joins with the artifact.
 
-One thing to know: a unix listen binding serves one peer at a time,
-and iris holds the membrane while it runs (F.13 in
-`dna/FRICTION.md`). `hale dna ask` and `review` notice the attached
-iris (`.hale/dna/iris.port`) and publish through it; without iris
-they connect directly.
-
 ## The membrane
 
 The organism binds two typed topics on unix sockets under
