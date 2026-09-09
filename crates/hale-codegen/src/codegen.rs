@@ -2237,8 +2237,17 @@ const RUNTIME_C_SOURCE: &str = include_str!("../runtime/lotus_arena.c");
 const RUNTIME_TLS_C_SOURCE: &str = include_str!("../runtime/lotus_tls.c");
 const RUNTIME_COMPRESS_C_SOURCE: &str =
     include_str!("../runtime/lotus_compress.c");
-const RUNTIME_OBS_C_SOURCE: &str =
-    include_str!("../runtime/lotus_obs.c");
+/// GH #527 B1: the observation protocol's executable form,
+/// `runtime/obs_protocol.h`, is the single source of truth shared with
+/// iris. It is prepended to the obs TU here (the runtime is compiled
+/// from embedded text, so a `#include` could not find it), and
+/// lotus_obs.c pins its own typedefs to the header's layouts with
+/// _Static_asserts.
+const RUNTIME_OBS_C_SOURCE: &str = concat!(
+    include_str!("../runtime/obs_protocol.h"),
+    "\n",
+    include_str!("../runtime/lotus_obs.c")
+);
 /// Form K5 (2026-05-20) — POSIX SHM ring substrate for zero-copy
 /// bus payload routing. Independent translation unit; pulled in
 /// unconditionally so user programs that bind a topic to a

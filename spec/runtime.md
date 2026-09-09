@@ -1427,8 +1427,11 @@ zero_copy binding produces.
 
 With `LOTUS_OBS=1` the runtime publishes an iris-protocol
 observation segment (`/hale-obs-<pid>` + registration file per
-PROTOCOL v0.2 — the contract lives in the iris-observer repo;
-layouts mirrored from its reference implementation. 0.2, 2026-08-12
+PROTOCOL v0.4 — the contract's executable form is
+`crates/hale-codegen/runtime/obs_protocol.h` in this repo since
+2026-09-09 (GH #527 B1); `lotus_obs.c` is compiled with it prepended
+and pins its layouts to it, and the Rust test decoder is checked
+against its text. 0.2, 2026-08-12
 downstream handoff: the header gains `model_hash` at `0x80` — the
 topology artifact's `shape_hash`, stamped by the CLI from the same
 bundle it typechecks, so a consumer can establish the RUNNING
