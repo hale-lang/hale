@@ -162,7 +162,7 @@ fn verdict_and_intent_cross_the_membrane_and_the_organism_decides() {
         lines.lock().unwrap()
     );
 
-    let cache = dir.join("cache");
+    let cache = std::env::temp_dir().join("hale-tests-iris-cache");
     let port = free_port();
     let mut iris = hale()
         .args(["iris", &port.to_string(), "--membrane"])
