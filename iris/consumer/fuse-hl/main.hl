@@ -71,7 +71,7 @@ const M_NET_SLOTS: Int = 1;
 const M_WORKED: Int = 2; // 0 idle · 1 worked · 2 budget-exhausted (behind)
 const M_CLAIMS_N: Int = 3; // ClaimVec rows in use (vec has no clear)
 const M_GROUPS_N: Int = 4; // GroupVec rows in use
-const M_RSS_LOG: Int = 5;  // last rss_note() timestamp (ns)
+const M_RSS_LOG: Int = 5; // last rss_note() timestamp (ns)
 const META_CELLS: Int = 6;
 
 // ---- rows ----
@@ -89,9 +89,9 @@ type SeqEnt { seq: Int = 0; ts: Int = 0; seg: Int = -1; kind: Int = 0; origin: I
 // law rows (artifact-fed; see INSPECTOR.md "witnessed law").
 // ClaimRow.kind: 1=count 2=require_endpoint 3=forbid_reaches 0=other
 type ClaimRow { name: String = ""; form: String = ""; family: String = "";
-                sresult: String = ""; kind: Int = 0; pubs: Int = 0;
-                subject: String = ""; tdisp: String = ""; grp: String = "";
-                src: String = ""; dst: String = ""; cmp: String = ""; n: Int = 0; }
+    sresult: String = ""; kind: Int = 0; pubs: Int = 0;
+    subject: String = ""; tdisp: String = ""; grp: String = "";
+    src: String = ""; dst: String = ""; cmp: String = ""; n: Int = 0; }
 type GroupRow { gname: String = ""; member: String = ""; }
 // WitRow: observed (topic, seg, locus-type) participation, from
 // attributed BUS records. kind 1=publish 2=deliver; tname "?" =
@@ -234,7 +234,7 @@ fn fnv1a64(s: String) -> Int {
     let n = len(s);
     while i < n {
         h = h ^ std::str::byte_at_unchecked(s, i);
-        h = h * 1099511628211;        // 0x100000001b3
+        h = h * 1099511628211; // 0x100000001b3
         i = i + 1;
     }
     h
@@ -550,7 +550,6 @@ locus Cycle {
             i = i + 1;
         }
     }
-
 
     // ---- law ingestion (artifact -> claims/groups/lawmeta) ----
     // Discovery cadence (1 Hz); reparses only when artifact_digest
@@ -942,7 +941,6 @@ locus Cycle {
         return s;
     }
 
-
     // ---- witnessed-law evaluation --------------------------------
     // hale evaluated each claim over DECLARATIONS; these evaluate
     // the same predicate over the OBSERVED fleet. The asymmetry is
@@ -1262,8 +1260,8 @@ locus Cycle {
         if sp2 < 0 { return; }
         let pages = std::str::parse_int(std::str::substring(rest, 0, sp2)) or 0;
         println("fuse-hl: rss " + (pages * 4096 / 1048576) + "MB, segs "
-            + self.segs.len() + ", topics " + self.topics.len()
-            + ", loci " + self.loci.len() + ", edges " + self.edges.len());
+                + self.segs.len() + ", topics " + self.topics.len()
+                + ", loci " + self.loci.len() + ", edges " + self.edges.len());
     }
 
     fn drop_sse(slot: Int) {

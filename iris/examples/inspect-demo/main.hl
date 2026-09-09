@@ -25,11 +25,11 @@
 // running fleet keeps the old shape hash; the tree has the new one.
 
 type Order { id: Int = 0; label: String = ""; }
-type Fill  { id: Int = 0; qty: Int = 0; }
+type Fill { id: Int = 0; qty: Int = 0; }
 type Audit { note: String = ""; }
 
 topic Orders { payload: Order; subject: "orders"; }
-topic Fills  { payload: Fill;  subject: "fills"; }
+topic Fills { payload: Fill; subject: "fills"; }
 topic Audits { payload: Audit; subject: "audit"; }
 
 locus Worker {

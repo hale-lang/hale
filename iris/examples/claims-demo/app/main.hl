@@ -24,13 +24,13 @@
 //   LOTUS_OBS=1 ./app &
 //   ../../consumer/fuse-hl/fuse-hl 8787 ../../render/web /tmp/claims-demo.topo.json
 
-type Task   { id: Int = 0; }
+type Task { id: Int = 0; }
 type Metric { n: Int = 0; }
-type Audit  { note: String = ""; }
+type Audit { note: String = ""; }
 
-topic Tasks   { payload: Task;   subject: "tasks"; }
+topic Tasks { payload: Task; subject: "tasks"; }
 topic Metrics { payload: Metric; subject: "metrics"; }
-topic Audits  { payload: Audit;  subject: "audit"; }
+topic Audits { payload: Audit; subject: "audit"; }
 
 locus DeltaTriage {
     params { seen: Int = 0; }
@@ -59,9 +59,9 @@ main locus Org {
     bus { publish Tasks; publish Audits; }
     claims {
         single_writer: count publishers(topic Metrics) == 1;
-        consumed:      require subscribes(some gamma_wing, topic Metrics);
-        audited:       require subscribes(some gamma_wing, topic Audits);
-        iso:           forbid reaches(gamma_wing, delta_wing);
+        consumed: require subscribes(some gamma_wing, topic Metrics);
+        audited: require subscribes(some gamma_wing, topic Audits);
+        iso: forbid reaches(gamma_wing, delta_wing);
     }
     run() {
         let mut i = 0;

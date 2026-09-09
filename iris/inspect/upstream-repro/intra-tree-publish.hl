@@ -6,10 +6,10 @@
 // transport (none), subscriber count (1) — is identical.
 type P { v: Int = 0; }
 
-topic ToChild   { payload: P; subject: "to_child"; }
+topic ToChild { payload: P; subject: "to_child"; }
 topic ToSibling { payload: P; subject: "to_sibling"; }
 
-locus Kid { bus { subscribe ToChild   as on_p; } fn on_p(p: P) { } }
+locus Kid { bus { subscribe ToChild as on_p; } fn on_p(p: P) { } }
 locus Sib { bus { subscribe ToSibling as on_p; } fn on_p(p: P) { } }
 
 locus Pub {
@@ -18,7 +18,7 @@ locus Pub {
     run() {
         let mut i = 0;
         while i < 600 {
-            ToChild   <- P { v: i };
+            ToChild <- P { v: i };
             ToSibling <- P { v: i };
             std::time::sleep(100ms);
             i = i + 1;

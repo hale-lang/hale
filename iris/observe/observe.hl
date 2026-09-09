@@ -102,9 +102,9 @@ locus Observe {
                 obs_records_total_add(1);
             }
             let w0 = (id & 1048575)
-                   | ((ekind & 31) << 20)
-                   | ((sz & 255) << 25)
-                   | ((delta & 2147483647) << 33);
+                | ((ekind & 31) << 20)
+                | ((sz & 255) << 25)
+                | ((delta & 2147483647) << 33);
             std::ring::__spsc_emit(self.base, self.desc, self.slots, w0, w1);
             obs_records_total_add(1);
         }
