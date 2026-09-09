@@ -34,6 +34,7 @@ fn new_makes_a_governed_application_that_checks_builds_runs_and_tests() {
     assert!(main.contains("main locus DemoApp"), "{main}");
     let law = std::fs::read_to_string(app.join("dna_constitution.hl")).unwrap();
     assert!(law.contains("\n    organism_gated: forbid reaches(organism, effects(genome_apply)) avoiding dna_gate;"), "a fresh app has no holes, so the app-wide clause is active: {law}");
+    assert!(law.contains("phase1_read_only: forbid reaches(genome, effects(genome_apply));"), "Phase 1: nothing applies, and the law says so: {law}");
     let (ok, out) = hale(&["check", "--matrix", "."], &app);
     assert!(ok, "matrix: {out}");
     let (ok, out) = hale(&["build", "."], &app);

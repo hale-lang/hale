@@ -13,6 +13,7 @@
 //!     --diff <diff.json>                … or carry a ready diff document
 //!     --membrane <dir>                  control channel: publish verdicts and
 //!                                       intent to an organism's sockets in <dir>
+//!     --organism <status.json>          the organism's status projection (B7)
 //!   hale iris inspect <artifact> [url]  artifact-side inspector
 //!   hale iris --where                   print the cache directory
 //!   hale iris --build-only              materialize + build, print the binary
@@ -71,7 +72,7 @@ fn exec(bin: &Path, args: &[String], envs: &[(String, String)]) -> ExitCode {
 pub fn run(args: &[String]) -> ExitCode {
     match args.first().map(String::as_str) {
         Some("--help") | Some("-h") => {
-            eprintln!("usage: hale iris [port] [artifact.json] [--diff <a.topology> <b.topology> | --diff <diff.json>] [--membrane <dir>]");
+            eprintln!("usage: hale iris [port] [artifact.json] [--diff <a.topology> <b.topology> | --diff <diff.json>] [--membrane <dir>] [--organism <status.json>]");
             eprintln!("       hale iris inspect <artifact.json> [http://host:port]");
             eprintln!("       hale iris --where | --build-only");
             ExitCode::SUCCESS
@@ -115,9 +116,18 @@ pub fn run(args: &[String]) -> ExitCode {
             let mut positional: Vec<String> = Vec::new();
             let mut diff_paths: Vec<String> = Vec::new();
             let mut membrane: Option<String> = None;
+            let mut organism: Option<String> = None;
             let mut it = args.iter();
             while let Some(a) = it.next() {
-                if a == "--membrane" {
+                if a == "--organism" {
+                    match it.next() {
+                        Some(p) => organism = Some(p.clone()),
+                        None => {
+                            eprintln!("hale iris: --organism needs a status.json path");
+                            return ExitCode::from(2);
+                        }
+                    }
+                } else if a == "--membrane" {
                     match it.next() {
                         Some(d) => membrane = Some(d.clone()),
                         None => {
@@ -179,6 +189,12 @@ pub fn run(args: &[String]) -> ExitCode {
                 envs.push(("LOTUS_BUS_CONFIG".into(), conf.display().to_string()));
                 envs.push(("HALE_IRIS_MEMBRANE".into(), dir.clone()));
                 eprintln!("hale iris: membrane at {dir} (verdicts and intent publish to the organism)");
+            }
+            // GH #528 PR 28 (B7): the organism's status projection —
+            // a JSON file `hale dna run` re-projects from the Journal —
+            // is the observer's third source beside shm and the artifact.
+            if let Some(p) = &organism {
+                envs.push(("HALE_IRIS_DNA_STATUS".into(), p.clone()));
             }
             let (root, bin) = match ensure_built(hale_iris::FUSE_SEED, hale_iris::FUSE_BIN) {
                 Ok(x) => x,

@@ -82,8 +82,11 @@ reason, and the deferral is journaled. Resolve the edges and
 uncomment it.
 
 In Phase 1 the deployment gateway is `NoDeployment`: every
-mutation stops at `staged`. That is not a claim, it is the
-constructor.
+mutation stops at `staged`. That is the constructor, and it is
+also the law: `phase1_read_only: forbid reaches(genome,
+effects(genome_apply))` holds against the assembly as constructed,
+so swapping the gateway in `dna/assembly.hl` is a law change a
+reviewer sees, not a constructor detail.
 
 ## Models
 
@@ -153,6 +156,26 @@ reviewer's authority and independence, and the Journal records
 walks the Journal from an intent, Task or Review id through the
 rows that link to it. None of these decide anything: the host
 publishes and reads.
+
+## In iris
+
+`hale dna run` hands iris three sources: the observation segment
+(what the expression does), the artifact (what the genome says),
+and the organism's **status projection**, a JSON file the host
+re-projects from the Journal once a second. Perspective **[5]**
+renders that projection — tasks and their state, pending Reviews
+and why, staged mutations, model calls, the expression identity —
+and tints the DNA lineage tower on the canvas (Task, Workflow,
+Step, Work, Attempt), keyed on the core's type names rather than on
+your application's. Imported loci are observed under their
+author-facing names (`dna::Dna`, not a mangled symbol), so the
+tower is visible and joins with the artifact.
+
+One thing to know: a unix listen binding serves one peer at a time,
+and iris holds the membrane while it runs (F.13 in
+`dna/FRICTION.md`). `hale dna ask` and `review` notice the attached
+iris (`.hale/dna/iris.port`) and publish through it; without iris
+they connect directly.
 
 ## The membrane
 

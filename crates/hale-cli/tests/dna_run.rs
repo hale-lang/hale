@@ -48,7 +48,8 @@ fn run_hosts_the_organism_with_iris_and_the_membrane_and_holds_no_state() {
     let mut snap = String::new();
     while Instant::now() < deadline {
         let s = http(port, "GET /snapshot HTTP/1.0\r\nHost: x\r\n\r\n");
-        if s.contains("\"membrane\"") && s.contains("\"state\":\"loaded\"") && s.contains("\"digest\":\"verified\"") {
+        // the diff AND the organism's status both report loaded, the law verified
+        if s.contains("\"membrane\"") && s.matches("\"state\":\"loaded\"").count() >= 2 && s.contains("\"digest\":\"verified\"") && s.contains("\"processes\":[{") {
             snap = s;
             break;
         }
@@ -74,11 +75,29 @@ fn run_hosts_the_organism_with_iris_and_the_membrane_and_holds_no_state() {
     let compact = snap.replace(' ', "");
     assert!(compact.contains("\"classification\":\"model-shape\""), "{snap}");
     assert!(compact.contains("\"change\":\"added\"") && compact.contains("genome::Genome"), "the review view names the added Genome: {snap}");
+    // B7: the organism's status projection rides in the snapshot
+    // (state loaded, the baseline review pending) — and the observed
+    // tower names imported loci by their AUTHOR-facing names, so the
+    // DNA is visible and joins with the artifact (PR 28).
+    let compact = snap.replace(' ', "");
+    assert!(compact.contains("\"dna\":{"), "{snap}");
+    assert!(compact.contains("\"reviews\":[{") && compact.contains("\"state\":\"pending\""), "the status projection carries the pending purpose review: {snap}");
+    assert!(compact.contains("\"type\":\"dna::Dna\"") || compact.contains("\"type\":\"dna::Metabolism\""), "imported loci observed under their author-facing names: {snap}");
+    assert!(!compact.contains("\"type\":\"__lib_"), "no mangled locus type names in the observation: {snap}");
     // an intent through the membrane lands in the organism's Journal
     let before = std::fs::read_to_string(app.join(".hale/dna/journal.jsonl")).unwrap().lines().count();
     let body = r#"{"intent_id":"i1","outcome":"write the changelog","from":"test"}"#;
     let r = http(port, &format!("POST /ctl/intent HTTP/1.0\r\nHost: x\r\nContent-Length: {}\r\n\r\n{body}", body.len()));
     assert!(r.contains("200"), "{r}");
+    // …and so does `hale dna ask` WHILE iris holds the membrane (F.13:
+    // it goes through iris's /ctl, and the answer comes from the Journal)
+    let ask = Command::new(env!("CARGO_BIN_EXE_hale"))
+        .args(["dna", "ask", "also", "tag", "the", "release"])
+        .current_dir(&app)
+        .env("XDG_CACHE_HOME", &cache)
+        .output()
+        .unwrap();
+    let ask_out = format!("{}{}", String::from_utf8_lossy(&ask.stdout), String::from_utf8_lossy(&ask.stderr));
     let grew = {
         let dl = Instant::now() + Duration::from_secs(15);
         loop {
@@ -92,8 +111,25 @@ fn run_hosts_the_organism_with_iris_and_the_membrane_and_holds_no_state() {
             std::thread::sleep(Duration::from_millis(200));
         }
     };
+    // the status projection followed the Journal
+    let status_ok = {
+        let dl = Instant::now() + Duration::from_secs(10);
+        loop {
+            let st = std::fs::read_to_string(app.join(".hale/dna/status.json")).unwrap_or_default();
+            if st.contains("\"t1\"") {
+                break true;
+            }
+            if Instant::now() > dl {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    };
     finish(&mut host);
     assert!(grew, "the organism journaled intent.offered + task.born");
+    assert!(ask.status.success() && ask_out.contains("task t2 born"), "ask through iris: {ask_out}");
+    assert!(status_ok, "status.json re-projected from the Journal");
+    assert!(!app.join(".hale/dna/iris.port").exists(), "the port file is gone with the host");
     let _ = std::fs::remove_dir_all(&d);
 }
 
