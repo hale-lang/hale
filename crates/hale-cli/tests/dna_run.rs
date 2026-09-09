@@ -33,7 +33,7 @@ fn run_hosts_the_organism_with_iris_and_the_membrane_and_holds_no_state() {
     let (ok, out) = hale(&["dna", "new", "org"], &d);
     assert!(ok, "{out}");
     let app: PathBuf = d.join("org");
-    let cache = d.join("cache");
+    let cache = std::env::temp_dir().join("hale-tests-iris-cache");
     let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
         .args(["dna", "run", ".", "--port", &port.to_string()])
