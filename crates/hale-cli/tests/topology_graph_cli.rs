@@ -3423,7 +3423,7 @@ fn main() { App { }; }
     let artifact = dump_artifact(&dir, &src);
     let raw = std::fs::read_to_string(&artifact).unwrap();
     let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
-    assert_eq!(v["schema"], "1.18");
+    assert_eq!(v["schema"], "1.19");
     let adequacy =
         v["adequacy"].as_object().expect("adequacy object");
     assert!(

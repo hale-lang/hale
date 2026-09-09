@@ -175,7 +175,7 @@ use crate::symbol::Bundle;
 // stdlib re-emerges into user code only from inside its own loops,
 // which sets the bit either way — so this bumps the schema without
 // moving a single committed baseline hash.
-pub const TOPOLOGY_SCHEMA: &str = "1.18";
+pub const TOPOLOGY_SCHEMA: &str = "1.19";
 
 /// GH #408 Phase 0: what the rows MEAN, as distinct from their shape.
 ///
@@ -786,6 +786,47 @@ pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
                 ",\n  \"contracts\": [{}]",
                 rows.join(", ")
             ));
+        }
+        // GH #528 (schema 1.19): the DECLARED bindings — which topics
+        // the main locus routes across a process boundary, on which
+        // transport, in which role. A deployment fact of the source
+        // that `hale dna init` seeds the Journal from and a fleet
+        // consumer can read without re-parsing. Unhashed (a binding
+        // changes where a message goes, not the model's shape).
+        {
+            let e = &vmodel.entities;
+            let mut rows: Vec<String> = Vec::new();
+            for tb in &vmodel.relations.binds {
+                let Some(b) = e.bindings.get(tb.binding.index()) else { continue };
+                let topic = e.topics.get(tb.topic.index()).map(|t| t.display.clone()).unwrap_or_default();
+                let transport = match &b.transport {
+                    hale_model::TransportKind::Unix => "unix".to_string(),
+                    hale_model::TransportKind::Udp => "udp".to_string(),
+                    hale_model::TransportKind::ShmRing => "shm_ring".to_string(),
+                    hale_model::TransportKind::Adapter(n) => format!("adapter:{n}"),
+                };
+                let role = match b.role {
+                    hale_model::BindingRole::Listen => "listen",
+                    hale_model::BindingRole::Connect => "connect",
+                };
+                let loss = match b.loss {
+                    hale_model::keys::BindingLossBehavior::Drop => "drop",
+                    hale_model::keys::BindingLossBehavior::WaitCapable => "wait_capable",
+                    hale_model::keys::BindingLossBehavior::Fail => "fail",
+                };
+                rows.push(format!(
+                    "{{\"topic\": {}, \"subject\": {}, \"transport\": {}, \"role\": {}, \"loss\": {}{}}}",
+                    quote(&topic),
+                    quote(subj_pat(b.subject)),
+                    quote(&transport),
+                    quote(role),
+                    quote(loss),
+                    ep_loc(b.provenance)
+                ));
+            }
+            rows.sort();
+            rows.dedup();
+            out.push_str(&format!(",\n  \"bindings\": [{}]", rows.join(", ")));
         }
     }
     out.push_str(",\n  \"claims\": [\n");
@@ -1651,6 +1692,7 @@ const CANONICAL_TOP_LEVEL: &[&str] = &[
     "endpoints",
     "declares_publish",
     "contracts",
+    "bindings",
     "claims",
     "lowered",
     "law",

@@ -9,8 +9,14 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+/// ONE cache for every test that launches the observer, in this
+/// binary and its siblings (dna_run, dna_status, dna_membrane): the
+/// observer builds once per machine and `hale iris` serializes the
+/// build with a lock, so five tests on a loaded CI shard do not each
+/// compile it. Never deleted: it is toolchain-hashed, and the next
+/// run wants it.
 fn cache_root() -> PathBuf {
-    let d = std::env::temp_dir().join(format!("hale-iris-cli-test-{}", std::process::id()));
+    let d = std::env::temp_dir().join("hale-tests-iris-cache");
     std::fs::create_dir_all(&d).unwrap();
     d
 }
@@ -64,7 +70,7 @@ fn iris_materializes_builds_once_and_serves_a_snapshot() {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn hale iris");
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + Duration::from_secs(300);
     let mut body = String::new();
     while Instant::now() < deadline {
         if let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) {
@@ -81,7 +87,6 @@ fn iris_materializes_builds_once_and_serves_a_snapshot() {
     }
     let _ = child.kill();
     let _ = child.wait();
-    let _ = std::fs::remove_dir_all(&cache);
     assert!(body.contains("\"processes\""), "fuse-hl served a snapshot: {body:?}");
 }
 
@@ -94,8 +99,8 @@ fn iris_inspect_builds_and_reports_a_missing_artifact() {
     // hale iris build error).
     assert!(!ok, "inspect on a missing artifact must not succeed");
     assert!(!err.contains("failed"), "inspector must have built and run: {err}");
-    assert!(cache.join("hale/iris").exists(), "inspector materialized under the private cache");
-    let _ = (out, std::fs::remove_dir_all(&cache));
+    assert!(cache.join("hale/iris").exists(), "inspector materialized under the shared cache");
+    let _ = out;
 }
 
 /// GH #527 B5: `hale iris --diff a b` diffs the pair with the
@@ -132,7 +137,7 @@ fn iris_diff_pair_rides_into_the_snapshot() {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn hale iris --diff");
-    let deadline = Instant::now() + Duration::from_secs(25);
+    let deadline = Instant::now() + Duration::from_secs(300);
     let mut body = String::new();
     while Instant::now() < deadline {
         if let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) {
@@ -150,7 +155,6 @@ fn iris_diff_pair_rides_into_the_snapshot() {
     }
     let _ = child.kill();
     let _ = child.wait();
-    let _ = std::fs::remove_dir_all(&cache);
     let json_start = body.find("{\"ts\"").expect("snapshot body");
     let v: serde_json::Value = serde_json::from_str(&body[json_start..]).expect("snapshot is JSON");
     assert_eq!(v["diff"]["state"], "loaded", "{body}");
