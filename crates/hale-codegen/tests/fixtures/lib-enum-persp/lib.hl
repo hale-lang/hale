@@ -18,6 +18,10 @@ fn first() -> String {
     return name(Color::Red);
 }
 
+fn pick_color() -> Color {
+    return Color::Green;
+}
+
 fn is_green(c: Color) -> Bool {
     return match c {
         Color::Green -> true,

@@ -497,7 +497,7 @@ fn library_enum_match_and_perspective_serves_survive_import() {
     let _ = std::fs::remove_file(&bin);
     assert!(out.status.success(), "non-zero exit: {:?} stderr={}", out.status, String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8_lossy(&out.stdout);
-    for needle in ["first=red", "green=true", "which=second", "after=second", "label=b"] {
+    for needle in ["first=red", "green=true", "which=second", "after=second", "label=b", "picked=g"] {
         assert!(stdout.contains(needle), "missing {needle}: {stdout:?}");
     }
 }
