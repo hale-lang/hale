@@ -132,6 +132,8 @@ locus AutonomyBoundary {
     }
     fn current_grant() -> Grant { return self.grant; }
     // The disposition of a proposed change under the current grant.
+    // One audit row per assessment; bounded by the Mutations proposed.
+    @unbounded
     fn assess(change_class: String, m: Magnitude, e: Evidence) -> Disposition {
         let d = dispose(self.grant, change_class, m, e);
         self.decisions = self.decisions + 1;
@@ -159,7 +161,9 @@ locus AutonomyBoundary {
     // ...and expansion needs the PARENT. A request from the child (or
     // anyone who is not the owning parent) is refused and recorded.
     fn expand(requested_by: String, parent: String, new_max: Int, add_classes: String) -> Bool {
-        if requested_by != parent || self.grant.may_expand_self {
+        // the child never expands its own grant, whatever it names as
+        // the parent; and only the parent may ask at all
+        if requested_by == self.child || requested_by != parent || self.grant.may_expand_self {
             self.expansions_refused = self.expansions_refused + 1;
             self.audit.push(AuditRow { seq: self.decisions, disposition: "refuse-expand", note: "requested by " + requested_by });
             return false;

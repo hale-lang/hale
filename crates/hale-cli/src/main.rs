@@ -4836,6 +4836,13 @@ fn collect_test_files(target: &Path, out: &mut Vec<PathBuf>) -> Result<(), Strin
         entries.sort();
         for p in entries {
             if p.is_dir() {
+                // `vendor/` and dot-directories are skipped (spec/testing.md):
+                // a toolchain-managed tree, and the DNA's `.hale/` — its
+                // worktrees carry the application's own tests (GH #529 D7)
+                let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                if name == "vendor" || name.starts_with('.') {
+                    continue;
+                }
                 collect_test_files(&p, out)?;
             } else if p
                 .file_name()

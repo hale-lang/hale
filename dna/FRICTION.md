@@ -443,6 +443,54 @@ attached iris; the `iris.port` detour is gone. Test:
 while iris was attached and `ask` / `review` published through
 iris's `/ctl` endpoints.
 
+## F.14 — an imported main's inline claims cannot see its seed's groups
+
+**Where:** the acceptance application (GH #529 D7): the site's chat
+server declares `group participants = { Participant };` and a claim
+`forbid reaches(participants, effects(secret_use)) avoiding rooms`
+inline in its `main locus`. Its own tests `import ".." as app`.
+
+**What:** `hale test` on the importer fails with "claim
+`guests_sign_only_via_rooms` names group `participants`, which is
+never declared" — the imported main's inline claims are checked in
+the importer's scope, where the seed's top-level groups are not
+visible. The same claim in a `constitution Chat { … }` the main
+adopts resolves its groups in the constitution's own scope and
+passes. Reproducer: `dna/acceptance/chat-server` with the claim moved
+back inline, then `hale test dna/acceptance/chat-server`.
+
+**Worked around:** the acceptance copy carries the claim as an
+adopted constitution (the page keeps it inline).
+
+## F.15 — a flow child cannot outlive its `run()` to await a bus reply
+
+**Where:** the intent path (GH #529 D7 steps 4–6): a Task's routed
+Work publishes `WorkRequested` and the assembly answers with
+`WorkDone` after seconds of toolchain work.
+
+**What:** in-process (no bindings) the round trip is synchronous —
+the request dispatches nested inside the publish and the reply is at
+the Work by drain (F.5). In a bound organism (an off-thread bus) the
+publish is queued: the Work, Step, Workflow and Task all finish their
+`run()` before the assembly's handler runs, so the Task settled
+`failed` with an empty history and the later `WorkDone` had no
+subscriber. Waiting inside `run()` with sliced sleeps does not help:
+the whole chain runs inside the assembly's `on_intent` handler, and
+no other handler on the pool is dispatched while a handler sleeps —
+the request never reaches its handler, the Work waits until its
+timeout. A locus born in a handler that must survive an asynchronous
+reply has no shape in the language today (it is either a flow child
+that dissolves at drain or a static param).
+
+**Recorded, by design (for now):** a routed Work settles `pending`,
+the Step / Workflow / Task carry it up unchanged, the assembly
+journals `task.pending` at the offer, and — when the routed Work is
+done — settles the durable Task in the Journal (`task.done` /
+`task.failed`, naming the Work and the performer). The live tree is
+the expression of one synchronous pass; the Journal is the Task. In
+process, where the reply arrives at drain, the Task still settles
+`done` in its own pass and nothing is journaled twice.
+
 **Compiler bugs fixed in this track:** F.2 (`@unbounded` ignored by the
 hot-path lint), F.6 (release dispatch by child type alone — memory
 corruption).
@@ -459,7 +507,11 @@ rewrite: a library cannot use its own enums or perspectives until they
 are.
 
 **Recorded, by design:** F.5 (a bus reply reaches a flow child at
-drain, so the retry loop lives with whoever owns the performers).
+drain, so the retry loop lives with whoever owns the performers),
+F.15 (a flow child cannot await an asynchronous reply: routed Work
+settles pending, the assembly settles the durable Task from the
+Journal), F.14 (an imported main's inline claims cannot see its
+seed's groups; an adopted constitution can).
 
 **Runtime limitations, FIXED:** F.12 (keyed subscriptions now hear
 wire deliveries — receive-side key derivation), F.13 (a listen

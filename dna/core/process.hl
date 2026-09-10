@@ -150,6 +150,13 @@ locus Work {
                 requires: self.requires,
                 data_class: self.data_class
             };
+            // In-process the answer arrives at drain (F.5) and `on_done`
+            // overwrites this; behind an off-thread bus (a bound organism)
+            // it arrives after this Work is gone (F.15): the Work settles
+            // PENDING, and the assembly settles the durable Task from the
+            // Journal when the routed Work is done.
+            self.disposition = "pending";
+            self.history = "routed:in-flight ";
         } else {
             self.performer.fail_first = self.fail_first;
             let mut n = 0;
@@ -198,6 +205,7 @@ locus Step {
         works_done: Int = 0;
         works_failed: Int = 0;
         works_violated: Int = 0;
+        works_pending: Int = 0; // routed Work whose settlement is still on its way (F.15)
         child_tasks_settled: Int = 0;
         disposition: String = "";
         detail: String = "";
@@ -226,6 +234,7 @@ locus Step {
     }
     release (w: Work) {
         if w.disposition == "done" { self.works_done = self.works_done + 1; }
+        else if w.disposition == "pending" { self.works_pending = self.works_pending + 1; }
         else { self.works_failed = self.works_failed + 1; }
         self.detail = self.detail + w.work_id + "=" + w.disposition + "[" + w.history + "] ";
     }
@@ -270,7 +279,8 @@ locus Step {
         }
         // join at the Step boundary
         let delegated_ok = !self.delegate || self.child_tasks_settled > 0;
-        if self.works_failed == 0 && delegated_ok { self.disposition = "done"; }
+        if self.works_failed == 0 && self.works_pending > 0 && delegated_ok { self.disposition = "pending"; }
+        else if self.works_failed == 0 && delegated_ok { self.disposition = "done"; }
         else { self.disposition = "failed"; }
     }
 }
@@ -295,6 +305,7 @@ locus Workflow {
         steps_done: Int = 0;
         steps_failed: Int = 0;
         steps_skipped: Int = 0; // dependents that never activated
+        steps_pending: Int = 0; // routed Work still in flight (F.15): the chain stops here, pending
         disposition: String = "";
         detail: String = "";
     }
@@ -310,6 +321,7 @@ locus Workflow {
     accept(s: Step) { }
     release (s: Step) {
         if s.disposition == "done" { self.steps_done = self.steps_done + 1; }
+        else if s.disposition == "pending" { self.steps_pending = self.steps_pending + 1; }
         else { self.steps_failed = self.steps_failed + 1; }
         self.detail = self.detail + s.step_id + "=" + s.disposition + " {" + s.detail + "} ";
     }
@@ -323,7 +335,7 @@ locus Workflow {
         // means its dependents never activate.
         let mut i = 0;
         let mut cancelled = false;
-        while i < self.steps && self.steps_failed == 0 && !cancelled {
+        while i < self.steps && self.steps_failed == 0 && self.steps_pending == 0 && !cancelled {
             if i == self.cancel_at {
                 // Cancellation is a Task-owned transition; the Workflow
                 // stops activating dependents and says so.
@@ -345,8 +357,9 @@ locus Workflow {
                 i = i + 1;
             }
         }
-        self.steps_skipped = self.steps - self.steps_done - self.steps_failed;
+        self.steps_skipped = self.steps - self.steps_done - self.steps_failed - self.steps_pending;
         if cancelled { self.disposition = "cancelled"; }
+        else if self.steps_failed == 0 && self.steps_pending > 0 { self.disposition = "pending"; }
         else if self.steps_failed == 0 && self.steps_done == self.steps { self.disposition = "done"; }
         else { self.disposition = "failed"; }
     }
@@ -413,6 +426,11 @@ locus Metabolism {
         log: SettledRows = SettledRows { };
         minted: Int = 0;
         last_id: String = "";
+        // The Workflow definition in force for the NEXT Task. Evolving
+        // it (GH #529 D7 extension 1) changes future adoption only: a
+        // Task binds the revision at birth and finishes under it.
+        workflow_revision: Int = 1;
+        offering: Bool = false; // inside `offer`: a Task settling now settled synchronously
     }
     bus { publish TaskSettled; }
     accept(t: Task) { }
@@ -422,11 +440,15 @@ locus Metabolism {
             kind: "task",
             parent: t.parent_task,
             disposition: t.disposition,
-            detail: t.detail
+            detail: t.detail,
+            revision: t.revision
         });
-        if t.parent_task != "" {
-            // Mediation: the child settled; tell the tower that is
-            // waiting, and only that tower (keyed by parent_task).
+        // Mediation: the child settled; tell the tower that is waiting
+        // (keyed by parent_task). A root's settlement (parent "") is
+        // for the assembly — only when it settles LATER than its offer
+        // (routed Work); a synchronous settlement is read by `offer`'s
+        // caller directly.
+        if t.parent_task != "" || !self.offering {
             TaskSettled <- TaskSettlement {
                 task_id: t.task_id,
                 parent_task: t.parent_task,
@@ -436,6 +458,13 @@ locus Metabolism {
             };
         }
     }
+    // Ids continue from the Journal across restarts (the assembly
+    // resumes the count at birth): a durable id is never minted twice.
+    fn resume(minted: Int) { if minted > self.minted { self.minted = minted; } }
+    fn evolve_workflow() -> Int {
+        self.workflow_revision = self.workflow_revision + 1;
+        return self.workflow_revision;
+    }
     // Intent enters here; accepting it births a durable Task. Reached
     // per intent from the membrane handler: one Task per offer, owned
     // and settled here.
@@ -444,12 +473,14 @@ locus Metabolism {
         self.minted = self.minted + 1;
         let id = "t" + to_string(self.minted);
         self.last_id = id;
+        self.offering = true;
         Task {
-            task_id: id, intent: i, steps: k.steps, fan: k.fan,
+            task_id: id, intent: i, revision: self.workflow_revision, steps: k.steps, fan: k.fan,
             delegate_at: k.delegate_at, cancel_at: k.cancel_at,
             routed: k.routed, requires: k.requires, data_class: k.data_class,
             fail_first: k.fail_first, escalate: k.escalate
         };
+        self.offering = false;
         return id;
     }
     fn settled_count() -> Int { return self.log.len(); }

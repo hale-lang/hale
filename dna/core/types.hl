@@ -34,6 +34,7 @@ type Settled {
     disposition: String = "";
     detail: String = "";
     attempts: Int = 0;
+    revision: Int = 0; // the Workflow definition revision a Task was born with
 }
 
 // Executor-neutral unit of work: the METHOD is open, the envelope is

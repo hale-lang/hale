@@ -209,6 +209,14 @@ locus HaleVerification {
             let rp = self.record(j, cand, m.id, "replay", run_tool(self.hale_bin + "\nreplay\n" + self.recording + "\n" + wt + "\n--feed"));
             replay_ok = rp == 0;
         }
+        // rollback rehearsed: the candidate can be stepped off and back
+        // onto mechanically, in its own worktree, before anything applies
+        let mut rehearsed = -1;
+        if check == 0 && len(m.base_commit) > 0 {
+            let back = run_tool("git\n-C\n" + m.worktree + "\ncheckout\n-q\n" + m.base_commit);
+            let forth = run_tool("git\n-C\n" + m.worktree + "\ncheckout\n-q\n" + cand);
+            rehearsed = self.record(j, cand, m.id, "rollback", RunResult { code: if back.code == 0 && forth.code == 0 { 0 } else { 1 }, stdout: "checkout " + m.base_commit + " then " + cand + "\n", stderr: back.stderr + forth.stderr });
+        }
         let mut diff = -1;
         let mut diff_json = "";
         let mut diff_text = "";
@@ -230,14 +238,18 @@ locus HaleVerification {
         }
         // a project with no tests has no test evidence, only an exit code
         let tested = test == 0 && std::str::contains(tests.stdout, ", 0 failed");
-        self.last = VerificationReport {
-            mutation_id: m.id, candidate: cand, candidate_shape: shape,
-            evidence: Evidence { check_clean: check == 0, verify_clean: verify == 0, tests_pass: tested, replay_ok: replay_ok },
-            magnitude: mag,
-            steps: "fmt=" + to_string(fmt) + " check=" + to_string(check) + " verify=" + to_string(verify) + " test=" + to_string(test) + " diff=" + to_string(diff),
-            candidate_topology: if check == 0 { topo } else { "" },
-            diff_json: diff_json, diff_text: diff_text
-        };
+        self.last = self.assemble(m.id, cand, shape,
+            Evidence { check_clean: check == 0, verify_clean: verify == 0, tests_pass: tested, replay_ok: replay_ok, rollback_rehearsed: rehearsed == 0 },
+            mag, fmt, check, verify, test, diff, rehearsed, if check == 0 { topo } else { "" }, diff_json, diff_text);
         return self.last;
+    }
+    // One report per run; bounded by the runs a Review asks for.
+    @unbounded
+    fn assemble(id: String, cand: String, shape: String, e: Evidence, mag: Magnitude, fmt: Int, check: Int, verify: Int, test: Int, diff: Int, rehearsed: Int, topo: String, diff_json: String, diff_text: String) -> VerificationReport {
+        return VerificationReport {
+            mutation_id: id, candidate: cand, candidate_shape: shape, evidence: e, magnitude: mag,
+            steps: "fmt=" + to_string(fmt) + " check=" + to_string(check) + " verify=" + to_string(verify) + " test=" + to_string(test) + " diff=" + to_string(diff) + " rollback=" + to_string(rehearsed),
+            candidate_topology: topo, diff_json: diff_json, diff_text: diff_text
+        };
     }
 }

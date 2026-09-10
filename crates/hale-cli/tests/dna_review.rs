@@ -93,7 +93,8 @@ fn a_mutation_is_rendered_offline_and_decided_through_the_organism() {
         "+// tuned: the entrypoint is documented here",
         "semantic diff (hale model diff",
         "classification: source-only",
-        "evidence (fmt=0 check=0 verify=0 test=0 diff=0):",
+        "evidence (fmt=0 check=0 verify=0 test=0 diff=0 rollback=0):",
+        "rollback   yes    0",
         "base       yes    0",
         "check      yes    0",
         "test       yes    0",
@@ -102,7 +103,7 @@ fn a_mutation_is_rendered_offline_and_decided_through_the_organism() {
         assert!(view.contains(needle), "missing {needle:?} in:\n{view}");
     }
     let (ok, st) = hale(&["dna", "status"], &app);
-    assert!(ok && st.contains("mutations:  1") && st.contains("m1 [stage] docs: document the entrypoint"), "{st}");
+    assert!(ok && st.contains("mutations:  1") && st.contains("m1 [stage] docs: document the entrypoint (main.hl) · task t0"), "{st}");
 
     // 3. the organism, started AFTER the request, re-births the Review
     let cache = std::env::temp_dir().join("hale-tests-iris-cache");

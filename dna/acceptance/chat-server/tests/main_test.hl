@@ -1,0 +1,12 @@
+// The application's own tests: what `hale dna init` must leave passing,
+// and what every candidate Mutation is verified against.
+
+import ".." as app;
+
+fn main() {
+    let r = app::Room { room: 3 };
+    std::test::assert_eq_int(r.lines, 0, "a fresh room has no lines");
+    std::test::assert_eq_int(r.s.stamp(3), 3 * 31 + 40961 % 997, "the signer stamps a room deterministically");
+    let d = app::Doorman { };
+    std::test::assert_eq_int(d.seen, 0, "a fresh doorman has greeted nobody");
+}

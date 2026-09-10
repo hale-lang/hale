@@ -1034,7 +1034,7 @@ pub fn build_executable_with_options(
     bg_programs.insert("__codegen_merged".to_string(), &merged);
     let bundle = hale_types::symbol::Bundle::new(bg_programs);
     let has_socket_binding = merged.items.iter().any(|item| {
-        matches!(item, TopDecl::Locus(l) if l.is_main && l.members.iter().any(|m| {
+        matches!(item, TopDecl::Locus(l) if l.is_main && !l.name.name.starts_with("__lib_") && l.members.iter().any(|m| {
             matches!(m, LocusMember::Bindings(b) if !b.entries.is_empty())
         }))
     });
@@ -9381,7 +9381,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let mut wire_subjects: BTreeMap<String, String> = BTreeMap::new();
         Self::collect_topic_wire_subjects(&self.program.items, &mut wire_subjects);
         let main_locus = self.program.items.iter().find_map(|item| match item {
-            TopDecl::Locus(l) if l.is_main => Some(l),
+            TopDecl::Locus(l) if l.is_main && !l.name.name.starts_with("__lib_") => Some(l),
             _ => None,
         });
         let Some(l) = main_locus else { return };
@@ -9627,7 +9627,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// for every user locus per the F.31 spec amendment).
     fn collect_main_placement(&mut self) {
         let main_locus = self.program.items.iter().find_map(|item| match item {
-            TopDecl::Locus(l) if l.is_main => Some(l),
+            TopDecl::Locus(l) if l.is_main && !l.name.name.starts_with("__lib_") => Some(l),
             _ => None,
         });
         let Some(l) = main_locus else { return };
@@ -9853,7 +9853,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // would have errored in typecheck; we defensively pick the
         // first match here.
         let main_locus = self.program.items.iter().find_map(|item| match item {
-            TopDecl::Locus(l) if l.is_main => Some(l.clone()),
+            TopDecl::Locus(l) if l.is_main && !l.name.name.starts_with("__lib_") => Some(l.clone()),
             _ => None,
         });
         let Some(l) = main_locus else { return Ok(()) };
@@ -10809,7 +10809,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
     ) -> Result<(), CodegenError> {
         let main_locus = self.program.items.iter().find_map(|item| match item {
-            TopDecl::Locus(l) if l.is_main => Some(l.clone()),
+            TopDecl::Locus(l) if l.is_main && !l.name.name.starts_with("__lib_") => Some(l.clone()),
             _ => None,
         });
         let Some(l) = main_locus else { return Ok(()) };

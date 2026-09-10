@@ -84,6 +84,49 @@ locus SourceEditor {
     fn kind() -> String { return "agent"; }
     fn identity() -> String { return self.name; }
     fn confine(root: String) { self.tools.confine(root); }
+    fn grant() -> String { return "read edit fmt check @" + self.tools.root; }
+    // The `.hl` files of the grant's root, newline-separated: what an
+    // Attempt may inspect (nothing outside the grant is listed).
+    @unbounded
+    fn files() -> String {
+        let n = std::io::fs::list_dir_count(self.tools.root) or 0;
+        let mut out = "";
+        let mut i = 0;
+        while i < n {
+            let name = std::io::fs::list_dir_at(self.tools.root, i) or "";
+            if len(name) > 3 && name[(len(name) - 3)..len(name)] == ".hl" { out = out + name + "\n"; }
+            i = i + 1;
+        }
+        return out;
+    }
+    // Which file the objective is about (GH #529 D7 step 5): a file the
+    // objective names, else the quick tier's pick from the listing —
+    // and only a listed file is ever a target.
+    @unbounded
+    fn locate(objective: String) -> String {
+        let listing = self.files();
+        let mut rest = objective;
+        while len(rest) > 0 {
+            let sp = std::str::index_of(rest, " ");
+            let mut tok = if sp < 0 { rest } else { rest[0..sp] };
+            if len(tok) > 0 && (tok[0..1] == "(" || tok[0..1] == "`") { tok = tok[1..len(tok)]; }
+            while len(tok) > 0 && (tok[(len(tok) - 1)..len(tok)] == ")" || tok[(len(tok) - 1)..len(tok)] == "," || tok[(len(tok) - 1)..len(tok)] == "." || tok[(len(tok) - 1)..len(tok)] == "`" || tok[(len(tok) - 1)..len(tok)] == "?") {
+                tok = tok[0..(len(tok) - 1)];
+            }
+            if len(tok) > 3 && std::str::contains(listing, tok + "\n") { return tok; }
+            if sp < 0 { rest = ""; } else { rest = rest[(sp + 1)..len(rest)]; }
+        }
+        let pick = self.models.ask(ModelRequest {
+            attempt_id: "locate", role: "locate",
+            prompt: "Which one of these files should change so that: " + objective + "\nAnswer with the file name only.",
+            context: listing, context_bytes: len(listing) + len(objective),
+            tool_grant: self.grant(), data_class: "internal"
+        });
+        if !pick.ok { return ""; }
+        let name = trim_nl(pick.output);
+        if len(name) > 0 && std::str::contains(listing, name + "\n") { return name; }
+        return "";
+    }
     // Bounded by the attempt cap of the Work that owns this performer.
     @unbounded
     fn perform(req: WorkRequest) -> WorkResult {
@@ -100,7 +143,7 @@ locus SourceEditor {
             attempt_id: attempt, role: "edit",
             prompt: "Rewrite " + req.target + " so that: " + req.objective + "\nReturn the whole file.",
             context: current, context_bytes: len(current) + len(req.objective),
-            data_class: req.data_class
+            tool_grant: self.grant(), data_class: req.data_class
         });
         if !edit.ok {
             return WorkResult { disposition: "failed", narrative: "edit refused: " + edit.refused, performer: self.name };
@@ -116,7 +159,7 @@ locus SourceEditor {
             attempt_id: attempt, role: "assess", assurance: 2,
             prompt: "Which fitness signals should this change move, and which way? One per line: <signal> <+|->",
             context: edit.output, context_bytes: len(edit.output),
-            data_class: req.data_class, retry_of: attempt + ":edit"
+            tool_grant: self.grant(), data_class: req.data_class, retry_of: attempt + ":edit"
         });
         let b = std::json::Builder { };
         b.begin_object();

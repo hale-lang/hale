@@ -52,7 +52,7 @@ main locus App {
 
         // ---- a candidate that checks ---------------------------------------
         let r = self.v.verify(self.journal, dna::Mutation { id: "m1", worktree: root + "/wt", candidate_commit: "cand1" }, root + "/baseline.topology");
-        std::test::assert_eq_str(r.steps, "fmt=0 check=0 verify=0 test=0 diff=0", "every step ran clean: " + r.steps);
+        std::test::assert_eq_str(r.steps, "fmt=0 check=0 verify=0 test=0 diff=0 rollback=-1", "every step ran clean (no base commit: no rehearsal): " + r.steps);
         std::test::assert(r.evidence.check_clean && r.evidence.verify_clean, "check and verify evidence");
         std::test::assert(!r.evidence.tests_pass, "no tests is no test evidence");
         std::test::assert(!r.evidence.replay_ok, "no recording is no replay evidence");

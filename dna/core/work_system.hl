@@ -191,6 +191,10 @@ locus WorkSystem {
     // Bounded by max_attempts; one Attempt literal per try.
     @unbounded
     fn on_request(req: WorkRequest) {
+        // Work that changes source is the assembly's own (its editor,
+        // its gateway, its Journal — GH #529 D7); the router's
+        // performers never touch the genome.
+        if std::str::contains(req.requires, "edit") { return; }
         self.requests = self.requests + 1;
         let mut n = 0;
         let mut last = "";
