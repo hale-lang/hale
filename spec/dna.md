@@ -156,3 +156,16 @@ answered; `hale dna pressure raise <source> <what>` publishes one
 signal on the membrane's fourth topic, `PressureRaised`
 (`dna.pressure.raised`).
 
+## The editing position
+
+`SourceEditor.perform` plans the files an objective is about — every
+listed file the objective names, else the quick tier's plan from the
+listing, one file per line; only a listed file is ever a target —
+edits each (one model call per file, the request naming the file as
+`target`), formats and checks the seed, and, when the check fails,
+tries again with the diagnostics in the prompt, up to `max_tries`
+in all (default 3). Each try is an attempt id (`<work>/a<n>`), so
+every try's model calls are evidence in the record. The result names
+the files changed and the tries taken; a proposal that does not check
+within the bound is a failed Attempt with the last diagnostics.
+
