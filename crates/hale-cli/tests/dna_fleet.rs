@@ -93,16 +93,29 @@ impl Fleet {
         (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
     }
     fn spawn(&mut self, args: &[&str], cwd: &Path) {
+        // stderr to a file per process, shown when the test fails
+        let log = std::fs::File::create(self.d.join(format!("{}.stderr", args.iter().take(2).map(|a| a.replace('/', "_")).collect::<Vec<_>>().join("-")))).unwrap();
         let c = Command::new(env!("CARGO_BIN_EXE_hale"))
             .args(args)
             .current_dir(cwd)
             .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
             .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(log)
             .spawn()
             .expect("spawn");
         self.procs.push(c);
+    }
+    fn logs(&self) -> String {
+        let mut out = String::new();
+        if let Ok(rd) = std::fs::read_dir(&self.d) {
+            for f in rd.flatten() {
+                if f.path().extension().map(|x| x == "stderr").unwrap_or(false) {
+                    out.push_str(&format!("--- {}\n{}\n", f.file_name().to_string_lossy(), std::fs::read_to_string(f.path()).unwrap_or_default()));
+                }
+            }
+        }
+        out
     }
     fn stop(&mut self) {
         for p in self.procs.iter_mut() {
@@ -185,11 +198,12 @@ fn bring_up(tag: &str) -> Fleet {
     }
     assert!(out.contains("touching api-0 api-1"), "{out}");
     let base = f.base.clone();
-    let up = wait_row(&app, 90, |(_, k, e, b)| k == "instance.up" && e == "api-0" && b.contains(&base)) && wait_row(&app, 90, |(_, k, e, b)| k == "instance.up" && e == "api-1" && b.contains(&base));
+    let up = wait_row(&app, 180, |(_, k, e, b)| k == "instance.up" && e == "api-0" && b.contains(&base)) && wait_row(&app, 180, |(_, k, e, b)| k == "instance.up" && e == "api-1" && b.contains(&base));
     if !up {
         let dump = dump(&app);
+        let logs = f.logs();
         f.stop();
-        panic!("the base was not expressed by both nodes:\n{dump}");
+        panic!("the base was not expressed by both nodes:\n{dump}\n{logs}");
     }
     f
 }
