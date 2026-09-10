@@ -161,12 +161,15 @@ publishes and reads.
 
 Phase 2 (Track D) lets an Attempt change the genome. Two gateways in
 the core carry that, each with the effect class the law reasons
-about:
+about. Neither holds a Journal of its own: the assembly hands its
+one Journal to every gated call, so the gateway's events sit in the
+same chain as everything else and cannot be wired with a private one.
 
 - `IsolatedWorktrees { repo, root }` — one `git worktree` per
   Mutation, named by its id under `.hale/dna/worktrees`, detached at
-  the base commit; removed when the Mutation dissolves. Carries
-  `worktree_io`. The base is recorded as the commit *and* the
+  the base commit, with the repository's `vendor/` copied in (it is
+  toolchain-managed and ignored by git); removed when the Mutation
+  dissolves. Carries `worktree_io`. The base is recorded as the commit *and* the
   `exec_digest` of the checked build it was expressed as.
 - `LocalGit { repo }` — `commit_all`, `diff`, `contains`, and
   `apply`. `apply` fast-forwards the repository to the exact reviewed
@@ -224,8 +227,10 @@ editor's.
 `HaleVerification { hale_bin, evidence_dir, recording }` runs the
 toolchain over a candidate's worktree — `hale fmt --check`, `hale
 check --json --dump-topology`, `hale verify --json`, `hale test`,
-`hale model diff <baseline> <candidate>`, and `hale replay --feed`
-when the project has a recording — and keeps every result as
+`hale model diff <base> <candidate>` (the base artifact cut from the
+genome's seed at the same moment, so the diff is against what the
+candidate actually changed), and `hale replay --feed` when the
+project has a recording — and keeps every result as
 content-addressed evidence: the step's output goes to
 `.hale/dna/evidence/<sha256>.txt`, and an `evidence.<step>` event
 on the candidate commit carries the exit code and that digest
@@ -247,6 +252,60 @@ the lineage has applied anything). It is journaled as
 see an added locus that reaches a declared class, `hale model
 diff` now reports one-sided fns with effects as rows of their own
 (`+ fn Mailer::on_ping reaches mail`).
+
+### The Review that blocks
+
+`Dna.mutate(task, class, objective, target, now)` is the pipeline up
+to the human: open a worktree at the genome's head (the gateway,
+journaled and fenced), point the editor's grant at it and let it
+propose, commit the candidate, verify it with receipts, and put it
+under a `Review` — a child of the assembly, keyed on the mutation's
+id, **pinned to the exact candidate commit**. Every disposition the
+boundary computes is recorded (`mutation.review`, `mutation.stage`,
+`mutation.escalate`), and in Phase 2 every one of them still blocks
+on a human: the verdict is the assurance the grant cannot supply. A
+candidate that does not check is `mutation.deny` and never a
+candidate.
+
+The `review.requested` event carries what a reviewer decides on: the
+question, the required authority, the base and candidate commits,
+the candidate's shape hash, the disposition, the evidence steps, the
+magnitude vector, and where the semantic diff lives. So the review
+renders **offline**:
+
+```sh
+hale dna review            # the pending Reviews, one line each
+hale dna review m1         # source diff · semantic diff · evidence table · magnitude
+hale dna review m1 --iris  # the same diff in iris [4], beside the status and the membrane form
+```
+
+The source diff is git's (base to candidate); the semantic diff is
+`hale model diff --text` read from its receipt; the evidence table is
+one row per toolchain step with its exit code and the digest of its
+receipt. The kill test (`dna/kill-test/`) is why all three are shown
+together: the semantic view decides law and structure, the source
+view decides handler behaviour, and neither is offered alone.
+
+A verdict names the candidate the reviewer looked at:
+
+```sh
+hale dna review m1 approve --as riley --comment "fine"
+hale dna review m1 approve --digest <sha>     # state it explicitly
+```
+
+The Review, not the transport, admits it: a digest other than the
+pinned candidate is refused (`review.refused`: `digest mismatch`), as
+is an authority that does not satisfy the requirement or a reviewer
+who authored the candidate. The settlement is a Journal event
+(`review.settled`: `approve by riley`), and the mutation's status
+moves to `reviewed` or `rejected`.
+
+The Journal is the authority for the Review's existence too: an
+organism started after the request — or restarted mid-review —
+re-births every pending mutation Review from `review.requested`
+events at birth (`rehydrated` in `Dna.status()`), so the answer can
+always be given. The purpose Review is the Genome's own static child
+and is not rehydrated.
 
 ## In iris
 

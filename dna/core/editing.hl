@@ -23,12 +23,16 @@
 locus WorktreeTools {
     params {
         root: String = ".";
-        hale_bin: String = "hale";
+        hale_bin: String = ""; // "" = HALE_BIN when set, else `hale` on PATH
         reads: Int = 0;
         edits: Int = 0;
         refused: Int = 0;
         last_refusal: String = "";
     }
+    birth() { self.hale_bin = resolve_toolchain(self.hale_bin); }
+    // The owner points the grant at ONE worktree (the one it opened
+    // for this Mutation); the grant itself cannot widen its root.
+    fn confine(root: String) { self.root = root; }
     fn inside(rel: String) -> Bool {
         if len(rel) == 0 { return false; }
         if rel[0..1] == "/" { return false; }
@@ -79,6 +83,7 @@ locus SourceEditor {
     }
     fn kind() -> String { return "agent"; }
     fn identity() -> String { return self.name; }
+    fn confine(root: String) { self.tools.confine(root); }
     // Bounded by the attempt cap of the Work that owns this performer.
     @unbounded
     fn perform(req: WorkRequest) -> WorkResult {

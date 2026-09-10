@@ -82,7 +82,9 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna ask [--to <locus>] <intent…>");
     eprintln!("                                    offer intent over the membrane; prints the Task born or the refusal");
     eprintln!("       hale dna history [<entity>]  walk the Journal by causal links (works offline)");
-    eprintln!("       hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>] [--comment <c>]");
+    eprintln!("       hale dna review              the pending Reviews");
+    eprintln!("       hale dna review <id> [--iris] render a Review: source diff, semantic diff, evidence (works offline)");
+    eprintln!("       hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>] [--comment <c>] [--digest <sha>]");
     eprintln!("                                    send a verdict over the membrane; the Review decides");
     if code == 0 {
         ExitCode::SUCCESS
@@ -279,7 +281,7 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     let purpose_text = format!("{}: keep the application correct, reviewable and explainable; every change is staged, reviewed by a maintainer, and never applied by the organism itself.", app.project);
     let purpose_digest = format!("sha256:{}", hex(&openssl::sha::sha256(purpose_text.as_bytes())));
     created(&mut out, &app.root.join("dna/purpose.hl"), &purpose_hl(&purpose_text))?;
-    created(&mut out, &app.root.join("dna/assembly.hl"), &assembly_hl(&app.project, &purpose_digest))?;
+    created(&mut out, &app.root.join("dna/assembly.hl"), &assembly_hl(&app.project, &purpose_digest, &app.seed_rel))?;
     // The law lives IN the application's seed: a constitution names
     // groups the adopting entrypoint must declare (`organism`), and a
     // seed importing the app (its tests) must see both together.
@@ -328,7 +330,7 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     let gi = app.root.join(".gitignore");
     let mut gtext = fs::read_to_string(&gi).unwrap_or_default();
     let mut added = Vec::new();
-    for line in ["/vendor/", "/.hale/dna/*.sock"] {
+    for line in ["/vendor/", "/.hale/"] {
         if !gtext.lines().any(|l| l.trim() == line) {
             if !gtext.is_empty() && !gtext.ends_with('\n') {
                 gtext.push('\n');
@@ -469,7 +471,9 @@ fn run_organism(args: &[String]) -> ExitCode {
     for sock in [dna_dir.join(crate::iris::MEMBRANE_VERDICT_SOCK), dna_dir.join(crate::iris::MEMBRANE_INTENT_SOCK)] {
         let _ = fs::remove_file(&sock);
     }
-    let mut organism = match Command::new(&bin).current_dir(&root).env("LOTUS_OBS", "1").spawn() {
+    // The organism runs the toolchain (fmt, check, verify, test, model
+    // diff) over its candidates: hand it the binary that started it.
+    let mut organism = match Command::new(&bin).current_dir(&root).env("LOTUS_OBS", "1").env("HALE_BIN", &me).spawn() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("hale dna run: cannot start {}: {e}", bin.display());
@@ -631,7 +635,14 @@ fn status_projection(root: &Path) -> Result<Value, String> {
         match r.kind.as_str() {
             "review.requested" => {
                 let b = body(r);
-                reviews.insert(id.clone(), serde_json::json!({"id": id, "state": "pending", "question": b["question"], "required_authority": b["required_authority"], "subject_digest": b["subject_digest"], "refusals": []}));
+                let mut v = serde_json::json!({"id": id, "state": "pending", "question": b["question"], "required_authority": b["required_authority"], "subject_digest": b["subject_digest"], "refusals": []});
+                // a mutation's Review carries what a reviewer renders (GH #529 D4)
+                if b["mutation_id"].is_string() {
+                    for k in ["mutation_id", "change_class", "disposition", "base_commit", "candidate_commit", "candidate_shape", "evidence", "magnitude", "diff_text", "diff_json", "author"] {
+                        v[k] = b[k].clone();
+                    }
+                }
+                reviews.insert(id.clone(), v);
             }
             "review.settled" => {
                 if let Some(v) = reviews.get_mut(&id) {
@@ -649,11 +660,38 @@ fn status_projection(root: &Path) -> Result<Value, String> {
             _ => {}
         }
     }
-    let mutations: Vec<Value> = rows
-        .iter()
-        .filter(|r| r.kind.starts_with("mutation."))
-        .map(|r| serde_json::json!({"candidate": r.entity, "disposition": r.kind.trim_start_matches("mutation."), "class": r.body}))
-        .collect();
+    // mutations: one record per id, its last disposition and its
+    // candidate; the gateway's worktree/candidate/applied rows and the
+    // assembly's proposed/<disposition>/failed rows all name the id.
+    let mut mutations: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
+    for r in rows.iter().filter(|r| r.kind.starts_with("mutation.")) {
+        let kind = r.kind.trim_start_matches("mutation.").to_string();
+        let m = mutations.entry(r.entity.clone()).or_insert_with(|| serde_json::json!({"id": r.entity, "candidate": "", "disposition": "", "class": "", "events": []}));
+        match kind.as_str() {
+            "proposed" => {
+                m["class"] = Value::String(r.body.split(':').next().unwrap_or("").to_string());
+                m["objective"] = Value::String(r.body.clone());
+                m["disposition"] = Value::String("proposed".into());
+            }
+            "worktree" => m["worktree"] = Value::String(r.body.clone()),
+            "candidate" => m["candidate"] = Value::String(r.body.clone()),
+            other => {
+                m["disposition"] = Value::String(other.to_string());
+                m["detail"] = Value::String(r.body.clone());
+            }
+        }
+        if let Some(a) = m["events"].as_array_mut() {
+            a.push(Value::String(kind));
+        }
+    }
+    // a settled Review moves its mutation on: reviewed (approve) or rejected
+    for r in rows.iter().filter(|r| r.kind == "review.settled") {
+        if let Some(m) = mutations.get_mut(&r.entity) {
+            m["disposition"] = Value::String(if r.body.starts_with("approve") { "reviewed".into() } else { "rejected".into() });
+            m["detail"] = Value::String(r.body.clone());
+        }
+    }
+    let mutations: Vec<Value> = mutations.into_values().collect();
     let deferred: Vec<Value> = rows.iter().filter(|r| r.kind == "law.deferred").map(body).collect();
     let model_calls: Vec<Value> = rows
         .iter()
@@ -744,8 +782,18 @@ fn status(args: &[String]) -> Result<Vec<String>, String> {
         let refusals = r["refusals"].as_array().map(|a| a.len()).unwrap_or(0);
         out.push(format!("  {} [{}] {}{}", s(&r["id"]), s(&r["state"]), why, if refusals > 0 { format!(" ({refusals} verdict(s) refused)") } else { String::new() }));
     }
-    let muts = st["mutations"].as_array().map(|a| a.len()).unwrap_or(0);
-    out.push(format!("mutations:  {} (every one stops at stage in Phase 1)", muts));
+    let muts = st["mutations"].as_array().cloned().unwrap_or_default();
+    out.push(format!("mutations:  {} (none applies before a human's verdict on the exact candidate)", muts.len()));
+    for m in &muts {
+        let cand = s(&m["candidate"]);
+        out.push(format!(
+            "  {} [{}] {}{}",
+            s(&m["id"]),
+            s(&m["disposition"]),
+            m["objective"].as_str().unwrap_or(""),
+            if cand.is_empty() { String::new() } else { format!(" · candidate {}", &cand[..cand.len().min(12)]) }
+        ));
+    }
     let deferred = st["law_deferred"].as_array().map(|a| a.len()).unwrap_or(0);
     if deferred > 0 {
         out.push(format!("law:        {} clause(s) deferred at init (see dna_constitution.hl)", deferred));
@@ -853,34 +901,66 @@ fn review(args: &[String]) -> Result<Vec<String>, String> {
     let mut reviewer = std::env::var("USER").unwrap_or_else(|_| "human".into());
     let mut authority = "maintainer".to_string();
     let mut comment = String::new();
+    let mut digest_override: Option<String> = None;
+    let mut iris = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--as" => reviewer = it.next().cloned().ok_or("--as needs a reviewer")?,
             "--authority" => authority = it.next().cloned().ok_or("--authority needs a value")?,
             "--comment" => comment = it.next().cloned().ok_or("--comment needs text")?,
+            "--digest" => digest_override = Some(it.next().cloned().ok_or("--digest needs the candidate digest you looked at")?),
+            "--iris" => iris = true,
             f if f.starts_with("--") => return Err(format!("review: unknown flag `{f}`")),
             w => pos.push(w.to_string()),
         }
     }
-    let (Some(id), Some(verdict)) = (pos.first().cloned(), pos.get(1).cloned()) else {
-        return Err("review: `hale dna review <review_id> approve|revise|reject|abstain`".into());
+    let (root, _) = project(Path::new("."))?;
+    let st = status_projection(&root)?;
+    let reviews = st["reviews"].as_array().cloned().unwrap_or_default();
+    let s = |v: &Value| v.as_str().unwrap_or("").to_string();
+    // ---- no id: the pending Reviews ------------------------------------
+    let Some(id) = pos.first().cloned() else {
+        let pending: Vec<&Value> = reviews.iter().filter(|r| r["state"] == "pending").collect();
+        let mut out = vec![format!("{} pending review(s) of {}", pending.len(), reviews.len())];
+        for r in pending {
+            out.push(format!("  {} needs {} — {}", s(&r["id"]), s(&r["required_authority"]), s(&r["question"])));
+            if r["mutation_id"].is_string() {
+                out.push(format!(
+                    "      {} · candidate {} · evidence {} · disposition {}",
+                    s(&r["change_class"]),
+                    short(&s(&r["candidate_commit"])),
+                    s(&r["evidence"]),
+                    s(&r["disposition"])
+                ));
+            }
+        }
+        out.push("render one with `hale dna review <id>`; decide with `hale dna review <id> approve|revise|reject|abstain`".into());
+        return Ok(out);
+    };
+    let r = reviews
+        .iter()
+        .find(|r| r["id"] == id.as_str())
+        .ok_or_else(|| format!("no `review.requested` for `{id}` in the Journal (pending: {})", reviews.iter().filter(|r| r["state"] == "pending").map(|r| s(&r["id"])).collect::<Vec<_>>().join(", ")))?
+        .clone();
+    let digest = s(&r["subject_digest"]);
+    // ---- id only: render what the reviewer decides on ------------------
+    let Some(verdict) = pos.get(1).cloned() else {
+        return render_review(&root, &r, iris);
     };
     if !["approve", "revise", "reject", "abstain"].contains(&verdict.as_str()) {
         return Err(format!("review: verdict `{verdict}` is not one of approve | revise | reject | abstain"));
     }
-    let (root, _) = project(Path::new("."))?;
-    let rows = read_journal(&root)?;
-    let requested = rows
-        .iter()
-        .find(|r| r.kind == "review.requested" && (r.entity == format!("review:{id}") || r.entity == id))
-        .ok_or_else(|| format!("no `review.requested` for `{id}` in the Journal (pending: {})", rows.iter().filter(|r| r.kind == "review.requested").map(|r| r.entity.trim_start_matches("review:").to_string()).collect::<Vec<_>>().join(", ")))?;
-    let digest = serde_json::from_str::<Value>(&requested.body).ok().and_then(|b| b["subject_digest"].as_str().map(|s| s.to_string())).unwrap_or_default();
     if !membrane_up(&root) {
         return Err("the organism is not running (no membrane); start it with `hale dna run`".into());
     }
+    // The verdict names the candidate the reviewer LOOKED AT: by default
+    // the one the request pinned; `--digest` states it explicitly, and
+    // the Review refuses a mismatch (the TOCTOU pin, #521 open question 14).
+    let named = digest_override.unwrap_or(digest);
+    let rows = read_journal(&root)?;
     let before = rows.len();
-    let body = serde_json::json!({"review_id": id, "subject_digest": digest, "verdict": verdict, "reviewer": reviewer, "authority": authority, "comment": comment}).to_string();
+    let body = serde_json::json!({"review_id": id, "subject_digest": named, "verdict": verdict, "reviewer": reviewer, "authority": authority, "comment": comment}).to_string();
     publish_on_membrane(&root, "verdict", &body)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
@@ -893,6 +973,127 @@ fn review(args: &[String]) -> Result<Vec<String>, String> {
         }
         std::thread::sleep(std::time::Duration::from_millis(150));
     }
+}
+
+fn short(sha: &str) -> String {
+    sha.chars().take(12).collect()
+}
+
+/// What a reviewer decides on (GH #529 D4): the question and the
+/// exact candidate; for a mutation, the source diff (git, base to
+/// candidate), the semantic diff (`hale model diff --text`, from the
+/// receipt on disk), the evidence table (one row per toolchain step,
+/// with its content-addressed receipt) and the magnitude vector. All
+/// of it from the Journal and the evidence dir — no organism needed.
+/// `--iris` opens the review perspective on the same diff beside the
+/// organism's status and the membrane form, so the verdict can be
+/// sent from either.
+fn render_review(root: &Path, r: &Value, iris: bool) -> Result<Vec<String>, String> {
+    let s = |v: &Value| v.as_str().unwrap_or("").to_string();
+    let id = s(&r["id"]);
+    let mut out = vec![
+        format!("review {id} [{}]: {}", s(&r["state"]), s(&r["question"])),
+        format!("  needs {} · candidate {}{}", s(&r["required_authority"]), s(&r["subject_digest"]), if r["state"] == "pending" { String::new() } else { format!(" · settled {}", s(&r["settled"])) }),
+    ];
+    for refusal in r["refusals"].as_array().cloned().unwrap_or_default() {
+        out.push(format!("  refused a verdict: {}", s(&refusal)));
+    }
+    if !r["mutation_id"].is_string() {
+        out.push(format!("decide: hale dna review {id} approve|revise|reject|abstain [--as <you>] [--comment <c>]"));
+        return Ok(out);
+    }
+    let base = s(&r["base_commit"]);
+    let cand = s(&r["candidate_commit"]);
+    out.push(format!(
+        "  mutation {} ({}) by {} · disposition under the grant: {} · shape {}",
+        s(&r["mutation_id"]),
+        s(&r["change_class"]),
+        s(&r["author"]),
+        s(&r["disposition"]),
+        s(&r["candidate_shape"])
+    ));
+    // magnitude: the vector, never a score
+    if let Some(m) = r["magnitude"].as_object() {
+        let facets: Vec<String> = m
+            .iter()
+            .filter(|(_, v)| match v {
+                Value::Bool(b) => *b,
+                Value::Number(n) => n.as_i64().unwrap_or(0) != 0,
+                _ => false,
+            })
+            .map(|(k, v)| if v.is_boolean() { k.clone() } else { format!("{k} {v}") })
+            .collect();
+        out.push(format!("  magnitude: {}", if facets.is_empty() { "nothing moved in the model".to_string() } else { facets.join(", ") }));
+    }
+    // source diff
+    out.push(String::new());
+    out.push(format!("source diff (git {} .. {}):", short(&base), short(&cand)));
+    let git = Command::new("git")
+        .args(["-C", &root.to_string_lossy(), "diff", "--stat", "-p", &base, &cand])
+        .output()
+        .map_err(|e| format!("git diff: {e}"))?;
+    let text = String::from_utf8_lossy(&git.stdout);
+    if git.status.success() {
+        for l in text.lines() {
+            out.push(format!("  {l}"));
+        }
+    } else {
+        out.push(format!("  (git diff failed: {})", String::from_utf8_lossy(&git.stderr).trim()));
+    }
+    // semantic diff, from the receipt on disk
+    out.push(String::new());
+    out.push("semantic diff (hale model diff, baseline .. candidate):".into());
+    let diff_text = s(&r["diff_text"]);
+    match fs::read_to_string(root.join(&diff_text)) {
+        Ok(t) => {
+            for l in t.lines() {
+                out.push(format!("  {l}"));
+            }
+        }
+        Err(e) => out.push(format!("  (no semantic diff: {diff_text}: {e})")),
+    }
+    // evidence: one row per step, with its receipt
+    out.push(String::new());
+    out.push(format!("evidence ({}):", s(&r["evidence"])));
+    out.push(format!("  {:<10} {:<6} {:<5} {:<14} {}", "step", "ok", "code", "receipt", "bytes"));
+    let rows = read_journal(root)?;
+    for e in rows.iter().filter(|e| e.kind.starts_with("evidence.") && e.entity == cand && e.kind != "evidence.magnitude") {
+        let b: Value = serde_json::from_str(&e.body).unwrap_or(Value::Null);
+        out.push(format!(
+            "  {:<10} {:<6} {:<5} {:<14} {}",
+            e.kind.trim_start_matches("evidence."),
+            if b["ok"].as_bool().unwrap_or(false) { "yes" } else { "NO" },
+            b["code"],
+            short(&s(&b["output_digest"])),
+            b["bytes"]
+        ));
+    }
+    out.push(format!("  receipts under {}", root.join(".hale/dna/evidence").display()));
+    out.push(String::new());
+    out.push(format!(
+        "decide: hale dna review {id} approve|revise|reject|abstain [--as <you>] [--comment <c>] [--digest {}]",
+        short(&cand)
+    ));
+    if iris {
+        let diff_json = s(&r["diff_json"]);
+        if diff_json.is_empty() {
+            return Err("--iris: this review has no semantic diff document".into());
+        }
+        let me = std::env::current_exe().map_err(|e| e.to_string())?;
+        let status = root.join(".hale/dna/status.json");
+        let mut c = Command::new(&me);
+        c.arg("iris")
+            .arg("--diff")
+            .arg(root.join(&diff_json))
+            .arg("--membrane")
+            .arg(root.join(".hale/dna"))
+            .arg("--organism")
+            .arg(&status)
+            .current_dir(root);
+        let child = c.spawn().map_err(|e| format!("hale iris: {e}"))?;
+        out.push(format!("iris: review perspective [4] on {} (pid {}); the membrane form sends the verdict", diff_json, child.id()));
+    }
+    Ok(out)
 }
 
 /// `hale dna history [<entity>]`: the Journal in order, or the rows
@@ -1017,7 +1218,7 @@ fn main() {{
 }}
 "#
     );
-    let gitignore = format!("# the build artifact\n/{name}\n# toolchain-managed\n/vendor/\n/.hale/dna/*.sock\n");
+    let gitignore = format!("# the build artifact\n/{name}\n# toolchain-managed (vendor is re-materialized; .hale holds the Journal, sockets, worktrees, evidence)\n/vendor/\n/.hale/\n");
     let mut out = Vec::new();
     for (f, c) in [("hale.toml", "[deps]\n".to_string()), ("main.hl", main_hl), ("tests/main_test.hl", test_hl), (".gitignore", gitignore)] {
         let p = dir.join(f);
@@ -1076,7 +1277,7 @@ fn purpose() -> String {{
     )
 }
 
-fn assembly_hl(project: &str, purpose_digest: &str) -> String {
+fn assembly_hl(project: &str, purpose_digest: &str, seed: &str) -> String {
     format!(
         r#"// dna/assembly.hl — the Genome: this project's DNA assembly
 // (project-owned; edit freely). Every "setting" is a constructor
@@ -1114,7 +1315,25 @@ locus Genome {{
             }},
             review_policy: dna::HumanBeforeApply {{ }},
             deployment: dna::NoDeployment {{ }},
-            membrane: dna::LocalHumanMembrane {{ who: "operator" }}
+            membrane: dna::LocalHumanMembrane {{ who: "operator" }},
+            // Phase 2 (GH #529): a Mutation edits in its own worktree, is
+            // verified with receipts, and blocks on a human Review pinned
+            // to the exact candidate. The editor's grant is read, edit,
+            // fmt and check inside that worktree — the law says so.
+            gateway: dna::MutationGateway {{
+                workspaces: dna::IsolatedWorktrees {{ repo: ".", root: ".hale/dna/worktrees" }},
+                repo: dna::LocalGit {{ repo: "." }}
+            }},
+            verification: dna::HaleVerification {{ evidence_dir: ".hale/dna/evidence", repo: ".", seed: "{seed}" }},
+            editor: dna::SourceEditor {{
+                name: "editor",
+                models: dna::ModelRouter {{
+                    quick: dna::HostedModel {{ name: "quick", model: "gpt-4o-mini", credential: dna::HostedCredential {{ env_var: "OPENAI_API_KEY" }} }},
+                    deep: dna::HostedModel {{ name: "deep", model: "gpt-4o", credential: dna::HostedCredential {{ env_var: "OPENAI_API_KEY" }}, input_micros_per_1k: 2500, output_micros_per_1k: 10000 }},
+                    private: dna::LocalModel {{ name: "private", endpoint: "http://127.0.0.1:11434/v1/chat/completions", model: "llama3" }}
+                }}
+            }},
+            genome_seed: "{seed}"
         }};
         // The baseline review: ratify dna/purpose.hl. Settles only on a
         // maintainer's verdict naming this exact digest.
@@ -1182,8 +1401,10 @@ import "dna" as genome;
 group organism = {{ {main_name} }};
 group genome = {{ genome::Genome }};
 group dna_gate = {{ dna::Dna }};
-group performers = {{ dna::AgentPerformer, dna::HumanWorkGateway, dna::ServicePerformer, dna::ScriptedPerformer }};
+group performers = {{ dna::AgentPerformer, dna::HumanWorkGateway, dna::ServicePerformer, dna::ScriptedPerformer, dna::SourceEditor }};
 group credentials = {{ dna::CredentialSource, dna::HostedCredential }};
+group editors = {{ dna::SourceEditor, dna::WorktreeTools }};
+group knowledge = {{ dna::Knowledge }};
 
 constitution Project {{
     // A mutation is applied only THROUGH the assembly's gate, never by
@@ -1196,6 +1417,14 @@ constitution Project {{
     // and the law says so, so swapping the gateway in dna/assembly.hl
     // is a law change a reviewer sees, not a constructor detail.
     phase1_read_only: forbid reaches(genome, effects(genome_apply));
+    // Phase 2 (GH #529): the Attempt that edits source holds nothing
+    // but its worktree grant — no git, no worktree gateway, no apply,
+    // no Knowledge. A wiring that hands it any of them is a build
+    // failure with a witness, not a runtime check.
+    editors_never_commit: forbid reaches(editors, effects(repo_write));
+    editors_never_touch_worktrees: forbid reaches(editors, effects(worktree_io));
+    editors_never_apply: forbid reaches(editors, effects(genome_apply));
+    editors_never_learn: forbid reaches(editors, knowledge);
 {organism_clause}}}
 "#
     )

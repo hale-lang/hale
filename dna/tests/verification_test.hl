@@ -36,6 +36,7 @@ fn main() { App { }; }
 
 main locus App {
     params {
+        journal: dna::Journal = dna::MemJournal { };
         v: dna::HaleVerification = dna::HaleVerification { };
     }
     run() {
@@ -50,7 +51,7 @@ main locus App {
         self.v = dna::HaleVerification { hale_bin: toolchain(), evidence_dir: root + "/evidence" };
 
         // ---- a candidate that checks ---------------------------------------
-        let r = self.v.verify(dna::Mutation { id: "m1", worktree: root + "/wt", candidate_commit: "cand1" }, root + "/baseline.topology");
+        let r = self.v.verify(self.journal, dna::Mutation { id: "m1", worktree: root + "/wt", candidate_commit: "cand1" }, root + "/baseline.topology");
         std::test::assert_eq_str(r.steps, "fmt=0 check=0 verify=0 test=0 diff=0", "every step ran clean: " + r.steps);
         std::test::assert(r.evidence.check_clean && r.evidence.verify_clean, "check and verify evidence");
         std::test::assert(!r.evidence.tests_pass, "no tests is no test evidence");
@@ -69,9 +70,9 @@ main locus App {
         // ---- receipts: journal events on the candidate, outputs by digest --
         let mut evidence_events = 0;
         let mut i = 0;
-        let n = self.v.journal.revision();
+        let n = self.journal.revision();
         while i < n {
-            let e = self.v.journal.read(i);
+            let e = self.journal.read(i);
             if e.kind == "evidence.check" {
                 std::test::assert_eq_str(e.entity, "cand1", "evidence is tied to the candidate");
                 let d = std::json::find_string_field(e.body, "output_digest");
@@ -85,11 +86,11 @@ main locus App {
             i = i + 1;
         }
         std::test::assert_eq_int(evidence_events, 6, "fmt check verify test diff magnitude");
-        std::test::assert(self.v.journal.verify_chain(), "chain intact");
+        std::test::assert(self.journal.verify_chain(), "chain intact");
 
         // ---- a candidate that does not check ------------------------------
         std::io::fs::write_file(root + "/wt/main.hl", "fn main() { let x: Int = \"no\"; }\n") or discard;
-        let bad = self.v.verify(dna::Mutation { id: "m2", worktree: root + "/wt", candidate_commit: "cand2" }, root + "/baseline.topology");
+        let bad = self.v.verify(self.journal, dna::Mutation { id: "m2", worktree: root + "/wt", candidate_commit: "cand2" }, root + "/baseline.topology");
         std::test::assert(!bad.evidence.check_clean, "check failed");
         std::test::assert_eq_str(bad.diff_json, "", "no artifact, no diff");
         std::test::assert_eq_str(bad.candidate_shape, "", "no shape");
