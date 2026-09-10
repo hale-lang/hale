@@ -1,7 +1,9 @@
-# A change, end to end
+# The twelve steps, with the Journal
 
-This is one real session, output included, on the chat server that
-ships in the hale repository as the acceptance application
+[Working with it](./working.md) shows this session as a user sees
+it. This is the same session with the Journal beside every step, on
+the chat server that ships in the hale repository as the acceptance
+application
 (`dna/acceptance/chat-server`). The organism's editor runs on
 scripted models here — the same run with a hosted model behind
 `OPENAI_API_KEY` is the same commands and the same Journal, with
@@ -18,7 +20,7 @@ hale check --matrix . && hale test . # after: 1 pair checked, 1 passed
 git add -A && git commit -m "attach the DNA"
 ```
 
-[Attaching it](./attach.md) shows what `init` wrote. The
+[How attaching works](./attach.md) shows what `init` wrote. The
 application's own tests are what every candidate will later be
 verified against, so they matter twice.
 
@@ -117,7 +119,7 @@ $ hale dna review
 
 `hale dna review m1` renders the source diff, the semantic diff,
 the evidence table and the magnitude — the next chapter,
-[Reviewing](./review.md), shows it in full. Iris's organism panel
+[The Review in detail](./review.md), shows it in full. Iris's organism panel
 shows the same pending Review from the same projection, and its
 membrane form sends the same typed verdict.
 

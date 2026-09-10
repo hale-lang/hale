@@ -88,7 +88,7 @@ published; the organism reports what it decided.
 
 **The organism.** `hale iris --organism <status.json>` adds a third
 source beside the segment and the artifact: a DNA organism's status
-projection (see [DNA](../dna/run.md)). Perspective [5] renders it and
+projection (see [DNA](../dna/index.md)). Perspective [5] renders it and
 tints the lineage tower on the canvas. `hale dna run` wires all of
 this up for you.
 

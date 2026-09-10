@@ -1,84 +1,77 @@
 # DNA: a governed application
 
-**DNA** is the part of a Hale application that decides how the
-application itself changes: what may be attempted, who reviews it,
-what evidence counts, what is applied, and what is never applied
-without a human. It ships inside the `hale` binary as ordinary Hale
-source, and a project owns its own copy of the decisions.
+Your program can change itself. You hold the door.
+
+**DNA** gives a Hale application a way to take a request, propose a
+change to its own source in a sandbox, prove the change checks and
+tests, show you exactly what it did, and — only after you say yes —
+apply it, restart itself, and watch that it still works. Every step
+is written down where you can read it later.
 
 ```sh
-hale dna init .                      # attach it to an application
-hale dna run                         # hold the organism, its membrane, and iris
+hale dna init .                                  # attach it to your application
+hale dna run                                     # start it
 hale dna ask "document the chat server in main.hl"
-hale dna review m1                   # what a human decides on
-hale dna review m1 approve --as riley
+hale dna review m1                               # read the change and the evidence
+hale dna review m1 approve --as riley            # your call
 ```
 
-That is the whole loop. An intent goes in through the **membrane**,
-becomes a durable Task, and a source-editing Attempt proposes a
-change in its own worktree. The toolchain verifies the candidate
-and leaves receipts. A blocking **Review** shows a human the source
-diff, the semantic diff and the evidence, pinned to the exact
-candidate. Approval applies exactly that candidate, the host
-rebuilds and restarts the expression, an observation window judges
-it, and the change is retained or rolled back. Every step is an
-event in a hash-chained **Journal** that `hale dna history` walks.
+## The loop
 
-## Three words
+1. **You ask.** In a sentence. The organism turns it into a task.
+2. **It proposes.** In a sandbox copy of your repository, with a
+   model, it edits the file, formats it, checks it.
+3. **It proves.** The candidate is checked, verified, tested, and
+   diffed against your program's structure. Every result is kept
+   with a receipt.
+4. **You review.** The diff, what changed in the program's shape
+   and rules, and the checks — pinned to one commit. Approve,
+   revise, or reject.
+5. **It applies and watches.** Approval becomes a commit. The
+   program rebuilds, restarts, and is watched for a while. If it
+   stays up, the change is kept. If not, it is rolled back.
 
-- **Genome** — the source, the law, and the assembly that says
-  which stores, models and gateways exist. What the program *is*.
-- **Expression** — the running process built from the genome, with
-  a model hash iris can join to its instances. What the program
-  *does*.
-- **Experience** — the Journal: what happened, in order, with
-  receipts. The authority when the two disagree.
+## What you keep
 
-The names are chosen to keep three things apart that most
-"self-improving software" blurs: a change to the genome is not a
-change to the expression until a rebuild, and neither is true until
-the Journal says so.
+- **The decision.** Nothing is applied without your verdict.
+- **The source.** A change is always shown as a source diff, not a
+  summary of one.
+- **The story.** `hale dna history m1` is everything that happened
+  to one change, in order: the ask, the sandbox, the checks, the
+  review, the apply, the restart, the outcome.
+- **The way back.** A change that crashes the program, or that you
+  reject after the fact, is rolled back to the commit it started
+  from.
 
-## What it is not
+## What it looks like
 
-DNA is not an agent that edits your program while you sleep. The
-kill test that gates this design (`dna/kill-test/` in the hale
-repository) established two things about model-generated changes:
-a semantic diff decides law and structure well, and it cannot see
-handler behaviour — a `+1` becoming `+100` is invisible to it. So a
-Review always shows the source diff beside the semantic one, and in
-this phase every change blocks on a human. The grant a project gives
-its organism is a *boundary*, expressed in the law, not a mood.
+```text
+$ hale dna ask document the chat server in main.hl
+task t1 born for intent i1a08c0786c5 [pending]
 
-What DNA does do, mechanically and every time:
+$ hale dna review
+2 pending review(s) of 2
+  m1 needs maintainer — apply m1 (application): document the chat server in main.hl?
+      application · candidate dbbb49f550f3 · evidence fmt=0 check=0 verify=0 test=0 diff=0 rollback=0 · disposition escalate
 
-- the editing Attempt can read, edit, format and check inside one
-  worktree, and the constitution makes anything more a build
-  failure with a witness path;
-- a candidate is verified with `fmt`, `check`, `verify`, `test`,
-  `model diff` and a rollback rehearsal, each output kept under its
-  own sha256;
-- the verdict names a candidate commit; a candidate that moved after
-  the reviewer looked is refused by digest;
-- an apply is journaled before it is dispatched, so a crashed and
-  retried apply reads its own record and never commits twice;
-- a rollback is `git reset --keep` to a base the Journal recorded,
-  never a guess.
+$ hale dna review m1 approve --as riley --comment "the rooms stay the only way"
+review m1 settled: approve by riley
 
-## Where to go next
+hale dna run: organism restarted (pid 1694392) as 8517c3db7499d3b3 build b1ac50c8c3ef
+hale dna run: m1 observed healthy for 5s as 8517c3db7499d3b3
+```
 
-- [Attaching it](./attach.md) — what `init` generates and why the
-  law lives where it does.
-- [Running it](./run.md) — the host, the membrane, status, ask,
-  history.
-- [A change, end to end](./walkthrough.md) — one real session, with
-  its output.
-- [Reviewing](./review.md) — the three views, the verdict, the pin.
-- [Apply, restart, observe](./apply.md) — what approval does and
-  what happens when it goes wrong.
-- [Autonomy and policy](./autonomy.md) — grants, the magnitude
-  vector, post-review, pressure.
-- [Models and credentials](./models.md) — hosted, local, scripted,
-  sealed.
-- [Reference](./reference.md) — the Journal's vocabulary, the CLI,
-  the files.
+## Where to go
+
+- [Getting started](./getting-started.md) — attach it, run it,
+  answer the first review.
+- [Working with it](./working.md) — the daily loop.
+- [Shaping it](./shaping.md) — the purpose, how much autonomy,
+  which models.
+- [What it will and won't do](./limits.md) — the plain limits.
+- [Troubleshooting](./troubleshooting.md) — the messages you'll
+  meet.
+
+The mechanism — the Journal, the gateways, the review's pin, the
+autonomy rules — is in the *under the hood* chapters that follow.
+You don't need them to use it.

@@ -1,4 +1,4 @@
-# Reviewing
+# The Review in detail
 
 A Review is a locus, not a flag. It owns the exact question, the
 candidate's digest at decision time, the authority required, and

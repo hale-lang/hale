@@ -1,4 +1,4 @@
-# Running it
+# The host and the membrane
 
 ```sh
 hale dna run [project] [--port N] [--no-iris] [--observe <secs>]
@@ -27,68 +27,14 @@ With iris attached the line before that names the URL; `l` is the
 law view, `4` the review view, `5` the organism, `m` the membrane
 form. See [Iris](../systems/iris.md).
 
-## Talking to it
+## The commands are projections
 
-Four commands, and none of them decides anything. The host
-publishes and reads; the organism decides; the Journal is the record
-both consult.
-
-```sh
-hale dna status [--json]              # the projection, from the Journal (works offline)
-hale dna ask "document the chat server in main.hl"
-hale dna review                       # pending Reviews; `review <id>` renders one
-hale dna history [<entity>]           # the Journal, or one entity's causal history
-```
-
-**`status`** reads the Journal: tasks born and settled, pending
-Reviews and why (the authority they need, the question), mutations
-with their disposition and candidate, the expression identity (the
-artifact `init` attached, the artifact that would run now, the
-build digest), the chain's integrity, and whether an organism is
-currently bound to its membrane. Offline it says so:
-
-```text
-organism:   not running — reading the Journal
-```
-
-Running, the same projection is what iris's organism panel renders:
-
-```text
-$ hale dna status
-organism:   running (membrane bound)
-journal:    41 event(s), chain verified
-expression: attached ChatServer (shape 3853f0f14bbf1639) · current shape 8517c3db7499d3b3 · build 68c91b13f399
-intents:    1 offered, 0 refused
-tasks:      1
-  t1 [done] i1a08c0786c5: document the chat server in main.hl
-reviews:    2 pending of 2
-  m1 [pending] needs maintainer — apply m1 (application): document the chat server in main.hl?
-  purpose [pending] needs maintainer — ratify the declared purpose?
-mutations:  1 (none applies before a human's verdict on the exact candidate)
-  m1 [escalate] application: document the chat server in main.hl · task t1 · candidate dbbb49f550f3
-```
-
-**`ask`** publishes a typed `IntentOffered` through the embedded
-membrane client and reads the organism's answer back from the
-Journal: the Task it birthed, or the refusal.
-
-```text
-$ hale dna ask document the chat server in main.hl
-task t1 born for intent i1a08c0786c5 [pending]
-```
-
-`[pending]` is honest: the Task's Work is routed to the assembly's
-editor and takes a few seconds; `status` shows `[done]` once the
-Journal says so.
-
-**`review`** is the human's end of the loop and has its own
-chapter: [Reviewing](./review.md).
-
-**`history`** walks the Journal from an intent, Task, Mutation or
-Review id through the rows that link to it — a Task's Mutation, a
-Mutation's candidate, the candidate's receipts, the Review, the
-verdict, the apply, the restart, the observation. It is the audit
-trail, and it works offline.
+`status`, `review`, `history` read the Journal and the receipts;
+`ask` and a verdict publish one typed fact through the embedded
+membrane client and read the organism's answer back from the
+Journal. None of them decides anything, and all but the two that
+publish work offline. [Working with it](./working.md) is their
+user-facing side.
 
 ## The membrane
 

@@ -65,12 +65,20 @@
 # DNA
 
 - [A governed application](./dna/index.md)
-- [Attaching it](./dna/attach.md)
-- [Running it](./dna/run.md)
-- [A change, end to end](./dna/walkthrough.md)
-- [Reviewing](./dna/review.md)
+- [Getting started](./dna/getting-started.md)
+- [Working with it](./dna/working.md)
+- [Shaping it](./dna/shaping.md)
+- [What it will and won't do](./dna/limits.md)
+- [Troubleshooting](./dna/troubleshooting.md)
+
+# DNA, under the hood
+
+- [How attaching works](./dna/attach.md)
+- [The host and the membrane](./dna/run.md)
+- [The twelve steps, with the Journal](./dna/walkthrough.md)
+- [The Review in detail](./dna/review.md)
 - [Apply, restart, observe](./dna/apply.md)
-- [Autonomy and policy](./dna/autonomy.md)
+- [Autonomy: the vector and the rules](./dna/autonomy.md)
 - [Models and credentials](./dna/models.md)
 - [Reference](./dna/reference.md)
 

@@ -1,4 +1,4 @@
-# Autonomy and policy
+# Autonomy: the vector and the rules
 
 Autonomy is a **boundary grant**, given by a parent to one child,
 and never widened by the child. In the generated Genome the parent

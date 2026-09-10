@@ -71,7 +71,7 @@ itself cannot widen its root. Every model request the editor makes
 carries the grant as `tool_grant`, so the evidence says what the
 Attempt could touch. What the editor holds *not* — repository,
 worktree gateway, deployment, Knowledge — is law
-([Attaching it](./attach.md)).
+([How attaching works](./attach.md)).
 
 ## Sealed credentials
 

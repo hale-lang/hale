@@ -1,51 +1,18 @@
-# Attaching it
+# How attaching works
 
-`hale dna init` attaches the DNA to an application that already has
-a `main locus`; `hale dna new <name>` makes a greenfield one with the
-DNA already attached. Both are idempotent, and `init` rewrites
-nothing you wrote — it inserts.
+[Getting started](./getting-started.md) is what you see. This is
+what `init` does, and why the pieces sit where they sit.
 
-```sh
-hale dna new demo            # a greenfield application with its DNA
-hale dna init .              # attach to an existing application
-hale dna upgrade             # re-materialize vendor/dna for this toolchain
-```
-
-Here is `init` on a small chat server (the one in
-`dna/acceptance/chat-server`):
-
-```text
-$ hale dna init .
-ok: 1 file(s) typechecked
-wrote   vendor/dna (13 file(s) written, 0 unchanged; hale.lock pins toolchain 0.19.2)
-cut     .hale/dna/baseline.topology (schema 1.19, shape 3853f0f14bbf1639, verdict clean)
-created dna/purpose.hl
-created dna/assembly.hl
-created dna_constitution.hl
-edited  main.hl (imports, `genome` param, `adopt Project`, membrane bindings)
-edited  hale.toml ([claims] base, [environments.local])
-seeded  .hale/dna/journal.jsonl (17 event(s): application.attached, structure.observed, responsibility.proposed, review.requested)
-edited  .gitignore (/vendor/, /.hale/)
-```
-
-`init` refuses an application that does not pass `hale check`, and
-it cuts the application's topology artifact *before* it changes
-anything, so the baseline is the application as you had it.
-
-## What is generated, and who owns it
-
-| path | owner | what |
-|---|---|---|
-| `vendor/dna/*.hl` | toolchain | the DNA core, pinned in `hale.lock` as `[dna] toolchain`; git-ignored, re-materialized by `upgrade` |
-| `dna/assembly.hl` | project | the **Genome**: the `Dna` constructor with local defaults, and the baseline Review |
-| `dna_constitution.hl` (in the app's seed) | project | the groups and `constitution Project` |
-| `dna/purpose.hl` | project | the declared purpose the first Review ratifies |
-| `.hale/dna/journal.jsonl` | the organism | the Journal, seeded from the compiler's model |
-| `.hale/dna/baseline.topology` | the organism | the artifact it was seeded from |
-
-`.hale/` is git-ignored as a whole: the Journal, the membrane
-sockets, the worktrees, the evidence and the status projection all
-live there and none of them belong in the genome.
+`init` typechecks the application, materializes the core into
+`vendor/dna` (pinned in `hale.lock` as `[dna] toolchain`), cuts the
+application's topology artifact **before** changing anything (the
+baseline), generates the three project-owned files, grafts the
+imports, the `genome` param, `adopt Project;` and the three bindings
+into the `main locus` by span insertion — existing `params`,
+`claims` and `bindings` blocks are extended, never rewritten — adds
+`[claims] base = "Project"` and a `local` environment to `hale.toml`,
+seeds the Journal from the artifact, and formats what it touched.
+Re-running keeps every file.
 
 ## What changes in your main
 
@@ -80,21 +47,9 @@ verdict, a human's intent, and the host's observation report enter.
 Nothing decides in the transport; the loci that own those topics
 decide.
 
-`hale.toml` gains `[claims] base = "Project"` and a `local`
-environment, so `hale check --matrix .` judges the entrypoint
-against the law:
-
-```text
-$ hale check --matrix .
-=== ./. @ local ===
-ok: 2 file(s) typechecked
-
-ok: 1 (entrypoint, environment) pair(s) checked
-```
-
-And the application's own tests still pass — the first of the
-twelve acceptance steps is exactly that: an existing application
-adds the DNA through ordinary project machinery and loses nothing.
+`hale.toml`'s `[claims] base = "Project"` and `local` environment
+are what make `hale check --matrix .` judge the entrypoint against
+the law.
 
 ## The Genome
 
@@ -185,22 +140,10 @@ uncomment it.
 
 ## The purpose, and the first Review
 
-`dna/purpose.hl` is one string, and the Genome's first Review asks a
-maintainer to ratify it:
-
-```text
-$ hale dna status
-organism:   not running — reading the Journal
-journal:    17 event(s), chain verified
-expression: attached ChatServer (shape 3853f0f14bbf1639) · current shape not cut · build not built
-intents:    0 offered, 0 refused
-tasks:      none
-reviews:    1 pending of 1
-  purpose [pending] needs maintainer — ratify the declared purpose?
-mutations:  0 (none applies before a human's verdict on the exact candidate)
-```
-
-The Review's subject digest is the sha256 of the purpose text.
+`dna/purpose.hl` is one string, and the Genome's first Review — a
+static child of the Genome, `review_id: "purpose"` — asks a
+maintainer to ratify it. The Review's subject digest is the sha256
+of the purpose text.
 Change the text and the digest together, or the verdict is refused
 as stale — which is the same rule every later Review applies to a
 candidate commit.
