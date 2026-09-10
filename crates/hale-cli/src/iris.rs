@@ -39,13 +39,13 @@ fn ensure_built(seed: &str, bin: &str) -> Result<(PathBuf, PathBuf), String> {
 /// half-written file — `Permission denied`).
 pub(crate) fn ensure_built_in(root: &Path, seed: &str, bin: &str, what: &str) -> Result<PathBuf, String> {
     let bin_path = root.join(bin);
-    if bin_path.is_file() {
-        return Ok(bin_path);
-    }
     // One build per cache, ever: two `hale iris` (or a test shard's
     // five) racing to build the same seed into the same directory
     // would trample each other's objects. An exclusive flock on the
     // cache root serializes them; the loser finds the binary built.
+    // The lock is taken BEFORE the existence check: the linker creates
+    // the output before it is complete or executable, and a caller
+    // that saw the file and exec'd it got `Permission denied`.
     let lock_path = root.join(".build.lock");
     let lock = std::fs::OpenOptions::new()
         .create(true)
