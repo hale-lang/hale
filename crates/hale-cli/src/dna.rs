@@ -74,6 +74,7 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("board") => report(board(&args[1..])),
         Some("report") => report(file_report(&args[1..])),
         Some("pressure") => report(pressure(&args[1..])),
+        Some("github") => report(github_cmd(&args[1..])),
         Some("review") => report(review(&args[1..])),
         Some("--help") | Some("-h") | None => usage(if args.is_empty() { 2 } else { 0 }),
         Some(other) => {
@@ -100,6 +101,8 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*) with origin");
     eprintln!("       hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports");
     eprintln!("       hale dna report [project]    file a report from the record since the last one (report.filed)");
+    eprintln!("       hale dna github sync         mirror pending Reviews to pull requests and read their reviews back as verdicts");
+    eprintln!("                                    (git config dna.github owner/repo; dna.github.board logins,…; needs `gh`)");
     eprintln!("       hale dna pressure [raise <source> <what…>]");
     eprintln!("                                    pressure raised and answered; `raise` publishes one signal on the membrane");
     eprintln!("       hale dna review              the pending Reviews");
@@ -554,6 +557,18 @@ fn run_organism(args: &[String], dev: bool) -> ExitCode {
         }
         if let Err(e) = sync_record(&root) {
             eprintln!("hale dna {verb}: sync: {e}");
+        }
+        // GH #566 F4: GitHub as a membrane — pending Reviews out as pull
+        // requests, their reviews back as verdicts, in the reviewers' names
+        if github_repo(&root).is_some() {
+            match github_sync(&root) {
+                Ok(lines) => {
+                    for l in lines {
+                        eprintln!("hale dna {verb}: github: {l}");
+                    }
+                }
+                Err(e) => eprintln!("hale dna {verb}: github: {e}"),
+            }
         }
         let n = relay_record_membrane(&root, &mut relayed);
         if n > 0 {
@@ -1215,6 +1230,122 @@ fn pressure(args: &[String]) -> Result<Vec<String>, String> {
         out.push(format!("  {:>5}  {:<20} {}  {}", r.seq, r.kind, r.entity, r.body));
     }
     Ok(out)
+}
+
+// ---------------------------------------------------------------
+// GitHub as a membrane (GH #566 F4): a mirror of the record, never the record
+// ---------------------------------------------------------------
+
+/// `git config dna.github` = `owner/repo`. Absent: no GitHub membrane.
+fn github_repo(root: &Path) -> Option<String> {
+    git(root, &["config", "dna.github"]).ok().filter(|s| !s.is_empty())
+}
+
+fn gh(root: &Path, args: &[&str]) -> Result<String, String> {
+    let out = Command::new("gh").args(args).current_dir(root).output().map_err(|e| format!("gh: {e} (is `gh` installed and logged in?)"))?;
+    if !out.status.success() {
+        return Err(format!("gh {}: {}", args.first().unwrap_or(&""), String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// One pass: every pending mutation Review without a pull request gets
+/// one (its candidate pushed to `dna/<id>`, the three views as the
+/// body); every open pull request's GitHub reviews become
+/// `review.verdict` rows in the reviewer's login (authority `board`
+/// when `dna.github.board` lists the login, else `reviewer`), once
+/// each; every settled Review with a pull request gets the outcome as
+/// a comment, and an approval pushes the genome so GitHub sees the
+/// merge. GitHub is a projection of the record: a review whose head
+/// moved is refused by the Review here and shows as refused there.
+fn github_sync(root: &Path) -> Result<Vec<String>, String> {
+    let repo = github_repo(root).ok_or("no `dna.github` in git config")?;
+    let board: Vec<String> = git(root, &["config", "dna.github.board"]).unwrap_or_default().split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let remote = record_remote(root).unwrap_or_else(|| "origin".into());
+    let branch = git(root, &["symbolic-ref", "--short", "HEAD"]).unwrap_or_else(|_| "main".into());
+    let mut out = Vec::new();
+    let st = status_projection(root)?;
+    let s = |v: &Value| v.as_str().unwrap_or("").to_string();
+    let reviews = st["reviews"].as_array().cloned().unwrap_or_default();
+    let rows = read_journal(root)?;
+    let pr_of = |id: &str| -> Option<(u64, String)> {
+        rows.iter().rev().find(|r| r.kind == "github.pr" && r.entity == id).and_then(|r| serde_json::from_str::<Value>(&r.body).ok()).map(|b| (b["number"].as_u64().unwrap_or(0), s(&b["url"])))
+    };
+    // 1. out: a pull request per pending mutation Review
+    for r in reviews.iter().filter(|r| r["state"] == "pending" && r["mutation_id"].is_string()) {
+        let id = s(&r["id"]);
+        if pr_of(&id).is_some() {
+            continue;
+        }
+        let cand = s(&r["candidate_commit"]);
+        let head = format!("dna/{id}");
+        git(root, &["push", "-q", "-f", &remote, &format!("{cand}:refs/heads/{head}")])?;
+        let body = render_review(root, r, false)?.join("
+");
+        let url = gh(root, &["pr", "create", "--repo", &repo, "--base", &branch, "--head", &head, "--title", &s(&r["question"]), "--body", &body])?;
+        let number: u64 = url.rsplit('/').next().and_then(|n| n.trim().parse().ok()).unwrap_or(0);
+        append_journal(root, "github.pr", &id, &serde_json::json!({"number": number, "url": url.trim(), "head": head, "candidate": cand}).to_string())?;
+        out.push(format!("{id}: pull request #{number} opened ({})", url.trim()));
+    }
+    // 2. in: GitHub reviews on open pull requests become verdicts, once each
+    let rows = read_journal(root)?;
+    for r in reviews.iter().filter(|r| r["state"] == "pending" && r["mutation_id"].is_string()) {
+        let id = s(&r["id"]);
+        let Some((number, _)) = pr_of(&id) else { continue };
+        let json = gh(root, &["pr", "view", &number.to_string(), "--repo", &repo, "--json", "state,headRefOid,reviews"])?;
+        let v: Value = serde_json::from_str(&json).map_err(|e| format!("gh pr view: {e}"))?;
+        for rev in v["reviews"].as_array().cloned().unwrap_or_default() {
+            let state = s(&rev["state"]);
+            let verdict = match state.as_str() {
+                "APPROVED" => "approve",
+                "CHANGES_REQUESTED" => "revise",
+                _ => continue,
+            };
+            let login = s(&rev["author"]["login"]);
+            let oid = rev["commit"]["oid"].as_str().map(|s| s.to_string()).unwrap_or_else(|| s(&v["headRefOid"]));
+            let key = format!("{login}@{oid}@{state}");
+            if rows.iter().any(|x| x.kind == "review.verdict" && x.entity == id && x.body.contains(&format!(r#""github":"{key}""#))) {
+                continue;
+            }
+            let authority = if board.iter().any(|b| b == &login) { "board" } else { "reviewer" };
+            let body = serde_json::json!({"review_id": id, "subject_digest": oid, "verdict": verdict, "reviewer": login, "authority": authority, "comment": format!("github review #{number}"), "github": key}).to_string();
+            append_journal(root, "review.verdict", &id, &body)?;
+            out.push(format!("{id}: {verdict} by {login} ({authority}) from pull request #{number}"));
+        }
+    }
+    // 3. back: settlements as comments; an approval pushes the genome
+    let rows = read_journal(root)?;
+    for r in reviews.iter().filter(|r| r["state"] == "settled" && r["mutation_id"].is_string()) {
+        let id = s(&r["id"]);
+        let Some((number, _)) = pr_of(&id) else { continue };
+        if rows.iter().any(|x| x.kind == "github.commented" && x.entity == id) {
+            continue;
+        }
+        let settled = s(&r["settled"]);
+        if settled.starts_with("approve") {
+            let _ = git(root, &["push", "-q", &remote, &format!("{branch}:{branch}")]);
+        }
+        gh(root, &["pr", "comment", &number.to_string(), "--repo", &repo, "--body", &format!("dna: review {id} settled: {settled}")])?;
+        append_journal(root, "github.commented", &id, &format!("#{number}: {settled}"))?;
+        out.push(format!("{id}: pull request #{number} told: {settled}"));
+    }
+    Ok(out)
+}
+
+fn github_cmd(args: &[String]) -> Result<Vec<String>, String> {
+    let (root, _) = project(Path::new("."))?;
+    match args.first().map(|s| s.as_str()) {
+        Some("sync") => {
+            let _ = sync_record(&root);
+            let mut out = github_sync(&root)?;
+            let _ = sync_record(&root);
+            if out.is_empty() {
+                out.push("github: nothing to mirror".into());
+            }
+            Ok(out)
+        }
+        _ => Err("usage: hale dna github sync".into()),
+    }
 }
 
 /// Re-project the Journal into `status.json` (atomically: write beside,

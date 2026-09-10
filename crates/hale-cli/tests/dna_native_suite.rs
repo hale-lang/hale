@@ -75,6 +75,7 @@ fn dna_fixture_set_is_complete() {
         vec![
             "apply_test.hl",
             "assembly_test.hl",
+            "deployment_test.hl",
             "editing_test.hl",
             "extensions_test.hl",
             "fanout_join_test.hl",
