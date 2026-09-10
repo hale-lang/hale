@@ -8,6 +8,10 @@ behavior.
 
 ## Unreleased
 
+### Docs: DNA has its own section of the Book
+
+- `docs/src/dna/` — nine chapters replace the single "Systems control" page: what it is, attaching it, running it, a change end to end (one real session, output included), reviewing, apply/restart/observe, autonomy and policy, models and credentials, and a reference (CLI, the Journal's vocabulary, `status.json`, the files, the core by file). The site's left nav follows `SUMMARY.md`. The generated Genome's header comment no longer describes Phase 1; `hale dna status` drops the empty `()` when a mutation named no target.
+
 ### DNA: the twelve steps end to end, and the four extensions (GH #529 D7)
 
 - Intent becomes a Mutation: an intent through the membrane births a Task whose Work is routed back to the assembly as source-editing Work (`requires: "edit"`, which the WorkSystem's performers never take). `Dna.on_work_requested` runs the editor's Attempt — `SourceEditor.locate` picks the file the objective names (or the quick tier's pick from the grant's listing; only a listed file is ever a target; `mutation.located`), every model call carries the tool grant as evidence — then the pipeline to the Review, and settles the Work. Behind a bound organism's off-thread bus a routed Work cannot await its answer (FRICTION F.15): it settles `pending`, the Step / Workflow / Task carry it up, the assembly journals `task.pending` and later `task.done` / `task.failed` naming the Work and the performer. In process, where the reply arrives at drain, nothing changes. `FakeModel` publishes `ModelCalled` evidence like a hosted call (`adapter: fake`), takes `answer_file` and `answer_role`. Verification rehearses the rollback in the worktree (`evidence.rollback`, `Evidence.rollback_rehearsed`). Durable ids continue from the Journal across restarts (`Metabolism.resume`). On a retained or rolled-back window the originating pressure is re-measured against the declared fitness signals (`pressure.remeasured`). A rejected Mutation's worktree is dissolved; its lineage stays.

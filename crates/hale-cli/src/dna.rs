@@ -880,6 +880,7 @@ fn status_projection(root: &Path) -> Result<Value, String> {
                 let (task, rest) = rest.split_once(' ').unwrap_or(("", rest));
                 let (class, rest) = rest.split_once(": ").unwrap_or((rest, ""));
                 let objective = rest.rsplit_once(" at ").map(|(o, _)| o).unwrap_or(rest);
+                let objective = objective.strip_suffix(" ()").unwrap_or(objective);
                 m["task"] = Value::String(task.to_string());
                 m["class"] = Value::String(class.to_string());
                 m["objective"] = Value::String(objective.to_string());
@@ -1508,10 +1509,10 @@ fn assembly_hl(project: &str, purpose_digest: &str, seed: &str) -> String {
 // (project-owned; edit freely). Every "setting" is a constructor
 // argument; `hale check` sees all of it.
 //
-// Phase 1 defaults: a file Journal (the causal authority), in-memory
+// Defaults: a file Journal (the causal authority), in-memory
 // knowledge, a conservative autonomy grant, human review before any
-// apply, NO deployment (every mutation stops at `staged`), and the
-// local human membrane. Provenance of every fact here: declared.
+// apply, a Mutation gateway over this repository, and the local
+// human membrane. Provenance of every fact here: declared.
 
 import "vendor/dna" as dna;
 

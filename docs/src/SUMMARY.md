@@ -59,9 +59,20 @@
 - [WebAssembly & the browser](./systems/webassembly.md)
 - [Operations & debugging](./systems/operations.md)
 - [Iris: the embedded observer](./systems/iris.md)
-- [DNA: a governed application](./systems/dna.md)
 - [Record & replay](./systems/replay.md)
 - [Modes](./systems/modes.md)
+
+# DNA
+
+- [A governed application](./dna/index.md)
+- [Attaching it](./dna/attach.md)
+- [Running it](./dna/run.md)
+- [A change, end to end](./dna/walkthrough.md)
+- [Reviewing](./dna/review.md)
+- [Apply, restart, observe](./dna/apply.md)
+- [Autonomy and policy](./dna/autonomy.md)
+- [Models and credentials](./dna/models.md)
+- [Reference](./dna/reference.md)
 
 ---
 
