@@ -187,7 +187,19 @@ fn iris_diff_pair_rides_into_the_snapshot() {
     }
     let _ = child.kill();
     let _ = child.wait();
-    let json_start = body.find("{\"ts\"").expect("snapshot body");
+    let json_start = body.find("{\"ts\"").unwrap_or_else(|| {
+        // the last snapshot seen and what the server said, for a failure
+        // a loaded shard produces and a workstation never does
+        let last = TcpStream::connect(("127.0.0.1", port)).ok().and_then(|mut s| {
+            let _ = s.set_read_timeout(Some(Duration::from_secs(3)));
+            let _ = s.write_all(b"GET /snapshot HTTP/1.0\r\nHost: x\r\n\r\n");
+            let mut b = String::new();
+            let _ = s.read_to_string(&mut b);
+            Some(b)
+        });
+        let log = std::fs::read_to_string(cache.join(format!("iris-{port}.stderr"))).unwrap_or_default();
+        panic!("no loaded diff in the snapshot within 300s\nlast snapshot: {last:?}\nserver log:\n{log}");
+    });
     let v: serde_json::Value = serde_json::from_str(&body[json_start..]).expect("snapshot is JSON");
     assert_eq!(v["diff"]["state"], "loaded", "{body}");
     let doc = &v["diff"]["document"];
