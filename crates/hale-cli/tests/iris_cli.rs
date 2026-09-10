@@ -51,12 +51,16 @@ fn spawn_iris(cache: &Path, args: &[&str]) -> (std::process::Child, u16) {
     for _ in 0..4 {
         let port = free_port();
         let log = cache.join(format!("iris-{port}.stderr"));
+        // both streams into one log: the ready line is printed, the
+        // build banner and a bind failure are eprinted
+        let out = std::fs::File::create(&log).unwrap();
+        let err = out.try_clone().unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_hale"))
             .args(["iris", &port.to_string()])
             .args(args)
             .env("XDG_CACHE_HOME", cache)
-            .stdout(Stdio::null())
-            .stderr(std::fs::File::create(&log).unwrap())
+            .stdout(out)
+            .stderr(err)
             .spawn()
             .expect("spawn hale iris");
         let deadline = Instant::now() + Duration::from_secs(240);
