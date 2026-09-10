@@ -38,13 +38,14 @@ fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
 }
 
-/// Start `hale iris <port> <args…>` on a free port and wait until it
-/// accepts connections. A port picked with bind(0) and released can be
-/// taken again before fuse-hl binds it — under a loaded shard, by an
-/// ephemeral source port of another test's connection — and a server
-/// that failed its bind exits at birth, which a poll loop with a
-/// silent stderr waits 300 s for. So: stderr captured, an early exit
-/// retried on a fresh port, and the failure named.
+/// Start `hale iris <port> <args…>` on a free port and wait until OUR
+/// server says it is listening. A port picked with bind(0) and released
+/// can be taken before fuse-hl binds it — under a loaded shard, by
+/// another test's server — and then a connect to the port succeeds
+/// against a stranger whose snapshot never loads our diff, which a poll
+/// loop waits 300 s for. So: stderr captured, the ready line
+/// (`fuse-hl: listening`) awaited from our own child, an early exit or
+/// a silent child retried on a fresh port, and the failure named.
 fn spawn_iris(cache: &Path, args: &[&str]) -> (std::process::Child, u16) {
     let mut last = String::new();
     for _ in 0..4 {
@@ -64,7 +65,8 @@ fn spawn_iris(cache: &Path, args: &[&str]) -> (std::process::Child, u16) {
                 last = format!("hale iris exited {st} before serving on {port}:\n{}", std::fs::read_to_string(&log).unwrap_or_default());
                 break;
             }
-            if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            let said = std::fs::read_to_string(&log).unwrap_or_default();
+            if said.contains("fuse-hl: listening") && TcpStream::connect(("127.0.0.1", port)).is_ok() {
                 return (child, port);
             }
             if Instant::now() > deadline {
