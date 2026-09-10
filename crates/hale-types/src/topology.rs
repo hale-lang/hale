@@ -667,7 +667,9 @@ pub fn dump_topology_parts(bundle: &Bundle<'_>) -> String {
                 let params: Vec<String> = l
                     .params
                     .iter()
-                    .map(|p| format!("{{\"name\": {}, \"type\": {}}}", quote(&p.name), quote(&p.type_name)))
+                    // author spelling for an imported type (GH #566 F3: a grown
+                    // position reads `dna::Leader`, not the mangled symbol)
+                    .map(|p| format!("{{\"name\": {}, \"type\": {}}}", quote(&p.name), quote(&demangle_str(&p.type_name))))
                     .collect();
                 let mut methods: Vec<String> = r
                     .member_of

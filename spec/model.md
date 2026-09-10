@@ -532,7 +532,9 @@ The output is a versioned document (`TOPOLOGY_DIFF_SCHEMA`, now
   when they moved: a wider payload is a contract change for every
   locus on the topic. These facets are read from the artifact's
   `contracts` and `topics` sections (schema 1.18+), the per-locus
-  regrouping of facts the model already holds.
+  regrouping of facts the model already holds. A param's type is
+  rendered in author spelling (`dna::Leader`, never the mangled
+  cross-seed symbol), like every other name in the artifact.
 - **`effects`** — per paired fn, classes `gained` / `dropped`; per
   fn present on one side only with a non-empty effect set, a row
   with `change: added` (its classes as `gained`) or `change:
