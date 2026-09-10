@@ -527,3 +527,42 @@ field was never exercised because F.3 forbids the value flow before
 reassignment is reached; String-keyed settlement topics carried every
 delegated Task in the fixtures without visible cost, though nothing
 here is at scale.
+
+## F.16 — a vec form's `set` with a value read from the same vec segfaults
+
+Found writing the host in Hale (GH #566 F8). Swapping two items of a
+`@form(vec)` the obvious way — read both with `get`, write them back
+crossed with `set` — kills the process with SIGSEGV, and `hale run`
+reports only `exit 1` with no diagnostic:
+
+```hale
+type Row { id: String = ""; state: String = "pending"; note: String = ""; }
+@form(vec)
+locus Rows { capacity { heap items of Row; } }
+locus Keeper {
+    params { rows: Rows = Rows { }; }
+    fn go() {
+        self.rows.push(Row { id: "purpose", note: "first" });
+        self.rows.push(Row { id: "m1", note: "second" });
+        let a = self.rows.get(0) or Row { };
+        let b = self.rows.get(1) or Row { };
+        self.rows.set(0, b) or discard;   // retires slot 0's strings, which `a` still aliases
+        self.rows.set(1, a) or discard;   // copies from freed memory
+        println("rows ", self.rows.len()); // never printed
+    }
+}
+fn main() { let k = Keeper { }; k.go(); }
+```
+
+The read-modify-write of one slot (`get(i)`, change a field, `set(i, …)`)
+appeared to work in the same program — luck, by the same reading.
+Presumably the single-owner retire at a cell store (the
+`vec.set` retire of GH handoff #263) frees the old value's strings
+while a value read by `get` still aliases them; a `get` that returned
+an owned copy, or a `set` that retired after the copy, would close
+it. **Worked around** in `dna/host`: the projection never keeps
+rows in a vec — it derives each row from the record on demand and
+sorts an id list built by string insertion.
+
+Two frictions in one: the aliasing, and the silence — a segfault in
+a `hale run` program prints nothing, not even that it died by signal.

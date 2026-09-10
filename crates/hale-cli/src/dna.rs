@@ -51,6 +51,67 @@ const INTENT_SOCK_REL: &str = ".hale/dna/hale-dna.intent.offered.sock";
 const OBSERVED_SOCK_REL: &str = ".hale/dna/hale-dna.expression.observed.sock";
 const PRESSURE_SOCK_REL: &str = ".hale/dna/hale-dna.pressure.raised.sock";
 
+/// GH #566 F8: the host is a Hale program (`dna/host`, embedded beside
+/// the core and built once into the toolchain cache). A verb that is
+/// DNA behaviour — a projection, a relay, supervision — execs it with
+/// the project resolved: `host <verb> <root> <seed> <fleet> <plan> …`,
+/// with the toolchain, the membrane client and the toolchain version
+/// in the environment. This shim resolves the project (the manifest is
+/// the compiler's) and forwards the exit status.
+fn host_exec(verb: &str, dir: &Path, args: &[String]) -> ExitCode {
+    let run = || -> Result<i32, String> {
+        let (root, seed) = project(dir)?;
+        let seed_rel = seed.strip_prefix(&root).ok().map(|p| p.to_string_lossy().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| ".".into());
+        let (fleet, plan_rel) = match crate::pkg::read_dna_fleet(&root.join("hale.toml"))? {
+            Some((name, path)) => (name, path.strip_prefix(&root).unwrap_or(&path).to_string_lossy().to_string()),
+            None => (String::new(), String::new()),
+        };
+        let cache = hale_iris::materialize().map_err(|e| format!("cannot materialize the toolchain cache: {e}"))?;
+        let host = crate::iris::ensure_built_in(&cache, hale_dna::HOST_SEED, hale_dna::HOST_BIN, "the host")?;
+        let membrane = crate::iris::ensure_built_in(&cache, hale_dna::MEMBRANE_SEED, hale_dna::MEMBRANE_BIN, "the membrane client")?;
+        let me = std::env::current_exe().map_err(|e| e.to_string())?;
+        let st = Command::new(&host)
+            .arg(verb)
+            .arg(&root)
+            .arg(&seed_rel)
+            .arg(&fleet)
+            .arg(&plan_rel)
+            .args(args)
+            .current_dir(&root)
+            .env("HALE_BIN", &me)
+            .env("HALE_DNA_MEMBRANE", &membrane)
+            .env("HALE_DNA_TOOLCHAIN", TOOLCHAIN)
+            .status()
+            .map_err(|e| format!("hale dna {verb}: {e}"))?;
+        Ok(st.code().unwrap_or(1))
+    };
+    match run() {
+        Ok(code) => ExitCode::from(code.clamp(0, 255) as u8),
+        Err(e) => {
+            eprintln!("hale dna: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// The `[project]` positional a verb takes: the first arg that is not a
+/// flag and names a directory with a manifest (or any non-flag for verbs
+/// whose only positional is the project).
+fn project_arg(args: &[String], any_positional: bool) -> (PathBuf, Vec<String>) {
+    let mut dir = PathBuf::from(".");
+    let mut rest = Vec::new();
+    let mut taken = false;
+    for a in args {
+        if !taken && !a.starts_with("--") && (any_positional || Path::new(a).join("hale.toml").exists() || Path::new(a).is_dir()) {
+            dir = PathBuf::from(a);
+            taken = true;
+        } else {
+            rest.push(a.clone());
+        }
+    }
+    (dir, rest)
+}
+
 pub fn run(args: &[String]) -> ExitCode {
     match args.first().map(String::as_str) {
         Some("init") => {
@@ -67,18 +128,37 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         Some("run") => run_organism(&args[1..], false),
         Some("dev") => run_organism(&args[1..], true),
-        Some("status") => report(status(&args[1..])),
+        Some("status") => {
+            let (dir, rest) = project_arg(&args[1..], true);
+            host_exec("status", &dir, &rest)
+        }
         Some("ask") => report(ask(&args[1..])),
-        Some("history") => report(history(&args[1..])),
+        Some("history") => {
+            let (dir, rest) = project_arg(&args[1..], false);
+            host_exec("history", &dir, &rest)
+        }
         Some("sync") => report(sync_cmd(&args[1..])),
-        Some("board") => report(board(&args[1..])),
-        Some("report") => report(file_report(&args[1..])),
-        Some("pressure") => report(pressure(&args[1..])),
+        Some("board") => {
+            let (dir, rest) = project_arg(&args[1..], true);
+            host_exec("board", &dir, &rest)
+        }
+        Some("report") => {
+            let (dir, rest) = project_arg(&args[1..], true);
+            host_exec("report", &dir, &rest)
+        }
+        Some("pressure") if args.get(1).map(|a| a == "raise").unwrap_or(false) => report(pressure(&args[1..])),
+        Some("pressure") => host_exec("pressure", Path::new("."), &args[1..]),
         Some("github") => report(github_cmd(&args[1..])),
-        Some("fleet") => report(fleet_cmd(&args[1..])),
+        Some("fleet") => {
+            let (dir, rest) = project_arg(&args[1..], true);
+            host_exec("fleet", &dir, &rest)
+        }
         Some("ui") => ui_cmd(&args[1..]),
         Some("deploy") => report(deploy_cmd(&args[1..], false)),
         Some("rollback") => report(deploy_cmd(&args[1..], true)),
+        // a list or a render is the host's; a verdict stays here until the
+        // writers move (GH #566 F8)
+        Some("review") if args[1..].iter().filter(|a| !a.starts_with("--")).count() < 2 && !args[1..].iter().any(|a| matches!(a.as_str(), "--as" | "--authority" | "--comment" | "--digest")) => host_exec("review", Path::new("."), &args[1..]),
         Some("review") => report(review(&args[1..])),
         Some("--help") | Some("-h") | None => usage(if args.is_empty() { 2 } else { 0 }),
         Some(other) => {

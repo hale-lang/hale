@@ -1,0 +1,406 @@
+// dna/host/verbs.hl — the projections `hale dna` prints, from the
+// record alone (GH #566 F8): status, history, the Reviews, the Board's
+// queue, a report, pressure, the fleet.
+
+import "../core" as dna;
+
+// One verb's answer: lines to print, or an error.
+type Answer {
+    ok: Bool = true;
+    text: String = "";
+}
+
+fn fail(why: String) -> Answer {
+    return Answer { ok: false, text: why };
+}
+
+fn answer(text: String) -> Answer {
+    return Answer { ok: true, text: text };
+}
+
+// A loaded projection, or the reason there is none.
+fn open_projection(root: String, seed: String, toolchain: String) -> Projection {
+    return Projection { root: root, seed: seed, toolchain: toolchain, j: dna::GitJournal { repo: root, author: "host" } };
+}
+
+fn no_record(root: String) -> String {
+    return "no record at " + RECORD_REF + " in " + root + " (run `hale dna init`)";
+}
+
+// ---- status ---------------------------------------------------------
+
+fn status_verb(root: String, seed: String, toolchain: String, json: Bool) -> Answer {
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let p = open_projection(root, seed, toolchain);
+    if json { return answer(p.json() + "\n"); }
+    return answer(p.text());
+}
+
+// ---- history --------------------------------------------------------
+
+fn looks_like_id(t: String) -> Bool {
+    if len(t) < 2 || len(t) > 20 { return false; }
+    let c = t[0..1];
+    if !(c == "i" || c == "t" || c == "w" || c == "a" || c == "r") { return false; }
+    let mut i = 1;
+    while i < len(t) {
+        let b = std::str::byte_at_unchecked(t, i);
+        let alnum = (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122);
+        if !alnum { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn mentions(e: dna::Event, id: String) -> Bool {
+    return e.entity == id || std::str::ends_with(e.entity, ":" + id) || std::str::contains(e.body, id);
+}
+
+fn strip_prefixes(entity: String) -> String {
+    let mut s = entity;
+    if std::str::starts_with(s, "review:") { s = s[7..len(s)]; }
+    if std::str::starts_with(s, "locus:") { s = s[6..len(s)]; }
+    return s;
+}
+
+fn has(ids: String, id: String) -> Bool {
+    return std::str::contains(ids, "\n" + id + "\n");
+}
+
+@unbounded
+fn history_verb(root: String, entity: String) -> Answer {
+    if len(record_head(root)) == 0 { return fail(no_record(root)); }
+    let p = open_projection(root, ".", "");
+    let n = p.rows();
+    let mut ids = "\n";
+    if len(entity) > 0 {
+        ids = ids + entity + "\n";
+        // rows about the entity; expand through ids that co-occur
+        let mut round = 0;
+        while round < 3 {
+            round = round + 1;
+            let snapshot = ids;
+            let mut i = 0;
+            while i < n {
+                let e = p.row(i);
+                if mentioned_by_any(e, snapshot) {
+                    let se = strip_prefixes(e.entity);
+                    if !has(ids, se) { ids = ids + se + "\n"; }
+                    let mut tok = "";
+                    let mut k = 0;
+                    while k <= len(e.body) {
+                        let ch = if k < len(e.body) { e.body[k..(k + 1)] } else { " " };
+                        if ch == ":" || ch == " " || ch == "\n" || ch == "\t" || ch == "," || ch == "\"" {
+                            if looks_like_id(tok) && !has(ids, tok) { ids = ids + tok + "\n"; }
+                            tok = "";
+                        } else {
+                            tok = tok + ch;
+                        }
+                        k = k + 1;
+                    }
+                }
+                i = i + 1;
+            }
+        }
+    }
+    let mut out = "record " + RECORD_REF + " — " + to_string(n) + " event(s), chain " + (if p.chain_ok() { "verified" } else { "BROKEN" }) + "\n";
+    let mut lines = "";
+    let mut selected = 0;
+    let mut i = 0;
+    while i < n {
+        let e = p.row(i);
+        if len(entity) == 0 || mentioned_by_any(e, ids) {
+            selected = selected + 1;
+            let b = if len(e.body) > 96 { e.body[0..96] + "…" } else { e.body };
+            lines = lines + std::str::pad_left(to_string(e.seq), 5, " ") + "  " + std::str::pad_right(e.kind, 22, " ") + " " + std::str::pad_right(e.entity, 28, " ") + " " + b + "\n";
+        }
+        i = i + 1;
+    }
+    if len(entity) > 0 { out = out + "history of " + entity + ": " + to_string(selected) + " event(s)\n"; }
+    return answer(out + lines);
+}
+
+fn mentioned_by_any(e: dna::Event, ids: String) -> Bool {
+    let mut rest = ids;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let id = if nl < 0 { rest } else { rest[0..nl] };
+        if len(id) > 0 && mentions(e, id) { return true; }
+        if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+    }
+    return false;
+}
+
+// ---- reviews --------------------------------------------------------
+
+@unbounded
+fn review_list(p: Projection) -> Answer {
+    let ids = p.review_ids();
+    let n = list_len(ids);
+    let mut out = to_string(p.pending_reviews()) + " pending review(s) of " + to_string(n) + "\n";
+    let mut i = 0;
+    while i < n {
+        let r = p.review_of(nth(ids, i));
+        if r.state == "pending" {
+            out = out + "  " + r.id + " needs " + r.required_authority + " — " + r.question + "\n";
+            if r.is_mutation {
+                out = out + "      " + r.change_class + " · candidate " + short(r.candidate_commit) + " · evidence " + r.evidence + " · disposition " + r.disposition + "\n";
+            }
+        }
+        i = i + 1;
+    }
+    return answer(out + "render one with `hale dna review <id>`; decide with `hale dna review <id> approve|revise|reject|abstain`\n");
+}
+
+fn pending_ids(p: Projection) -> String {
+    let mut out = "";
+    let ids = p.review_ids();
+    let n = list_len(ids);
+    let mut i = 0;
+    while i < n {
+        let r = p.review_of(nth(ids, i));
+        if r.state == "pending" { out = out + (if len(out) > 0 { ", " } else { "" }) + r.id; }
+        i = i + 1;
+    }
+    return out;
+}
+
+// The magnitude vector's facets, in the order the projection listed
+// them (by name), never a score.
+fn magnitude_facets(raw: String) -> String {
+    let mut out = "";
+    let bools = "contract_change effects_widened irreversible law_touched ownership_crossed placement_change state_migration ";
+    let ints = "external_blast loci novelty ";
+    // alphabetical over both kinds
+    let order = "contract_change effects_widened external_blast irreversible law_touched loci novelty ownership_crossed placement_change state_migration ";
+    let mut rest = order;
+    while len(rest) > 0 {
+        let sp = std::str::index_of(rest, " ");
+        let k = rest[0..sp];
+        rest = rest[(sp + 1)..len(rest)];
+        if std::str::contains(bools, k + " ") {
+            if std::json::find_bool_field(raw, k) { out = out + (if len(out) > 0 { ", " } else { "" }) + k; }
+        } else {
+            let v = std::json::find_int_field(raw, k);
+            if v != 0 { out = out + (if len(out) > 0 { ", " } else { "" }) + k + " " + to_string(v); }
+        }
+    }
+    if len(out) == 0 { return "nothing moved in the model"; }
+    return out;
+}
+
+fn indent_lines(text: String, prefix: String) -> String {
+    let mut out = "";
+    let mut rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        out = out + prefix + line + "\n";
+        if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+    }
+    return out;
+}
+
+@unbounded
+fn render_review(p: Projection, id: String, iris: Bool) -> Answer {
+    let r = p.review_of(id);
+    if len(r.id) == 0 { return fail("no `review.requested` for `" + id + "` in the Journal (pending: " + pending_ids(p) + ")"); }
+    let mut out = "review " + id + " [" + r.state + "]: " + r.question + "\n";
+    out = out + "  needs " + r.required_authority + " · candidate " + r.subject_digest + (if r.state == "pending" { "" } else { " · settled " + r.settled }) + "\n";
+    if r.refusal_count > 0 { out = out + indent_lines(dna::trim_nl(r.refusals), "  refused a verdict: "); }
+    if r.has_reasoned { out = out + "  why:\n" + indent_lines(dna::trim_nl(r.reasoned), "    "); }
+    if !r.is_mutation {
+        return answer(out + "decide: hale dna review " + id + " approve|revise|reject|abstain [--as <you>] [--comment <c>]\n");
+    }
+    out = out + "  mutation " + r.mutation_id + " (" + r.change_class + ") by " + r.author + " · disposition under the grant: " + r.disposition + " · shape " + r.candidate_shape + "\n";
+    if len(r.magnitude_raw) > 0 { out = out + "  magnitude: " + magnitude_facets(r.magnitude_raw) + "\n"; }
+    out = out + "\nsource diff (git " + short(r.base_commit) + " .. " + short(r.candidate_commit) + "):\n";
+    let d = git(p.root, "diff\n--stat\n-p\n" + r.base_commit + "\n" + r.candidate_commit);
+    if d.code == 0 { out = out + indent_lines(dna::trim_nl(d.stdout), "  "); } else { out = out + "  (git diff failed: " + dna::trim_nl(d.stderr) + ")\n"; }
+    out = out + "\nsemantic diff (hale model diff, baseline .. candidate):\n";
+    let sem = receipt_read(p.root, r.diff_text);
+    if sem.present { out = out + indent_lines(dna::trim_nl(sem.text), "  "); } else { out = out + "  (no semantic diff receipt " + r.diff_text + ")\n"; }
+    out = out + "\nevidence (" + r.evidence + "):\n";
+    out = out + "  " + std::str::pad_right("step", 10, " ") + " " + std::str::pad_right("ok", 6, " ") + " " + std::str::pad_right("code", 5, " ") + " " + std::str::pad_right("receipt", 14, " ") + " bytes\n";
+    let mut i = 0;
+    while i < p.rows() {
+        let e = p.row(i);
+        if std::str::starts_with(e.kind, "evidence.") && e.entity == r.candidate_commit && e.kind != "evidence.magnitude" {
+            let ok = if std::json::find_bool_field(e.body, "ok") { "yes" } else { "NO" };
+            out = out + "  " + std::str::pad_right(e.kind[9..len(e.kind)], 10, " ") + " " + std::str::pad_right(ok, 6, " ") + " " + std::str::pad_right(to_string(std::json::find_int_field(e.body, "code")), 5, " ") + " " + std::str::pad_right(short(std::json::find_string_field(e.body, "output_digest")), 14, " ") + " " + to_string(std::json::find_int_field(e.body, "bytes")) + "\n";
+        }
+        i = i + 1;
+    }
+    out = out + "  receipts: refs/dna/receipts/<digest> (git cat-file -p)\n\n";
+    out = out + "decide: hale dna review " + id + " approve|revise|reject|abstain [--as <you>] [--comment <c>] [--digest " + short(r.candidate_commit) + "]\n";
+    if iris {
+        if len(r.diff_json) == 0 { return fail("--iris: this review has no semantic diff document"); }
+        let doc = receipt_read(p.root, r.diff_json);
+        if !doc.present { return fail("--iris: no diff receipt " + r.diff_json); }
+        std::io::fs::mkdir(p.root + "/.hale/dna/scratch") or discard;
+        let doc_path = p.root + "/.hale/dna/scratch/review-" + id + ".diff.json";
+        let wrote = write_text(doc_path, doc.text) or false;
+        if !wrote { return fail("--iris: cannot write " + doc_path); }
+        let hale = std::env::var("HALE_BIN");
+        let launched = dna::run_tool("sh\n-c\ncd " + p.root + " && nohup " + hale + " iris --diff " + doc_path + " --membrane " + p.root + "/.hale/dna --organism " + p.root + "/.hale/dna/status.json >/dev/null 2>&1 & echo $!");
+        out = out + "iris: review perspective [4] on " + r.diff_json + " (pid " + dna::trim_nl(launched.stdout) + "); the membrane form sends the verdict\n";
+    }
+    return answer(out);
+}
+
+// ---- board ----------------------------------------------------------
+
+@unbounded
+fn board_verb(p: Projection) -> Answer {
+    let mut mine = 0;
+    let mut lines = "";
+    let mut leaders = 0;
+    let ids = p.review_ids();
+    let n = list_len(ids);
+    let mut i = 0;
+    while i < n {
+        let r = p.review_of(nth(ids, i));
+        if r.state == "pending" && (r.required_authority == "board" || r.required_authority == "maintainer") {
+            mine = mine + 1;
+            let why = if r.is_mutation { " — " + r.change_class + " · " + (if len(r.seed) == 0 { "the application" } else { r.seed }) + " · disposition " + r.disposition } else { "" };
+            lines = lines + "  " + r.id + "  " + r.question + why + "\n";
+        }
+        if r.state == "pending" && r.required_authority == "leader" { leaders = leaders + 1; }
+        i = i + 1;
+    }
+    let mut out = "board: " + to_string(mine) + " review(s) need your verdict\n" + lines;
+    if leaders > 0 { out = out + "leader: " + to_string(leaders) + " review(s) inside the grant, being decided\n"; }
+    let proposals = p.count("appendage.proposed");
+    if proposals > 0 {
+        out = out + "proposals: " + to_string(proposals) + "\n";
+        i = 0;
+        while i < p.rows() {
+            let e = p.row(i);
+            if e.kind == "appendage.proposed" {
+                let mut cand = "";
+                let mut k = 0;
+                while k < p.rows() {
+                    let c = p.row(k);
+                    if c.kind == "appendage.candidate" && c.entity == e.entity && len(cand) == 0 { cand = " → " + c.body; }
+                    k = k + 1;
+                }
+                out = out + "  " + e.entity + ": " + e.body + cand + "\n";
+            }
+            i = i + 1;
+        }
+    }
+    let last = p.last_of("report.filed");
+    if last.seq >= 0 { out = out + "last report (#" + to_string(last.seq) + "): " + last.body + "\n"; }
+    let grant = p.count("grant.changed");
+    if grant > 0 { out = out + "grant changes: " + to_string(grant) + "\n"; }
+    return answer(out + "decide with `hale dna review <id> approve|revise|reject`; `hale dna review <id>` renders one\n");
+}
+
+// ---- report ---------------------------------------------------------
+
+@unbounded
+fn report_verb(p: Projection) -> Answer {
+    let last = p.last_of("report.filed");
+    let since = if last.seq >= 0 { last.seq + 1 } else { 0 };
+    let mut proposed = 0;
+    let mut reviewed = 0;
+    let mut applied = 0;
+    let mut retained = 0;
+    let mut rolled = 0;
+    let mut rejected = 0;
+    let mut escalated = 0;
+    let mut pressure = 0;
+    let mut proposals = 0;
+    let mut calls = 0;
+    let mut cost = 0;
+    let mut settled = "";
+    let mut i = since;
+    while i < p.rows() {
+        let e = p.row(i);
+        if e.kind == "mutation.proposed" { proposed = proposed + 1; }
+        if e.kind == "review.requested" { reviewed = reviewed + 1; if std::str::contains(e.body, "\"required_authority\": \"board\"") { escalated = escalated + 1; } }
+        if e.kind == "mutation.applied" { applied = applied + 1; }
+        if e.kind == "mutation.retained" { retained = retained + 1; }
+        if e.kind == "mutation.rolled_back" { rolled = rolled + 1; }
+        if e.kind == "mutation.rejected" { rejected = rejected + 1; }
+        if e.kind == "pressure.raised" { pressure = pressure + 1; }
+        if e.kind == "appendage.proposed" { proposals = proposals + 1; }
+        if e.kind == "model.called" { calls = calls + 1; cost = cost + std::json::find_int_field(e.body, "cost_micros"); }
+        if e.kind == "review.settled" { settled = settled + (if len(settled) > 0 { ", " } else { "" }) + e.entity + " " + e.body; }
+        i = i + 1;
+    }
+    let body = "since #" + to_string(since) + ": proposed " + to_string(proposed) + " · reviewed " + to_string(reviewed) + " · applied " + to_string(applied) + " · retained " + to_string(retained) + " · rolled back " + to_string(rolled) + " · rejected " + to_string(rejected) + " · escalated " + to_string(escalated) + " · pressure " + to_string(pressure) + " · proposals " + to_string(proposals) + " · model calls " + to_string(calls) + " (" + to_string(cost) + " µ$) · settled: " + (if len(settled) == 0 { "none" } else { settled });
+    let id = "r" + to_string(p.rows());
+    if !append_as(p.root, "report.filed", id, body, "") { return fail("report: the record refused the append"); }
+    let s = sync_record(p.root);
+    return answer("report " + id + " filed: " + body + "\n");
+}
+
+// ---- pressure -------------------------------------------------------
+
+@unbounded
+fn pressure_list(p: Projection) -> Answer {
+    let raised = p.count("pressure.raised");
+    let mut out = "pressure: " + to_string(raised) + " signal(s) raised\n";
+    let mut taken = 0;
+    let mut i = p.rows() - 1;
+    while i >= 0 && taken < 10 {
+        let e = p.row(i);
+        if e.kind == "pressure.raised" {
+            out = out + "  " + std::str::pad_left(to_string(e.seq), 5, " ") + "  " + e.entity + "  " + e.body + "\n";
+            taken = taken + 1;
+        }
+        i = i - 1;
+    }
+    i = 0;
+    while i < p.rows() {
+        let e = p.row(i);
+        if e.kind == "appendage.proposed" || e.kind == "appendage.candidate" || e.kind == "pressure.remeasured" {
+            out = out + "  " + std::str::pad_left(to_string(e.seq), 5, " ") + "  " + std::str::pad_right(e.kind, 20, " ") + " " + e.entity + "  " + e.body + "\n";
+        }
+        i = i + 1;
+    }
+    return answer(out);
+}
+
+// ---- fleet ----------------------------------------------------------
+
+@unbounded
+fn fleet_list(p: Projection, fleet: String, plan_rel: String) -> Answer {
+    if len(fleet) == 0 { return fail("no `[dna] fleet = \"<name>\"` in hale.toml: the DNA expresses no fleet here"); }
+    let plan = std::io::fs::read_file(p.root + "/" + plan_rel) or "";
+    if len(plan) == 0 { return fail("no plan at " + plan_rel); }
+    let mut out = "fleet " + fleet + " (" + plan_rel + ")\n";
+    let d = p.last_of("fleet.deploy");
+    if d.seq >= 0 {
+        let seed = std::json::find_string_field(d.body, "seed");
+        let mut touched = 0;
+        let mut it = std::json::array_first(std::json::find_field_raw(d.body, "touched"));
+        while !it.done { touched = touched + 1; it = std::json::array_next(it); }
+        out = out + "last deploy: " + std::json::find_string_field(d.body, "reason") + " " + short(std::json::find_string_field(d.body, "revision")) + " (" + d.entity + ") touching " + to_string(touched) + " — " + (if len(seed) == 0 { "the whole genome" } else { seed }) + "\n";
+    } else {
+        out = out + "no deploy yet: `hale dna deploy <revision>`\n";
+    }
+    let mut it = std::json::array_first(std::json::find_field_raw(plan, "instances"));
+    while !it.done {
+        let id = std::json::find_string_field(it.element, "id");
+        let node = std::json::find_string_field(it.element, "node");
+        // the last instance.* row about it
+        let mut last = dna::Event { seq: -1 };
+        let mut i = p.rows() - 1;
+        while i >= 0 && last.seq < 0 {
+            let e = p.row(i);
+            if std::str::starts_with(e.kind, "instance.") && e.entity == id { last = e; }
+            i = i - 1;
+        }
+        if last.seq < 0 {
+            out = out + "  " + std::str::pad_right(id, 12, " ") + " " + std::str::pad_right(if len(node) > 0 { node } else { "-" }, 10, " ") + " never expressed\n";
+        } else {
+            let state = if last.kind == "instance.up" { "up" } else { "exited " + to_string(std::json::find_int_field(last.body, "code")) };
+            let n = std::json::find_string_field(last.body, "node");
+            out = out + "  " + std::str::pad_right(id, 12, " ") + " " + std::str::pad_right(if len(n) > 0 { n } else { if len(node) > 0 { node } else { "-" } }, 10, " ") + " " + std::str::pad_right(state, 8, " ") + " rev " + short(std::json::find_string_field(last.body, "revision")) + " model " + short(std::json::find_string_field(last.body, "model_hash")) + "\n";
+        }
+        it = std::json::array_next(it);
+    }
+    return answer(out);
+}
