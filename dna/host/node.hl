@@ -1,0 +1,212 @@
+// dna/host/node.hl — `hale node <name>`: the agent that expresses, on
+// one machine, the instances a fleet plan assigns to that node
+// (GH #566 F5, in Hale since F8). It never decides: it expresses what
+// the record's latest `fleet.deploy` says and reports what it sees.
+
+import "../core" as dna;
+
+type Instance {
+    id: String = "";
+    revision: String = "";
+    proc: Proc = Proc { };
+    log_offset: Int = 0;
+}
+@form(vec)
+locus Instances { capacity { heap items of Instance; } }
+
+// The plan file this clone's manifest names for `fleet` ("" = the one
+// under `[dna]`), read by the toolchain: `hale dna` resolved it into
+// HALE_DNA_PLAN for the host, but a node reads the manifest at the
+// revision it checked out — through `hale fleet plan-of`.
+fn plan_rel_of(root: String, fleet: String) -> String {
+    let hale = std::env::var("HALE_BIN");
+    let r = dna::run_tool(hale + "\ndna\nplan-of\n" + root + "\n" + fleet);
+    if r.code != 0 { return ""; }
+    return dna::trim_nl(r.stdout);
+}
+
+locus Node {
+    params {
+        name: String = "";
+        root: String = ".";
+        fleet: String = "";
+        tick_ms: Int = 1000;
+        node_dir: String = "";
+        author: String = "";
+        instances: Instances = Instances { };
+        expressed_seq: Int = -1;
+        started_total: Int = 0;
+    }
+    fn index_of(id: String) -> Int {
+        let mut i = 0;
+        while i < self.instances.len() {
+            let x = self.instances.get(i) or Instance { };
+            if x.id == id { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+    fn say(what: String) { eprintln("hale node ", self.name, ": ", what); }
+    // Cut the artifact and build the seed; the binary ("" on failure).
+    fn build(seed_dir: String, artifact: String) -> String {
+        let hale = std::env::var("HALE_BIN");
+        let c = dna::run_tool(hale + "\ncheck\n" + seed_dir + "\n--dump-topology=" + artifact);
+        if c.code != 0 { self.say("`hale check " + seed_dir + "` failed; nothing runs that does not pass"); return ""; }
+        let b = dna::run_tool(hale + "\nbuild\n" + seed_dir);
+        if b.code != 0 { self.say("`hale build " + seed_dir + "` failed"); return ""; }
+        let sl = last_index_of(seed_dir, "/");
+        let bin = seed_dir + "/" + (if sl < 0 { seed_dir } else { seed_dir[(sl + 1)..len(seed_dir)] });
+        if !std::io::fs::file_exists(bin) { self.say("no binary at " + bin); return ""; }
+        return bin;
+    }
+    // Express one deploy row: the revision checked out, every instance
+    // of this node the deploy touches (or that is not up) rebuilt and
+    // restarted at it. False when it must be retried next tick.
+    @unbounded
+    fn express(deploy: dna::Event) -> Bool {
+        let rev = std::json::find_string_field(deploy.body, "revision");
+        if len(rev) == 0 { self.say("fleet.deploy #" + to_string(deploy.seq) + ": a deploy with no revision"); return true; }
+        let remote = record_remote(self.root);
+        if len(remote) > 0 { let f = git(self.root, "fetch\n-q\n" + remote + "\n+refs/dna/revisions/*:refs/dna/revisions/*"); }
+        if len(git_out(self.root, "rev-parse\n--verify\n" + rev + "^{commit}")) == 0 { self.say("fleet.deploy #" + to_string(deploy.seq) + ": revision " + short(rev) + " is not here yet (retrying next tick)"); return false; }
+        let co = git_err(self.root, "checkout\n-q\n--detach\n" + rev);
+        if len(co) > 0 { self.say("fleet.deploy #" + to_string(deploy.seq) + ": " + co + " (retrying next tick)"); return false; }
+        let plan_name = std::json::find_string_field(deploy.body, "plan");
+        let plan_rel = plan_rel_of(self.root, plan_name);
+        if len(plan_rel) == 0 { self.say("fleet.deploy #" + to_string(deploy.seq) + ": no fleet `" + plan_name + "` in hale.toml at " + short(rev) + " (retrying next tick)"); return false; }
+        let plan = std::io::fs::read_file(self.root + "/" + plan_rel) or "";
+        let plan_dir = plan_dir_of(plan_rel);
+        let touched = " " + std::str::replace(std::str::replace(std::str::replace(std::json::find_field_raw(deploy.body, "touched"), "\"", ""), "[", ""), "]", "") + " ";
+        let touched_sp = std::str::replace(touched, ",", " ");
+        let mut started = 0;
+        let hale = std::env::var("HALE_BIN");
+        let mut it = std::json::array_first(std::json::find_field_raw(plan, "instances"));
+        while !it.done {
+            let id = std::json::find_string_field(it.element, "id");
+            let node = std::json::find_string_field(it.element, "node");
+            let seed = std::json::find_string_field(it.element, "seed");
+            if node == self.name {
+                let idx = self.index_of(id);
+                let mut up = false;
+                if idx >= 0 {
+                    let x = self.instances.get(idx) or Instance { };
+                    up = x.revision == rev && alive(x.proc);
+                }
+                let wanted = std::str::contains(touched_sp, " " + id + " ");
+                if !(up && !wanted) {
+                    if len(seed) == 0 {
+                        self.say("instance " + id + " has no seed to build; skipped");
+                    } else {
+                        let seed_dir = normalize(self.root + "/" + plan_dir + "/" + seed);
+                        let artifact = self.node_dir + "/" + id + ".topology";
+                        let bin = self.build(seed_dir, artifact);
+                        if len(bin) == 0 { return false; }
+                        let shape = shape_of(artifact);
+                        let sha = dna::run_tool("sha256sum\n" + bin);
+                        let build_digest = if sha.code == 0 && len(sha.stdout) >= 12 { sha.stdout[0..12] } else { "" };
+                        if idx >= 0 {
+                            let old = self.instances.get(idx) or Instance { };
+                            stop_proc(old.proc);
+                        }
+                        let envs = "LOTUS_OBS=1\nHALE_BIN=" + hale + "\nHALE_DNA_NODE=" + self.name + "\nHALE_DNA_INSTANCE=" + id + "\nHALE_DNA_EXPRESSION=" + shape + " build " + build_digest;
+                        let p = start(self.node_dir, id, self.root, envs, bin);
+                        if p.pid <= 0 { self.say("instance " + id + ": cannot start " + bin); return false; }
+                        let b = std::json::Builder { };
+                        b.begin_object();
+                        b.string_field("node", self.name);
+                        b.string_field("instance", id);
+                        b.string_field("revision", rev);
+                        b.string_field("model_hash", shape);
+                        b.string_field("build", build_digest);
+                        b.int_field("pid", p.pid);
+                        b.end_object();
+                        let ok = append_as(self.root, "instance.up", id, b.result(), self.author);
+                        self.say("instance " + id + " up (pid " + to_string(p.pid) + ") at " + short(rev) + " as " + short(shape));
+                        let fresh = Instance { id: id, revision: rev, proc: p };
+                        if idx >= 0 { self.instances.set(idx, fresh) or discard; } else { self.instances.push(fresh); }
+                        started = started + 1;
+                    }
+                }
+            }
+            it = std::json::array_next(it);
+        }
+        self.expressed_seq = deploy.seq;
+        self.started_total = self.started_total + started;
+        self.say("fleet.deploy #" + to_string(deploy.seq) + " expressed (" + to_string(started) + " instance(s) started)");
+        let s = sync_record(self.root);
+        return true;
+    }
+    // What exited since the last tick.
+    @unbounded
+    fn reap() {
+        let mut i = 0;
+        let mut gone = false;
+        while i < self.instances.len() {
+            let x = self.instances.get(i) or Instance { };
+            let code = exit_code(x.proc);
+            if code != -2 && x.proc.pid > 0 {
+                self.say("instance " + x.id + " exited (" + to_string(code) + ")");
+                let b = std::json::Builder { };
+                b.begin_object();
+                b.string_field("node", self.name);
+                b.string_field("instance", x.id);
+                b.string_field("revision", x.revision);
+                b.int_field("code", code);
+                b.end_object();
+                let ok = append_as(self.root, "instance.exited", x.id, b.result(), self.author);
+                std::io::fs::unlink(self.node_dir + "/" + x.id + ".pid") or discard;
+                self.instances.set(i, Instance { id: x.id, revision: x.revision, proc: Proc { pid: -1, dir: x.proc.dir, name: x.proc.name }, log_offset: x.log_offset }) or discard;
+                gone = true;
+            } else {
+                let off = drain_log(x.proc, x.log_offset);
+                if off != x.log_offset { self.instances.set(i, Instance { id: x.id, revision: x.revision, proc: x.proc, log_offset: off }) or discard; }
+            }
+            i = i + 1;
+        }
+        if gone { let s = sync_record(self.root); }
+    }
+    @unbounded
+    fn tick() {
+        let s = sync_record(self.root);
+        if !s.ok { self.say("sync: " + s.summary); }
+        self.reap();
+        if len(record_head(self.root)) == 0 { return; }
+        let p = open_projection(self.root, ".", "");
+        let mut i = p.rows() - 1;
+        let mut deploy = dna::Event { seq: -1 };
+        while i >= 0 && deploy.seq < 0 {
+            let e = p.row(i);
+            if e.kind == "fleet.deploy" && (len(self.fleet) == 0 || std::json::find_string_field(e.body, "plan") == self.fleet) { deploy = e; }
+            i = i - 1;
+        }
+        if deploy.seq >= 0 && deploy.seq != self.expressed_seq {
+            let done = self.express(deploy);
+        }
+    }
+    run() {
+        self.node_dir = self.root + "/.hale/node/" + self.name;
+        std::io::fs::mkdir(self.root + "/.hale") or discard;
+        std::io::fs::mkdir(self.root + "/.hale/node") or discard;
+        std::io::fs::mkdir(self.node_dir) or discard;
+        self.author = "node/" + self.name;
+        let remote = record_remote(self.root);
+        self.say("expressing from " + self.root + " (record via " + (if len(remote) == 0 { "no remote" } else { remote }) + ")");
+        while true {
+            self.tick();
+            std::time::sleep(self.tick_ms * 1ms);
+        }
+    }
+}
+
+fn node_main(name: String, root: String, fleet: String, tick_ms: Int) {
+    if len(name) == 0 {
+        eprintln("hale node: a node has a name");
+        eprintln("usage: hale node <name> [--repo <clone>] [--fleet <name>] [--tick <ms>]");
+        std::process::exit(2);
+    }
+    if !git_ok(root, "rev-parse\n--git-dir") {
+        eprintln("hale node ", name, ": ", root, " is not a git clone of the governed repository");
+        std::process::exit(2);
+    }
+    Node { name: name, root: root, fleet: fleet, tick_ms: if tick_ms < 100 { 100 } else { tick_ms } };
+}

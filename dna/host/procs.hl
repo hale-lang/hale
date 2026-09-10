@@ -1,0 +1,91 @@
+// dna/host/procs.hl — processes the host and the nodes keep up
+// (GH #566 F8). A child is started through `sh`, detached from the
+// call that started it, with its pid and its exit code as files
+// beside a log of what it printed: the host polls liveness with
+// `kill -0`, reads the code when it ends, stops it with TERM then
+// KILL, and echoes its log to the terminal a tick at a time. No
+// handle outlives a scope by accident, and any number of children
+// fit.
+
+import "../core" as dna;
+
+type Proc {
+    pid: Int = -1;
+    dir: String = "";
+    name: String = "";
+}
+
+// `argv` newline-separated; `envs` as `NAME=value` lines; cwd = `cwd`.
+fn start(dir: String, name: String, cwd: String, envs: String, argv: String) -> Proc {
+    std::io::fs::mkdir(dir) or discard;
+    std::io::fs::unlink(dir + "/" + name + ".exit") or discard;
+    std::io::fs::unlink(dir + "/" + name + ".pid") or discard;
+    // the inner shell: run the program, record its pid, wait, record its code
+    let script = "cd " + shq(cwd) + " && exec env " + env_words(envs) + " \"$@\" </dev/null >>" + shq(dir + "/" + name + ".log") + " 2>&1";
+    let outer = "( sh -c " + shq("\"$@\" & echo $! > " + shq(dir + "/" + name + ".pid") + "; wait $!; echo $? > " + shq(dir + "/" + name + ".exit")) + " sh sh -c " + shq(script) + " sh " + argv_words(argv) + " ) >/dev/null 2>&1 &";
+    let r = dna::run_tool("sh\n-c\n" + outer);
+    let mut waited = 0;
+    while waited < 50 {
+        let pid = std::io::fs::read_file(dir + "/" + name + ".pid") or "";
+        if len(dna::trim_nl(pid)) > 0 { return Proc { pid: std::str::parse_int(dna::trim_nl(pid)) or - 1, dir: dir, name: name }; }
+        std::time::sleep(20ms);
+        waited = waited + 1;
+    }
+    return Proc { pid: -1, dir: dir, name: name };
+}
+
+// single-quote for sh
+fn shq(s: String) -> String {
+    return "'" + std::str::replace(s, "'", "'\\''") + "'";
+}
+
+fn env_words(envs: String) -> String {
+    let mut out = "";
+    let mut rest = envs;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let w = if nl < 0 { rest } else { rest[0..nl] };
+        if len(w) > 0 { out = out + shq(w) + " "; }
+        if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+    }
+    return out;
+}
+
+fn argv_words(argv: String) -> String {
+    return env_words(argv);
+}
+
+fn alive(p: Proc) -> Bool {
+    if p.pid <= 0 { return false; }
+    return dna::run_tool("kill\n-0\n" + to_string(p.pid)).code == 0;
+}
+
+// The exit code once the process ended; -2 while it runs.
+fn exit_code(p: Proc) -> Int {
+    if p.pid <= 0 { return -1; }
+    let text = std::io::fs::read_file(p.dir + "/" + p.name + ".exit") or "";
+    if len(dna::trim_nl(text)) == 0 { if alive(p) { return -2; } return -1; }
+    return std::str::parse_int(dna::trim_nl(text)) or - 1;
+}
+
+// TERM, a grace period, then KILL.
+fn stop_proc(p: Proc) {
+    if p.pid <= 0 { return; }
+    let t = dna::run_tool("kill\n-TERM\n" + to_string(p.pid));
+    let mut waited = 0;
+    while waited < 100 {
+        if !alive(p) { return; }
+        std::time::sleep(50ms);
+        waited = waited + 1;
+    }
+    let k = dna::run_tool("kill\n-KILL\n" + to_string(p.pid));
+    std::time::sleep(50ms);
+}
+
+// Echo what a child printed since `offset`; the new offset.
+fn drain_log(p: Proc, offset: Int) -> Int {
+    let text = std::io::fs::read_file(p.dir + "/" + p.name + ".log") or "";
+    if len(text) <= offset { return offset; }
+    print(text[offset..len(text)]);
+    return len(text);
+}

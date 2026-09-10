@@ -160,8 +160,10 @@ pub struct InstanceSpec {
     pub seed: Option<String>,
     /// GH #566 F5 (schema 1.2): the node that expresses this instance
     /// (`hale node <name>`). An instance with no node is expressed by
-    /// whoever runs it by hand.
+    /// whoever runs it by hand. Composition ignores it; the host
+    /// (`dna/host`, Hale) reads it from the plan itself.
     #[serde(default)]
+    #[allow(dead_code)]
     pub node: Option<String>,
     /// GH #408 Phase 7 (`attest`): path to this instance's built
     /// executable, relative to the plan file. The artifact certifies

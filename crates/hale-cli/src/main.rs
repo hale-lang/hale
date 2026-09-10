@@ -30,7 +30,6 @@ use hale_lsp as lsp;
 mod fleet;
 mod dna;
 mod iris;
-mod node;
 mod mcp;
 mod pkg;
 mod replay;
@@ -72,7 +71,7 @@ fn main() -> ExitCode {
     // GH #566 F5: `hale node <name>` — the agent that expresses a fleet
     // plan's instances on one machine, from the record.
     if cmd == "node" {
-        return node::run(&args[2..]);
+        return dna::node(&args[2..]);
     }
     if cmd == "--list-targets" || cmd == "targets" {
         let host = hale_codegen::target::TargetSpec::host();

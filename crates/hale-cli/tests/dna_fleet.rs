@@ -224,13 +224,16 @@ fn an_approval_redeploys_both_instances_and_the_window_retains() {
     let dump = dump(&app);
     f.stop();
     assert!(retained, "the candidate was retained:\n{dump}");
-    let deploy = rows.iter().find(|(_, k, e, b)| k == "fleet.deploy" && e == "m1" && b.contains("\"reason\":\"apply\"")).expect("the apply's deploy row");
-    assert!(deploy.3.contains(&cand) && deploy.3.contains("\"touched\":[\"api-0\",\"api-1\"]"), "{}", deploy.3);
+    let reason_of = |b: &str| serde_json::from_str::<serde_json::Value>(b).ok().and_then(|v| v["reason"].as_str().map(|s| s.to_string())).unwrap_or_default();
+    let deploy = rows.iter().find(|(_, k, e, b)| k == "fleet.deploy" && e == "m1" && reason_of(b) == "apply").expect("the apply's deploy row");
+    let db: serde_json::Value = serde_json::from_str(&deploy.3).unwrap();
+    assert!(db["revision"] == cand.as_str() && db["touched"] == serde_json::json!(["api-0", "api-1"]), "{}", deploy.3);
     let ups: Vec<&(u64, String, String, String)> = rows.iter().filter(|(q, k, _, b)| *q > deploy.0 && k == "instance.up" && b.contains(&cand)).collect();
     assert_eq!(ups.len(), 2, "both instances came up at the candidate:\n{dump}");
     let hash = |b: &str| serde_json::from_str::<serde_json::Value>(b).unwrap()["model_hash"].as_str().unwrap().to_string();
     assert_eq!(hash(&ups[0].3), hash(&ups[1].3), "both report the same model hash");
-    assert!(ups.iter().any(|r| r.3.contains("\"node\":\"edge-1\"")) && ups.iter().any(|r| r.3.contains("\"node\":\"edge-2\"")), "one per node");
+    let node_of = |b: &str| serde_json::from_str::<serde_json::Value>(b).unwrap()["node"].as_str().unwrap().to_string();
+    assert!(ups.iter().any(|r| node_of(&r.3) == "edge-1") && ups.iter().any(|r| node_of(&r.3) == "edge-2"), "one per node");
     let observed = rows.iter().find(|(_, k, e, _)| k == "expression.observed" && e == "m1").expect("observed");
     assert!(observed.3.starts_with(&format!("healthy {} 2 instance(s) up", hash(&ups[0].3))), "{}", observed.3);
     assert!(fleet_out.contains("api-0") && fleet_out.contains("edge-2") && fleet_out.matches(" up ").count() == 2, "hale dna fleet shows both up:\n{fleet_out}");
@@ -260,8 +263,9 @@ fn an_instance_killed_inside_the_window_rolls_the_fleet_back_by_name() {
     let _ = Command::new("kill").args(["-9", pid.trim()]).status();
     let rolled = wait_row(&app, 120, |(_, k, e, _)| k == "mutation.rolled_back" && e == "m1");
     // the rollback deploy brings both back to the base, after the row
-    let rolled = rolled && wait_row(&app, 60, |(_, k, e, b)| k == "fleet.deploy" && e == "m1" && b.contains("\"reason\":\"rollback\""));
-    let rb_seq = journal(&app).iter().find(|(_, k, e, b)| k == "fleet.deploy" && e == "m1" && b.contains("\"reason\":\"rollback\"")).map(|r| r.0).unwrap_or(u64::MAX);
+    let is_rollback = |b: &str| serde_json::from_str::<serde_json::Value>(b).ok().map(|v| v["reason"] == "rollback").unwrap_or(false);
+    let rolled = rolled && wait_row(&app, 60, |(_, k, e, b)| k == "fleet.deploy" && e == "m1" && is_rollback(b));
+    let rb_seq = journal(&app).iter().find(|(_, k, e, b)| k == "fleet.deploy" && e == "m1" && is_rollback(b)).map(|r| r.0).unwrap_or(u64::MAX);
     let b = base.clone();
     let back = rolled
         && wait_row(&app, 120, |(q, k, e, body)| *q > rb_seq && k == "instance.up" && e == "api-0" && body.contains(&b))
@@ -274,8 +278,9 @@ fn an_instance_killed_inside_the_window_rolls_the_fleet_back_by_name() {
     assert!(crashed.3.contains("instance api-1 on edge-2 exited"), "{}", crashed.3);
     let observed = rows.iter().find(|(_, k, e, b)| k == "expression.observed" && e == "m1" && b.starts_with("crashed")).expect("observed crashed");
     assert!(observed.3.contains("instance api-1 on edge-2"), "{}", observed.3);
-    let rb = rows.iter().find(|(_, k, e, b)| k == "fleet.deploy" && e == "m1" && b.contains("\"reason\":\"rollback\"")).expect("the rollback's deploy row");
-    assert!(rb.3.contains(&base) && rb.3.contains("\"touched\":[\"api-0\",\"api-1\"]"), "{}", rb.3);
+    let rb = rows.iter().find(|(_, k, e, b)| k == "fleet.deploy" && e == "m1" && is_rollback(b)).expect("the rollback's deploy row");
+    let rbb: serde_json::Value = serde_json::from_str(&rb.3).unwrap();
+    assert!(rbb["revision"] == base.as_str() && rbb["touched"] == serde_json::json!(["api-0", "api-1"]), "{}", rb.3);
     let ups_base_after: Vec<_> = rows.iter().filter(|(q, k, _, b)| *q > rb.0 && k == "instance.up" && b.contains(&base)).collect();
     assert!(back && ups_base_after.len() == 2, "both instances came back at the base after the rollback:\n{dump}");
     assert_eq!(git(&["rev-parse", "HEAD"], &f.edges[1]), base, "edge-2 is back at the base");

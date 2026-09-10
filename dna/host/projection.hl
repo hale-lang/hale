@@ -50,7 +50,6 @@ type MutationRow {
     events: String = ""; // space-separated
 }
 
-
 fn str_lt(a: String, b: String) -> Bool {
     let n = if len(a) < len(b) { len(a) } else { len(b) };
     let mut i = 0;
@@ -300,7 +299,7 @@ locus Projection {
     fn chain_ok() -> Bool {
         let c = git_out(self.root, "rev-list\n--count\n" + RECORD_REF);
         if len(c) == 0 { return self.rows() == 0; }
-        return (std::str::parse_int(c) or -1) == self.rows();
+        return (std::str::parse_int(c) or - 1) == self.rows();
     }
     fn organism_line() -> String {
         if membrane_up(self.root) { return "running (membrane bound)"; }

@@ -127,6 +127,15 @@ fn main() {
             if verb == "fleet" { ans = fleet_list(p, fleet, plan); }
         }
     }
+    if verb == "run" || verb == "dev" {
+        host_main(verb, root, seed, fleet, plan, toolchain, a);
+        return;
+    }
+    if verb == "node" {
+        let tick = flag(a, "--tick");
+        node_main(word(a, 0), root, flag(a, "--fleet"), if len(tick) > 0 { std::str::parse_int(tick) or 1000 } else { 1000 });
+        return;
+    }
     if verb == "ask" {
         ans = ask_verb(root, join_words(a.words), flag(a, "--to"), has_flag(a, "--no-wait"));
     } else if verb == "verdict" {

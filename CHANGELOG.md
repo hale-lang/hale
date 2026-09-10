@@ -8,6 +8,12 @@ behavior.
 
 ## Unreleased
 
+### DNA: the host is Hale (GH #566 F8)
+
+- Everything `hale dna` did beside the compiler that is DNA behaviour — the projections (`status`, `history`, `review`, `board`, `report`, `pressure`, `fleet`), the writers (`ask`, a verdict, `pressure raise`, `sync`, `deploy`, `rollback`, `github sync`), the supervision (`run`, `dev`: the observation window, the fleet's deploy rows and window, the organization's own restarts, crash accounting, the membrane relay, GitHub) and the node agent (`hale node`) — is now `dna/host`, a Hale seed embedded in the toolchain beside the core, the membrane client and the surface, built once into the cache and exec'd by `hale dna` with the project resolved. Some 2,700 lines of Rust in `crates/hale-cli/src/dna.rs` and `node.rs` are gone; the compiler keeps `init` / `new` / `upgrade`, `hale fleet check`, the plan schema and the exec shims. The CLI's text is unchanged and every DNA suite passes against it. Children run detached through `sh` with pid, exit code and log as files, and the host echoes their logs a tick at a time.
+- Found on the way, F.16 in `dna/FRICTION.md`: a vec form's `set` with a value read from the same vec segfaults, and `hale run` says nothing about the signal. The host's projection derives rows from the record on demand instead of keeping a mutable table.
+- Tests that read record rows by JSON spelling now parse them: the host writes rows through the Hale JSON builder.
+
 ### DNA: the dogfood (GH #566 F7)
 
 - One real ask end to end on the acceptance chat server under `hale dna dev`, the editor on a hosted quick tier and the Leader on a hosted deep tier (Anthropic's OpenAI-compatible endpoint): the candidate proposed, verified, approved by the Leader with its reasoning, applied, restarted, observed healthy, retained — about 1.2¢ of model calls. What it found, fixed:
