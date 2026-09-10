@@ -43,6 +43,7 @@ const JOURNAL_REL: &str = ".hale/dna/journal.jsonl";
 const BASELINE_REL: &str = ".hale/dna/baseline.topology";
 const VERDICT_SOCK_REL: &str = ".hale/dna/hale-dna.review.verdict.sock";
 const INTENT_SOCK_REL: &str = ".hale/dna/hale-dna.intent.offered.sock";
+const OBSERVED_SOCK_REL: &str = ".hale/dna/hale-dna.expression.observed.sock";
 
 pub fn run(args: &[String]) -> ExitCode {
     match args.first().map(String::as_str) {
@@ -75,8 +76,9 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("usage: hale dna init [app-dir]      attach the DNA to an existing application");
     eprintln!("       hale dna new <name>          a greenfield application with its DNA");
     eprintln!("       hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain");
-    eprintln!("       hale dna run [project] [--port N] [--no-iris]");
-    eprintln!("                                    build, run under LOTUS_OBS with iris attached, hold the membrane");
+    eprintln!("       hale dna run [project] [--port N] [--no-iris] [--observe <secs>]");
+    eprintln!("                                    build, run under LOTUS_OBS with iris attached, hold the membrane;");
+    eprintln!("                                    rebuild and restart on the organism's request, watch the window, report back");
     eprintln!("       hale dna status [project] [--json]");
     eprintln!("                                    the organism's status projection, from the Journal");
     eprintln!("       hale dna ask [--to <locus>] <intent…>");
@@ -409,6 +411,7 @@ fn run_organism(args: &[String]) -> ExitCode {
     let mut dir = PathBuf::from(".");
     let mut port = "8787".to_string();
     let mut iris = true;
+    let mut observe_secs: u64 = 15;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -416,6 +419,13 @@ fn run_organism(args: &[String]) -> ExitCode {
                 Some(p) => port = p.clone(),
                 None => {
                     eprintln!("hale dna run: --port needs a value");
+                    return ExitCode::from(2);
+                }
+            },
+            "--observe" => match it.next().and_then(|v| v.parse::<u64>().ok()) {
+                Some(n) => observe_secs = n,
+                None => {
+                    eprintln!("hale dna run: --observe needs a number of seconds");
                     return ExitCode::from(2);
                 }
             },
@@ -443,59 +453,27 @@ fn run_organism(args: &[String]) -> ExitCode {
     };
     let dna_dir = root.join(".hale/dna");
     let _ = fs::create_dir_all(&dna_dir);
-    // 1. a fresh artifact of what is about to run
+    // 1 + 2. a fresh artifact of what is about to run, and the build
     let current = dna_dir.join("current.topology");
-    let st = Command::new(&me)
-        .arg("check")
-        .arg(&seed)
-        .arg(format!("--dump-topology={}", current.display()))
-        .stdout(std::process::Stdio::null())
-        .status();
-    if !matches!(st, Ok(s) if s.success()) {
-        eprintln!("hale dna run: `hale check {}` failed; the organism is not run on a program that does not pass", seed.display());
-        return ExitCode::from(1);
-    }
-    // 2. build
-    let st = Command::new(&me).arg("build").arg(&seed).stdout(std::process::Stdio::null()).status();
-    if !matches!(st, Ok(s) if s.success()) {
-        eprintln!("hale dna run: `hale build {}` failed", seed.display());
-        return ExitCode::from(1);
-    }
+    let bin = match express(&me, &seed, &current) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("hale dna run: {e}");
+            return ExitCode::from(1);
+        }
+    };
     let bin_name = seed.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "app".into());
-    let bin = seed.join(&bin_name);
-    if !bin.is_file() {
-        eprintln!("hale dna run: no binary at {}", bin.display());
-        return ExitCode::from(1);
-    }
     // 3. the organism, from the root, observable
-    for sock in [dna_dir.join(crate::iris::MEMBRANE_VERDICT_SOCK), dna_dir.join(crate::iris::MEMBRANE_INTENT_SOCK)] {
-        let _ = fs::remove_file(&sock);
-    }
-    // The organism runs the toolchain (fmt, check, verify, test, model
-    // diff) over its candidates: hand it the binary that started it.
-    let mut organism = match Command::new(&bin).current_dir(&root).env("LOTUS_OBS", "1").env("HALE_BIN", &me).spawn() {
+    let mut organism = match spawn_organism(&bin, &root, &me, &dna_dir, None) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("hale dna run: cannot start {}: {e}", bin.display());
+            eprintln!("hale dna run: {e}");
             return ExitCode::from(1);
         }
     };
     eprintln!("hale dna run: organism {} (pid {}) from {} under LOTUS_OBS=1", bin_name, organism.id(), root.display());
     // 4. the membrane comes up
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    let bound = loop {
-        let up = dna_dir.join(crate::iris::MEMBRANE_VERDICT_SOCK).exists() && dna_dir.join(crate::iris::MEMBRANE_INTENT_SOCK).exists();
-        if up {
-            break true;
-        }
-        if let Ok(Some(_)) = organism.try_wait() {
-            break false;
-        }
-        if std::time::Instant::now() > deadline {
-            break false;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    };
+    let bound = wait_membrane(&dna_dir, &mut organism, 20);
     let mut observer: Option<std::process::Child> = None;
     let status_path = dna_dir.join("status.json");
     if bound {
@@ -504,27 +482,17 @@ fn run_organism(args: &[String]) -> ExitCode {
         write_status(&root, &status_path);
         if iris {
             let baseline = dna_dir.join("baseline.topology");
-            let mut cmd = Command::new(&me);
-            cmd.arg("iris").arg(&port).arg(&current);
-            if baseline.is_file() {
-                cmd.arg("--diff").arg(&baseline).arg(&current);
-            }
-            cmd.arg("--membrane").arg(&dna_dir).arg("--organism").arg(&status_path);
-            cmd.stdin(std::process::Stdio::null());
-            match cmd.spawn() {
-                Ok(c) => {
-                    eprintln!("hale dna run: iris at http://127.0.0.1:{port}/  (l law · 4 review vs baseline · 5 organism · m membrane)");
-                    observer = Some(c);
-                }
-                Err(e) => eprintln!("hale dna run: could not launch hale iris: {e}"),
-            }
+            observer = launch_iris(&me, &port, &current, if baseline.is_file() { Some(baseline) } else { None }, &dna_dir, &status_path);
         }
     } else if organism.try_wait().ok().flatten().is_none() {
         eprintln!("hale dna run: the membrane did not come up within 20s; the organism runs unobserved");
     }
     // 5. supervise: the organism's exit is ours. Meanwhile the host
     // re-projects the Journal into status.json once a second — a
-    // projection, never state of its own.
+    // projection, never state of its own — and answers the organism's
+    // restart requests (GH #529 D6): rebuild, restart, watch the
+    // observation window, report back on the membrane.
+    let mut handled: BTreeSet<u64> = BTreeSet::new();
     let code = loop {
         match organism.try_wait() {
             Ok(Some(st)) => break st.code().unwrap_or(1),
@@ -532,6 +500,100 @@ fn run_organism(args: &[String]) -> ExitCode {
             Err(_) => break 1,
         }
         write_status(&root, &status_path);
+        if let Some((seq, id, body)) = pending_restart(&root, &handled) {
+            handled.insert(seq);
+            let rollback = body.starts_with("rollback ");
+            eprintln!("hale dna run: {id} requests a restart ({body})");
+            let previous = dna_dir.join("previous.topology");
+            let _ = fs::copy(&current, &previous);
+            match express(&me, &seed, &current) {
+                Err(e) => {
+                    eprintln!("hale dna run: {id}: the candidate does not express: {e}");
+                    if !rollback {
+                        let body = serde_json::json!({"mutation_id": id, "outcome": "build_failed", "model_hash": "", "detail": e}).to_string();
+                        if let Err(e) = publish_on_membrane(&root, "observed", &body) {
+                            eprintln!("hale dna run: could not report on the membrane: {e}");
+                        }
+                    }
+                    let _ = fs::copy(&previous, &current);
+                    continue;
+                }
+                Ok(_) => {}
+            }
+            let shape = shape_of(&current);
+            let expression = format!("{}{} build {}", if rollback { "rollback " } else { "" }, shape, crate::sign::sha256_file(&bin).map(|d| d[..12].to_string()).unwrap_or_default());
+            terminate(&mut organism);
+            organism = match spawn_organism(&bin, &root, &me, &dna_dir, Some((&id, &expression))) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("hale dna run: {e}");
+                    break 1;
+                }
+            };
+            eprintln!("hale dna run: organism restarted (pid {}) as {}", organism.id(), expression);
+            let bound = wait_membrane(&dna_dir, &mut organism, 20);
+            write_status(&root, &status_path);
+            if let Some(mut o) = observer.take() {
+                let _ = o.kill();
+                let _ = o.wait();
+                observer = launch_iris(&me, &port, &current, Some(previous.clone()), &dna_dir, &status_path);
+            }
+            if rollback || !bound {
+                continue;
+            }
+            // the observation window: the expression must stay up
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(observe_secs);
+            let mut crashed: Option<i32> = None;
+            while std::time::Instant::now() < end {
+                if let Ok(Some(st)) = organism.try_wait() {
+                    crashed = Some(st.code().unwrap_or(-1));
+                    break;
+                }
+                write_status(&root, &status_path);
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            match crashed {
+                None => {
+                    let body = serde_json::json!({"mutation_id": id, "outcome": "healthy", "model_hash": shape, "detail": format!("up for {observe_secs}s")}).to_string();
+                    match publish_on_membrane(&root, "observed", &body) {
+                        Ok(()) => eprintln!("hale dna run: {id} observed healthy for {observe_secs}s as {shape}"),
+                        Err(e) => eprintln!("hale dna run: could not report on the membrane: {e}"),
+                    }
+                }
+                Some(code) => {
+                    // Nobody is left to decide, so the host accounts for it
+                    // explicitly: journaled (the organism is gone, the
+                    // Journal has one writer), rolled back to the base,
+                    // rebuilt, restarted as the old expression.
+                    eprintln!("hale dna run: {id}: the expression exited ({code}) inside the observation window; rolling back");
+                    let base = base_of(&root, &id);
+                    let _ = append_journal(&root, "expression.crashed", &id, &format!("exited {code} in the observation window"));
+                    let reset = Command::new("git").args(["-C", &root.to_string_lossy(), "reset", "-q", "--keep", &base]).status();
+                    if matches!(reset, Ok(s) if s.success()) {
+                        let _ = append_journal(&root, "mutation.rolled_back", &id, &format!("{base} by host after crash"));
+                    } else {
+                        let _ = append_journal(&root, "mutation.failed", &id, &format!("rollback to {base} failed after crash"));
+                    }
+                    match express(&me, &seed, &current) {
+                        Ok(_) => {
+                            let shape = shape_of(&current);
+                            organism = match spawn_organism(&bin, &root, &me, &dna_dir, Some((&id, &format!("rollback {shape} after crash")))) {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    eprintln!("hale dna run: {e}");
+                                    break 1;
+                                }
+                            };
+                            let _ = wait_membrane(&dna_dir, &mut organism, 20);
+                        }
+                        Err(e) => {
+                            eprintln!("hale dna run: the base does not express either: {e}");
+                            break 1;
+                        }
+                    }
+                }
+            }
+        }
         std::thread::sleep(std::time::Duration::from_secs(1));
     };
     if let Some(mut o) = observer {
@@ -541,6 +603,150 @@ fn run_organism(args: &[String]) -> ExitCode {
     write_status(&root, &status_path);
     eprintln!("hale dna run: organism exited ({code}); the Journal at {} is the record", root.join(JOURNAL_REL).display());
     ExitCode::from(code.clamp(0, 255) as u8)
+}
+
+/// Cut the artifact of what is about to run and build it; the binary.
+fn express(me: &Path, seed: &Path, current: &Path) -> Result<PathBuf, String> {
+    let st = Command::new(me)
+        .arg("check")
+        .arg(seed)
+        .arg(format!("--dump-topology={}", current.display()))
+        .stdout(std::process::Stdio::null())
+        .status();
+    if !matches!(st, Ok(s) if s.success()) {
+        return Err(format!("`hale check {}` failed; the organism is not run on a program that does not pass", seed.display()));
+    }
+    let st = Command::new(me).arg("build").arg(seed).stdout(std::process::Stdio::null()).status();
+    if !matches!(st, Ok(s) if s.success()) {
+        return Err(format!("`hale build {}` failed", seed.display()));
+    }
+    let bin_name = seed.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "app".into());
+    let bin = seed.join(&bin_name);
+    if !bin.is_file() {
+        return Err(format!("no binary at {}", bin.display()));
+    }
+    Ok(bin)
+}
+
+/// Start the organism from the root, observable, with the toolchain
+/// that started it; `restart_for` names the Mutation whose request
+/// this restart answers and what the expression is (GH #529 D6), which
+/// the organism journals as `expression.restarted` at birth.
+fn spawn_organism(bin: &Path, root: &Path, me: &Path, dna_dir: &Path, restart_for: Option<(&str, &str)>) -> Result<std::process::Child, String> {
+    for sock in [crate::iris::MEMBRANE_VERDICT_SOCK, crate::iris::MEMBRANE_INTENT_SOCK, crate::iris::MEMBRANE_OBSERVED_SOCK] {
+        let _ = fs::remove_file(dna_dir.join(sock));
+    }
+    let mut c = Command::new(bin);
+    c.current_dir(root).env("LOTUS_OBS", "1").env("HALE_BIN", me);
+    if let Some((id, expression)) = restart_for {
+        c.env("HALE_DNA_RESTART_FOR", id).env("HALE_DNA_EXPRESSION", expression);
+    }
+    c.spawn().map_err(|e| format!("cannot start {}: {e}", bin.display()))
+}
+
+fn wait_membrane(dna_dir: &Path, organism: &mut std::process::Child, secs: u64) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    loop {
+        if dna_dir.join(crate::iris::MEMBRANE_VERDICT_SOCK).exists() && dna_dir.join(crate::iris::MEMBRANE_INTENT_SOCK).exists() {
+            return true;
+        }
+        if let Ok(Some(_)) = organism.try_wait() {
+            return false;
+        }
+        if std::time::Instant::now() > deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+fn launch_iris(me: &Path, port: &str, current: &Path, diff_from: Option<PathBuf>, dna_dir: &Path, status_path: &Path) -> Option<std::process::Child> {
+    let mut cmd = Command::new(me);
+    cmd.arg("iris").arg(port).arg(current);
+    if let Some(a) = diff_from {
+        cmd.arg("--diff").arg(&a).arg(current);
+    }
+    cmd.arg("--membrane").arg(dna_dir).arg("--organism").arg(status_path);
+    cmd.stdin(std::process::Stdio::null());
+    match cmd.spawn() {
+        Ok(c) => {
+            eprintln!("hale dna run: iris at http://127.0.0.1:{port}/  (l law · 4 review · 5 organism · m membrane)");
+            Some(c)
+        }
+        Err(e) => {
+            eprintln!("hale dna run: could not launch hale iris: {e}");
+            None
+        }
+    }
+}
+
+/// SIGTERM, a grace period, then SIGKILL; the exit is reaped.
+fn terminate(organism: &mut std::process::Child) {
+    unsafe {
+        libc::kill(organism.id() as i32, libc::SIGTERM);
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if let Ok(Some(_)) = organism.try_wait() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let _ = organism.kill();
+    let _ = organism.wait();
+}
+
+/// The latest `expression.restart_requested` this host has not handled
+/// and the organism has not already answered with `expression.restarted`.
+fn pending_restart(root: &Path, handled: &BTreeSet<u64>) -> Option<(u64, String, String)> {
+    let rows = read_journal(root).ok()?;
+    let mut out = None;
+    for (i, r) in rows.iter().enumerate() {
+        if r.kind != "expression.restart_requested" || handled.contains(&r.seq) {
+            continue;
+        }
+        let answered = rows[i + 1..].iter().any(|x| x.kind == "expression.restarted" && x.entity == r.entity);
+        if !answered {
+            out = Some((r.seq, r.entity.clone(), r.body.clone()));
+        }
+    }
+    out
+}
+
+fn shape_of(artifact: &Path) -> String {
+    fs::read_to_string(artifact)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v["shape_hash"].as_str().map(|s| s.to_string()))
+        .unwrap_or_default()
+}
+
+/// A Mutation's base commit, from its `review.requested` body.
+fn base_of(root: &Path, id: &str) -> String {
+    read_journal(root)
+        .ok()
+        .and_then(|rows| {
+            rows.iter()
+                .rev()
+                .find(|r| r.kind == "review.requested" && r.entity == format!("review:{id}"))
+                .and_then(|r| serde_json::from_str::<Value>(&r.body).ok())
+                .and_then(|b| b["base_commit"].as_str().map(|s| s.to_string()))
+        })
+        .unwrap_or_default()
+}
+
+/// Append one event to the Journal from the host — only while the
+/// organism is NOT running (the Journal has one writer at a time; the
+/// organism's in-memory projection would go stale otherwise).
+fn append_journal(root: &Path, kind: &str, entity: &str, body: &str) -> Result<(), String> {
+    let rows = read_journal(root)?;
+    let prev = rows.last().map(|r| r.digest.clone()).unwrap_or_else(|| "genesis".into());
+    let seq = rows.len() as u64;
+    let digest = hex(&openssl::sha::sha256(format!("{}|{}|{}|{}", prev, kind, entity, body).as_bytes()));
+    let line = serde_json::json!({"seq": seq, "kind": kind, "entity": entity, "body": body, "prev": prev, "digest": digest}).to_string();
+    use std::io::Write;
+    let mut f = fs::OpenOptions::new().append(true).create(true).open(root.join(JOURNAL_REL)).map_err(|e| e.to_string())?;
+    f.write_all(format!("{line}\n").as_bytes()).map_err(|e| e.to_string())
 }
 
 /// Re-project the Journal into `status.json` (atomically: write beside,
@@ -684,15 +890,23 @@ fn status_projection(root: &Path) -> Result<Value, String> {
             a.push(Value::String(kind));
         }
     }
-    // a settled Review moves its mutation on: reviewed (approve) or rejected
+    // a settled Review moves its mutation on: reviewed (approve) or
+    // rejected — unless the assembly already took it further (applied,
+    // retained, rolled back, refused), which the mutation rows say.
     for r in rows.iter().filter(|r| r.kind == "review.settled") {
         if let Some(m) = mutations.get_mut(&r.entity) {
-            m["disposition"] = Value::String(if r.body.starts_with("approve") { "reviewed".into() } else { "rejected".into() });
-            m["detail"] = Value::String(r.body.clone());
+            let d = m["disposition"].as_str().unwrap_or("").to_string();
+            if matches!(d.as_str(), "" | "proposed" | "review" | "stage" | "escalate" | "release") {
+                m["disposition"] = Value::String(if r.body.starts_with("approve") { "reviewed".into() } else { "rejected".into() });
+                m["detail"] = Value::String(r.body.clone());
+            }
         }
     }
     let mutations: Vec<Value> = mutations.into_values().collect();
     let deferred: Vec<Value> = rows.iter().filter(|r| r.kind == "law.deferred").map(body).collect();
+    let restarts = rows.iter().filter(|r| r.kind == "expression.restarted").count();
+    let last_restart_request = rows.iter().rev().find(|r| r.kind == "expression.restart_requested").map(|r| serde_json::json!({"mutation": r.entity, "what": r.body, "seq": r.seq}));
+    let last_observed = rows.iter().rev().find(|r| r.kind == "expression.observed" || r.kind == "expression.crashed").map(|r| serde_json::json!({"mutation": r.entity, "what": format!("{} {}", r.kind.trim_start_matches("expression."), r.body), "seq": r.seq}));
     let model_calls: Vec<Value> = rows
         .iter()
         .filter(|r| r.kind == "model.called")
@@ -725,7 +939,7 @@ fn status_projection(root: &Path) -> Result<Value, String> {
     Ok(serde_json::json!({
         "organism": if membrane_up(root) { "running (membrane bound)" } else { "not running — reading the Journal" },
         "journal": {"path": JOURNAL_REL, "revision": rows.len(), "chain": if chain_ok(&rows) { "verified" } else { "BROKEN" }},
-        "expression": {"attached": attached, "current": current_id, "build_digest": build_digest, "toolchain": TOOLCHAIN},
+        "expression": {"attached": attached, "current": current_id, "build_digest": build_digest, "toolchain": TOOLCHAIN, "restarts": restarts, "last_restart_request": last_restart_request, "last_observed": last_observed},
         "intents": {"offered": intents_offered, "refused": intents_refused},
         "tasks": tasks.values().cloned().collect::<Vec<_>>(),
         "reviews": reviews.values().cloned().collect::<Vec<_>>(),
@@ -874,11 +1088,13 @@ fn publish_on_membrane(root: &Path, kind: &str, body: &str) -> Result<(), String
     fs::write(
         &conf,
         format!(
-            "dna.review.verdict = unix://{}/{} : connect\ndna.intent.offered = unix://{}/{} : connect\n",
+            "dna.review.verdict = unix://{}/{} : connect\ndna.intent.offered = unix://{}/{} : connect\ndna.expression.observed = unix://{}/{} : connect\n",
             dna_dir.display(),
             crate::iris::MEMBRANE_VERDICT_SOCK,
             dna_dir.display(),
-            crate::iris::MEMBRANE_INTENT_SOCK
+            crate::iris::MEMBRANE_INTENT_SOCK,
+            dna_dir.display(),
+            crate::iris::MEMBRANE_OBSERVED_SOCK
         ),
     )
     .map_err(|e| e.to_string())?;
@@ -1408,15 +1624,12 @@ group knowledge = {{ dna::Knowledge }};
 
 constitution Project {{
     // A mutation is applied only THROUGH the assembly's gate, never by
-    // a performer — and in Phase 1 the gate is NoDeployment, so nothing
-    // applies at all.
+    // a performer. The gate applies exactly the candidate a settled
+    // human Review pinned (GH #529 D5): the path from the genome to
+    // `genome_apply` runs through `dna::Dna` or it does not exist.
     apply_gated: forbid reaches(genome, effects(genome_apply)) avoiding dna_gate;
     performers_never_apply: forbid reaches(performers, effects(genome_apply));
     credentials_sealed: require sealed(all credentials);
-    // Phase 1: NOTHING applies. The assembly constructs NoDeployment
-    // and the law says so, so swapping the gateway in dna/assembly.hl
-    // is a law change a reviewer sees, not a constructor detail.
-    phase1_read_only: forbid reaches(genome, effects(genome_apply));
     // Phase 2 (GH #529): the Attempt that edits source holds nothing
     // but its worktree grant — no git, no worktree gateway, no apply,
     // no Knowledge. A wiring that hands it any of them is a build
@@ -1522,7 +1735,7 @@ fn graft_main(src: &str, main_name: &str) -> Result<Option<String>, String> {
             LocusMember::Bindings(bb) => {
                 has_bindings = true;
                 let close = block_close(src, bb.span.end.as_usize())?;
-                let line = format!("dna::ReviewVerdict: unix(\"{VERDICT_SOCK_REL}\", role: listen); dna::IntentOffered: unix(\"{INTENT_SOCK_REL}\", role: listen);");
+                let line = format!("dna::ReviewVerdict: unix(\"{VERDICT_SOCK_REL}\", role: listen); dna::IntentOffered: unix(\"{INTENT_SOCK_REL}\", role: listen); dna::ExpressionObserved: unix(\"{OBSERVED_SOCK_REL}\", role: listen);");
                 inserts.push((close, inside(src, bb.span.start.as_usize(), close, &line)));
             }
             _ => {}
@@ -1537,7 +1750,7 @@ fn graft_main(src: &str, main_name: &str) -> Result<Option<String>, String> {
     }
     if !has_bindings {
         blocks.push_str(&format!(
-            "\n    bindings {{\n        dna::ReviewVerdict: unix(\"{VERDICT_SOCK_REL}\", role: listen);\n        dna::IntentOffered: unix(\"{INTENT_SOCK_REL}\", role: listen);\n    }}"
+            "\n    bindings {{\n        dna::ReviewVerdict: unix(\"{VERDICT_SOCK_REL}\", role: listen);\n        dna::IntentOffered: unix(\"{INTENT_SOCK_REL}\", role: listen);\n        dna::ExpressionObserved: unix(\"{OBSERVED_SOCK_REL}\", role: listen);\n    }}"
         ));
     }
     if !blocks.is_empty() {

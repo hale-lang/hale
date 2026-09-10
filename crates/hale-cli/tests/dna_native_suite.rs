@@ -73,6 +73,7 @@ fn dna_fixture_set_is_complete() {
     assert_eq!(
         names,
         vec![
+            "apply_test.hl",
             "assembly_test.hl",
             "editing_test.hl",
             "fanout_join_test.hl",

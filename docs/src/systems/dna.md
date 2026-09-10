@@ -279,6 +279,9 @@ hale dna review m1         # source diff · semantic diff · evidence table · m
 hale dna review m1 --iris  # the same diff in iris [4], beside the status and the membrane form
 ```
 
+A verdict of `approve` is also the apply: see "Apply, restart,
+observe" below.
+
 The source diff is git's (base to candidate); the semantic diff is
 `hale model diff --text` read from its receipt; the evidence table is
 one row per toolchain step with its exit code and the digest of its
@@ -306,6 +309,52 @@ re-births every pending mutation Review from `review.requested`
 events at birth (`rehydrated` in `Dna.status()`), so the answer can
 always be given. The purpose Review is the Genome's own static child
 and is not rehydrated.
+
+### Apply, restart, observe
+
+Approval applies **exactly the reviewed candidate**. When a
+mutation's Review settles `approve`, the assembly checks that the
+worktree's head is still the commit the reviewer looked at — a
+candidate that moved after the review is refused by digest
+(`mutation.refused`) — takes the Mutation's lease, and applies
+through the gateway: fast-forward, or a merge of the pinned commit,
+journaled under the candidate before dispatch, so a crashed and
+retried apply reads the recorded result and never commits twice. A
+merge that does not complete is aborted; there is no half-applied
+state. Rejection or revision journals `mutation.rejected` /
+`mutation.revise` and leaves genome and expression untouched; the
+Mutation, its Attempts and its evidence stay in lineage.
+
+The applied genome is not yet the running expression. The assembly
+journals `expression.restart_requested` (with the fitness signals
+the proposal declared) and `hale dna run` answers it: cut a fresh
+artifact, rebuild, terminate the old organism, start the new one
+with `HALE_DNA_RESTART_FOR=<id>`, which the new expression journals
+as `expression.restarted` at birth, and relaunch iris with the diff
+from the previous artifact to the current one. Then the
+**observation window** (`--observe <secs>`, default 15): the
+expression must stay up. At the end the host reports on the
+membrane — a third typed topic, `ExpressionObserved` — and the
+organism decides: `healthy` retains the Mutation
+(`mutation.retained`) and dissolves its worktree; anything else
+rolls the genome back to the Mutation's base (`git reset --keep`,
+journaled as `mutation.rolled_back`) and asks for the old expression
+back. Only an applied Mutation is judged; a late report changes
+nothing.
+
+If the expression exits inside the window there is nobody left to
+decide, so the host accounts for it explicitly: `expression.crashed`
+and `mutation.rolled_back` are appended by the host (the Journal has
+one writer at a time, and the organism is gone), the base is
+rebuilt and restarted. If the candidate does not even express
+(build fails), the host reports `build_failed` and the running
+organism rolls back the same way.
+
+`hale dna status` shows every mutation by id with its disposition
+(`proposed`, `review`, `stage`, `reviewed`, `applied`, `retained`,
+`rolled_back`, `rejected`, `refused`, `failed`) and the expression's
+restarts; `hale dna history m1` is the whole lineage of one
+Mutation, receipts included.
 
 ## In iris
 

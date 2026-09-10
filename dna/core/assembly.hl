@@ -116,6 +116,8 @@ locus Dna {
         last_task: String = "";
         mutations_minted: Int = 0;
         last_mutation: String = "";
+        applied: Int = 0; // candidates applied by this assembly (a replayed apply is not counted twice)
+        restarts_requested: Int = 0;
         reviews_open: Int = 0; // live mutation Reviews (accepted children)
         rehydrated: Int = 0; // Reviews re-born from the Journal at birth
     }
@@ -126,7 +128,15 @@ locus Dna {
     // organism restarted mid-review can still be answered.
     accept(r: Review) { self.reviews_open = self.reviews_open + 1; }
     release (r: Review) { self.reviews_open = self.reviews_open - 1; }
-    birth() { self.rehydrate(); }
+    birth() {
+        self.rehydrate();
+        // GH #529 D6: the host restarted this expression on a Mutation's
+        // request; the fact is journaled by the expression itself.
+        if std::env::var_exists("HALE_DNA_RESTART_FOR") {
+            let x = self.journal.append(self.journal.revision(), "expression.restarted", std::env::var("HALE_DNA_RESTART_FOR"),
+                if std::env::var_exists("HALE_DNA_EXPRESSION") { std::env::var("HALE_DNA_EXPRESSION") } else { "" });
+        }
+    }
     // GH #527 B6: intent crossing the membrane on the typed channel
     // (`hale dna ask`, Iris) enters through the SAME gate as a local
     // `ask` — the membrane decides, the Metabolism births the Task,
@@ -137,6 +147,7 @@ locus Dna {
         subscribe IntentOffered as on_intent;
         subscribe ReviewSettled as on_review_settled;
         subscribe ModelCalled as on_model_called;
+        subscribe ExpressionObserved as on_observed;
     }
     // Every model call's evidence, journaled (never the prompt).
     @unbounded
@@ -177,6 +188,122 @@ locus Dna {
             return;
         }
         let x = self.journal.append(self.journal.revision(), "review.settled", r.review_id, r.outcome + " by " + r.decided_by);
+        // GH #529 D5: a mutation's approval applies exactly the reviewed
+        // candidate; a rejection or revision leaves genome and expression
+        // untouched and keeps the Mutation in lineage.
+        if self.request_of(r.review_id) == "" { return; }
+        if r.outcome == "approve" {
+            let y = self.apply_reviewed(r.review_id, std::time::now());
+            return;
+        }
+        let z = self.journal.append(self.journal.revision(), "mutation." + (if r.outcome == "revise" { "revise" } else { "rejected" }), r.review_id,
+            "review " + r.outcome + " by " + r.decided_by + "; genome and expression untouched");
+    }
+    // The `review.requested` body of a mutation's Review, "" for any
+    // other (the purpose Review, an unknown id).
+    @unbounded
+    fn request_of(review_id: String) -> String {
+        let n = self.journal.revision();
+        let mut i = 0;
+        let mut out = "";
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "review.requested" && e.entity == "review:" + review_id && std::str::contains(e.body, "\"mutation_id\"") { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
+    // The last `mutation.<disposition>` recorded for an id.
+    @unbounded
+    fn disposition_of(mutation_id: String) -> String {
+        let n = self.journal.revision();
+        let mut i = 0;
+        let mut out = "";
+        while i < n {
+            let e = self.journal.read(i);
+            if e.entity == mutation_id && std::str::contains(e.kind, "mutation.") && e.kind != "mutation.worktree" && e.kind != "mutation.candidate" {
+                out = e.kind[9..len(e.kind)];
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+    // Apply exactly the reviewed candidate (GH #529 D5): the Review
+    // must have settled approve, the worktree's head must still be the
+    // commit the reviewer looked at (a candidate that moved after the
+    // review is refused by digest), and the apply goes through the
+    // gateway — journaled under the candidate, fenced by the lease — so
+    // a crashed and retried apply reads the recorded result and never
+    // commits twice. Then the host is asked to rebuild and restart.
+    @unbounded
+    fn apply_reviewed(mutation_id: String, now: Int) -> String {
+        let req = self.request_of(mutation_id);
+        if req == "" { return "refused: no mutation review " + mutation_id; }
+        let reviewed = std::json::find_string_field(req, "subject_digest");
+        let wt = std::json::find_string_field(req, "worktree");
+        if !self.approved(mutation_id) {
+            let x = self.journal.append(self.journal.revision(), "mutation.refused", mutation_id, "not approved");
+            return "refused: not approved";
+        }
+        let head = self.gateway.head_of(wt);
+        if head != reviewed {
+            let x = self.journal.append(self.journal.revision(), "mutation.refused", mutation_id, "candidate moved after review: " + head + " != " + reviewed);
+            self.membrane.notify("mutation", mutation_id + " refused: the candidate moved after the review");
+            return "refused: candidate moved after review";
+        }
+        let lease = self.gateway.take(mutation_id, "dna", now);
+        let r = self.gateway.apply(self.journal, mutation_id, reviewed, lease.token, now);
+        if !r.ok {
+            let x = self.journal.append(self.journal.revision(), "mutation.failed", mutation_id, "apply: " + r.refused);
+            self.membrane.notify("mutation", mutation_id + " apply failed: " + r.refused);
+            return "failed: " + r.refused;
+        }
+        if r.replayed { return "applied (replayed)"; }
+        self.applied = self.applied + 1;
+        self.restarts_requested = self.restarts_requested + 1;
+        let fitness = std::json::find_string_field(req, "fitness_signals");
+        let x = self.journal.append(self.journal.revision(), "expression.restart_requested", mutation_id, "apply " + reviewed + " fitness " + fitness);
+        self.membrane.notify("restart", mutation_id + " applied as " + reviewed + "; rebuild and restart requested");
+        return "applied";
+    }
+    @unbounded
+    fn approved(mutation_id: String) -> Bool {
+        let n = self.journal.revision();
+        let mut i = 0;
+        let mut ok = false;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "review.settled" && e.entity == mutation_id { ok = e.body[0..7] == "approve"; }
+            i = i + 1;
+        }
+        return ok;
+    }
+    // The host's report on the observation window (GH #529 D6). Only an
+    // applied Mutation is judged: healthy retains it and dissolves its
+    // worktree; anything else rolls the genome back to the Mutation's
+    // base and asks for the old expression back.
+    @unbounded
+    fn on_observed(o: Observation) {
+        let x = self.journal.append(self.journal.revision(), "expression.observed", o.mutation_id, o.outcome + " " + o.model_hash + " " + o.detail);
+        if self.disposition_of(o.mutation_id) != "applied" { return; }
+        let now = std::time::now();
+        let req = self.request_of(o.mutation_id);
+        let lease = self.gateway.take(o.mutation_id, "dna", now);
+        if o.outcome == "healthy" {
+            let y = self.journal.append(self.journal.revision(), "mutation.retained", o.mutation_id, "observed healthy as " + o.model_hash);
+            let z = self.gateway.remove(self.journal, o.mutation_id, lease.token, now);
+            return;
+        }
+        let base = std::json::find_string_field(req, "base_commit");
+        let r = self.gateway.rollback(self.journal, o.mutation_id, base, lease.token, now);
+        if !r.ok {
+            let y = self.journal.append(self.journal.revision(), "mutation.failed", o.mutation_id, "rollback: " + r.refused);
+            self.membrane.notify("mutation", o.mutation_id + " rollback failed: " + r.refused);
+            return;
+        }
+        self.restarts_requested = self.restarts_requested + 1;
+        let y = self.journal.append(self.journal.revision(), "expression.restart_requested", o.mutation_id, "rollback " + base + " after " + o.outcome);
+        self.membrane.notify("restart", o.mutation_id + " rolled back to " + base + " after " + o.outcome);
     }
     // Bounded by the humans offering intent; each birth is a Task the
     // Metabolism owns and settles.
@@ -264,7 +391,9 @@ locus Dna {
         let m = Mutation {
             id: id, task_id: task_id, base_commit: base, worktree: wt,
             candidate_commit: committed.value, candidate_digest: committed.value,
-            change_class: change_class, rationale: objective, disposition: "proposed"
+            change_class: change_class, rationale: objective,
+            fitness_signals: std::json::find_string_field(r.result, "fitness_signals"),
+            disposition: "proposed"
         };
         let report = self.verification.verify(self.journal, m, self.baseline);
         if !report.evidence.check_clean {
@@ -308,6 +437,7 @@ locus Dna {
         b.string_field("candidate_commit", m.candidate_commit);
         b.string_field("candidate_shape", r.candidate_shape);
         b.string_field("worktree", m.worktree);
+        b.string_field("fitness_signals", m.fitness_signals);
         b.string_field("evidence", r.steps);
         b.field("magnitude", magnitude_json(r.magnitude));
         b.string_field("diff_text", r.diff_text);
@@ -358,6 +488,8 @@ locus Dna {
         b.string_field("last_mutation", self.last_mutation);
         b.int_field("reviews_open", self.reviews_open);
         b.int_field("rehydrated", self.rehydrated);
+        b.int_field("applied", self.applied);
+        b.int_field("restarts_requested", self.restarts_requested);
         b.int_field("journal_revision", self.journal.revision());
         b.int_field("tasks_settled", self.metabolism.settled_count());
         b.int_field("work_requests", self.work.requests);

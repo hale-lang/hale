@@ -1,6 +1,7 @@
 crates/hale-cli/tests/check_arg_parsing.rs#0 f428caff9d863411
 crates/hale-cli/tests/debug_info.rs#0 a8a553c534907f76
 crates/hale-cli/tests/dispatch_plan_cli.rs#0 e9ff5fe335d31b65
+crates/hale-cli/tests/dna_apply.rs#0 f2c1228edb650960
 crates/hale-cli/tests/dna_review.rs#0 f2c1228edb650960
 crates/hale-cli/tests/doc.rs#0 a9238ad19f21c0ec
 crates/hale-cli/tests/effects_manifest.rs#0 0a8481ef56eab005
