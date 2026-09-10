@@ -33,8 +33,23 @@ repository:
 - **Leases** are blobs under `refs/dna/lease/<key>` (`:` in a key
   becomes `/`), `holder`, `token`, `expires`, `present` on four lines,
   compare-and-swapped on the ref. Tokens are monotonic per key.
-- **Fetch and push `refs/dna/*`** to share the record. A plain clone
-  has no record until it fetches the refspec.
+- **Sync.** `hale dna sync` (and the host, every tick) fetches the
+  remote's record into `refs/dna/remote/journal`, reconciles, and
+  pushes. Local ahead: push. Remote ahead: fast-forward. Diverged: the
+  local-only events are re-appended on top of the remote's head, bodies
+  and authors unchanged, `seq` their new position, then pushed; a push
+  the remote refuses is fetched and reconciled again. Receipts travel
+  by refspec both ways. The remote is `dna.remote` in git config, or
+  `origin`. A plain clone has no record until it syncs.
+- **The membrane over the record.** From a clone with no organism,
+  `hale dna ask` appends `intent.requested` (the body: outcome, from,
+  to) and a verdict appends `review.verdict` (the body: the verdict as
+  the socket membrane carries it), each in the appender's git identity;
+  the host beside the organism relays unanswered rows onto the
+  membrane once, and the organism's answers (`intent.offered`,
+  `task.born`, `review.settled`, `review.refused`) return the same way.
+  A row is answered when a later row of the answering kind names its
+  entity. `hale dna ask --no-wait` appends and returns.
 
 `.hale/dna/` holds only what is not the record: the membrane sockets,
 the status projection, worktrees, scratch inputs to the toolchain.
@@ -43,7 +58,8 @@ Deleting it loses nothing the record holds.
 ## Event kinds
 
 `application.attached`, `structure.observed`, `responsibility.proposed`,
-`law.deferred`, `intent.offered`, `intent.refused`, `task.born`,
+`law.deferred`, `intent.requested`, `intent.offered`, `intent.refused`,
+`review.verdict`, `task.born`,
 `task.<state>`, `mutation.proposed`, `mutation.worktree`,
 `mutation.located`, `mutation.candidate`, `mutation.<disposition>`,
 `mutation.applied`, `mutation.retained`, `mutation.rolled_back`,

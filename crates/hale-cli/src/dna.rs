@@ -65,6 +65,7 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("status") => report(status(&args[1..])),
         Some("ask") => report(ask(&args[1..])),
         Some("history") => report(history(&args[1..])),
+        Some("sync") => report(sync_cmd(&args[1..])),
         Some("review") => report(review(&args[1..])),
         Some("--help") | Some("-h") | None => usage(if args.is_empty() { 2 } else { 0 }),
         Some(other) => {
@@ -86,6 +87,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna ask [--to <locus>] <intent…>");
     eprintln!("                                    offer intent over the membrane; prints the Task born or the refusal");
     eprintln!("       hale dna history [<entity>]  walk the Journal by causal links (works offline)");
+    eprintln!("       hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*) with origin");
     eprintln!("       hale dna review              the pending Reviews");
     eprintln!("       hale dna review <id> [--iris] render a Review: source diff, semantic diff, evidence (works offline)");
     eprintln!("       hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>] [--comment <c>] [--digest <sha>]");
@@ -498,11 +500,22 @@ fn run_organism(args: &[String]) -> ExitCode {
     // restart requests (GH #529 D6): rebuild, restart, watch the
     // observation window, report back on the membrane.
     let mut handled: BTreeSet<u64> = BTreeSet::new();
+    let mut relayed: BTreeSet<u64> = BTreeSet::new();
     let code = loop {
         match organism.try_wait() {
             Ok(Some(st)) => break st.code().unwrap_or(1),
             Ok(None) => {}
             Err(_) => break 1,
+        }
+        // the record across clones: pull what others appended, relay the
+        // membrane facts among them to the organism, push what it answered
+        if let Err(e) = sync_record(&root) {
+            eprintln!("hale dna run: sync: {e}");
+        }
+        let n = relay_record_membrane(&root, &mut relayed);
+        if n > 0 {
+            eprintln!("hale dna run: relayed {n} fact(s) from the record onto the membrane");
+            let _ = sync_record(&root);
         }
         write_status(&root, &status_path);
         if let Some((seq, id, body)) = pending_restart(&root, &handled) {
@@ -769,6 +782,10 @@ fn record_head(root: &Path) -> Option<String> {
 /// another clone never lose each other's events. The author is git's
 /// identity for the user running this (a human's verdict is theirs).
 fn append_journal(root: &Path, kind: &str, entity: &str, body: &str) -> Result<(), String> {
+    append_journal_as(root, kind, entity, body, None)
+}
+
+fn append_journal_as(root: &Path, kind: &str, entity: &str, body: &str, author: Option<&str>) -> Result<(), String> {
     let dna_dir = root.join(".hale/dna");
     fs::create_dir_all(&dna_dir).map_err(|e| e.to_string())?;
     let pid = std::process::id();
@@ -786,7 +803,8 @@ fn append_journal(root: &Path, kind: &str, entity: &str, body: &str) -> Result<(
             None => String::new(),
         };
         let seq = text.lines().filter(|l| !l.trim().is_empty()).count();
-        let line = serde_json::json!({"seq": seq, "kind": kind, "entity": entity, "body": body, "author": git(root, &["config", "user.name"]).unwrap_or_else(|_| "host".into())}).to_string();
+        let who = author.map(|a| a.to_string()).unwrap_or_else(|| git(root, &["config", "user.name"]).ok().filter(|n| !n.is_empty()).unwrap_or_else(|| "host".into()));
+        let line = serde_json::json!({"seq": seq, "kind": kind, "entity": entity, "body": body, "author": who}).to_string();
         fs::write(&tmp, format!("{text}{line}\n")).map_err(|e| e.to_string())?;
         let blob = git(root, &["hash-object", "-w", &tmp.to_string_lossy()])?;
         let _ = fs::remove_file(&idx);
@@ -829,6 +847,134 @@ fn receipt_read(root: &Path, digest: &str) -> Option<String> {
         return None;
     }
     Some(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+// ---------------------------------------------------------------
+// the record across clones: sync with origin, and the membrane over it
+// ---------------------------------------------------------------
+
+const REMOTE_TRACK: &str = "refs/dna/remote/journal";
+
+/// The remote the record syncs with, when the repository has one.
+fn record_remote(root: &Path) -> Option<String> {
+    let name = git(root, &["config", "dna.remote"]).ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "origin".into());
+    git(root, &["remote", "get-url", &name]).ok().map(|_| name)
+}
+
+/// Fetch, reconcile, push (GH #566 F1). The record is linear: when
+/// this clone and the remote both appended, the local-only events are
+/// re-appended on top of the remote's head (their bodies and authors
+/// unchanged; their seq is their new position) and pushed. Receipts
+/// travel both ways by refspec. Returns a one-line summary.
+fn sync_record(root: &Path) -> Result<String, String> {
+    let Some(remote) = record_remote(root) else {
+        return Ok("no remote: the record is local".into());
+    };
+    git(root, &["fetch", "-q", &remote, &format!("+{RECORD_REF}:{REMOTE_TRACK}"), "+refs/dna/receipts/*:refs/dna/receipts/*"]).or_else(|e| {
+        // a remote with no record yet is not an error
+        if e.contains("couldn't find remote ref") || e.contains("Couldn't find remote ref") { Ok(String::new()) } else { Err(format!("fetch {remote}: {e}")) }
+    })?;
+    let mut summary = String::new();
+    for _ in 0..3 {
+        let local = record_head(root);
+        let remote_head = git(root, &["rev-parse", "-q", "--verify", REMOTE_TRACK]).ok().filter(|s| !s.is_empty());
+        let (Some(l), Some(r)) = (local.clone(), remote_head.clone()) else {
+            if local.is_none() && remote_head.is_some() {
+                git(root, &["update-ref", RECORD_REF, remote_head.as_deref().unwrap()])?;
+                summary = "pulled the record".into();
+            }
+            break;
+        };
+        if l == r {
+            if summary.is_empty() {
+                summary = "up to date".into();
+            }
+            break;
+        }
+        if git(root, &["merge-base", "--is-ancestor", &r, &l]).is_ok() {
+            // local ahead: push below
+            let n = git(root, &["rev-list", "--count", &format!("{r}..{l}")]).unwrap_or_default();
+            summary = format!("pushed {n} event(s)");
+        } else if git(root, &["merge-base", "--is-ancestor", &l, &r]).is_ok() {
+            git(root, &["update-ref", RECORD_REF, &r, &l])?;
+            let n = git(root, &["rev-list", "--count", &format!("{l}..{r}")]).unwrap_or_default();
+            summary = format!("pulled {n} event(s)");
+            break;
+        } else {
+            // diverged: re-append the local-only events on top of the remote
+            let mine = git(root, &["rev-list", "--reverse", &format!("{r}..{l}")])?;
+            let mine: Vec<String> = mine.lines().map(|s| s.to_string()).collect();
+            let mut events: Vec<(String, String, String, String)> = Vec::new();
+            for c in &mine {
+                let text = git(root, &["show", &format!("{c}:journal.jsonl")])?;
+                let Some(last) = text.lines().filter(|l| !l.trim().is_empty()).last() else { continue };
+                let v: Value = serde_json::from_str(last).map_err(|e| e.to_string())?;
+                let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
+                events.push((s("kind"), s("entity"), s("body"), s("author")));
+            }
+            git(root, &["update-ref", RECORD_REF, &r, &l])?;
+            for (kind, entity, body, author) in &events {
+                append_journal_as(root, kind, entity, body, Some(author))?;
+            }
+            summary = format!("re-appended {} local event(s) onto the remote's {}", events.len(), git(root, &["rev-list", "--count", &format!("{l}..{r}")]).unwrap_or_default());
+        }
+        match git(root, &["push", "-q", &remote, &format!("{RECORD_REF}:{RECORD_REF}"), "refs/dna/receipts/*:refs/dna/receipts/*"]) {
+            Ok(_) => {
+                let _ = git(root, &["update-ref", REMOTE_TRACK, &record_head(root).unwrap_or_default()]);
+                break;
+            }
+            Err(_) => {
+                // the remote moved again: fetch and go round
+                git(root, &["fetch", "-q", &remote, &format!("+{RECORD_REF}:{REMOTE_TRACK}")])?;
+            }
+        }
+    }
+    Ok(summary)
+}
+
+fn sync_cmd(args: &[String]) -> Result<Vec<String>, String> {
+    let dir = args.first().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    let (root, _) = project(&dir)?;
+    let s = sync_record(&root)?;
+    let rows = read_journal(&root).map(|r| r.len()).unwrap_or(0);
+    Ok(vec![format!("record {RECORD_REF}: {s}; {rows} event(s)")])
+}
+
+/// The membrane over the record: an `intent.requested` or a
+/// `review.verdict` row a CLI appended from any clone is relayed by the
+/// host onto the running organism's sockets, once, and the organism's
+/// answer (`intent.offered` / `review.settled` / …) goes back into the
+/// record like any other event. Rows already answered are skipped, so
+/// a restarted host does not replay history.
+fn relay_record_membrane(root: &Path, relayed: &mut BTreeSet<u64>) -> usize {
+    let Ok(rows) = read_journal(root) else { return 0 };
+    let mut n = 0;
+    for (i, r) in rows.iter().enumerate() {
+        if relayed.contains(&r.seq) {
+            continue;
+        }
+        let answered = |kinds: &[&str]| rows[i + 1..].iter().any(|x| kinds.contains(&x.kind.as_str()) && x.entity == r.entity);
+        match r.kind.as_str() {
+            "intent.requested" if !answered(&["intent.offered", "intent.refused"]) => {
+                let mut b: Value = serde_json::from_str(&r.body).unwrap_or(Value::Null);
+                if let Some(o) = b.as_object_mut() {
+                    o.insert("intent_id".into(), Value::String(r.entity.clone()));
+                }
+                if publish_on_membrane(root, "intent", &b.to_string()).is_ok() {
+                    relayed.insert(r.seq);
+                    n += 1;
+                }
+            }
+            "review.verdict" if !answered(&["review.settled", "review.refused"]) => {
+                if publish_on_membrane(root, "verdict", &r.body).is_ok() {
+                    relayed.insert(r.seq);
+                    n += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    n
 }
 
 /// Re-project the Journal into `status.json` (atomically: write beside,
@@ -1108,11 +1254,13 @@ fn status(args: &[String]) -> Result<Vec<String>, String> {
 /// or the refusal. The host publishes and reads; it decides nothing.
 fn ask(args: &[String]) -> Result<Vec<String>, String> {
     let mut to = String::new();
+    let mut no_wait = false;
     let mut words: Vec<String> = Vec::new();
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--to" => to = it.next().cloned().ok_or("--to needs a locus")?,
+            "--no-wait" => no_wait = true,
             f if f.starts_with("--") => return Err(format!("ask: unknown flag `{f}`")),
             w => words.push(w.to_string()),
         }
@@ -1122,21 +1270,35 @@ fn ask(args: &[String]) -> Result<Vec<String>, String> {
     }
     let outcome = words.join(" ");
     let (root, _) = project(Path::new("."))?;
+    let _ = sync_record(&root);
     let rows_before = read_journal(&root)?.len();
-    if !membrane_up(&root) {
-        return Err(format!(
-            "the organism is not running (no membrane under {}); start it with `hale dna run`. The Journal has {} event(s).",
-            root.join(".hale/dna").display(),
-            rows_before
-        ));
-    }
     let intent_id = format!("i{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0));
     let who = std::env::var("USER").unwrap_or_else(|_| "human".into());
     let body = serde_json::json!({"intent_id": intent_id, "outcome": outcome, "from": who, "to": to}).to_string();
-    publish_on_membrane(&root, "intent", &body)?;
-    // the organism's answer, from the Journal
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let local = membrane_up(&root);
+    if local {
+        publish_on_membrane(&root, "intent", &body)?;
+    } else {
+        // no organism here: the intent goes into the record, and the host
+        // beside the organism relays it (GH #566 F1)
+        if record_remote(&root).is_none() {
+            return Err(format!(
+                "the organism is not running here (no membrane under {}) and the repository has no remote to reach one through; start it with `hale dna run`",
+                root.join(".hale/dna").display()
+            ));
+        }
+        append_journal(&root, "intent.requested", &intent_id, &serde_json::json!({"outcome": outcome, "from": who, "to": to}).to_string())?;
+        sync_record(&root)?;
+        if no_wait {
+            return Ok(vec![format!("intent {intent_id} requested in the record; the organism answers there (`hale dna sync`, then `status`)")]);
+        }
+    }
+    // the organism's answer, from the record
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(if local { 10 } else { 60 });
     loop {
+        if !local {
+            let _ = sync_record(&root);
+        }
         let rows = read_journal(&root)?;
         if let Some(r) = rows.iter().skip(rows_before).find(|r| r.kind == "intent.refused" && r.entity == intent_id) {
             return Ok(vec![format!("refused: {}", r.body)]);
@@ -1148,9 +1310,9 @@ fn ask(args: &[String]) -> Result<Vec<String>, String> {
             }
         }
         if std::time::Instant::now() > deadline {
-            return Err(format!("published intent {intent_id}, but the organism journaled no answer within 10s (Journal revision {})", rows.len()));
+            return Err(format!("published intent {intent_id}, but the organism journaled no answer in time (record revision {})", rows.len()));
         }
-        std::thread::sleep(std::time::Duration::from_millis(150));
+        std::thread::sleep(std::time::Duration::from_millis(if local { 150 } else { 1000 }));
     }
 }
 
@@ -1219,6 +1381,9 @@ fn review(args: &[String]) -> Result<Vec<String>, String> {
         }
     }
     let (root, _) = project(Path::new("."))?;
+    if !membrane_up(&root) {
+        let _ = sync_record(&root);
+    }
     let st = status_projection(&root)?;
     let reviews = st["reviews"].as_array().cloned().unwrap_or_default();
     let s = |v: &Value| v.as_str().unwrap_or("").to_string();
@@ -1254,8 +1419,9 @@ fn review(args: &[String]) -> Result<Vec<String>, String> {
     if !["approve", "revise", "reject", "abstain"].contains(&verdict.as_str()) {
         return Err(format!("review: verdict `{verdict}` is not one of approve | revise | reject | abstain"));
     }
-    if !membrane_up(&root) {
-        return Err("the organism is not running (no membrane); start it with `hale dna run`".into());
+    let local = membrane_up(&root);
+    if !local && record_remote(&root).is_none() {
+        return Err("the organism is not running here (no membrane) and the repository has no remote to reach one through; start it with `hale dna run`".into());
     }
     // The verdict names the candidate the reviewer LOOKED AT: by default
     // the one the request pinned; `--digest` states it explicitly, and
@@ -1264,17 +1430,27 @@ fn review(args: &[String]) -> Result<Vec<String>, String> {
     let rows = read_journal(&root)?;
     let before = rows.len();
     let body = serde_json::json!({"review_id": id, "subject_digest": named, "verdict": verdict, "reviewer": reviewer, "authority": authority, "comment": comment}).to_string();
-    publish_on_membrane(&root, "verdict", &body)?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    if local {
+        publish_on_membrane(&root, "verdict", &body)?;
+    } else {
+        // the verdict is a row in the record, in the reviewer's name; the host
+        // beside the organism relays it, and the Review answers in the record
+        append_journal(&root, "review.verdict", &id, &body)?;
+        sync_record(&root)?;
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(if local { 10 } else { 60 });
     loop {
+        if !local {
+            let _ = sync_record(&root);
+        }
         let rows = read_journal(&root)?;
         if let Some(r) = rows.iter().skip(before).find(|r| (r.kind == "review.settled" || r.kind == "review.refused") && r.entity == id) {
             return Ok(vec![if r.kind == "review.settled" { format!("review {id} settled: {}", r.body) } else { format!("review {id} refused the verdict: {}", r.body) }]);
         }
         if std::time::Instant::now() > deadline {
-            return Err(format!("published the verdict, but the organism journaled no answer for `{id}` within 10s"));
+            return Err(format!("published the verdict, but the organism journaled no answer for `{id}` in time"));
         }
-        std::thread::sleep(std::time::Duration::from_millis(150));
+        std::thread::sleep(std::time::Duration::from_millis(if local { 150 } else { 1000 }));
     }
 }
 
