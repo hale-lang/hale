@@ -93,3 +93,23 @@ fn credential_sources_sealed_holds() {
 fn unsealed_credential_holder_is_refused_by_name() {
     refused("sealed_fail", &["claim `confined` violated", "LeakyCreds"]);
 }
+
+// ---- GH #529 D2: the source-editing Attempt is confined by construction
+
+#[test]
+fn editor_confined_to_its_worktree_holds() {
+    passes("editor_confined_pass");
+}
+
+#[test]
+fn editor_holding_a_repository_is_refused_with_a_witness() {
+    refused(
+        "editor_confined_fail",
+        &[
+            "claim `editors_never_commit` violated",
+            "Committer::go",
+            "dna::LocalGit::commit_all",
+        ],
+    );
+}
+

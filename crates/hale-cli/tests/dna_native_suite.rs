@@ -17,9 +17,12 @@ fn repo_root() -> PathBuf {
 #[test]
 fn dna_fixtures_pass() {
     let dir = repo_root().join("dna/tests");
+    // The editing fixture runs the toolchain (`hale fmt`, `hale check`)
+    // inside its worktree: hand it this build, not whatever is on PATH.
     let out = Command::new(env!("CARGO_BIN_EXE_hale"))
         .arg("test")
         .arg(&dir)
+        .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .output()
         .expect("invoke hale test dna/tests");
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -53,7 +56,8 @@ fn dna_core_verifies_clean() {
 
 /// A suite that quietly emptied would pass the check above by
 /// running nothing. #526 names eight programs; seven are Hale-native,
-/// and #528 adds the hosted-model adapter's.
+/// #528 adds the hosted-model adapter's, and #529 the gateways' and
+/// the source-editing Attempt's.
 #[test]
 fn dna_fixture_set_is_complete() {
     let dir = repo_root().join("dna/tests");
@@ -70,6 +74,7 @@ fn dna_fixture_set_is_complete() {
         names,
         vec![
             "assembly_test.hl",
+            "editing_test.hl",
             "fanout_join_test.hl",
             "hosted_model_test.hl",
             "journal_test.hl",

@@ -1,0 +1,140 @@
+// dna/core/editing.hl — the source-editing Attempt (GH #529 D2).
+//
+// An AgentPerformer whose hands are a tool grant confined to ONE
+// worktree: read, edit, `hale fmt`, `hale check`. No git, no
+// network beyond the model router it was handed, no deployment, no
+// Knowledge — not as a runtime check but by construction: the grant
+// has no such methods, the performer holds no such handles, and the
+// constitution forbids the performer's group from reaching
+// `repo_write`, `worktree_io`, `genome_apply` and the Knowledge locus,
+// so a wiring that hands it any of them fails `hale check` with a
+// witness (dna/tests/law/editor_confined_*). Its model calls still
+// leave `model.called` evidence in the Journal — through the router,
+// like every other Attempt's.
+//
+// Its output is a MutationProposal: the files it changed, why, and
+// the fitness signals it expects to move. The candidate commit is
+// the gateway's business (workspace.hl), never the editor's.
+
+// ---- the tool grant ----------------------------------------------------
+
+// Paths are worktree-relative and stay inside: a `..` segment or an
+// absolute path is refused, and every tool runs against `root`.
+locus WorktreeTools {
+    params {
+        root: String = ".";
+        hale_bin: String = "hale";
+        reads: Int = 0;
+        edits: Int = 0;
+        refused: Int = 0;
+        last_refusal: String = "";
+    }
+    fn inside(rel: String) -> Bool {
+        if len(rel) == 0 { return false; }
+        if rel[0..1] == "/" { return false; }
+        if std::str::contains(rel, "..") { return false; }
+        return true;
+    }
+    // Each call is one Attempt's: bounded by the attempt cap of the
+    // Work that owns the editor, not by anything the grant can see.
+    @unbounded
+    fn read(rel: String) -> String {
+        if !self.inside(rel) { self.refused = self.refused + 1; self.last_refusal = "read outside the worktree: " + rel; return ""; }
+        self.reads = self.reads + 1;
+        return std::io::fs::read_file(self.root + "/" + rel) or "";
+    }
+    @unbounded
+    fn edit(rel: String, content: String) -> Bool {
+        if !self.inside(rel) { self.refused = self.refused + 1; self.last_refusal = "edit outside the worktree: " + rel; return false; }
+        let before = self.refused;
+        std::io::fs::write_file(self.root + "/" + rel, content) or self.write_failed(err);
+        if self.refused > before { return false; }
+        self.edits = self.edits + 1;
+        return true;
+    }
+    @unbounded
+    fn write_failed(e: IoError) {
+        self.refused = self.refused + 1;
+        self.last_refusal = "write failed: " + e.kind;
+    }
+    @effects(is: { toolchain_run })
+    fn fmt() -> RunResult { return run_tool(self.hale_bin + "\nfmt\n" + self.root); }
+    @effects(is: { toolchain_run })
+    fn check() -> RunResult { return run_tool(self.hale_bin + "\ncheck\n" + self.root); }
+}
+
+// ---- the editing performer --------------------------------------------
+
+// One Attempt: read the target, ask the router for the edit, write it
+// inside the worktree, format, check; hand back a proposal. Two model
+// calls under one attempt identity (the edit, then the fitness
+// assessment), exactly as AgentPerformer nests its calls.
+locus SourceEditor {
+    params {
+        name: String = "editor";
+        models: ModelRouter = ModelRouter { };
+        tools: WorktreeTools = WorktreeTools { };
+        attempts: Int = 0;
+        last: MutationProposal = MutationProposal { };
+    }
+    fn kind() -> String { return "agent"; }
+    fn identity() -> String { return self.name; }
+    // Bounded by the attempt cap of the Work that owns this performer.
+    @unbounded
+    fn perform(req: WorkRequest) -> WorkResult {
+        self.attempts = self.attempts + 1;
+        let attempt = req.work_id + "/a" + to_string(req.attempt_no);
+        if len(req.target) == 0 {
+            return WorkResult { disposition: "failed", narrative: "no target file in the request", performer: self.name };
+        }
+        let current = self.tools.read(req.target);
+        if len(current) == 0 && len(self.tools.last_refusal) > 0 {
+            return WorkResult { disposition: "failed", narrative: self.tools.last_refusal, performer: self.name };
+        }
+        let edit = self.models.ask(ModelRequest {
+            attempt_id: attempt, role: "edit",
+            prompt: "Rewrite " + req.target + " so that: " + req.objective + "\nReturn the whole file.",
+            context: current, context_bytes: len(current) + len(req.objective),
+            data_class: req.data_class
+        });
+        if !edit.ok {
+            return WorkResult { disposition: "failed", narrative: "edit refused: " + edit.refused, performer: self.name };
+        }
+        if !self.tools.edit(req.target, edit.output) {
+            return WorkResult { disposition: "failed", narrative: self.tools.last_refusal, performer: self.name };
+        }
+        let f = self.tools.fmt();
+        let c = self.tools.check();
+        // The assessment is the deep tier's (assurance 2): it is what the
+        // Review reads, so it is not the quick model's guess.
+        let assess = self.models.ask(ModelRequest {
+            attempt_id: attempt, role: "assess", assurance: 2,
+            prompt: "Which fitness signals should this change move, and which way? One per line: <signal> <+|->",
+            context: edit.output, context_bytes: len(edit.output),
+            data_class: req.data_class, retry_of: attempt + ":edit"
+        });
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("work_id", req.work_id);
+        b.string_field("files_changed", req.target);
+        b.string_field("rationale", req.objective);
+        b.string_field("fitness_signals", if assess.ok { assess.output } else { "" });
+        b.bool_field("fmt_clean", f.code == 0);
+        b.bool_field("check_clean", c.code == 0);
+        b.string_field("check_output", if c.code == 0 { "" } else { trim_nl(c.stderr) });
+        b.end_object();
+        self.last = MutationProposal {
+            work_id: req.work_id, files_changed: req.target, rationale: req.objective,
+            fitness_signals: if assess.ok { assess.output } else { "" },
+            fmt_clean: f.code == 0, check_clean: c.code == 0,
+            check_output: if c.code == 0 { "" } else { trim_nl(c.stderr) }
+        };
+        return WorkResult {
+            disposition: if c.code == 0 { "done" } else { "failed" },
+            result: b.result(),
+            narrative: if c.code == 0 { "proposal checks clean" } else { "proposal does not check: " + trim_nl(c.stderr) },
+            evidence: "fmt=" + to_string(f.code) + " check=" + to_string(c.code) + " backends=" + edit.backend + "," + assess.backend,
+            performer: self.name
+        };
+    }
+}

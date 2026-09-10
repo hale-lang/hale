@@ -183,6 +183,42 @@ Attempt's lease on `mutation:<id>`, so a stale fencing token is
 refused rather than applied. `hale dna history m1` shows the
 worktree, candidate and apply events of a Mutation.
 
+### The Attempt that edits
+
+`SourceEditor` is the performer that changes source. Its hands are
+`WorktreeTools { root, hale_bin }`: `read` and `edit` of
+worktree-relative paths (an absolute path or a `..` segment is
+refused and counted), and `fmt` and `check`, which run the toolchain
+against the worktree (effect class `toolchain_run`). That is the
+whole grant. The editor holds no repository, no worktree gateway, no
+deployment and no Knowledge — not as a runtime check but by
+construction, and a constitution says so:
+
+```hale,fragment
+group editors = { dna::SourceEditor, dna::WorktreeTools };
+group knowledge = { dna::Knowledge };
+constitution Editing {
+    editors_never_commit: forbid reaches(editors, effects(repo_write));
+    editors_never_touch_worktrees: forbid reaches(editors, effects(worktree_io));
+    editors_never_apply: forbid reaches(editors, effects(genome_apply));
+    editors_never_learn: forbid reaches(editors, knowledge);
+}
+```
+
+A wiring that hands the editor a `LocalGit` fails `hale check` with
+the witness path (`dna/tests/law/editor_confined_fail`).
+
+One `perform` is two model calls under one attempt id — the quick
+tier rewrites the target file to the objective, the deep tier says
+which fitness signals the change should move — then `fmt`, then
+`check`. The result is a `MutationProposal` in `WorkResult.result`:
+the files changed, the rationale, the expected fitness signals, and
+whether the proposal formats and checks; the toolchain's exit codes
+and the two backends are the `evidence`. A proposal that does not
+check is a failed Attempt carrying the diagnostics, never a
+candidate. The candidate commit is the gateway's business, not the
+editor's.
+
 ## In iris
 
 `hale dna run` hands iris three sources: the observation segment
