@@ -77,6 +77,7 @@ fn dna_fixture_set_is_complete() {
             "performers_test.hl",
             "recursion_settlement_test.hl",
             "review_authority_test.hl",
+            "workspace_test.hl",
         ]
     );
 }

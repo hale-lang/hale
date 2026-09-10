@@ -188,6 +188,10 @@ interface Coordination {
     fn acquire(key: String, holder: String, now: Int, ttl: Int) -> Lease;
     fn complete(key: String, token: Int, now: Int) -> Bool;
     fn holder_of(key: String) -> String;
+    // The lease as it stands, so a gateway can FENCE an operation on
+    // its token (GH #529 D1): a holder whose lease expired and was
+    // re-acquired presents a stale token and is refused.
+    fn current(key: String) -> Lease;
 }
 
 @form(hashmap)
@@ -222,6 +226,13 @@ locus MemLeases {
         if cur.present { return cur.holder; }
         return "";
     }
+    fn current(key: String) -> Lease { return self.rows.get(key) or Lease { }; }
+}
+
+// True when `token` is the live fencing token for `key` at `now`.
+fn lease_fences(c: Coordination, key: String, token: Int, now: Int) -> Bool {
+    let cur = c.current(key);
+    return cur.present && cur.token == token && cur.expires > now;
 }
 
 // ---- idempotent effects over the journal --------------------------

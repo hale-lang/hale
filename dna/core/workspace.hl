@@ -1,0 +1,260 @@
+// dna/core/workspace.hl — the workspace and repository gateways
+// (GH #529 D1): where a Mutation edits, and where the genome lives.
+//
+// Two effect gateways over `std::process`, each carrying the effect
+// class the law reasons about (`worktree_io`, `repo_write`, and for
+// the one operation that changes the genome, `genome_apply`), and a
+// `MutationGateway` that puts every operation behind the Journal and
+// a lease:
+//
+//   - journaled BEFORE dispatch under an idempotency key
+//     (`effect_request`), the result appended once (`effect_result`),
+//     so a crashed and retried apply cannot commit twice — the retry
+//     finds the key and reads the recorded result;
+//   - fenced by the Attempt's lease on `mutation:<id>`: an operation
+//     presents its fencing token, and a stale one (the lease expired
+//     and was re-acquired) is refused, never applied.
+//
+// One worktree per Mutation, named by the Mutation's id under
+// `root`, removed on dissolution. The base is recorded as the commit
+// AND the `exec_digest` of the checked build it was expressed as —
+// a branch name says nothing about what ran.
+
+// ---- running a tool -----------------------------------------------
+
+type RunResult {
+    code: Int = -1;
+    stdout: String = "";
+    stderr: String = "";
+}
+
+fn run_failed(e: IoError) -> std::process::ProcessOutput {
+    return std::process::ProcessOutput { code: -1, signal: 0, stdout: "", stderr: e.kind };
+}
+
+// argv as `std::process::run` takes it: newline-separated.
+fn run_tool(argv: String) -> RunResult {
+    let out = std::process::run(argv) or run_failed(err);
+    return RunResult { code: out.code, stdout: out.stdout, stderr: out.stderr };
+}
+
+fn trim_nl(s: String) -> String {
+    let mut e = len(s);
+    while e > 0 && (s[(e - 1)..e] == "\n" || s[(e - 1)..e] == "\r" || s[(e - 1)..e] == " ") { e = e - 1; }
+    return s[0..e];
+}
+
+// ---- workspaces ------------------------------------------------------
+
+type Worktree {
+    mutation_id: String = "";
+    path: String = "";
+    base_commit: String = "";
+    base_exec_digest: String = "";
+    present: Bool = false;
+    error: String = "";
+}
+
+interface Workspaces {
+    fn open(mutation_id: String, base_commit: String) -> Worktree;
+    fn remove(mutation_id: String) -> Bool;
+    fn path_of(mutation_id: String) -> String;
+    fn kind() -> String;
+}
+
+// `git worktree` under `root`, one per Mutation, detached at the base.
+locus IsolatedWorktrees {
+    params {
+        repo: String = ".";
+        root: String = ".hale/dna/worktrees";
+        base_exec_digest: String = ""; // the checked build's identity, supplied by the host
+        opened: Int = 0;
+        removed: Int = 0;
+        last_error: String = "";
+    }
+    fn kind() -> String { return "isolated-worktrees"; }
+    fn path_of(mutation_id: String) -> String { return self.root + "/" + mutation_id; }
+    @effects(is: { worktree_io })
+    fn open(mutation_id: String, base_commit: String) -> Worktree {
+        let path = self.path_of(mutation_id);
+        std::io::fs::mkdir(self.root) or discard;
+        let r = run_tool("git\n-C\n" + self.repo + "\nworktree\nadd\n--detach\n" + path + "\n" + base_commit);
+        if r.code != 0 {
+            self.last_error = trim_nl(r.stderr);
+            return Worktree { mutation_id: mutation_id, base_commit: base_commit, error: self.last_error };
+        }
+        self.opened = self.opened + 1;
+        return Worktree {
+            mutation_id: mutation_id, path: path, base_commit: base_commit,
+            base_exec_digest: self.base_exec_digest, present: true
+        };
+    }
+    @effects(is: { worktree_io })
+    fn remove(mutation_id: String) -> Bool {
+        let r = run_tool("git\n-C\n" + self.repo + "\nworktree\nremove\n--force\n" + self.path_of(mutation_id));
+        if r.code != 0 { self.last_error = trim_nl(r.stderr); return false; }
+        self.removed = self.removed + 1;
+        return true;
+    }
+}
+
+// ---- the repository --------------------------------------------------
+
+interface Repository {
+    fn head(path: String) -> String;
+    fn commit_all(path: String, message: String) -> String;
+    fn diff(path: String, base: String, candidate: String) -> String;
+    fn contains(path: String, commit: String) -> Bool;
+    fn apply(candidate: String) -> Bool;
+    fn kind() -> String;
+}
+
+// Local git. `apply` is the ONE method that changes the genome: it
+// carries `genome_apply`, so the law can forbid every path to it
+// except through the assembly's gate.
+locus LocalGit {
+    params {
+        repo: String = ".";
+        author: String = "dna <dna@local>";
+        applied: Int = 0;
+        last_error: String = "";
+    }
+    fn kind() -> String { return "local-git"; }
+    fn head(path: String) -> String {
+        let r = run_tool("git\n-C\n" + path + "\nrev-parse\nHEAD");
+        if r.code != 0 { self.last_error = trim_nl(r.stderr); return ""; }
+        return trim_nl(r.stdout);
+    }
+    // Stage everything in `path` and commit it; the candidate's sha, or "".
+    @effects(is: { repo_write })
+    fn commit_all(path: String, message: String) -> String {
+        let a = run_tool("git\n-C\n" + path + "\nadd\n-A");
+        if a.code != 0 { self.last_error = trim_nl(a.stderr); return ""; }
+        let c = run_tool("git\n-C\n" + path + "\n-c\nuser.name=dna\n-c\nuser.email=dna@local\ncommit\n-q\n--allow-empty\n-m\n" + message + "\n--author\n" + self.author);
+        if c.code != 0 { self.last_error = trim_nl(c.stderr); return ""; }
+        return self.head(path);
+    }
+    fn diff(path: String, base: String, candidate: String) -> String {
+        let r = run_tool("git\n-C\n" + path + "\ndiff\n" + base + "\n" + candidate);
+        if r.code != 0 { self.last_error = trim_nl(r.stderr); return ""; }
+        return r.stdout;
+    }
+    fn contains(path: String, commit: String) -> Bool {
+        let r = run_tool("git\n-C\n" + path + "\nmerge-base\n--is-ancestor\n" + commit + "\nHEAD");
+        return r.code == 0;
+    }
+    // Fast-forward the repository to the exact candidate; a candidate
+    // that is not a descendant of HEAD is merged with a merge commit.
+    @effects(is: { genome_apply, repo_write })
+    fn apply(candidate: String) -> Bool {
+        let ff = run_tool("git\n-C\n" + self.repo + "\nmerge\n-q\n--ff-only\n" + candidate);
+        if ff.code == 0 { self.applied = self.applied + 1; return true; }
+        let m = run_tool("git\n-C\n" + self.repo + "\n-c\nuser.name=dna\n-c\nuser.email=dna@local\nmerge\n-q\n--no-edit\n--no-ff\n" + candidate);
+        if m.code != 0 { self.last_error = trim_nl(m.stderr); return false; }
+        self.applied = self.applied + 1;
+        return true;
+    }
+}
+
+// ---- the gateway: journaled, fenced -----------------------------------
+
+type GateResult {
+    ok: Bool = false;
+    value: String = ""; // a path, a sha, a diff
+    refused: String = ""; // why, when !ok
+    replayed: Bool = false; // the effect had already been requested; result read from the Journal
+}
+
+locus MutationGateway {
+    params {
+        journal: Journal = MemJournal { };
+        leases: Coordination = MemLeases { };
+        workspaces: Workspaces = IsolatedWorktrees { };
+        repo: Repository = LocalGit { };
+        lease_ttl: Int = 600;
+        refusals: Int = 0;
+    }
+    fn lease_key(mutation_id: String) -> String { return "mutation:" + mutation_id; }
+    // The Attempt takes the Mutation's lease before touching it.
+    fn take(mutation_id: String, holder: String, now: Int) -> Lease {
+        return self.leases.acquire(self.lease_key(mutation_id), holder, now, self.lease_ttl);
+    }
+    fn refuse(why: String) -> GateResult {
+        self.refusals = self.refusals + 1;
+        return GateResult { refused: why };
+    }
+    // Open the Mutation's worktree at `base`. Idempotent per Mutation:
+    // a retry finds the request journaled and re-reads the path.
+    fn open(mutation_id: String, base_commit: String, token: Int, now: Int) -> GateResult {
+        if !lease_fences(self.leases, self.lease_key(mutation_id), token, now) { return self.refuse("stale or missing lease"); }
+        let key = "worktree.open:" + mutation_id;
+        let fresh = effect_request(self.journal, key, base_commit);
+        if !fresh {
+            let st = effect_status(self.journal, key);
+            if st.done && st.ok { return GateResult { ok: true, value: self.workspaces.path_of(mutation_id), replayed: true }; }
+            if st.done { return self.refuse("earlier open failed; not retried"); }
+        }
+        let wt = self.workspaces.open(mutation_id, base_commit);
+        let r = effect_result(self.journal, key, wt.present);
+        if !wt.present { return self.refuse(wt.error); }
+        let j = self.journal.append(self.journal.revision(), "mutation.worktree", mutation_id,
+            "opened " + wt.path + " at " + base_commit + " expressed as " + wt.base_exec_digest);
+        return GateResult { ok: true, value: wt.path };
+    }
+    // Commit the worktree's state as a candidate. `step` names the
+    // commit within the Mutation, so each is its own idempotent effect.
+    fn commit(mutation_id: String, step: String, message: String, token: Int, now: Int) -> GateResult {
+        if !lease_fences(self.leases, self.lease_key(mutation_id), token, now) { return self.refuse("stale or missing lease"); }
+        let key = "commit:" + mutation_id + ":" + step;
+        let fresh = effect_request(self.journal, key, message);
+        if !fresh {
+            let st = effect_status(self.journal, key);
+            if st.done && st.ok { return GateResult { ok: true, value: self.recorded(key), replayed: true }; }
+            if st.done { return self.refuse("earlier commit failed; not retried"); }
+        }
+        let sha = self.repo.commit_all(self.workspaces.path_of(mutation_id), message);
+        let r = effect_result(self.journal, key, sha != "");
+        if sha == "" { return self.refuse("commit failed"); }
+        let j = self.journal.append(self.journal.revision(), "mutation.candidate", mutation_id, sha);
+        return GateResult { ok: true, value: sha };
+    }
+    // Apply the exact candidate to the repository. Keyed by the
+    // candidate itself: a crashed and retried apply cannot commit twice.
+    fn apply(mutation_id: String, candidate: String, token: Int, now: Int) -> GateResult {
+        if !lease_fences(self.leases, self.lease_key(mutation_id), token, now) { return self.refuse("stale or missing lease"); }
+        let key = "apply:" + candidate;
+        let fresh = effect_request(self.journal, key, mutation_id);
+        if !fresh {
+            let st = effect_status(self.journal, key);
+            if st.done && st.ok { return GateResult { ok: true, value: candidate, replayed: true }; }
+            if st.done { return self.refuse("earlier apply failed; not retried"); }
+            return self.refuse("apply in flight");
+        }
+        let ok = self.repo.apply(candidate);
+        let r = effect_result(self.journal, key, ok);
+        if !ok { return self.refuse("apply failed"); }
+        let j = self.journal.append(self.journal.revision(), "mutation.applied", mutation_id, candidate);
+        return GateResult { ok: true, value: candidate };
+    }
+    // Remove the worktree (the Mutation dissolves; its history stays).
+    fn remove(mutation_id: String, token: Int, now: Int) -> GateResult {
+        if !lease_fences(self.leases, self.lease_key(mutation_id), token, now) { return self.refuse("stale or missing lease"); }
+        let ok = self.workspaces.remove(mutation_id);
+        if !ok { return self.refuse("remove failed"); }
+        let j = self.journal.append(self.journal.revision(), "mutation.worktree", mutation_id, "removed");
+        return GateResult { ok: true };
+    }
+    // The last `mutation.candidate` body for the key's Mutation — the
+    // sha a replayed commit returns.
+    @unbounded
+    fn recorded(key: String) -> String {
+        let mut out = "";
+        let mut i = 0;
+        while i < self.journal.revision() {
+            let e = self.journal.read(i);
+            if e.kind == "mutation.candidate" && std::str::contains(key, e.entity) { out = e.body; }
+            i = i + 1;
+        }
+        return out;
+    }
+}
