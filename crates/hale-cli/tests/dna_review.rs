@@ -41,12 +41,13 @@ import "vendor/dna" as dna;
 fn main() {
     let cur = std::io::fs::read_file("main.hl") or "";
     let core = dna::Dna {
-        journal: dna::FileJournal { path: ".hale/dna/journal.jsonl" },
+        journal: dna::GitJournal { repo: "." },
         gateway: dna::MutationGateway {
+            leases: dna::GitLeases { repo: "." },
             workspaces: dna::IsolatedWorktrees { repo: ".", root: ".hale/dna/worktrees" },
             repo: dna::LocalGit { repo: "." }
         },
-        verification: dna::HaleVerification { evidence_dir: ".hale/dna/evidence", repo: ".", seed: "." },
+        verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, scratch: ".hale/dna/scratch", repo: ".", seed: "." },
         editor: dna::SourceEditor {
             name: "editor",
             models: dna::ModelRouter {

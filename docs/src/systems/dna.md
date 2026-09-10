@@ -21,7 +21,7 @@ hale dna upgrade           # re-materialize vendor/dna for this toolchain
 | `dna/assembly.hl` | project | the `Genome`: the `Dna` constructor with local defaults, and the baseline `Review` |
 | `dna_constitution.hl` (in the app's seed) | project | the groups and `constitution Project` |
 | `dna/purpose.hl` | project | the declared purpose the first Review ratifies |
-| `.hale/dna/journal.jsonl` | the organism | the Journal, seeded from the compiler's model |
+| `refs/dna/journal` (a branch) | the organism | the record, one commit per event, seeded from the compiler's model |
 | `.hale/dna/baseline.topology` | the organism | the artifact it was seeded from |
 
 The application's `main locus` gains the imports, a `genome` param,
@@ -36,7 +36,7 @@ argument in `dna/assembly.hl`:
 
 ```hale,fragment
 core: dna::Dna = dna::Dna {
-    journal: dna::FileJournal { path: ".hale/dna/journal.jsonl" },
+    journal: dna::GitJournal { repo: "." },
     boundary: dna::AutonomyBoundary { child: "demo", grant: dna::Grant { classes: "refactor docs", max_magnitude: 4, review: "pre" } },
     review_policy: dna::HumanBeforeApply { },
     deployment: dna::NoDeployment { },
@@ -59,9 +59,9 @@ event per fact the compiler can vouch for, with provenance:
 - `law.deferred` — a clause the application cannot certify yet (see below);
 - `review.requested` — the baseline review: ratify `dna/purpose.hl`, pinned to the sha256 of its text.
 
-The chain is the same the core's `FileJournal` writes (each row's
-digest covers the previous digest), so the organism rehydrates it
-at birth and continues it.
+The record is a git branch (`spec/dna.md`): one commit per event,
+git's DAG as the chain, so the organism rehydrates it at birth,
+continues it, and any clone that fetches `refs/dna/*` has it.
 
 ## The law an application can carry
 
@@ -231,8 +231,8 @@ check --json --dump-topology`, `hale verify --json`, `hale test`,
 genome's seed at the same moment, so the diff is against what the
 candidate actually changed), and `hale replay --feed` when the
 project has a recording — and keeps every result as
-content-addressed evidence: the step's output goes to
-`.hale/dna/evidence/<sha256>.txt`, and an `evidence.<step>` event
+content-addressed evidence: the step's output is a receipt under
+`refs/dna/receipts/<sha256>`, and an `evidence.<step>` event
 on the candidate commit carries the exit code and that digest
 (`hale dna history <candidate>` lists them). The `Evidence` the
 boundary and the Review read (`check_clean`, `verify_clean`,

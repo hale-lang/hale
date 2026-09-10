@@ -40,12 +40,13 @@ const DRIVER: &str = r#"import "vendor/dna" as dna;
 fn main() {
     let cur = std::io::fs::read_file("main.hl") or "";
     let core = dna::Dna {
-        journal: dna::FileJournal { path: ".hale/dna/journal.jsonl" },
+        journal: dna::GitJournal { repo: "." },
         gateway: dna::MutationGateway {
+            leases: dna::GitLeases { repo: "." },
             workspaces: dna::IsolatedWorktrees { repo: ".", root: ".hale/dna/worktrees" },
             repo: dna::LocalGit { repo: "." }
         },
-        verification: dna::HaleVerification { evidence_dir: ".hale/dna/evidence", repo: ".", seed: "." },
+        verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, scratch: ".hale/dna/scratch", repo: ".", seed: "." },
         editor: dna::SourceEditor {
             name: "editor",
             models: dna::ModelRouter {
@@ -66,7 +67,7 @@ fn main() {
 /// JSON differently (the host's serde, the organism's Builder), so
 /// the file is parsed, never string-matched.
 fn journal(app: &Path) -> Vec<(String, String, String)> {
-    let text = std::fs::read_to_string(app.join(".hale/dna/journal.jsonl")).unwrap_or_default();
+    let text = Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
     text.lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .map(|v| {

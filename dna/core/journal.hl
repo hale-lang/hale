@@ -5,9 +5,9 @@
 // assembled by semantic capability: `Journal` (ordered append with an
 // expected revision, idempotency, durable identity), `Coordination`
 // (leases with fencing tokens), and a rebuildable `RetrievalIndex`.
-// Two implementations of each: in-memory, and a file-backed JSONL
-// journal with a sha256 chain, using only stdlib (no FFI in the core;
-// sqlite arrives as a pond adapter).
+// Two implementations of each: in-memory (tests), and the git branch
+// `refs/dna/journal` (GH #566 F1) — one commit per event, git's DAG as
+// the chain — using only stdlib and git subprocesses (no FFI in the core).
 
 type Event {
     seq: Int = 0;
@@ -94,82 +94,231 @@ fn chain_ok(rows: EventRows) -> Bool {
     return true;
 }
 
-// ---- file-backed journal (JSONL, sha256-chained) ---------------------
+// ---- the record: a git branch (GH #566 F1) ---------------------------
+//
+// `refs/dna/journal` is the Journal: one commit per event, the events
+// as `journal.jsonl` in the commit's tree, the commit DAG as the chain
+// (an event's digest IS its commit; `prev` is the parent). Git holds
+// the history of the genome; this ref holds the minutes of the
+// organization, and every clone that fetches `refs/dna/*` has both.
+// Appends are compare-and-swap on the ref (`update-ref` with the
+// expected old value), which is the `stale_revision` rule made
+// cross-process. Receipts are blobs under `refs/dna/receipts/<sha256>`;
+// leases are blobs under `refs/dna/lease/<key>`, CAS-updated.
+//
+// Every operation is a git subprocess (no FFI in the core). The index
+// a tree is built through is a private file under `.hale/dna/`, named
+// per process, so two writers in one repository never share one.
 
-locus FileJournal {
-    params {
-        path: String = ".hale/dna/journal.jsonl";
-        rows: EventRows = EventRows { };
-        loaded: Int = 0; // rows rehydrated at birth
-        io_errors: Int = 0;
-        last_io_error: String = "";
+fn git_out(repo: String, argv: String) -> String {
+    let r = run_tool("git\n-C\n" + repo + "\n" + argv);
+    if r.code != 0 { return ""; }
+    return trim_nl(r.stdout);
+}
+
+@unbounded
+fn ref_safe(key: String) -> String {
+    let mut out = "";
+    let mut i = 0;
+    while i < len(key) {
+        let c = key[i..(i + 1)];
+        if c == ":" || c == " " { out = out + "/"; } else { out = out + c; }
+        i = i + 1;
     }
-    // Rehydrate: the file is the durable form; the rows are its
-    // in-memory projection. A missing file is an empty journal.
+    return out;
+}
+
+locus GitJournal {
+    params {
+        repo: String = ".";
+        ref_name: String = "refs/dna/journal";
+        author: String = "dna"; // the identity on the organism's own events
+        rows: EventRows = EventRows { };
+        text: String = ""; // journal.jsonl as of `head_sha`
+        head_sha: String = "";
+        loaded: Int = 0;
+        retries: Int = 0; // appends that lost a CAS race and re-appended at the new tail
+        io_errors: Int = 0;
+        last_error: String = "";
+    }
     birth() { self.load(); }
+    fn scratch() -> String { return self.repo + "/.hale/dna"; }
+    // Rehydrate from the ref: the file is the events, rev-list is the chain.
     @effects(is: { journal_io })
     fn load() {
-        let text = std::io::fs::read_file(self.path) or "";
-        let mut rest = text;
+        std::io::fs::mkdir(self.repo + "/.hale") or discard;
+        std::io::fs::mkdir(self.scratch()) or discard;
+        while self.rows.len() > 0 { let gone = self.rows.pop() or Event { }; }
+        self.loaded = 0;
+        self.head_sha = git_out(self.repo, "rev-parse\n-q\n--verify\n" + self.ref_name);
+        if self.head_sha == "" { self.text = ""; return; }
+        self.text = git_out(self.repo, "show\n" + self.ref_name + ":journal.jsonl");
+        if len(self.text) > 0 { self.text = self.text + "\n"; }
+        let shas = git_out(self.repo, "rev-list\n--reverse\n" + self.ref_name) + "\n";
+        let mut rest = self.text;
+        let mut srest = shas;
+        let mut prev = "genesis";
         while len(rest) > 0 {
             let nl = std::str::index_of(rest, "\n");
             let line = if nl < 0 { rest } else { rest[0..nl] };
+            let snl = std::str::index_of(srest, "\n");
+            let sha = if snl < 0 { srest } else { srest[0..snl] };
             if len(line) > 0 {
-                // F.8 (dna/FRICTION.md): these readers are infallible
-                // ("" / 0 on a missing field); an `or` here typechecks
-                // and then fails codegen.
                 self.rows.push(Event {
                     seq: std::json::find_int_field(line, "seq"),
                     kind: std::json::find_string_field(line, "kind"),
                     entity: std::json::find_string_field(line, "entity"),
                     body: std::json::find_string_field(line, "body"),
-                    prev: std::json::find_string_field(line, "prev"),
-                    digest: std::json::find_string_field(line, "digest")
+                    prev: prev,
+                    digest: sha
                 });
                 self.loaded = self.loaded + 1;
+                prev = sha;
             }
             if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
+            if snl < 0 { srest = ""; } else { srest = srest[(snl + 1)..len(srest)]; }
         }
+    }
+    // Another writer (the CLI, a host) may have advanced the ref: reload
+    // when it moved. True when it had.
+    @effects(is: { journal_io })
+    fn refresh() -> Bool {
+        let now = git_out(self.repo, "rev-parse\n-q\n--verify\n" + self.ref_name);
+        if now == self.head_sha { return false; }
+        self.load();
+        return true;
     }
     fn revision() -> Int { return self.rows.len(); }
     fn head() -> String {
-        if self.rows.len() == 0 { return "genesis"; }
-        let e = self.rows.get(self.rows.len() - 1) or Event { };
-        return e.digest;
+        if self.head_sha == "" { return "genesis"; }
+        return self.head_sha;
     }
+    fn read(i: Int) -> Event { return self.rows.get(i) or Event { }; }
+    // The chain is git's: the ref still points where we loaded it, and
+    // the commit count is the row count.
+    fn verify_chain() -> Bool {
+        let now = git_out(self.repo, "rev-parse\n-q\n--verify\n" + self.ref_name);
+        if now != self.head_sha { return false; }
+        if self.head_sha == "" { return self.rows.len() == 0; }
+        let n = std::str::parse_int(git_out(self.repo, "rev-list\n--count\n" + self.ref_name)) or - 1;
+        return n == self.rows.len();
+    }
+    // One event = one commit. Compare-and-append: the in-process check
+    // against `expected`, then git's CAS on the ref. A CAS lost to another
+    // process reloads and, when the caller was appending at the tail,
+    // re-appends at the new tail (the intent "append after everything"
+    // is preserved; the seq moves).
     @effects(is: { journal_io })
     fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult {
         let rev = self.rows.len();
         if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
-        let prev = self.head();
-        let d = event_digest(prev, kind, entity, body);
-        let b = std::json::Builder { };
-        b.begin_object();
-        b.int_field("seq", rev);
-        b.string_field("kind", kind);
-        b.string_field("entity", entity);
-        b.string_field("body", body);
-        b.string_field("prev", prev);
-        b.string_field("digest", d);
-        b.end_object();
-        // The durable write happens BEFORE the in-memory projection
-        // moves: a crash between them loses nothing that was promised.
-        // F.9 (dna/FRICTION.md): `write_file_append` is Unit-typed in
-        // codegen (Int per spec), so the error is caught by an
-        // error-check fn, not an `or <value>` substitute.
-        let before = self.io_errors;
-        let line = b.result() + "\n";
-        std::io::fs::write_file_append(self.path, line) or self.io_failed(err);
-        if self.io_errors > before { return AppendResult { error: "io", expected: expected, actual: rev }; }
-        self.rows.push(Event { seq: rev, kind: kind, entity: entity, body: body, prev: prev, digest: d });
-        return AppendResult { ok: true, revision: rev + 1 };
+        let mut attempt = 0;
+        while attempt < 3 {
+            let seq = self.rows.len();
+            let b = std::json::Builder { };
+            b.begin_object();
+            b.int_field("seq", seq);
+            b.string_field("kind", kind);
+            b.string_field("entity", entity);
+            b.string_field("body", body);
+            b.string_field("author", self.author);
+            b.end_object();
+            let line = b.result() + "\n";
+            let commit = self.commit_line(line, kind + " " + entity);
+            if len(commit) > 0 {
+                let old = self.head_sha;
+                let cas = run_tool("git\n-C\n" + self.repo + "\nupdate-ref\n" + self.ref_name + "\n" + commit + "\n" + old);
+                if cas.code == 0 {
+                    self.rows.push(Event { seq: seq, kind: kind, entity: entity, body: body, prev: self.head(), digest: commit });
+                    self.text = self.text + line;
+                    self.head_sha = commit;
+                    return AppendResult { ok: true, revision: seq + 1 };
+                }
+            }
+            // the ref moved under us (or the write failed): reload and retry at the tail
+            self.retries = self.retries + 1;
+            self.load();
+            attempt = attempt + 1;
+        }
+        self.io_errors = self.io_errors + 1;
+        self.last_error = "append lost the ref race three times";
+        return AppendResult { error: "io", expected: expected, actual: self.rows.len() };
+    }
+    // Build the commit for `journal.jsonl` + `line`, on top of the head.
+    // Returns the commit sha, or "" when any plumbing step failed.
+    @effects(is: { journal_io })
+    fn commit_line(line: String, message: String) -> String {
+        let tmp = self.scratch() + "/journal." + to_string(std::process::pid()) + ".tmp";
+        let idx = self.scratch() + "/index." + to_string(std::process::pid()) + ".tmp";
+        std::io::fs::write_file(tmp, self.text + line) or self.io_failed(err);
+        let blob = git_out(self.repo, "hash-object\n-w\n" + tmp);
+        if blob == "" { self.last_error = "hash-object failed"; return ""; }
+        let base = if self.head_sha == "" { "--empty" } else { self.head_sha };
+        let rt = run_tool("env\nGIT_INDEX_FILE=" + idx + "\ngit\n-C\n" + self.repo + "\nread-tree\n" + base);
+        if rt.code != 0 { self.last_error = "read-tree: " + trim_nl(rt.stderr); return ""; }
+        let ui = run_tool("env\nGIT_INDEX_FILE=" + idx + "\ngit\n-C\n" + self.repo + "\nupdate-index\n--add\n--cacheinfo\n100644," + blob + ",journal.jsonl");
+        if ui.code != 0 { self.last_error = "update-index: " + trim_nl(ui.stderr); return ""; }
+        let wt = run_tool("env\nGIT_INDEX_FILE=" + idx + "\ngit\n-C\n" + self.repo + "\nwrite-tree");
+        if wt.code != 0 { self.last_error = "write-tree: " + trim_nl(wt.stderr); return ""; }
+        let tree = trim_nl(wt.stdout);
+        let parent = if self.head_sha == "" { "" } else { "\n-p\n" + self.head_sha };
+        let ct = run_tool("git\n-C\n" + self.repo + "\n-c\nuser.name=" + self.author + "\n-c\nuser.email=" + self.author + "@dna\ncommit-tree\n" + tree + parent + "\n-m\n" + message);
+        if ct.code != 0 { self.last_error = "commit-tree: " + trim_nl(ct.stderr); return ""; }
+        return trim_nl(ct.stdout);
     }
     fn io_failed(e: IoError) {
         self.io_errors = self.io_errors + 1;
-        self.last_io_error = e.kind;
+        self.last_error = e.kind;
     }
-    fn read(i: Int) -> Event { return self.rows.get(i) or Event { }; }
-    fn verify_chain() -> Bool { return chain_ok(self.rows); }
+}
+
+// ---- receipts: content-addressed evidence ----------------------------
+
+interface Receipts {
+    fn store(text: String) -> String; // the sha256 hex digest the text is filed under
+    fn read(digest: String) -> String; // "" when absent
+    fn kind() -> String;
+}
+
+// Under a directory, one file per digest.
+locus FileReceipts {
+    params { dir: String = ".hale/dna/evidence"; stored: Int = 0; }
+    fn kind() -> String { return "file"; }
+    fn store(text: String) -> String {
+        let digest = hex(std::crypto::sha256(std::bytes::from_string(text)));
+        std::io::fs::mkdir(self.dir) or discard;
+        std::io::fs::write_file(self.dir + "/" + digest + ".txt", text) or discard;
+        self.stored = self.stored + 1;
+        return digest;
+    }
+    fn read(digest: String) -> String { return std::io::fs::read_file(self.dir + "/" + digest + ".txt") or ""; }
+}
+
+// As blobs in the repository, `refs/dna/receipts/<digest>`: fetched
+// and pushed with the record, never garbage-collected.
+locus GitReceipts {
+    params { repo: String = "."; stored: Int = 0; }
+    fn kind() -> String { return "git"; }
+    @effects(is: { journal_io })
+    fn store(text: String) -> String {
+        let digest = hex(std::crypto::sha256(std::bytes::from_string(text)));
+        if git_out(self.repo, "rev-parse\n-q\n--verify\nrefs/dna/receipts/" + digest) != "" { return digest; }
+        std::io::fs::mkdir(self.repo + "/.hale") or discard;
+        std::io::fs::mkdir(self.repo + "/.hale/dna") or discard;
+        let tmp = self.repo + "/.hale/dna/receipt." + to_string(std::process::pid()) + ".tmp";
+        std::io::fs::write_file(tmp, text) or discard;
+        let blob = git_out(self.repo, "hash-object\n-w\n" + tmp);
+        if blob == "" { return ""; }
+        let r = run_tool("git\n-C\n" + self.repo + "\nupdate-ref\nrefs/dna/receipts/" + digest + "\n" + blob);
+        if r.code != 0 { return ""; }
+        self.stored = self.stored + 1;
+        return digest;
+    }
+    fn read(digest: String) -> String {
+        let r = run_tool("git\n-C\n" + self.repo + "\ncat-file\n-p\nrefs/dna/receipts/" + digest);
+        if r.code != 0 { return ""; }
+        return r.stdout;
+    }
 }
 
 // ---- coordination: leases with fencing tokens -----------------------
@@ -227,6 +376,69 @@ locus MemLeases {
         return "";
     }
     fn current(key: String) -> Lease { return self.rows.get(key) or Lease { }; }
+}
+
+// Leases as blobs under `refs/dna/lease/<key>` ("holder\ntoken\nexpires\npresent"),
+// compare-and-swapped on the ref: two organisms or hosts on one
+// repository fence each other through git itself.
+locus GitLeases {
+    params { repo: String = "."; races: Int = 0; }
+    fn ref_of(key: String) -> String { return "refs/dna/lease/" + ref_safe(key); }
+    fn parse(key: String, text: String) -> Lease {
+        if len(text) == 0 { return Lease { key: key }; }
+        let a = std::str::index_of(text, "\n");
+        let holder = text[0..a];
+        let rest = text[(a + 1)..len(text)];
+        let b = std::str::index_of(rest, "\n");
+        let token = std::str::parse_int(rest[0..b]) or 0;
+        let rest2 = rest[(b + 1)..len(rest)];
+        let c = std::str::index_of(rest2, "\n");
+        let expires = std::str::parse_int(rest2[0..c]) or 0;
+        let present = rest2[(c + 1)..len(rest2)] == "1";
+        return Lease { key: key, holder: holder, token: token, expires: expires, present: present };
+    }
+    fn read(key: String) -> Lease {
+        let r = run_tool("git\n-C\n" + self.repo + "\ncat-file\n-p\n" + self.ref_of(key));
+        if r.code != 0 { return Lease { key: key }; }
+        return self.parse(key, r.stdout);
+    }
+    @effects(is: { journal_io })
+    fn write(key: String, l: Lease) -> Bool {
+        let old = git_out(self.repo, "rev-parse\n-q\n--verify\n" + self.ref_of(key));
+        std::io::fs::mkdir(self.repo + "/.hale") or discard;
+        std::io::fs::mkdir(self.repo + "/.hale/dna") or discard;
+        let tmp = self.repo + "/.hale/dna/lease." + to_string(std::process::pid()) + ".tmp";
+        std::io::fs::write_file(tmp, l.holder + "\n" + to_string(l.token) + "\n" + to_string(l.expires) + "\n" + (if l.present { "1" } else { "0" })) or discard;
+        let blob = git_out(self.repo, "hash-object\n-w\n" + tmp);
+        if blob == "" { return false; }
+        let r = run_tool("git\n-C\n" + self.repo + "\nupdate-ref\n" + self.ref_of(key) + "\n" + blob + "\n" + old);
+        if r.code != 0 { self.races = self.races + 1; return false; }
+        return true;
+    }
+    fn acquire(key: String, holder: String, now: Int, ttl: Int) -> Lease {
+        let cur = self.read(key);
+        if cur.present && cur.expires > now && cur.holder != holder {
+            return Lease { key: key, holder: cur.holder, token: 0, expires: cur.expires, present: false };
+        }
+        let l = Lease { key: key, holder: holder, token: cur.token + 1, expires: now + ttl, present: true };
+        if !self.write(key, l) {
+            let again = self.read(key);
+            return Lease { key: key, holder: again.holder, token: 0, expires: again.expires, present: false };
+        }
+        return l;
+    }
+    fn complete(key: String, token: Int, now: Int) -> Bool {
+        let cur = self.read(key);
+        if !cur.present { return false; }
+        if cur.token != token { return false; }
+        return self.write(key, Lease { key: key, holder: cur.holder, token: cur.token, expires: 0, present: false });
+    }
+    fn holder_of(key: String) -> String {
+        let cur = self.read(key);
+        if cur.present { return cur.holder; }
+        return "";
+    }
+    fn current(key: String) -> Lease { return self.read(key); }
 }
 
 // True when `token` is the live fencing token for `key` at `now`.

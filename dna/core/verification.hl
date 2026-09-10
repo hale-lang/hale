@@ -4,10 +4,10 @@
 // `hale fmt --check`, `hale check --json --dump-topology`, `hale
 // verify --json`, `hale test`, `hale model diff <base> <candidate>`
 // and, where the project has a recording, `hale replay --feed` — and
-// keeps each result as CONTENT-ADDRESSED evidence: the output is
-// written under `evidence_dir/<sha256>.txt` and an `evidence.<step>`
-// event is appended to the Journal on the candidate commit, carrying
-// the exit code and the output digest. The Evidence a Review reads
+// keeps each result as a CONTENT-ADDRESSED receipt (`Receipts`: a file
+// per digest, or a blob under `refs/dna/receipts/<sha256>` in the
+// repository) and an `evidence.<step>` event on the candidate commit
+// carrying the exit code and the digest. The Evidence a Review reads
 // is therefore a set of facts with receipts, never a self-report.
 //
 // `assess_structure` turns the semantic diff into the magnitude
@@ -24,8 +24,8 @@ type VerificationReport {
     magnitude: Magnitude = Magnitude { };
     steps: String = ""; // "fmt=0 check=0 verify=0 test=0 diff=0"
     candidate_topology: String = ""; // path
-    diff_json: String = ""; // path ("" when there was no candidate artifact)
-    diff_text: String = "";
+    diff_json: String = ""; // receipt digest ("" when there was no candidate artifact)
+    diff_text: String = ""; // receipt digest
 }
 
 fn count_declarations(diff: String, kind: String) -> Int {
@@ -140,7 +140,8 @@ fn magnitude_json(m: Magnitude) -> String {
 locus HaleVerification {
     params {
         hale_bin: String = ""; // "" = HALE_BIN when set, else `hale` on PATH
-        evidence_dir: String = ".hale/dna/evidence";
+        receipts: Receipts = FileReceipts { };
+        scratch: String = ".hale/dna/scratch"; // where the toolchain's inputs and outputs land before they are receipts
         recording: String = ""; // a LOTUS_OBS_RECORD recording; "" = no replay step
         repo: String = "."; // the repository the worktrees belong to
         seed: String = "."; // the genome's seed, relative to the worktree
@@ -158,8 +159,7 @@ locus HaleVerification {
     @unbounded
     fn record(j: Journal, candidate: String, mutation_id: String, step: String, r: RunResult) -> Int {
         let text = r.stdout + r.stderr;
-        let digest = hex(std::crypto::sha256(std::bytes::from_string(text)));
-        std::io::fs::write_file(self.evidence_dir + "/" + digest + ".txt", text) or discard;
+        let digest = self.receipts.store(text);
         let b = std::json::Builder { };
         b.begin_object();
         b.string_field("mutation_id", mutation_id);
@@ -190,13 +190,13 @@ locus HaleVerification {
     @effects(is: { toolchain_run })
     fn verify(j: Journal, m: Mutation, base_topology: String) -> VerificationReport {
         self.runs = self.runs + 1;
-        std::io::fs::mkdir(self.evidence_dir) or discard;
+        std::io::fs::mkdir(self.scratch) or discard;
         let wt = self.seed_in(m.worktree);
         let cand = m.candidate_commit;
-        let topo = self.evidence_dir + "/" + m.id + ".candidate.topology.json";
+        let topo = self.scratch + "/" + m.id + ".candidate.topology.json";
         let mut base = base_topology;
         if len(base) == 0 {
-            base = self.evidence_dir + "/" + m.id + ".base.topology.json";
+            base = self.scratch + "/" + m.id + ".base.topology.json";
             let cut = self.record(j, cand, m.id, "base", run_tool(self.hale_bin + "\ncheck\n" + self.seed_in(self.repo) + "\n--dump-topology=" + base));
         }
         let fmt = self.record(j, cand, m.id, "fmt", run_tool(self.hale_bin + "\nfmt\n--check\n" + wt));
@@ -226,11 +226,11 @@ locus HaleVerification {
             let dj = run_tool(self.hale_bin + "\nmodel\ndiff\n" + base + "\n" + topo + "\n--json");
             diff = self.record(j, cand, m.id, "diff", dj);
             if diff == 0 {
-                diff_json = self.evidence_dir + "/" + m.id + ".diff.json";
-                std::io::fs::write_file(diff_json, dj.stdout) or discard;
+                // the diff documents are receipts too: the review reads
+                // them by digest, from any clone that has the record
+                diff_json = self.receipts.store(dj.stdout);
                 let dt = run_tool(self.hale_bin + "\nmodel\ndiff\n" + base + "\n" + topo + "\n--text");
-                diff_text = self.evidence_dir + "/" + m.id + ".diff.txt";
-                std::io::fs::write_file(diff_text, dt.stdout) or discard;
+                diff_text = self.receipts.store(dt.stdout);
                 shape = std::json::find_string_field(std::json::find_field_raw(dj.stdout, "b"), "shape_hash");
                 mag = assess_structure(dj.stdout, self.lineage_applied(j));
                 let x = j.append(j.revision(), "evidence.magnitude", cand, magnitude_json(mag));

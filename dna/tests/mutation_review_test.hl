@@ -8,7 +8,7 @@
 // candidate commit. A verdict naming another digest is refused by the
 // Review itself; a maintainer's verdict naming the candidate settles
 // it, and both answers are Journal events. A second Dna born over the
-// same file Journal re-births the still-pending Review from it.
+// same record (the git branch) re-births the still-pending Review from it.
 
 import "../core" as dna;
 
@@ -50,15 +50,14 @@ main locus App {
         std::test::assert_eq_int(c0.code, 0, "base commit: " + c0.stderr);
         let cut = sh(toolchain() + "\ncheck\n" + repo + "\n--dump-topology=" + repo + "/.hale/dna/baseline.topology");
         std::test::assert_eq_int(cut.code, 0, "baseline: " + cut.stderr);
-        let journal_path = repo + "/.hale/dna/journal.jsonl";
 
         self.dna = dna::Dna {
-            journal: dna::FileJournal { path: journal_path },
+            journal: dna::GitJournal { repo: repo },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees", base_exec_digest: "exec:base" },
                 repo: dna::LocalGit { repo: repo }
             },
-            verification: dna::HaleVerification { hale_bin: toolchain(), evidence_dir: repo + "/.hale/dna/evidence", repo: repo },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
             editor: dna::SourceEditor {
                 name: "editor",
                 models: dna::ModelRouter {
@@ -127,7 +126,7 @@ main locus App {
         // ---- 4. a second mutation stays pending; a new Dna re-births it ----
         let out2 = self.dna.mutate("t2", "feature", "again", "main.hl", 200);
         std::test::assert_eq_str(out2, "m2: review", out2);
-        let second = dna::Dna { journal: dna::FileJournal { path: journal_path } };
+        let second = dna::Dna { journal: dna::GitJournal { repo: repo } };
         std::test::assert_eq_int(second.rehydrated, 1, "only the pending Review is re-born (m1 settled)");
         std::test::assert_eq_int(second.reviews_open, 1, "and it is a live child");
         std::test::assert(std::str::contains(second.status(), "\"rehydrated\": 1"), second.status());

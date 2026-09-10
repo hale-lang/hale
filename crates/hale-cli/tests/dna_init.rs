@@ -46,8 +46,10 @@ fn pipeline_app(tag: &str) -> PathBuf {
 }
 
 fn journal_rows(root: &Path) -> Vec<serde_json::Value> {
-    std::fs::read_to_string(root.join(".hale/dna/journal.jsonl"))
-        .unwrap()
+    // the record is the branch refs/dna/journal; its tree holds the events
+    let out = std::process::Command::new("git").args(["-C", &root.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .to_string()
         .lines()
         .filter(|l| !l.is_empty())
         .map(|l| serde_json::from_str(l).expect("journal line is JSON"))
@@ -66,7 +68,6 @@ fn init_attaches_the_dna_and_the_application_still_checks_builds_and_runs() {
         "dna/assembly.hl",
         "dna_constitution.hl",
         "dna/purpose.hl",
-        ".hale/dna/journal.jsonl",
         ".hale/dna/baseline.topology",
         "hale.lock",
     ] {

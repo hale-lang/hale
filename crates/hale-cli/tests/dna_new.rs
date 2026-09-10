@@ -27,7 +27,7 @@ fn new_makes_a_governed_application_that_checks_builds_runs_and_tests() {
     let (ok, out) = hale(&["dna", "new", "demo-app"], &d);
     assert!(ok, "{out}");
     let app = d.join("demo-app");
-    for f in ["main.hl", "tests/main_test.hl", "hale.toml", "hale.lock", ".gitignore", "dna/assembly.hl", "dna_constitution.hl", "dna/purpose.hl", "vendor/dna/topics.hl", ".hale/dna/journal.jsonl"] {
+    for f in ["main.hl", "tests/main_test.hl", "hale.toml", "hale.lock", ".gitignore", "dna/assembly.hl", "dna_constitution.hl", "dna/purpose.hl", "vendor/dna/topics.hl", ".hale/dna/baseline.topology"] {
         assert!(app.join(f).exists(), "{f}: {out}");
     }
     let main = std::fs::read_to_string(app.join("main.hl")).unwrap();

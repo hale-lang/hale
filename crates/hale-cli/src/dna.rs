@@ -22,7 +22,7 @@
 //!   dna/assembly.hl            project-owned: the Genome constructor (editable)
 //!   <app>/dna_constitution.hl  project-owned: groups + `constitution Project` (in the app's seed)
 //!   dna/purpose.hl             project-owned: the declared purpose (ratified by the first Review)
-//!   .hale/dna/journal.jsonl    the Journal, seeded from the topology artifact
+//!   refs/dna/journal           the record, seeded from the topology artifact
 //!   .hale/dna/baseline.topology the artifact it was seeded from
 //!   hale.toml                  gains [claims] base = "Project" + [environments.local]
 //!   <app>/main.hl              gains the imports, the `genome` param, `adopt Project`,
@@ -39,7 +39,9 @@ use std::process::{Command, ExitCode};
 
 use serde_json::Value;
 
-const JOURNAL_REL: &str = ".hale/dna/journal.jsonl";
+/// The record (GH #566 F1): one commit per event on this ref, the events as
+/// `journal.jsonl` in its tree, receipts as blobs under `refs/dna/receipts/`.
+const RECORD_REF: &str = "refs/dna/journal";
 const BASELINE_REL: &str = ".hale/dna/baseline.topology";
 const VERDICT_SOCK_REL: &str = ".hale/dna/hale-dna.review.verdict.sock";
 const INTENT_SOCK_REL: &str = ".hale/dna/hale-dna.intent.offered.sock";
@@ -225,6 +227,10 @@ fn locate(app_dir: &Path) -> Result<App, String> {
 fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     let app = locate(app_dir)?;
     let mut out: Vec<String> = Vec::new();
+    // 0. the record is a branch, so the project is a repository
+    if ensure_repo(&app.root)? {
+        out.push(format!("git init {} (the record lives on {RECORD_REF})", app.root.display()));
+    }
     let created = |out: &mut Vec<String>, p: &Path, content: &str| -> Result<bool, String> {
         if p.exists() {
             out.push(format!("kept    {} (already exists)", p.display()));
@@ -320,13 +326,12 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
     } else {
         out.push(format!("kept    {} (declares environments already)", manifest.display()));
     }
-    // 7. the Journal, seeded from the artifact
-    let journal = app.root.join(JOURNAL_REL);
-    if journal.exists() {
-        out.push(format!("kept    {} (a Journal exists; not reseeded)", journal.display()));
+    // 7. the record, seeded from the artifact
+    if record_head(&app.root).is_some() {
+        out.push(format!("kept    {RECORD_REF} (a record exists; not reseeded)"));
     } else {
-        let n = seed_journal(&journal, &app, &art, &raw, &purpose_digest)?;
-        out.push(format!("seeded  {} ({n} event(s): application.attached, structure.observed, responsibility.proposed, review.requested)", journal.display()));
+        let n = seed_journal(&app.root, &app, &art, &raw, &purpose_digest)?;
+        out.push(format!("seeded  {RECORD_REF} ({n} event(s): application.attached, structure.observed, responsibility.proposed, review.requested)"));
     }
     // 8. .gitignore hygiene
     let gi = app.root.join(".gitignore");
@@ -601,7 +606,7 @@ fn run_organism(args: &[String]) -> ExitCode {
         let _ = o.wait();
     }
     write_status(&root, &status_path);
-    eprintln!("hale dna run: organism exited ({code}); the Journal at {} is the record", root.join(JOURNAL_REL).display());
+    eprintln!("hale dna run: organism exited ({code}); {} in {} is the record", RECORD_REF, root.display());
     ExitCode::from(code.clamp(0, 255) as u8)
 }
 
@@ -738,15 +743,92 @@ fn base_of(root: &Path, id: &str) -> String {
 /// Append one event to the Journal from the host — only while the
 /// organism is NOT running (the Journal has one writer at a time; the
 /// organism's in-memory projection would go stale otherwise).
+fn git(root: &Path, args: &[&str]) -> Result<String, String> {
+    let out = Command::new("git").arg("-C").arg(root).args(args).output().map_err(|e| format!("git: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim_end_matches('\n').to_string())
+}
+
+/// The record lives in the repository; a project without one gets one.
+/// True when this call created it.
+fn ensure_repo(root: &Path) -> Result<bool, String> {
+    if git(root, &["rev-parse", "--git-dir"]).is_ok() {
+        return Ok(false);
+    }
+    git(root, &["init", "-q", "-b", "main"]).map(|_| true)
+}
+
+fn record_head(root: &Path) -> Option<String> {
+    git(root, &["rev-parse", "-q", "--verify", RECORD_REF]).ok().filter(|s| !s.is_empty())
+}
+
+/// Append one event to the record: one commit on `refs/dna/journal`,
+/// compare-and-swapped on the ref, so the organism, the host and a CLI in
+/// another clone never lose each other's events. The author is git's
+/// identity for the user running this (a human's verdict is theirs).
 fn append_journal(root: &Path, kind: &str, entity: &str, body: &str) -> Result<(), String> {
-    let rows = read_journal(root)?;
-    let prev = rows.last().map(|r| r.digest.clone()).unwrap_or_else(|| "genesis".into());
-    let seq = rows.len() as u64;
-    let digest = hex(&openssl::sha::sha256(format!("{}|{}|{}|{}", prev, kind, entity, body).as_bytes()));
-    let line = serde_json::json!({"seq": seq, "kind": kind, "entity": entity, "body": body, "prev": prev, "digest": digest}).to_string();
-    use std::io::Write;
-    let mut f = fs::OpenOptions::new().append(true).create(true).open(root.join(JOURNAL_REL)).map_err(|e| e.to_string())?;
-    f.write_all(format!("{line}\n").as_bytes()).map_err(|e| e.to_string())
+    let dna_dir = root.join(".hale/dna");
+    fs::create_dir_all(&dna_dir).map_err(|e| e.to_string())?;
+    let pid = std::process::id();
+    let tmp = dna_dir.join(format!("journal.host.{pid}.tmp"));
+    let idx = dna_dir.join(format!("index.host.{pid}.tmp"));
+    let identity: Vec<String> = if git(root, &["config", "user.name"]).map(|n| n.is_empty()).unwrap_or(true) {
+        vec!["-c".into(), "user.name=host".into(), "-c".into(), "user.email=host@dna".into()]
+    } else {
+        Vec::new()
+    };
+    for _ in 0..3 {
+        let head = record_head(root);
+        let text = match &head {
+            Some(_) => git(root, &["show", &format!("{RECORD_REF}:journal.jsonl")])? + "\n",
+            None => String::new(),
+        };
+        let seq = text.lines().filter(|l| !l.trim().is_empty()).count();
+        let line = serde_json::json!({"seq": seq, "kind": kind, "entity": entity, "body": body, "author": git(root, &["config", "user.name"]).unwrap_or_else(|_| "host".into())}).to_string();
+        fs::write(&tmp, format!("{text}{line}\n")).map_err(|e| e.to_string())?;
+        let blob = git(root, &["hash-object", "-w", &tmp.to_string_lossy()])?;
+        let _ = fs::remove_file(&idx);
+        let with_index = |args: &[&str]| -> Result<String, String> {
+            let out = Command::new("git").arg("-C").arg(root).env("GIT_INDEX_FILE", &idx).args(args).output().map_err(|e| format!("git: {e}"))?;
+            if !out.status.success() {
+                return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+            }
+            Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        };
+        match &head {
+            Some(h) => with_index(&["read-tree", h])?,
+            None => with_index(&["read-tree", "--empty"])?,
+        };
+        with_index(&["update-index", "--add", "--cacheinfo", &format!("100644,{blob},journal.jsonl")])?;
+        let tree = with_index(&["write-tree"])?;
+        let mut ct: Vec<String> = identity.clone();
+        ct.extend(["commit-tree".into(), tree]);
+        if let Some(h) = &head {
+            ct.extend(["-p".into(), h.clone()]);
+        }
+        ct.extend(["-m".into(), format!("{kind} {entity}")]);
+        let ct_args: Vec<&str> = ct.iter().map(|s| s.as_str()).collect();
+        let commit = git(root, &ct_args)?;
+        let old = head.clone().unwrap_or_default();
+        if git(root, &["update-ref", RECORD_REF, &commit, &old]).is_ok() {
+            let _ = fs::remove_file(&tmp);
+            let _ = fs::remove_file(&idx);
+            return Ok(());
+        }
+        // the ref moved under us: re-read and re-append at the new tail
+    }
+    Err("append lost the record's ref race three times".into())
+}
+
+/// A receipt (a verification step's output, a diff document), by digest.
+fn receipt_read(root: &Path, digest: &str) -> Option<String> {
+    let out = Command::new("git").arg("-C").arg(root).args(["cat-file", "-p", &format!("refs/dna/receipts/{digest}")]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
 /// Re-project the Journal into `status.json` (atomically: write beside,
@@ -778,34 +860,30 @@ struct Row {
 }
 
 fn read_journal(root: &Path) -> Result<Vec<Row>, String> {
-    let p = root.join(JOURNAL_REL);
-    let text = fs::read_to_string(&p).map_err(|e| format!("no Journal at {}: {e} (run `hale dna init`)", p.display()))?;
+    let Some(_) = record_head(root) else {
+        return Err(format!("no record at {RECORD_REF} in {} (run `hale dna init`)", root.display()));
+    };
+    let text = git(root, &["show", &format!("{RECORD_REF}:journal.jsonl")])?;
+    let shas = git(root, &["rev-list", "--reverse", RECORD_REF])?;
+    let shas: Vec<&str> = shas.lines().collect();
     let mut rows = Vec::new();
-    for (i, line) in text.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let v: Value = serde_json::from_str(line).map_err(|e| format!("{}:{}: not JSON: {e}", p.display(), i + 1))?;
+    let mut prev = "genesis".to_string();
+    for (i, line) in text.lines().filter(|l| !l.trim().is_empty()).enumerate() {
+        let v: Value = serde_json::from_str(line).map_err(|e| format!("{RECORD_REF}:journal.jsonl:{}: not JSON: {e}", i + 1))?;
         let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
-        rows.push(Row { seq: v["seq"].as_u64().unwrap_or(i as u64), kind: s("kind"), entity: s("entity"), body: s("body"), prev: s("prev"), digest: s("digest") });
+        let digest = shas.get(i).map(|x| x.to_string()).unwrap_or_default();
+        rows.push(Row { seq: v["seq"].as_u64().unwrap_or(i as u64), kind: s("kind"), entity: s("entity"), body: s("body"), prev: prev.clone(), digest: digest.clone() });
+        prev = digest;
     }
     Ok(rows)
 }
 
-/// The chain, verified exactly as `FileJournal.verify_chain` does.
-fn chain_ok(rows: &[Row]) -> bool {
-    let mut prev = "genesis".to_string();
-    for r in rows {
-        if r.prev != prev {
-            return false;
-        }
-        let d = hex(&openssl::sha::sha256(format!("{}|{}|{}|{}", prev, r.kind, r.entity, r.body).as_bytes()));
-        if d != r.digest {
-            return false;
-        }
-        prev = r.digest.clone();
+/// The chain is git's: the ref's commit count is the event count.
+fn chain_ok(root: &Path, rows: &[Row]) -> bool {
+    match git(root, &["rev-list", "--count", RECORD_REF]) {
+        Ok(n) => n.trim().parse::<usize>().map(|c| c == rows.len()).unwrap_or(false),
+        Err(_) => rows.is_empty(),
     }
-    true
 }
 
 fn membrane_up(root: &Path) -> bool {
@@ -944,7 +1022,7 @@ fn status_projection(root: &Path) -> Result<Value, String> {
     let build_digest = crate::sign::sha256_file(&bin).ok();
     Ok(serde_json::json!({
         "organism": if membrane_up(root) { "running (membrane bound)" } else { "not running — reading the Journal" },
-        "journal": {"path": JOURNAL_REL, "revision": rows.len(), "chain": if chain_ok(&rows) { "verified" } else { "BROKEN" }},
+        "journal": {"ref": RECORD_REF, "revision": rows.len(), "chain": if chain_ok(root, &rows) { "verified" } else { "BROKEN" }},
         "expression": {"attached": attached, "current": current_id, "build_digest": build_digest, "toolchain": TOOLCHAIN, "restarts": restarts, "last_restart_request": last_restart_request, "last_observed": last_observed},
         "intents": {"offered": intents_offered, "refused": intents_refused},
         "tasks": tasks.values().cloned().collect::<Vec<_>>(),
@@ -1269,13 +1347,13 @@ fn render_review(root: &Path, r: &Value, iris: bool) -> Result<Vec<String>, Stri
     out.push(String::new());
     out.push("semantic diff (hale model diff, baseline .. candidate):".into());
     let diff_text = s(&r["diff_text"]);
-    match fs::read_to_string(root.join(&diff_text)) {
-        Ok(t) => {
+    match receipt_read(root, &diff_text) {
+        Some(t) => {
             for l in t.lines() {
                 out.push(format!("  {l}"));
             }
         }
-        Err(e) => out.push(format!("  (no semantic diff: {diff_text}: {e})")),
+        None => out.push(format!("  (no semantic diff receipt {diff_text})")),
     }
     // evidence: one row per step, with its receipt
     out.push(String::new());
@@ -1293,7 +1371,7 @@ fn render_review(root: &Path, r: &Value, iris: bool) -> Result<Vec<String>, Stri
             b["bytes"]
         ));
     }
-    out.push(format!("  receipts under {}", root.join(".hale/dna/evidence").display()));
+    out.push("  receipts: refs/dna/receipts/<digest> (git cat-file -p)".to_string());
     out.push(String::new());
     out.push(format!(
         "decide: hale dna review {id} approve|revise|reject|abstain [--as <you>] [--comment <c>] [--digest {}]",
@@ -1306,10 +1384,14 @@ fn render_review(root: &Path, r: &Value, iris: bool) -> Result<Vec<String>, Stri
         }
         let me = std::env::current_exe().map_err(|e| e.to_string())?;
         let status = root.join(".hale/dna/status.json");
+        let doc = receipt_read(root, &diff_json).ok_or_else(|| format!("--iris: no diff receipt {diff_json}"))?;
+        let doc_path = root.join(".hale/dna/scratch").join(format!("review-{id}.diff.json"));
+        fs::create_dir_all(doc_path.parent().unwrap()).map_err(|e| e.to_string())?;
+        fs::write(&doc_path, doc).map_err(|e| e.to_string())?;
         let mut c = Command::new(&me);
         c.arg("iris")
             .arg("--diff")
-            .arg(root.join(&diff_json))
+            .arg(&doc_path)
             .arg("--membrane")
             .arg(root.join(".hale/dna"))
             .arg("--organism")
@@ -1338,7 +1420,7 @@ fn history(args: &[String]) -> Result<Vec<String>, String> {
     }
     let (root, _) = project(&dir)?;
     let rows = read_journal(&root)?;
-    let chain = if chain_ok(&rows) { "verified" } else { "BROKEN" };
+    let chain = if chain_ok(&root, &rows) { "verified" } else { "BROKEN" };
     let selected: Vec<&Row> = match &entity {
         None => rows.iter().collect(),
         Some(e) => {
@@ -1368,7 +1450,7 @@ fn history(args: &[String]) -> Result<Vec<String>, String> {
             rows.iter().filter(|r| ids.iter().any(|id| mentions(r, id))).collect()
         }
     };
-    let mut out = vec![format!("journal {} — {} event(s), chain {}", root.join(JOURNAL_REL).display(), rows.len(), chain)];
+    let mut out = vec![format!("record {} — {} event(s), chain {}", RECORD_REF, rows.len(), chain)];
     if let Some(e) = &entity {
         out.push(format!("history of {e}: {} event(s)", selected.len()));
     }
@@ -1388,6 +1470,7 @@ fn new_project(dir: &Path) -> Result<Vec<String>, String> {
         return Err(format!("{} exists and is not empty; `hale dna init` attaches to an existing application", dir.display()));
     }
     fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    ensure_repo(dir)?;
     let name = dir
         .canonicalize()
         .ok()
@@ -1443,7 +1526,7 @@ fn main() {{
 }}
 "#
     );
-    let gitignore = format!("# the build artifact\n/{name}\n# toolchain-managed (vendor is re-materialized; .hale holds the Journal, sockets, worktrees, evidence)\n/vendor/\n/.hale/\n");
+    let gitignore = format!("# the build artifact\n/{name}\n# toolchain-managed (vendor is re-materialized; .hale holds sockets, worktrees, scratch; the record is refs/dna/*)\n/vendor/\n/.hale/\n");
     let mut out = Vec::new();
     for (f, c) in [("hale.toml", "[deps]\n".to_string()), ("main.hl", main_hl), ("tests/main_test.hl", test_hl), (".gitignore", gitignore)] {
         let p = dir.join(f);
@@ -1518,7 +1601,10 @@ import "vendor/dna" as dna;
 locus Genome {{
     params {{
         core: dna::Dna = dna::Dna {{
-            journal: dna::FileJournal {{ path: ".hale/dna/journal.jsonl" }},
+            // The record: one commit per event on refs/dna/journal, receipts
+            // and leases as refs beside it. Every clone that fetches
+            // refs/dna/* has the whole history of what this organism did.
+            journal: dna::GitJournal {{ repo: "." }},
             // Models: hosted adapters present a credential from a sealed
             // locus (set OPENAI_API_KEY; the material never enters this
             // tree) and are not permitted backends without one; the
@@ -1546,10 +1632,11 @@ locus Genome {{
             // to the exact candidate. The editor's grant is read, edit,
             // fmt and check inside that worktree — the law says so.
             gateway: dna::MutationGateway {{
+                leases: dna::GitLeases {{ repo: "." }},
                 workspaces: dna::IsolatedWorktrees {{ repo: ".", root: ".hale/dna/worktrees" }},
                 repo: dna::LocalGit {{ repo: "." }}
             }},
-            verification: dna::HaleVerification {{ evidence_dir: ".hale/dna/evidence", repo: ".", seed: "{seed}" }},
+            verification: dna::HaleVerification {{ receipts: dna::GitReceipts {{ repo: "." }}, scratch: ".hale/dna/scratch", repo: ".", seed: "{seed}" }},
             editor: dna::SourceEditor {{
                 name: "editor",
                 models: dna::ModelRouter {{
@@ -1788,28 +1875,21 @@ fn block_close(src: &str, span_end: usize) -> Result<usize, String> {
 // the Journal, seeded from the artifact
 // ---------------------------------------------------------------
 
+/// The seed events, collected then appended to the record in order.
 struct Chain {
-    lines: Vec<String>,
-    prev: String,
+    lines: Vec<(String, String, String)>,
 }
 
 impl Chain {
     fn new() -> Self {
-        Chain { lines: Vec::new(), prev: "genesis".to_string() }
+        Chain { lines: Vec::new() }
     }
-    /// Exactly `FileJournal.append`: digest = sha256(prev|kind|entity|body).
     fn push(&mut self, kind: &str, entity: &str, body: &str) {
-        let seq = self.lines.len();
-        let d = hex(&openssl::sha::sha256(format!("{}|{}|{}|{}", self.prev, kind, entity, body).as_bytes()));
-        let line = serde_json::json!({
-            "seq": seq, "kind": kind, "entity": entity, "body": body, "prev": self.prev, "digest": d
-        });
-        self.lines.push(line.to_string());
-        self.prev = d;
+        self.lines.push((kind.to_string(), entity.to_string(), body.to_string()));
     }
 }
 
-fn seed_journal(path: &Path, app: &App, art: &Value, raw: &str, purpose_digest: &str) -> Result<usize, String> {
+fn seed_journal(root: &Path, app: &App, art: &Value, raw: &str, purpose_digest: &str) -> Result<usize, String> {
     let mut c = Chain::new();
     let s = |v: &Value| v.as_str().unwrap_or("").to_string();
     let names = |v: &Value| -> Vec<String> { v.as_array().map(|a| a.iter().map(|x| s(x)).collect()).unwrap_or_default() };
@@ -1913,12 +1993,9 @@ fn seed_journal(path: &Path, app: &App, art: &Value, raw: &str, purpose_digest: 
         })
         .to_string(),
     );
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    for (kind, entity, body) in &c.lines {
+        append_journal(root, kind, entity, body)?;
     }
-    let mut text = c.lines.join("\n");
-    text.push('\n');
-    fs::write(path, text).map_err(|e| format!("write {}: {e}", path.display()))?;
     Ok(c.lines.len())
 }
 

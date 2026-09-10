@@ -7,7 +7,7 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -98,7 +98,8 @@ fn run_hosts_the_organism_with_iris_and_the_membrane_and_holds_no_state() {
     assert!(types.iter().any(|t| t == "dna::Dna" || t == "dna::Metabolism"), "imported loci observed under their author-facing names: {types:?}");
     assert!(!types.iter().any(|t| t.starts_with("__lib_")), "no mangled locus type names in the observation: {types:?}");
     // an intent through the membrane lands in the organism's Journal
-    let before = std::fs::read_to_string(app.join(".hale/dna/journal.jsonl")).unwrap().lines().count();
+    let record = |app: &Path| -> String { Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default() };
+    let before = record(&app).lines().count();
     let body = r#"{"intent_id":"i1","outcome":"write the changelog","from":"test"}"#;
     let r = http(port, &format!("POST /ctl/intent HTTP/1.0\r\nHost: x\r\nContent-Length: {}\r\n\r\n{body}", body.len()));
     assert!(r.contains("200"), "{r}");
@@ -114,7 +115,7 @@ fn run_hosts_the_organism_with_iris_and_the_membrane_and_holds_no_state() {
     let grew = {
         let dl = Instant::now() + Duration::from_secs(15);
         loop {
-            let j = std::fs::read_to_string(app.join(".hale/dna/journal.jsonl")).unwrap_or_default();
+            let j = record(&app);
             if j.lines().count() > before && j.contains("\"task.born\"") {
                 break true;
             }
