@@ -8,6 +8,13 @@ behavior.
 
 ## Unreleased
 
+### DNA: the organization evolves (GH #566 F3)
+
+- The `organization` change class edits the organization's own seed: `Mutation.seed`, the editing position confined to it, verification of that seed with its own base artifact, the semantic diff of the organization, a Review that is the Board's. A restart request names the seed; the host answers one for `dna/org` by rebuilding and restarting the organization itself (which records `expression.restarted`), watches the window, and accounts for a crash of the new organization by resetting to the base and restarting the old one.
+- Growth from pressure: with `initiative` on (default), the `appendage_threshold`-th signal from one source proposes a growth Mutation of the organization's seed (`appendage.candidate` names it) — a candidate commit the Board decides; nothing is grown before that.
+- `hale dna board` (the Board's queue: Reviews only it can settle, proposals, the last report), `hale dna report` (`report.filed` since the previous one: proposed, reviewed, applied, retained, rolled back, rejected, escalated, pressure, proposals, model calls and cost, settlements), `hale dna pressure` and `hale dna pressure raise <source> <what>` over the membrane's fourth topic, `PressureRaised`.
+- Test: `dna_org_evolves::persistent_pressure_grows_the_organization_through_the_board` — three signals from `billing` become a candidate that adds a `billing-supervisor` position, `hale dna board` lists it as the Board's, the review's semantic diff shows `+billing: Leader`, approval applies it, the organization restarts itself (new pid, `expression.restarted` in its own name), the window retains it, the position is in the genome, and the report says so.
+
 ### DNA: the organism is an organization (GH #566 F2)
 
 - `hale dna init` generates `dna/org` — a program of its own: a `Board` (the human authority and the membrane's human side), a `Leader` (a model-backed position holding the project's grant, deciding the Reviews inside it by reading the source and semantic diffs; its verdict is a model call with evidence), the substrate `Dna`, the purpose Review, the membrane bindings, and `law.hl`, the foundational law adopted by the org (`apply_only_through_the_substrate`, the editor's confinement, the Leader reaching the genome only through the substrate, sealed credentials). **The application is not modified at all**: no imports, no `genome` param, no bindings, no law — it is observed like any Hale binary and contains none of the organization. `hale.toml` gains `[claims] no_base = true` and two environments, `local` (the application) and `org`. `dna/assembly.hl`, `dna_constitution.hl` and the graft are gone.

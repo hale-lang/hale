@@ -4,6 +4,7 @@
 //   membrane intent  '{"intent_id": "...", "outcome": "...", "from": "...", "to": "..."}'
 //   membrane verdict '{"review_id": "...", "subject_digest": "...", "verdict": "...", "reviewer": "...", "authority": "...", "comment": "..."}'
 //   membrane observed '{"mutation_id": "...", "outcome": "healthy|crashed|build_failed", "model_hash": "...", "detail": "..."}'
+//   membrane pressure '{"source": "...", "what": "...", "count": 1}'
 //
 // `hale dna` execs it with LOTUS_BUS_CONFIG routing the two topics to
 // the organism's listen sockets. The organism decides; this program
@@ -21,6 +22,7 @@ main locus Client {
         publish dna::IntentOffered;
         publish dna::ReviewVerdict;
         publish dna::ExpressionObserved;
+        publish dna::PressureRaised;
     }
     run() {
         if self.kind == "intent" {
@@ -46,8 +48,14 @@ main locus Client {
                 model_hash: std::json::find_string_field(self.body, "model_hash"),
                 detail: std::json::find_string_field(self.body, "detail")
             };
+        } else if self.kind == "pressure" {
+            dna::PressureRaised <- dna::Pressure {
+                source: std::json::find_string_field(self.body, "source"),
+                what: std::json::find_string_field(self.body, "what"),
+                count: std::json::find_int_field(self.body, "count")
+            };
         } else {
-            println("membrane: unknown kind `", self.kind, "` (intent | verdict | observed)");
+            println("membrane: unknown kind `", self.kind, "` (intent | verdict | observed | pressure)");
             return;
         }
         // let the connect-role fanout flush before the process ends

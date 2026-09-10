@@ -149,7 +149,7 @@ fn approval_applies_the_pinned_candidate_and_the_host_restarts_and_observes() {
     let count = git(&["rev-list", "--count", "HEAD"], &app);
     let still_up = up(&app) && host.try_wait().ok().flatten().is_none();
     finish(&mut host);
-    let kinds: Vec<String> = rows.iter().map(|(k, e, b)| format!("{k} {e} {}", &b[..b.len().min(60)])).collect();
+    let kinds: Vec<String> = rows.iter().map(|(k, e, b)| format!("{k} {e} {}", b.chars().take(60).collect::<String>())).collect();
     assert!(retained, "the Mutation was not retained within 120s:\n{}", kinds.join("\n"));
     assert!(has(&rows, "mutation.applied", "m1"), "{}", kinds.join("\n"));
     assert!(has(&rows, "expression.restart_requested", "m1"), "{}", kinds.join("\n"));
