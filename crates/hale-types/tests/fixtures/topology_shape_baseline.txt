@@ -5,6 +5,7 @@ crates/hale-cli/tests/dna_apply.rs#0 f2c1228edb650960
 crates/hale-cli/tests/dna_fleet.rs#0 f2c1228edb650960
 crates/hale-cli/tests/dna_github_membrane.rs#0 f2c1228edb650960
 crates/hale-cli/tests/dna_review.rs#0 f2c1228edb650960
+crates/hale-cli/tests/dna_ui.rs#0 f2c1228edb650960
 crates/hale-cli/tests/doc.rs#0 a9238ad19f21c0ec
 crates/hale-cli/tests/effects_manifest.rs#0 0a8481ef56eab005
 crates/hale-cli/tests/effects_manifest.rs#1 e91db4ab4aed156e

@@ -76,6 +76,7 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("pressure") => report(pressure(&args[1..])),
         Some("github") => report(github_cmd(&args[1..])),
         Some("fleet") => report(fleet_cmd(&args[1..])),
+        Some("ui") => ui_cmd(&args[1..]),
         Some("deploy") => report(deploy_cmd(&args[1..], false)),
         Some("rollback") => report(deploy_cmd(&args[1..], true)),
         Some("review") => report(review(&args[1..])),
@@ -112,9 +113,12 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    (`[dna] fleet = \"<name>\"` in hale.toml names the plan; `hale node <name>` runs a node)");
     eprintln!("       hale dna pressure [raise <source> <what…>]");
     eprintln!("                                    pressure raised and answered; `raise` publishes one signal on the membrane");
+    eprintln!("       hale dna ui [project] [--port N]");
+    eprintln!("                                    the DNA surface in a browser, from the record alone: the Board's queue, the Reviews");
+    eprintln!("                                    with their three views, the fleet, the history; verdicts, intent and pressure from forms");
     eprintln!("       hale dna review              the pending Reviews");
     eprintln!("       hale dna review <id> [--iris] render a Review: source diff, semantic diff, evidence (works offline)");
-    eprintln!("       hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>] [--comment <c>] [--digest <sha>]");
+    eprintln!("       hale dna review <id> approve|revise|reject|abstain [--as <reviewer>] [--authority <a>] [--comment <c>] [--digest <sha>] [--no-wait]");
     eprintln!("                                    send a verdict over the membrane; the Review decides");
     if code == 0 {
         ExitCode::SUCCESS
@@ -1403,6 +1407,55 @@ pub(crate) fn fleet_window(root: &Path, rev: &str, touched: &[String], deploy_se
     }
 }
 
+/// `hale dna ui [project] [--port N]`: the DNA surface in a browser,
+/// from the record alone (GH #566 F6) — a Hale HTTP server over the
+/// offline verbs of `hale dna`, built once into the toolchain cache
+/// beside the core, run in the project root with this toolchain.
+fn ui_cmd(args: &[String]) -> ExitCode {
+    let mut dir = PathBuf::from(".");
+    let mut port = "8790".to_string();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--port" => match it.next() {
+                Some(p) => port = p.clone(),
+                None => {
+                    eprintln!("hale dna ui: --port needs a value");
+                    return ExitCode::from(2);
+                }
+            },
+            f if f.starts_with("--") => {
+                eprintln!("hale dna ui: unknown flag `{f}`");
+                return ExitCode::from(2);
+            }
+            p => dir = PathBuf::from(p),
+        }
+    }
+    let run = || -> Result<i32, String> {
+        let (root, _) = project(&dir)?;
+        let cache = hale_iris::materialize().map_err(|e| format!("cannot materialize the toolchain cache: {e}"))?;
+        let bin = cache.join(hale_dna::UI_BIN);
+        let me = std::env::current_exe().map_err(|e| e.to_string())?;
+        if !bin.is_file() {
+            eprintln!("hale dna ui: building the surface ({})", cache.join(hale_dna::UI_SEED).display());
+            let st = Command::new(&me).arg("build").arg(cache.join(hale_dna::UI_SEED)).stdout(std::process::Stdio::null()).status().map_err(|e| e.to_string())?;
+            if !st.success() || !bin.is_file() {
+                return Err("building the DNA surface failed".into());
+            }
+        }
+        let _ = sync_record(&root);
+        let st = Command::new(&bin).arg(&port).arg(cache.join(hale_dna::UI_HTML.path)).current_dir(&root).env("HALE_BIN", &me).status().map_err(|e| format!("hale dna ui: {e}"))?;
+        Ok(st.code().unwrap_or(1))
+    };
+    match run() {
+        Ok(code) => ExitCode::from(code.clamp(0, 255) as u8),
+        Err(e) => {
+            eprintln!("hale dna ui: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
 /// `hale dna fleet`: what the fleet expresses, from the record — every
 /// instance of the plan, its node, the revision and model hash it last
 /// came up at, whether it is up, and the deploy that asked.
@@ -1984,9 +2037,11 @@ fn review(args: &[String]) -> Result<Vec<String>, String> {
     let mut comment = String::new();
     let mut digest_override: Option<String> = None;
     let mut iris = false;
+    let mut no_wait = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
+            "--no-wait" => no_wait = true,
             "--as" => reviewer = it.next().cloned().ok_or("--as needs a reviewer")?,
             "--authority" => authority = it.next().cloned().ok_or("--authority needs a value")?,
             "--comment" => comment = it.next().cloned().ok_or("--comment needs text")?,
@@ -2053,6 +2108,9 @@ fn review(args: &[String]) -> Result<Vec<String>, String> {
         // beside the organism relays it, and the Review answers in the record
         append_journal(&root, "review.verdict", &id, &body)?;
         sync_record(&root)?;
+    }
+    if no_wait {
+        return Ok(vec![format!("verdict {verdict} on {id} by {reviewer} sent {}; the Review answers in the record", if local { "over the membrane" } else { "into the record" })]);
     }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(if local { 10 } else { 60 });
     loop {
@@ -2359,12 +2417,12 @@ fn pascal(s: &str) -> String {
 
 fn purpose_hl(text: &str) -> String {
     format!(
-        r#"// dna/purpose.hl — the declared purpose (project-owned).
+        r#"// dna/org/purpose.hl — the declared purpose (project-owned).
 //
 // The first governed workflow is the baseline review: the Review
-// named `purpose` in dna/assembly.hl ratifies THIS text (its
-// subject digest is the sha256 of PURPOSE). Change the text and the
-// Review's digest together, or the verdict is refused as stale.
+// named `purpose` ratifies THIS text (its subject digest is the
+// sha256 of PURPOSE). Change the text and the Review's digest
+// together, or the verdict is refused as stale.
 
 const PURPOSE: String = "{}";
 

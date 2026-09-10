@@ -57,6 +57,20 @@ pub const MEMBRANE_CLIENT: EmbeddedFile = EmbeddedFile {
 pub const MEMBRANE_SEED: &str = "dna/membrane";
 pub const MEMBRANE_BIN: &str = "dna/membrane/membrane";
 
+/// The DNA surface (`dna/ui`, GH #566 F6): an HTTP server over the
+/// offline verbs of `hale dna`, from the record alone. `hale dna ui`
+/// builds and execs it from the toolchain cache.
+pub const UI_MAIN: EmbeddedFile = EmbeddedFile {
+    path: "dna/ui/main.hl",
+    content: include_str!("../../../dna/ui/main.hl"),
+};
+pub const UI_HTML: EmbeddedFile = EmbeddedFile {
+    path: "dna/ui/index.html",
+    content: include_str!("../../../dna/ui/index.html"),
+};
+pub const UI_SEED: &str = "dna/ui";
+pub const UI_BIN: &str = "dna/ui/ui";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,5 +95,6 @@ mod tests {
             assert!(!f.content.is_empty(), "{} is empty", f.path);
         }
         assert!(MEMBRANE_CLIENT.content.contains("main locus Client"));
+        assert!(UI_MAIN.content.contains("std::http::Server") && UI_HTML.content.contains("<title>hale dna</title>"));
     }
 }

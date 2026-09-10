@@ -1,0 +1,113 @@
+// dna/ui — `hale dna ui`: the DNA surface, from the record alone
+// (GH #566 F6).
+//
+// A small HTTP server over the offline verbs of `hale dna`. Every
+// request runs one command in the project root and returns what it
+// printed, so the page shows exactly what the CLI shows — the Board's
+// queue, the pending Reviews with their three views, the fleet, the
+// history — with or without an organization up. A verdict or an
+// intent from the page goes the way the CLI's does: onto the membrane
+// when one is bound here, into the record otherwise. Nothing here
+// reads the record itself; nothing here decides.
+//
+//   ui <port> <index.html>      (HALE_BIN names the toolchain; cwd is the project)
+
+fn hale_bin() -> String {
+    if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
+    return "hale";
+}
+
+// argv as `std::process::run` takes it: newline-separated.
+fn run_failed(e: IoError) -> std::process::ProcessOutput {
+    return std::process::ProcessOutput { code: -1, signal: 0, stdout: "", stderr: e.kind };
+}
+
+fn dna(args: String) -> String {
+    let out = std::process::run(hale_bin() + "\ndna\n" + args) or run_failed(err);
+    if out.code == 0 { return out.stdout; }
+    return out.stdout + out.stderr;
+}
+
+fn text(body: String) -> std::http::Response {
+    return std::http::Response { status: 200, content_type: "text/plain; charset=utf-8", headers: "Cache-Control: no-store", body: body };
+}
+
+// A path segment only: no separators, no flags, so a request cannot
+// name a file or a flag to the CLI.
+fn clean(s: String) -> String {
+    let mut out = "";
+    let mut p = 0;
+    let n = len(s);
+    while p < n {
+        let ch = s[p..(p + 1)];
+        if ch != "/" && ch != "\n" && ch != " " && ch != "\\" && !(p == 0 && ch == "-") { out = out + ch; }
+        p = p + 1;
+    }
+    return out;
+}
+
+locus Ui {
+    params {
+        html: String = "";
+        served: Int = 0;
+    }
+    fn handle(req: std::http::Request) -> std::http::Response {
+        self.served = self.served + 1;
+        let ctx = std::http::build_context(req);
+        if std::http::is_route(ctx, "GET", "/") {
+            let page = std::io::fs::read_file(self.html) or "<h1>hale dna ui: no page at " + self.html + "</h1>";
+            return std::http::Response { status: 200, content_type: "text/html; charset=utf-8", body: page };
+        }
+        if std::http::is_route(ctx, "GET", "/api/status") {
+            return std::http::Response { status: 200, content_type: "application/json", headers: "Cache-Control: no-store", body: dna("status\n--json") };
+        }
+        if std::http::is_route(ctx, "GET", "/api/board") { return text(dna("board")); }
+        if std::http::is_route(ctx, "GET", "/api/fleet") { return text(dna("fleet")); }
+        if std::http::is_route(ctx, "GET", "/api/pressure") { return text(dna("pressure")); }
+        if std::http::is_route(ctx, "GET", "/api/reviews") { return text(dna("review")); }
+        if std::http::is_route(ctx, "GET", "/api/review/:id") {
+            return text(dna("review\n" + clean(std::http::path_param(ctx.params, "id"))));
+        }
+        if std::http::is_route(ctx, "GET", "/api/history") { return text(dna("history")); }
+        if std::http::is_route(ctx, "GET", "/api/history/:entity") {
+            return text(dna("history\n" + clean(std::http::path_param(ctx.params, "entity"))));
+        }
+        // the forms: a verdict, an intent, a pressure signal — each is
+        // the CLI's own verb, sent and not waited for
+        if std::http::is_route(ctx, "POST", "/api/verdict") {
+            let b = req.body;
+            let id = clean(std::json::find_string_field(b, "id"));
+            let verdict = clean(std::json::find_string_field(b, "verdict"));
+            let who = clean(std::json::find_string_field(b, "as"));
+            let comment = std::json::find_string_field(b, "comment");
+            let mut args = "review\n" + id + "\n" + verdict + "\n--no-wait";
+            if len(who) > 0 { args = args + "\n--as\n" + who; }
+            if len(comment) > 0 { args = args + "\n--comment\n" + comment; }
+            return text(dna(args));
+        }
+        if std::http::is_route(ctx, "POST", "/api/ask") {
+            let b = req.body;
+            let outcome = std::json::find_string_field(b, "outcome");
+            let to = clean(std::json::find_string_field(b, "to"));
+            if len(outcome) == 0 { return std::http::Response { status: 400, body: "say what should happen" }; }
+            let mut args = "ask\n--no-wait";
+            if len(to) > 0 { args = args + "\n--to\n" + to; }
+            return text(dna(args + "\n" + outcome));
+        }
+        if std::http::is_route(ctx, "POST", "/api/pressure") {
+            let b = req.body;
+            let source = clean(std::json::find_string_field(b, "source"));
+            let what = std::json::find_string_field(b, "what");
+            if len(source) == 0 || len(what) == 0 { return std::http::Response { status: 400, body: "a source and what it saw" }; }
+            return text(dna("pressure\nraise\n" + source + "\n" + what));
+        }
+        return std::http::Response { status: 404, body: "not found" };
+    }
+}
+
+fn main() {
+    let port = std::str::parse_int(std::env::arg_or(1, "8790")) or 8790;
+    let html = std::env::arg_or(2, "index.html");
+    println("hale dna ui: http://127.0.0.1:", port, "/ (from the record; ctrl-c stops)");
+    std::http::Server { port: port, handler: Ui { html: html } };
+}
