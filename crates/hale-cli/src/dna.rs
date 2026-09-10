@@ -75,6 +75,9 @@ pub fn run(args: &[String]) -> ExitCode {
         Some("report") => report(file_report(&args[1..])),
         Some("pressure") => report(pressure(&args[1..])),
         Some("github") => report(github_cmd(&args[1..])),
+        Some("fleet") => report(fleet_cmd(&args[1..])),
+        Some("deploy") => report(deploy_cmd(&args[1..], false)),
+        Some("rollback") => report(deploy_cmd(&args[1..], true)),
         Some("review") => report(review(&args[1..])),
         Some("--help") | Some("-h") | None => usage(if args.is_empty() { 2 } else { 0 }),
         Some(other) => {
@@ -103,6 +106,10 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna report [project]    file a report from the record since the last one (report.filed)");
     eprintln!("       hale dna github sync         mirror pending Reviews to pull requests and read their reviews back as verdicts");
     eprintln!("                                    (git config dna.github owner/repo; dna.github.board logins,…; needs `gh`)");
+    eprintln!("       hale dna fleet [project]     what the fleet expresses: every instance, its node, revision, model hash, state");
+    eprintln!("       hale dna deploy <revision>   express a genome revision through the fleet's nodes (fleet.deploy)");
+    eprintln!("       hale dna rollback <mutation> express the base a Mutation was applied on, again");
+    eprintln!("                                    (`[dna] fleet = \"<name>\"` in hale.toml names the plan; `hale node <name>` runs a node)");
     eprintln!("       hale dna pressure [raise <source> <what…>]");
     eprintln!("                                    pressure raised and answered; `raise` publishes one signal on the membrane");
     eprintln!("       hale dna review              the pending Reviews");
@@ -541,6 +548,19 @@ fn run_organism(args: &[String], dev: bool) -> ExitCode {
     let mut handled: BTreeSet<u64> = BTreeSet::new();
     let mut relayed: BTreeSet<u64> = BTreeSet::new();
     let mut app_gone_reported = false;
+    // GH #566 F5: under `run`, the fleet `[dna] fleet` names is the
+    // expression — this host deploys through the record and watches the
+    // window over every instance the change touches
+    let fleet = match crate::pkg::read_dna_fleet(&root.join("hale.toml")) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("hale dna {verb}: {e}");
+            None
+        }
+    };
+    if let Some((name, plan)) = &fleet {
+        eprintln!("hale dna {verb}: the fleet `{name}` ({}) is the expression; `hale node <name>` runs its nodes", plan.display());
+    }
     let code = loop {
         match org.try_wait() {
             Ok(Some(st)) => break st.code().unwrap_or(1),
@@ -581,7 +601,51 @@ fn run_organism(args: &[String], dev: bool) -> ExitCode {
             let rollback = body.starts_with("rollback ");
             let seed_named = body.split(" seed ").nth(1).and_then(|r| r.split(' ').next()).unwrap_or("").to_string();
             if !dev && seed_named != ORG_SEED {
-                eprintln!("hale dna run: {id} requests a restart ({body}); no expression is under this host — `hale dna dev`, or a deployment gateway, expresses it");
+                let Some((fname, plan)) = &fleet else {
+                    eprintln!("hale dna run: {id} requests a restart ({body}); no expression is under this host — `hale dna dev`, a fleet (`[dna] fleet`), or a deployment gateway expresses it");
+                    continue;
+                };
+                let rollback = body.starts_with("rollback ");
+                let rev = body.split(' ').nth(1).unwrap_or("").to_string();
+                eprintln!("hale dna run: {id} requests a restart ({body}); deploying to the fleet `{fname}`");
+                let deployed = fleet_deploy(&root, fname, plan, &rev, &seed_named, &id, if rollback { "rollback" } else { "apply" });
+                let (deploy_seq, touched) = match deployed {
+                    Ok(x) => x,
+                    Err(e) => {
+                        eprintln!("hale dna run: {id}: the fleet does not deploy: {e}");
+                        if !rollback {
+                            let body = serde_json::json!({"mutation_id": id, "outcome": "build_failed", "model_hash": "", "detail": format!("fleet: {e}")}).to_string();
+                            let _ = publish_on_membrane(&root, "observed", &body);
+                        }
+                        continue;
+                    }
+                };
+                eprintln!("hale dna run: {id}: fleet.deploy {} {} touching {}", if rollback { "rollback to" } else { "apply" }, short(&rev), touched.join(" "));
+                if rollback {
+                    continue;
+                }
+                // the window over every touched instance: each comes up at
+                // the revision, then none exits for the window
+                let outcome = fleet_window(&root, &rev, &touched, deploy_seq, 180, observe_secs, &status_path);
+                let body = match outcome {
+                    FleetOutcome::Healthy(shape) => {
+                        eprintln!("hale dna run: {id}: {} instance(s) observed healthy for {observe_secs}s as {shape}", touched.len());
+                        serde_json::json!({"mutation_id": id, "outcome": "healthy", "model_hash": shape, "detail": format!("{} instance(s) up for {observe_secs}s", touched.len())}).to_string()
+                    }
+                    FleetOutcome::Crashed { instance, node, code, shape } => {
+                        eprintln!("hale dna run: {id}: instance {instance} on {node} exited ({code}) inside the observation window");
+                        let _ = append_journal(&root, "expression.crashed", &id, &format!("instance {instance} on {node} exited {code} in the observation window"));
+                        serde_json::json!({"mutation_id": id, "outcome": "crashed", "model_hash": shape, "detail": format!("instance {instance} on {node} exited {code} in the observation window")}).to_string()
+                    }
+                    FleetOutcome::NeverUp(missing) => {
+                        eprintln!("hale dna run: {id}: never expressed by {}", missing.join(" "));
+                        let _ = append_journal(&root, "expression.crashed", &id, &format!("never expressed: {}", missing.join(" ")));
+                        serde_json::json!({"mutation_id": id, "outcome": "build_failed", "model_hash": "", "detail": format!("never expressed by {}", missing.join(" "))}).to_string()
+                    }
+                };
+                if let Err(e) = publish_on_membrane(&root, "observed", &body) {
+                    eprintln!("hale dna run: could not report on the membrane: {e}");
+                }
                 continue;
             }
             eprintln!("hale dna {verb}: {id} requests a restart ({body})");
@@ -820,7 +884,7 @@ fn launch_iris(me: &Path, port: &str, current: &Path, diff_from: Option<PathBuf>
 }
 
 /// SIGTERM, a grace period, then SIGKILL; the exit is reaped.
-fn terminate(organism: &mut std::process::Child) {
+pub(crate) fn terminate(organism: &mut std::process::Child) {
     unsafe {
         libc::kill(organism.id() as i32, libc::SIGTERM);
     }
@@ -852,7 +916,7 @@ fn pending_restart(root: &Path, handled: &BTreeSet<u64>) -> Option<(u64, String,
     out
 }
 
-fn shape_of(artifact: &Path) -> String {
+pub(crate) fn shape_of(artifact: &Path) -> String {
     fs::read_to_string(artifact)
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
@@ -863,7 +927,7 @@ fn shape_of(artifact: &Path) -> String {
 /// Append one event to the Journal from the host — only while the
 /// organism is NOT running (the Journal has one writer at a time; the
 /// organism's in-memory projection would go stale otherwise).
-fn git(root: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) fn git(root: &Path, args: &[&str]) -> Result<String, String> {
     let out = Command::new("git").arg("-C").arg(root).args(args).output().map_err(|e| format!("git: {e}"))?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
@@ -892,7 +956,7 @@ fn append_journal(root: &Path, kind: &str, entity: &str, body: &str) -> Result<(
     append_journal_as(root, kind, entity, body, None)
 }
 
-fn append_journal_as(root: &Path, kind: &str, entity: &str, body: &str, author: Option<&str>) -> Result<(), String> {
+pub(crate) fn append_journal_as(root: &Path, kind: &str, entity: &str, body: &str, author: Option<&str>) -> Result<(), String> {
     let dna_dir = root.join(".hale/dna");
     fs::create_dir_all(&dna_dir).map_err(|e| e.to_string())?;
     let pid = std::process::id();
@@ -963,7 +1027,7 @@ fn receipt_read(root: &Path, digest: &str) -> Option<String> {
 const REMOTE_TRACK: &str = "refs/dna/remote/journal";
 
 /// The remote the record syncs with, when the repository has one.
-fn record_remote(root: &Path) -> Option<String> {
+pub(crate) fn record_remote(root: &Path) -> Option<String> {
     let name = git(root, &["config", "dna.remote"]).ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "origin".into());
     git(root, &["remote", "get-url", &name]).ok().map(|_| name)
 }
@@ -973,7 +1037,7 @@ fn record_remote(root: &Path) -> Option<String> {
 /// re-appended on top of the remote's head (their bodies and authors
 /// unchanged; their seq is their new position) and pushed. Receipts
 /// travel both ways by refspec. Returns a one-line summary.
-fn sync_record(root: &Path) -> Result<String, String> {
+pub(crate) fn sync_record(root: &Path) -> Result<String, String> {
     let Some(remote) = record_remote(root) else {
         return Ok("no remote: the record is local".into());
     };
@@ -1233,6 +1297,173 @@ fn pressure(args: &[String]) -> Result<Vec<String>, String> {
 }
 
 // ---------------------------------------------------------------
+// The fleet as the expression (GH #566 F5): `fleet.deploy` rows out,
+// `instance.up` / `instance.exited` rows back from the nodes
+// ---------------------------------------------------------------
+
+/// Fold `.` and `..` out of a path without touching the filesystem, so
+/// a plan's `seed` (relative to the plan) and a mutation's seed
+/// (relative to the root) compare as the same directory.
+pub(crate) fn normalize(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// The plan as it is at `rev`, parsed; `plan` is its path under `root`.
+pub(crate) fn plan_at(root: &Path, plan: &Path, rev: &str) -> Result<crate::fleet::FleetPlan, String> {
+    let rel = plan.strip_prefix(root).unwrap_or(plan).to_string_lossy().to_string();
+    let text = git(root, &["show", &format!("{rev}:{rel}")]).map_err(|e| format!("no plan {rel} at {}: {e}", short(rev)))?;
+    let p: crate::fleet::FleetPlan = serde_json::from_str(&text).map_err(|e| format!("{rel} at {}: {e}", short(rev)))?;
+    Ok(p)
+}
+
+/// The instances a change to `seed` touches: every instance a node
+/// expresses whose seed is that directory; every one when the seed is
+/// "" (an operator's deploy, a rollback of the whole genome).
+pub(crate) fn touched_by(root: &Path, plan_path: &Path, plan: &crate::fleet::FleetPlan, seed: &str) -> Vec<String> {
+    let plan_dir = plan_path.parent().unwrap_or(root);
+    let want = if seed.is_empty() { None } else { Some(normalize(&root.join(seed))) };
+    plan.instances
+        .iter()
+        .filter(|i| i.node.is_some())
+        .filter(|i| match (&want, &i.seed) {
+            (None, _) => true,
+            (Some(w), Some(s)) => &normalize(&plan_dir.join(s)) == w,
+            (Some(_), None) => false,
+        })
+        .map(|i| i.id.clone())
+        .collect()
+}
+
+/// Ask the fleet to express `rev`: the revision pushed where every node
+/// fetches from (`refs/dna/revisions/<rev>`), then one `fleet.deploy` row
+/// — plan, revision, seed, the touched instances, why. Returns the row's
+/// seq and the touched instances.
+pub(crate) fn fleet_deploy(root: &Path, fleet: &str, plan_path: &Path, rev: &str, seed: &str, entity: &str, reason: &str) -> Result<(u64, Vec<String>), String> {
+    let rev = git(root, &["rev-parse", "--verify", &format!("{rev}^{{commit}}")])?;
+    let plan = plan_at(root, plan_path, &rev)?;
+    let touched = touched_by(root, plan_path, &plan, seed);
+    if let Some(remote) = record_remote(root) {
+        git(root, &["push", "-q", "-f", &remote, &format!("{rev}:refs/dna/revisions/{rev}")])?;
+    }
+    let body = serde_json::json!({"plan": fleet, "revision": rev, "seed": seed, "touched": touched, "reason": reason}).to_string();
+    append_journal(root, "fleet.deploy", entity, &body)?;
+    let _ = sync_record(root);
+    let seq = read_journal(root)?.iter().rev().find(|r| r.kind == "fleet.deploy" && r.entity == entity).map(|r| r.seq).unwrap_or(0);
+    Ok((seq, touched))
+}
+
+pub(crate) enum FleetOutcome {
+    Healthy(String),
+    Crashed { instance: String, node: String, code: i64, shape: String },
+    NeverUp(Vec<String>),
+}
+
+/// The window over the touched instances: every one reports `instance.up`
+/// at `rev` after the deploy row (within `settle_secs`), then none reports
+/// `instance.exited` for `observe_secs`. The shape is what the instances
+/// report; a crash names the instance and its node.
+pub(crate) fn fleet_window(root: &Path, rev: &str, touched: &[String], deploy_seq: u64, settle_secs: u64, observe_secs: u64, status_path: &Path) -> FleetOutcome {
+    let settle = std::time::Instant::now() + std::time::Duration::from_secs(settle_secs);
+    let mut all_up_at: Option<std::time::Instant> = None;
+    let mut shape = String::new();
+    loop {
+        let _ = sync_record(root);
+        write_status(root, status_path);
+        let rows = read_journal(root).unwrap_or_default();
+        let after: Vec<(&Row, Value)> = rows.iter().filter(|r| r.seq > deploy_seq && r.kind.starts_with("instance.")).map(|r| (r, serde_json::from_str::<Value>(&r.body).unwrap_or(Value::Null))).collect();
+        let at_rev = |b: &Value| b["revision"].as_str() == Some(rev);
+        for (r, b) in &after {
+            if r.kind == "instance.exited" && at_rev(b) && touched.contains(&r.entity) {
+                return FleetOutcome::Crashed { instance: r.entity.clone(), node: b["node"].as_str().unwrap_or("?").to_string(), code: b["code"].as_i64().unwrap_or(-1), shape: shape.clone() };
+            }
+        }
+        let missing: Vec<String> = touched.iter().filter(|t| !after.iter().any(|(r, b)| r.kind == "instance.up" && &r.entity == *t && at_rev(b))).cloned().collect();
+        if missing.is_empty() {
+            if shape.is_empty() {
+                shape = after.iter().find(|(r, b)| r.kind == "instance.up" && at_rev(b)).and_then(|(_, b)| b["model_hash"].as_str().map(|s| s.to_string())).unwrap_or_default();
+            }
+            let since = *all_up_at.get_or_insert_with(std::time::Instant::now);
+            if since.elapsed() >= std::time::Duration::from_secs(observe_secs) {
+                return FleetOutcome::Healthy(shape);
+            }
+        } else if std::time::Instant::now() > settle {
+            return FleetOutcome::NeverUp(missing);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
+/// `hale dna fleet`: what the fleet expresses, from the record — every
+/// instance of the plan, its node, the revision and model hash it last
+/// came up at, whether it is up, and the deploy that asked.
+fn fleet_cmd(args: &[String]) -> Result<Vec<String>, String> {
+    let dir = args.first().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    let (root, _) = project(&dir)?;
+    let _ = sync_record(&root);
+    let Some((name, plan_path)) = crate::pkg::read_dna_fleet(&root.join("hale.toml"))? else {
+        return Err("no `[dna] fleet = \"<name>\"` in hale.toml: the DNA expresses no fleet here".into());
+    };
+    let plan = crate::fleet::read_plan(&plan_path).map_err(|e| e.join("\n"))?;
+    let rows = read_journal(&root)?;
+    let mut out = vec![format!("fleet {name} ({})", plan_path.strip_prefix(&root).unwrap_or(&plan_path).display())];
+    if let Some(d) = rows.iter().rev().find(|r| r.kind == "fleet.deploy") {
+        let b: Value = serde_json::from_str(&d.body).unwrap_or_default();
+        out.push(format!("last deploy: {} {} ({}) touching {} — {}", b["reason"].as_str().unwrap_or("?"), short(b["revision"].as_str().unwrap_or("")), d.entity, b["touched"].as_array().map(|a| a.len()).unwrap_or(0), b["seed"].as_str().filter(|s| !s.is_empty()).unwrap_or("the whole genome")));
+    } else {
+        out.push("no deploy yet: `hale dna deploy <revision>`".into());
+    }
+    for i in &plan.instances {
+        let last = rows.iter().rev().find(|r| r.kind.starts_with("instance.") && r.entity == i.id);
+        let line = match last {
+            None => format!("  {:<12} {:<10} never expressed", i.id, i.node.as_deref().unwrap_or("-")),
+            Some(r) => {
+                let b: Value = serde_json::from_str(&r.body).unwrap_or_default();
+                let state = if r.kind == "instance.up" { "up".to_string() } else { format!("exited {}", b["code"].as_i64().unwrap_or(-1)) };
+                format!("  {:<12} {:<10} {:<8} rev {} model {}", i.id, b["node"].as_str().unwrap_or(i.node.as_deref().unwrap_or("-")), state, short(b["revision"].as_str().unwrap_or("")), b["model_hash"].as_str().map(short).unwrap_or_default())
+            }
+        };
+        out.push(line);
+    }
+    Ok(out)
+}
+
+/// `hale dna deploy <revision>` / `hale dna rollback <mutation>`: an
+/// operator's deploy row, the same row an approval writes.
+fn deploy_cmd(args: &[String], rollback: bool) -> Result<Vec<String>, String> {
+    let verb = if rollback { "rollback" } else { "deploy" };
+    let Some(what) = args.first() else {
+        return Err(format!("usage: hale dna {verb} <{}>", if rollback { "mutation id" } else { "revision" }));
+    };
+    let (root, _) = project(Path::new("."))?;
+    let _ = sync_record(&root);
+    let Some((name, plan_path)) = crate::pkg::read_dna_fleet(&root.join("hale.toml"))? else {
+        return Err("no `[dna] fleet = \"<name>\"` in hale.toml: the DNA expresses no fleet here".into());
+    };
+    let (rev, entity, reason) = if rollback {
+        let base = base_of(&root, what);
+        if base.is_empty() {
+            return Err(format!("{what}: no Review in the record names its base"));
+        }
+        (base, what.clone(), format!("rollback {what} by operator"))
+    } else {
+        let rev = git(&root, &["rev-parse", "--verify", &format!("{what}^{{commit}}")])?;
+        (rev.clone(), short(&rev), "deploy by operator".to_string())
+    };
+    let (seq, touched) = fleet_deploy(&root, &name, &plan_path, &rev, "", &entity, &reason)?;
+    Ok(vec![format!("fleet.deploy #{seq}: {name} at {} touching {}", short(&rev), if touched.is_empty() { "no instance (none has a node)".to_string() } else { touched.join(" ") })])
+}
+
+// ---------------------------------------------------------------
 // GitHub as a membrane (GH #566 F4): a mirror of the record, never the record
 // ---------------------------------------------------------------
 
@@ -1367,14 +1598,14 @@ fn write_status(root: &Path, path: &Path) {
 // ---------------------------------------------------------------
 
 #[derive(Clone)]
-struct Row {
-    seq: u64,
-    kind: String,
-    entity: String,
-    body: String,
+pub(crate) struct Row {
+    pub(crate) seq: u64,
+    pub(crate) kind: String,
+    pub(crate) entity: String,
+    pub(crate) body: String,
 }
 
-fn read_journal(root: &Path) -> Result<Vec<Row>, String> {
+pub(crate) fn read_journal(root: &Path) -> Result<Vec<Row>, String> {
     let Some(_) = record_head(root) else {
         return Err(format!("no record at {RECORD_REF} in {} (run `hale dna init`)", root.display()));
     };
@@ -1820,7 +2051,7 @@ fn review(args: &[String]) -> Result<Vec<String>, String> {
     }
 }
 
-fn short(sha: &str) -> String {
+pub(crate) fn short(sha: &str) -> String {
     sha.chars().take(12).collect()
 }
 

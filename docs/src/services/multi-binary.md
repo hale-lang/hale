@@ -234,6 +234,19 @@ Why an *instance* rather than an application: `oms` is a program,
 `oms-0` is a process. Cardinality, witnesses, and running two copies
 of one binary all need the distinction.
 
+When the services live in the same workspace, an instance can name
+the **seed** it is built from instead of a committed artifact (schema
+1.2), and the node that runs it:
+
+```json
+{"id": "oms-0", "seed": "apps/oms", "node": "edge-1", "labels": ["oms"]}
+```
+
+`hale fleet check` cuts the artifact from the seed first, so the plan
+is checked against what the source is right now. The `node` is for
+the DNA (`hale node <name>` expresses the plan's instances on that
+machine; see the DNA chapters), and composition ignores it.
+
 Why artifacts rather than source: merging the programs would invent
 edges that no deployed route creates (an unbound topic is in-process
 by default), erase routes that exist only in config, and turn

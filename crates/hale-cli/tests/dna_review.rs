@@ -96,7 +96,7 @@ fn a_mutation_is_rendered_offline_and_decided_through_the_organism() {
         "+// tuned: the entrypoint is documented here",
         "semantic diff (hale model diff",
         "classification: source-only",
-        "evidence (fmt=0 check=0 verify=0 test=0 diff=0 rollback=0):",
+        "evidence (fmt=0 check=0 verify=0 test=0 diff=0 rollback=0 fleet=0):",
         "rollback   yes    0",
         "base       yes    0",
         "check      yes    0",

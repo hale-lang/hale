@@ -8,6 +8,14 @@ behavior.
 
 ## Unreleased
 
+### DNA: the fleet is the expression (GH #566 F5)
+
+- Fleet plan schema 1.2: an instance may name a `seed` (relative to the plan) instead of an `artifact` — composition cuts the artifact from the seed first — and the `node` that expresses it. `hale fleet check --in <dir>` checks another workspace's declared fleets; `--if-declared` makes a workspace with none a success that says so. `[dna] fleet = "<name>"` in `hale.toml` names the fleet the DNA expresses.
+- Verification runs the fleet on every candidate (`evidence.fleet`, `fleet_clean`): a change that breaks a fleet claim is `mutation.deny` with the witness in the receipt; a candidate whose diff names a plan or the manifest is re-classed `topology` (`mutation.topology`) and goes to the Board. The steps string gains `fleet=<code>`.
+- `hale node <name> [--repo <clone>] [--fleet <name>] [--tick <ms>]`: the agent that expresses a plan's instances on one machine from the record — reads the latest `fleet.deploy`, fetches the revision (`refs/dna/revisions/<rev>`), builds and restarts the instances it touches, and reports `instance.up` (node, instance, revision, model hash, build, pid) and `instance.exited` (code) in the node's name. It decides nothing.
+- Under `hale dna run` with `[dna] fleet` set, the host answers an application's restart request with a `fleet.deploy` row (revision, seed, the instances touched, reason) and watches the window over every touched instance: all up at the revision and none exited is `healthy`; one exited is `expression.crashed` naming the instance and its node, and the organization's rollback is another deploy row every node answers. `hale dna deploy <revision>`, `hale dna rollback <mutation>` write the same rows by hand; `hale dna fleet` renders what the fleet expresses.
+- Tests: `dna_fleet` (two node clones, an API with two instances; an approval redeploys both, both report one model hash, retained; killing one inside the window rolls both back to the base with `instance api-1 on edge-2 exited` in the record), `fleet_seed_instances` (schema 1.2 composition, `--in`/`--if-declared`, the refusals). Spec: `spec/dna.md` "The fleet", `spec/verification.md` schema 1.2; Book: multi-binary chapter.
+
 ### DNA: backends by role — a shell deployment gateway, GitHub as a membrane (GH #566 F4)
 
 - `Deployment` gains `rollback(base)`; `ShellDeployment { command, seed }` runs `<command> express <candidate> <seed>` on approval and `<command> rollback <base> <seed>` after a bad window or a rejection; the command owns expressing and judging, and its exit code is the observation (`expression.deployed`, then the usual `expression.observed`, `mutation.retained` / `mutation.rolled_back`) with no host asked. Test: `dna/tests/deployment_test.hl` (a scripted command: an approval expresses and retains with nothing asked of a host; a command that fails rolls the genome back and restores the base through the same command).

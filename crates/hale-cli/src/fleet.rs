@@ -40,7 +40,7 @@ pub const FLEET_PLAN_SCHEMA: &str = "1.1";
 /// Plan schemas this build reads. Equality was right when there was
 /// one; a set keeps "your plan is newer than your compiler" a real
 /// refusal without making every older plan one too.
-const READABLE_PLAN_SCHEMAS: [&str; 2] = ["1.0", "1.1"];
+const READABLE_PLAN_SCHEMAS: [&str; 3] = ["1.0", "1.1", "1.2"];
 
 /// An exact, finite deployment. Autoscaling ranges and wildcard
 /// discovery are elaborator INPUTS, not sealed-plan contents: a
@@ -145,10 +145,24 @@ pub struct InstanceSpec {
     /// witnesses, several instances of one artifact — needs the
     /// distinction.
     pub id: String,
-    /// Path to a topology artifact, relative to the plan file.
+    /// Path to a topology artifact, relative to the plan file. Empty
+    /// when `seed` names where to cut it from (schema 1.2).
+    #[serde(default)]
     pub artifact: String,
     #[serde(default)]
     pub labels: Vec<String>,
+    /// GH #566 F5 (schema 1.2): the seed this instance is built from,
+    /// relative to the plan file. With no `artifact`, composition cuts
+    /// the artifact from the seed first (`hale check --dump-topology`)
+    /// — the plan then describes the workspace's own services, and a
+    /// DNA candidate is checked as the fleet it would deploy.
+    #[serde(default)]
+    pub seed: Option<String>,
+    /// GH #566 F5 (schema 1.2): the node that expresses this instance
+    /// (`hale node <name>`). An instance with no node is expressed by
+    /// whoever runs it by hand.
+    #[serde(default)]
+    pub node: Option<String>,
     /// GH #408 Phase 7 (`attest`): path to this instance's built
     /// executable, relative to the plan file. The artifact certifies
     /// the model; this row is what lets a deployment answer for the
@@ -234,12 +248,19 @@ pub fn compose(
             ));
             continue;
         }
-        match load_artifact(&base.join(&inst.artifact), trust) {
+        let artifact = match artifact_of(base, &plan.name, inst) {
+            Ok(p) => p,
+            Err(e) => {
+                errs.push(format!("instance `{}`: {}", inst.id, e));
+                continue;
+            }
+        };
+        match load_artifact(&artifact, trust) {
             Ok((model, sha256, signed_by)) => comps.push(Component {
                 id: inst.id.clone(),
                 labels: inst.labels.clone(),
                 model,
-                path: base.join(&inst.artifact),
+                path: artifact,
                 sha256,
                 signed_by,
             }),
@@ -1379,7 +1400,40 @@ pub fn attest(plan_path: &Path) -> Result<String, Vec<String>> {
     }
 }
 
-fn read_plan(p: &Path) -> Result<FleetPlan, Vec<String>> {
+/// Where an instance's artifact is: the plan's `artifact` path, or —
+/// with a `seed` and no artifact (schema 1.2) — cut now from the seed
+/// into `.hale/fleet/<plan>/<id>.topology.json` beside the plan, so
+/// the composition reads what the seed IS at this revision. A seed
+/// that does not check is an instance with no admissible artifact.
+fn artifact_of(base: &Path, plan_name: &str, inst: &InstanceSpec) -> Result<PathBuf, String> {
+    if !inst.artifact.is_empty() {
+        return Ok(base.join(&inst.artifact));
+    }
+    let Some(seed) = inst.seed.as_deref() else {
+        return Err("no `artifact` and no `seed`: an instance names one or the other".into());
+    };
+    let out = base.join(".hale/fleet").join(plan_name).join(format!("{}.topology.json", inst.id));
+    if let Some(d) = out.parent() {
+        std::fs::create_dir_all(d).map_err(|e| format!("mkdir {}: {e}", d.display()))?;
+    }
+    let me = std::env::current_exe().map_err(|e| e.to_string())?;
+    let r = std::process::Command::new(me)
+        .arg("check")
+        .arg(base.join(seed))
+        .arg(format!("--dump-topology={}", out.display()))
+        .output()
+        .map_err(|e| format!("hale check {seed}: {e}"))?;
+    if !r.status.success() {
+        return Err(format!(
+            "seed `{seed}` does not check, so it has no artifact to compose:\n{}{}",
+            String::from_utf8_lossy(&r.stdout).trim(),
+            String::from_utf8_lossy(&r.stderr).trim()
+        ));
+    }
+    Ok(out)
+}
+
+pub fn read_plan(p: &Path) -> Result<FleetPlan, Vec<String>> {
     let src = std::fs::read_to_string(p)
         .map_err(|e| vec![format!("read {}: {}", p.display(), e)])?;
     let plan: FleetPlan = serde_json::from_str(&src)

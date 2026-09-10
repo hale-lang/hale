@@ -642,7 +642,25 @@ locus Dna {
             let x = self.journal.append(self.journal.revision(), "mutation.deny", id, "candidate does not check (" + report.steps + ")");
             return id + ": denied: candidate does not check";
         }
-        let d = self.review_mutation(m, report, self.editor.identity());
+        // GH #566 F5: a change to one service that breaks a claim the fleet
+        // makes over all of them is denied with the witness in the evidence
+        if !report.evidence.fleet_clean {
+            let x = self.journal.append(self.journal.revision(), "mutation.deny", id, "candidate breaks the fleet (" + report.steps + ")");
+            return id + ": denied: candidate breaks the fleet";
+        }
+        // a candidate that names a plan or the manifest changes the fleet's
+        // shape: it is a topology mutation whatever it was asked as
+        let mut reviewed = m;
+        if report.evidence.topology_changed && m.change_class != "topology" {
+            reviewed = Mutation {
+                id: m.id, task_id: m.task_id, base_commit: m.base_commit, worktree: m.worktree,
+                candidate_commit: m.candidate_commit, candidate_digest: m.candidate_digest,
+                change_class: "topology", seed: m.seed, rationale: m.rationale,
+                fitness_signals: m.fitness_signals, disposition: m.disposition
+            };
+            let y = self.journal.append(self.journal.revision(), "mutation.topology", id, "names a plan or the manifest: the fleet's shape changes, the Board decides");
+        }
+        let d = self.review_mutation(reviewed, report, self.editor.identity());
         return id + ": " + d;
     }
     fn mutation_failed(id: String, why: String) -> String {

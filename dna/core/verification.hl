@@ -22,7 +22,7 @@ type VerificationReport {
     candidate_shape: String = ""; // the candidate artifact's shape hash ("" when it did not check)
     evidence: Evidence = Evidence { };
     magnitude: Magnitude = Magnitude { };
-    steps: String = ""; // "fmt=0 check=0 verify=0 test=0 diff=0"
+    steps: String = ""; // "fmt=0 check=0 verify=0 test=0 diff=0 rollback=0 fleet=0"
     candidate_topology: String = ""; // path
     diff_json: String = ""; // receipt digest ("" when there was no candidate artifact)
     diff_text: String = ""; // receipt digest
@@ -120,6 +120,26 @@ fn resolve_toolchain(given: String) -> String {
     return "hale";
 }
 
+// Does a `git diff --name-only` name the fleet's shape — a plan
+// (`*.plan.json`) or the manifest (`hale.toml`)? Such a change is a
+// `topology` mutation whatever it was asked as (GH #566 F5).
+fn names_topology(names: String) -> Bool {
+    let mut line = "";
+    let mut p = 0;
+    let n = len(names);
+    while p < n {
+        let ch = names[p..(p + 1)];
+        if ch == "\n" {
+            if std::str::contains(line, ".plan.json") || line == "hale.toml" { return true; }
+            line = "";
+        } else {
+            line = line + ch;
+        }
+        p = p + 1;
+    }
+    return std::str::contains(line, ".plan.json") || line == "hale.toml";
+}
+
 fn magnitude_json(m: Magnitude) -> String {
     let b = std::json::Builder { };
     b.begin_object();
@@ -208,6 +228,15 @@ locus HaleVerification {
         let verify = self.record(j, cand, m.id, "verify", run_tool(self.hale_bin + "\nverify\n" + wt + "\n--json"));
         let tests = run_tool(self.hale_bin + "\ntest\n" + wt);
         let test = self.record(j, cand, m.id, "test", tests);
+        // the fleet (GH #566 F5): every arrangement the workspace declares,
+        // composed from the candidate's own artifacts; a workspace that
+        // declares none passes and says so
+        let fleet = self.record(j, cand, m.id, "fleet", run_tool(self.hale_bin + "\nfleet\ncheck\n--in\n" + m.worktree + "\n--if-declared"));
+        let mut topology = false;
+        if len(m.base_commit) > 0 {
+            let names = run_tool("git\n-C\n" + m.worktree + "\ndiff\n--name-only\n" + m.base_commit + "\n" + cand);
+            topology = names_topology(names.stdout);
+        }
         let mut replay_ok = false;
         if len(self.recording) > 0 {
             let rp = self.record(j, cand, m.id, "replay", run_tool(self.hale_bin + "\nreplay\n" + self.recording + "\n" + wt + "\n--feed"));
@@ -243,16 +272,16 @@ locus HaleVerification {
         // a project with no tests has no test evidence, only an exit code
         let tested = test == 0 && std::str::contains(tests.stdout, ", 0 failed");
         self.last = self.assemble(m.id, cand, shape,
-            Evidence { check_clean: check == 0, verify_clean: verify == 0, tests_pass: tested, replay_ok: replay_ok, rollback_rehearsed: rehearsed == 0 },
-            mag, fmt, check, verify, test, diff, rehearsed, if check == 0 { topo } else { "" }, diff_json, diff_text);
+            Evidence { check_clean: check == 0, verify_clean: verify == 0, tests_pass: tested, replay_ok: replay_ok, rollback_rehearsed: rehearsed == 0, fleet_clean: fleet == 0, topology_changed: topology },
+            mag, fmt, check, verify, test, diff, rehearsed, fleet, if check == 0 { topo } else { "" }, diff_json, diff_text);
         return self.last;
     }
     // One report per run; bounded by the runs a Review asks for.
     @unbounded
-    fn assemble(id: String, cand: String, shape: String, e: Evidence, mag: Magnitude, fmt: Int, check: Int, verify: Int, test: Int, diff: Int, rehearsed: Int, topo: String, diff_json: String, diff_text: String) -> VerificationReport {
+    fn assemble(id: String, cand: String, shape: String, e: Evidence, mag: Magnitude, fmt: Int, check: Int, verify: Int, test: Int, diff: Int, rehearsed: Int, fleet: Int, topo: String, diff_json: String, diff_text: String) -> VerificationReport {
         return VerificationReport {
             mutation_id: id, candidate: cand, candidate_shape: shape, evidence: e, magnitude: mag,
-            steps: "fmt=" + to_string(fmt) + " check=" + to_string(check) + " verify=" + to_string(verify) + " test=" + to_string(test) + " diff=" + to_string(diff) + " rollback=" + to_string(rehearsed),
+            steps: "fmt=" + to_string(fmt) + " check=" + to_string(check) + " verify=" + to_string(verify) + " test=" + to_string(test) + " diff=" + to_string(diff) + " rollback=" + to_string(rehearsed) + " fleet=" + to_string(fleet),
             candidate_topology: topo, diff_json: diff_json, diff_text: diff_text
         };
     }

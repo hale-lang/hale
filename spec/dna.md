@@ -69,7 +69,8 @@ Deleting it loses nothing the record holds.
 `review.settled`, `review.refused`, `expression.restart_requested`,
 `expression.deployed`, `expression.restarted`, `expression.observed`,
 `expression.crashed`, `pressure.raised`, `pressure.remeasured`,
-`appendage.proposed`, `model.called`, `github.pr`, `github.commented`. Their bodies are documented in the guide's reference
+`appendage.proposed`, `model.called`, `github.pr`, `github.commented`,
+`mutation.topology`, `fleet.deploy`, `instance.up`, `instance.exited`. Their bodies are documented in the guide's reference
 chapter; the set grows by ordinary change, and a reader that meets an
 unknown kind must keep walking.
 
@@ -196,5 +197,72 @@ The assembly names what fills each role; `hale check` sees the wiring.
   expresses and judges in the organization's own handler and no host
   is asked; without one, `expression.restart_requested` asks the host.
 - **Observation** — for a shell gateway, the command's exit; for a
-  host, the window it watches; for a fleet, F5.
+  host, the window it watches; for a fleet, what its nodes report
+  (below).
+
+## The fleet
+
+The genome's topology is the fleet plan Hale already checks
+(`spec/verification.md`, "Fleet composition"), and the DNA expresses
+one arrangement of it:
+
+- **The plan describes the workspace's own services.** Plan schema
+  1.2 lets an instance name a `seed` (relative to the plan) instead
+  of an `artifact`; composition cuts the artifact from the seed first,
+  so a candidate is checked as the fleet it would deploy. An instance
+  may name the `node` that expresses it. `[dna] fleet = "<name>"` in
+  `hale.toml` names which entry of `[fleets]` the DNA expresses.
+- **The fleet is evidence.** Verification runs `hale fleet check --in
+  <worktree> --if-declared` on every candidate (`evidence.fleet`;
+  `fleet_clean`, true when the workspace declares no fleet). A change
+  to one service that breaks a claim the fleet makes over all of them
+  is `mutation.deny` ("candidate breaks the fleet") with the witness
+  in the receipt. A candidate whose diff names a plan (`*.plan.json`)
+  or the manifest (`hale.toml`) changes the fleet's shape: it is
+  re-classed `topology` (`mutation.topology`) whatever it was asked
+  as, and `OrgPolicy` sends it to the Board.
+- **A deploy is a row.** `fleet.deploy` (entity: the Mutation, or the
+  short revision for an operator's deploy) carries the plan name, the
+  revision, the seed the change edits (`""` for the whole genome), the
+  instances touched — every instance with a node whose seed is that
+  directory — and the reason (`apply`, `rollback`, or the operator's).
+  The revision is pushed to `refs/dna/revisions/<rev>` on the record's
+  remote first, so every node can fetch it. Under `hale dna run` with
+  `[dna] fleet` set, the host answers an application's
+  `expression.restart_requested` with a deploy row; `hale dna deploy
+  <revision>` and `hale dna rollback <mutation>` write the same row by
+  hand. A rollback's row asks for the base; nothing is watched.
+- **A node expresses.** `hale node <name> [--repo <clone>] [--fleet
+  <name>] [--tick <ms>]` runs in a clone of the governed repository.
+  Every tick it syncs the record and reads the latest `fleet.deploy`;
+  when that names a revision it does not express, it fetches the
+  revision, checks it out, and for each instance the plan assigns to
+  the node that the deploy touches (or that is not up) cuts the
+  artifact, builds the seed, restarts the process (cwd the clone,
+  `LOTUS_OBS=1`, `HALE_DNA_NODE`, `HALE_DNA_INSTANCE`,
+  `HALE_DNA_EXPRESSION`) and appends `instance.up` as `node/<name>`:
+  node, instance, revision, model hash, build digest, pid. An instance
+  that exits appends `instance.exited` with its code. The expression
+  identity per instance is therefore reported by the node that
+  expresses it and joined to the plan by instance id. The node decides
+  nothing. `.hale/node/<name>/<instance>.pid` is the only local state.
+- **The window is over every touched instance.** After an apply's
+  deploy row the host waits for every touched instance's `instance.up`
+  at the revision (180 s to settle), then for the observation window
+  with no `instance.exited` at the revision among them. All up and
+  none exited: `Observation healthy` with the model hash the instances
+  reported. One exited: `expression.crashed` naming the instance and
+  its node, `Observation crashed` with the same detail, and the
+  organization rolls back — a rollback deploy row touching the same
+  instances, which every node answers. Never up: `expression.crashed`
+  "never expressed by …" and `Observation build_failed`.
+- **`hale dna fleet`** renders what the fleet expresses from the
+  record: every instance of the plan, its node, whether it is up, the
+  revision and model hash it last came up at, and the last deploy.
+
+What is deliberately not here yet: a fleet-level semantic diff (a
+Review's diff is the edited seed's; the deploy row names the instances
+it reaches), pressure raised from services' typed metrics (`hale dna
+pressure raise` is the spelling; nothing raises it for a node), and
+the organization as an instance of its own plan.
 

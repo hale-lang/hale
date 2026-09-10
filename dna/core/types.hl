@@ -94,6 +94,8 @@ type Evidence {
     replay_ok: Bool = false;
     independent_reviews: Int = 0;
     rollback_rehearsed: Bool = false;
+    fleet_clean: Bool = true; // every fleet the workspace declares composes and holds its claims with the candidate's artifacts (GH #566 F5); true when it declares none
+    topology_changed: Bool = false; // the candidate names a plan or the manifest: the change is the fleet's shape, not one service's source
 }
 
 // The disposition of a proposed change (#521): release inside an
