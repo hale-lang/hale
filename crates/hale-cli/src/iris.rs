@@ -28,9 +28,19 @@ use std::process::{Command, ExitCode, Stdio};
 /// Returns the binary path.
 fn ensure_built(seed: &str, bin: &str) -> Result<(PathBuf, PathBuf), String> {
     let root = hale_iris::materialize().map_err(|e| format!("hale iris: cannot materialize sources: {e}"))?;
+    let bin_path = ensure_built_in(&root, seed, bin, "the observer")?;
+    Ok((root, bin_path))
+}
+
+/// Build `seed` under the materialized cache `root` once, under the
+/// cache's build lock, and return its binary. The DNA's membrane client
+/// and surface share the cache with the observer and build the same
+/// way (GH #566 F7: two commands racing to build one binary exec'd a
+/// half-written file — `Permission denied`).
+pub(crate) fn ensure_built_in(root: &Path, seed: &str, bin: &str, what: &str) -> Result<PathBuf, String> {
     let bin_path = root.join(bin);
     if bin_path.is_file() {
-        return Ok((root, bin_path));
+        return Ok(bin_path);
     }
     // One build per cache, ever: two `hale iris` (or a test shard's
     // five) racing to build the same seed into the same directory
@@ -44,10 +54,10 @@ fn ensure_built(seed: &str, bin: &str) -> Result<(PathBuf, PathBuf), String> {
         .map_err(|e| format!("hale iris: cannot open {}: {e}", lock_path.display()))?;
     let _guard = BuildLock::acquire(&lock);
     if bin_path.is_file() {
-        return Ok((root, bin_path));
+        return Ok(bin_path);
     }
     let me = std::env::current_exe().map_err(|e| format!("hale iris: cannot locate the hale binary: {e}"))?;
-    eprintln!("hale iris: building the observer ({} @ {})", seed, root.display());
+    eprintln!("hale iris: building {what} ({} @ {})", seed, root.display());
     let status = Command::new(&me)
         .arg("build")
         .arg(root.join(seed))
@@ -61,7 +71,7 @@ fn ensure_built(seed: &str, bin: &str) -> Result<(PathBuf, PathBuf), String> {
     if !bin_path.is_file() {
         return Err(format!("hale iris: build produced no binary at {}", bin_path.display()));
     }
-    Ok((root, bin_path))
+    Ok(bin_path)
 }
 
 /// An exclusive advisory lock held for the build; released on drop.

@@ -1434,15 +1434,8 @@ fn ui_cmd(args: &[String]) -> ExitCode {
     let run = || -> Result<i32, String> {
         let (root, _) = project(&dir)?;
         let cache = hale_iris::materialize().map_err(|e| format!("cannot materialize the toolchain cache: {e}"))?;
-        let bin = cache.join(hale_dna::UI_BIN);
+        let bin = crate::iris::ensure_built_in(&cache, hale_dna::UI_SEED, hale_dna::UI_BIN, "the surface")?;
         let me = std::env::current_exe().map_err(|e| e.to_string())?;
-        if !bin.is_file() {
-            eprintln!("hale dna ui: building the surface ({})", cache.join(hale_dna::UI_SEED).display());
-            let st = Command::new(&me).arg("build").arg(cache.join(hale_dna::UI_SEED)).stdout(std::process::Stdio::null()).status().map_err(|e| e.to_string())?;
-            if !st.success() || !bin.is_file() {
-                return Err("building the DNA surface failed".into());
-            }
-        }
         let _ = sync_record(&root);
         let st = Command::new(&bin).arg(&port).arg(cache.join(hale_dna::UI_HTML.path)).current_dir(&root).env("HALE_BIN", &me).status().map_err(|e| format!("hale dna ui: {e}"))?;
         Ok(st.code().unwrap_or(1))
@@ -1971,34 +1964,7 @@ fn ask(args: &[String]) -> Result<Vec<String>, String> {
 /// attached iris.
 fn publish_on_membrane(root: &Path, kind: &str, body: &str) -> Result<(), String> {
     let cache = hale_iris::materialize().map_err(|e| format!("cannot materialize the toolchain cache: {e}"))?;
-    let bin = cache.join(hale_dna::MEMBRANE_BIN);
-    let me = std::env::current_exe().map_err(|e| e.to_string())?;
-    // One build per cache, under the cache's lock — taken BEFORE the
-    // existence check: the linker creates the output before it is
-    // complete or executable, and two verdicts racing here exec'd a
-    // half-written file (`membrane client: Permission denied`).
-    let lock_path = cache.join(".build.lock");
-    let lock = std::fs::OpenOptions::new().create(true).write(true).open(&lock_path).map_err(|e| format!("cannot open {}: {e}", lock_path.display()))?;
-    {
-        use std::os::unix::io::AsRawFd;
-        // SAFETY: flock on a descriptor we own for the block's lifetime.
-        unsafe {
-            libc::flock(lock.as_raw_fd(), libc::LOCK_EX);
-        }
-        if !bin.is_file() {
-            eprintln!("hale dna: building the membrane client ({})", cache.join(hale_dna::MEMBRANE_SEED).display());
-            let st = Command::new(&me).arg("build").arg(cache.join(hale_dna::MEMBRANE_SEED)).stdout(std::process::Stdio::null()).status().map_err(|e| e.to_string())?;
-            if !st.success() || !bin.is_file() {
-                unsafe {
-                    libc::flock(lock.as_raw_fd(), libc::LOCK_UN);
-                }
-                return Err("building the membrane client failed".into());
-            }
-        }
-        unsafe {
-            libc::flock(lock.as_raw_fd(), libc::LOCK_UN);
-        }
-    }
+    let bin = crate::iris::ensure_built_in(&cache, hale_dna::MEMBRANE_SEED, hale_dna::MEMBRANE_BIN, "the membrane client")?;
     let dna_dir = root.join(".hale/dna");
     let conf = std::env::temp_dir().join(format!("hale-dna-membrane-{}.conf", std::process::id()));
     fs::write(
