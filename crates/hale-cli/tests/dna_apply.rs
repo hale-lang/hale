@@ -138,7 +138,9 @@ fn approval_applies_the_pinned_candidate_and_the_host_restarts_and_observes() {
     }
     // the organism applies, the host restarts, the window passes, the report lands
     let dl = Instant::now() + Duration::from_secs(120);
-    while Instant::now() < dl && !has(&journal(&app), "mutation.retained", "m1") {
+    // retained, and the worktree dissolved right after it — two rows,
+    // a tick apart under load
+    while Instant::now() < dl && !journal(&app).iter().any(|(k, e, b)| k == "mutation.worktree" && e == "m1" && b == "removed") {
         std::thread::sleep(Duration::from_millis(300));
     }
     let rows = journal(&app);

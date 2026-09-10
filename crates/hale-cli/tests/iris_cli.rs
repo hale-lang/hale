@@ -55,10 +55,16 @@ fn spawn_iris(cache: &Path, args: &[&str]) -> (std::process::Child, u16) {
         // build banner and a bind failure are eprinted
         let out = std::fs::File::create(&log).unwrap();
         let err = out.try_clone().unwrap();
+        // a private registry: this iris discovers no other test's observed
+        // processes, whose segments come and go under it on a loaded
+        // shard — what it serves here needs none of them
+        let runtime = cache.join(format!("iris-{port}-runtime"));
+        let _ = std::fs::create_dir_all(&runtime);
         let mut child = Command::new(env!("CARGO_BIN_EXE_hale"))
             .args(["iris", &port.to_string()])
             .args(args)
             .env("XDG_CACHE_HOME", cache)
+            .env("XDG_RUNTIME_DIR", &runtime)
             .stdout(out)
             .stderr(err)
             .spawn()
@@ -185,6 +191,7 @@ fn iris_diff_pair_rides_into_the_snapshot() {
         }
         std::thread::sleep(Duration::from_millis(250));
     }
+    let exited = child.try_wait().ok().flatten().map(|st| format!("{st}")).unwrap_or_else(|| "still running".into());
     let _ = child.kill();
     let _ = child.wait();
     let json_start = body.find("{\"ts\"").unwrap_or_else(|| {
@@ -198,7 +205,7 @@ fn iris_diff_pair_rides_into_the_snapshot() {
             Some(b)
         });
         let log = std::fs::read_to_string(cache.join(format!("iris-{port}.stderr"))).unwrap_or_default();
-        panic!("no loaded diff in the snapshot within 300s\nlast snapshot: {last:?}\nserver log:\n{log}");
+        panic!("no loaded diff in the snapshot within 300s (server {exited})\nlast snapshot: {last:?}\nserver log:\n{log}");
     });
     let v: serde_json::Value = serde_json::from_str(&body[json_start..]).expect("snapshot is JSON");
     assert_eq!(v["diff"]["state"], "loaded", "{body}");
