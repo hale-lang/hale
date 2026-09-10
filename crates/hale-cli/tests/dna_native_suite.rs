@@ -82,6 +82,7 @@ fn dna_fixture_set_is_complete() {
             "journal_test.hl",
             "knowledge_test.hl",
             "mutation_review_test.hl",
+            "org_test.hl",
             "performers_test.hl",
             "recursion_settlement_test.hl",
             "review_authority_test.hl",

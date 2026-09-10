@@ -54,6 +54,8 @@ fn main() {
                 deep: dna::FakeModel { name: "deep", answer: "docs_coverage +" }
             }
         },
+        review_policy: dna::OrgPolicy { },
+        membrane: dna::Board { who: "board" },
         boundary: dna::AutonomyBoundary {
             child: "orgapply",
             grant: dna::Grant { child: "orgapply", classes: "docs refactor", max_magnitude: 4, review: "pre" }
@@ -101,7 +103,7 @@ fn approval_applies_the_pinned_candidate_and_the_host_restarts_and_observes() {
 
     let cache = std::env::temp_dir().join("hale-tests-iris-cache");
     let mut host = Command::new(env!("CARGO_BIN_EXE_hale"))
-        .args(["dna", "run", ".", "--no-iris", "--observe", "2"])
+        .args(["dna", "dev", ".", "--no-iris", "--observe", "2"])
         .current_dir(&app)
         .env("XDG_CACHE_HOME", &cache)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
@@ -114,11 +116,15 @@ fn approval_applies_the_pinned_candidate_and_the_host_restarts_and_observes() {
     while Instant::now() < dl && !up(&app) {
         std::thread::sleep(Duration::from_millis(200));
     }
+    // the host, then the processes it started (their pids are in .hale/dna)
     let finish = |host: &mut std::process::Child| {
-        let _ = Command::new("pkill").args(["-x", "orgapply"]).status();
         let _ = host.kill();
         let _ = host.wait();
-        let _ = Command::new("pkill").args(["-x", "orgapply"]).status();
+        for f in ["org.pid", "app.pid"] {
+            if let Ok(pid) = std::fs::read_to_string(app.join(".hale/dna").join(f)) {
+                let _ = Command::new("kill").args(["-9", pid.trim()]).status();
+            }
+        }
     };
     if !up(&app) {
         finish(&mut host);
@@ -148,7 +154,7 @@ fn approval_applies_the_pinned_candidate_and_the_host_restarts_and_observes() {
     assert!(has(&rows, "mutation.applied", "m1"), "{}", kinds.join("\n"));
     assert!(has(&rows, "expression.restart_requested", "m1"), "{}", kinds.join("\n"));
     let restarted = rows.iter().find(|(k, e, _)| k == "expression.restarted" && e == "m1").expect("the restarted expression journaled itself");
-    assert!(restarted.2.contains("build "), "expression named: {}", restarted.2);
+    assert!(restarted.2.contains("build "), "expression named (by the host, GH #566 F2): {}", restarted.2);
     let observed = rows.iter().find(|(k, e, _)| k == "expression.observed" && e == "m1").expect("the host reported on the membrane");
     assert!(observed.2.starts_with("healthy "), "{}", observed.2);
     assert_eq!(count, "2", "exactly the candidate was applied");

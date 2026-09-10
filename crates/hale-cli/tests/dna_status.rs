@@ -24,7 +24,7 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     // offline: the Journal answers, and says the organism is not running
     let (ok, out) = hale(&["dna", "status"], &app);
     assert!(ok, "{out}");
-    assert!(out.contains("not running") && out.contains("chain verified") && out.contains("1 pending of 1") && out.contains("needs maintainer"), "{out}");
+    assert!(out.contains("not running") && out.contains("chain verified") && out.contains("1 pending of 1") && out.contains("needs board"), "{out}");
     let (ok, out) = hale(&["dna", "ask", "anything"], &app);
     assert!(!ok && out.contains("not running"), "{out}");
     let (ok, out) = hale(&["dna", "history"], &app);
@@ -43,9 +43,15 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     while Instant::now() < dl && !(app.join(".hale/dna/hale-dna.intent.offered.sock").exists() && app.join(".hale/dna/hale-dna.review.verdict.sock").exists()) {
         std::thread::sleep(Duration::from_millis(200));
     }
+    // the host, then the processes it started (their pids are in .hale/dna)
     let finish = |host: &mut std::process::Child| {
-        let _ = Command::new("pkill").args(["-x", "orgstat"]).status();
+        let _ = host.kill();
         let _ = host.wait();
+        for f in ["org.pid", "app.pid"] {
+            if let Ok(pid) = std::fs::read_to_string(app.join(".hale/dna").join(f)) {
+                let _ = Command::new("kill").args(["-9", pid.trim()]).status();
+            }
+        }
     };
     if !app.join(".hale/dna/hale-dna.intent.offered.sock").exists() {
         finish(&mut host);
@@ -65,7 +71,7 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     let asked = ok && out.contains("task t1 born");
     // review: the wrong authority is refused BY THE REVIEW, the right one settles it
     let (ok1, out1) = run(&["dna", "review", "purpose", "approve", "--authority", "agent", "--as", "bot"]);
-    let refused = ok1 && out1.contains("refused the verdict") && out1.contains("authority agent does not satisfy maintainer");
+    let refused = ok1 && out1.contains("refused the verdict") && out1.contains("authority agent does not satisfy board");
     let (ok2, out2) = run(&["dna", "review", "purpose", "approve", "--as", "riley", "--comment", "ratified"]);
     let settled = ok2 && out2.contains("settled: approve by riley");
     let (ok3, out3) = run(&["dna", "status"]);

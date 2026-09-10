@@ -50,7 +50,7 @@ fn run_hosts_the_organism_with_iris_and_the_membrane_and_holds_no_state() {
     let organism_loci = |s: &str| -> Option<Vec<String>> {
         let json = s.find("{\"ts\"")?;
         let v: serde_json::Value = serde_json::from_str(&s[json..]).ok()?;
-        let p = v["processes"].as_array()?.iter().find(|p| p["name"] == "orgrun")?;
+        let p = v["processes"].as_array()?.iter().find(|p| p["name"] == "org")?;
         Some(p["loci"].as_array()?.iter().map(|l| l["type"].as_str().unwrap_or("").to_string()).collect())
     };
     let deadline = Instant::now() + Duration::from_secs(90);
@@ -71,8 +71,10 @@ fn run_hosts_the_organism_with_iris_and_the_membrane_and_holds_no_state() {
         std::thread::sleep(Duration::from_millis(250));
     }
     let finish = |host: &mut std::process::Child| {
-        // the host's children are the organism and iris; end the organism first
-        let _ = Command::new("pkill").args(["-x", "orgrun"]).status();
+        // the host's children are the organization and iris; end the org first
+        if let Ok(pid) = std::fs::read_to_string(app.join(".hale/dna/org.pid")) {
+            let _ = Command::new("kill").args(["-9", pid.trim()]).status();
+        }
         let _ = host.wait();
         let _ = Command::new("pkill").args(["-x", "fuse-hl"]).status();
     };
@@ -81,12 +83,11 @@ fn run_hosts_the_organism_with_iris_and_the_membrane_and_holds_no_state() {
         panic!("iris did not come up with membrane + law + review");
     }
     assert!(app.join(".hale/dna/current.topology").is_file(), "a fresh artifact of what runs");
-    // The baseline is the application as `init` found it, BEFORE the
-    // DNA was grafted on — so the first run's review view shows
-    // exactly what init added: the Genome and the membrane.
+    // The baseline is the application as `init` found it, and init changes
+    // nothing in the application (GH #566 F2): the first run's review view
+    // is identical.
     let compact = snap.replace(' ', "");
-    assert!(compact.contains("\"classification\":\"model-shape\""), "{snap}");
-    assert!(compact.contains("\"change\":\"added\"") && compact.contains("genome::Genome"), "the review view names the added Genome: {snap}");
+    assert!(compact.contains("\"classification\":\"identical\""), "init leaves the application's model unchanged: {snap}");
     // B7: the organism's status projection rides in the snapshot
     // (state loaded, the baseline review pending) — and the observed
     // tower names imported loci by their AUTHOR-facing names, so the

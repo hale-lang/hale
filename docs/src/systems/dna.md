@@ -8,10 +8,16 @@ repository) ships inside the toolchain; a project materializes it
 and owns its own assembly on top.
 
 ```sh
-hale dna new demo          # a greenfield application with its DNA
-hale dna init .            # attach the DNA to an existing application
+hale dna new demo          # a greenfield application with its organization
+hale dna init .            # generate the organization (dna/org) that oversees an existing application
 hale dna upgrade           # re-materialize vendor/dna for this toolchain
 ```
+
+> Phase 3 (GH #566) is under way and this chapter lags it: since F2
+> the organism is an **organization** written in Hale at `dna/org`
+> (a Board, a Leader, the substrate), the application is not
+> modified by `init`, and the record is a git branch. `spec/dna.md`
+> is current; this chapter is rewritten in the docs track.
 
 ## What `init` produces
 

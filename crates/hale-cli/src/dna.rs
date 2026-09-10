@@ -42,6 +42,9 @@ use serde_json::Value;
 /// The record (GH #566 F1): one commit per event on this ref, the events as
 /// `journal.jsonl` in its tree, receipts as blobs under `refs/dna/receipts/`.
 const RECORD_REF: &str = "refs/dna/journal";
+/// The organization's seed (GH #566 F2): a program `init` generates and
+/// `hale dna run` runs; the application is never grafted.
+const ORG_SEED: &str = "dna/org";
 const BASELINE_REL: &str = ".hale/dna/baseline.topology";
 const VERDICT_SOCK_REL: &str = ".hale/dna/hale-dna.review.verdict.sock";
 const INTENT_SOCK_REL: &str = ".hale/dna/hale-dna.intent.offered.sock";
@@ -61,7 +64,8 @@ pub fn run(args: &[String]) -> ExitCode {
             let dir = args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
             report(upgrade(&dir))
         }
-        Some("run") => run_organism(&args[1..]),
+        Some("run") => run_organism(&args[1..], false),
+        Some("dev") => run_organism(&args[1..], true),
         Some("status") => report(status(&args[1..])),
         Some("ask") => report(ask(&args[1..])),
         Some("history") => report(history(&args[1..])),
@@ -79,9 +83,11 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("usage: hale dna init [app-dir]      attach the DNA to an existing application");
     eprintln!("       hale dna new <name>          a greenfield application with its DNA");
     eprintln!("       hale dna upgrade [dir]       re-materialize vendor/dna for this toolchain");
-    eprintln!("       hale dna run [project] [--port N] [--no-iris] [--observe <secs>]");
-    eprintln!("                                    build, run under LOTUS_OBS with iris attached, hold the membrane;");
-    eprintln!("                                    rebuild and restart on the organism's request, watch the window, report back");
+    eprintln!("       hale dna run [project] [--port N] [--no-iris]");
+    eprintln!("                                    build and run the organization (dna/org) with iris attached; hold the membrane");
+    eprintln!("       hale dna dev [project] [--port N] [--no-iris] [--observe <secs>]");
+    eprintln!("                                    the organization AND the application under one host: rebuild and restart");
+    eprintln!("                                    the application on an apply, watch the window, report back");
     eprintln!("       hale dna status [project] [--json]");
     eprintln!("                                    the organism's status projection, from the Journal");
     eprintln!("       hale dna ask [--to <locus>] <intent…>");
@@ -287,44 +293,25 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
         art["shape_hash"].as_str().unwrap_or("?"),
         art["verdict"].as_str().unwrap_or("?")
     ));
-    // 4. the project-owned DNA seed
-    let purpose_text = format!("{}: keep the application correct, reviewable and explainable; every change is staged, reviewed by a maintainer, and never applied by the organism itself.", app.project);
+    // 4. the organization: a program of its own (GH #566 F2). The
+    //    application is not touched — it carries its own law and is
+    //    observable like any Hale binary; the org oversees it from outside.
+    let purpose_text = format!("{}: keep the application correct, reviewable and explainable; every change is staged, reviewed, and never applied by the organism itself.", app.project);
     let purpose_digest = format!("sha256:{}", hex(&openssl::sha::sha256(purpose_text.as_bytes())));
-    created(&mut out, &app.root.join("dna/purpose.hl"), &purpose_hl(&purpose_text))?;
-    created(&mut out, &app.root.join("dna/assembly.hl"), &assembly_hl(&app.project, &purpose_digest, &app.seed_rel))?;
-    // The law lives IN the application's seed: a constitution names
-    // groups the adopting entrypoint must declare (`organism`), and a
-    // seed importing the app (its tests) must see both together.
-    let holes = holes_of(&art);
-    created(&mut out, &app.seed.join("dna_constitution.hl"), &constitution_hl(&app.main_name, &holes))?;
-    if !holes.is_empty() {
-        out.push(format!(
-            "note    `organism_gated` is deferred in dna_constitution.hl: the baseline has {} unresolvable edge(s) ({})",
-            holes.len(),
-            holes.iter().take(3).cloned().collect::<Vec<_>>().join("; ")
-        ));
-    }
-    // 5. the application's main gains the DNA
-    let src = fs::read_to_string(&app.main_file).map_err(|e| e.to_string())?;
-    match graft_main(&src, &app.main_name)? {
-        Some(edited) => {
-            fs::write(&app.main_file, edited).map_err(|e| e.to_string())?;
-            out.push(format!(
-                "edited  {} (imports, `genome` param, `adopt Project`, membrane bindings)",
-                app.main_file.display()
-            ));
-        }
-        None => out.push(format!("kept    {} (already carries the DNA)", app.main_file.display())),
-    }
-    // 6. the manifest's environments
+    let org_dir = app.root.join(ORG_SEED);
+    created(&mut out, &org_dir.join("purpose.hl"), &purpose_hl(&purpose_text))?;
+    created(&mut out, &org_dir.join("law.hl"), &org_law_hl())?;
+    created(&mut out, &org_dir.join("main.hl"), &org_hl(&app.project, &purpose_digest, &app.seed_rel))?;
+    out.push(format!("kept    {} (the application is not modified; the organization oversees it from {})", app.main_file.display(), ORG_SEED));
+    // 5. the manifest's environments: the application's, and the organization's
     let mtext = fs::read_to_string(&manifest).map_err(|e| e.to_string())?;
     if !mtext.contains("[environments.") {
         let add = format!(
-            "\n# hale dna init: the law every deployment target carries, and the\n# local target this entrypoint deploys to (`hale check --matrix`).\n[claims]\nbase = \"Project\"\n\n[environments.local]\nsource_only = true\nentrypoints = [\"{}\"]\n",
-            app.seed_rel
+            "\n# hale dna init: the two entrypoints and where each deploys (`hale check --matrix`).\n# The organization adopts its law (dna/org/law.hl) itself; the application keeps its own.\n[claims]\nno_base = true\n\n[environments.local]\nsource_only = true\nentrypoints = [\"{}\"]\n\n[environments.org]\nsource_only = true\nentrypoints = [\"{}\"]\n",
+            app.seed_rel, ORG_SEED
         );
         fs::write(&manifest, format!("{}{}", mtext, add)).map_err(|e| e.to_string())?;
-        out.push(format!("edited  {} ([claims] base, [environments.local])", manifest.display()));
+        out.push(format!("edited  {} ([claims] no_base, [environments.local], [environments.org])", manifest.display()));
     } else {
         out.push(format!("kept    {} (declares environments already)", manifest.display()));
     }
@@ -363,9 +350,9 @@ fn init(app_dir: &Path) -> Result<Vec<String>, String> {
         .status();
     out.push(String::new());
     out.push("next steps:".to_string());
-    out.push(format!("    hale check --matrix {}   # every entrypoint against Project", app.root.display()));
-    out.push(format!("    hale dna run {}          # build, run under LOTUS_OBS, iris attached", app.root.display()));
-    out.push("    the first Review (`purpose`) ratifies dna/purpose.hl — answer it in iris [m]".to_string());
+    out.push(format!("    hale check --matrix {}   # every entrypoint against its law", app.root.display()));
+    out.push(format!("    hale dna dev {}          # the organization and the application under one host, iris attached", app.root.display()));
+    out.push("    the first Review (`purpose`) ratifies dna/org/purpose.hl: `hale dna review purpose approve --as <you>`".to_string());
     Ok(out)
 }
 
@@ -414,7 +401,8 @@ fn project(dir: &Path) -> Result<(PathBuf, PathBuf), String> {
 /// baseline `init` cut, membrane attached), and waits for the
 /// organism. When the organism exits, iris is reaped and the
 /// organism's exit code is ours.
-fn run_organism(args: &[String]) -> ExitCode {
+fn run_organism(args: &[String], dev: bool) -> ExitCode {
+    let verb = if dev { "dev" } else { "run" };
     let mut dir = PathBuf::from(".");
     let mut port = "8787".to_string();
     let mut iris = true;
@@ -425,20 +413,20 @@ fn run_organism(args: &[String]) -> ExitCode {
             "--port" => match it.next() {
                 Some(p) => port = p.clone(),
                 None => {
-                    eprintln!("hale dna run: --port needs a value");
+                    eprintln!("hale dna {verb}: --port needs a value");
                     return ExitCode::from(2);
                 }
             },
             "--observe" => match it.next().and_then(|v| v.parse::<u64>().ok()) {
                 Some(n) => observe_secs = n,
                 None => {
-                    eprintln!("hale dna run: --observe needs a number of seconds");
+                    eprintln!("hale dna {verb}: --observe needs a number of seconds");
                     return ExitCode::from(2);
                 }
             },
             "--no-iris" => iris = false,
             f if f.starts_with("--") => {
-                eprintln!("hale dna run: unknown flag `{f}`");
+                eprintln!("hale dna {verb}: unknown flag `{f}`");
                 return ExitCode::from(2);
             }
             p => dir = PathBuf::from(p),
@@ -447,90 +435,141 @@ fn run_organism(args: &[String]) -> ExitCode {
     let (root, seed) = match project(&dir) {
         Ok(x) => x,
         Err(e) => {
-            eprintln!("hale dna run: {e}");
+            eprintln!("hale dna {verb}: {e}");
             return ExitCode::from(2);
         }
     };
+    let org_seed = root.join(ORG_SEED);
+    if !org_seed.is_dir() {
+        eprintln!("hale dna {verb}: no organization at {} (run `hale dna init`)", org_seed.display());
+        return ExitCode::from(2);
+    }
     let me = match std::env::current_exe() {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("hale dna run: {e}");
+            eprintln!("hale dna {verb}: {e}");
             return ExitCode::from(1);
         }
     };
     let dna_dir = root.join(".hale/dna");
     let _ = fs::create_dir_all(&dna_dir);
-    // 1 + 2. a fresh artifact of what is about to run, and the build
+    let status_path = dna_dir.join("status.json");
+    // 1. the expression identity: a fresh artifact of the application
     let current = dna_dir.join("current.topology");
-    let bin = match express(&me, &seed, &current) {
+    if let Err(e) = cut_artifact(&me, &seed, &current) {
+        eprintln!("hale dna {verb}: {e}");
+        return ExitCode::from(1);
+    }
+    // 2. the organization: built, started from the root, observable
+    let org_bin = match build_seed(&me, &org_seed) {
         Ok(b) => b,
         Err(e) => {
-            eprintln!("hale dna run: {e}");
+            eprintln!("hale dna {verb}: {e}");
             return ExitCode::from(1);
         }
     };
-    let bin_name = seed.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "app".into());
-    // 3. the organism, from the root, observable
-    let mut organism = match spawn_organism(&bin, &root, &me, &dna_dir, None) {
+    for sock in [crate::iris::MEMBRANE_VERDICT_SOCK, crate::iris::MEMBRANE_INTENT_SOCK, crate::iris::MEMBRANE_OBSERVED_SOCK] {
+        let _ = fs::remove_file(dna_dir.join(sock));
+    }
+    let mut org = match spawn_process(&org_bin, &root, &me, None) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("hale dna run: {e}");
+            eprintln!("hale dna {verb}: {e}");
             return ExitCode::from(1);
         }
     };
-    eprintln!("hale dna run: organism {} (pid {}) from {} under LOTUS_OBS=1", bin_name, organism.id(), root.display());
-    // 4. the membrane comes up
-    let bound = wait_membrane(&dna_dir, &mut organism, 20);
-    let mut observer: Option<std::process::Child> = None;
-    let status_path = dna_dir.join("status.json");
+    let _ = fs::write(dna_dir.join("org.pid"), org.id().to_string());
+    eprintln!("hale dna {verb}: organization (pid {}) from {} under LOTUS_OBS=1", org.id(), root.display());
+    // 3. the membrane comes up
+    let bound = wait_membrane(&dna_dir, &mut org, 20);
     if bound {
-        eprintln!("hale dna run: membrane bound at {}", dna_dir.display());
-        // the status projection, written before iris reads it
-        write_status(&root, &status_path);
-        if iris {
-            let baseline = dna_dir.join("baseline.topology");
-            observer = launch_iris(&me, &port, &current, if baseline.is_file() { Some(baseline) } else { None }, &dna_dir, &status_path);
-        }
-    } else if organism.try_wait().ok().flatten().is_none() {
-        eprintln!("hale dna run: the membrane did not come up within 20s; the organism runs unobserved");
+        eprintln!("hale dna {verb}: membrane bound at {}", dna_dir.display());
+    } else if org.try_wait().ok().flatten().is_none() {
+        eprintln!("hale dna {verb}: the membrane did not come up within 20s; the organization runs unobserved");
     }
-    // 5. supervise: the organism's exit is ours. Meanwhile the host
-    // re-projects the Journal into status.json once a second — a
-    // projection, never state of its own — and answers the organism's
-    // restart requests (GH #529 D6): rebuild, restart, watch the
-    // observation window, report back on the membrane.
+    // 4. dev: the application too, under this host, so an apply can be
+    //    expressed and observed here
+    let app_name = seed.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "app".into());
+    let mut app: Option<std::process::Child> = None;
+    let mut app_bin: PathBuf = seed.join(&app_name);
+    if dev {
+        match build_seed(&me, &seed) {
+            Ok(b) => app_bin = b,
+            Err(e) => {
+                eprintln!("hale dna dev: {e}");
+                terminate(&mut org);
+                return ExitCode::from(1);
+            }
+        }
+        match spawn_process(&app_bin, &root, &me, None) {
+            Ok(c) => {
+                let _ = fs::write(dna_dir.join("app.pid"), c.id().to_string());
+                eprintln!("hale dna dev: expression {} (pid {}) under LOTUS_OBS=1", app_name, c.id());
+                app = Some(c);
+            }
+            Err(e) => {
+                eprintln!("hale dna dev: {e}");
+                terminate(&mut org);
+                return ExitCode::from(1);
+            }
+        }
+    }
+    // 5. iris: the law view on the application's artifact, the review
+    //    view against the baseline, the organism panel, the membrane form
+    write_status(&root, &status_path);
+    let mut observer: Option<std::process::Child> = None;
+    if iris && bound {
+        let baseline = dna_dir.join("baseline.topology");
+        observer = launch_iris(&me, &port, &current, if baseline.is_file() { Some(baseline) } else { None }, &dna_dir, &status_path);
+    }
+    // 6. supervise: the organization's exit is ours. Each tick: sync the
+    //    record, relay the membrane facts in it, re-project status, and
+    //    answer restart requests — under `dev` by rebuilding and
+    //    restarting the application and watching it; under `run` by
+    //    saying that no expression is under this host.
     let mut handled: BTreeSet<u64> = BTreeSet::new();
     let mut relayed: BTreeSet<u64> = BTreeSet::new();
+    let mut app_gone_reported = false;
     let code = loop {
-        match organism.try_wait() {
+        match org.try_wait() {
             Ok(Some(st)) => break st.code().unwrap_or(1),
             Ok(None) => {}
             Err(_) => break 1,
         }
-        // the record across clones: pull what others appended, relay the
-        // membrane facts among them to the organism, push what it answered
+        if let Some(a) = app.as_mut() {
+            if let Ok(Some(st)) = a.try_wait() {
+                if !app_gone_reported {
+                    eprintln!("hale dna dev: the expression exited ({}) outside a window; the organization is still up", st.code().unwrap_or(-1));
+                    app_gone_reported = true;
+                }
+            }
+        }
         if let Err(e) = sync_record(&root) {
-            eprintln!("hale dna run: sync: {e}");
+            eprintln!("hale dna {verb}: sync: {e}");
         }
         let n = relay_record_membrane(&root, &mut relayed);
         if n > 0 {
-            eprintln!("hale dna run: relayed {n} fact(s) from the record onto the membrane");
+            eprintln!("hale dna {verb}: relayed {n} fact(s) from the record onto the membrane");
             let _ = sync_record(&root);
         }
         write_status(&root, &status_path);
         if let Some((seq, id, body)) = pending_restart(&root, &handled) {
             handled.insert(seq);
             let rollback = body.starts_with("rollback ");
-            eprintln!("hale dna run: {id} requests a restart ({body})");
+            if !dev {
+                eprintln!("hale dna run: {id} requests a restart ({body}); no expression is under this host — `hale dna dev`, or a deployment gateway, expresses it");
+                continue;
+            }
+            eprintln!("hale dna dev: {id} requests a restart ({body})");
             let previous = dna_dir.join("previous.topology");
             let _ = fs::copy(&current, &previous);
             match express(&me, &seed, &current) {
                 Err(e) => {
-                    eprintln!("hale dna run: {id}: the candidate does not express: {e}");
+                    eprintln!("hale dna dev: {id}: the candidate does not express: {e}");
                     if !rollback {
                         let body = serde_json::json!({"mutation_id": id, "outcome": "build_failed", "model_hash": "", "detail": e}).to_string();
                         if let Err(e) = publish_on_membrane(&root, "observed", &body) {
-                            eprintln!("hale dna run: could not report on the membrane: {e}");
+                            eprintln!("hale dna dev: could not report on the membrane: {e}");
                         }
                     }
                     let _ = fs::copy(&previous, &current);
@@ -539,34 +578,41 @@ fn run_organism(args: &[String]) -> ExitCode {
                 Ok(_) => {}
             }
             let shape = shape_of(&current);
-            let expression = format!("{}{} build {}", if rollback { "rollback " } else { "" }, shape, crate::sign::sha256_file(&bin).map(|d| d[..12].to_string()).unwrap_or_default());
-            terminate(&mut organism);
-            organism = match spawn_organism(&bin, &root, &me, &dna_dir, Some((&id, &expression))) {
+            let expression = format!("{}{} build {}", if rollback { "rollback " } else { "" }, shape, crate::sign::sha256_file(&app_bin).map(|d| d[..12].to_string()).unwrap_or_default());
+            if let Some(mut a) = app.take() {
+                terminate(&mut a);
+            }
+            let mut fresh = match spawn_process(&app_bin, &root, &me, Some((&id, &expression))) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("hale dna run: {e}");
+                    eprintln!("hale dna dev: {e}");
                     break 1;
                 }
             };
-            eprintln!("hale dna run: organism restarted (pid {}) as {}", organism.id(), expression);
-            let bound = wait_membrane(&dna_dir, &mut organism, 20);
+            let _ = fs::write(dna_dir.join("app.pid"), fresh.id().to_string());
+            app_gone_reported = false;
+            // the expression carries no organism now: the host records that it restarted
+            let _ = append_journal(&root, "expression.restarted", &id, &expression);
+            eprintln!("hale dna dev: expression restarted (pid {}) as {}", fresh.id(), expression);
             write_status(&root, &status_path);
             if let Some(mut o) = observer.take() {
                 let _ = o.kill();
                 let _ = o.wait();
                 observer = launch_iris(&me, &port, &current, Some(previous.clone()), &dna_dir, &status_path);
             }
-            if rollback || !bound {
+            if rollback {
+                app = Some(fresh);
                 continue;
             }
             // the observation window: the expression must stay up
             let end = std::time::Instant::now() + std::time::Duration::from_secs(observe_secs);
             let mut crashed: Option<i32> = None;
             while std::time::Instant::now() < end {
-                if let Ok(Some(st)) = organism.try_wait() {
+                if let Ok(Some(st)) = fresh.try_wait() {
                     crashed = Some(st.code().unwrap_or(-1));
                     break;
                 }
+                let _ = sync_record(&root);
                 write_status(&root, &status_path);
                 std::thread::sleep(std::time::Duration::from_millis(250));
             }
@@ -574,41 +620,22 @@ fn run_organism(args: &[String]) -> ExitCode {
                 None => {
                     let body = serde_json::json!({"mutation_id": id, "outcome": "healthy", "model_hash": shape, "detail": format!("up for {observe_secs}s")}).to_string();
                     match publish_on_membrane(&root, "observed", &body) {
-                        Ok(()) => eprintln!("hale dna run: {id} observed healthy for {observe_secs}s as {shape}"),
-                        Err(e) => eprintln!("hale dna run: could not report on the membrane: {e}"),
+                        Ok(()) => eprintln!("hale dna dev: {id} observed healthy for {observe_secs}s as {shape}"),
+                        Err(e) => eprintln!("hale dna dev: could not report on the membrane: {e}"),
                     }
+                    app = Some(fresh);
                 }
                 Some(code) => {
-                    // Nobody is left to decide, so the host accounts for it
-                    // explicitly: journaled (the organism is gone, the
-                    // Journal has one writer), rolled back to the base,
-                    // rebuilt, restarted as the old expression.
-                    eprintln!("hale dna run: {id}: the expression exited ({code}) inside the observation window; rolling back");
-                    let base = base_of(&root, &id);
-                    let _ = append_journal(&root, "expression.crashed", &id, &format!("exited {code} in the observation window"));
-                    let reset = Command::new("git").args(["-C", &root.to_string_lossy(), "reset", "-q", "--keep", &base]).status();
-                    if matches!(reset, Ok(s) if s.success()) {
-                        let _ = append_journal(&root, "mutation.rolled_back", &id, &format!("{base} by host after crash"));
-                    } else {
-                        let _ = append_journal(&root, "mutation.failed", &id, &format!("rollback to {base} failed after crash"));
+                    // the organization is up and decides; the host reports the crash
+                    // as an observation and restores the base expression itself
+                    eprintln!("hale dna dev: {id}: the expression exited ({code}) inside the observation window");
+                    let body = serde_json::json!({"mutation_id": id, "outcome": "crashed", "model_hash": shape, "detail": format!("exited {code} in the observation window")}).to_string();
+                    if let Err(e) = publish_on_membrane(&root, "observed", &body) {
+                        eprintln!("hale dna dev: could not report on the membrane: {e}");
                     }
-                    match express(&me, &seed, &current) {
-                        Ok(_) => {
-                            let shape = shape_of(&current);
-                            organism = match spawn_organism(&bin, &root, &me, &dna_dir, Some((&id, &format!("rollback {shape} after crash")))) {
-                                Ok(c) => c,
-                                Err(e) => {
-                                    eprintln!("hale dna run: {e}");
-                                    break 1;
-                                }
-                            };
-                            let _ = wait_membrane(&dna_dir, &mut organism, 20);
-                        }
-                        Err(e) => {
-                            eprintln!("hale dna run: the base does not express either: {e}");
-                            break 1;
-                        }
-                    }
+                    app = None;
+                    // the organization rolls back and requests the old expression;
+                    // that request is answered by the next tick like any other
                 }
             }
         }
@@ -618,13 +645,18 @@ fn run_organism(args: &[String]) -> ExitCode {
         let _ = o.kill();
         let _ = o.wait();
     }
+    if let Some(mut a) = app {
+        terminate(&mut a);
+    }
+    let _ = fs::remove_file(dna_dir.join("org.pid"));
+    let _ = fs::remove_file(dna_dir.join("app.pid"));
     write_status(&root, &status_path);
-    eprintln!("hale dna run: organism exited ({code}); {} in {} is the record", RECORD_REF, root.display());
+    eprintln!("hale dna {verb}: organization exited ({code}); {} in {} is the record", RECORD_REF, root.display());
     ExitCode::from(code.clamp(0, 255) as u8)
 }
 
-/// Cut the artifact of what is about to run and build it; the binary.
-fn express(me: &Path, seed: &Path, current: &Path) -> Result<PathBuf, String> {
+/// Cut the artifact of what is about to run.
+fn cut_artifact(me: &Path, seed: &Path, current: &Path) -> Result<(), String> {
     let st = Command::new(me)
         .arg("check")
         .arg(seed)
@@ -632,8 +664,19 @@ fn express(me: &Path, seed: &Path, current: &Path) -> Result<PathBuf, String> {
         .stdout(std::process::Stdio::null())
         .status();
     if !matches!(st, Ok(s) if s.success()) {
-        return Err(format!("`hale check {}` failed; the organism is not run on a program that does not pass", seed.display()));
+        return Err(format!("`hale check {}` failed; nothing is run on a program that does not pass", seed.display()));
     }
+    Ok(())
+}
+
+/// Cut the artifact of what is about to run and build it; the binary.
+fn express(me: &Path, seed: &Path, current: &Path) -> Result<PathBuf, String> {
+    cut_artifact(me, seed, current)?;
+    build_seed(me, seed)
+}
+
+/// Build a seed; its binary.
+fn build_seed(me: &Path, seed: &Path) -> Result<PathBuf, String> {
     let st = Command::new(me).arg("build").arg(seed).stdout(std::process::Stdio::null()).status();
     if !matches!(st, Ok(s) if s.success()) {
         return Err(format!("`hale build {}` failed", seed.display()));
@@ -646,14 +689,10 @@ fn express(me: &Path, seed: &Path, current: &Path) -> Result<PathBuf, String> {
     Ok(bin)
 }
 
-/// Start the organism from the root, observable, with the toolchain
-/// that started it; `restart_for` names the Mutation whose request
-/// this restart answers and what the expression is (GH #529 D6), which
-/// the organism journals as `expression.restarted` at birth.
-fn spawn_organism(bin: &Path, root: &Path, me: &Path, dna_dir: &Path, restart_for: Option<(&str, &str)>) -> Result<std::process::Child, String> {
-    for sock in [crate::iris::MEMBRANE_VERDICT_SOCK, crate::iris::MEMBRANE_INTENT_SOCK, crate::iris::MEMBRANE_OBSERVED_SOCK] {
-        let _ = fs::remove_file(dna_dir.join(sock));
-    }
+/// Start a process from the root, observable, with the toolchain that
+/// started it; `restart_for` names the Mutation whose request this
+/// restart answers and what the expression is (GH #529 D6).
+fn spawn_process(bin: &Path, root: &Path, me: &Path, restart_for: Option<(&str, &str)>) -> Result<std::process::Child, String> {
     let mut c = Command::new(bin);
     c.current_dir(root).env("LOTUS_OBS", "1").env("HALE_BIN", me);
     if let Some((id, expression)) = restart_for {
@@ -736,20 +775,6 @@ fn shape_of(artifact: &Path) -> String {
         .ok()
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
         .and_then(|v| v["shape_hash"].as_str().map(|s| s.to_string()))
-        .unwrap_or_default()
-}
-
-/// A Mutation's base commit, from its `review.requested` body.
-fn base_of(root: &Path, id: &str) -> String {
-    read_journal(root)
-        .ok()
-        .and_then(|rows| {
-            rows.iter()
-                .rev()
-                .find(|r| r.kind == "review.requested" && r.entity == format!("review:{id}"))
-                .and_then(|r| serde_json::from_str::<Value>(&r.body).ok())
-                .and_then(|b| b["base_commit"].as_str().map(|s| s.to_string()))
-        })
         .unwrap_or_default()
 }
 
@@ -1001,8 +1026,6 @@ struct Row {
     kind: String,
     entity: String,
     body: String,
-    prev: String,
-    digest: String,
 }
 
 fn read_journal(root: &Path) -> Result<Vec<Row>, String> {
@@ -1010,16 +1033,11 @@ fn read_journal(root: &Path) -> Result<Vec<Row>, String> {
         return Err(format!("no record at {RECORD_REF} in {} (run `hale dna init`)", root.display()));
     };
     let text = git(root, &["show", &format!("{RECORD_REF}:journal.jsonl")])?;
-    let shas = git(root, &["rev-list", "--reverse", RECORD_REF])?;
-    let shas: Vec<&str> = shas.lines().collect();
     let mut rows = Vec::new();
-    let mut prev = "genesis".to_string();
     for (i, line) in text.lines().filter(|l| !l.trim().is_empty()).enumerate() {
         let v: Value = serde_json::from_str(line).map_err(|e| format!("{RECORD_REF}:journal.jsonl:{}: not JSON: {e}", i + 1))?;
         let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
-        let digest = shas.get(i).map(|x| x.to_string()).unwrap_or_default();
-        rows.push(Row { seq: v["seq"].as_u64().unwrap_or(i as u64), kind: s("kind"), entity: s("entity"), body: s("body"), prev: prev.clone(), digest: digest.clone() });
-        prev = digest;
+        rows.push(Row { seq: v["seq"].as_u64().unwrap_or(i as u64), kind: s("kind"), entity: s("entity"), body: s("body") });
     }
     Ok(rows)
 }
@@ -1364,7 +1382,7 @@ fn publish_on_membrane(root: &Path, kind: &str, body: &str) -> Result<(), String
 fn review(args: &[String]) -> Result<Vec<String>, String> {
     let mut pos: Vec<String> = Vec::new();
     let mut reviewer = std::env::var("USER").unwrap_or_else(|_| "human".into());
-    let mut authority = "maintainer".to_string();
+    let mut authority = "board".to_string();
     let mut comment = String::new();
     let mut digest_override: Option<String> = None;
     let mut iris = false;
@@ -1654,11 +1672,10 @@ fn new_project(dir: &Path) -> Result<Vec<String>, String> {
         .unwrap_or_else(|| "app".to_string());
     let locus = pascal(&name);
     let main_hl = format!(
-        r#"/// {name} — a governed application. The entrypoint is a `main locus`
-/// so the DNA can attach: its `genome` param is the assembly
-/// (dna/assembly.hl), `Project` is its law (dna/constitution.hl),
-/// and the membrane sockets are where a human's verdict or intent
-/// enters. Every `.hl` in this directory shares one scope.
+        r#"/// {name} — a governed application: the organization in dna/org
+/// oversees it (proposes, verifies, reviews, expresses its changes)
+/// from outside; nothing of that is in this program. Every `.hl` in
+/// this directory shares one scope.
 type Ping {{ n: Int = 0; }}
 topic Pings {{ payload: Ping; subject: "{sub}.ping"; }}
 
@@ -1761,25 +1778,35 @@ fn purpose() -> String {{
     )
 }
 
-fn assembly_hl(project: &str, purpose_digest: &str, seed: &str) -> String {
+fn org_hl(project: &str, purpose_digest: &str, seed: &str) -> String {
     format!(
-        r#"// dna/assembly.hl — the Genome: this project's DNA assembly
-// (project-owned; edit freely). Every "setting" is a constructor
-// argument; `hale check` sees all of it.
+        r#"// dna/org/main.hl — the organization that oversees {project}
+// (project-owned; edit freely). An org chart is a Hale program:
+// positions are loci, routing is the bus, a position's capabilities
+// are its effect contract, and `hale check` holds the law in law.hl
+// against the wiring you actually built. Grow it by adding positions
+// and routes; every setting is a constructor argument.
 //
-// Phase 1 defaults: a file Journal (the causal authority), in-memory
-// knowledge, a conservative autonomy grant, human review before any
-// apply, NO deployment (every mutation stops at `staged`), and the
-// local human membrane. Provenance of every fact here: declared.
+//   Board       the human authority: intent enters through it,
+//               escalations and reports leave through it, it owns
+//               every grant (its verdicts carry `--authority board`)
+//   Leader      the model-backed position holding the project's grant:
+//               decides the Reviews inside it, leaves the Board's
+//   core        the substrate: the record, the gateways, verification,
+//               the editing position, the Reviews
+//
+// The application ({seed}) is not part of this program. It carries its
+// own law and is observed like any Hale binary; this organization
+// proposes changes to it, verifies them, and expresses them.
 
 import "vendor/dna" as dna;
 
-locus Genome {{
+main locus Org {{
     params {{
         core: dna::Dna = dna::Dna {{
             // The record: one commit per event on refs/dna/journal, receipts
             // and leases as refs beside it. Every clone that fetches
-            // refs/dna/* has the whole history of what this organism did.
+            // refs/dna/* has the whole history of what this organization did.
             journal: dna::GitJournal {{ repo: "." }},
             // Models: hosted adapters present a credential from a sealed
             // locus (set OPENAI_API_KEY; the material never enters this
@@ -1796,23 +1823,24 @@ locus Genome {{
                     }}
                 }}
             }},
+            // The Leader's grant, owned by the Board: what the organization
+            // may decide on its own terms. An `application` change is outside
+            // this grant and escalates to the Board; widen it here, in a
+            // reviewed commit, as the record earns it.
             boundary: dna::AutonomyBoundary {{
                 child: "{project}",
                 grant: dna::Grant {{ child: "{project}", classes: "refactor docs", max_magnitude: 4, review: "pre" }}
             }},
-            review_policy: dna::HumanBeforeApply {{ }},
-            deployment: dna::NoDeployment {{ }},
-            membrane: dna::LocalHumanMembrane {{ who: "operator" }},
-            // Phase 2 (GH #529): a Mutation edits in its own worktree, is
-            // verified with receipts, and blocks on a human Review pinned
-            // to the exact candidate. The editor's grant is read, edit,
-            // fmt and check inside that worktree — the law says so.
+            review_policy: dna::OrgPolicy {{ }},
+            membrane: dna::Board {{ who: "board" }},
             gateway: dna::MutationGateway {{
                 leases: dna::GitLeases {{ repo: "." }},
                 workspaces: dna::IsolatedWorktrees {{ repo: ".", root: ".hale/dna/worktrees" }},
                 repo: dna::LocalGit {{ repo: "." }}
             }},
             verification: dna::HaleVerification {{ receipts: dna::GitReceipts {{ repo: "." }}, scratch: ".hale/dna/scratch", repo: ".", seed: "{seed}" }},
+            // The editing position: read, edit, fmt and check inside one
+            // worktree — the law says so.
             editor: dna::SourceEditor {{
                 name: "editor",
                 models: dna::ModelRouter {{
@@ -1823,233 +1851,98 @@ locus Genome {{
             }},
             genome_seed: "{seed}"
         }};
-        // The baseline review: ratify dna/purpose.hl. Settles only on a
-        // maintainer's verdict naming this exact digest.
+        // The Leader: decides the Reviews inside the grant, with the deep
+        // tier, reading the source diff and the semantic diff; every
+        // decision is a model call with evidence in the record.
+        leader: dna::Leader = dna::Leader {{
+            name: "leader",
+            models: dna::ModelRouter {{
+                quick: dna::HostedModel {{ name: "quick", model: "gpt-4o-mini", credential: dna::HostedCredential {{ env_var: "OPENAI_API_KEY" }} }},
+                deep: dna::HostedModel {{ name: "deep", model: "gpt-4o", credential: dna::HostedCredential {{ env_var: "OPENAI_API_KEY" }}, input_micros_per_1k: 2500, output_micros_per_1k: 10000 }},
+                private: dna::LocalModel {{ name: "private", endpoint: "http://127.0.0.1:11434/v1/chat/completions", model: "llama3" }}
+            }},
+            receipts: dna::GitReceipts {{ repo: "." }},
+            source: dna::SourceReader {{ repo: "." }}
+        }};
+        // The baseline review: ratify purpose.hl. The Board's; it settles
+        // only on a verdict naming this exact digest.
         purpose: dna::Review = dna::Review {{
             review_id: "purpose",
             question: "ratify the declared purpose?",
             subject_digest: "{purpose_digest}",
-            required_authority: "maintainer",
+            required_authority: "board",
             author: "hale dna init"
         }};
     }}
-
-    fn status() -> String {{
-        let b = std::json::Builder {{ }};
-        b.begin_object();
-        b.string_field("project", "{project}");
-        b.field("core", self.core.status());
-        b.string_field("purpose_review", if self.purpose.settled {{ self.purpose.outcome }} else {{ "pending" }});
-        b.end_object();
-        return b.result();
+    claims {{ adopt Org; }}
+    // The membrane: where a verdict, an intent and the host's observation
+    // report enter. `hale dna` and iris publish here; the owning loci decide.
+    bindings {{
+        dna::ReviewVerdict: unix("{verdict}", role: listen);
+        dna::IntentOffered: unix("{intent}", role: listen);
+        dna::ExpressionObserved: unix("{observed}", role: listen);
+    }}
+    run() {{
+        if std::env::var_exists("HALE_DNA_ONESHOT") {{ return; }}
+        while true {{ std::time::sleep(100ms); }}
     }}
 }}
-"#
+
+fn main() {{
+    Org {{ }};
+}}
+"#,
+        verdict = VERDICT_SOCK_REL,
+        intent = INTENT_SOCK_REL,
+        observed = OBSERVED_SOCK_REL,
     )
 }
 
-/// The law. `holes` are the application's unresolvable edges from the
-/// baseline artifact: a `forbid reaches(organism, …)` clause over an
-/// application with a hole fails closed (an unresolvable edge is never
-/// a pass), so the app-wide clause is generated ACTIVE only when the
-/// baseline has none, and DEFERRED — written out, commented, with the
-/// reason — otherwise. The assembly-scoped clauses hold regardless.
-fn constitution_hl(main_name: &str, holes: &[String]) -> String {
-    let organism_clause = if holes.is_empty() {
-        "    // The application itself never reaches an apply except through the
-    // gate (active: the baseline artifact has no unresolvable edges).
-    organism_gated: forbid reaches(organism, effects(genome_apply)) avoiding dna_gate;
-".to_string()
-    } else {
-        format!(
-            "    // DEFERRED by `hale dna init`: the baseline has {} unresolvable
-    // edge(s) ({}), and a reachability clause over the application
-    // fails closed on them. Resolve the edges (or scope the group) and
-    // uncomment:
-    // organism_gated: forbid reaches(organism, effects(genome_apply)) avoiding dna_gate;
-",
-            holes.len(),
-            holes.iter().take(3).cloned().collect::<Vec<_>>().join("; ")
-        )
-    };
-    format!(
-        r#"// dna_constitution.hl — the law (project-owned; generated by
-// `hale dna init`). Adopted by the entrypoint (`adopt Project;`) and
-// carried by every environment (`[claims] base` in hale.toml). Add
-// clauses; do not weaken these.
-//
-// It lives in the application's own seed because a constitution
-// names groups its adopting entrypoint must declare (`organism`),
-// and because whoever imports the application (its tests) must see
-// the law and its vocabulary together.
+/// The foundational law of an organization (GH #566 F2), from the rules
+/// an executable org chart lives by: a position's capabilities are its
+/// effect contract; nothing applies except through the substrate; the
+/// editing position reaches neither git, nor the worktree gateway, nor a
+/// deployment, nor the organization's memory; credentials stay sealed.
+/// Project-owned: add clauses, don't weaken these.
+fn org_law_hl() -> String {
+    r#"// dna/org/law.hl — the organization's law (project-owned; generated by
+// `hale dna init`). Adopted by the org's main (`adopt Org;`). Add
+// clauses; do not weaken these. Growth adds positions and routes that
+// still satisfy them: the compiler refuses the rest before anyone reviews.
 
 import "vendor/dna" as dna;
-import "dna" as genome;
 
-group organism = {{ {main_name} }};
-group genome = {{ genome::Genome }};
-group dna_gate = {{ dna::Dna }};
-group performers = {{ dna::AgentPerformer, dna::HumanWorkGateway, dna::ServicePerformer, dna::ScriptedPerformer, dna::SourceEditor }};
-group credentials = {{ dna::CredentialSource, dna::HostedCredential }};
-group editors = {{ dna::SourceEditor, dna::WorktreeTools }};
-group knowledge = {{ dna::Knowledge }};
+group board = { dna::Board };
+group leader = { dna::Leader };
+group substrate = { dna::Dna };
+group positions = { dna::Leader, dna::SourceEditor, dna::WorktreeTools, dna::AgentPerformer, dna::HumanWorkGateway, dna::ServicePerformer, dna::ScriptedPerformer };
+group editors = { dna::SourceEditor, dna::WorktreeTools };
+group knowledge = { dna::Knowledge };
+group credentials = { dna::CredentialSource, dna::HostedCredential };
 
-constitution Project {{
-    // A mutation is applied only THROUGH the assembly's gate, never by
-    // a performer. The gate applies exactly the candidate a settled
-    // human Review pinned (GH #529 D5): the path from the genome to
-    // `genome_apply` runs through `dna::Dna` or it does not exist.
-    apply_gated: forbid reaches(genome, effects(genome_apply)) avoiding dna_gate;
-    performers_never_apply: forbid reaches(performers, effects(genome_apply));
-    credentials_sealed: require sealed(all credentials);
-    // Phase 2 (GH #529): the Attempt that edits source holds nothing
-    // but its worktree grant — no git, no worktree gateway, no apply,
-    // no Knowledge. A wiring that hands it any of them is a build
-    // failure with a witness, not a runtime check.
+constitution Org {
+    // Nothing is applied except through the substrate's gate, after a
+    // settled Review: the path from any position to `genome_apply` runs
+    // through `dna::Dna` or it does not exist.
+    apply_only_through_the_substrate: forbid reaches(positions, effects(genome_apply)) avoiding substrate;
+    // The editing position holds nothing but its worktree grant — no
+    // git, no worktree gateway, no apply, no memory. A wiring that hands
+    // it any of them is a build failure with a witness, not a runtime check.
     editors_never_commit: forbid reaches(editors, effects(repo_write));
     editors_never_touch_worktrees: forbid reaches(editors, effects(worktree_io));
     editors_never_apply: forbid reaches(editors, effects(genome_apply));
     editors_never_learn: forbid reaches(editors, knowledge);
-{organism_clause}}}
+    // The Leader decides; the substrate acts. Its verdict reaches the
+    // genome only through `dna::Dna` (the bus edges Review -> Dna -> gateway),
+    // never by holding a repository or a worktree itself.
+    leader_never_commits: forbid reaches(leader, effects(repo_write)) avoiding substrate;
+    leader_never_touches_worktrees: forbid reaches(leader, effects(worktree_io)) avoiding substrate;
+    // Credentials are read from their source into sealed loci and never returned.
+    credentials_sealed: require sealed(all credentials);
+}
 "#
-    )
+    .to_string()
 }
-
-/// The application's unresolvable edges, as the artifact reports them.
-fn holes_of(art: &Value) -> Vec<String> {
-    art["unknowns"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .map(|u| {
-                    let f = u["fn"].as_str().unwrap_or("?");
-                    let why: Vec<String> = u["reasons"]
-                        .as_array()
-                        .map(|r| r.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
-                        .unwrap_or_default();
-                    if why.is_empty() {
-                        f.to_string()
-                    } else {
-                        format!("{f}: {}", why.join(", "))
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// Graft the DNA onto the application's main file. Returns `None`
-/// when it already carries it (idempotent), otherwise the edited
-/// source. Edits are span-anchored insertions; nothing existing is
-/// rewritten.
-fn graft_main(src: &str, main_name: &str) -> Result<Option<String>, String> {
-    use hale_syntax::ast::{LocusMember, TopDecl};
-    if src.contains("genome::Genome") {
-        return Ok(None);
-    }
-    let prog = hale_syntax::parse_source(src).map_err(|d| {
-        format!(
-            "the application does not parse: {}",
-            d.first().map(|x| x.message.clone()).unwrap_or_default()
-        )
-    })?;
-    let mut inserts: Vec<(usize, String)> = Vec::new();
-    // imports
-    let last_import_end = prog.imports.iter().map(|i| i.span.end.as_usize()).max();
-    let mut import_text = String::new();
-    if !prog.imports.iter().any(|i| i.alias.as_deref() == Some("dna")) {
-        import_text.push_str("import \"vendor/dna\" as dna;\n");
-    }
-    if !prog.imports.iter().any(|i| i.alias.as_deref() == Some("genome")) {
-        import_text.push_str("import \"dna\" as genome;\n");
-    }
-    match last_import_end {
-        Some(e) => {
-            let e = src[e..].find('\n').map(|n| e + n + 1).unwrap_or(e);
-            inserts.push((e, import_text));
-        }
-        None => inserts.push((0, format!("{import_text}\n"))),
-    }
-    // the main locus
-    let Some(TopDecl::Locus(main)) = prog.items.iter().find(|i| matches!(i, TopDecl::Locus(l) if l.is_main)) else {
-        return Err("no main locus".into());
-    };
-    // Missing blocks go at the END of the main's body, before its
-    // closing brace — after whatever the author wrote.
-    let close_main = block_close(src, main.span.end.as_usize())?;
-    // An insertion inside an existing block keeps the author's
-    // layout: a one-line block stays one line, a multi-line block
-    // gets its own line.
-    let inside = |src: &str, block_start: usize, close: usize, line: &str| -> String {
-        if src[block_start..close].contains('\n') {
-            format!("    {line}\n    ")
-        } else {
-            format!(" {line} ")
-        }
-    };
-    let mut has_params = false;
-    let mut has_claims = false;
-    let mut has_bindings = false;
-    for m in &main.members {
-        match m {
-            LocusMember::Params(pb) => {
-                has_params = true;
-                let close = block_close(src, pb.span.end.as_usize())?;
-                inserts.push((close, inside(src, pb.span.start.as_usize(), close, "genome: genome::Genome = genome::Genome { };")));
-            }
-            LocusMember::Claims(cb) => {
-                has_claims = true;
-                if !cb.adopts.iter().any(|a| a.name == "Project") {
-                    let close = block_close(src, cb.span.end.as_usize())?;
-                    inserts.push((close, inside(src, cb.span.start.as_usize(), close, "adopt Project;")));
-                }
-            }
-            LocusMember::Bindings(bb) => {
-                has_bindings = true;
-                let close = block_close(src, bb.span.end.as_usize())?;
-                let line = format!("dna::ReviewVerdict: unix(\"{VERDICT_SOCK_REL}\", role: listen); dna::IntentOffered: unix(\"{INTENT_SOCK_REL}\", role: listen); dna::ExpressionObserved: unix(\"{OBSERVED_SOCK_REL}\", role: listen);");
-                inserts.push((close, inside(src, bb.span.start.as_usize(), close, &line)));
-            }
-            _ => {}
-        }
-    }
-    let mut blocks = String::new();
-    if !has_params {
-        blocks.push_str("\n    params {\n        genome: genome::Genome = genome::Genome { };\n    }");
-    }
-    if !has_claims {
-        blocks.push_str("\n    claims {\n        adopt Project;\n    }");
-    }
-    if !has_bindings {
-        blocks.push_str(&format!(
-            "\n    bindings {{\n        dna::ReviewVerdict: unix(\"{VERDICT_SOCK_REL}\", role: listen);\n        dna::IntentOffered: unix(\"{INTENT_SOCK_REL}\", role: listen);\n        dna::ExpressionObserved: unix(\"{OBSERVED_SOCK_REL}\", role: listen);\n    }}"
-        ));
-    }
-    if !blocks.is_empty() {
-        // `blocks` starts with a newline; the brace it lands before is
-        // on its own line, so the body ends "...}\n<blocks>\n}".
-        blocks.push('\n');
-        inserts.push((close_main, blocks));
-    }
-    let _ = main_name;
-    inserts.sort_by(|a, b| b.0.cmp(&a.0));
-    let mut out = src.to_string();
-    for (at, text) in inserts {
-        out.insert_str(at, &text);
-    }
-    Ok(Some(out))
-}
-
-/// The byte offset of a block's closing `}` given the span end the
-/// parser recorded (which may sit on or just past the brace).
-fn block_close(src: &str, span_end: usize) -> Result<usize, String> {
-    let end = span_end.min(src.len());
-    src[..end].rfind('}').ok_or_else(|| "block without a closing brace".to_string())
-}
-
-// ---------------------------------------------------------------
-// the Journal, seeded from the artifact
-// ---------------------------------------------------------------
 
 /// The seed events, collected then appended to the record in order.
 struct Chain {
@@ -2151,19 +2044,12 @@ fn seed_journal(root: &Path, app: &App, art: &Value, raw: &str, purpose_digest: 
             &serde_json::json!({"kind": "claim", "name": cl["name"], "form": cl["form"], "result": cl["result"], "source": cl["source"], "provenance": "observed"}).to_string(),
         );
     }
-    for h in holes_of(art) {
-        c.push(
-            "law.deferred",
-            "claim:organism_gated",
-            &serde_json::json!({"clause": "forbid reaches(organism, effects(genome_apply)) avoiding dna_gate", "reason": h, "provenance": "inferred"}).to_string(),
-        );
-    }
     c.push(
         "review.requested",
         "review:purpose",
         &serde_json::json!({
             "question": "ratify the declared purpose?", "subject_digest": purpose_digest,
-            "required_authority": "maintainer", "author": "hale dna init",
+            "required_authority": "board", "author": "hale dna init",
             "baseline": {"artifact_digest": s(&art["artifact_digest"]), "bytes": raw.len()},
             "provenance": "declared"
         })

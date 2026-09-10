@@ -33,6 +33,7 @@ pub const FILES: &[EmbeddedFile] = core![
     "journal",
     "knowledge",
     "models",
+    "org",
     "performers",
     "process",
     "review",

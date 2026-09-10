@@ -55,6 +55,8 @@ fn main() {
                 deep: dna::FakeModel { name: "deep", answer: "docs_coverage +" }
             }
         },
+        review_policy: dna::OrgPolicy { },
+        membrane: dna::Board { who: "board" },
         boundary: dna::AutonomyBoundary {
             child: "orgrev",
             grant: dna::Grant { child: "orgrev", classes: "docs refactor", max_magnitude: 4, review: "pre" }
@@ -84,7 +86,7 @@ fn a_mutation_is_rendered_offline_and_decided_through_the_organism() {
 
     // 2. rendered offline: the pending list, then the Review itself
     let (ok, list) = hale(&["dna", "review"], &app);
-    assert!(ok && list.contains("2 pending review(s) of 2") && list.contains("m1 needs maintainer") && list.contains("docs · candidate"), "{list}");
+    assert!(ok && list.contains("2 pending review(s) of 2") && list.contains("m1 needs leader") && list.contains("docs · candidate"), "{list}");
     let (ok, view) = hale(&["dna", "review", "m1"], &app);
     assert!(ok, "{view}");
     for needle in [
@@ -121,11 +123,15 @@ fn a_mutation_is_rendered_offline_and_decided_through_the_organism() {
     while Instant::now() < dl && !(app.join(".hale/dna/hale-dna.intent.offered.sock").exists() && app.join(".hale/dna/hale-dna.review.verdict.sock").exists()) {
         std::thread::sleep(Duration::from_millis(200));
     }
-    // the host first (D5 makes it restart the organism on approval), then the organism
+    // the host, then the processes it started (their pids are in .hale/dna)
     let finish = |host: &mut std::process::Child| {
         let _ = host.kill();
         let _ = host.wait();
-        let _ = Command::new("pkill").args(["-x", "orgrev"]).status();
+        for f in ["org.pid", "app.pid"] {
+            if let Ok(pid) = std::fs::read_to_string(app.join(".hale/dna").join(f)) {
+                let _ = Command::new("kill").args(["-9", pid.trim()]).status();
+            }
+        }
     };
     if !app.join(".hale/dna/hale-dna.review.verdict.sock").exists() {
         finish(&mut host);
