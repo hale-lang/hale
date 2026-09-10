@@ -133,6 +133,7 @@ main locus Org {
         std::test::assert_eq_str(std::json::find_string_field(req2, "required_authority"), "leader", "the Leader's to decide");
         std::test::assert_eq_int(self.leader.decisions, 1, "one decision");
         std::test::assert_eq_int(self.leader.approved, 1, "approved");
+        std::test::assert(std::str::contains(self.last("review.reasoned", "m2"), "model deep:"), "the Leader's reasoning is in the record: " + self.last("review.reasoned", "m2"));
         std::test::assert_eq_str(self.last("review.settled", "m2"), "approve by leader", "settled by the Leader: " + self.last("review.refused", "m2"));
         std::test::assert_eq_int(self.count_role("review"), 1, "the Leader's decision is a model call with evidence");
         let cand2 = self.last("mutation.candidate", "m2");

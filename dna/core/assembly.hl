@@ -274,6 +274,11 @@ locus Dna {
             return;
         }
         let x = self.journal.append(self.journal.revision(), "review.settled", r.review_id, r.outcome + " by " + r.decided_by);
+        // the record says why (GH #566 F7): a person's note, or the Leader's
+        // reasoning — the model's answer, not a digest of it
+        if len(r.comment) > 0 {
+            let w = self.journal.append(self.journal.revision(), "review.reasoned", r.review_id, r.comment);
+        }
         // GH #529 D5: a mutation's approval applies exactly the reviewed
         // candidate; a rejection or revision leaves genome and expression
         // untouched and keeps the Mutation in lineage.
@@ -764,6 +769,35 @@ locus Dna {
         }
         self.metabolism.resume(tasks);
         if mutations > self.mutations_minted { self.mutations_minted = mutations; }
+        self.fail_in_flight();
+    }
+    // A Mutation whose last word in the record is `proposed`, `worktree`
+    // or `located` was in flight — an editor mid-attempt — when the
+    // organization stopped (GH #566 F7). Nobody resumes an attempt: it
+    // failed, and the record says so instead of showing it in flight
+    // forever. Bounded by the mutations the record holds.
+    @unbounded
+    fn fail_in_flight() {
+        let n = self.journal.revision();
+        let mut i = 0;
+        while i < n {
+            let e = self.journal.read(i);
+            if e.kind == "mutation.proposed" {
+                let id = e.entity;
+                let mut last = "proposed";
+                let mut k = i + 1;
+                while k < n {
+                    let s = self.journal.read(k);
+                    if s.entity == id && std::str::starts_with(s.kind, "mutation.") { last = s.kind[9..len(s.kind)]; }
+                    k = k + 1;
+                }
+                if last == "proposed" || last == "worktree" || last == "located" {
+                    let x = self.journal.append(self.journal.revision(), "mutation.failed", id, "in flight (" + last + ") when the organization stopped; nothing resumes an attempt");
+                    let y = self.gateway.workspaces.remove(id);
+                }
+            }
+            i = i + 1;
+        }
     }
     fn status() -> String {
         let b = std::json::Builder { };

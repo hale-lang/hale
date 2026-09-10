@@ -126,8 +126,20 @@ main locus App {
         // ---- 4. a second mutation stays pending; a new Dna re-births it ----
         let out2 = self.dna.mutate("t2", "feature", "again", "main.hl", 200);
         std::test::assert_eq_str(out2, "m2: review", out2);
+        // a third, still in flight when this organization stops: the next
+        // one fails it in the record rather than showing it located forever
+        let p3 = self.dna.journal.append(self.dna.journal.revision(), "mutation.proposed", "m3", "task t3 feature: never finished (main.hl) at base");
+        let w3 = self.dna.journal.append(self.dna.journal.revision(), "mutation.located", "m3", "main.hl under read edit fmt check");
         let second = dna::Dna { journal: dna::GitJournal { repo: repo } };
         std::test::assert_eq_int(second.rehydrated, 1, "only the pending Review is re-born (m1 settled)");
+        let mut failed3 = "";
+        let mut q = 0;
+        while q < second.journal.revision() {
+            let e = second.journal.read(q);
+            if e.kind == "mutation.failed" && e.entity == "m3" { failed3 = e.body; }
+            q = q + 1;
+        }
+        std::test::assert(std::str::contains(failed3, "in flight (located)"), "the in-flight mutation failed on rehydrate: " + failed3);
         std::test::assert_eq_int(second.reviews_open, 1, "and it is a live child");
         std::test::assert(std::str::contains(second.status(), "\"rehydrated\": 1"), second.status());
     }

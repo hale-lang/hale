@@ -73,6 +73,47 @@ locus WorktreeTools {
 // inside the worktree, format, check; hand back a proposal. Two model
 // calls under one attempt identity (the edit, then the fitness
 // assessment), exactly as AgentPerformer nests its calls.
+// The file inside a model's answer: when the answer carries a fenced
+// block (```lang … ```), the block's body — a preamble before it and a
+// remark after it are commentary, not source. An answer with no fence
+// is the file as given.
+fn unfence(answer: String) -> String {
+    let open = std::str::index_of(answer, "```");
+    if open < 0 { return answer; }
+    let after_open = answer[(open + 3)..len(answer)];
+    let nl = std::str::index_of(after_open, "\n");
+    if nl < 0 { return answer; }
+    let body = after_open[(nl + 1)..len(after_open)];
+    let close = std::str::index_of(body, "\n```");
+    if close < 0 { return body; }
+    return body[0..(close + 1)];
+}
+
+// The well-formed lines of a fitness assessment — `<signal> <+|->`,
+// one per line, nothing else — joined by newlines; commentary is
+// dropped. A signal is one word.
+fn fitness_lines(answer: String) -> String {
+    let mut out = "";
+    let mut line = "";
+    let mut p = 0;
+    let n = len(answer);
+    while p <= n {
+        let ch = if p < n { answer[p..(p + 1)] } else { "\n" };
+        if ch == "\n" {
+            let t = trim_nl(line);
+            let sp = std::str::index_of(t, " ");
+            if sp > 0 && sp == len(t) - 2 && (t[(sp + 1)..len(t)] == "+" || t[(sp + 1)..len(t)] == "-") && !std::str::contains(t[0..sp], "`") {
+                out = out + (if len(out) > 0 { "\n" } else { "" }) + t;
+            }
+            line = "";
+        } else {
+            line = line + ch;
+        }
+        p = p + 1;
+    }
+    return out;
+}
+
 locus SourceEditor {
     params {
         name: String = "editor";
@@ -165,13 +206,15 @@ locus SourceEditor {
         return trim_nl(out);
     }
     // One edit of one file on one try: read, ask, write. The diagnostics
-    // of the previous try, when any, travel in the prompt.
+    // of the previous try, when any, travel in the prompt. A hosted model
+    // wraps a file in a code fence however it is asked (GH #566 F7); the
+    // fence is not the file.
     @unbounded
     fn edit_one(attempt: String, file: String, objective: String, diagnostics: String, data_class: String) -> ModelResult {
         let refused_before = self.tools.refused;
         let current = self.tools.read(file);
         if self.tools.refused > refused_before { return ModelResult { ok: false, refused: self.tools.last_refusal }; }
-        let mut prompt = "Rewrite " + file + " so that: " + objective + "\nReturn the whole file.";
+        let mut prompt = "Rewrite " + file + " so that: " + objective + "\nChange only what the objective requires; keep every other line, comments included, exactly as it is.\nReturn the whole file as plain text: no code fence, no commentary, nothing before the first line of the file or after the last.";
         if len(diagnostics) > 0 { prompt = prompt + "\nThe previous attempt did not check. hale check said:\n" + diagnostics; }
         let edit = self.models.ask(ModelRequest {
             attempt_id: attempt, role: "edit", target: file,
@@ -180,7 +223,7 @@ locus SourceEditor {
             retry_of: if len(diagnostics) > 0 { attempt + ":edit" } else { "" }
         });
         if !edit.ok { return edit; }
-        if !self.tools.edit(file, edit.output) { return ModelResult { ok: false, backend: edit.backend, refused: self.tools.last_refusal }; }
+        if !self.tools.edit(file, unfence(edit.output)) { return ModelResult { ok: false, backend: edit.backend, refused: self.tools.last_refusal }; }
         return edit;
     }
     // Bounded by the attempt cap of the Work that owns this performer
@@ -199,10 +242,12 @@ locus SourceEditor {
         let mut fmt_code = 1;
         let mut check_code = 1;
         let mut done = false;
+        let mut changed = "";
         while tries < self.max_tries && !done {
             let attempt = req.work_id + "/a" + to_string(req.attempt_no + tries);
             let mut rest = files + " ";
             let mut failed = "";
+            changed = "";
             while len(rest) > 0 && len(failed) == 0 {
                 let sp = std::str::index_of(rest, " ");
                 let file = rest[0..sp];
@@ -211,6 +256,7 @@ locus SourceEditor {
                 let e = self.edit_one(attempt, file, req.objective, diagnostics, req.data_class);
                 if !e.ok { failed = "edit of " + file + " refused: " + e.refused; }
                 backends = e.backend;
+                changed = changed + "=== " + file + "\n" + unfence(e.output) + "\n";
             }
             if len(failed) > 0 {
                 return WorkResult { disposition: "failed", narrative: failed, performer: self.name };
@@ -225,10 +271,13 @@ locus SourceEditor {
         let attempt = req.work_id + "/a" + to_string(req.attempt_no + tries - 1);
         // The assessment is the deep tier's (assurance 2): it is what the
         // Review reads, so it is not the quick model's guess.
+        // the assessor sees the change it assesses — the objective and the
+        // files as edited — and only well-formed lines of its answer count
+        // (GH #566 F7: a model with nothing to look at says so, at length)
         let assess = self.models.ask(ModelRequest {
             attempt_id: attempt, role: "assess", assurance: 2,
-            prompt: "Which fitness signals should this change move, and which way? One per line: <signal> <+|->",
-            context: files, context_bytes: len(files) + 64,
+            prompt: "Which fitness signals should this change move, and which way? One per line, nothing else: <signal> <+|->",
+            context: "OBJECTIVE\n" + req.objective + "\n\nFILES AS EDITED\n" + changed, context_bytes: len(changed) + len(req.objective) + 64,
             tool_grant: self.grant(), data_class: req.data_class, retry_of: attempt + ":edit"
         });
         let b = std::json::Builder { };
@@ -236,7 +285,7 @@ locus SourceEditor {
         b.string_field("work_id", req.work_id);
         b.string_field("files_changed", files);
         b.string_field("rationale", req.objective);
-        b.string_field("fitness_signals", if assess.ok { assess.output } else { "" });
+        b.string_field("fitness_signals", if assess.ok { fitness_lines(assess.output) } else { "" });
         b.bool_field("fmt_clean", fmt_code == 0);
         b.bool_field("check_clean", check_code == 0);
         b.int_field("tries", tries);

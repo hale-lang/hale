@@ -178,13 +178,20 @@ locus LocalFakeModel {
 // assembly journals it. The prompt's digest, not the prompt, is what
 // the record carries.
 
+fn temperature_param(milli: Int) -> String {
+    if milli < 0 { return "temperature=default"; }
+    return "temperature=" + to_string(milli / 1000) + "." + pad3(milli % 1000);
+}
+
 fn openai_chat_body(model: String, req: ModelRequest, temperature_milli: Int, max_tokens: Int) -> String {
     let mut b = "{\"model\": " + jq(model) + ", \"messages\": [";
     if len(req.context) > 0 {
         b = b + "{\"role\": \"system\", \"content\": " + jq(req.context) + "}, ";
     }
     b = b + "{\"role\": \"user\", \"content\": " + jq(req.prompt) + "}]";
-    b = b + ", \"temperature\": " + to_string(temperature_milli / 1000) + "." + pad3(temperature_milli % 1000);
+    // a provider's default when none is set: some models refuse the
+    // parameter outright (GH #566 F7), and the evidence says which it was
+    if temperature_milli >= 0 { b = b + ", \"temperature\": " + to_string(temperature_milli / 1000) + "." + pad3(temperature_milli % 1000); }
     if max_tokens > 0 { b = b + ", \"max_tokens\": " + to_string(max_tokens); }
     return b + "}";
 }
@@ -282,8 +289,8 @@ locus HostedModel {
         model: String = "gpt-4o-mini";
         credential: HostedCredential = HostedCredential { };
         max_bytes: Int = 400000;
-        temperature_milli: Int = 0;
-        max_tokens: Int = 1024;
+        temperature_milli: Int = -1; // < 0: the provider's default; 0..1000 sent as 0.000..1.000
+        max_tokens: Int = 4096; // a whole-file rewrite needs room; 0 = the provider's default
         // price per 1k tokens, micro-dollars (0.15 / 0.60 per M ≈ gpt-4o-mini)
         input_micros_per_1k: Int = 150;
         output_micros_per_1k: Int = 600;
@@ -305,7 +312,7 @@ locus HostedModel {
             attempt_id: req.attempt_id, adapter: self.adapter, backend: self.name,
             endpoint: self.endpoint, credential: self.credential.fingerprint(),
             requested_model: self.model,
-            params: "temperature=" + to_string(self.temperature_milli / 1000) + "." + pad3(self.temperature_milli % 1000) + " max_tokens=" + to_string(self.max_tokens),
+            params: temperature_param(self.temperature_milli) + " max_tokens=" + to_string(self.max_tokens),
             prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
             context_digest: digest_of(req.context),
             knowledge_bindings: req.knowledge_bindings, tool_grant: req.tool_grant,
@@ -354,8 +361,8 @@ locus LocalModel {
         endpoint: String = "http://127.0.0.1:11434/v1/chat/completions";
         model: String = "llama3";
         max_bytes: Int = 400000;
-        temperature_milli: Int = 0;
-        max_tokens: Int = 1024;
+        temperature_milli: Int = -1; // < 0: the provider's default; 0..1000 sent as 0.000..1.000
+        max_tokens: Int = 4096; // a whole-file rewrite needs room; 0 = the provider's default
         calls: Int = 0;
         last: ModelEvidence = ModelEvidence { };
     }
@@ -369,7 +376,7 @@ locus LocalModel {
         let mut ev = ModelEvidence {
             attempt_id: req.attempt_id, adapter: "local", backend: self.name,
             endpoint: self.endpoint, requested_model: self.model,
-            params: "temperature=" + to_string(self.temperature_milli / 1000) + "." + pad3(self.temperature_milli % 1000) + " max_tokens=" + to_string(self.max_tokens),
+            params: temperature_param(self.temperature_milli) + " max_tokens=" + to_string(self.max_tokens),
             prompt_digest: if len(req.prompt_digest) > 0 { req.prompt_digest } else { digest_of(req.prompt) },
             context_digest: digest_of(req.context),
             knowledge_bindings: req.knowledge_bindings, tool_grant: req.tool_grant,

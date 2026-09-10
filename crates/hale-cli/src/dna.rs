@@ -1725,6 +1725,11 @@ fn status_projection(root: &Path) -> Result<Value, String> {
                     v["settled"] = Value::String(r.body.clone());
                 }
             }
+            "review.reasoned" => {
+                if let Some(v) = reviews.get_mut(&id) {
+                    v["reasoned"] = Value::String(r.body.clone());
+                }
+            }
             "review.refused" => {
                 if let Some(v) = reviews.get_mut(&id) {
                     if let Some(a) = v["refusals"].as_array_mut() {
@@ -2120,6 +2125,12 @@ fn render_review(root: &Path, r: &Value, iris: bool) -> Result<Vec<String>, Stri
     ];
     for refusal in r["refusals"].as_array().cloned().unwrap_or_default() {
         out.push(format!("  refused a verdict: {}", s(&refusal)));
+    }
+    if let Some(why) = r["reasoned"].as_str() {
+        out.push("  why:".into());
+        for l in why.lines() {
+            out.push(format!("    {l}"));
+        }
     }
     if !r["mutation_id"].is_string() {
         out.push(format!("decide: hale dna review {id} approve|revise|reject|abstain [--as <you>] [--comment <c>]"));

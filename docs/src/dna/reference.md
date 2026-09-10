@@ -77,6 +77,7 @@ tree, one JSON object per line: `seq`, `kind`, `entity`, `body`,
 | `review.requested` | `review:<id>` | question, authority, candidate, base, shape, disposition, evidence, magnitude, diff digests, fitness signals |
 | `review.verdict` | `<id>` | a verdict appended from a clone or from GitHub, in the reviewer's name |
 | `review.settled` / `review.refused` | `<id>` | `<verdict> by <reviewer>` / the reason |
+| `review.reasoned` | `<id>` | the deciding verdict's comment: a person's note, or the Leader's reasoning in full |
 | `expression.restart_requested` | `m<n>` | `apply <candidate> seed <s> fitness …` or `rollback <base> seed <s> after …` |
 | `expression.restarted` | `m<n>` | the shape and build the new expression reports |
 | `expression.deployed` | `m<n>` | what a deployment gateway expressed, and its judgement |
